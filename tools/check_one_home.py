@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """Fail when a setting has two homes — one in a drawer row and one in a central settings screen.
 
-#1515's whole reason for the contextual drawer is that a screen-specific setting should have **one
-obvious home**, not also live deep inside a settings tree. The D4 slices move each editor into its
-context and delete the central row in the same push; nothing about the language stops the deleted
-row growing back, so this guard states the rule the slices are executing:
+The contextual drawer exists so a screen-specific setting has one obvious home, and nothing about
+the language stops a deleted central row growing back. Two rules follow.
 
-1. **No `Settings` field is written by both a drawer and a settings screen.** The write is the
-   home — a row that draws a value it cannot change is a readout, not a second home.
-2. **No catalog key on a context row's label is drawn by a settings screen.** The label is what the
-   rider searches for, so the same word appearing in both places is the duplication they would see.
+No `Settings` field is written by both a drawer and a settings screen: the write is the home, and a
+row that draws a value it cannot change is a readout. No catalog key on a context row's label is
+drawn by a settings screen: the label is what the rider searches for.
 
-Deliberate exceptions are listed below, each with the decision that made it one. An exception is a
-recorded deviation, not a way to keep a duplicate quiet.
-
-A text guard fails by going blind, not by going off, so the census is pinned: every `ContextRow`
-must yield a parsed label, and the totals must clear a floor that matches the declared controls.
+Deliberate exceptions are listed below with the decision that made each one. A text guard fails by
+going blind, so the census is pinned: every `ContextRow` must yield a parsed label, and the totals
+must clear a floor that matches the declared controls.
 """
 
 from __future__ import annotations
@@ -85,8 +80,8 @@ def main() -> int:
             f"same push that moves the editor, or record the exception in ALLOWED_SHARED_FIELDS."
         )
 
-    # A field a settings screen writes but the drawer only reads is fine, and so is the reverse —
-    # only the *pair* is a second home, which is what the loop above checks.
+    # A field a settings screen writes but the drawer only reads is fine, and so is the reverse.
+    # Only the pair is a second home.
 
     row_labels: dict[str, str] = {}
     rows_seen = 0

@@ -1,23 +1,20 @@
-//! **The budget is measured, not asserted** (#1116 D2).
+//! The budget is measured, not asserted.
 //!
 //! [`obcm_assemble::extsort::ExternalSort`]'s whole reason to exist is that it sorts more records
-//! than it can hold. A unit test can check that it produces the right order and that its own buffer
-//! reports a bounded capacity, but neither of those would notice a k-way merge that quietly
-//! allocated a cursor per run without dividing the budget, or a `Vec` that doubled past the ceiling
-//! at the worst moment. What notices is counting every allocation the process makes.
+//! than it can hold. A unit test could check the order and a bounded buffer capacity, but neither
+//! would notice a k-way merge that allocated a cursor per run without dividing the budget, or a
+//! `Vec` that doubled past the ceiling at the worst moment. What notices is counting every
+//! allocation the process makes.
 //!
 //! So this file installs a counting global allocator — process-wide, which is why it is a test
-//! binary of its own with exactly **one** test in it (two would interleave on the counters) — and
-//! sorts the same shape of input at two sizes and two budgets:
+//! binary of its own with exactly one test in it, since two would interleave on the counters — and
+//! sorts the same shape of input at two sizes and two budgets. Sixteen times the records at the
+//! same budget must cost the same peak, because the sort's footprint is the budget and not the
+//! input; sixteen times the budget at the same records must cost a visibly larger one, because the
+//! knob is real.
 //!
-//! * 16× the records at the same budget must cost the **same peak**. That is the claim: the sort's
-//!   footprint is the budget, not the input.
-//! * 16× the budget at the same records must cost a visibly larger one. That is the other half:
-//!   the knob is real, not decoration.
-//!
-//! The scratch is backed by **files**, not [`obcm_assemble::MemoryScratch`], for the same reason:
-//! an in-memory scratch would put the spill back on the heap and every number here would measure it
-//! instead of the sorter.
+//! The scratch is backed by files rather than [`obcm_assemble::MemoryScratch`], which would put the
+//! spill back on the heap and make every number here measure it instead of the sorter.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::RefCell;
@@ -35,8 +32,8 @@ static PEAK: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
 
-/// Charges the **net** change of every allocation, exactly as the CLI's `mem-profile` harness does,
-/// so the two report the same kind of number.
+/// Charges the net change of every allocation, exactly as the CLI's `mem-profile` harness does, so
+/// the two report the same kind of number.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
@@ -210,17 +207,16 @@ fn the_sort_costs_its_budget_and_not_its_input() {
     const SMALL: usize = 256 * 1024;
     const LARGE: usize = 16 * SMALL;
 
-    // Warm up: the first sort pays for whatever the runtime lazily allocates on first use (the
-    // formatting machinery, the io buffers), and that is not the sorter's cost.
+    // Warm up: the first sort pays for whatever the runtime lazily allocates on first use, and that
+    // is not the sorter's cost.
     sort_peak(&scratch, 10_000, SMALL);
 
     let few = sort_peak(&scratch, 50_000, SMALL);
     let many = sort_peak(&scratch, 800_000, SMALL);
     let generous = sort_peak(&scratch, 800_000, LARGE);
 
-    // 16× the records, same budget: the same peak. A quarter of the budget is the slack — the input
-    // grew by 12 MB of records and 45 runs' worth of cursors, so anything proportional to `n` blows
-    // straight through this.
+    // 16× the records, same budget: the same peak. A quarter of the budget is the slack, so
+    // anything proportional to `n` blows straight through this.
     assert!(
         many <= few + SMALL / 4,
         "16× the records cost {many} B against {few} B at the same {SMALL} B budget — the sort's footprint is \

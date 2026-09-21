@@ -2,9 +2,8 @@ import XCTest
 import OBCDomain
 @testable import OBCFormats
 
-/// The GPX decoder — geometry, elevation, name/creator, and the waypoint
-/// distance-along projection W1 renders. Ends on the real bundled sample
-/// (a downsampled Komoot export) as the end-to-end pin.
+/// The GPX decoder: geometry, elevation, name and creator, and the waypoint distance-along
+/// projection. It ends on the real bundled Komoot sample as the end-to-end pin.
 final class GPXRouteDecoderTests: XCTestCase {
     private let decoder = GPXRouteDecoder()
 
@@ -47,12 +46,11 @@ final class GPXRouteDecoderTests: XCTestCase {
         XCTAssertNil(route.waypoints[0].note, "no <desc> → no note")
     }
 
-    /// `<sym>`/`<type>` become the waypoint's category (`OBCR_Spec.md` §4.1, #947),
-    /// `<sym>` winning when both are present — and an unmapped symbol degrades to
-    /// generic without costing the waypoint its place in the list.
+    /// `<sym>` and `<type>` become the waypoint's category, `<sym>` winning when both are
+    /// present. An unmapped symbol degrades to generic without costing the waypoint its place.
     func testWaypointSymbolsBecomeCategories() throws {
-        // One waypoint per track point (distinct `along`s, so ride order is total
-        // and the assertion can't depend on `sorted` being stable).
+        // One waypoint per track point: distinct `along`s make ride order total, so the
+        // assertion does not depend on `sorted` being stable.
         let gpx = """
             <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
               <wpt lat="47.000" lon="11.0"><name>Fountain</name><sym>Drinking Water</sym></wpt>
@@ -109,11 +107,10 @@ final class GPXRouteDecoderTests: XCTestCase {
         }
     }
 
-    // MARK: Coordinate / elevation validation (#304)
+    // MARK: Coordinate and elevation validation
 
-    /// A non-finite coordinate (`lat="inf"`) parses as a `Double` but must be
-    /// rejected as a clean `.malformed`, never built into a poisoning `NaN`
-    /// coordinate.
+    /// `lat="inf"` parses as a `Double`, so it must be rejected explicitly rather than becoming
+    /// a poisoning `NaN` coordinate.
     func testNonFiniteCoordinateRejectsTheFile() {
         let bad = """
             <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
@@ -125,8 +122,7 @@ final class GPXRouteDecoderTests: XCTestCase {
         assertMalformed(bad)
     }
 
-    /// An out-of-range coordinate (`lat="999"`) is finite but not a valid
-    /// latitude — also a clean reject.
+    /// `lat="999"` is finite but not a valid latitude, so it is also a clean reject.
     func testOutOfRangeCoordinateRejectsTheFile() {
         let bad = """
             <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
@@ -139,9 +135,8 @@ final class GPXRouteDecoderTests: XCTestCase {
         assertMalformed(bad)
     }
 
-    /// The original crash path: a bad track coordinate poisons the cumulative
-    /// distance → a `NaN` waypoint `along` → `sorted` traps. Rejecting the
-    /// coordinate at the edge throws cleanly instead — no crash.
+    /// A bad track coordinate poisons the cumulative distance, giving a `NaN` waypoint `along`
+    /// that makes `sorted` trap. Rejecting at the edge throws cleanly instead.
     func testBadCoordinateWithWaypointThrowsInsteadOfCrashing() {
         let bad = """
             <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
@@ -156,8 +151,6 @@ final class GPXRouteDecoderTests: XCTestCase {
         assertMalformed(bad)
     }
 
-    /// A non-finite `<ele>` is dropped to `nil` (no elevation) — the route still
-    /// imports, it just carries no altitude for that point.
     func testNonFiniteElevationBecomesNil() throws {
         let mixed = """
             <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
@@ -181,9 +174,8 @@ final class GPXRouteDecoderTests: XCTestCase {
         }
     }
 
-    /// End-to-end on the real bundled sample (`OBCMock/Fixtures/sample-import.gpx`,
-    /// the `-OBCImportSample` file) — read via the repo path so this pins the
-    /// exact bytes the E1 XCUITest imports.
+    /// Reads the bundled sample through the repo path, so this pins the exact bytes the import
+    /// UI test uses.
     func testDecodesTheBundledKomootSample() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // → Tests/OBCFormatsTests

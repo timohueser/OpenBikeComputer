@@ -2,8 +2,8 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// The pure whole-trip upload planner (TR8, issue #657): the skip / replace /
-/// fresh partition and the precheck slot math — no transport, no model.
+/// The pure whole-trip upload planner: the skip, replace and fresh partition, and the precheck
+/// slot math. No transport, no model.
 struct TripUploadPlannerTests {
     private func stage(_ id: String, upToDate: Bool = false, committed: UInt16? = nil) -> TripUploadPlanner.StageInput {
         TripUploadPlanner.StageInput(
@@ -32,7 +32,7 @@ struct TripUploadPlannerTests {
 
     @Test
     func upToDateBeatsAPresentLink() {
-        // A stage that's both up-to-date and on the device is a skip, not a replace.
+        // A stage that is both up to date and on the device is a skip, not a replace.
         let plan = TripUploadPlanner.plan(
             stages: [stage("a", upToDate: true, committed: 7)],
             tripObjectID: DeviceObjectID(3),
@@ -47,10 +47,9 @@ struct TripUploadPlannerTests {
 
     @Test
     func residentMenuLimitsAreNotStorageLimits() {
-        // The flat-store benchmark card has 249 routes. The device intentionally
-        // keeps only the newest 64 resident for its menu, but the store itself has
-        // room for 1,916 catalog entries. With no advertised admission cap the
-        // planner must proceed and let the device remain the storage authority.
+        // The device keeps only the newest 64 routes resident for its menu, but the store holds
+        // 1,916 catalog entries. With no advertised admission cap the planner must proceed and
+        // leave the device as the storage authority.
         let plan = TripUploadPlanner.plan(
             stages: [stage("a"), stage("b")],
             tripObjectID: nil,
@@ -91,8 +90,8 @@ struct TripUploadPlannerTests {
 
     @Test
     func replacedAndSkippedStagesNeverCountAgainstSlots() {
-        // A device at the route cap still fits a trip whose stages are all
-        // replace-by-id / skip (replace is cap-exempt on the device).
+        // A device at the route cap still fits a trip whose stages all replace or skip: replace
+        // is cap-exempt on the device.
         let plan = TripUploadPlanner.plan(
             stages: [stage("a", upToDate: true, committed: 1), stage("b", committed: 2)],
             tripObjectID: DeviceObjectID(9),
@@ -114,7 +113,7 @@ struct TripUploadPlannerTests {
         #expect(plan.precheck.needsNewTripSlot)
         #expect(plan.precheck.tripSlotExhausted)
         #expect(!plan.precheck.fits)
-        // The route side is fine — the deficit is the trip slot.
+        // The route side is fine; the deficit is the trip slot.
         #expect(plan.precheck.routeSlotDeficit == 0)
     }
 
@@ -122,8 +121,7 @@ struct TripUploadPlannerTests {
 
     @Test
     func reRunOfALandedTripIsAllSkips() {
-        // Every stage up-to-date + the trip already on the device → a pure-skip
-        // plan that fits trivially (nothing fresh to send).
+        // Every stage up to date and the trip already on the device: a pure-skip plan fits.
         let plan = TripUploadPlanner.plan(
             stages: [stage("a", upToDate: true, committed: 1), stage("b", upToDate: true, committed: 2)],
             tripObjectID: DeviceObjectID(9),

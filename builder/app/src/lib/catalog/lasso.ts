@@ -1,34 +1,28 @@
-// A drawn ring into cells: which cells of a band intersect the closed polygon a
-// lasso gesture traced (#1038's ghosted fourth tool, now real).
+// A drawn ring into cells: which cells of a band intersect the closed polygon a lasso
+// gesture traced.
 //
-// **What this is, and what it deliberately is not.** It is a polygon-vs-square
-// overlap test evaluated per candidate cell, all in integer microdegrees. It is
-// not a metric buffer and needs no projection: unlike the corridor's
-// distance-in-metres question, "does my square overlap this ring" is an affine
-// question the lat/lon plane answers exactly, so there is no cosine anywhere in
-// this file and nothing for latitude to distort.
+// It is a polygon-vs-square overlap test evaluated per candidate cell, all in integer
+// microdegrees. It is not a metric buffer and needs no projection: unlike the corridor's
+// distance-in-metres question, "does my square overlap this ring" is an affine question
+// the lat/lon plane answers exactly, so there is no cosine anywhere in this file.
 //
-// The overlap test has exactly two cases, and together they are complete for a
-// simple ring against a convex square:
+// The overlap test has exactly two cases, and together they are complete for a simple
+// ring against a convex square:
 //
-//   * **An edge of the ring overlaps the square** — decided by Liang–Barsky
-//     clipping (the segment clipped to the square is non-empty). This covers
-//     every partial overlap, and also a ring drawn entirely *inside* one cell,
-//     whose edges lie in the square without crossing its boundary.
-//   * **The square lies entirely inside the ring** — no edge touches it, so one
-//     corner standing in for all four is tested even-odd against the ring, the
-//     same rule the map's fill and the store's `pointInRings` use.
+//   * **An edge of the ring overlaps the square** — decided by Liang–Barsky clipping.
+//     This covers every partial overlap, and a ring drawn entirely *inside* one cell.
+//   * **The square lies entirely inside the ring** — no edge touches it, so one corner
+//     standing in for all four is tested even-odd against the ring.
 //
-// Edges are treated as closed against the half-open cell squares; the µdeg of
-// slack that costs errs toward including a cell, the same attitude the corridor
-// test takes at its shared edges.
+// Edges are treated as closed against the half-open cell squares; the µdeg of slack that
+// costs errs toward including a cell.
 
 import { cellsIntersecting, cellSquare, GridError, type CellId, type UBox } from "./grid";
 import type { LatLon } from "./corridor";
 
 /** The widest a lasso may reach in longitude, µdeg: half the world — the same
- *  antimeridian refusal the corridor makes, for the same reason (OBCA §1.4: the
- *  grid does not wrap, so a ring across the seam is two selections). */
+ *  antimeridian refusal the corridor makes, because the grid does not wrap and a ring
+ *  across the seam is two selections. */
 export const MAX_LASSO_LON_SPAN = 180_000_000;
 
 /** The µdeg box a ring's points span. */
@@ -46,9 +40,8 @@ function ringBox(points: readonly LatLon[]): UBox {
     return { minLat, minLon, maxLat, maxLon };
 }
 
-/** Even-odd containment of a point in the ring (closed implicitly: the segment
- *  from the last point back to the first counts). The same rule as the map's
- *  even-odd fill, so what this selects is what the drawing showed. */
+/** Even-odd containment of a point in the ring, closed implicitly. The same rule as the
+ *  map's even-odd fill, so what this selects is what the drawing showed. */
 function pointInRing(lat: number, lon: number, points: readonly LatLon[]): boolean {
     let inside = false;
     for (let k = 0; k < points.length; k++) {
@@ -61,9 +54,8 @@ function pointInRing(lat: number, lon: number, points: readonly LatLon[]): boole
     return inside;
 }
 
-/** Whether the segment `a→b` overlaps the filled box — Liang–Barsky: clip the
- *  segment's parameter interval against each slab and see whether anything is
- *  left. A segment wholly inside the box clips to itself and overlaps. */
+/** Whether the segment `a→b` overlaps the filled box — Liang–Barsky: clip the segment's
+ *  parameter interval against each slab and see whether anything is left. */
 function segOverlapsBox(a: LatLon, b: LatLon, box: UBox): boolean {
     const dLat = b.lat - a.lat;
     const dLon = b.lon - a.lon;

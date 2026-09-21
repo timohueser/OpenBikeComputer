@@ -1,5 +1,5 @@
-// A ratchet, not a test of today: `RELEASE` is null until D3 (#908) publishes
-// the first installers, so the body below runs zero assertions right now — on
+// A ratchet, not a test of today: `RELEASE` is null until the first installers are
+// published, so the body below runs zero assertions right now — on
 // purpose. The moment there is a build, these are the things that have to be
 // true of it, and a missing checksum or a placeholder URL fails here instead of
 // on someone's machine. The one assertion that always runs pins that the page

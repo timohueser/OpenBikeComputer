@@ -1,62 +1,54 @@
 import Foundation
 import OBCDomain
 
-/// The phone-side library (B1S): planned routes saved from imports and tracked
-/// rides synced off the device — what keeps the lists browsable before, without,
-/// or away from a device (H4 save-before-pairing, the S4 offline rule) and what
-/// makes B7's re-sync idempotent (H9/H10).
+/// The phone-side library: planned routes saved from imports and tracked rides synced off the
+/// device. It keeps the lists browsable before, without, or away from a device, and it is what
+/// makes a re-sync idempotent.
 ///
-/// A seam like `DeviceTransport`: screens and flows see only this protocol; the
-/// composition root picks the conformer — `FileLibraryStore` (real),
-/// `InMemoryLibraryStore` (tests/previews, and mock runs so every XCUITest
-/// launch starts from its scenario alone).
+/// A seam like `DeviceTransport`: screens and flows see only this protocol, and the composition
+/// root picks the conformer. Mock runs use the in-memory one, so every UI-test launch starts from
+/// its scenario alone.
 ///
-/// Stores hold **canonical domain models** (`PlannedRouteRecord`, `Ride`) — never
-/// device wire bytes, whose layout is firmware-`S0`-owned (see #256). Calls are
-/// synchronous and expected from the main actor. Ride reads are split (#360):
-/// the lists browse `rideSummaries()` (small), and a tracklog loads one ride at
-/// a time via `ridePoints(_:)` when a detail opens — a season of rides must
-/// never be decoded whole at launch.
+/// Stores hold canonical domain models, never device wire bytes. Calls are synchronous and
+/// expected from the main actor. Ride reads are split: the lists browse the summaries, and a
+/// tracklog loads one ride at a time when a detail opens, because a season of rides must never be
+/// decoded whole at launch.
 public protocol LibraryStore: Sendable {
-    // MARK: Planned routes (imports, H4)
+    // MARK: Planned routes
 
-    /// Every saved planned route, newest first (`addedAt` descending).
+    /// Every saved planned route, newest first.
     func plannedRoutes() -> [PlannedRouteRecord]
-    /// Insert or replace a record under its `summary.id` — also the write path
-    /// for renames (H12) and the uploaded-to-device flip.
+    /// Insert or replace a record under its id: also the write path for renames and for the
+    /// uploaded-to-device flip.
     func savePlannedRoute(_ record: PlannedRouteRecord)
-    /// Delete a planned route. **Also prunes the id from any trip that holds it**
-    /// (a route can't linger as a dangling stage in a trip once its record is
-    /// gone); a trip left with no stages dissolves.
+    /// Delete a planned route. Also prunes the id from any trip that holds it, because a route
+    /// cannot linger as a dangling stage once its record is gone; a trip left with no stages
+    /// dissolves.
     func deletePlannedRoute(_ id: RouteID)
 
-    // MARK: Trips (route grouping, TR5)
+    // MARK: Trips
 
-    /// Every saved trip, newest first (`addedAt` descending). Reads **drop stage
-    /// ids whose planned-route record is gone** (a defensively-tolerated dangling
-    /// ref), so a returned trip's `stageIDs` are always resolvable; a trip left
-    /// with no resolvable stage is dropped.
+    /// Every saved trip, newest first. A read drops stage ids whose planned-route record is gone,
+    /// so a returned trip's stages are always resolvable, and a trip left with no resolvable stage
+    /// is dropped.
     func trips() -> [TripRecord]
-    /// Insert or replace a trip under its `id`. **Enforces the invariant that a
-    /// `RouteID` lives in at most one trip:** saving a trip removes its stages
-    /// from every *other* stored trip, and any other trip thereby emptied
-    /// dissolves. Ungroup/delete of *routes* is not implied — routes are
-    /// untouched.
+    /// Insert or replace a trip under its id. Enforces the invariant that a `RouteID` lives in at
+    /// most one trip: saving a trip removes its stages from every other stored trip, and any other
+    /// trip thereby emptied dissolves. The routes themselves are untouched.
     func saveTrip(_ record: TripRecord)
-    /// Delete a trip — **ungroup semantics only.** The member route records are
-    /// untouched (they become top-level); a "delete trip & routes" cascade is
-    /// composed by the caller from `deleteTrip` + `deletePlannedRoute`s.
+    /// Delete a trip, with ungroup semantics only. The member route records are untouched and
+    /// become top-level; the caller composes a "delete trip and routes" cascade from this and the
+    /// per-route deletes.
     func deleteTrip(_ id: TripID)
 
-    // MARK: Tracked rides (sync, B7)
+    // MARK: Tracked rides
 
-    /// Every synced ride's summary, newest first (`date` descending) — the
-    /// Tracked list's whole appetite. Never decodes tracklogs (#360).
+    /// Every synced ride's summary, newest first: the Tracked list's whole appetite. Never decodes
+    /// tracklogs.
     func rideSummaries() -> [RideSummary]
-    /// One ride's full tracklog, loaded on demand (the detail map's read).
-    /// `nil` when the ride is unknown or its points don't decode — the ride
-    /// stays summary-only rather than dropped, and the detail degrades to the
-    /// preview's coordinates.
+    /// One ride's full tracklog, loaded on demand for the detail map. Nil when the ride is unknown
+    /// or its points do not decode: the ride stays summary-only rather than dropped, and the detail
+    /// degrades to the preview's coordinates.
     func ridePoints(_ id: RideID) -> [RidePoint]?
     /// Save one ride's summary and points. Report a write failure before sync records success.
     func saveRide(_ ride: Ride) throws
@@ -67,9 +59,9 @@ public protocol LibraryStore: Sendable {
     func archivedRideSource(_ id: RideID) -> RideSource?
     /// Revalidate durable storage before returning proof for an existing archive.
     func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt?
-    /// Update a ride's summary without touching its stored points — the rename
-    /// (H12) write path; re-encoding a full tracklog to change a name would be
-    /// the exact whole-ride coupling #360 removed.
+    /// Update a ride's summary without touching its stored points: the rename write path.
+    /// Re-encoding a full tracklog to change a name would be exactly the whole-ride coupling the
+    /// split read removed.
     func saveRideSummary(_ summary: RideSummary)
     func deleteRide(_ id: RideID)
 
@@ -79,17 +71,15 @@ public protocol LibraryStore: Sendable {
     func syncedRideIDs() -> Set<RideID>
     func markRideSynced(_ id: RideID)
 
-    /// Ride ids the user deleted *on the phone*. The device keeps its copy
-    /// (the SD card is untouched), so the list merge must hide these device
-    /// rides instead of resurrecting them on every sync/reload.
+    /// Ride ids the user deleted on the phone. The device keeps its copy, so the list merge must
+    /// hide these device rides instead of resurrecting them on every sync or reload.
     func deletedRideIDs() -> Set<RideID>
     func markRideDeleted(_ id: RideID)
 
-    /// Rides in the phone-side trash (#292), keyed to when each was trashed.
-    /// A trashed ride keeps its stored files — `rideSummaries()`/`ridePoints()`
-    /// still serve it; only the Tracked list hides it — so Recover is just
-    /// clearing the mark. A permanent delete pairs `deleteRide` with
-    /// `unmarkRideTrashed`; the dates drive the model's retention purge.
+    /// Rides in the phone-side trash, keyed to when each was trashed. A trashed ride keeps its
+    /// stored files, and only the Tracked list hides it, so Recover is just clearing the mark. A
+    /// permanent delete pairs `deleteRide` with `unmarkRideTrashed`, and the dates drive the
+    /// retention purge.
     func trashedRideIDs() -> [RideID: Date]
     func markRideTrashed(_ id: RideID, at date: Date)
     func unmarkRideTrashed(_ id: RideID)
@@ -117,9 +107,9 @@ extension LibraryStore {
     public func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt? { nil }
 }
 
-/// The no-filesystem conformer: unit tests, previews, and Debug mock runs
-/// (persistence across relaunches is `FileLibraryStore`'s job; scenario-driven
-/// launches must start from their fixtures alone).
+/// The no-filesystem conformer: unit tests, previews, and Debug mock runs. Persistence across
+/// relaunches is `FileLibraryStore`'s job, and scenario-driven launches must start from their
+/// fixtures alone.
 public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private let lock = NSLock()
     private var planned: [RouteID: PlannedRouteRecord] = [:]
@@ -165,8 +155,8 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     public func saveTrip(_ record: TripRecord) {
         lock.withLock {
             storedTrips[record.id] = record
-            // Invariant: a RouteID lives in ≤ 1 trip — strip the saved trip's
-            // stages from every other trip; one thereby emptied dissolves.
+            // Invariant: a RouteID lives in at most one trip. Strip the saved trip's stages from
+            // every other trip; one thereby emptied dissolves.
             let claimed = Set(record.stageIDs)
             for (id, var other) in storedTrips where id != record.id {
                 let kept = other.stageIDs.filter { !claimed.contains($0) }
@@ -185,8 +175,8 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock { storedTrips[id] = nil }
     }
 
-    /// Remove `route` from every trip that holds it; a trip left with no stages
-    /// dissolves. Caller holds `lock`.
+    /// Remove `route` from every trip that holds it; a trip left with no stages dissolves. The
+    /// caller holds `lock`.
     private func pruneStageFromTrips(_ route: RouteID) {
         for (id, var trip) in storedTrips where trip.stageIDs.contains(route) {
             trip.stageIDs.removeAll { $0 == route }

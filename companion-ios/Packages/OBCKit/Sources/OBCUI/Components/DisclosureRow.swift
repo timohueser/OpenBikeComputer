@@ -1,13 +1,8 @@
 import SwiftUI
 
-/// The tappable **disclosure row** on route detail (`.disc-row`) — the
-/// "Waypoints · 4" entry. A standalone panel row: 30pt amber-tinted icon tile
-/// (9pt radius), label, mono value, chevron.
-///
-/// Two behaviors: the plain init fires `action` (a push), the `isExpanded`
-/// init folds `content` out below the row **inside the same panel** — the
-/// waypoints dropdown on route detail. The chevron rotates to point down while
-/// expanded.
+/// The tappable disclosure row on route detail, such as "Waypoints · 4".
+/// Two behaviors: the plain init fires `action` as a push, and the `isExpanded` init
+/// folds `content` out below the row inside the same panel.
 public struct OBCDisclosureRow<Content: View>: View {
     let systemImage: String
     let label: String
@@ -18,8 +13,8 @@ public struct OBCDisclosureRow<Content: View>: View {
     private let content: Content
 
     /// Expanding variant: tapping the row folds `content` out below it.
-    /// `headerAccessibilityID` lands on the header button (not the panel), so
-    /// UI tests can keep tapping the row while the dropdown is open.
+    /// `headerAccessibilityID` lands on the header button, not the panel, so UI tests
+    /// can keep tapping the row while the dropdown is open.
     public init(
         systemImage: String,
         label: String,
@@ -104,7 +99,7 @@ public struct OBCDisclosureRow<Content: View>: View {
 }
 
 extension OBCDisclosureRow where Content == EmptyView {
-    /// Plain (push) variant: the whole row is a button firing `action`.
+    /// Plain push variant: the whole row is a button firing `action`.
     /// `accessibilityID` lands on that button, so UI tests can tap the row.
     public init(
         systemImage: String,

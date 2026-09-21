@@ -15,9 +15,8 @@ sys.modules[SPEC.name] = resource_guard
 SPEC.loader.exec_module(resource_guard)
 
 
-# The shipping scratch arena (#1146 P2), as `llvm-nm --print-size --demangle` really prints it:
-# 0x168a0 B of NOBITS at `__suninit`. Spelled out so a rename of the static fails these tests rather
-# than silently disabling the gate that pins it.
+# The shipping scratch arena, as `llvm-nm --print-size --demangle` prints it. Spelled out so a
+# rename of the static fails these tests rather than silently disabling the gate that pins it.
 ARENA_NAME = "obc_fw_nrf54l::arena::ARENA::ha27c553b3defd127"
 ARENA_BYTES = 92_320
 UNINIT_BYTES = 93_344  # the arena + `defmt_rtt::BUFFER`, its only other tenant
@@ -241,9 +240,9 @@ other:
         self._check_board(self._board_measured(), self._board_baseline())
 
 
-# The #1108 boot-STKOF guards. `MAIN_TASK` is the real demangled spelling of the symbol that was
-# invisible to `parse_poll_frames` — the whole reason this block exists — so a future embassy rename
-# fails these tests rather than silently disabling the gate.
+# The boot stack-overflow guards. `MAIN_TASK` is the demangled spelling of the symbol
+# `parse_poll_frames` cannot see, so an embassy rename fails these tests rather than silently
+# disabling the gate.
 MAIN_TASK = (
     "obc_fw_nrf54l::____embassy_main_task::____embassy_main_task_inner_function"
     "::_$u7b$$u7b$closure$u7d$$u7d$::ha6608219ad9d4537"
@@ -361,7 +360,7 @@ class BootChainTests(unittest.TestCase):
     2000: f5ad 5dc3     sub.w sp, sp, #0x1860
 """
         self.assertEqual(max(resource_guard.parse_task_body_frames(disassembly).values()), 20_352)
-        # The regression in one assertion: the pre-existing poll guard cannot see the main task.
+        # The poll guard cannot see the main task.
         self.assertEqual(max(resource_guard.parse_poll_frames(disassembly).values()), 6_240)
 
     def test_task_body_parser_rejects_missing_symbols(self):
@@ -516,9 +515,8 @@ class BootChainTests(unittest.TestCase):
             "boot_chain_ceiling": 43_008,
             "boot_chain_headroom_min": 4_096,
             "boot_chain_roots": ["link::init_store"],
-            # v3's deep-ride gate. The fixture's residual (48,600 B) clears this comfortably, so it
-            # is inert for every pre-existing case and the tests below stay about what they were
-            # about; `DeepRideHighWaterTests` is where it is exercised.
+            # The deep-ride gate. The fixture's residual clears it comfortably, so it is inert for
+            # every other case here; `DeepRideHighWaterTests` is where it is exercised.
             "deep_ride_high_water": 35_808,
             "deep_ride_high_water_measured": "2026-07-04 (fixture)",
             "deep_ride_margin_min": 0,
@@ -583,12 +581,12 @@ class BootChainTests(unittest.TestCase):
         self._check(self._measured(), self._boot_baseline())
 
     def test_task_frame_gate_fails_the_image_that_bricked_boot(self):
-        # 5de00ce's real numbers: EL7's inlined ~2 KB terrain parse took the main task to 22,400 B.
+        # Real numbers from an image whose inlined terrain parse grew the main task's frame.
         with self.assertRaisesRegex(resource_guard.GuardError, "task body is 22400 B.*#1108"):
             self._check(self._measured(task_frame=22_400), self._boot_baseline())
 
     def test_headroom_gate_fails_when_the_chain_does_not_fit(self):
-        # Same image, the other exact symptom: chain 56,532 B against a 48,600 B stack.
+        # The same image's other symptom: the boot chain passing the stack.
         with self.assertRaisesRegex(resource_guard.GuardError, "headroom is -7932 B"):
             self._check(
                 self._measured(chain_ceiling=56_532),
@@ -600,7 +598,7 @@ class BootChainTests(unittest.TestCase):
             self._check(self._measured(residual_stack=44_000), self._boot_baseline())
 
     def test_a_root_that_was_inlined_away_is_a_hard_error(self):
-        # The #1084 mechanism itself: an #[inline(never)] boot constructor losing its attribute
+        # The mechanism itself: an `#[inline(never)]` boot constructor that loses its attribute
         # moves its temporary into the caller's permanent frame.
         with self.assertRaisesRegex(resource_guard.GuardError, "inlined away"):
             self._check(
@@ -611,7 +609,7 @@ class BootChainTests(unittest.TestCase):
     def test_profiles_without_boot_roots_skip_the_boot_gates(self):
         baseline = self._boot_baseline()
         del baseline["board"]["default"]["boot_chain_roots"]
-        # No BootChain measured, and no KeyError from the absent limits.
+        # No boot chain measured, and no error from the absent limits.
         self._check(
             resource_guard.BoardMeasurement(
                 100, 20, UNINIT_BYTES, 0, (), (), None, (arena_symbol(),)
@@ -636,10 +634,9 @@ class ModuleFrameGateTests(unittest.TestCase):
     3000: b084          sub.w sp, sp, #40000
 """
 
-    # A **trait impl**, spelled the way llvm-objdump actually demangles one: legacy escaping, and the
-    # paths inside the `<... as ...>` brackets separated by `..` rather than `::`. This is the shape
-    # that escaped the #1386 gate — `Store::commit` carried 2,812 B and a needle of
-    # `obc_storage::flat` never saw it.
+    # A trait impl, spelled the way llvm-objdump demangles one: legacy escaping, and the paths
+    # inside the brackets separated by `..` rather than `::`. That shape escapes a needle written
+    # with the ordinary separator.
     TRAIT_IMPL = """
 00004000 <_$LT$obc_storage..flat..store..FlatStore$LT$D$GT$$u20$as$u20$obc_storage..flat..seam..Store$GT$::commit::h1234>:
     4000: b5f0          push {r4, r5, r6, r7, lr}
@@ -670,7 +667,7 @@ class ModuleFrameGateTests(unittest.TestCase):
             self._run(8_192, match="absent_module")
 
     def test_a_scoped_needle_reaches_trait_impl_symbols(self):
-        """The #1386 hole: a needle spelled as a Rust path must gate trait methods too.
+        """A needle spelled as a Rust path must gate trait methods too.
 
         Before canonicalisation this needle matched nothing in a disassembly of only trait impls —
         the guard read as "stale" rather than as "everything passed", which is the one saving grace,

@@ -5,11 +5,9 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// The whole-trip upload queue driver (TR8, issue #657), host-side: the happy
-/// path (stages then trip object), interrupt + resume (restart-current-stage),
-/// the flat-catalog/menu-cap boundary, and the idempotent re-run.
-/// Driven through `MainScreenModel.makeTripUploadModel` over the `trips` fixture,
-/// exactly as `TripDetailView` wires it.
+/// The whole-trip upload queue driver: the happy path (stages, then the trip object), interrupt
+/// and resume (which restarts the current stage), the flat-catalog against menu-cap boundary, and
+/// the idempotent re-run. Driven through `MainScreenModel.makeTripUploadModel`.
 @MainActor
 struct TripUploadModelTests {
     private let tripID = TripID("driftless-weekender")  // 2 fresh stages, no device copy
@@ -42,7 +40,7 @@ struct TripUploadModelTests {
         startAndConfirm(upload)
         try await waitFor("done", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
 
-        // Two fresh stages + the trip object committed; nothing skipped.
+        // Two fresh stages and the trip object committed; nothing skipped.
         #expect(upload.committedCount == 3)
         #expect(upload.skippedCount == 0)
         // The device now holds one trip referencing both stages.
@@ -74,9 +72,8 @@ struct TripUploadModelTests {
     @Test
     func aFullResidentRouteMenuDoesNotPretendTheFlatStoreIsFull() async throws {
         let (model, control) = try await makeMain(routesNearlyFull: true)
-        // The mock catalog is padded to 63 routes. The shipping device keeps at
-        // most 64 routes resident for its menu, but that is not a PUT admission
-        // cap: the flat store has a separate 1,916-entry catalog.
+        // The mock catalog is padded to 63 routes. The device keeps at most 64 routes resident
+        // for its menu, but that is not an admission cap: the flat store holds 1,916 entries.
         let plan = try! #require(model.planTripUpload(tripID))
         #expect(plan.precheck.fits)
 
@@ -97,7 +94,7 @@ struct TripUploadModelTests {
         try await waitFor("first done", timeout: .seconds(20), interval: .milliseconds(5)) { first.phase == .done }
         #expect(control.deviceTripCount == 1)
 
-        // Re-run: every stage is up to date + the trip proven, so nothing is sent.
+        // Re-run: every stage is up to date and the trip is proven, so nothing is sent.
         let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(second)
         try await waitFor("second done", timeout: .seconds(20), interval: .milliseconds(5)) { second.phase == .done }

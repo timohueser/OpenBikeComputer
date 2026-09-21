@@ -1,39 +1,30 @@
-// The assembly worker (#1038): `bridge.ts` run where its header says it must be.
+// The assembly worker: the bridge run where its header says it must be.
 //
-// This file is deliberately near-empty. The threading contract lives in the
-// bridge's header, the message vocabulary in `workerProtocol.ts`, and everything
-// here is the lines that connect them: receive a request, run the bridge, post what
-// happened. The UI's cancel button never sends a message — it calls
-// `worker.terminate()` on the other side, because a worker blocked inside a
-// synchronous wasm call cannot read its inbox (bridge header, "Threading").
+// This file is deliberately near-empty. The threading contract lives in the bridge's
+// header, the message vocabulary in `workerProtocol.ts`, and everything here is the
+// lines that connect them. The UI's cancel button never sends a message — it calls
+// `worker.terminate()`, because a worker blocked inside a synchronous wasm call cannot
+// read its inbox.
 //
-// Progress posts from inside the assembly's callback: the callback runs on this
-// thread between wasm steps, and `postMessage` queues across without waiting.
+// Progress posts from inside the assembly's callback: the callback runs on this thread
+// between wasm steps, and `postMessage` queues across without waiting.
 //
-// The output has two shapes, and the good one is the sink: with a map sink
-// the assembly writes *into OPFS* from inside the blocking call (#1116 D1), so the
-// file is never in wasm memory and never crosses this port. The handle is opened
-// before the run for the same reason the input's are — the opener is async — and
-// closed in the same `finally`, which is also what lets the page read the file: a
-// sync handle is an exclusive lock. The map is then announced as a `stored-map`
-// carrying only its identity, and the page opens a `Blob` on the known entry. A
-// browser that cannot serve a sink buffers the map instead and gets it as a `file`
-// with the bytes transferred only when its admitted mode permits buffering.
+// The output has two shapes, and the good one is the sink: with a map sink the assembly
+// writes *into OPFS* from inside the blocking call, so the file is never in wasm memory
+// and never crosses this port. The handle is opened before the run, because the opener
+// is async, and closed in the same `finally`, which is also what lets the page read the
+// file: a sync handle is an exclusive lock. A browser that cannot serve a sink buffers
+// the map instead.
 //
-// The input side is the mirror of that (#1116 B2). A request with `sourceCells`
-// brings no cell buffers at all: the download left them in OPFS, and *this* thread
-// is where they can be read back synchronously, because `FileSystemSyncAccessHandle`
-// exists only in a dedicated worker. The handles are opened before the run (they
-// cannot be opened during it — the opener is async and the run cannot await), handed
-// to the engine as a read callback, and closed in a `finally`, because a handle is
-// an exclusive lock and a leaked one would make the next run fail to open the same
-// cell. An explicitly buffered admission may read cells into memory if sync handles
-// are unavailable. A disk-backed admission fails instead.
+// The input side mirrors that. A request with `sourceCells` brings no cell buffers at
+// all: the download left them in OPFS, and *this* thread is where they can be read back
+// synchronously, because `FileSystemSyncAccessHandle` exists only in a dedicated worker.
+// The handles are opened before the run and closed in a `finally`, because a leaked lock
+// would make the next run fail to open the same cell.
 //
-// The `finally` covers every ending except the one that skips all code: a cancel,
-// which is `worker.terminate()`. A sync access handle's lock belongs to the agent
-// that opened it, so terminating this one releases them — which is just as well,
-// since there is no way to run anything here afterwards.
+// The `finally` covers every ending except the one that skips all code: a cancel, which
+// is `worker.terminate()`. A sync access handle's lock belongs to the agent that opened
+// it, so terminating this one releases them.
 
 import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources, type AssembleResult } from "./bridge";
 import {
@@ -73,12 +64,11 @@ function postError(cause: unknown, estimateId?: number): void {
 }
 
 /**
- * Get at the cells a request left on disk, the best way this browser allows, and
- * say which way that was.
+ * Get at the cells a request left on disk, the best way this browser allows, and say
+ * which way that was.
  *
- * Both outcomes are honest paths, not a success and a failure: the `buffered` one
- * is exactly today's memory profile with the download resumed, which is what a
- * browser without sync access handles can have.
+ * Both outcomes are honest paths, not a success and a failure: the `buffered` one is
+ * exactly today's memory profile with the download resumed.
  */
 interface Opened {
     sources?: AssembleSources;
@@ -88,9 +78,9 @@ interface Opened {
     reader: CellReader | null;
 }
 
-/** The store sink's four byte-moving methods, bound so the engine can call them
- *  straight. Written out rather than spread, because a spread of an object with
- *  getters would copy `open` as a snapshot. */
+/** The store sink's four byte-moving methods, bound so the engine can call them straight.
+ *  Written out rather than spread, because a spread of an object with getters would copy
+ *  `open` as a snapshot. */
 function sinkMethods(sink: MapSink) {
     return {
         create: () => sink.create(),
@@ -117,11 +107,10 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
     const req = event.data;
     try {
         if (req.type === "estimate") {
-            // Both residency escapes are conjunctions and this thread owns the second half: the
-            // main thread says whether a writable store with room exists, only the worker can say
-            // whether *it* can hold sync access handles. Probed here so the projection prices the
-            // run the assembly will actually be — a browser whose probe fails reads full cells into
-            // memory and buffers the finished map there too, and must be priced as such.
+            // Both residency escapes are conjunctions and this thread owns the second half:
+            // the main thread says whether a writable store with room exists, and only the
+            // worker can say whether *it* can hold sync access handles. Probed here so the
+            // projection prices the run the assembly will actually be.
             const onDisk = req.onDisk && (await syncReadsAvailable());
             post({
                 type: "estimate-result",
@@ -173,36 +162,31 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                     },
                     req.knownEmpty,
                     // The raster, when the catalog publishes one. A terrain-less catalog
-                    // sends nothing here and the map is written with an empty §1.3 region.
+                    // sends nothing and the map is written with an empty terrain region.
                     req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
                     opened.sources,
                     // Adapted rather than passed through: the store's sink is a file and
-                    // knows nothing about identities. `sealed` has genuinely nothing to
-                    // do here — the same digest and length arrive on the result, from the
-                    // same place — but the seam requires it, and a sink that could not
-                    // report a finished file would be one whose bytes nobody can name.
+                    // knows nothing about identities. `sealed` has nothing to do here — the
+                    // same digest and length arrive on the result — but the seam requires it.
                     sink ? { ...sinkMethods(sink), sealed: () => {} } : undefined,
                     scratch ?? undefined,
                 );
             } finally {
-                // The moment the run is over, whether it finished or threw: every
-                // handle is an exclusive lock on a file the next run will want — and,
-                // for the sink, one the *page* is about to want. The spill is further
-                // *deleted*, not just unlocked: it means nothing outside this run and
-                // holds country-scale quota.
+                // The moment the run is over, whether it finished or threw: every handle is
+                // an exclusive lock on a file the next run will want, and for the sink one
+                // the *page* is about to want. The spill is further *deleted*, not just
+                // unlocked: it means nothing outside this run and holds country-scale quota.
                 opened.reader?.close();
                 sink?.close();
                 await scratch?.discard();
-                // The run's OPFS ledger, whatever the outcome: every crossing into
-                // the browser's storage, by channel, with its wall-clock cost. It
-                // rides the `done` message because a worker's own console does not
-                // reliably surface — and it is the first number an in-tab slowness
-                // report needs.
+                // The run's OPFS ledger, whatever the outcome. It rides the `done` message
+                // because a worker's own console does not reliably surface, and it is the
+                // first number an in-tab slowness report needs.
                 io = takeIoStats();
             }
-            // One map, announced once. A sunk one is an identity — the page reads the
-            // bytes off disk itself, now that the handle above is closed; a buffered
-            // one rides across with its buffer in the transfer list.
+            // One map, announced once. A sunk one is an identity — the page reads the bytes
+            // off disk itself, now that the handle above is closed; a buffered one rides
+            // across with its buffer in the transfer list.
             if (result.resident) {
                 post({
                     type: "file",

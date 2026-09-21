@@ -15,9 +15,9 @@ from . import schema_preview
 
 PROJECT_ROOT = paths.BUILDER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-# The shipped style documents. Since #1036 this directory is one schema.json (a
-# complete packer config + a _meta block) plus a skins/ subdirectory; only the schema
-# can be handed to the packer, so only the top level is listed.
+# The shipped style documents: one schema.json (a complete packer config plus a _meta
+# block) and a skins/ subdirectory. Only the schema can be handed to the packer, so only
+# the top level is listed.
 PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
@@ -31,7 +31,6 @@ SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "confi
 app = FastAPI(title="OBC Schema Editor")
 
 MAX_CATALOG_OBJECT_BYTES = 128 * 1024 * 1024
-
 
 def _catalog_url() -> str:
     value = os.environ.get(
@@ -53,7 +52,6 @@ def _catalog_url() -> str:
         )
     return value
 
-
 def _catalog_object_url(value: str) -> str:
     root = urlsplit(_catalog_url())
     target = urlsplit(value)
@@ -70,7 +68,6 @@ def _catalog_object_url(value: str) -> str:
     ):
         raise HTTPException(status_code=400, detail="Catalog object URL is outside the configured catalog tree.")
     return value
-
 
 def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "OpenBikeComputer maintainer host"})
@@ -91,20 +88,17 @@ def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
     except (OSError, URLError, ValueError) as error:
         raise HTTPException(status_code=502, detail=f"Published catalog could not be read: {error}.") from error
 
-
 @app.get("/api/catalog/root")
 def get_catalog_root():
     url = _catalog_url()
     body, content_type = _fetch_catalog_object(url)
     return Response(content=body, media_type=content_type, headers={"X-OBC-Catalog-Url": url})
 
-
 @app.get("/api/catalog/object")
 def get_catalog_object(url: str):
     resolved = _catalog_object_url(url)
     body, content_type = _fetch_catalog_object(resolved)
     return Response(content=body, media_type=content_type)
-
 
 def _default_palette():
     """The LS021B7DD02's 64-color RGB222 gamut, laid out like obc-sim's --palette
@@ -119,11 +113,9 @@ def _default_palette():
             colors.append(f"#{r:02X}{g:02X}{b:02X}")
     return {"columns": 8, "colors": colors}
 
-
 def _read_config(path: str):
     with open(path) as f:
         return json.load(f)
-
 
 @app.get("/api/palette")
 def get_palette():
@@ -135,10 +127,9 @@ def get_palette():
             pass  # fall through to the generated gamut
     return JSONResponse(_default_palette())
 
-
 @app.get("/api/presets")
 def get_presets():
-    """List the shipped, bakeable style documents — since #1036 the one schema.
+    """List the shipped, bakeable style documents: the one schema.
     Each entry carries the _meta fields plus the bare packer config (directly
     submittable / CLI-usable). Skins live in presets/skins/ and are deliberately
     absent: a skin is presentation stamped onto already-baked bytes and carries no
@@ -163,11 +154,9 @@ def get_presets():
     presets.sort(key=lambda p: p["name"])
     return JSONResponse(presets)
 
-
-# /api/schema cache, keyed on the binary's mtime so a rebuilt obc-pack (e.g.
-# during v6 work) is picked up without a server restart.
+# /api/schema cache, keyed on the binary's mtime so a rebuilt obc-pack is picked up
+# without a server restart.
 _schema_cache = {"key": None, "envelope": None}
-
 
 @app.get("/api/schema")
 def get_schema():
@@ -201,7 +190,6 @@ def get_schema():
                "maintainers may alternatively set OBC_PACK_BIN to an executable path.",
     )
 
-
 @app.get("/api/schema-preview/status")
 def get_schema_preview_status():
     status = schema_preview.source_status()
@@ -212,7 +200,6 @@ def get_schema_preview_status():
         "detail": status.detail,
         "bbox": schema_preview.TENINGEN_BBOX,
     })
-
 
 @app.post("/api/schema-preview")
 async def build_schema_preview(request: Request):
@@ -239,7 +226,6 @@ async def build_schema_preview(request: Request):
             "X-OBC-Pack-Diagnostics": schema_preview.encode_diagnostics(result.diagnostics),
         },
     )
-
 
 # The SPA (builder/app/, built by Vite into static/dist/ —
 # gitignored, so a fresh checkout needs one `npm run build`). Mounted last:

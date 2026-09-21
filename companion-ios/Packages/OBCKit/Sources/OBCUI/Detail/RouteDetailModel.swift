@@ -3,22 +3,16 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// State for the route-detail screen (B4) — **one profile layout, three
-/// dressings** (the design's rule: don't fork the view):
+/// State for the route-detail screen: one profile layout, three dressings, because the view is
+/// never forked.
 ///
-///   • `.planned`  — E2, a saved route tapped from the Planned list
-///   • `.tracked`  — E3, a device-recorded ride from the Tracked list
-///   • `.imported` — E1, the landing for a just-parsed route file
-///
-/// Planned routes are **library-first** (#289): the waypoints + profile come in
-/// as `preloadedDetail`, derived from the saved record's own geometry — E2
-/// never asks the device for a route the phone already holds. Tracked renders
-/// its summary immediately and fills the profile when `rideDetail` lands (a
-/// failed read degrades quietly). Imported computes everything up front from
-/// the parsed geometry (`RouteStats`).
+/// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
+/// derived from the saved record's own geometry, so the screen never asks the device for a route
+/// the phone already holds. Tracked renders its summary at once and fills the profile when the
+/// ride detail lands; a failed read degrades quietly. Imported computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
-    /// Which of the three design dressings this instance wears.
+    /// Which of the three dressings this instance wears.
     public enum Dressing {
         case planned(RouteSummary)
         case tracked(RideSummary)
@@ -29,68 +23,55 @@ public final class RouteDetailModel {
 
     // MARK: Observable state
 
-    /// Title — editable via `rename(to:)` on every dressing (H12).
+    /// Title, editable through `rename(to:)` on every dressing.
     public private(set) var name: String
-    /// Waypoints in ride order (W1); empty until the detail read lands.
+    /// Waypoints in ride order; empty until the detail read lands.
     public private(set) var waypoints: [Waypoint] = []
     /// Elevation samples for the profile card; empty hides the card.
     public private(set) var elevationProfile: [Double] = []
-    /// E2's MAX stat, when the source knows it.
     public private(set) var maxGradePercent: Double?
-    /// The live link state — Upload is link-bound, so the button dims with it
-    /// (the S4 rule). Starts optimistic; the stream's replayed value corrects
-    /// it before the first frame on every transport.
+    /// The live link state. Upload is link-bound, so the button dims with it. Starts optimistic;
+    /// the stream's replayed value corrects it before the first frame on every transport.
     public private(set) var connection: ConnectionState = .connected
 
-    /// Whether Upload can act right now.
     public var canUpload: Bool { connection == .connected }
-
 
     // MARK: Fixed per-dressing facts
 
     public private(set) var preview: TrackPreview?
-    /// The track the interactive map (#294) draws — full resolution when it's
-    /// available (imported/planned always; tracked when `rideGeometry` was
-    /// threaded in), else the preview's own downsampled coordinates. Never
-    /// empty when `preview` has geometry, so `canExpandMap`-style checks can
-    /// key on it directly.
+    /// The track the interactive map draws: full resolution when it is available, else the
+    /// preview's own downsampled coordinates. Never empty when `preview` has geometry.
     public var mapCoordinates: [Coordinate] {
         !fullTrackCoordinates.isEmpty ? fullTrackCoordinates : (preview?.coordinates ?? [])
     }
     @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
-    /// The soft line under the title (E3's "Yesterday, 8:12 AM"; E1's file name).
+    /// The soft line under the title: a ride's date, or an imported file's name.
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
     private var climbMeters: Double = 0
     private var descentMeters: Double = 0
     private var estimatedDuration: TimeInterval?
     private var pointCount = 0
-    /// Stats computed for an imported file (E1) — also what `makeSummary` saves.
+    /// Stats computed for an imported file, which is also what `makeSummary` saves.
     private var importedStats: RouteStats?
-    /// The canonical geometry an upload encodes to OBCR. The imported dressing
-    /// carries its own; a planned route's is threaded from the library (the device
-    /// wire blob is re-encoded from it, per the B1S format rule). Planned routes
-    /// are library-first (#289), so this is always present where Upload shows;
-    /// a defensive `nil` yields an empty payload the transports reject loudly.
+    /// The canonical geometry an upload encodes. The imported dressing carries its own; a planned
+    /// route's is threaded from the library, and planned routes are library-first, so it is always
+    /// present where Upload shows. A defensive nil yields an empty payload the transports reject.
     @ObservationIgnored private let uploadGeometry: ImportedRoute?
-    /// The device object id to replace on upload — non-nil when re-uploading a
-    /// route already on the device (an edited Komoot re-import, or a planned
-    /// re-push) so it updates in place instead of duplicating. **Mutable**: the
-    /// moment an upload commits, `recordUploaded` pins the assigned id here, so
-    /// pressing Upload again on the same screen replaces that object instead of
-    /// creating another copy.
+    /// The device object id to replace on upload: non-nil when re-uploading a route the device
+    /// already holds, so it updates in place instead of duplicating. Mutable, because the moment
+    /// an upload commits `recordUploaded` pins the assigned id here, and pressing Upload again on
+    /// the same screen replaces that object.
     private var uploadTargetObjectID: DeviceObjectID?
-    /// The CRC the device is **proven** to currently hold for this route (#770)
-    /// — threaded from the main model's identity-verified reconcile (a scoped
-    /// link + a matching non-zero catalog CRC), or set by `recordUploaded` when
-    /// an upload just verified it. `nil` = unproven → the button reads Upload,
-    /// never a checkmark on presence alone.
+    /// The CRC the device is proven to currently hold for this route, threaded from the main
+    /// model's identity-verified reconcile, or set by `recordUploaded` when an upload verified it.
+    /// Nil is unproven, so the button reads Upload and never a checkmark on presence alone.
     private var provenCommittedCRC: UInt32?
-    /// The current payload's CRC, encoded lazily and cached — a rename
-    /// invalidates it (the name is part of the payload).
+    /// The current payload's CRC, encoded lazily and cached. A rename invalidates it, because the
+    /// name is part of the payload.
     @ObservationIgnored private var cachedPayloadCRC: UInt32?
 
-    /// The device-copy state behind the Upload ↔ Update ↔ up-to-date button.
+    /// The device-copy state behind the Upload, Update and up-to-date button.
     public var deviceCopyState: OnDeviceState {
         OnDeviceState.determine(
             provenCommittedCRC: provenCommittedCRC,
@@ -98,9 +79,8 @@ public final class RouteDetailModel {
         )
     }
 
-    /// An upload committed under `objectID`: pin the id + the verified
-    /// fingerprint (proof the device now holds it) so the button flips to
-    /// up-to-date and any further upload replaces in place.
+    /// An upload committed under `objectID`: pin the id and the verified fingerprint, so the
+    /// button flips to up to date and any further upload replaces in place.
     public func recordUploaded(objectID: DeviceObjectID, crc32: UInt32) {
         uploadTargetObjectID = objectID
         provenCommittedCRC = crc32
@@ -113,10 +93,9 @@ public final class RouteDetailModel {
         return crc
     }
 
-    /// Every dressing renames (H12) — on E1 the pencil fixes the name *before*
-    /// save/upload, so an import doesn't have to round-trip through Planned.
+    /// Every dressing renames. On the import landing the pencil fixes the name before save or
+    /// upload, so an import does not have to round-trip through the Planned list.
     public var isRenamable: Bool { true }
-
 
     @ObservationIgnored private let now: () -> Date
     // MARK: Wiring
@@ -125,9 +104,8 @@ public final class RouteDetailModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var connectionWatch: Task<Void, Never>?
 
-    /// `preloadedDetail` short-circuits the transport fetch — the composition
-    /// root passes it for routes saved from an import this session, whose
-    /// waypoints/profile live app-side, not on the device.
+    /// `preloadedDetail` short-circuits the transport fetch: the composition root passes it for
+    /// routes saved from an import, whose waypoints and profile live app-side, not on the device.
     public init(
         transport: any DeviceLink & DeviceObjects,
         dressing: Dressing,
@@ -137,9 +115,8 @@ public final class RouteDetailModel {
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         now: @escaping () -> Date = Date.init,
-        // The tracked dressing's full tracklog (#294 follow-up), threaded from
-        // the library's synced `Ride.points` — a ride carries no ImportedRoute,
-        // so it can't ride along on `uploadGeometry` the way planned/imported do.
+        // The tracked dressing's full tracklog, threaded from the library's synced ride points. A
+        // ride carries no `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
         rideGeometry: [Coordinate]? = nil
     ) {
         self.transport = transport
@@ -149,14 +126,12 @@ public final class RouteDetailModel {
         self.now = now
         self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
-        case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
+        case .imported(let route, _): uploadGeometry = route
         default: uploadGeometry = plannedGeometry
         }
-        // The interactive map (#294) draws this, never the downsampled `preview`
-        // — full resolution is already in memory for imported/planned (it's the
-        // same geometry `uploadGeometry` carries); `rideGeometry` threads it in
-        // for tracked. Falls back to the preview's coordinates when neither is
-        // available (a ride synced before this geometry was threaded through) —
+        // The interactive map draws this, never the downsampled `preview`. Full resolution is
+        // already in memory for imported and planned routes; `rideGeometry` threads it in for
+        // tracked. It falls back to the preview's coordinates when neither is available, which is
         // a coarser map, not a missing one.
         fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? rideGeometry ?? []
 
@@ -199,10 +174,8 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Fetch the tracked dressing's detail read (call once, from `.task`);
-    /// failures degrade quietly. Planned and imported already have everything —
-    /// planned from its library record (`preloadedDetail`), imported from the
-    /// parsed geometry.
+    /// Fetch the tracked dressing's detail read; failures degrade quietly. Planned and imported
+    /// already have everything.
     public func start() {
         guard !started else { return }
         started = true
@@ -229,7 +202,7 @@ public final class RouteDetailModel {
 
     // MARK: Header dressing
 
-    /// The hero's corner tag + whether it reads in forest (the tracked accent).
+    /// The hero's corner tag, and whether it reads in the tracked accent colour.
     public var tag: (text: String, isAccent: Bool) {
         switch dressing {
         case .planned: ("Planned", false)
@@ -238,7 +211,7 @@ public final class RouteDetailModel {
         }
     }
 
-    /// The E1 banner line ("Imported from Komoot"); `nil` on E2/E3.
+    /// The import banner line; nil on the other dressings.
     public var importedFromLine: String? {
         guard case .imported(let route, let fileName) = dressing else { return nil }
         let creator = route.creator?.lowercased() ?? ""
@@ -249,7 +222,7 @@ public final class RouteDetailModel {
         return ext.isEmpty ? "Imported route file" : "Imported from \(ext) file"
     }
 
-    // MARK: Stat strip (E1/E2/E3 columns, per the design)
+    // MARK: Stat strip
 
     public var stats: [OBCStat] {
         switch dressing {
@@ -279,19 +252,17 @@ public final class RouteDetailModel {
         }
     }
 
-    // MARK: Ride sensor summary (E3 only)
+    // MARK: Ride sensor summary (tracked only)
 
-    /// One plain label→value row of the per-ride BLE-sensor summary (epic #707).
+    /// One plain label and value row of the per-ride sensor summary.
     public struct SensorRow: Identifiable, Equatable, Sendable {
         public let label: String
         public let value: String
         public var id: String { label }
     }
 
-    /// The tracked ride's sensor-summary rows (E3), in the design's fixed order —
-    /// one row per value the ride actually carries, nothing at all when it
-    /// carries none (a ride recorded with no sensors paired). No dead
-    /// rows for an absent value (`ios-copy-tone-plain`).
+    /// The tracked ride's sensor rows, in the design's fixed order: one row per value the ride
+    /// actually carries, and nothing at all when it carries none. No dead rows for an absent value.
     public var sensorRows: [SensorRow] {
         guard case .tracked(let ride) = dressing else { return [] }
         var rows: [SensorRow] = []
@@ -305,26 +276,23 @@ public final class RouteDetailModel {
 
     // MARK: Actions
 
-    /// H12 — local rename; the caller propagates it to the list (and the
-    /// device gets it on next upload). Empty/whitespace names are ignored.
+    /// A local rename; the caller propagates it to the list, and the device gets it on the next
+    /// upload. Empty or whitespace names are ignored.
     public func rename(to newName: String) -> Bool {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         name = trimmed
-        // The name rides in the payload: a rename out-dates the device copy
-        // until the next upload pushes it.
+        // The name rides in the payload, so a rename out-dates the device copy until the next one.
         cachedPayloadCRC = nil
         return true
     }
 
-    /// The id an E1 save/upload lands under — stable per landing, so the
-    /// uploaded blob and the saved library entry are the same route. A re-import
-    /// **replacing** an existing route reuses that route's id (passed in) so the
-    /// save overwrites it rather than adding a duplicate.
+    /// The id an import's save or upload lands under, stable per landing, so the uploaded blob
+    /// and the saved library entry are the same route. A re-import that replaces an existing route
+    /// reuses that route's id, so the save overwrites instead of adding a duplicate.
     @ObservationIgnored private let importedID: RouteID
 
-    /// The `RouteSummary` an E1 save/upload lands in the library — the parsed
-    /// geometry's stats under a fresh (per-landing) id.
+    /// The summary an import's save or upload lands in the library: the parsed geometry's stats.
     public func makeSummary() -> RouteSummary {
         let stats = importedStats ?? RouteStats(distanceMeters: distanceMeters, elevationGainMeters: climbMeters)
         var source = RouteSource.gpx
@@ -344,18 +312,16 @@ public final class RouteDetailModel {
         )
     }
 
-    /// The `RouteBlob` the upload sheet (B5) sends — the current name + waypoints
-    /// over the **real OBCR v2 payload** the device stores verbatim and rides
-    /// (`RouteObjectCodec`, spec §7.1). The geometry is the imported route's (E1)
-    /// or the library record's for a planned route (#289: every planned row is a
-    /// library save, so it's always there).
+    /// The blob the upload sheet sends: the current name and waypoints over the real OBCR payload
+    /// the device stores verbatim and rides. The geometry is the imported route's, or the library
+    /// record's for a planned route.
     public func makeUploadBlob() -> RouteBlob {
         let summary: RouteSummary
         switch dressing {
         case .planned(var route):
-            route.name = name  // a rename rides along (H12)
+            route.name = name  // a rename rides along
             summary = route
-        case .imported, .tracked:  // tracked never uploads (E3 has no action)
+        case .imported, .tracked:  // tracked never uploads
             summary = makeSummary()
         }
         return RouteBlob(
@@ -364,17 +330,16 @@ public final class RouteDetailModel {
         )
     }
 
-    /// The OBCR payload an upload sends — also what `deviceCopyState`
-    /// fingerprints, so "up to date" always means byte-identical to this.
+    /// The payload an upload sends, which is also what `deviceCopyState` fingerprints, so "up to
+    /// date" always means byte-identical to this.
     private func uploadPayload() -> Data {
         uploadGeometry.map {
             RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
         } ?? Data()
     }
 
-    /// The full `RouteDetail` an E1 save keeps app-side — reopening the saved
-    /// route must not lose the parsed waypoints/profile (the device never had
-    /// them; the mock's `routeDetail` can't answer for a phone-only id).
+    /// The full detail an import's save keeps app-side: reopening the saved route must not lose
+    /// the parsed waypoints and profile, because the device never had them.
     public func makeDetail() -> RouteDetail {
         RouteDetail(
             summary: makeSummary(),

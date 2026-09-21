@@ -1,80 +1,62 @@
-//! **Who owns the FLPR right now** — the display/storage mode scheduler (epic #1158, §3 of #1145).
+//! Who owns the FLPR right now: the display and storage mode scheduler.
 //!
 //! There is one coprocessor and two soft-peripheral images that want it: the LS021 scan blob
-//! ([`crate::ls021_flpr`]) and Nordic's sEMMC SD host ([`crate::semmc`]). Both are **resident** —
-//! the display blob in its 4 KiB carve, the sEMMC image in its 20 KiB one — so a handover is not a
-//! load, it is a park + a pad flip + a warm boot. Measured on glass 2026-08-06:
+//! ([`crate::ls021_flpr`]) and Nordic's sEMMC SD host ([`crate::semmc`]). Both images stay resident,
+//! so a handover is not a load: it is a park, a pad flip and a warm boot. Measured on glass:
 //!
 //! | switch | cost |
 //! | :-- | --: |
-//! | → storage (park, pads → `CTRLSEL=VPR`, warm boot, power-on) | **29 µs** |
-//! | → display (quiesce, park, pads → GPIO, blob relaunch, `ALIVE`) | **138 µs** |
-//! | card state across a switch | stays `tran` + High-Speed, **zero** re-inits (12/12 rounds) |
+//! | to storage (park, pads to `CTRLSEL=VPR`, warm boot, power-on) | 29 µs |
+//! | to display (quiesce, park, pads to GPIO, blob relaunch, `ALIVE`) | 138 µs |
+//! | card state across a switch | stays `tran` and High-Speed, with no re-init |
 //!
-//! ## The design: lazy mode, one gate, no mutex
+//! ## Lazy mode, one gate, no mutex
 //!
-//! The obvious shape is an async owner mutex, and it is the wrong one here — it would deadlock the
-//! first time a task held a storage session across an `await` while the map plane wanted to push,
-//! and it would buy nothing, because **the exclusion the hardware actually needs is one-directional
-//! and much narrower than "who holds the FLPR"**:
+//! An async owner mutex would deadlock the first time a task held a storage session across an
+//! `await` while the map plane wanted to push, and it would buy nothing, because the exclusion the
+//! hardware needs is much narrower than "who holds the FLPR":
 //!
-//! 1. *Never park mid-scan.* Between ringing the doorbell and the FLPR's ack, the panel is being
-//!    drawn; parking there abandons a half-drawn frame. This is the only display-side window that
-//!    matters — [`crate::ls021_flpr::scan_in_flight`] names it exactly, and every storage entry
-//!    here waits it out.
-//! 2. *Never switch mid-transfer.* Every sEMMC entry point — transfers **and** card bring-up — is
-//!    **synchronous** and never yields, so on the one thread-mode executor no other task can even
-//!    run while one is in flight, and the `&mut Semmc` borrow enforces the rest. PR #1160 shipped
-//!    `Semmc::start` as `async` and stated the contract that came with it (*hold the mode across the
-//!    entire `start().await`*); this PR made it synchronous instead, so that contract is now
-//!    satisfied by there being no yield to hold across. The reasons — the COM task it was written to
-//!    protect runs on a **preempting** P3 executor, and the coroutine cost 6.4 KB of permanent
-//!    `main` task frame — are on `Semmc::start`.
-//! 3. *The mode must match the work.* Ensured lazily at the point of use:
-//!    [`ensure_display`] from the display side's one push funnel, [`ensure_storage`] from the
-//!    `BlockDevice` seam.
+//! 1. Never park mid-scan. Between ringing the doorbell and the FLPR's ack the panel is being drawn,
+//!    and parking there abandons a half-drawn frame. [`crate::ls021_flpr::scan_in_flight`] names
+//!    that window exactly, and every storage entry here waits it out.
+//! 2. Never switch mid-transfer. Every sEMMC entry point, transfers and card bring-up alike, is
+//!    synchronous and never yields, so on the one thread-mode executor no other task can run while
+//!    one is in flight, and the `&mut Semmc` borrow enforces the rest.
+//! 3. The mode must match the work, ensured lazily at the point of use: [`ensure_display`] from the
+//!    display side's one push funnel, [`ensure_storage`] from the `BlockDevice` seam.
 //!
-//! With those three, mutual exclusion falls out of the executor's cooperative scheduling and no
-//! lock is needed at all — which is also why nothing here can deadlock.
+//! With those three, mutual exclusion falls out of the executor's cooperative scheduling, no lock is
+//! needed, and nothing here can deadlock.
 //!
 //! ## The hold policy
 //!
-//! **A hold is one synchronous burst long, and is never held across an `await`.** The mode is
-//! *lazy*: neither side switches back when it is done, so a run of storage operations pays 29 µs
-//! once, and a run of frames pays 138 µs once. A frame interleaved between two storage bursts costs
-//! both — 167 µs against a 44 ms full-frame push, **0.4 %**, and less than half of one 430 µs
-//! single-block read.
+//! A hold is one synchronous burst long and is never held across an `await`. The mode is lazy:
+//! neither side switches back when it is done, so a run of storage operations pays 29 µs once and a
+//! run of frames pays 138 µs once. A frame between two storage bursts costs both, 167 µs against a
+//! 44 ms full-frame push.
 //!
-//! That is what keeps the panel alive during a long transfer: a BLE or USB upload does not *own*
-//! storage for the transfer, it owns it for each chunk's synchronous FAT call. Between chunks the
-//! map plane pushes a frame, flipping the mode out from under the uploader — harmlessly, because
-//! the card keeps its `tran` + High-Speed state across a park and the uploader's next call flips it
-//! back. [`storage_session`] exists so that the *async* users announce that intent up front and
-//! wait for a live scan by yielding instead of spinning; it is deliberately **not** a lock.
+//! That is what keeps the panel alive during a long transfer: an upload does not own storage for the
+//! transfer, it owns it for each chunk's synchronous call. Between chunks the map plane pushes a
+//! frame and flips the mode out from under the uploader, harmlessly, because the card keeps its
+//! state across a park and the uploader's next call flips it back. [`storage_session`] exists so
+//! that async users announce that intent up front and wait out a live scan by yielding instead of
+//! spinning; it is deliberately not a lock.
 //!
-//! **COM is not in this file and must never be.** The panel's anti-DC-bias square wave runs on the
-//! M33 (`com::com_task` on the P3 executor) and free-runs through both modes, through a wedged
-//! FLPR, and through every handover — the glass just holds its last image. That property is
-//! load-bearing; it is why a storage burst can take the coprocessor at all.
+//! COM is not in this file and must never be. The panel's anti-DC-bias square wave runs on the M33
+//! and free-runs through both modes, through a wedged FLPR and through every handover, so the glass
+//! holds its last image. That property is what lets a storage burst take the coprocessor at all.
 //!
-//! ## Reconciling the two park recipes
+//! ## The two park recipes
 //!
-//! Two different sequences stop the hart, and this module picks deliberately:
+//! [`semmc::park_hart`](crate::semmc::park_hart) is the routine switch recipe in both directions,
+//! because it is the one the 29 µs and 138 µs numbers were measured with, at switch cadence. Both
+//! `semmc::enter_storage_mode` and `semmc::leave_storage_mode` call it internally.
 //!
-//! - [`semmc::park_hart`](crate::semmc::park_hart) — Nordic's `nrf_semmc_uninit` shape: `CPURUN = 0`
-//!   then a pulsed `ndmreset | dmactive` → `dmactive` → `0`. **This is the routine switch recipe,
-//!   both directions**, because it is the one the 29 µs / 138 µs numbers were measured with, at
-//!   switch cadence, 12/12 rounds. Both `semmc::enter_storage_mode` and `semmc::leave_storage_mode`
-//!   call it internally, so a switch through this module always uses it.
-//! - [`ls021_flpr::relaunch_flpr`](crate::ls021_flpr::relaunch_flpr) — the #349 escalation: DM
-//!   `haltreq`, wait for `DMSTATUS.allhalted` (≤10 ms), *then* `ndmreset`. **Kept for recovery
-//!   only.** Its extra courtesy is a clean instruction boundary, which is worth 10 ms when the
-//!   question is "why is this core wedged" and worth nothing when the answer is already known. The
-//!   force-stop capability is unchanged and still reachable — a wedged FLPR is still halted through
-//!   its Debug Module, not through `CPURUN` (which does not stop a busy-polling core).
-//!
-//! Both are a park; only one has been measured at frame cadence, and that is the one the fast path
-//! uses.
+//! [`ls021_flpr::relaunch_flpr`](crate::ls021_flpr::relaunch_flpr) halts through the Debug Module
+//! and waits for `DMSTATUS.allhalted` before resetting. It is kept for recovery only: its extra
+//! courtesy is a clean instruction boundary, which is worth 10 ms when the question is why the core
+//! is wedged and worth nothing when the answer is known. A wedged FLPR is still halted through its
+//! Debug Module and not through `CPURUN`, which does not stop a busy-polling core.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
@@ -87,7 +69,7 @@ use crate::semmc::{self, CardInfo, Semmc, SemmcError};
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 enum Mode {
-    /// Neither, yet — before the display blob's first launch. Reached only during boot.
+    /// Neither, yet: before the display blob's first launch. Reached only during boot.
     Unknown = 0,
     /// The LS021 scan blob.
     Display = 1,
@@ -107,15 +89,14 @@ impl Mode {
 
 static MODE: AtomicU8 = AtomicU8::new(Mode::Unknown as u8);
 
-/// Guards the one `&mut Semmc`. The driver is not re-entrant (a transfer is a synchronous state
-/// machine over one register block), and nothing in the design re-enters it — this is the assertion
+/// Guards the one `&mut Semmc`. The driver is not re-entrant — a transfer is a synchronous state
+/// machine over one register block — and nothing in the design re-enters it. This is the assertion
 /// that says so, not a lock.
 static SEMMC_BUSY: AtomicBool = AtomicBool::new(false);
 
-/// The host driver. A `static mut` rather than a `RefCell` in a `Mutex` because the access rule is
-/// structural, not dynamic: every user is a synchronous call on the one thread-mode executor and no
-/// ISR touches it ([`semmc::on_vpr00_irq`] only stores one atomic). [`with_semmc`] is the sole
-/// door, and it carries the re-entrancy assertion.
+/// The host driver. A `static mut` rather than a `RefCell` in a `Mutex`, because the access rule is
+/// structural and not dynamic: every user is a synchronous call on the one thread-mode executor and
+/// no ISR touches it. [`with_semmc`] is the sole door, and it carries the re-entrancy assertion.
 static mut SEMMC: Semmc = Semmc::new();
 
 fn mode() -> Mode {
@@ -123,49 +104,44 @@ fn mode() -> Mode {
 }
 
 /// Poll interval for the async wait in [`storage_session`]. Fine enough to be invisible against a
-/// 44 ms scan (≈1 % of one), coarse enough that a full frame costs ~88 wakes rather than pegging the
-/// executor with `yield_now`.
+/// 44 ms scan, coarse enough that a full frame costs about 88 wakes rather than pegging the executor
+/// with `yield_now`.
 const SCAN_POLL: Duration = Duration::from_micros(500);
 
 /// Borrow the sEMMC driver for one synchronous operation.
 ///
-/// Returns `None` if it is already borrowed — which cannot happen by construction (see
-/// [`SEMMC_BUSY`]) and is reported rather than silently aliased if the construction ever changes.
+/// Returns `None` if it is already borrowed, which cannot happen by construction and is reported
+/// rather than silently aliased if the construction ever changes.
 fn with_semmc<R>(f: impl FnOnce(&mut Semmc) -> R) -> Option<R> {
     if SEMMC_BUSY.swap(true, Ordering::Acquire) {
         error!("flpr_mux: re-entrant sEMMC borrow — the storage transport is not re-entrant");
         return None;
     }
-    // SAFETY: `SEMMC_BUSY` was clear, so no other borrow is live; every caller is a synchronous
-    // call on the one thread-mode executor and no interrupt handler touches this static.
+    // SAFETY: `SEMMC_BUSY` was clear, so no other borrow is live. Every caller is a synchronous call
+    // on the one thread-mode executor, and no interrupt handler touches this static.
     let r = f(unsafe { &mut *core::ptr::addr_of_mut!(SEMMC) });
     SEMMC_BUSY.store(false, Ordering::Release);
     Some(r)
 }
 
-/// **Take the FLPR for the display**, if it does not already have it. Called from
-/// [`Ls021Flpr::ring_spans`](crate::ls021_flpr::Ls021Flpr) — every push, both the async and the
-/// blocking one — so this is the storage→display half of the mux and the only place the display
-/// side knows the mux exists.
+/// Take the FLPR for the display, if it does not already have it. Every push calls it, so this is
+/// the storage-to-display half of the mux and the only place the display side knows the mux exists.
 ///
-/// Synchronous, because the overlay push is (its ~9 KB composite scratch must stay a stack
-/// transient, #347) — see [`crate::ls021_flpr::launch_flpr_blocking`].
+/// Synchronous, because the overlay push is: its composite scratch must stay a stack transient.
 ///
-/// A failed relaunch is logged and returns anyway: the caller then rings a dead core, the ack times
-/// out, and `MapDisplay`'s existing escalation runs a full [`relaunch_flpr`](crate::ls021_flpr::relaunch_flpr).
-/// Growing a second recovery ladder here would only give the two ways to disagree.
+/// A failed relaunch is logged and returns anyway. The caller then rings a dead core, the ack times
+/// out, and `MapDisplay`'s existing escalation runs a full relaunch; a second recovery ladder here
+/// would only give the two ways to disagree.
 pub fn ensure_display() {
     if mode() == Mode::Display {
         return;
     }
     quiesce_storage_if_active();
-    // **Park unconditionally, not only when the mode says `Storage`.** `Mode::Unknown` does not mean
-    // "the hart is idle" — it is also where a *failed* bring-up leaves things, with the sEMMC image
-    // copied into its carve and quite possibly running (`Semmc::start` boots the firmware before it
-    // ever talks to a card, so a `NoCard` return leaves a live coprocessor behind). Re-copying the
-    // display blob and writing `INITPC`/`CPURUN` under a running core is undefined; a second park
-    // costs microseconds and is idempotent. The pad flip likewise: it restores exactly what `main`
-    // claimed for the two shared pads and parks the four card-only ones as inputs.
+    // Park unconditionally, not only when the mode says `Storage`. `Mode::Unknown` does not mean the
+    // hart is idle: it is also where a failed bring-up leaves things, with the sEMMC image copied
+    // into its carve and quite possibly running, because `Semmc::start` boots the firmware before it
+    // ever talks to a card. Re-copying the display blob and writing `INITPC` under a running core is
+    // undefined; a second park costs microseconds and is idempotent.
     semmc::park_hart();
     semmc::configure_display_pads();
     match crate::ls021_flpr::launch_flpr_blocking() {
@@ -177,18 +153,16 @@ pub fn ensure_display() {
 /// Hand the sEMMC peripheral back if it holds the hart: latched completions cleared, the shared
 /// `VPR00` interrupt gate disarmed, the hart parked, the pads returned to the display map.
 ///
-/// Idempotent and safe to call in any mode — a no-op only when the display already holds the hart.
-/// Used by [`ensure_display`] and by [`relaunch_flpr`](crate::ls021_flpr::relaunch_flpr), whose
-/// Debug-Module halt should never land on a coprocessor the M33 is still mid-conversation with.
+/// Idempotent and safe to call in any mode, and a no-op only when the display already holds the
+/// hart. It is used by [`ensure_display`] and by the recovery relaunch, whose Debug-Module halt
+/// should never land on a coprocessor the M33 is still mid-conversation with.
 ///
-/// **Gated on `!= Display`, not `== Storage`, and that distinction is load-bearing.**
-/// `Semmc::start` arms the shared `VPR00` gate (`INTENSET` bit 20) inside `boot_firmware`, *before*
-/// `enable`/`init_card` can fail — so a failed bring-up leaves `Mode::Unknown` with the completion
-/// gate armed and possibly a latched `EVENTS_TRIGGERED[20]`. Skipping the quiesce there would let
-/// [`ensure_display`]'s unconditional park launch the display blob with the sEMMC gate still live,
-/// which is exactly what `leave_storage_mode` exists to prevent ("a completion event left pending
-/// would fire `on_vpr00_irq` against a peripheral that no longer exists"). The disarm must travel
-/// with the park, so it runs for `Unknown` too.
+/// It is gated on `!= Display`, not `== Storage`, and that distinction is load-bearing.
+/// `Semmc::start` arms the shared `VPR00` gate inside `boot_firmware`, before `enable` or
+/// `init_card` can fail, so a failed bring-up leaves `Mode::Unknown` with the completion gate armed
+/// and possibly a latched event. Skipping the quiesce there would let [`ensure_display`]'s
+/// unconditional park launch the display blob with the sEMMC gate still live, and a completion event
+/// left pending would fire `on_vpr00_irq` against a peripheral that no longer exists.
 pub fn quiesce_storage_if_active() {
     if mode() == Mode::Display {
         return;
@@ -197,16 +171,15 @@ pub fn quiesce_storage_if_active() {
     MODE.store(Mode::Unknown as u8, Ordering::Relaxed);
 }
 
-/// **Take the FLPR for storage**, if it does not already have it — the synchronous seam every
+/// Take the FLPR for storage, if it does not already have it: the synchronous seam every
 /// `BlockDevice` operation goes through.
 ///
-/// Waits out a live scan first ([`wait_scan_settled`](crate::ls021_flpr::wait_scan_settled)): rule
-/// 1, *never park mid-scan*. In the map plane's own storage phase there is never a scan in flight
-/// (that task renders and presents sequentially), so this is free; a BLE/USB chunk landing during a
-/// push is the case it exists for, and [`storage_session`] is the async front door that turns that
-/// spin into a yield.
+/// It waits out a live scan first, which is the never-park-mid-scan rule. In the map plane's own
+/// storage phase there is never a scan in flight, because that task renders and presents
+/// sequentially, so this is free. A chunk landing during a push is the case it exists for, and
+/// [`storage_session`] is the async front door that turns that spin into a yield.
 ///
-/// Returns whether storage has the hart. `false` means the sEMMC firmware would not boot — the
+/// Returns whether storage has the hart. `false` means the sEMMC firmware would not boot, and the
 /// transport then fails the operation rather than clocking a bus that is not there.
 pub fn ensure_storage() -> bool {
     if mode() == Mode::Storage {
@@ -229,7 +202,7 @@ pub fn ensure_storage() -> bool {
 
 /// Run one synchronous storage operation with the FLPR in storage mode.
 ///
-/// The single door the `BlockDevice` impl uses: it pairs the mode guarantee with the driver borrow
+/// The single door the `BlockDevice` impl uses: it pairs the mode guarantee with the driver borrow,
 /// so neither can be taken without the other.
 pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> R) -> Result<R, SemmcError> {
     if !ensure_storage() {
@@ -238,37 +211,26 @@ pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> R) -> Result<R, SemmcError>
     with_semmc(f).ok_or(SemmcError::NotInitialised)
 }
 
-/// **The async front door for a batch of storage work** — acquired by
-/// [`SharedStoreMutex::lock`](crate::SharedStoreMutex), so every plane that reaches the card
-/// through the shared store gets it for free and no call site changed.
+/// The async front door for a batch of storage work, acquired by
+/// [`SharedStoreMutex::lock`](crate::SharedStoreMutex), so every plane that reaches the card through
+/// the shared store gets it for free.
 ///
-/// What it does, and does not do:
+/// It waits out a live scan by yielding, so a chunk arriving mid-frame costs the executor nothing
+/// while the FLPR finishes drawing. It does not switch the mode — that is [`with_storage`]'s job,
+/// lazily, at the point of use — and it is not a lock: holding it does not stop the map plane
+/// pushing a frame. That is deliberate, because a session that blocked the panel would turn a
+/// multi-megabyte upload into a frozen screen.
 ///
-/// - it **waits out a live scan by yielding**, so a BLE or USB chunk arriving mid-frame costs the
-///   executor nothing while the FLPR finishes drawing (the synchronous [`ensure_storage`] would
-///   spin for the same wall-clock time);
-/// - it does **not** switch the mode. That is [`with_storage`]'s job, lazily, at the point of use —
-///   see below;
-/// - it is **not a lock**. Holding it does not stop the map plane pushing a frame — see the hold
-///   policy in this module's docs. That is deliberate: a session that blocked the panel would turn
-///   a multi-megabyte upload into a frozen screen.
+/// It deliberately does not switch eagerly. An eager switch charged every acquirer a 29 µs park and
+/// warm boot, plus 138 µs to get the panel back on the next frame, whether or not it ever touched
+/// the card — and `SharedStoreMutex::lock` has about 50 call sites, plenty of which never reach the
+/// device. On a soft peripheral that will not boot it was a 500 ms boot-deadline spin per lock.
 ///
-/// **Why no eager `ensure_storage`.** It used to call one, to save the burst's first block read a
-/// mode check. That check is one relaxed atomic load — and the eager switch charged every acquirer a
-/// 29 µs park + warm boot, plus 138 µs to get the panel back on the next frame, whether or not it
-/// ever touched the card. `SharedStoreMutex::lock` has ~50 call sites and plenty of them never
-/// reach the device: RRAM settings saves, and in-memory checks like `ride.rs`'s DFU go/no-go. On a
-/// soft peripheral that will not boot it was worse than a tax — a 500 ms `BOOT_DEADLINE` spin per
-/// lock. Dropping it restores this module's own rule, *the mode must match the work, ensured lazily
-/// at the point of use*.
-///
-/// The scan wait is bounded by [`FRAME_DEADLINE`](crate::ls021_flpr::FRAME_DEADLINE) — the house
-/// rule is that no wait in this subsystem is unbounded, and this one is held inside the store mutex,
-/// so an FLPR that never finishes a frame would otherwise wedge every plane that wants the card.
-/// On expiry it **proceeds with a log** rather than failing: the session carries no capability (the
-/// mode is re-checked per operation), so proceeding only means "stop yielding". The real guard is
-/// still ahead — each operation's [`with_storage`] runs `wait_scan_settled`, which applies the same
-/// bound synchronously and hands the caller a `NoBoot` if the coprocessor is genuinely wedged.
+/// The scan wait is bounded by [`FRAME_DEADLINE`](crate::ls021_flpr::FRAME_DEADLINE), because no
+/// wait in this subsystem is unbounded and this one is held inside the store mutex, so an FLPR that
+/// never finishes a frame would wedge every plane that wants the card. On expiry it proceeds with a
+/// log rather than failing: the session carries no capability, so proceeding only means it stops
+/// yielding. Each operation's [`with_storage`] then applies the same bound synchronously.
 pub async fn storage_session() -> StorageSession {
     let deadline = Instant::now() + crate::ls021_flpr::FRAME_DEADLINE;
     while crate::ls021_flpr::scan_in_flight() {
@@ -284,21 +246,16 @@ pub async fn storage_session() -> StorageSession {
     StorageSession(())
 }
 
-/// The (zero-sized) marker [`storage_session`] hands back. Carries no capability — the mode is
-/// re-checked at each operation — so dropping it early cannot make anything unsound; it exists to
-/// make the intent visible at the call sites and to give the guard a place to grow if the policy
-/// ever needs one.
+/// The zero-sized marker [`storage_session`] hands back. It carries no capability — the mode is
+/// re-checked at each operation — so dropping it early cannot make anything unsound. It exists to
+/// make the intent visible at the call sites.
 pub struct StorageSession(());
 
-/// **Bring the card up.** Runs once per power-on, from `main`, before any other plane exists.
+/// Bring the card up. It runs once per power-on, from `main`, before any other plane exists.
 ///
-/// PR #1160 shipped `Semmc::start` as `async` with a contract attached: *the mode must be held
-/// across the entire `start().await`*, because it yielded three times with the sEMMC image live and,
-/// at the CMD8 deliver-and-abort, a command actually on the wire. **That contract is now
-/// structural**: `start` is synchronous, so there is no yield to hand the coprocessor away at, and
-/// this whole function is one uninterruptible stretch on the one thread-mode executor. It is also
-/// called from `main` before the ride loop, the BLE stack and the USB plane exist, so there is
-/// nothing that *could* want the FLPR meanwhile.
+/// The mode must be held across the whole of `Semmc::start`, and that is structural rather than a
+/// convention: `start` is synchronous, so there is no yield to hand the coprocessor away at, and
+/// this whole function is one uninterruptible stretch on the one thread-mode executor.
 pub fn bring_up_storage() -> Result<CardInfo, SemmcError> {
     if !crate::ls021_flpr::wait_scan_settled() {
         warn!("flpr_mux: bringing storage up with the panel mid-scan — the frame is lost");
@@ -308,10 +265,9 @@ pub fn bring_up_storage() -> Result<CardInfo, SemmcError> {
     r
 }
 
-/// Record that the display blob is live and owns the hart — called by
-/// [`launch_flpr`](crate::ls021_flpr::launch_flpr) on a successful `ALIVE` stamp, so the boot launch
-/// and the #349 recovery relaunch both publish the mode without the display path having to know
-/// about this module beyond its one push-funnel call.
+/// Record that the display blob is live and owns the hart. The successful `ALIVE` stamp calls it,
+/// so the boot launch and the recovery relaunch both publish the mode without the display path
+/// having to know about this module beyond its one push-funnel call.
 pub fn note_display_live() {
     MODE.store(Mode::Display as u8, Ordering::Relaxed);
 }

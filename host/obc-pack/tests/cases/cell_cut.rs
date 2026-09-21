@@ -1,27 +1,11 @@
 //! End-to-end cell cutting: cut a synthetic extract into grid cells with the real cutter, then read
-//! every artifact back with the real `obc-reader` — the acceptance suite of #1018 / `OBCA_Spec.md`
-//! §3.
+//! every artifact back with the real `obc-reader`.
 //!
-//! The fixture is deliberately synthetic and deliberately *placed*: everything sits on the spec's own
-//! worked-example seam (OBCA §7, the fine-band lon line at `7 602 176` µdeg above Basel) with a
-//! second crossing at `7 864 320`, which is simultaneously a `2^18` and a `2^19` line. Simplify
-//! tolerances are zero throughout, so a clipped vertex is *exactly* the interpolated crossing and the
-//! adjacency assertions can be equalities rather than tolerances — which is the whole point of the
-//! seam contract.
-//!
-//! What each test pins:
-//!
-//! - [`two_runs_are_byte_identical`] — determinism (§3.2), across the parallel per-cell path.
-//! - [`adjacent_cells_meet_exactly_at_the_seam`] — the boundary junctions of two neighbours coincide
-//!   to the microdegree and their clipped geometry endpoints meet (§3.3/§3.4).
-//! - [`every_cell_round_trips_through_the_reader`] — a cell is a valid OBCM whose header bbox is its
-//!   square, with the complete ladder and out-of-band levels genuinely empty (§3.1).
-//! - [`sections_live_only_in_the_band_that_carries_them`] — nav/POI in the core band only (§3.1/§3.6).
-//! - [`island_pruning_is_strictly_interior`] — §3.5, through the whole cut.
-//! - [`partial_marking_follows_declared_coverage`] — §3.7.
-//! - [`a_real_pbf_cuts_into_cells`] — the ingest→cut path over the committed corpus fixture.
-//! - [`a_terrain_fed_cut_agrees_across_the_seam`] — OBCM v12's §8.3 ascent is integrated from the
-//!   *global* OBCT lattice, so two neighbours' stubs agree and sum to the uncut way (#1073).
+//! The fixture is deliberately synthetic and deliberately placed: everything sits on the spec's own
+//! worked-example seam, the fine-band lon line at `7 602 176` µdeg, with a second crossing at
+//! `7 864 320`, which is simultaneously a `2^18` and a `2^19` line. Simplify tolerances are zero
+//! throughout, so a clipped vertex is exactly the interpolated crossing and the adjacency assertions
+//! can be equalities rather than tolerances, which is the whole point of the seam contract.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -38,7 +22,7 @@ use obc_pack::progress::Progress;
 use obc_pack::terrain::TerrainSet;
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
-/// The band-`2^18` lon line between cells `j = 1052` and `j = 1053` — OBCA §7's worked-example seam.
+/// The band-`2^18` lon line between cells `j = 1052` and `j = 1053`: the worked-example seam.
 const SEAM: i64 = 7_602_176;
 /// The next lon line east, which is also a `2^19` line.
 const SEAM_E: i64 = 7_864_320;
@@ -62,8 +46,8 @@ const CONFIG: &str = r#"{
     "routing": {"min_component_edges": 4}
 }"#;
 
-/// The band table for that ladder: one coarse band, one geometry band, one core band. Two bands share
-/// `2^18`, exactly as the recommended table's `fine` and `network` do.
+/// The band table for that ladder: one coarse band, one geometry band, one core band. Two bands
+/// share `2^18`, exactly as the recommended table's `fine` and `network` do.
 const BANDS: &str = r#"{"bands": [
     {"id": "coarse",  "cell_log2": 20, "lods": [0],    "role": "coarse"},
     {"id": "fine",    "cell_log2": 18, "lods": [1, 2], "role": "geometry"},
@@ -145,7 +129,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         rect(water, 0, LAT - 40_000, SEAM + 30_000, LAT - 20_000, SEAM + 50_000),
     ];
     let ways = vec![
-        // Crosses the first seam; short enough that the §8.3 `i16` bound does not split it.
+        // Crosses the first seam; short enough that the `i16` bound does not split it.
         way(1_000, 7, &[(LAT, SEAM - 6_000), (LAT, SEAM + 6_000)]),
         // A T-junction inside cell j = 1053, sharing node 1_001 (the way above's second node) so the
         // whole-extract touch count makes it a junction.
@@ -219,9 +203,11 @@ fn tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-// --- determinism (§3.2) ------------------------------------------------------------------------
+// --- determinism ------------------------------------------------------------------------------
 
-/// Same inputs ⇒ byte-identical cells, manifest included. This is what lets the catalog
+/// Same inputs give byte-identical cells, manifest included. This is what lets the catalog
+/// content-address a cell and a re-bake be a no-op, and the per-cell work runs on a rayon pool, so
+/// it is also the guard against a thread-order-dependent byte anywhere in the cut.
 /// content-address a cell and a re-bake be a no-op — and the per-cell work runs on a rayon pool, so
 /// it is also the guard against a thread-order-dependent byte anywhere in the cut.
 #[test]
@@ -243,7 +229,7 @@ fn two_runs_are_byte_identical() {
     assert!(ta.contains_key("cells.json"), "the provenance sidecar is written");
 }
 
-// --- adjacency (§3.3 / §3.4) -------------------------------------------------------------------
+// --- adjacency ---------------------------------------------------------------------------------
 
 fn open(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
@@ -299,9 +285,9 @@ fn nav_coords(bytes: &[u8]) -> BTreeSet<(i32, i32)> {
     out
 }
 
-/// **The seam test.** Two adjacent cells cut from one extract must agree, to the microdegree, on
-/// every junction and every clipped geometry endpoint that lands on their shared edge — that
-/// agreement is what an assembler unifies, and it is why unification needs no tolerance (§3.4).
+/// The seam test. Two adjacent cells cut from one extract must agree, to the microdegree, on every
+/// junction and every clipped geometry endpoint that lands on their shared edge: that agreement is
+/// what an assembler unifies, and it is why unification needs no tolerance.
 #[test]
 fn adjacent_cells_meet_exactly_at_the_seam() {
     let out = Scratch::new("adjacency");
@@ -339,8 +325,8 @@ fn adjacent_cells_meet_exactly_at_the_seam() {
     assert!(ev.iter().all(|(lon, _)| (*lon as i64) >= e_box.0), "eastern geometry stays in its square");
 }
 
-/// The second seam is a `2^18` **and** a `2^19` line, so the same road is cut at it in one band and
-/// runs straight through the middle of a cell in another. Both must be true at once.
+/// The second seam is a `2^18` and a `2^19` line, so the same road is cut at it in one band and runs
+/// straight through the middle of a cell in another. Both must be true at once.
 #[test]
 fn a_seam_of_one_band_is_interior_to_another() {
     let out = Scratch::new("bands");
@@ -366,12 +352,12 @@ fn a_seam_of_one_band_is_interior_to_another() {
     );
 }
 
-/// The same seam property under the **shipped preset** — 9 LODs, real simplify tolerances from
-/// 2200 m down to 0.5 m, `merge_fills` and `merge_lines` both on, the recommended band table.
+/// The same seam property under the shipped preset: 9 LODs, real simplify tolerances from 2200 m
+/// down to 0.5 m, `merge_fills` and `merge_lines` both on, the recommended band table.
 ///
-/// This is the test that would fail if the cutter ever simplified *after* clipping, or merged
-/// per-cell: either would let two neighbours move their own copy of a seam vertex independently, and
-/// the equality below would become a near-miss — the crack OBCA §3.3 exists to rule out.
+/// This is the test that would fail if the cutter ever simplified after clipping, or merged per
+/// cell: either would let two neighbours move their own copy of a seam vertex independently, and the
+/// equality below would become a near-miss.
 #[test]
 fn the_shipped_preset_still_meets_at_the_seam() {
     const PRESET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json");
@@ -391,9 +377,9 @@ fn the_shipped_preset_still_meets_at_the_seam() {
     assert_eq!(seam(&west), seam(&east), "the preset's cells agree on the seam junction");
     assert!(!seam(&west).is_empty());
 
-    // Geometry, per band and per LOD: whatever each neighbour puts on the shared line, the other puts
-    // there too. Checked per LOD because the tolerances differ by level, and on each band's own seam —
-    // `SEAM` is a `2^18` line that runs through the middle of a `2^19` cell, while `SEAM_E` is both.
+    // Geometry, per band and per LOD: whatever each neighbour puts on the shared line, the other
+    // puts there too. Checked per LOD because the tolerances differ by level, and on each band's own
+    // seam, since `SEAM` runs through the middle of a `2^19` cell while `SEAM_E` is both.
     for (band, i, j, seam) in [("mid", 602, 526, SEAM_E), ("fine", 1204, 1052, SEAM), ("fine", 1204, 1053, SEAM_E)] {
         let a = cell_file(out.path(), &summary, band, i, j);
         let b = cell_file(out.path(), &summary, band, i, j + 1);
@@ -436,11 +422,11 @@ fn seam_coords_per_lod(bytes: &[u8], seam: i64) -> BTreeMap<usize, BTreeSet<i32>
     out
 }
 
-// --- the artifact contract (§3.1) --------------------------------------------------------------
+// --- the artifact contract -----------------------------------------------------------------------
 
-/// Every cell is a valid OBCM whose header bbox **is** its grid square, carrying the complete ladder
-/// with every out-of-band level written genuinely empty (`Index Node Count == 0`) — so nothing in the
-/// bytes says which band the cell belongs to.
+/// Every cell is a valid OBCM whose header bbox is its grid square, carrying the complete ladder
+/// with every out-of-band level written genuinely empty, so nothing in the bytes says which band the
+/// cell belongs to.
 #[test]
 fn every_cell_round_trips_through_the_reader() {
     let out = Scratch::new("roundtrip");
@@ -460,7 +446,7 @@ fn every_cell_round_trips_through_the_reader() {
         assert_eq!(r.version, obc_formats::obcm::VERSION);
         assert_eq!(r.marker_color, cfg.marker_color);
 
-        // The header bbox is the cell square — the inverted rule of §3.1.
+        // The header bbox is the cell square: the inverted rule.
         let (min_lon, min_lat, max_lon, max_lat) = artifact.id.square();
         assert_eq!(
             r.bbox,
@@ -484,7 +470,7 @@ fn every_cell_round_trips_through_the_reader() {
                 assert_eq!(seen, 0, "{}: walking an empty LOD yields nothing", artifact.path);
             }
         }
-        // Whatever is non-empty decodes cleanly, every feature of every chunk (§4.8's verify, in
+        // Whatever is non-empty decodes cleanly, every feature of every chunk.
         // miniature).
         let _ = all_vertices(&bytes);
     }
@@ -515,19 +501,20 @@ fn sections_live_only_in_the_band_that_carries_them() {
             assert_eq!(poi_records, 0, "{}: …and no POIs", artifact.path);
             assert_eq!((artifact.nav_nodes, artifact.nav_edges, artifact.pois), (0, 0, 0));
         }
-        // The POI directory and the profile table are present either way (§3.1: the sections exist,
-        // they are merely empty), which is what keeps every cell an openable map.
+        // The POI directory and the profile table are present either way — the sections exist and
+        // are merely empty — which is what keeps every cell an openable map.
         assert_eq!(poi.entries.len(), 7, "{}: all seven POI categories have a directory entry", artifact.path);
         assert!(nav.profile_count >= 1, "{}: the schema's profile table travels with every cell", artifact.path);
     }
     assert_eq!(network_pois, 3, "every POI landed in exactly one network cell");
-    // Each POI is in the one cell whose half-open square contains it (§3.6).
+    // Each POI is in the one cell whose half-open square contains it.
     let west = summary.cells.iter().find(|c| c.band == "network" && c.id.j == 1052).expect("west cell");
     let east = summary.cells.iter().find(|c| c.band == "network" && c.id.j == 1053).expect("east cell");
     assert_eq!((west.pois, east.pois), (1, 1));
 }
 
-/// §3.5 through the whole cut: the interior islet is gone, the boundary-crossing stub is not.
+/// Island pruning through the whole cut: the interior islet is gone, the boundary-crossing stub is
+/// not.
 #[test]
 fn island_pruning_is_strictly_interior() {
     let out = Scratch::new("prune");
@@ -540,10 +527,9 @@ fn island_pruning_is_strictly_interior() {
     );
 }
 
-// --- provenance (§3.7) ------------------------------------------------------------------------
+// --- provenance --------------------------------------------------------------------------------
 
 /// A cell is canonical only when the declared sources demonstrably cover its whole square; anything
-/// less is `partial`, including "no coverage declared at all".
 #[test]
 fn partial_marking_follows_declared_coverage() {
     let out = Scratch::new("partial-none");
@@ -606,7 +592,7 @@ fn explicit_selection_cuts_exactly_those_cells() {
     assert!(cut_ingested(&ing, &ways, &cfg, picked.path(), &bad_band, &Progress::silent()).is_err());
 }
 
-/// A band table that does not partition the ladder is refused before anything is written (OBCA §1.2).
+/// A band table that does not partition the ladder is refused before anything is written.
 #[test]
 fn a_broken_band_table_is_refused() {
     let out = Scratch::new("bad-bands");
@@ -621,16 +607,16 @@ fn a_broken_band_table_is_refused() {
 
 // --- the real ingest path ---------------------------------------------------------------------
 
-/// The committed corpus fixture through the whole `cut()` path: ingest a `.pbf` **once**, emit the
-/// cells it touches.
+/// The committed corpus fixture through the whole `cut()` path: ingest a `.pbf` once, emit the cells
+/// it touches.
 ///
-/// `tiny.osm` covers ~1 × 1.5 km of styled content, which fits well inside a single `2^18` cell, so
-/// this run uses a **finer band table** (`2^12`, ≈ 460 × 310 m) to get a genuine multi-cell cut out of
-/// it. That is not a workaround but the point: cell sizes are schema data ([`BandTable`]), not format
-/// constants, and a cutter that only worked at the recommended sizes would hide an assumption.
+/// `tiny.osm` covers about 1 x 1.5 km of styled content, which fits inside a single `2^18` cell, so
+/// this run uses a finer band table (`2^12`, about 460 x 310 m) to get a genuine multi-cell cut out
+/// of it. That is the point rather than a workaround: cell sizes are schema data, and a cutter that
+/// only worked at the recommended sizes would hide an assumption.
 ///
-/// Land generation is off: it fetches a dataset over the network, which a test must never do. A
-/// Geofabrik-scale run stays a manual exercise (`obc-pack cells …`) rather than a CI download.
+/// Land generation is off, because it fetches a dataset over the network and a test must never do
+/// that.
 #[test]
 fn a_real_pbf_cuts_into_cells() {
     const TINY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny.osm.pbf");
@@ -653,7 +639,7 @@ fn a_real_pbf_cuts_into_cells() {
     let fine: Vec<_> = summary.cells.iter().filter(|c| c.band == "fine").collect();
     assert!(fine.len() >= 8, "the fixture spans several 2^12 cells, got {}", fine.len());
     assert!(fine.iter().any(|c| c.bytes > 0), "and they were written");
-    // Ids are padded to the width the smaller size needs (OBCA §1.3), not to four digits.
+    // Ids are padded to the width the smaller size needs, not to four digits.
     assert!(fine[0].id.to_string().starts_with("12/"), "{}", fine[0].id);
     assert_eq!(fine[0].id.to_string().split('/').nth(1).unwrap().len(), 6, "2^12 needs six digits");
     // The nav graph really did come out of the pbf and land in the core band's cells.
@@ -671,11 +657,11 @@ fn a_real_pbf_cuts_into_cells() {
     }
 }
 
-// === Terrain-fed cuts: the v12 §8.3 ascent at a seam (epic #1068 EL5) ==========================
+// --- terrain-fed cuts: the ascent at a seam ----------------------------------------------------
 
-/// The synthetic terrain's posting and cell size — both legal OBCT v1 header values, both small so
-/// the container covering the fixture is ~100 KB rather than ~100 MB (`OBCT_Spec.md` §1.3: posting
-/// and cell size are data, and the sampler cannot tell a small one from a production one).
+/// The synthetic terrain's posting and cell size: both legal OBCT header values, both small so the
+/// container covering the fixture is about 100 KB rather than 100 MB. Posting and cell size are
+/// data, and the sampler cannot tell a small one from a production one.
 const T_POSTING_LOG2: u8 = 9;
 const T_CELL_LOG2: u8 = 14;
 
@@ -736,16 +722,13 @@ fn arc_ascent(arcs: &BTreeSet<Arc>, from: (i32, i32), to: (i32, i32)) -> Option<
     arcs.iter().find(|(f, t, _)| *f == from && *t == to).map(|(_, _, a)| *a)
 }
 
-/// **The seam-determinism pin for v12.** The cutter slices the road crossing the `2^18` line exactly
-/// on it, and each neighbour bakes the ascent of *its own* stub — but both integrate the same global
-/// OBCT lattice, so:
-///
-/// 1. each side's booked climb equals what integrating that stub through the shared sampler gives,
-///    which is what would break the moment anything sampled a cell-local raster or a per-cell origin;
-/// 2. the two stubs' eastbound climbs **sum to the uncut way's**, so cutting an edge at a border
-///    does not create or destroy metres of climbing (exactly, on this monotone ramp — the dead-band
-///    re-anchors at the cut, which costs at most its own threshold);
-/// 3. and cutting twice produces byte-identical cells, terrain and all.
+/// The seam-determinism pin for the ascent. The cutter slices the road crossing the `2^18` line
+/// exactly on it, and each neighbour bakes the ascent of its own stub, but both integrate the same
+/// global OBCT lattice. So each side's booked climb equals what integrating that stub through the
+/// shared sampler gives, which is what would break the moment anything sampled a cell-local raster;
+/// the two stubs' eastbound climbs sum to the uncut way's, so cutting an edge at a border neither
+/// creates nor destroys metres of climbing; and cutting twice produces byte-identical cells, terrain
+/// and all.
 #[test]
 fn a_terrain_fed_cut_agrees_across_the_seam() {
     let out = Scratch::new("terrain-seam");
@@ -797,8 +780,8 @@ fn a_terrain_fed_cut_agrees_across_the_seam() {
     }
 }
 
-/// A cut with **no** `--terrain` writes `Ascent M = 0` everywhere: the degrade path, and what every
-/// other cut test in this file (and every bake until the terrain track is wired in) produces.
+/// A cut with no `--terrain` writes `Ascent M = 0` everywhere: the degrade path, and what every
+/// other cut test in this file produces.
 #[test]
 fn a_cut_without_terrain_books_no_ascent() {
     let out = Scratch::new("no-terrain");

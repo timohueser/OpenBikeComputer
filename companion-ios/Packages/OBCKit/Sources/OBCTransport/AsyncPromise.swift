@@ -1,11 +1,8 @@
 import Foundation
 
-/// A one-shot async value: fulfilled exactly once, awaitable by any number of
-/// readers before or after fulfillment (late readers get the value immediately).
-/// The first `fulfill` wins; later calls are no-ops — so racing terminal paths
-/// (complete vs cancel) resolve deterministically to whichever landed first.
-///
-/// Pure and lock-based like `AsyncMulticast` (its one-shot sibling). Backs
+/// A one-shot async value: fulfilled exactly once and awaitable by any number of readers,
+/// where a late reader gets the value immediately. The first `fulfill` wins and later calls do
+/// nothing, so racing terminal paths resolve to whichever landed first. It backs
 /// `TransferHandle.outcome`.
 public final class AsyncPromise<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
@@ -14,7 +11,6 @@ public final class AsyncPromise<Value: Sendable>: @unchecked Sendable {
 
     public init() {}
 
-    /// Resolve the promise. Idempotent — only the first value sticks.
     public func fulfill(_ value: Value) {
         lock.lock()
         guard resolved == nil else { lock.unlock(); return }
@@ -25,7 +21,7 @@ public final class AsyncPromise<Value: Sendable>: @unchecked Sendable {
         for waiter in waiting { waiter.resume(returning: value) }
     }
 
-    /// The resolved value — suspends until `fulfill` if not yet resolved.
+    /// The resolved value. It suspends until `fulfill` when it is not yet resolved.
     public var value: Value {
         get async {
             await withCheckedContinuation { continuation in
@@ -41,7 +37,7 @@ public final class AsyncPromise<Value: Sendable>: @unchecked Sendable {
         }
     }
 
-    /// The value if already fulfilled, `nil` otherwise (never suspends).
+    /// The value if it is already fulfilled, `nil` otherwise. It never suspends.
     public var current: Value? {
         lock.lock(); defer { lock.unlock() }
         return resolved

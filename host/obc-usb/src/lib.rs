@@ -19,9 +19,7 @@ pub const PRODUCT_ID: u16 = 0x0001;
 /// (`firmware/obc-fw-nrf54l/src/usb/mod.rs`), and the class a WebUSB-reachable interface must use.
 const VENDOR_CLASS: u8 = 0xff;
 
-/// The one object-protocol major this host implements (§5.2).
-/// USB record-binding major. Distinct from protocol v4 inside each control frame: binding v5 is
-/// the throughput framing shipped by #1459.
+/// USB record-binding major, distinct from the protocol version inside each control frame.
 const USB_BINDING_MAJOR: u8 = 5;
 
 /// How much of a bulk IN stream one transfer asks for.
@@ -96,8 +94,6 @@ impl std::fmt::Display for PipeFault {
     }
 }
 
-// ============================ Endpoint discovery ============================
-
 /// One endpoint, reduced to the three facts the layout rule uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointFacts {
@@ -117,11 +113,11 @@ pub struct EndpointLayout {
 
 /// Split a vendor interface's endpoints into a control pair and a bulk pair.
 ///
-/// **Allocation order is the wire contract.** The firmware allocates
-/// control-IN, control-OUT, bulk-IN, bulk-OUT in that order and says so
-/// (`firmware/obc-fw-nrf54l/src/usb/mod.rs`), and both hosts read them back the same mechanical
-/// way: lowest-numbered IN/OUT pair is control, the next is bulk. This is deliberately the *same*
-/// rule as `lib/usb/webusb.ts::discoverLayout` — descriptor topology, not protocol, which is why it
+/// Allocation order is the wire contract. The firmware allocates control-IN, control-OUT, bulk-IN,
+/// bulk-OUT in that order, and both hosts read them back the same mechanical way: the
+/// lowest-numbered IN/OUT pair is control, the next is bulk. Deliberately the same rule as
+/// `lib/usb/webusb.ts::discoverLayout` — descriptor topology, not protocol, which is why it is the
+/// one thing this backend re-derives rather than borrowing from the TS client.
 /// is the one thing this backend re-derives rather than borrowing from the TS client.
 pub fn split_layout(interface: u8, endpoints: &[EndpointFacts]) -> Result<EndpointLayout, PipeFault> {
     let mut ins: Vec<EndpointFacts> = endpoints.iter().copied().filter(|e| e.is_in).collect();
@@ -160,20 +156,18 @@ fn check_binding_major(interface_protocol: u8, device_release: u16) -> Result<()
     Ok(())
 }
 
-// ============================ The pipes ============================
-
 /// One endpoint pair as a byte pipe: `read`, `write`, `reset`, and a cancel that reaches the
 /// transport.
 ///
-/// ## Why cancellation is a first-class thing here and not on the web
-///
-/// WebUSB cannot cancel a submitted `transferIn` at all, so C3's pipe releases the *caller* and
-/// leaves the transfer to settle into nothing. That works there because a browser tab can afford an
-/// orphan. Here it would wedge: an orphaned read holds the endpoint's `&mut`, the next read queues
-/// behind it, and after an abort the device stops sending by design — so the orphan never completes
-/// and the pipe is dead while looking alive. nusb *can* cancel, so this pipe does.
+/// Cancellation is first-class here, unlike on the web. WebUSB cannot cancel a submitted
+/// `transferIn` at all, so its pipe releases the caller and leaves the transfer to settle into
+/// nothing, which a browser tab can afford. Here it would wedge: an orphaned read holds the
+/// endpoint's `&mut`, the next read queues behind it, and after an abort the device stops sending
+/// by design, so the orphan never completes and the pipe is dead while looking alive.
 ///
 /// The mechanism is a `watch` channel rather than a `Notify` because the race matters: a cancel
+/// that arrives between the caller deciding to abort and the read parking itself must not be lost.
+/// A monotonic epoch the reader snapshots before it parks cannot miss one.
 /// that arrives between "the caller decided to abort" and "the read parked itself" must not be
 /// lost. A monotonic epoch the reader snapshots before it parks cannot miss one.
 pub struct Pipe {
@@ -209,9 +203,9 @@ impl Pipe {
 
     /// Wait for the next bytes.
     ///
-    /// Never resolves empty: a zero-length packet is a USB-level marker (the object terminator
-    /// #889 added), not data, and a caller could not tell an empty array from a spurious wakeup —
-    /// so it is absorbed and the read goes round again.
+    /// Never resolves empty: a zero-length packet is a USB-level marker, not data, and a caller
+    /// could not tell an empty array from a spurious wakeup — so it is absorbed and the read goes
+    /// round again.
     pub async fn read(&self) -> Result<Vec<u8>, PipeFault> {
         let mut ep = self.ep_in.lock().await;
         let mut cancel = self.cancel_in.subscribe();
@@ -328,8 +322,6 @@ async fn cancel_and_drain<D: nusb::transfer::EndpointDirection>(ep: &mut Endpoin
     }
 }
 
-// ============================ One open device ============================
-
 /// A device this app has opened and claimed: the interface, and the two pipes over it.
 ///
 /// The `Interface` is held for its whole life because dropping it releases the claim — nothing
@@ -437,7 +429,7 @@ pub async fn open(info: &DeviceInfo, device_id: String) -> Result<(Arc<OpenLink>
 /// On Linux the usbfs node is root-owned unless a udev rule says otherwise, and the error the user
 /// would otherwise read is a bare `Permission denied` with nothing to suggest that a one-line file
 /// fixes it (`apps/obc-desktop/linux/`). macOS needs nothing for a vendor interface; Windows
-/// binds WinUSB from the MS OS 2.0 descriptors the firmware already ships (#889).
+/// binds WinUSB from the MS OS 2.0 descriptors the firmware already ships.
 ///
 /// `Busy` is the other one, and it is not platform-specific: an interface may be claimed once, so a
 /// second window — or a browser tab that already took the device over WebUSB — is a real and

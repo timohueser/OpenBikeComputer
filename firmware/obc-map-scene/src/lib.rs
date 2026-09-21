@@ -1,12 +1,11 @@
 //! Allocation-free streamed map-scene contract.
 //!
 //! This crate owns only the semantic data and operations a base-map renderer needs: bounds,
-//! styles, LOD selection, visible candidates, selected-feature decode, and optional streaming
-//! diagnostics. It knows nothing about OBCM byte offsets, quadtrees, cache slots, or storage.
+//! styles, LOD selection, visible candidates, selected-feature decode and optional diagnostics.
+//! It knows nothing about OBCM byte offsets, quadtrees, cache slots or storage.
 //!
-//! The visitor methods are deliberately generic rather than object-safe. The production path is a
-//! per-feature hot loop, so concrete sources are monomorphized and no dynamic dispatch is paid per
-//! candidate. Tests can implement the same small trait over static slices.
+//! The visitor methods are generic rather than object-safe: the production path is a per-feature
+//! hot loop, so concrete sources are monomorphized and no dynamic dispatch is paid per candidate.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -54,17 +53,15 @@ pub enum LineStyle {
     #[default]
     Solid,
     Dashed,
-    /// A solid stroke with regular perpendicular ticks: the cableway and lift mark. Distinct in
-    /// *shape*, not only colour, which is what tells it apart from the other thin dashed lines.
+    /// A solid stroke with regular perpendicular ticks, the cableway and lift mark. Distinct in
+    /// shape, not only colour, which is what tells it apart from the other thin dashed lines.
     Ticked,
 }
 
-/// A style's boolean draw properties, **packed into one byte**.
+/// A style's boolean draw properties, packed into one byte.
 ///
-/// Packed rather than a field each because a source keeps the whole table resident — the OBCM
-/// reader holds `[Option<Style>; 256]` — so a `bool` field costs 256 bytes of the device's RAM
-/// budget (plus alignment) to carry one bit per style. The values here are the seam's own; a source
-/// translates its file's representation into them, exactly as it does for every other field.
+/// Packed rather than a field each because a source keeps the whole table resident, so a `bool`
+/// field costs 256 bytes of the device's RAM budget to carry one bit per style.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StyleFlags(u8);
 
@@ -105,18 +102,17 @@ impl StyleFlags {
         }
     }
 
-    /// Use `weight` as the on-screen stroke in **device pixels**, verbatim: the renderer's
-    /// zoom→width ramp does not apply. For a *mark on the map* — something with no width on the
-    /// ground, like a contour — where the ramp is not merely wrong but backwards.
+    /// Use `weight` as the on-screen stroke in device pixels, verbatim: the renderer's zoom-to-
+    /// width ramp does not apply. For a mark on the map, such as a contour, which has no width on
+    /// the ground and for which the ramp is backwards.
     #[inline]
     pub const fn fixed_width(self) -> bool {
         self.0 & Self::FIXED_WIDTH != 0
     }
 
-    /// This style belongs to the **terrain layer**, the group a device setting may suppress
-    /// wholesale. The renderer's collect pass reads it: with the terrain layer hidden
-    /// (`RenderConfig { terrain_layer: false }`) a style carrying this bit is never admitted to the
-    /// visible-style mask, so its features are not decoded at all.
+    /// This style belongs to the terrain layer, the group a device setting may suppress wholesale.
+    /// With the layer hidden, a style carrying this bit never enters the visible-style mask, so
+    /// its features are not decoded at all.
     #[inline]
     pub const fn terrain_layer(self) -> bool {
         self.0 & Self::TERRAIN_LAYER != 0
@@ -135,17 +131,15 @@ pub struct Style {
     pub color2: Option<u16>,
 }
 
-// A source holds 256 of these resident (`[Option<Style>; 256]` in the OBCM reader), so this struct
-// is multiplied by 256 in the board's RAM budget — which is why the boolean properties live packed
-// in [`StyleFlags`] and not one `bool` field each. Twelve bytes is what the fields need with no
-// padding to spare; growing it is a budget decision, not a detail.
+// A source holds 256 of these resident, so this struct is multiplied by 256 in the board's RAM
+// budget, which is why the boolean properties live packed in [`StyleFlags`]. Twelve bytes is what
+// the fields need with no padding to spare.
 const _: () = assert!(core::mem::size_of::<Style>() <= 12, "Style is resident ×256 — see StyleFlags");
 
 /// A source-defined identity for a candidate within one render.
 ///
 /// Consumers must treat the three words as opaque: they exist only so an allocation-free source
-/// can find a pass-A candidate again in pass B without publishing storage-format details. The
-/// renderer copies the six-byte token into its existing span-sized stub and never interprets it.
+/// can find a pass-A candidate again in pass B without publishing storage-format details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct FeatureToken([u16; 3]);
@@ -197,11 +191,10 @@ impl<'a> Feature<'a> {
         self.bbox
     }
 
-    /// Whether the borrowed geometry is a complete, slice-safe feature.
-    ///
-    /// Every feature has at least one non-empty ring and the checked sum of ring lengths must
-    /// exactly consume `points`. Renderers validate this at both pass-A reservation and pass-B
-    /// publication, so a hostile source cannot publish short, trailing, or overflowing slices.
+    /// Whether the borrowed geometry is a complete, slice-safe feature: at least one non-empty
+    /// ring, and the checked sum of ring lengths exactly consuming `points`. Renderers validate
+    /// this at both pass-A reservation and pass-B publication, so a hostile source cannot publish
+    /// short or overflowing slices.
     #[inline]
     pub fn has_valid_rings(&self) -> bool {
         if self.points.is_empty() || self.ring_lens.is_empty() {
@@ -289,11 +282,9 @@ pub struct Diagnostics {
     pub bytes_read: u32,
 }
 
-/// Caller-owned selected-candidate state used by [`MapScene::decode_selected`].
-///
-/// The source asks for opaque tokens and publishes complete geometry back into the same state.
-/// This lets it preserve its natural chunk-major streaming order without exposing chunks or
-/// offsets and without allocating a second candidate list.
+/// Caller-owned selected-candidate state used by [`MapScene::decode_selected`]. The source asks
+/// for opaque tokens and publishes complete geometry back into the same state, so it keeps its
+/// natural chunk-major order without exposing chunks or offsets and without a second list.
 pub trait SelectedFeatures {
     fn len(&self) -> usize;
     #[inline]
@@ -324,8 +315,8 @@ pub trait MapScene {
     }
 
     /// The style at the bottom of the paint order, used to clear the map plane before geometry.
-    /// Sources with a pre-resolved backdrop override this; the allocation-free fallback scans the
-    /// bounded 256-entry style id space.
+    /// Sources with a pre-resolved backdrop override this; the fallback scans the 256-entry id
+    /// space.
     fn backdrop_style(&self) -> Option<&Style> {
         (0..=u8::MAX).filter_map(|id| self.style(id)).min_by_key(|style| (style.z_index, style.id))
     }
@@ -348,7 +339,7 @@ pub trait MapScene {
     ) -> CandidateReport;
 
     /// Re-decode the selected candidates into the same caller-owned scratch and publish complete
-    /// features through `selected`. Sources retain their natural streaming/cache order.
+    /// features through `selected`.
     fn decode_selected<const P: usize, const R: usize>(
         &self,
         lod: usize,

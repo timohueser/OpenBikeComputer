@@ -1,5 +1,5 @@
 <script lang="ts">
-    // The routing-profile editor: one card per bike profile (name + the §8.6 climb
+    // The routing-profile editor: one card per bike profile (name + the climb
     // weight + a per-class multiplier grid for highway and surface classes),
     // add/remove within the schema's 1..=8 bound, and per-profile "Reset to
     // defaults". Every bound and

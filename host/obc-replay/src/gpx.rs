@@ -1,16 +1,14 @@
-//! GPX track parsing — a **simulator-only** concern.
+//! GPX track parsing — a simulator-only concern.
 //!
-//! The real device has a GPS chip; it never parses a GPX file. Replaying a
-//! recorded track is purely a host convenience, so this lives in this host crate (it
-//! needs `std`) and produces nothing the shared crates know about — the
-//! [`GpxPlayer`](crate::gpx_player::GpxPlayer) turns a [`Track`] into the same
-//! [`Fix`](obc_ports::Fix)es a GPS driver would emit.
+//! The real device has a GPS chip; it never parses a GPX file. Replaying a recorded track is purely
+//! a host convenience, so this lives in this host crate, which needs `std`, and produces nothing
+//! the shared crates know about: the [`GpxPlayer`](crate::gpx_player::GpxPlayer) turns a [`Track`]
+//! into the same [`Fix`](obc_ports::Fix)es a GPS driver would emit.
 //!
-//! The parser is a small hand-rolled scan rather than a full XML stack: GPX track
-//! points are a regular `<trkpt lat=".." lon="..">` with an optional `<ele>` and
-//! `<time>`, which is all we need. Timestamps are ISO-8601 UTC (`...Z`); we keep
-//! only the *relative* time within the track, so a tiny civil-date → epoch
-//! conversion is enough (no `chrono`).
+//! The parser is a small hand-rolled scan rather than a full XML stack: GPX track points are a
+//! regular `<trkpt lat=".." lon="..">` with an optional `<ele>` and `<time>`, which is all this
+//! needs. Timestamps are ISO-8601 UTC, and only the relative time within the track is kept, so a
+//! tiny civil-date to epoch conversion is enough.
 
 use std::path::Path;
 
@@ -142,10 +140,9 @@ fn parse_time_tag(body: &str) -> Option<f64> {
     parse_iso8601_utc(body[start..end].trim())
 }
 
-/// Parse an ISO-8601 UTC timestamp (`YYYY-MM-DDThh:mm:ss[.fff][Z]`) to seconds
-/// since the Unix epoch. Only the fields we get from GPX are handled; any zone
-/// suffix is treated as UTC (Komoot et al. emit `Z`), which is fine because we
-/// only ever use *differences* within a single track.
+/// Parse an ISO-8601 UTC timestamp (`YYYY-MM-DDThh:mm:ss[.fff][Z]`) to seconds since the Unix
+/// epoch. Only the fields GPX carries are handled, and any zone suffix is treated as UTC, which is
+/// fine because only differences within a single track are ever used.
 fn parse_iso8601_utc(s: &str) -> Option<f64> {
     let (date, time) = s.split_once(['T', 't'])?;
     let mut d = date.split('-');
@@ -153,7 +150,7 @@ fn parse_iso8601_utc(s: &str) -> Option<f64> {
     let month: i64 = d.next()?.parse().ok()?;
     let day: i64 = d.next()?.parse().ok()?;
 
-    // Strip a trailing zone marker; we assume UTC.
+    // Strip a trailing zone marker; the time is taken as UTC.
     let time = time.trim_end_matches(['Z', 'z']);
     let time = time.split(['+', '-']).next()?; // drop any explicit offset
     let mut t = time.split(':');
@@ -224,9 +221,9 @@ mod tests {
         assert!(Track::parse("<gpx></gpx>").is_err());
     }
 
-    /// `Track::parse` is strict: a `<trkpt>` missing `lat`/`lon` errors with the exact message
-    /// (a UI surfaces it) rather than dropping the point. Divergence: `obc-route`'s `GpxScanner`
-    /// *skips* the same point (see its `scanner_skips_a_missing_coordinate`).
+    /// `Track::parse` is strict: a `<trkpt>` missing `lat` or `lon` errors with the exact message,
+    /// which a UI surfaces, rather than dropping the point. `obc-route`'s `GpxScanner` skips the
+    /// same point instead.
     #[test]
     fn missing_coordinate_is_an_error() {
         // Missing lon → Err, and specifically the "missing lon" message.

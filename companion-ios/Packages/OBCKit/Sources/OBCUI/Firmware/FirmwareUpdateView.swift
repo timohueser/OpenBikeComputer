@@ -3,19 +3,11 @@ import UniformTypeIdentifiers
 import OBCDomain
 import OBCTransport
 
-/// The firmware-update screen (S7) — pushed from Settings' Firmware group. Shows
-/// the running version, what's published, the staged file (version + size), and a
-/// single action: send it. After sending, the rider confirms on the device and it
-/// restarts; the screen tracks that through to the reconnect.
-///
-/// Two ways in, one way out. The **published release** (#773 U4) is checked on
-/// appear — an anonymous GET for a public manifest, nothing about the device sent —
-/// and a newer build offers "Download & Install": the container is downloaded and
-/// proved against the manifest's size + SHA-256, then handed to the *same* staging
-/// path the picker feeds. The **Files picker** (`UPDATE.BIN` / `.bin`) stays, and
-/// is the only path for a device whose running version can't be parsed. Either
-/// way a corrupt file is refused on the phone, never streamed to the device, and
-/// nothing installs until the rider confirms it on the glass.
+/// The firmware-update screen: the running version, the published release, the staged
+/// file, and one action to send it. The rider confirms on the device, which restarts;
+/// the screen follows that through to the reconnect. A release is proved against the
+/// manifest size and SHA-256 before it stages; the Files picker is the only path for a
+/// device whose running version cannot be parsed. A corrupt file never leaves the phone.
 public struct FirmwareUpdateView: View {
     @Bindable private var model: FirmwareUpdateModel
     @State private var pickerShown = false
@@ -25,8 +17,8 @@ public struct FirmwareUpdateView: View {
         self.model = model
     }
 
-    /// `UPDATE.BIN` and any `.bin` — resolved by extension so the app declares no
-    /// imported type. `.data` is the fallback for a `.bin` iOS types as generic.
+    /// Resolved by extension so the app declares no imported type. `.data` covers a
+    /// `.bin` that iOS types as generic.
     private var contentTypes: [UTType] {
         [UTType(filenameExtension: "bin") ?? .data, .data]
     }
@@ -70,11 +62,9 @@ public struct FirmwareUpdateView: View {
             Text(model.importError ?? "")
         }
         .task { model.start() }
-        // Popping the screen mid-send must not leave a headless transfer (or a
-        // leaked #459/#754 ledger claim keeping the screen awake) behind it.
-        // The pair is re-entrant: if SwiftUI ever cycles disappear/appear on a
-        // persisting model (a presentation pushed over S7, a scene re-attach),
-        // `.task` runs `start()` again and it re-subscribes the link state.
+        // Popping mid-send must not leave a headless transfer or a leaked ledger claim.
+        // The pair is re-entrant: if SwiftUI cycles disappear/appear on a persisting
+        // model, `.task` runs `start()` again and re-subscribes the link state.
         .onDisappear { model.stop() }
     }
 
@@ -107,9 +97,8 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// The quiet answers live in the section footer — up to date, ahead of the
-    /// published build, or a development build that isn't offered updates at all.
-    /// `available` gets its own section instead, and `noRelease` says nothing.
+    /// The quiet answers go in the section footer: up to date, ahead of the published
+    /// build, or a development build. `available` gets its own section.
     private var statusFooter: String? {
         guard model.supportsUpdateCheck, model.hasUpdateAnswer else { return nil }
         switch model.updateStatus {
@@ -124,12 +113,10 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    // MARK: Available update (#773 U4)
+    // MARK: Available update
 
-    /// A newer published build: what it is, where to read about it, and the one
-    /// action. The failure lines for a check or a download the rider asked for
-    /// live here too — a download that fails its own verification never staged
-    /// anything, so this is the only place it can be said.
+    /// A newer published build and the one action. Failure lines live here too: a
+    /// download that fails verification staged nothing, so there is nowhere else.
     @ViewBuilder
     private var availableGroup: some View {
         if case .failed(let message) = model.checkState {
@@ -178,7 +165,6 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// The published build: version over size, matching the staged-file row.
     private var releaseRow: some View {
         HStack(spacing: 12) {
             OBCIconTile(systemImage: "sparkles", color: OBCTheme.amber)
@@ -221,7 +207,6 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// No file yet — the one action is to choose one.
     private var idleGroup: some View {
         OBCGroupedSection(
             "Update file",
@@ -238,8 +223,8 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// A validated file: version + size, then Send (dimmed off-link) and a way to
-    /// swap the file. `.failed` reuses this with its failure line above the button.
+    /// A validated file, Send, and a way to swap it. `.failed` reuses this group with
+    /// its failure line above the button.
     private var stagedFileGroup: some View {
         VStack(spacing: 16) {
             OBCGroupedSection("Update file") {
@@ -298,7 +283,7 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// Streaming to the device — progress + cancel. `.interrupted` swaps in Resume.
+    /// Streaming to the device: progress and cancel. `.interrupted` swaps in Resume.
     private var transferGroup: some View {
         VStack(spacing: 16) {
             OBCGroupedSection("Sending update") {
@@ -331,7 +316,7 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// installFw accepted — the rider confirms on the device, which reboots.
+    /// installFw accepted: the rider confirms on the device, which reboots.
     private var awaitingGroup: some View {
         OBCGroupedSection {
             VStack(spacing: 12) {
@@ -374,9 +359,8 @@ public struct FirmwareUpdateView: View {
     }
 
     #if DEBUG
-    /// The pre-release channel opt-in — a Debug-only developer switch, never part
-    /// of the shipped screen. On, the check also reads the pre-release manifest and
-    /// offers whichever channel is newer.
+    /// Debug-only pre-release opt-in, never part of the shipped screen. On, the check
+    /// also reads the pre-release manifest and offers the newer channel.
     @ViewBuilder
     private var developerGroup: some View {
         if model.supportsUpdateCheck {
@@ -437,7 +421,6 @@ public struct FirmwareUpdateView: View {
     }
 }
 
-/// Inert transport for the preview — a connected device on v0.4.2.
 private struct PreviewFirmwareTransport: DeviceLink, DeviceUpdates {
     var state: AsyncStream<ConnectionState> {
         AsyncStream { $0.yield(.connected); $0.finish() }
@@ -446,8 +429,8 @@ private struct PreviewFirmwareTransport: DeviceLink, DeviceUpdates {
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Trailhead", firmwareVersion: "0.4.2") }
 
-    /// A minimal valid OBCU container for the staged preview: 64-byte header + a
-    /// tiny raw image, both CRCs correct.
+    /// A minimal valid OBCU container: 64-byte header and a tiny raw image, both CRCs
+    /// correct.
     static let sampleContainer: Data = {
         var image = Data([0x00, 0x00, 0x02, 0x20])  // plausible initial SP, LE
         image.append(contentsOf: (4..<64).map { UInt8($0 & 0xFF) })

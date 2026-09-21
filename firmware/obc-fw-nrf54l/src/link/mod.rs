@@ -1,28 +1,23 @@
-//! The **transport-free companion-link core**: everything the protocol does that is not about which
+//! The transport-free companion-link core: everything the protocol does that is not about which
 //! wire carried it.
 //!
-//! `obc-ble-interface-spec.md` principle #2 — the bulk channel is a raw byte pipe with *no*
-//! per-chunk framing — is why a USB bulk endpoint pair slots in beneath the same object model as
-//! BLE's L2CAP CoC. That claim only stays true if the two transports genuinely share the semantics
-//! rather than each growing its own copy, so this module owns everything that would otherwise be
-//! duplicated:
+//! The bulk channel is a raw byte pipe with no per-chunk framing, which is why a USB bulk endpoint
+//! pair slots in beneath the same object model as BLE's L2CAP CoC. That stays true only if the two
+//! transports share the semantics instead of each growing its own copy, so this module owns what
+//! would otherwise be duplicated:
 //!
-//! - [`command::run_command`] — the §4.4 imperatives (`deleteObject`, `ackRides`, `installFw`,
-//!   `forgetBond`, `setClock`). Takes the store, returns a typed outcome; it
-//!   has never had a radio in it.
-//! - [`identity`] — the FICR-derived serial/name, the DIS strings, and the Config /
+//! - [`command::run_command`] — the imperatives (`deleteObject`, `ackRides`, `installFw`,
+//!   `forgetBond`, `setClock`). It takes the store and returns a typed outcome.
+//! - [`identity`] — the FICR-derived serial and name, the DIS strings, and the Config and
 //!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its
 //!   attribute-value types; USB writes the same bytes into a control frame.
 //! - The single [`ObjectStore`] itself ([`init_store`]). One card, one catalog, one revision
-//!   counter — so one store, built once in `main` and handed to every plane.
+//!   counter, so one store, built once in `main` and handed to every plane.
 //!
-//! What stays transport-specific: how a control message is *addressed* (a GATT characteristic
-//! handle vs. an EP0 vendor request, `FLAT_Store_Protocol.md` §5.2.1) and the link lifecycle
-//! (advertising/bonding vs. enumeration/VBUS). The object surface is not here at all any more: both
-//! links speak protocol v4 into the one engine in `crate::flat_store`.
-//!
-//! Compiled in every build: the USB plane and the radio both are. The module is named for the
-//! concept rather than the radio so a future radio-less build is a cfg addition, not a redesign.
+//! What stays transport-specific: how a control message is addressed (a GATT characteristic handle,
+//! or an EP0 vendor request) and the link lifecycle (advertising and bonding, or enumeration and
+//! VBUS). The object surface is not here at all: both links speak protocol v4 into the one engine in
+//! `crate::flat_store`.
 
 pub(crate) mod command;
 pub(crate) mod identity;
@@ -37,25 +32,21 @@ use obc_link::flat::ObjectKind;
 use crate::init_static;
 use crate::object_store::ObjectStore;
 
-// ============================ The one object store ============================
-
-/// The single [`ObjectStore`]: catalog / upload / download / revision semantics behind a `RefCell`
-/// that every plane borrows **synchronously, never across an `await`**. The SD card + RRAM settings
-/// it operates on live in [`crate::SharedStore`] (the async mutex the ride loop shares), locked per
-/// call and passed into each store method.
+/// The single [`ObjectStore`]: catalog, upload, download and revision semantics behind a `RefCell`
+/// that every plane borrows synchronously, never across an `await`. The SD card and RRAM settings it
+/// operates on live in [`crate::SharedStore`], locked per call and passed into each store method.
 static mut STORE: MaybeUninit<RefCell<ObjectStore>> = MaybeUninit::uninit();
 
-/// Size of the resident store, for the `main.rs` budget assert + the resource report. (Reported
-/// under the historical `ble_object_store` name — the allocation did not change, only its module.)
+/// Size of the resident store, for the resource report. It is reported under the
+/// `ble_object_store` name, which the pinned resource baseline uses.
 pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<RefCell<ObjectStore>>();
 
 #[inline(never)]
 pub(crate) fn init_store(shared: &mut crate::SharedStore) -> &'static RefCell<ObjectStore> {
-    /// The fully-wrapped initial value as a named constant: `ptr::write` of a constant lowers to
-    /// a `.rodata` -> slot memcpy, with no `RefCell<ObjectStore>`-sized stack value anywhere.
-    /// The `declare_interior_mutable_const` lint warns that every use of such a const is a fresh
-    /// copy that forgets mutations — here that copy-on-use IS the mechanism (one write into the
-    /// slot, never mutated as a const), so the lint's hazard cannot arise.
+    /// The fully-wrapped initial value as a named constant: `ptr::write` of a constant lowers to a
+    /// `.rodata`-to-slot memcpy, with no `RefCell<ObjectStore>`-sized stack value anywhere. The
+    /// `declare_interior_mutable_const` lint warns that every use of such a const is a fresh copy
+    /// that forgets mutations; here that copy-on-use is the mechanism, so the hazard cannot arise.
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RefCell<ObjectStore> = RefCell::new(ObjectStore::EMPTY);
     let cell = unsafe { init_static(core::ptr::addr_of_mut!(STORE), INIT) };
@@ -63,33 +54,29 @@ pub(crate) fn init_store(shared: &mut crate::SharedStore) -> &'static RefCell<Ob
     cell
 }
 
-/// The storage handles a link plane is composed with. They always travel together — every control
-/// and data plane needs all three — so they are handed over as one value rather than as three
-/// parallel parameters threaded through each transport's spawn trampoline.
+/// The storage handles a link plane is composed with. They always travel together, so they are
+/// handed over as one value rather than as three parallel parameters threaded through each
+/// transport's spawn trampoline.
 #[derive(Clone, Copy)]
 pub(crate) struct LinkStores {
     /// The SD card + RRAM settings, behind the async mutex the ride loop shares. Locked per store
     /// call and released before the next channel `await`, so the map render interleaves.
     pub shared: &'static crate::SharedStoreMutex,
-    /// The one object store (see [`init_store`]).
     pub objects: &'static RefCell<ObjectStore>,
-    /// The boot mint pass's store-epoch outcome — the value the §1 identity read serves. `None`
-    /// (no mounted store) means the version-only form; it is never re-derived by a plane, so a card
-    /// swap cannot silently change what a plane reports.
+    /// The boot mint pass's store-epoch outcome, the value the identity read serves. `None` means no
+    /// mounted store. It is never re-derived by a plane, so a card swap cannot silently change what
+    /// a plane reports.
     pub epoch: Option<u32>,
 }
 
-// ============================ Cross-plane mirrors ============================
-
-/// Whether a ride is recording, mirrored across the plane boundary: the ride loop owns the `App`
-/// and pushes `app.recording()` here each pass ([`set_recording`]); the `installFw`
-/// command handler reads it as the `busy` gate's "a ride is recording" input (spec §4.4) — the arm
-/// ends in a reboot, so an install must never be requested mid-ride. Defaults **false**; the ride
-/// loop seeds the real value on its first pass. `Relaxed`: every plane is a cooperative future on
-/// the one executor, and a stale read is at worst one pass late (the on-device guard still refuses).
+/// Whether a ride is recording, mirrored across the plane boundary: the ride loop pushes
+/// `app.recording()` here each pass, and the `installFw` command handler reads it as the `busy`
+/// gate, because that arm ends in a reboot. Defaults false; the ride loop seeds the real value on
+/// its first pass. `Relaxed` is enough: every plane is a cooperative future on the one executor, and
+/// a stale read is at worst one pass late.
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
-/// Push the ride-recording state to the link planes (ride loop, once per pass — one atomic store).
+/// Push the ride-recording state to the link planes; the ride loop calls it once per pass.
 pub fn set_recording(recording: bool) {
     RECORDING.store(recording, Ordering::Relaxed);
 }
@@ -99,9 +86,9 @@ pub(crate) fn recording() -> bool {
     RECORDING.load(Ordering::Relaxed)
 }
 
-/// The deepest stack use seen so far (bytes), published by the status loop from its
-/// [`stackmeter`](crate::stackmeter) paint-scan and surfaced in the diagnostics blob (§7.5) so a
-/// soak rig can post the stack high-water without RTT. 0 = not measured yet.
+/// The deepest stack use seen so far, in bytes, published by the status loop from its
+/// [`stackmeter`](crate::stackmeter) paint scan and surfaced in the diagnostics blob, so a soak rig
+/// can post the stack high-water without RTT. 0 = not measured yet.
 static STACK_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
 
 /// Publish a new stack high-water peak (called by the ride loop when the mark grows).
@@ -109,40 +96,30 @@ pub fn publish_stack_high_water(bytes: usize) {
     STACK_HIGH_WATER.store(bytes as u32, Ordering::Relaxed);
 }
 
-// ============================ Map-transfer progress mirror (issue #927) ============================
-//
-// A map upload writes for **minutes**. The ride loop owns the `App` and is the only task that may
-// touch it, and the USB data plane must not block on it, so progress crosses the plane boundary the
-// same way `RECORDING` does — plain atomics the ride loop reads once per pass and feeds through
-// `App::set_map_transfer`. Nothing here is a queue: the value is a *state*, always re-readable, and
-// a missed intermediate is simply a frame that showed the previous percentage.
+// A map upload writes for minutes. The ride loop owns the `App` and is the only task that may touch
+// it, and the USB data plane must not block on it, so progress crosses the plane boundary as plain
+// atomics the ride loop reads once per pass and feeds through `App::set_map_transfer`. Nothing here
+// is a queue: the value is a state, always re-readable, and a missed intermediate is simply a frame
+// that showed the previous percentage.
 
 /// The transfer phase, as a `u8` so it fits an atomic: 0 = idle, 1 = receiving, 2 = installed,
 /// 3 = storage failure, 4 = damaged (CRC), 5 = not a readable map, 6 = a file of a volume set was
-/// refused before it streamed (#1044).
+/// refused before it streamed.
 static MAP_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// Kibibytes received so far, and the announced total. KiB rather than bytes so a 4 GiB map still
 /// fits a `u32` with room, and finer than any bar 240 px can resolve.
 static MAP_RX_KIB: AtomicU32 = AtomicU32::new(0);
 static MAP_TOTAL_KIB: AtomicU32 = AtomicU32::new(0);
 
-/// **The engine's view of an upload, as a screen** — called from `flat_store::serve` after every
-/// engine call, on whichever link made it.
+/// The engine's view of an upload, as a screen — called from `flat_store::serve` after every engine
+/// call, on whichever link made it. One function rather than one per edge, because the engine is a
+/// state machine that one execution context holds, so the honest shape is "here is everything that
+/// is true now" rather than a sequence of notifications a plane has to remember to send.
 ///
-/// One function rather than the five edges the v1 planes published, because there are no longer five
-/// moments to publish at: the engine is a state machine one execution context holds, so the honest
-/// shape is "here is everything that is true now" rather than a sequence of notifications a plane
-/// has to remember to send on every path. That sequence is exactly how the v1 version grew a
-/// `map_transfer_refused` for the one case a plane forgot.
-///
-/// The three inputs collapse to three outcomes:
-///
-/// - a **verdict** wins, whatever else is true: it is the terminal card and it was latched precisely
-///   because it is true for one instant;
-/// - otherwise a **live map upload** is a progress bar;
-/// - otherwise, if a bar is on the glass and nothing is live, the transfer went away without a
-///   verdict — a pulled cable, a dropped connection, a `CANCEL`. That clears the card rather than
-///   raising one. The rider caused all three and needs no card explaining it back to them.
+/// The three inputs collapse to three outcomes: a verdict wins, whatever else is true, because it is
+/// the terminal card; otherwise a live map upload is a progress bar; otherwise, if a bar is on the
+/// glass and nothing is live, the transfer went away without a verdict — a pulled cable, a dropped
+/// connection, a `CANCEL` — which clears the card rather than raising one.
 pub(crate) fn publish_map_transfer(
     live: Option<obc_link::flat::UploadProgress>,
     ended: Option<(ObjectKind, obc_link::flat::UploadEnd)>,
@@ -159,8 +136,7 @@ pub(crate) fn publish_map_transfer(
                 // A different fix (free space, another card), so a different card.
                 UploadEnd::Refused(obc_link::flat::ErrorCode::NoSpace | obc_link::flat::ErrorCode::MediaIo) => 3,
                 // Everything else is the object being wrong for this device: a kind validator said
-                // no, a revision moved underneath, the store is read-only. Re-send from a builder
-                // that targets this firmware.
+                // no, a revision moved underneath, or the store is read-only.
                 UploadEnd::Refused(_) => 5,
             },
             Ordering::Relaxed,
@@ -169,8 +145,6 @@ pub(crate) fn publish_map_transfer(
     }
     match live {
         Some(progress) if progress.kind == ObjectKind::MapShard => {
-            // KiB rather than bytes so a 4 GiB map still fits a `u32` with room, and finer than any
-            // bar 240 px can resolve.
             MAP_RX_KIB.store((progress.received / 1024) as u32, Ordering::Relaxed);
             MAP_TOTAL_KIB.store((progress.declared / 1024) as u32, Ordering::Relaxed);
             MAP_PHASE.store(1, Ordering::Relaxed);
@@ -184,7 +158,7 @@ pub(crate) fn publish_map_transfer(
     }
 }
 
-/// The app-facing map-transfer state, or `None` when there is nothing to show — read once per pass
+/// The app-facing map-transfer state, or `None` when there is nothing to show. Read once per pass
 /// by the ride loop and handed to [`obc_app::App::set_map_transfer`].
 pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
     use obc_app::screen::{MapTransfer, MapTransferError};
@@ -206,17 +180,16 @@ pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
 pub(crate) enum MapVerifyFault {
     /// The bytes do not parse as a map this firmware reads. Send a map this build agrees with.
     NotAMap,
-    /// The card could not be read back. The map may be perfectly good; the medium is the suspect.
+    /// The card could not be read back. The map may be good; the medium is the suspect.
     Storage,
 }
 
-/// **A committed map failed its structure check.** Published right after [`publish_map_transfer`]
-/// has stored the installed phase, so the terminal card becomes the failure instead of success.
-/// Both phases already exist with their own copy, so this needed no new screen and no new strings.
+/// A committed map failed its structure check. Published right after [`publish_map_transfer`] has
+/// stored the installed phase, so the terminal card becomes the failure instead of the success.
 ///
-/// The map stays committed either way. The previous map is already gone by this point: the publish
-/// frees it in the same commit that writes the new one, so there is nothing to roll back to. The
-/// rider re-sends, and a reboot before they do lands on MAP UNREADABLE with USB recovery running.
+/// The map stays committed either way. The previous map is already gone: the publish frees it in the
+/// same commit that writes the new one, so there is nothing to roll back to. The rider re-sends, and
+/// a reboot before they do lands on MAP UNREADABLE with USB recovery running.
 pub(crate) fn publish_map_verify_failure(fault: MapVerifyFault) {
     MAP_PHASE.store(
         match fault {
@@ -227,21 +200,17 @@ pub(crate) fn publish_map_verify_failure(fault: MapVerifyFault) {
     );
 }
 
-/// Clear the map-transfer state — called when the rider dismisses the terminal card, so the ride
-/// loop's next pass doesn't immediately push it back.
+/// Clear the map-transfer state when the rider dismisses the terminal card, so the ride loop's next
+/// pass does not push it back.
 ///
-/// Clears **only a terminal state**. The dismissal is observed a pass after it happened (the card
-/// pops itself; nothing tells the board), so in the gap a fresh transfer could have started — and
-/// clearing *that* would leave a multi-minute write with no card and no way to raise one, since
-/// progress updates only touch the byte counters. Every plane runs as a cooperative future on the
-/// one executor and this holds no `await`, so the read-modify-write needs no stronger ordering.
+/// Clears only a terminal state. The dismissal is observed a pass after it happened, so a fresh
+/// transfer could have started in the gap, and clearing that would leave a multi-minute write with
+/// no card and no way to raise one, because progress updates only touch the byte counters.
 pub fn clear_map_transfer() {
     if MAP_PHASE.load(Ordering::Relaxed) >= 2 {
         MAP_PHASE.store(0, Ordering::Relaxed);
     }
 }
-
-// ============================ Status-message vocabulary ============================
 
 /// A `status` message's bytes, ready to hand to a transport (`&buf[..len]`). Each plane keeps one
 /// small stack buffer per message rather than a heapless alloc — every status message fits.

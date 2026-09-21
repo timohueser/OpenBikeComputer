@@ -1,10 +1,9 @@
 /**
  * The update check: the version dialect, and what happens when the manifest isn't there yet.
  *
- * The one behaviour with a locked decision behind it is the *refusal*: #773 states that a device
- * reporting a git hash rather than a release version is never offered an auto-update. So the tests
- * that matter most here are the ones proving an unparseable version produces `unknown` and not
- * "you're out of date".
+ * The one behaviour with a locked decision behind it is the *refusal*: a device reporting a git
+ * hash rather than a release version is never offered an auto-update. So the tests that matter most
+ * here are the ones proving an unparseable version produces `unknown` and not "you're out of date".
  */
 
 import { describe, expect, it } from "vitest";
@@ -61,7 +60,7 @@ describe("fetchFirmwareRelease", () => {
     it("asks the mirror rather than GitHub", async () => {
         // Not a style preference: a GitHub release asset 302s to storage that sends no CORS
         // header, so this fetch fails in a browser and in the desktop webview — the two hosts that
-        // have a browser in them. #773 (2026-07-29) moved the manifest to R2 for exactly that.
+        // have a browser in them. The manifest is mirrored to R2 for exactly that reason.
         expect(FIRMWARE_MANIFEST_URL).toBe("https://updates.openbikecomputer.com/fw/manifest.json");
         expect(FIRMWARE_MANIFEST_URL).not.toContain("github");
 
@@ -122,8 +121,8 @@ describe("the version dialect", () => {
 
 describe("updateStatus", () => {
     it("never offers an update to a device running an unparseable version", () => {
-        // #773's locked behaviour: a probe-flashed dev build reports a hash, and the answer is
-        // "cannot say" — collapsing that into "older" would push firmware onto a dev device.
+        // A probe-flashed dev build reports a hash, and the answer is "cannot say" —
+        // collapsing that into "older" would push firmware onto a dev device.
         expect(updateStatus("abc1234", "1.4.0")).toBe("unknown");
         expect(updateStatus(null, "1.4.0")).toBe("unknown");
     });

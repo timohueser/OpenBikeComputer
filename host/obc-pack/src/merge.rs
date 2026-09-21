@@ -1,39 +1,26 @@
-//! `merge.rs` — fill-dissolve (`merge_fills`): union polygons whose styles render
-//! **pixel-identically** into one (multi)polygon, deleting every interior shared
-//! boundary. A pure data-size / render-cost optimization with zero intended visual
-//! change: an un-outlined fill next to an identical un-outlined fill already looks
-//! like one blob today, but is stored as two polygons and drawn as two spans.
+//! The two per-LOD merge passes: fill-dissolve and line-stitch.
 //!
-//! Two styles render a fill identically iff they agree on `(z_index, color,
-//! priority)` **and** neither carries a `color2` — a `color2` means the rings are
-//! stroked (casing / outline, epic #556), so dissolving shared walls would change
-//! the output. `weight`/`dashed` never affect an un-outlined polygon fill
-//! (`obc-render`'s `fill_polygon_proj` consults only the color), so they are not in
-//! the key. Merge candidates are selected by geometry **kind** (polygon), not by
-//! style, because one style id can carry both lines and polygons.
+//! `merge_fills` unions polygons whose styles render pixel-identically into one (multi)polygon,
+//! deleting every interior shared boundary. It is a size and render-cost optimization with no
+//! intended visual change: an un-outlined fill next to an identical un-outlined fill already looks
+//! like one blob, but is stored as two polygons and drawn as two spans. Two styles render a fill
+//! identically iff they agree on `(z_index, color, priority)` and neither carries a `color2`, which
+//! strokes the rings and would make a dissolved wall visible. `weight` and the line style never
+//! affect an un-outlined fill, so they are not in the key. Candidates are selected by geometry kind,
+//! not by style, because one style id can carry both lines and polygons.
 //!
-//! Placement (see `main.rs`): per LOD, **after** the `min_lod` filter and **before**
-//! simplify — adjacent OSM parcels share boundary *nodes*, so the union dissolves
-//! them exactly; simplifying first would move each copy of a shared boundary
-//! independently and leave seam cracks. Off by default ⇒ byte-identical output.
+//! `merge_lines` is the sibling pass. OSM splits one continuous road, river or railway into many
+//! ways, each packed as its own feature, so a frame spends one span and one ring on every fragment.
+//! A line record carries no per-feature payload, so same-styled fragments that meet end to end
+//! render as one polyline, and stitching them through GEOS `line_merge` reclaims a span and a ring
+//! per join. Two lines stitch only if their styles agree on the full render identity `(z_index,
+//! color, weight, priority, line_style, color2)`, because every one of those changes a stroked line.
+//! At a join between dashed or cased fragments the pattern then runs continuously across it instead
+//! of restarting per way.
 //!
-//! **Line-stitch (`merge_lines`).** The sibling pass for lines: OSM splits one
-//! continuous road/river/rail into many `way`s (at every bridge, name change, lane
-//! change…), each packed as its own line feature — so a frame spends one span **and
-//! one ring** on every fragment, and at coarse zoom simplify crushes each to a
-//! ~2-vertex stub. Since a line record carries no per-feature payload (color /
-//! weight / dashed / color2 all live in the style table), same-styled fragments that
-//! meet end-to-end render as one polyline; stitching them via GEOS `line_merge` (see
-//! [`crate::geom::merge_lines_geos`]) reclaims a span + a ring per join — the budget
-//! that actually saturates at mid zoom — at no cost to the plain solid-line output.
-//! Two lines stitch iff their styles agree on the **full** render identity
-//! `(z_index, color, weight, priority, dashed, color2)` (weight/dashed/color2 *do*
-//! change a stroked line, unlike a fill, so all are in the key). The one visible
-//! difference is at a join between **dashed** or **casing** (`color2`) fragments: the
-//! dash phase / casing runs continuously across it instead of restarting per way —
-//! an improvement, never a regression. Same placement (before simplify, so a merged
-//! run's now-interior junction vertices simplify away too); off by default ⇒
-//! byte-identical.
+//! Both run per LOD, after the `min_lod` filter and before simplify: adjacent OSM parcels share
+//! boundary nodes, so the union dissolves them exactly, while simplifying first would move each copy
+//! of a shared boundary independently and leave seam cracks. Both are off by default.
 
 use std::collections::HashMap;
 
@@ -44,18 +31,15 @@ use crate::geom::{merge_lines_geos, union_polygons, Geom};
 use crate::progress::Progress;
 use crate::serialize::Style;
 
-/// A fill's render-equivalence key: `(z_index, color, priority)`. Two `color2`-less
-/// styles sharing this key paint every fill pixel the same, so their polygons may be
-/// unioned. `priority` is part of the key because it is the chunk-overflow drop class
-/// — merging a prio-2 meadow into a prio-3 farmland would change which spans get
-/// dropped under budget pressure.
+/// A fill's render-equivalence key: `(z_index, color, priority)`. Two `color2`-less styles sharing
+/// it paint every fill pixel the same, so their polygons may be unioned. `priority` is in the key
+/// because it is the chunk-overflow drop class: merging a prio-2 meadow into a prio-3 farmland would
+/// change which spans get dropped under budget pressure.
 pub type ClassKey = (i8, u16, u8);
 
-/// `style_id → (class_key, canonical_style_id)` for every **mergeable** style
-/// (`color2.is_none()`). The canonical id is the smallest style id in the class, so
-/// it is deterministic and independent of which members appear at a given LOD; a
-/// unioned group is tagged with it. Styles carrying a `color2` are absent from the
-/// map and never merge.
+/// `style_id -> (class_key, canonical_style_id)` for every mergeable style. The canonical id is the
+/// smallest style id in the class, so it is deterministic and independent of which members appear at
+/// a given LOD. A style carrying a `color2` is absent from the map and never merges.
 pub fn merge_classes(styles: &[Style]) -> HashMap<u8, (ClassKey, u8)> {
     // Group mergeable styles by key so the canonical id can be the class minimum.
     let mut by_key: HashMap<ClassKey, Vec<u8>> = HashMap::new();
@@ -74,20 +58,16 @@ pub fn merge_classes(styles: &[Style]) -> HashMap<u8, (ClassKey, u8)> {
     out
 }
 
-/// A line's render-equivalence key: `(z_index, color, weight, priority, dashed,
-/// color2)`. Unlike a fill (whose key is only `(z, color, priority)`), a line's
-/// stroke consults **every** rendered attribute — `weight` sets its width, `dashed`
-/// its pattern, `color2` its casing — so all are in the key: two lines stitch only
-/// if the merged polyline strokes pixel-for-pixel like the two fragments did.
+/// A line's render-equivalence key. Unlike a fill, whose key is only `(z, color, priority)`, a
+/// line's stroke consults every rendered attribute — `weight` sets its width, the line style its
+/// pattern, `color2` its casing — so two lines stitch only if the merged polyline strokes
+/// pixel-for-pixel like the two fragments did.
 pub type LineClassKey = (i8, u16, u8, u8, LineStyle, Option<u16>);
 
-/// `style_id → (line_class_key, canonical_style_id)` for **every** style — a line
-/// carries no `color2` exclusion (a merged casing is continuous, not a lost wall).
-/// The canonical id is the class's smallest style id (deterministic, independent of
-/// which members appear at a given LOD); a stitched run is tagged with it. A style
-/// used for both lines and polygons appears here (its lines stitch) and in
-/// [`merge_classes`] (its polygons dissolve) independently — the two passes select
-/// by geometry kind, so the keys need not agree.
+/// `style_id -> (line_class_key, canonical_style_id)` for every style; a line has no `color2`
+/// exclusion, because a merged casing is continuous rather than a lost wall. A style used for both
+/// lines and polygons appears here and in [`merge_classes`] independently, since the two passes
+/// select by geometry kind.
 pub fn merge_line_classes(styles: &[Style]) -> HashMap<u8, (LineClassKey, u8)> {
     let mut by_key: HashMap<LineClassKey, Vec<u8>> = HashMap::new();
     for s in styles {
@@ -118,10 +98,9 @@ pub struct MergeStats {
     pub fallbacks: usize,
 }
 
-/// Split a geometry into its polygon parts (merge candidates) and everything else
-/// (lines pass through unchanged). Flattens nested `Multi`; drops `Empty`. In
-/// practice only bare `Line`/`Polygon` reach the merge (Multi arises later, from
-/// clipping), so the recursive/`others` arms are defensive.
+/// Split a geometry into its polygon parts (merge candidates) and everything else, which passes
+/// through unchanged. Flattens nested `Multi` and drops `Empty`. In practice only bare `Line` and
+/// `Polygon` reach the merge, so the recursive arm is defensive.
 fn split_geom(g: Geom, polys: &mut Vec<Geom>, others: &mut Vec<Geom>) {
     match g {
         p @ Geom::Polygon { .. } => polys.push(p),
@@ -135,9 +114,8 @@ fn split_geom(g: Geom, polys: &mut Vec<Geom>, others: &mut Vec<Geom>) {
     }
 }
 
-/// The line dual of [`split_geom`]: separate a geometry's line parts (stitch
-/// candidates) from everything else (polygons pass through unchanged). Flattens
-/// nested `Multi`; drops `Empty`.
+/// The line dual of [`split_geom`]: separate a geometry's line parts from everything else, which
+/// passes through unchanged.
 fn split_lines(g: Geom, lines: &mut Vec<Geom>, others: &mut Vec<Geom>) {
     match g {
         l @ Geom::Line(_) => lines.push(l),
@@ -162,32 +140,26 @@ enum Slot {
 
 /// Dissolve mergeable fill polygons in a per-LOD `(style_id, geom)` list.
 ///
-/// Never drops a feature: a singleton class passes through byte-untouched (no GEOS
-/// round-trip, so "flag on, no adjacent same-class polygons" is an empty diff), and
-/// any GEOS failure on a ≥2-member group passes that group through unmerged with its
-/// original style ids. Determinism: passthroughs keep their input order, each merged
-/// group is emitted at its first member's position, group membership + union input
-/// are walked in input order, and classes are keyed by canonical id — so packing the
-/// same input twice is byte-identical.
+/// Never drops a feature: a singleton class passes through byte-untouched, with no GEOS round-trip,
+/// and any GEOS failure on a group of two or more passes that group through unmerged with its
+/// original style ids. Emission is deterministic — passthroughs keep input order, each merged group
+/// is emitted at its first member's position, and classes are keyed by canonical id.
 pub fn merge_fills(features: Vec<(u8, Geom)>, classes: &HashMap<u8, (ClassKey, u8)>) -> (Vec<(u8, Geom)>, MergeStats) {
     merge_fills_with(features, classes, &Progress::silent())
 }
 
 /// [`merge_fills`], abandonable.
 ///
-/// The checkpoint is phase 2, per group, because that is where the time is: one
-/// GEOS union over a whole style class can run for seconds and cannot be
-/// interrupted from outside. A cancelled group returns `None`, which phase 3
-/// already handles — it is the same path a GEOS failure takes, so the output
-/// stays well-formed rather than becoming a special case nobody tests. The work
-/// is discarded anyway; the point is only to stop starting more of it.
+/// The checkpoint is per group in phase 2, because that is where the time is: one GEOS union over a
+/// whole style class can run for seconds and cannot be interrupted from outside. A cancelled group
+/// returns `None`, which is the path a GEOS failure already takes, so the output stays well-formed.
 pub fn merge_fills_with(
     features: Vec<(u8, Geom)>,
     classes: &HashMap<u8, (ClassKey, u8)>,
     progress: &Progress,
 ) -> (Vec<(u8, Geom)>, MergeStats) {
-    // --- Phase 1: walk input, laying out slots and accumulating group members
-    // (both in input order). ---
+    // Phase 1: walk the input, laying out slots and accumulating group members, both in input
+    // order.
     let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
     // canonical_id → members in input order, each keeping its original style id (a
     // singleton emits that id unchanged, so the byte-untouched guarantee holds even
@@ -219,10 +191,9 @@ pub fn merge_fills_with(
         }
     }
 
-    // --- Phase 2: union each ≥2-member group in parallel. Each task builds, unions,
-    // and reads back its GEOS geometries wholly on one thread — only plain `Geom`
-    // crosses threads. Output order is set by phase 3, so the map's iteration order
-    // is irrelevant. ---
+    // Phase 2: union each group of two or more in parallel. Each task builds, unions and reads back
+    // its GEOS geometries wholly on one thread, so only plain `Geom` crosses threads. Output order
+    // is set by phase 3.
     let mut unions: HashMap<u8, Option<Vec<Geom>>> = members
         .par_iter()
         .filter(|(_, m)| m.len() >= 2)
@@ -235,7 +206,7 @@ pub fn merge_fills_with(
         })
         .collect();
 
-    // --- Phase 3: emit in slot order. ---
+    // Phase 3: emit in slot order.
     let mut out = Vec::with_capacity(slots.len());
     let mut stats = MergeStats::default();
     for slot in slots {
@@ -272,15 +243,9 @@ pub fn merge_fills_with(
     (out, stats)
 }
 
-/// Stitch same-styled connected line fragments in a per-LOD `(style_id, geom)` list
-/// into maximal polylines (see the module docs). Structurally the line dual of
-/// [`merge_fills`]: candidates are selected by geometry **kind** (line), polygons
-/// pass through unchanged, and the same never-drop guarantees hold — a singleton
-/// class passes through byte-untouched (no GEOS round-trip) and any `line_merge`
-/// failure passes the group through unmerged with its original style ids. Emission
-/// order is deterministic (passthroughs keep input order; each stitched group emits
-/// at its first member's position; classes key by canonical id), so packing the same
-/// input twice is byte-identical.
+/// Stitch same-styled connected line fragments in a per-LOD `(style_id, geom)` list into maximal
+/// polylines. Structurally the line dual of [`merge_fills`]: candidates are selected by geometry
+/// kind, polygons pass through unchanged, and the same never-drop and determinism guarantees hold.
 pub fn merge_lines(
     features: Vec<(u8, Geom)>,
     classes: &HashMap<u8, (LineClassKey, u8)>,
@@ -365,7 +330,7 @@ fn merge_lines_mode(
         })
         .collect();
 
-    // --- Phase 3: emit in slot order. ---
+    // Phase 3: emit in slot order.
     let mut out = Vec::with_capacity(slots.len());
     let mut stats = MergeStats::default();
     for slot in slots {
@@ -410,10 +375,9 @@ fn endpoint((x, y): (f64, f64)) -> Endpoint {
 /// Decompose an undirected line network into the minimum number of deterministic edge-covering
 /// trails. Each input polyline is one graph edge and appears in exactly one output, possibly
 /// reversed. Odd vertices are paired with virtual edges, Hierholzer produces one Euler circuit per
-/// component, and splitting at those virtual edges yields exactly `odd / 2` trails (or one circuit
-/// when there are no odd vertices). A trail may revisit a junction, which is harmless for a solid
-/// stroke and is precisely what lets a branched network occupy fewer renderer records without
-/// deleting an arm.
+/// component, and splitting at those virtual edges yields exactly `odd / 2` trails, or one circuit
+/// when there are no odd vertices. A trail may revisit a junction, which is harmless for a solid
+/// stroke and is what lets a branched network occupy fewer renderer records without deleting an arm.
 fn merge_edge_covering_trails(lines: &[&Geom]) -> Option<Vec<Geom>> {
     struct Edge {
         ends: (usize, usize),
@@ -550,8 +514,8 @@ fn merge_edge_covering_trails(lines: &[&Geom]) -> Option<Vec<Geom>> {
 mod tests {
     use super::*;
 
-    /// A fill-only style (no `color2`) at the given key fields; `weight`/`dashed`
-    /// are set to non-default values to prove they never enter the class key.
+    /// A fill-only style (no `color2`) at the given key fields. `weight` and the line style are set
+    /// to non-default values to prove they never enter the class key.
     fn fill_style(id: u8, z_index: i8, color: u16, priority: u8) -> Style {
         Style {
             id,
@@ -601,8 +565,6 @@ mod tests {
         features.iter().filter(|(_, g)| matches!(g, Geom::Polygon { .. })).count()
     }
 
-    // --- merge_classes ------------------------------------------------------
-
     #[test]
     fn classes_group_by_key_and_pick_the_min_id() {
         // ids 3 and 7 share (z,color,prio); id 5 differs in color; id 9 has a color2.
@@ -618,8 +580,6 @@ mod tests {
         assert_eq!(classes[&5].1, 5, "a lone key is its own canonical");
         assert!(!classes.contains_key(&9), "a color2 style is never mergeable");
     }
-
-    // --- merge_fills: the happy paths ---------------------------------------
 
     #[test]
     fn two_squares_sharing_an_edge_merge_and_lose_the_seam() {
@@ -687,8 +647,6 @@ mod tests {
         assert_eq!(stats.merged_inputs, 2, "both counted as merged inputs");
     }
 
-    // --- merge_fills: what must NOT merge -----------------------------------
-
     #[test]
     fn each_key_dimension_blocks_merging() {
         // Base style id 1; three others differ in exactly one key field, plus one with a color2.
@@ -738,8 +696,6 @@ mod tests {
         assert_eq!(stats, MergeStats::default());
     }
 
-    // --- ordering & determinism ---------------------------------------------
-
     #[test]
     fn merged_group_sits_at_its_first_members_position() {
         // Input [A(class1), B(other), C(class1)] → [merged(class1), B]: the merged
@@ -775,10 +731,8 @@ mod tests {
         assert_eq!(key(&a), key(&b), "same style-id + vertex-count sequence both runs");
     }
 
-    // --- merge_lines --------------------------------------------------------
-
-    /// A line style at the given key fields; the non-key spare (`id`) aside, every
-    /// field IS in the line key, so these helpers pin the full render identity.
+    /// A line style at the given key fields. Every field except `id` is in the line key, so these
+    /// helpers pin the full render identity.
     fn line_style(
         id: u8,
         z_index: i8,
@@ -802,9 +756,8 @@ mod tests {
 
     #[test]
     fn line_classes_key_on_full_render_identity() {
-        // 1 and 4 agree on every rendered field ⇒ one class (canonical 1); 2 differs
-        // in weight, 3 in dashed, 5 in color2 — each its own class. No style is ever
-        // excluded (a line carries no color2 veto).
+        // 1 and 4 agree on every rendered field, so one class (canonical 1); 2 differs in weight, 3
+        // in the line style, 5 in color2. No style is ever excluded.
         let styles = [
             line_style(1, 24, 0xAAA0, 1, 3, false, None),
             line_style(4, 24, 0xAAA0, 1, 3, false, None),
@@ -849,9 +802,8 @@ mod tests {
 
     #[test]
     fn a_y_junction_does_not_stitch_through_the_degree_3_node() {
-        // Three same-style arms meet at the origin. `line_merge` only joins degree-2
-        // nodes, so no arm stitches through — all three survive as separate lines
-        // (their shared endpoint's vertex count is unchanged).
+        // Three same-style arms meet at the origin. `line_merge` only joins degree-2 nodes, so no
+        // arm stitches through and all three survive as separate lines.
         let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
         let feats = vec![
             (1u8, line(&[(0.0, 0.0), (1.0, 0.0)])),

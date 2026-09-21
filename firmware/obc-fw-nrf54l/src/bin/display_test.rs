@@ -1,43 +1,38 @@
-//! **LS021 wiring checker** — the smallest possible binary that exercises the *real* display
-//! path end to end: pin claims on the **rehomed** source bus (issue #1158), the real FLPR blob +
-//! launch, the real `Ls021Flpr` presenter, and the real `com_task` — but no SD, no sensors, no
-//! BLE, no app. It cycles a solid full-screen colour every second (black → red → green → blue →
-//! white → colour bars), logging each step over RTT, so a black panel can be bisected:
+//! LS021 wiring checker: the smallest binary that exercises the real display path end to end.
+//! It claims the pins, launches the real FLPR blob, and runs the real `Ls021Flpr` presenter and
+//! the real `com_task`, with no SD, no sensors, no BLE, and no app. It cycles a solid full-screen
+//! colour every second (black, red, green, blue, white, colour bars) and logs each step over RTT,
+//! so a black panel can be bisected:
 //!
-//! - RTT shows `FLPR alive` + colour steps but the glass stays black → wiring (or panel power):
-//!   probe BCK/data on P2, the gate run on P1.10–14, COM on P1.22–24, and the 5 V/3.3 V rails.
-//! - No `FLPR alive` → the blob/carve (memory-map drift) — a firmware problem, not wiring.
-//! - Colours show here but the app stays black → normally an app-side bug (come back with RTT from
-//!   the full build) — **except in the #1158 window**: until the storage-pivot integration PR
-//!   merges, `main.rs` still claims the display data on the OLD pads (`P2.00–05`) plus SD-SPI, so
-//!   the app build simply does not drive the rehomed harness. On that harness a black app screen is
-//!   expected, not a bug. This checker is the only build on the new map until then.
+//! - RTT shows `FLPR alive` and the colour steps but the glass stays black: wiring, or panel
+//!   power. Probe BCK and data on P2, the gate run on P1.10–14, COM on P1.22–24, and the rails.
+//! - No `FLPR alive`: the blob or the carve (memory-map drift). A firmware problem, not wiring.
+//! - Colours show here but the app stays black: normally an app-side bug. Come back with RTT from
+//!   the full build.
 //!
-//! Flash with `cargo run --release --bin display_test` (rides the default feature set; the tiny
-//! image flashes much faster than the app). LED1 heartbeats once per colour step; LED0 shimmers
-//! at 60 Hz once COM starts (its pin carries VCOM) — that shimmer alone proves the COM task runs.
+//! Flash with `cargo run --release --bin display_test`. LED1 heartbeats once per colour step, and
+//! LED0 shimmers at 60 Hz once COM starts because its pin carries VCOM; that shimmer alone proves
+//! the COM task runs.
 //!
-//! Probing the drive signals (each frame push is a ~45 ms burst, once per second):
-//! INTB P1.13 goes HIGH for the whole burst (the easiest scope trigger), GSP P1.10 pulses once
-//! per frame, GCK P1.11 clocks 640 sub-lines, BSP P1.14 pulses per sub-line, BCK P2.07 runs the
-//! ~0.75 MHz shift clock, data on P2.06/.08/.09/.10 + P2.00/.04 (the rehomed bus, issue #1158).
+//! Probing the drive signals (each frame push is a ~45 ms burst, once per second): INTB P1.13
+//! goes HIGH for the whole burst, which is the easiest scope trigger; GSP P1.10 pulses once per
+//! frame; GCK P1.11 clocks 640 sub-lines; BSP P1.14 pulses per sub-line; BCK P2.07 runs the
+//! ~0.75 MHz shift clock; data is on P2.06/.08/.09/.10 plus P2.00/.04.
 #![no_std]
 #![no_main]
 
-// The real driver modules, pulled in by path (this is a `bin`, not a lib consumer). A checker
-// this small exercises only the panel-bring-up subset of each, so the items the app uses and it
-// doesn't — `Ls021Flpr::reset_diff`, the carve constants the budget assert reads — are dead here
-// by construction, not by accident.
+// The real driver modules, pulled in by path because this is a `bin`, not a lib consumer. A
+// checker this small exercises only the panel-bring-up subset of each, so the items the app uses
+// and it does not are dead here by construction, not by accident.
 #[allow(dead_code)]
 #[path = "../com.rs"]
 mod com;
 #[allow(dead_code)]
 #[path = "../ls021_flpr.rs"]
 mod ls021_flpr;
-// The display backend reaches the FLPR through the mode mux since the storage pivot (#1158) — every
-// push asks it for the coprocessor. Pulled in for that one seam; this checker never brings storage
-// up, so the mux simply records that the display owns the hart and the sEMMC side stays dormant
-// (its image is never copied into the carve and the card pads are only ever parked as inputs).
+// The display backend reaches the FLPR through the mode mux, so every push asks it for the
+// coprocessor. This checker never brings storage up, so the mux only records that the display
+// owns the hart and the sEMMC side stays dormant.
 #[allow(dead_code)]
 #[path = "../flpr_mux.rs"]
 mod flpr_mux;
@@ -54,8 +49,8 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_time::Timer;
-// The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set) — MPSL is
-// never initialised here; its cs impl works from reset, exactly as in the main app.
+// The critical-section impl comes from linking nrf-mpsl. MPSL is never initialised here; its
+// implementation works from reset, exactly as in the main app.
 use nrf_mpsl as _;
 use panic_probe as _;
 
@@ -82,21 +77,17 @@ async fn main(spawner: Spawner) {
     // LED1 heartbeat (one blink per colour step). LED0's pin carries VCOM below.
     let mut led = Output::new(p.P1_25, Level::Low, OutputDrive::Standard);
 
-    // Pin claims — the FLPR only toggles OUT bits, the M33 owns direction/drive, so every line
-    // must be configured here before launch. (`main.rs` still claims the display data on the old
-    // pads plus SD-SPI; the storage-pivot integration PR rewires it and deletes the SPI path in
-    // one step — until then this checker is the only build on the rehomed map.)
-    // Gate + frame lines: the contiguous P1.10–14 run.
+    // Pin claims: the FLPR only toggles OUT bits and the M33 owns direction and drive, so every
+    // line must be configured here before the launch.
+    // Gate and frame lines: the contiguous P1.10–14 run.
     let _gate_bus = [
         Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // GSP
         Output::new(p.P1_11, Level::Low, OutputDrive::Standard), // GCK
         Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
         Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
     ];
-    // Source bus on the rehomed map (issue #1158 — the sEMMC storage pivot gave the six fixed card
-    // pads P2.00–05 to the card, so the display data moved onto the four pins the retired SD-SPI
-    // path freed plus the two pads time-shared with sEMMC D3/D1). Matches `flpr_scan.c`'s
-    // `DATA_MASK 0x751` and `obc_display::ls021::wire`.
+    // Source bus. It matches `flpr_scan.c`'s `DATA_MASK 0x751` and `obc_display::ls021::wire`.
+    // B0/B1 are the two pads time-shared with sEMMC D3/D1.
     let _src_bus = [
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
         Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (unchanged)
@@ -107,15 +98,15 @@ async fn main(spawner: Spawner) {
         Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // B0 (shared: sEMMC D3)
         Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B1 (shared: sEMMC D1)
     ];
-    // Park the four card-only sEMMC pads as inputs: the card breakout's pull-ups hold CLK/CMD/D0/D2
-    // high = an idle SD bus, and with no clock edges the card stays inert while we drive the panel.
+    // Park the four card-only sEMMC pads as inputs: the card breakout's pull-ups hold
+    // CLK/CMD/D0/D2 high, which is an idle SD bus, and with no clock edges the card stays inert
+    // while we drive the panel.
     //
-    // ⚠️ **Deliberately different from `main.rs`**, which forbids exactly this: these four pads are
-    // also owned by `semmc::configure_display_pads` (linked in via the `flpr_mux`/`semmc` modules
-    // above), so claiming them here as embassy `Input`s is the double ownership main.rs's comment
-    // rules out. It is harmless *only* because both owners want the identical end state — high-Z
-    // input, no pull — and this bench never enters storage mode, so `configure_storage_pads` never
-    // runs and the two can't diverge. Do not copy the pattern into the app.
+    // This is deliberately different from `main.rs`, which forbids exactly this. The four pads
+    // are also owned by `semmc::configure_display_pads`, so claiming them here as embassy
+    // `Input`s is double ownership. It is harmless only because both owners want the identical
+    // end state, high-Z input with no pull, and this bench never enters storage mode. Do not copy
+    // the pattern into the app.
     let _sd_parked = [
         Input::new(p.P2_01, Pull::None), // sEMMC CLK
         Input::new(p.P2_02, Pull::None), // sEMMC D0
@@ -181,8 +172,8 @@ async fn main(spawner: Spawner) {
             frame.bytes_mut().fill(byte);
             info!("display_test: frame {=usize} — solid {=str} (0x{=u8:02x})", step, name, byte);
         } else {
-            // Colour bars: 6 vertical bands (R,G,B,yellow-ish,cyan-ish,white) — one frame that
-            // shows every data line and the odd/even column split at once.
+            // Colour bars: six vertical bands that show every data line and the odd/even column
+            // split in one frame.
             const BANDS: [u8; 6] = [0x03, 0x0C, 0x30, 0x0F, 0x3C, 0x3F];
             for row in frame.bytes_mut().as_chunks_mut::<FB_W>().0 {
                 for (x, px) in row.iter_mut().enumerate() {

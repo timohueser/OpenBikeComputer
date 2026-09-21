@@ -65,9 +65,9 @@ class FakeDevice(Link):
         self.chunk = chunk
         self.capacity = capacity
         self.corrupt_at = corrupt_at
-        # `header_fault` is the device's own read deadline expiring on the header; `nak_chunk` is the
-        # same thing (or a refused store write) at a chunk boundary. Both are NAKs the real device
-        # sends and neither existed in the first round of these tests.
+        # `header_fault` is the device's own read deadline expiring on the header, and `nak_chunk`
+        # is the same thing, or a refused store write, at a chunk boundary. Both are NAKs the real
+        # device sends.
         self.header_fault = header_fault
         self.nak_chunk = nak_chunk
         self.nak_reason = nak_reason
@@ -98,7 +98,7 @@ class FakeDevice(Link):
         self.received = 0
         self.chunk_index = 0
 
-    # ── the Link face the host drives ──────────────────────────────────────────────────────────
+    # The Link face the host drives.
 
     def write(self, data):
         for byte in data:
@@ -116,7 +116,7 @@ class FakeDevice(Link):
     def close(self):
         pass
 
-    # ── the state machine ──────────────────────────────────────────────────────────────────────
+    # The state machine.
 
     def _byte(self, byte):
         if self.state == "magic":
@@ -140,8 +140,8 @@ class FakeDevice(Link):
             self.payload.append(byte)
             self.received += 1
             if self.received == self.plan[0]:
-                # A chunk landed. The device either acks it or refuses here — a store that would not
-                # take it (reason 8) or its own read deadline having expired (reason 11).
+                # A chunk landed. The device acks it or refuses here, because the store would not
+                # take it or its own read deadline expired.
                 if self.chunk_index == self.nak_chunk:
                     self._nak(self.nak_reason)
                     return
@@ -199,7 +199,7 @@ class FakeDevice(Link):
             # The reservation is cancelled, so nothing is committed and no id is consumed.
             self._result(TAG_FAIL, REASON_PAYLOAD_CRC, 0, 0, len(self.payload), got, 0)
         elif self.commit_fails:
-            # The one failure that does not clean up after itself: the Allocation went into the
+            # The one failure that does not clean up after itself: the allocation went into the
             # commit by value, so the reservation stays held and the device ends the session.
             self._result(TAG_FAIL, REASON_COMMIT, 0, 0, len(self.payload), got, 0)
             self._reset()
@@ -248,7 +248,7 @@ class ScriptedLink(Link):
 
 class Crc(unittest.TestCase):
     def test_check_value(self):
-        # The one `FLAT_Store_Format.md` names, and the one obc-crc is tested against.
+        # The one the format names, and the one the CRC crate is tested against.
         self.assertEqual(crc32(b"123456789"), 0xCBF43926)
 
 
@@ -361,8 +361,8 @@ class Transfer(unittest.TestCase):
         self.assertEqual(device.committed[0][3], payload)
 
     def test_every_chunk_is_acked_before_the_next_one_is_sent(self):
-        # The pacing *is* the flow control on this cable: one ack per chunk, and nothing in flight
-        # while the device is writing. A run whose events interleave any other way has lost that.
+        # The pacing is the flow control on this cable: one ack per chunk, and nothing in flight
+        # while the device is writing.
         device = FakeDevice(chunk=1024)
         send(device, KINDS["map"], "map", self.payload(4096))
         self.assertEqual(
@@ -424,9 +424,9 @@ class Refusals(unittest.TestCase):
         return bytes((index * 7 + 11) & 0xFF for index in range(length))
 
     def test_a_device_side_link_fault_mid_payload_is_retriable(self):
-        # Reason 11 is the likeliest mid-transfer failure there is — the device's own chunk deadline
-        # expiring. If it does not raise RetriableError, `--attempts` does not cover the one thing it
-        # exists for, and a manual re-run has to land inside a ten-second window.
+        # Reason 11 is the likeliest mid-transfer failure: the device's own chunk deadline
+        # expiring. If it does not raise `RetriableError`, `--attempts` does not cover the one thing
+        # it exists for, and a manual re-run has to land inside a ten-second window.
         device = FakeDevice(chunk=1024, nak_chunk=2, nak_reason=REASON_LINK)
         with self.assertRaises(RetriableError):
             send(device, KINDS["map"], "map", self.payload())
@@ -458,8 +458,8 @@ class Refusals(unittest.TestCase):
         self.assertEqual(len(device.committed), 1)
 
     def test_a_refused_commit_reports_reason_10_and_ends_the_session(self):
-        # The Allocation went into the commit by value, so the extents stay held until a remount and
-        # the device stops listening. The host must not retry into that.
+        # The allocation went into the commit by value, so the extents stay held until a remount
+        # and the device stops listening. The host must not retry into that.
         device = FakeDevice(chunk=1024, commit_fails=True)
         result = send(device, KINDS["map"], "map", self.payload())
         self.assertFalse(result.ok)
@@ -494,9 +494,8 @@ class Gone(unittest.TestCase):
         self.assertIn("DESTRUCTIVE", str(caught.exception))
 
     def test_an_unframeable_line_points_at_a_second_talker_not_at_the_baud(self):
-        # The correction that matters: reason 4 is another talker on the tty. A `--baud` mismatch
-        # cannot produce it, because at the wrong rate this host never transmits at all — and could
-        # not have decoded this frame either.
+        # Reason 4 is another talker on the tty. A `--baud` mismatch cannot produce it, because at
+        # the wrong rate this host never transmits and could not have decoded the frame either.
         device = FakeDevice()
         device.stopped = True
         device.gone(4)
@@ -507,8 +506,8 @@ class Gone(unittest.TestCase):
         self.assertIn("NOT a --baud mismatch", message)
 
     def test_the_timeout_names_the_baud_before_the_wedge(self):
-        # A silent line is what a baud mismatch looks like, so the timeout — the only message an
-        # operator sees in that case — must put --baud ahead of the J-Link wedge, not after it.
+        # A silent line is what a baud mismatch looks like, and the timeout is the only message an
+        # operator sees, so it must name `--baud` before the probe.
         with self.assertRaises(LinkTimeout) as caught:
             await_ready(ScriptedLink(b""), wait=0.05)
         message = str(caught.exception)
@@ -516,7 +515,7 @@ class Gone(unittest.TestCase):
         self.assertIn("nobody answered", message)
 
     def test_a_damaged_advertisement_does_not_end_the_wait(self):
-        # One bad CRC is a glitched byte, not an absent board: the next advertisement is 500 ms away.
+        # One bad CRC is a glitched byte, not an absent board: the next advertisement is close.
         broken = bytearray(ready_frame(2048))
         broken[7] ^= 0xFF
         link = ScriptedLink(bytes(broken) + ready_frame(2048))
@@ -527,7 +526,7 @@ class Gone(unittest.TestCase):
         frame[4] = 9
         frame[10:14] = crc32(bytes(frame[:10])).to_bytes(4, "little")
         link = ScriptedLink(bytes(frame) + ready_frame(2048))
-        # Not fatal in the scan — it keeps looking — but `parse_ready` names it for a direct caller.
+        # Not fatal in the scan, which keeps looking, but `parse_ready` names it for a caller.
         with self.assertRaisesRegex(IngestError, "version 9"):
             parse_ready(bytes(frame))
 

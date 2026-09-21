@@ -4,16 +4,13 @@ import Foundation
 import Testing
 @testable import OBCTransport
 
-/// #753: the delegate-level mapping `BLETransport.isRetryableGatedFailure` —
-/// shared by the gated CCCD-write (`didUpdateNotificationStateFor`) and PSM-read
-/// (`didUpdateValueFor`) failure branches so they can't drift. Exercised with
-/// real CoreBluetooth error values, no radio. (Importing CoreBluetooth here is
-/// fine: the seam guard confines it to `Sources/OBCTransport/BLE` — tests may
-/// exercise that seam.)
+/// The delegate-level mapping `BLETransport.isRetryableGatedFailure`, shared by the gated CCCD
+/// write and PSM read failure branches so they cannot drift. It uses real CoreBluetooth error
+/// values and no radio; the seam guard confines CoreBluetooth to the BLE sources, and a test may
+/// exercise that seam.
 struct GatedFailureMappingTests {
-    /// The reported symptom (#753): an auth-class ATT error on a gated op while
-    /// the peripheral is still connected and a fresh-pair authenticate is
-    /// parked — the "pairing visibly completed" proxy → retryable.
+    /// An auth-class ATT error on a gated op, with the peripheral still connected and a
+    /// fresh-pair authenticate parked, is the proxy for "pairing visibly completed".
     @Test(arguments: [
         CBATTError.Code.insufficientAuthentication,
         .insufficientEncryption,
@@ -25,25 +22,22 @@ struct GatedFailureMappingTests {
         ))
     }
 
-    /// A pure disconnect carries no completed-pairing evidence — the proxy
-    /// deliberately excludes it (a decline commonly tears the link down), so a
-    /// gated failure on a no-longer-connected peripheral fails to D5 as today.
+    /// A disconnect carries no completed-pairing evidence, and a decline commonly tears the link
+    /// down, so a gated failure on a disconnected peripheral is never retried.
     @Test func disconnectedPeripheralIsNeverRetryable() {
         #expect(!BLETransport.isRetryableGatedFailure(
             CBATTError(.insufficientAuthentication), peripheralConnected: false, authenticatePending: true
         ))
     }
 
-    /// A background re-arm (bonded reconnect, no `authenticate()` parked) keeps
-    /// the pre-existing behavior — never the fresh-pair retry.
+    /// A background re-arm has no `authenticate()` parked, so it never takes the fresh-pair retry.
     @Test func backgroundReArmWithoutAuthenticatePendingIsNeverRetryable() {
         #expect(!BLETransport.isRetryableGatedFailure(
             CBATTError(.insufficientAuthentication), peripheralConnected: true, authenticatePending: false
         ))
     }
 
-    /// Non-auth failures (and a `nil` error — the op succeeded) are terminal:
-    /// they say nothing about a completed pairing.
+    /// Non-auth failures, and a `nil` error (the op succeeded), say nothing about a completed pairing.
     @Test func nonAuthErrorsAndSuccessesAreNeverRetryable() {
         #expect(!BLETransport.isRetryableGatedFailure(
             CBATTError(.readNotPermitted), peripheralConnected: true, authenticatePending: true

@@ -1,9 +1,9 @@
 // The size ledger: real bytes, and what deserves a warning.
 //
 // Two findings are pinned here because losing either costs a user something
-// concrete: a price that overstates a selection by half (PR #1025's
-// area-times-density trap), and a coverage warning that hatches an entire
-// country because its coarse cells are — normally, unavoidably — partial.
+// concrete: a price that overstates a selection by half (the area-times-density
+// trap), and a coverage warning that hatches an entire country because its coarse
+// cells are — normally, unavoidably — partial.
 
 import { describe, expect, it } from "vitest";
 import { ledgerFor, ledgerForRegion } from "./ledger";
@@ -12,9 +12,8 @@ import { cellSquare, parseCellId } from "./grid";
 import { exampleCatalog, fixtureIndices } from "./testdata";
 
 const indices = fixtureIndices(exampleCatalog, {
-    // Partial coarse cells are the normal state at country scale (#1025): a
-    // 2^20 cell is ≈ 9 100 km², and no such cell is fully interior to
-    // Switzerland.
+    // Partial coarse cells are the normal state at country scale: a 2^20 cell is
+    // ≈ 9 100 km², and no such cell is fully interior to Switzerland.
     coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
     mid: [{ id: "19/0602/0526", bytes: 1064 }],
     fine: [
@@ -43,9 +42,9 @@ function ledgerOf(...parts: BoxPart[]) {
 
 describe("ledgerFor", () => {
     it("totals summed real cell bytes, never an estimate", () => {
-        // #1025: border cells carry the neighbour's overhang, so cell squares
-        // cover 1.5–1.8× a region's ground. Anything derived from area × density
-        // would be wrong by that much; these are the catalog's own numbers.
+        // Border cells carry the neighbour's overhang, so cell squares cover 1.5–1.8×
+        // a region's ground. Anything derived from area × density would be wrong by
+        // that much; these are the catalog's own numbers.
         const ledger = ledgerOf(overAB);
         expect(ledger.totalBytes).toBe(2088 + 1064 + 552 + 424 + 296 + 168);
         expect(ledger.cellCount).toBe(6);
@@ -163,9 +162,9 @@ describe("pricing a region from the root (OBCC §6)", () => {
     it("prices a named region from the root alone — no satellite fetch", () => {
         const entry = exampleCatalog.regions[0];
         const ledger = ledgerForRegion(exampleCatalog, entry);
-        // The raster is priced in the root too (§13.3), so a hover shows the whole
-        // download — and it stays a **separate line**, because a rider may take
-        // the map without it and `bytes_by_band` deliberately excludes it.
+            // The raster is priced in the root too, so a hover shows the whole download —
+            // and it stays a **separate line**, because a rider may take the map without
+            // it and `bytes_by_band` deliberately excludes it.
         expect(ledger.terrain?.bytes).toBe(entry.terrain?.bytes);
         expect(ledger.totalBytes).toBe(entry.bytes + entry.terrain!.bytes);
         expect(Object.values(entry.bytes_by_band).reduce((a, b) => a + b, 0)).toBe(entry.bytes);
@@ -176,8 +175,8 @@ describe("pricing a region from the root (OBCC §6)", () => {
         const ledger = ledgerForRegion(exampleCatalog, exampleCatalog.regions[0]);
         expect(ledger.terrain?.attribution).toBe(exampleCatalog.terrain!.attribution);
         expect(ledger.terrain?.attribution).toMatch(/Copernicus/);
-        // §13.5 covers every listed reference too, so the ledger carries them all
-        // the way to the card rather than leaving them in the root document.
+            // The licence obligation covers every listed reference too, so the ledger carries
+            // them all the way to the card rather than leaving them in the root document.
         expect(ledger.terrain?.references).toEqual(exampleCatalog.terrain!.references);
         expect(ledger.terrain?.references.map((r) => r.attribution)).toContain("© swisstopo");
     });

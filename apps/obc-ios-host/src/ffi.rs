@@ -1,17 +1,16 @@
 //! The C ABI the Swift shell links: one opaque `ObcHost`. `include/obc_ios_host.h` is written by
 //! hand beside it and declares exactly these functions.
 //!
-//! **Every call on a host is main-thread only.** The display link, the touch areas and the
-//! CoreLocation and CoreMotion delegates all run there, and nothing here synchronises. The two
-//! calls that take no host — [`obc_ios_card_state`] and [`obc_ios_import_map`], where a large map
-//! copy must not freeze the UI — may run on any thread while no host is open. A NULL host is a
-//! no-op: `false`, NULL, or a failure code, so a shell that outlives its host cannot take the app
-//! down. A path that is NULL or not UTF-8 fails through [`obc_ios_last_error`], which is
-//! thread-local: read it on the thread that made the failing call.
+//! Every call on a host is main-thread only. The display link, the touch areas and the CoreLocation
+//! and CoreMotion delegates all run there, and nothing here synchronises. The two calls that take
+//! no host, [`obc_ios_card_state`] and [`obc_ios_import_map`], may run on any thread while no host
+//! is open, because a large map copy must not freeze the UI. A NULL host is a no-op, so a shell
+//! that outlives its host cannot take the app down. A path that is NULL or not UTF-8 fails through
+//! [`obc_ios_last_error`], which is thread-local: read it on the thread that made the call.
 //!
-//! A panic prints one tagged line to stderr (the Xcode console) through the hook the first entry
-//! point installs, and then aborts: `extern "C"` turns an unwind into an abort by itself, so there
-//! is no `catch_unwind` and no half-alive host to call into afterwards.
+//! A panic prints one tagged line to stderr through the hook the first entry point installs, and
+//! then aborts. `extern "C"` turns an unwind into an abort by itself, so there is no `catch_unwind`
+//! and no half-alive host to call into afterwards.
 
 use crate::{card_state, import_map, CardState, Host, FRAME_H, FRAME_W};
 use obc_app::Screen;
@@ -30,7 +29,7 @@ thread_local! {
 /// Record why a call failed and hand back the value C reads as the failure.
 fn fail<T>(message: String, failure: T) -> T {
     // The messages are formatted from paths that arrived as C strings, so an interior NUL is not
-    // reachable; a message that somehow carries one still has to say something.
+    // reachable. A message that carries one anyway still has to say something.
     let text = CString::new(message).unwrap_or_else(|_| c"the message contained a NUL".to_owned());
     LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(text));
     failure
@@ -233,8 +232,8 @@ pub unsafe extern "C" fn obc_ios_push_battery(host: *mut Host, percent: u8) {
 }
 
 /// One button edge from a touch area, held state in and edges out. `button` carries the header's
-/// `ObcButton`; it is read as its raw value, so a value outside the enum is ignored instead of
-/// trusted as a discriminant.
+/// `ObcButton` as a raw value, so a value outside the enum is ignored and never trusted as a
+/// discriminant.
 ///
 /// # Safety
 /// `host` is NULL or an open handle from [`obc_ios_open`].
@@ -279,15 +278,15 @@ pub unsafe extern "C" fn obc_ios_screen(host: *const Host) -> *const c_char {
     read(host, ptr::null(), |host| screen_name(host.screen()))
 }
 
-/// `Screen::name()` NUL-terminated. The table is built once from the one `Screen::NAMES` list, so
-/// a new screen needs no second spelling of its name here.
+/// `Screen::name()`, NUL-terminated. The table is built once from `Screen::NAMES`, so a new screen
+/// needs no second spelling of its name here.
 fn screen_name(name: &str) -> *const c_char {
     static NAMES: OnceLock<Vec<CString>> = OnceLock::new();
     let names = NAMES.get_or_init(|| Screen::NAMES.iter().filter_map(|name| CString::new(*name).ok()).collect());
     names.iter().find(|known| known.to_bytes() == name.as_bytes()).map_or(ptr::null(), |name| name.as_ptr())
 }
 
-/// Whether a ride is open — the shell keeps the screen awake while it is.
+/// Whether a ride is open. The shell keeps the screen awake while it is.
 ///
 /// # Safety
 /// `host` is NULL or an open handle from [`obc_ios_open`].

@@ -1,6 +1,6 @@
-//! The "Controls" window — a second egui immediate viewport driving the simulated device:
-//! the manual GPS fix (position / zoom / camera / orientation), GPX replay, and the
-//! render-stats readout. A second `impl SimGui` block, so it mutates the same fields.
+//! The Controls window: a second egui immediate viewport driving the simulated device, with the
+//! manual GPS fix, GPX replay and the render-stats readout. It is a second `impl SimGui` block, so
+//! it mutates the same fields.
 
 use eframe::egui;
 use obc_app::CameraMode;
@@ -14,19 +14,18 @@ use crate::calib;
 /// The red used for inline error / warning labels across the panel.
 const ERROR_RED: egui::Color32 = egui::Color32::from_rgb(220, 80, 80);
 
-/// A 6 pt gap then a separator — the divider above most control-panel sections.
+/// A gap then a separator: the divider above most control-panel sections.
 fn separator_above(ui: &mut egui::Ui) {
     ui.add_space(6.0);
     ui.separator();
 }
-// The two render paths, colored the same in the legend and the stacked bars below.
+// The two render paths, coloured the same in the legend and the stacked bars below.
 const KIND_LINE: egui::Color32 = egui::Color32::from_rgb(80, 150, 235); // lines = blue
 const KIND_POLY: egui::Color32 = egui::Color32::from_rgb(227, 165, 43); // polygons = amber
 
-/// A stacked buffer-utilization bar splitting the fill into the line vs polygon
-/// contribution. `line`/`poly` are this frame's counts of the resource; `cap` its scratch capacity.
-/// The blue segment is lines and the amber segment polygons, laid end to end, so the total fill is
-/// `(line + poly) / cap` — how close this frame is to the scratch limit, and which path is eating it.
+/// A stacked buffer-utilization bar splitting the fill into the line and polygon contributions.
+/// `line` and `poly` are this frame's counts of the resource and `cap` is its scratch capacity, so
+/// the total fill says how close this frame is to the scratch limit and which path is eating it.
 fn kind_bar(ui: &mut egui::Ui, label: &str, line: usize, poly: usize, cap: usize) {
     ui.horizontal(|ui| {
         ui.label(label);
@@ -57,8 +56,8 @@ fn kind_bar(ui: &mut egui::Ui, label: &str, line: usize, poly: usize, cap: usize
 }
 
 impl SimGui {
-    /// Draw the "Controls" window. Re-declared every frame; the widgets edit the panel
-    /// mirrors / `AppState`, then the mirrors are pushed into the
+    /// Draw the Controls window. It is re-declared every frame: the widgets edit the panel
+    /// mirrors, and the mirrors are then pushed into the
     /// [`SimLocationSource`](crate::sim_location::SimLocationSource) for the next `App::tick`.
     pub(super) fn show_control_panel(&mut self, ctx: &egui::Context) {
         ctx.show_viewport_immediate(
@@ -86,11 +85,11 @@ impl SimGui {
                         // Let sliders span the panel width, leaving room for the value box.
                         ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
 
-                        // A loaded GPX track owns the fix (as the device's GPS would), so the manual
-                        // position/heading inputs go read-only. Camera/zoom/orientation stay live.
+                        // A loaded GPX track owns the fix, as the device's GPS would, so the
+                        // manual position and heading inputs go read-only.
                         let replaying = self.gpx.is_some();
 
-                        // Position — the GPS fix, edited in degrees (stored as µdeg).
+                        // The GPS fix, edited in degrees and stored as microdegrees.
                         ui.add_enabled_ui(!replaying, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Lat");
@@ -115,16 +114,16 @@ impl SimGui {
 
                         separator_above(ui);
 
-                        // Compass — the magnetometer heading, effective while the GPS has no course.
-                        // It rotates a heading-up map during a replay pause and always drives a
+                        // The magnetometer heading, which applies while the GPS has no course. It
+                        // rotates a heading-up map during a replay pause and always drives a
                         // stopped Peak View.
                         ui.label("Compass (heading when stopped)");
                         ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
 
                         separator_above(ui);
 
-                        // Zoom — meters-per-pixel on a log scale. Only write back when dragged, so it
-                        // never fights the mouse scroll (which can range past the slider's bounds).
+                        // Meters per pixel on a log scale. Written back only when dragged, so it
+                        // never fights the mouse scroll, which can range past the slider's bounds.
                         ui.label("Zoom");
                         let mut mpp = zoom_to_mpp(self.app.state.zoom);
                         let resp =
@@ -148,8 +147,8 @@ impl SimGui {
 
                         separator_above(ui);
 
-                        // Camera mode and Orientation — paired on one row. Orientation (north-up vs
-                        // heading-up) is independent of the camera mode.
+                        // Camera mode and orientation, paired on one row. Orientation is
+                        // independent of the camera mode.
                         let prev_mode = self.app.state.mode;
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
@@ -168,8 +167,8 @@ impl SimGui {
                                 });
                             });
                         });
-                        // Entering Follow: snap the fix onto the camera center so the view doesn't jump
-                        // (Free moved the camera away from the fix).
+                        // Entering Follow snaps the fix onto the camera center, so the view does
+                        // not jump: Free moved the camera away from the fix.
                         if prev_mode == CameraMode::Free && self.app.state.mode == CameraMode::Follow {
                             self.panel.lat_deg = self.app.state.cam_lat as f64 / 1e6;
                             self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
@@ -177,8 +176,8 @@ impl SimGui {
 
                         separator_above(ui);
 
-                        // GPX replay — play a recorded track back as a simulated GPS sensor. The player
-                        // is the active `LocationSource` while a track is loaded.
+                        // GPX replay plays a recorded track back as a simulated GPS sensor. The
+                        // player is the active `LocationSource` while a track is loaded.
                         ui.label("GPX replay");
                         if ui.button("Load GPX…").clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file() {
@@ -225,14 +224,14 @@ impl SimGui {
             },
         );
 
-        // Push the mirrors into the location + compass sources (the app reads them next tick).
+        // Push the mirrors into the location and compass sources, which the app reads next tick.
         self.loc.set_position((self.panel.lat_deg * 1e6).round() as i32, (self.panel.lon_deg * 1e6).round() as i32);
         let moving = self.loc.current().and_then(|fix| fix.speed_mps).is_some_and(|speed| speed > 0.5);
         self.loc.set_course(moving.then_some(self.panel.heading_deg));
         self.compass.set(self.panel.compass_deg);
     }
 
-    /// Display size — the 1:1 "actual size" toggle (needs a calibration) plus a (re)calibrate
+    /// Display size: the 1:1 actual-size toggle, which needs a calibration, plus a calibrate
     /// button. The calibration screen lives in [`super::SimGui`].
     fn show_display_controls(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Display size").strong());
@@ -263,14 +262,12 @@ impl SimGui {
         }
     }
 
-    /// The Bluetooth injection controls — the sim's face of the host→app BLE seam (epic #447). P1
-    /// exposes the connected toggle (the connected indicator's driver); P2 adds the passkey injection
-    /// (the passkey card); P3 adds the store-changed injection (the live-catalog rescan's driver);
-    /// P8 adds the paired flag (the Bluetooth screen's "Paired" row — its Forget hold clears it,
-    /// like the board's RRAM clear; the radio-off state isn't injected here — it's the device's own
-    /// `Settings::ble_enabled`, flipped on the Bluetooth screen); P4 will add the full inject-upload
-    /// UI — all editing the same [`obc_app::BleStatus`] mirror pushed into the app each frame, so no
-    /// restructuring is needed then.
+    /// The Bluetooth injection controls: the sim's face of the BLE seam. The connected toggle
+    /// drives the connected indicator, the passkey injection drives the passkey card, the
+    /// store-changed injection drives the live-catalog rescan, and the paired flag drives the
+    /// Bluetooth screen's paired row. The radio-off state is not injected here, because it is the
+    /// device's own setting. Every control edits the same [`obc_app::BleStatus`] mirror pushed into
+    /// the app each frame.
     fn show_ble_controls(&mut self, ui: &mut egui::Ui) {
         use obc_app::BleLink;
         let mut connected = self.panel.ble.link == BleLink::Connected;
@@ -280,10 +277,10 @@ impl SimGui {
         ui.checkbox(&mut self.panel.ble.paired, "Paired (bond stored)");
         ui.weak("drives the indicator + the Bluetooth screen's status/Paired rows");
 
-        // Passkey injection (P2): a "Pairing" toggle mirrors the BLE side's `PassKeyDisplay` →
-        // `passkey: Some` (opens the card) / cleared → `None` (closes it), with a numeric field to
-        // set the 6-digit code the card renders. `set_ble_status` reconciles the host-pushed card
-        // each frame from `self.panel.ble.passkey`, exactly as the board's ride loop does.
+        // Passkey injection: a Pairing toggle mirrors the BLE side's passkey display, so setting
+        // it opens the card and clearing it closes the card, with a numeric field for the code.
+        // `set_ble_status` reconciles the host-pushed card each frame, as the board's ride loop
+        // does.
         let mut pairing = self.panel.ble.passkey.is_some();
         if ui.checkbox(&mut pairing, "Pairing (show passkey card)").changed() {
             self.panel.ble.passkey = pairing.then_some(123_456);
@@ -296,11 +293,10 @@ impl SimGui {
             );
         }
 
-        // Upload injection (P4): the route-upload popups' driver. Pick a catalog route, then
-        // inject it as a fresh upload (a new file — copy of the pick) or a replace-by-id (the
-        // pick's bytes rewritten in place). Each button runs the exact device sequence via
-        // [`SimGui::inject_upload`]; replace the *actively navigated* route to see the
-        // forced-adoption info card.
+        // Upload injection drives the route-upload popups. Pick a catalog route, then inject it
+        // as a fresh upload, which copies the pick, or as a replace by id, which rewrites the
+        // pick's bytes in place. Replacing the actively navigated route shows the forced-adoption
+        // info card.
         let mut inject: Option<bool> = None; // Some(replace?)
         {
             let routes = self.app.routes();
@@ -335,10 +331,8 @@ impl SimGui {
             self.inject_upload(self.panel.upload_sel, replace);
         }
 
-        // Trip delete (epic #526, TR2): the protocol-level trip delete — removes the `.obt` and
-        // leaves the member routes as top-level routes (non-cascading, spec §7.7). Stands in for the
-        // on-device delete until the TR3 folder UI wires it to a hold gesture. Deleting drops the
-        // folder, so its member routes fall back to the unfiled top level on the next re-group.
+        // The protocol-level trip delete: it removes the trip object and leaves the member routes
+        // as top-level routes, so they fall back to the unfiled top level on the next re-group.
         let mut delete_trip: Option<obc_app::CatalogObjectId> = None;
         let mut inject_trip: Option<obc_app::CatalogObjectId> = None;
         {
@@ -369,10 +363,9 @@ impl SimGui {
                 ui.weak("upload → the TRIP RECEIVED popup (replaces any route popup) · delete is non-cascading");
             }
         }
-        // The trip-commit fact, exactly the board's order: the trip catalog is already fed (the
-        // scan above / the store-changed re-feed), then the fact resolves the durable id — on the
-        // device the trip object always lands after its member routes, so this popup replaces the
-        // burst's last per-route popup (single most-recent-wins slot).
+        // The trip-commit fact, in the board's order: the trip catalog is already fed, and the
+        // fact then resolves the durable id. On the device the trip object always lands after its
+        // member routes, so this popup replaces the burst's last per-route one.
         if let Some(id) = inject_trip {
             self.host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
         }
@@ -397,27 +390,23 @@ impl SimGui {
         self.host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced: replace, elevation });
     }
 
-    /// The synthetic BLE-sensor controls (epic #707 SE8): the sim's face of the HR / power /
-    /// cadence seam. One **effort follows speed** switch synthesizes all three from the replayed GPX
-    /// speed (plus light noise) — the no-slider-babysitting path for a plausible recorded ride; with
-    /// it off, each quantity has an enable toggle + a fixed-value slider. The values feed
-    /// [`SimSensors`](crate::sim_sensors::SimSensors) each tick at the ~1 Hz fresh-mailbox cadence, so
-    /// toggling one off mid-ride makes its tile go stale → `--` (the app's 5 s gate) and the log drop
-    /// it. Injected values share the app's `Sensors` wiring with the future BLE central (SE6).
+    /// The synthetic BLE-sensor controls: the sim's face of the heart rate, power and cadence
+    /// seam. The effort-follows-speed switch synthesizes all three from the replayed speed, with
+    /// light noise; with it off, each quantity has an enable toggle and a fixed-value slider. The
+    /// values feed [`SimSensors`](crate::sim_sensors::SimSensors) each tick at the fresh-mailbox
+    /// cadence, so toggling one off mid-ride makes its tile go stale and the log drop it.
     fn show_sensor_controls(&mut self, ui: &mut egui::Ui) {
         let cfg = &mut self.sim_sensors.cfg;
         ui.checkbox(&mut cfg.effort_follows_speed, "Effort follows speed");
         ui.weak("synthesize HR/power/cadence from the replayed GPX speed (with light noise)");
 
-        // With the synth on, the per-quantity toggles/sliders are ignored, so grey them out.
+        // With the synth on, the per-quantity toggles and sliders are ignored, so grey them out.
         ui.add_enabled_ui(!cfg.effort_follows_speed, |ui| {
             ui.add_space(4.0);
-            // One row per quantity: an enable toggle + a fixed-value slider (bpm / W / rpm). These
-            // rows are indented inside the "Sensors" collapsing header and each slider carries a
-            // value box, so the panel-wide `slider_width` set at the top overflows them off the
-            // right edge (clipping the value). Size the rail to the space actually left — a label
-            // column + the value box — and lay the rows out in a `Grid` so the checkbox column is a
-            // uniform width and the three sliders line up.
+            // One row per quantity: an enable toggle and a fixed-value slider. The rows are
+            // indented inside the collapsing header and each slider carries a value box, so the
+            // panel-wide `slider_width` would overflow them off the right edge. The rail is sized
+            // to the space left, and a `Grid` keeps the checkbox column a uniform width.
             ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(80.0);
             egui::Grid::new("sim_sensor_sliders").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                 ui.checkbox(&mut cfg.hr_enabled, "HR");
@@ -433,9 +422,8 @@ impl SimGui {
         });
     }
 
-    /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed
-    /// slider. Split out so the "eject" mutation of `self.gpx` doesn't tangle with the active
-    /// `&mut` borrow of the player.
+    /// The loaded-track controls: play and pause, a seek scrubber, and a speed slider. Split out so
+    /// the eject mutation of `self.gpx` does not tangle with the active borrow of the player.
     fn show_gpx_controls(&mut self, ui: &mut egui::Ui) {
         let Some(player) = self.gpx.as_mut() else {
             if let Some(err) = &self.gpx_error {
@@ -455,7 +443,7 @@ impl SimGui {
             let play_label = if player.is_playing() { "⏸ Pause" } else { "▶ Play" };
             if ui.button(play_label).clicked() {
                 player.toggle();
-                // Play follows the moving fix; the user can still switch back to Free mid-playback.
+                // Play follows the moving fix; the user can still switch back to Free.
                 if player.is_playing() {
                     self.app.state.mode = CameraMode::Follow;
                 }
@@ -487,11 +475,11 @@ impl SimGui {
         }
     }
 
-    /// The **map-referenced altimeter** readout (elevation epic #1068, EL8) — the simulator half of
-    /// the device's `altfuse:` RTT line.
+    /// The map-referenced altimeter readout: the simulator half of the device's `altfuse:` RTT
+    /// line.
     ///
-    /// Raw vs. fused is the whole story: when replay conditions move the raw row away from the
-    /// terrain, the fused row stays on it, and `Offset` is the number doing the work.
+    /// Raw against fused is the whole story: when replay conditions move the raw row away from the
+    /// terrain, the fused row stays on it, and the offset is the number doing the work.
     fn show_altimeter(&self, ui: &mut egui::Ui) {
         let a = self.app.recorder.altitude();
         let baro = self.app.recorder.baro_elevation_m();
@@ -539,9 +527,8 @@ impl SimGui {
             ui.label(format!("{}", s.chunks_visited));
             ui.end_row();
 
-            // Chunk-cache hit rate + source overhead. The map renders in two collect passes (A:
-            // select candidates, B: re-decode winners) over the visible chunks, so a healthy hit
-            // rate keeps reads near one per visible chunk.
+            // Chunk-cache hit rate and source overhead. The map renders in two collect passes
+            // over the visible chunks, so a healthy hit rate keeps reads near one per chunk.
             let cache_reqs = s.map_chunk_hits + s.map_chunk_misses;
             ui.label("Map SD");
             if cache_reqs == 0 {
@@ -565,13 +552,13 @@ impl SimGui {
             ui.label(format!("{} / {} drawn", s.points_drawn, s.points_tried));
             ui.end_row();
 
-            // Active route overlay: points decoded vs. actually stroked. The gap (as you zoom out)
-            // is the per-segment view clip + subpixel fold doing its job.
+            // Active route overlay: points decoded against points stroked. The gap at far zoom is
+            // the per-segment view clip and the subpixel fold.
             ui.label("Route");
             ui.label(format!("{} / {} drawn · {} chunks", s.route_points_drawn, s.route_points, s.route_chunks));
             ui.end_row();
 
-            // Host-measured frame draw time. 0 = not yet measured.
+            // Host-measured frame draw time. Zero means not yet measured.
             ui.label("Render");
             if s.render_us == 0 {
                 ui.label("—");
@@ -580,9 +567,9 @@ impl SimGui {
             }
             ui.end_row();
 
-            // Render-on-demand signal: which planes the firmware *would* have re-rendered. The sim
-            // always redraws, so this is informational — `map` fires on gestures / camera-moving
-            // fixes and stays quiet when idle.
+            // Render-on-demand signal: which planes the firmware would have re-rendered. The sim
+            // always redraws, so this is a readout. The map plane fires on gestures and
+            // camera-moving fixes and stays quiet when idle.
             let d = self.last_dirty;
             ui.label("Dirty");
             let on = egui::Color32::from_rgb(227, 165, 43); // amber, like the device accent
@@ -593,10 +580,10 @@ impl SimGui {
             });
             ui.end_row();
 
-            // The pass's own sleep decision (`PassPlan::next_wake_ms`) — the timer a firmware host
-            // would arm before parking. The sim repaints continuously so its Controls window stays
-            // live, so this is **shown, not obeyed**: `now` = decided work is still in flight,
-            // `event` = nothing is time-animating.
+            // The pass's sleep decision: the timer a firmware host would arm before parking. The
+            // sim repaints continuously so its Controls window stays live, so this is shown and not
+            // obeyed. `now` means decided work is still in flight, and `event` means nothing is
+            // time-animating.
             ui.label("Next wake");
             match self.last_wake_ms {
                 Some(0) => ui.colored_label(on, "now"),
@@ -605,9 +592,9 @@ impl SimGui {
             };
             ui.end_row();
 
-            // Self-diffing present: rows actually *pushed* this frame vs. the full height, decided
-            // by the per-row hash diff — idle → 0 (free), a Home minute tick → a few clock rows, a
-            // map pan → ~all. An exact full-frame diff oracle backs each number (a miss panics).
+            // Self-diffing present: rows pushed this frame against the full height, decided by the
+            // per-row hash diff. Idle pushes none, a minute tick pushes a few clock rows, and a map
+            // pan pushes nearly all. An exact full-frame diff oracle backs each number.
             let p = self.present.stats;
             ui.label("Present");
             if p.total_rows == 0 {
@@ -620,8 +607,8 @@ impl SimGui {
         });
 
         ui.add_space(4.0);
-        // Scratch utilization split by render path, so the line vs polygon contribution to each
-        // buffer is visible at saturating zoom levels.
+        // Scratch utilization split by render path, so each buffer's line and polygon
+        // contributions are visible at saturating zoom levels.
         ui.horizontal(|ui| {
             ui.label("Scratch by kind");
             ui.colored_label(KIND_LINE, "■ lines");

@@ -20,10 +20,8 @@ import os
 
 import pytest
 
-
 def _endpoint_json(response):
     return json.loads(bytes(response.body))
-
 
 def test_schema_file_path_resolves():
     """SCHEMA_FILE must name a file that is actually there.
@@ -45,7 +43,6 @@ def test_schema_file_path_resolves():
     # enough to catch pointing at some *other* JSON file that happens to exist.
     assert "$defs" in schema and "properties" in schema
 
-
 def test_repo_file_fallback_serves_the_schema_without_a_binary(monkeypatch):
     """With no obc-pack built, /api/schema still answers — from the repo file.
 
@@ -65,7 +62,6 @@ def test_repo_file_fallback_serves_the_schema_without_a_binary(monkeypatch):
     assert envelope["schema"] == json.load(open(server.SCHEMA_FILE))
     # The fallback has to carry the parts the editor reads, not just any JSON.
     assert envelope["schema"]["properties"]["routing"]["default"]["profiles"]
-
 
 def test_both_sources_agree_on_the_envelope_shape(monkeypatch):
     """Binary and repo-file envelopes carry the same keys.
@@ -88,11 +84,9 @@ def test_both_sources_agree_on_the_envelope_shape(monkeypatch):
     from_file = _endpoint_json(server.get_schema())
 
     assert from_binary.keys() == from_file.keys()
-    # And the checked-in copy is the schema the binary generates — the Rust
-    # staleness test's claim, verified here through the endpoint that depends
-    # on it, since the two now travel by different paths to get here.
+        # And the checked-in copy is the schema the binary generates — the Rust staleness
+        # test's claim, verified here through the endpoint that depends on it.
     assert from_binary["schema"] == from_file["schema"]
-
 
 def test_unbuilt_packer_says_where_to_build_it(monkeypatch):
     """With neither source available, the 503 names the repo root.

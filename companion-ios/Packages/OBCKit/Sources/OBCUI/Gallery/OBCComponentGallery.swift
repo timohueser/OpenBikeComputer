@@ -2,10 +2,9 @@
 import SwiftUI
 import OBCDomain
 
-/// The B11 **component gallery** — every kit component with design-data
-/// samples, for on-sim screenshot review (issue #240 acceptance) and quick
-/// visual regression checks. Debug-only, like the mock dev tooling; reach it
-/// with `-OBCShowUIGallery` (see `companion-ios/CLAUDE.md`).
+/// The component gallery: every kit component with sample data, for on-simulator
+/// screenshot review and quick visual checks. Debug-only; reach it with
+/// `-OBCShowUIGallery`.
 public struct OBCComponentGallery: View {
     @State private var tab = 0
     @State private var toastShown = false
@@ -207,7 +206,7 @@ public struct OBCComponentGallery: View {
         .accessibilityIdentifier("uiGallery")
     }
 
-    /// A full launch/pairing screen shrunk into a browsable gallery cell.
+    /// A full launch or pairing screen shrunk into a browsable gallery cell.
     private func launchScreen(@ViewBuilder _ content: () -> some View) -> some View {
         content()
             .frame(height: 620)

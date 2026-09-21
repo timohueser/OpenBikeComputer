@@ -3,45 +3,19 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// State for the firmware-update screen (S7) — import an `UPDATE.BIN`, stream it
-/// to the device as a `fwImage` (spec §7.6), then request the on-glass install
-/// (`installFw`, §4.4). Depends only on the link and update capabilities.
+/// State for the firmware-update screen: import an `UPDATE.BIN`, stream it to the device, then
+/// request the on-glass install.
 ///
-/// The state machine:
+/// The transfer restarts whole: a drop re-sends from scratch and never resumes. After the device
+/// commits the image the model requests the install; on `accepted` it waits, because the rider
+/// confirms on the device, which reboots to install and drops the link. "Done" is the normal
+/// reconnect with the staged version now reported. There is no progress for the flash phase: the
+/// device is off-link in the bootloader.
 ///
-/// ```
-///   idle ──stage(valid file)──▶ staged ──send()──▶ transferring ──┐
-///     ▲                            ▲                   │  │        │ commit ok
-///     │  stage(bad file)→alert     │ cancel            │  │ drop   ▼
-///     └────────────────────────────┘                   │  └▶ interrupted ──resume──┐
-///                                                       │           │                │
-///                                        installFw ok ──┼───────────┴────────────────┘
-///                                                       ▼
-///                                                awaitingConfirm ──reconnect on new version──▶ done
-///                                                       │
-///                              installFw busy/noStaged/…│ or transfer failed
-///                                                       ▼
-///                                                     failed ──send()──▶ transferring
-/// ```
-///
-/// The transfer reuses the route-upload machinery: whole-object restart (a drop
-/// re-sends from scratch, never resumes). After the device commits `/UPDATE.BIN`
-/// the model sends `installFw`; on `accepted` it enters `awaitingConfirm` — the
-/// rider confirms **on the device**, which reboots to install and drops the link.
-/// "Done" is detected by the normal reconnect: when the link returns and DIS
-/// 0x2A26 now equals the staged version, the update landed. There is no progress
-/// for the flash phase — the device is off-link in the bootloader.
-///
-/// ## The published-release check (#773 U4)
-///
-/// Alongside the Files picker the model can ask ``UpdateChecker`` what the newest
-/// published build is and, if it's newer than DIS 0x2A26 says, download it and
-/// feed it **the same `stage(_:)` path the picker feeds**. The download is proved
-/// against the manifest's byte count and SHA-256 before it gets anywhere near the
-/// link, and the device-side confirm is untouched: an offered update still travels
-/// as a `fwImage` and still installs only on a physical press. Nothing here decides
-/// *when* to check on its own — no timers, no launch sheet, no background task;
-/// that is #773's U5, which drives this same surface from outside.
+/// The model can also ask ``UpdateChecker`` for the newest published build and feed it the same
+/// `stage(_:)` path the picker feeds. A download is proved against the manifest's byte count and
+/// SHA-256 before it gets anywhere near the link, and the device-side confirm is untouched.
+/// Nothing here decides when to check: no timers, no launch sheet, no background task.
 @MainActor @Observable
 public final class FirmwareUpdateModel {
     public enum Phase: Equatable {
@@ -57,14 +31,10 @@ public final class FirmwareUpdateModel {
     // MARK: Observable state
 
     public private(set) var phase: Phase = .idle {
-        // The #459/#754 in-flight ledger claim, held exactly while a send is
-        // moving bytes. Mirroring it on the phase transition (like
-        // `RideSyncCoordinator.syncState`) covers every exit uniformly: commit
-        // → `.awaitingConfirm`, cancel → `.staged`, a drop → `.interrupted`,
-        // and the failure branches all release it. A stalled `.interrupted`
-        // transfer deliberately drops the claim — the background drain must not
-        // wait on a transfer whose link is already gone (Resume restarts it),
-        // and the screen needn't stay awake for a send that isn't advancing.
+        // The in-flight ledger claim, held exactly while a send is moving bytes. Mirroring it on
+        // the phase transition covers every exit uniformly. A stalled `.interrupted` transfer
+        // drops the claim on purpose: the background drain must not wait on a transfer whose
+        // link is already gone, and the screen need not stay awake for a send that is stalled.
         didSet {
             guard oldValue != phase else { return }
             if phase == .transferring {
@@ -76,43 +46,36 @@ public final class FirmwareUpdateModel {
         }
     }
     public private(set) var progress = TransferProgress(bytesDone: 0, total: 0)
-    /// The device's running firmware version (DIS 0x2A26), `nil` until it lands /
-    /// while the link is down. Re-read on every reconnect.
+    /// The device's running firmware version, nil until it lands or while the link is down.
     public private(set) var runningVersion: String?
-    /// The imported + validated update, `nil` until a good file is staged.
     public private(set) var staged: StagedFirmware?
     public private(set) var connection: ConnectionState = .connecting
-    /// A picked file that isn't a usable update — surfaced as an alert, never a
-    /// phase (a corrupt download fails in the picker, not on the device).
-    /// Settable so the alert's dismissal clears it.
+    /// A picked file that is not a usable update, surfaced as an alert and never a phase.
+    /// Settable, so the alert's dismissal clears it.
     public var importError: String?
-    /// The failure sentence for a `.failed` phase (a mapped `installFw` reply or a
-    /// transfer failure). `nil` in every other phase.
+    /// The failure sentence for a `.failed` phase. Nil in every other phase.
     public private(set) var failureMessage: String?
 
-    // MARK: The published-release check (U4)
+    // MARK: The published-release check
 
-    /// Where the update check is: `.checking` only while a fetch is in flight, and
-    /// `.failed` only for a check the *rider* asked for — an automatic on-appear
-    /// check that can't reach the network says nothing (there is nothing to act on
-    /// and a plane has no update problem).
+    /// Where the update check is. `.failed` only for a check the rider asked for: an automatic
+    /// check that cannot reach the network says nothing, because there is nothing to act on.
     public enum CheckState: Equatable {
         case idle
         case checking
         case failed(String)
     }
 
-    /// The download+verify leg of "Download & Install".
+    /// The download and verify leg of "Download & Install".
     public enum DownloadState: Equatable {
         case idle
         case downloading
         case failed(String)
     }
 
-    /// The newest published release, from the cache on open and from the network
-    /// after a check. `nil` means nothing is published (or nothing is known yet).
+    /// The newest published release, from the cache on open and from the network after a check.
+    /// Nil means nothing is published, or nothing is known yet.
     public private(set) var latestRelease: FirmwareRelease?
-    /// When the cached answer was taken.
     public private(set) var lastCheckedAt: Date?
     public private(set) var checkState: CheckState = .idle
     public private(set) var downloadState: DownloadState = .idle
@@ -124,16 +87,13 @@ public final class FirmwareUpdateModel {
     // MARK: Wiring
 
     private let transport: any DeviceLink & DeviceUpdates
-    /// The foreground-only policy's in-flight ledger (#459), shared with the
-    /// upload sheet + ride-sync coordinator. A firmware send claims a token
-    /// while `.transferring` so it, too, is drained (not dropped) across a
-    /// background transition — and so the #754 idle-timer guard keeps the
-    /// screen awake for it. `nil` in previews/tests that don't wire it.
+    /// The foreground-only policy's in-flight ledger, shared with the upload sheet and the
+    /// ride-sync coordinator. A firmware send claims a token while transferring, so it is drained
+    /// and not dropped across a background transition. Nil in previews and tests.
     @ObservationIgnored private let activity: TransferActivity?
     @ObservationIgnored private var activityToken: TransferActivity.Token?
-    /// The published-release check (U4) — `nil` in wiring that doesn't want one
-    /// (previews, the transfer-state tests), which leaves the screen exactly the
-    /// Files-picker-only S7 it was.
+    /// Nil in wiring that does not want an update check, which leaves the screen the Files
+    /// picker alone.
     @ObservationIgnored private let updateChecker: UpdateChecker?
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var stateTask: Task<Void, Never>?
@@ -141,15 +101,14 @@ public final class FirmwareUpdateModel {
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
     @ObservationIgnored private var transferWatchers: [Task<Void, Never>] = []
     @ObservationIgnored private var started = false
-    /// Set once the link drops after `installFw` accepted — the reboot is under
-    /// way, so the copy switches from "confirm on the device" to "installing".
+    /// Set once the link drops after an accepted install: the reboot is under way, so the copy
+    /// switches from "confirm on the device" to "installing".
     @ObservationIgnored private var sawDropSinceInstall = false
 
-    /// A pre-staged update (the `-OBCFirmwareDemo` hook / previews) — validated +
-    /// staged on `start()`, since the Files picker can't be driven from automation.
+    /// A pre-staged update for automation and previews, validated and staged on `start()`,
+    /// because the Files picker cannot be driven from automation.
     @ObservationIgnored private let prestage: Data?
-    /// Fire Send once the pre-staged file is validated (the `send` demo token) —
-    /// so a demo/screenshot run walks the whole flow on its own.
+    /// Fire Send once the pre-staged file is validated, so a demo run walks the whole flow.
     @ObservationIgnored private let autoSend: Bool
 
     public init(
@@ -170,91 +129,72 @@ public final class FirmwareUpdateModel {
 
     // MARK: Derived copy
 
-    /// "v0.4.2" — the running-version readout; "—" while unknown.
     public var runningVersionLine: String { Self.versioned(runningVersion) ?? "—" }
 
-    /// "v1.2.0+abc1234" — the staged file's version; empty when nothing staged.
     public var stagedVersionLine: String { Self.versioned(staged?.version) ?? "" }
 
-    /// "854 KB" — the staged file's on-disk size.
     public var stagedSizeLine: String {
         guard let staged else { return "" }
         return ByteCountFormatter.string(fromByteCount: Int64(staged.byteCount), countStyle: .file)
     }
 
-    /// The staged version already matches what's running — offering to send it
-    /// again is pointless. `false` when either version is unknown.
+    /// The staged version already matches what is running, so sending it again is pointless.
     public var stagedMatchesRunning: Bool {
         guard let staged, let runningVersion else { return false }
         return staged.version == runningVersion
     }
 
-    /// Sending needs a validated file and a live link (the S4 rule: link-bound
-    /// actions dim when unreachable).
+    /// Sending needs a validated file and a live link.
     public var canSend: Bool {
         (phase == .staged || phase == .failed) && staged != nil && connection == .connected
     }
 
-    /// The link isn't dropped. The tick watcher reads this to tell a genuine
-    /// resume tick from a stale pre-drop one: ticks and link states arrive on
-    /// two independent streams, so a backlogged tick can be delivered *after*
-    /// the drop it preceded.
+    /// The link is not dropped. The tick watcher reads this to tell a genuine resume tick from a
+    /// stale pre-drop one: ticks and link states arrive on two independent streams, so a
+    /// backlogged tick can be delivered after the drop it preceded.
     private var linkUp: Bool {
         connection != .outOfRange && connection != .disconnected
     }
 
     public var fraction: Double { progress.fraction }
 
-    /// "62%" — mono, beside the bar.
     public var percentLine: String { "\(Int((progress.fraction * 100).rounded()))%" }
 
-    /// The `awaitingConfirm` headline — "Confirm on <device>" until the reboot
-    /// starts, then "Installing update".
     public var awaitingTitle: String {
         sawDropSinceInstall ? "Installing update" : "Confirm on \(deviceName)"
     }
 
-    /// The `awaitingConfirm` body: the one indispensable instruction before the
-    /// reboot, then the rebooting status after (spec-mandated copy).
     public var awaitingMessage: String {
         sawDropSinceInstall
             ? "\(deviceName) is installing the update. It'll reconnect here when it's done."
             : "Confirm the update on \(deviceName). It restarts to install, then reconnects here."
     }
 
-    /// The `done` line — the version now running.
     public var doneMessage: String {
         "\(deviceName) is running \(runningVersionLine)."
     }
 
     // MARK: Derived copy — the update check
 
-    /// The check's answer for *this* device: the published version against what
-    /// DIS reports. Derived, never stored, so it re-reads the moment either half
-    /// lands.
+    /// The published version against what the device reports. Derived, never stored, so it
+    /// re-reads the moment either half lands.
     public var updateStatus: FirmwareUpdateStatus {
         FirmwareVersion.updateStatus(running: runningVersion, latest: latestRelease?.version)
     }
 
-    /// The screen has an answer worth showing. Until DIS 0x2A26 lands there is no
-    /// running version to compare against, and ``updateStatus`` reads `.unknown`
-    /// for want of one — which must not be mistaken for "this is a dev build".
+    /// The screen has an answer worth showing. Until the running version lands, ``updateStatus``
+    /// reads `.unknown` for want of one, which must not be mistaken for a development build.
     public var hasUpdateAnswer: Bool { runningVersion != nil }
 
-    /// "v1.4.0" — the published version, empty when nothing is published.
     public var latestVersionLine: String { Self.versioned(latestRelease?.version) ?? "" }
 
-    /// "854 KB" — the published container's size.
     public var latestSizeLine: String {
         guard let latestRelease else { return "" }
         return ByteCountFormatter.string(fromByteCount: Int64(latestRelease.bytes), countStyle: .file)
     }
 
-    /// The release-notes link, when the manifest points at one this app can open.
     public var releaseNotesURL: URL? { latestRelease?.notesURL }
 
-    /// "Checked 5 minutes ago" — the check row's trailing value; "Never" before the
-    /// first one.
     public var lastCheckedLine: String {
         guard let lastCheckedAt else { return "Never" }
         let formatter = RelativeDateTimeFormatter()
@@ -262,12 +202,12 @@ public final class FirmwareUpdateModel {
         return formatter.localizedString(for: lastCheckedAt, relativeTo: Date())
     }
 
-    /// A running version that isn't a release version — #773's locked refusal. The
-    /// manual Files path stays available; only the *automatic* offer is paused.
+    /// A running version that is not a release version. The manual Files path stays available;
+    /// only the automatic offer is paused.
     public var developmentBuild: Bool { hasUpdateAnswer && updateStatus == .unknown }
 
-    /// Offer the download only for a genuinely newer published build, and never
-    /// while one is already staged or moving.
+    /// Offer the download only for a genuinely newer published build, and never while one is
+    /// already staged or moving.
     public var canDownloadUpdate: Bool {
         updateStatus == .available && downloadState != .downloading
             && (phase == .idle || phase == .staged || phase == .failed)
@@ -275,15 +215,11 @@ public final class FirmwareUpdateModel {
 
     // MARK: Lifecycle
 
-    /// Subscribe the link state and read the running version. Called from the
-    /// view's `.task`, and **re-entrant across a `stop()`**: SwiftUI can cycle
-    /// `onDisappear`/`onAppear` on a screen whose model persists (a future
-    /// presentation pushed over S7, a scene re-attach), and a one-shot
-    /// lifecycle would come back with a dead connection subscription —
-    /// `connection`/`canSend` frozen. Idempotent while running (the `started`
-    /// guard); `stop()` re-arms it. The transport's `state` replays the latest
-    /// value per subscription (`AsyncMulticast`), so a re-subscribe sees the
-    /// current link state, not just future edges.
+    /// Subscribe the link state and read the running version. Re-entrant across a `stop()`:
+    /// SwiftUI can cycle `onDisappear` and `onAppear` on a screen whose model persists, and a
+    /// one-shot lifecycle would come back with a dead connection subscription. The transport's
+    /// `state` replays its latest value per subscription, so a re-subscribe sees the current
+    /// link state, not only future edges.
     public func start() {
         guard !started else { return }
         started = true
@@ -310,7 +246,7 @@ public final class FirmwareUpdateModel {
         let dropped = !linkUp
         switch phase {
         case .transferring where dropped:
-            // The link left the transfer stalled-but-restartable (Resume re-sends).
+            // The link left the transfer stalled but restartable; Resume re-sends.
             if let handle, handle.currentOutcome == nil { phase = .interrupted }
         case .awaitingConfirm:
             if dropped { sawDropSinceInstall = true }
@@ -320,7 +256,7 @@ public final class FirmwareUpdateModel {
         }
     }
 
-    /// A reconnect after the install reboot: re-read DIS; the staged version now
+    /// A reconnect after the install reboot: re-read the device info. The staged version now
     /// running means the update landed.
     private func checkInstalledVersion() {
         Task { [weak self, transport] in
@@ -335,9 +271,8 @@ public final class FirmwareUpdateModel {
 
     // MARK: Import
 
-    /// Read + validate a picked file. A good file becomes the staged update; a bad
-    /// one sets `importError` (the alert) and changes no phase — the whole point
-    /// is that a corrupt download fails here, not on the device.
+    /// Read and validate a picked file. A bad one sets `importError` and changes no phase: the
+    /// whole point is that a corrupt download fails here, not on the device.
     public func stageFile(at url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -348,10 +283,9 @@ public final class FirmwareUpdateModel {
         stage(data)
     }
 
-    /// Validate raw bytes as an update (the seam the tests, the picker and the
-    /// U4 download all share). `true` when *these* bytes became the staged update
-    /// — the download path needs that to be sure it isn't sending an older file
-    /// that happened to be staged already.
+    /// Validate raw bytes as an update, the seam the tests, the picker and the download share.
+    /// True when these bytes became the staged update, which the download path needs so that it
+    /// cannot send an older file that happened to be staged already.
     @discardableResult
     public func stage(_ data: Data) -> Bool {
         do {
@@ -369,29 +303,26 @@ public final class FirmwareUpdateModel {
         return false
     }
 
-    // MARK: The update check (U4)
+    // MARK: The update check
 
-    /// This wiring has a checker at all (previews and the transfer tests don't).
+    /// Whether this wiring has a checker at all.
     public var supportsUpdateCheck: Bool { updateChecker != nil }
 
-    /// The dev opt-in: also consider the pre-release channel, and offer whichever
-    /// of the two is newer. Off by default, and surfaced only in the Debug
-    /// developer section — a rider never sees it.
+    /// The developer opt-in: also consider the pre-release channel and offer whichever of the two
+    /// is newer. Off by default, and surfaced only in the Debug developer section.
     public var includePrereleases: Bool { updateChecker?.includePrereleases ?? false }
 
-    /// Flip the pre-release opt-in and re-ask straight away: the channel changed,
-    /// so the cached answer is about a question nobody asked.
+    /// Flip the pre-release opt-in and re-ask straight away: the channel changed, so the cached
+    /// answer is about a question nobody asked.
     public func setIncludePrereleases(_ include: Bool) {
         updateChecker?.setIncludePrereleases(include)
         checkForUpdate(manual: true)
     }
 
-    /// Answer from the cache immediately, then re-ask the network if that answer is
-    /// stale (or the rider pulled to refresh, `manual: true`).
-    ///
-    /// Called from `start()`, so opening the screen is the check trigger. The
-    /// cached answer is applied first and unconditionally: a screen that opens
-    /// offline still shows what it knew, and a fetch that fails never erases it.
+    /// Answer from the cache immediately, then re-ask the network if that answer is stale, or the
+    /// rider pulled to refresh. Called from `start()`, so opening the screen is the trigger. The
+    /// cached answer is applied first and unconditionally: a screen that opens offline still shows
+    /// what it knew, and a fetch that fails never erases it.
     public func checkForUpdate(manual: Bool = false) {
         guard let updateChecker else { return }
         if let cached = updateChecker.cachedCheck() {
@@ -411,8 +342,7 @@ public final class FirmwareUpdateModel {
                 return
             } catch {
                 guard let self, !Task.isCancelled else { return }
-                // A manual check that fails owes the rider a sentence; an automatic
-                // one owes them silence.
+                // A manual check that fails owes the rider a sentence; an automatic one silence.
                 checkState = manual ? .failed(Self.checkFailureMessage(error)) : .idle
             }
         }
@@ -423,14 +353,10 @@ public final class FirmwareUpdateModel {
         lastCheckedAt = record.checkedAt
     }
 
-    /// Download the published container, prove it against the manifest, and hand it
-    /// to the **same staging path the Files picker uses** — then send it, if the
-    /// link is up. Nothing is installed by any of this: the device still shows its
-    /// confirm card and still waits for a physical press.
-    ///
-    /// A download that doesn't match the manifest's byte count or SHA-256 is thrown
-    /// away with a plain sentence and never reaches ``stage(_:)``, so a corrupt or
-    /// swapped file dies on the phone — the same rule as a bad file from the picker.
+    /// Download the published container, prove it against the manifest, and hand it to the same
+    /// staging path the Files picker uses, then send it if the link is up. A download that does
+    /// not match the manifest's byte count or SHA-256 is thrown away and never reaches
+    /// ``stage(_:)``, so a corrupt file dies on the phone. Nothing here installs anything.
     public func downloadUpdate() {
         guard let updateChecker, let release = latestRelease, canDownloadUpdate else { return }
         downloadState = .downloading
@@ -440,11 +366,9 @@ public final class FirmwareUpdateModel {
                 let data = try await updateChecker.download(release)
                 guard let self, !Task.isCancelled else { return }
                 downloadState = .idle
-                // A verified container that stages cleanly goes straight out to the
-                // device — "Download & Install" shouldn't need a second tap. It
-                // still can't install anything: the on-glass confirm is the gate.
-                // Keyed on *this* stage succeeding, so a rejected download can
-                // never send whatever was staged before it.
+                // A verified container that stages cleanly goes straight out to the device, so
+                // "Download & Install" needs no second tap. Keyed on this stage succeeding, so a
+                // rejected download can never send whatever was staged before it.
                 if stage(data), canSend { send() }
             } catch is CancellationError {
                 return
@@ -455,7 +379,6 @@ public final class FirmwareUpdateModel {
         }
     }
 
-    /// Dismiss the download/check failure line (its "OK").
     public func clearUpdateError() {
         if case .failed = downloadState { downloadState = .idle }
         if case .failed = checkState { checkState = .idle }
@@ -463,7 +386,7 @@ public final class FirmwareUpdateModel {
 
     // MARK: Send + install
 
-    /// Start (or retry) delivery: stream the container, then request the install.
+    /// Start, or retry, delivery: stream the container, then request the install.
     public func send() {
         guard phase == .staged || phase == .failed, let staged else { return }
         failureMessage = nil
@@ -478,15 +401,14 @@ public final class FirmwareUpdateModel {
         let handle = transport.uploadFirmware(staged.container)
         self.handle = handle
 
-        // Progress ticks. A tick is also the proof a resume is moving again —
-        // but only while the link is up: a stale pre-drop tick delivered after
-        // the drop event must not flip the sheet back to `.transferring`
-        // (hiding Resume) for a transfer whose link is already gone.
+        // A tick is also the proof a resume is moving again, but only while the link is up: a
+        // stale pre-drop tick delivered after the drop must not flip the sheet back to
+        // `.transferring` and hide Resume for a transfer whose link is already gone.
         transferWatchers.append(Task { [weak self] in
             for await tick in handle.progress {
                 guard let self else { return }
                 progress = tick
-                if phase == .interrupted, linkUp { phase = .transferring }  // moving again
+                if phase == .interrupted, linkUp { phase = .transferring }
             }
         })
 
@@ -497,7 +419,7 @@ public final class FirmwareUpdateModel {
             case .completed:
                 await requestInstall()
             case .canceled:
-                // Back to the staged file — still validated, ready to re-send.
+                // Back to the staged file, still validated and ready to re-send.
                 if phase != .done { phase = .staged }
             case .failed(let error):
                 failureMessage = Self.transferFailureMessage(error, deviceName: deviceName)
@@ -506,9 +428,8 @@ public final class FirmwareUpdateModel {
         })
     }
 
-    /// The device committed `/UPDATE.BIN` — ask it to install (`installFw`). Only
-    /// `accepted` opens the on-glass confirm flow; every other reply is a `.failed`
-    /// phase with a plain sentence.
+    /// The device committed the image: ask it to install. Only `accepted` opens the on-glass
+    /// confirm flow; every other reply is a `.failed` phase with a plain sentence.
     private func requestInstall() async {
         do {
             let result = try await transport.installFirmware()
@@ -526,12 +447,11 @@ public final class FirmwareUpdateModel {
         }
     }
 
-    /// Abort an in-flight or interrupted transfer.
     public func cancel() {
         handle?.cancel()
     }
 
-    /// Restart a dropped transfer from scratch (uploads restart, not resume).
+    /// Restart a dropped transfer from scratch: uploads restart, they do not resume.
     public func resume() {
         guard phase == .interrupted else { return }
         handle?.resume()
@@ -543,36 +463,30 @@ public final class FirmwareUpdateModel {
         transferWatchers.removeAll()
     }
 
-    /// The S7 screen went off screen (`.onDisappear`). A still-unresolved send
-    /// must not keep streaming headless behind the pop — cancel it (the same
-    /// rule as `UploadSheetModel.sheetDismissed`) — and release the ledger
-    /// claim here, since a `@MainActor` `deinit` can't touch the actor-isolated
-    /// `TransferActivity`. The counterpart of `start()`: re-arms `started`, so
-    /// a later `onAppear`'s `start()` re-subscribes instead of silently doing
-    /// nothing on a frozen model.
+    /// The screen went off screen. A still-unresolved send must not keep streaming headless
+    /// behind the pop, so cancel it, and release the ledger claim here, because a `@MainActor`
+    /// `deinit` cannot touch the actor-isolated `TransferActivity`. The counterpart of `start()`:
+    /// it re-arms `started`, so a later `start()` re-subscribes.
     public func stop() {
         started = false
         stateTask?.cancel()
         stateTask = nil
-        // The check + download are screen-scoped too: a popped screen has nobody
-        // to tell, and `start()` re-runs the check from the cache anyway. A
-        // download killed mid-flight stages nothing — the bytes are re-fetched.
+        // The check and the download are screen-scoped too: a popped screen has nobody to tell,
+        // and `start()` re-runs the check from the cache anyway. A killed download stages nothing.
         checkTask?.cancel()
         checkTask = nil
         downloadTask?.cancel()
         downloadTask = nil
         if checkState == .checking { checkState = .idle }
         if downloadState == .downloading { downloadState = .idle }
-        // Watchers first, then the handle: the cancel resolves the outcome to
-        // `.canceled`, and with its watcher already gone the phase settle below
-        // is authoritative — no race over who writes the post-cancel phase.
+        // Watchers first, then the handle: the cancel resolves the outcome to `.canceled`, and
+        // with its watcher already gone the phase settle below is authoritative.
         cancelTransferWatchers()
         if let handle, handle.currentOutcome == nil { handle.cancel() }
-        // Same landing as a watched cancel: back to the staged file, still
-        // validated and ready to re-send — not a frozen `.transferring` on a
-        // model that may reappear. The `didSet` releases the ledger claim.
+        // Same landing as a watched cancel: back to the staged file, still validated and ready to
+        // re-send, not a frozen `.transferring` on a model that may reappear.
         if phase == .transferring || phase == .interrupted { phase = .staged }
-        // Backstop (idempotent — the `didSet` normally already released).
+        // Backstop; the `didSet` normally released already.
         if let token = activityToken {
             activityToken = nil
             activity?.end(token)
@@ -588,8 +502,7 @@ public final class FirmwareUpdateModel {
 
     // MARK: Copy tables
 
-    /// The mapped `installFw` reply sentence (spec §4.4). `nil` for `accepted`
-    /// (that opens the confirm flow, no failure copy).
+    /// The mapped install-reply sentence. Nil for `accepted`, which opens the confirm flow.
     static func message(for result: FirmwareInstallResult, deviceName: String) -> String? {
         switch result {
         case .accepted:
@@ -605,8 +518,6 @@ public final class FirmwareUpdateModel {
         }
     }
 
-    /// A transfer/link failure sentence — storage-full is spelled out; everything
-    /// else keeps the "device didn't answer" framing.
     static func transferFailureMessage(_ error: DeviceError, deviceName: String) -> String {
         switch error {
         case .crcMismatch:
@@ -616,9 +527,8 @@ public final class FirmwareUpdateModel {
         }
     }
 
-    /// A failed *manual* check. The manifest errors say what's wrong at the
-    /// publishing end (they're loud on purpose — #773 U4); everything else is the
-    /// network.
+    /// A failed manual check. The manifest errors say what is wrong at the publishing end;
+    /// everything else is the network.
     static func checkFailureMessage(_ error: any Error) -> String {
         guard let manifest = error as? FirmwareManifestError else {
             return "Couldn't check for updates. Check your connection, then try again."
@@ -632,9 +542,8 @@ public final class FirmwareUpdateModel {
         }
     }
 
-    /// A failed download. A file that doesn't match the manifest is a corrupt or
-    /// wrong file, and saying so plainly matters more than the distinction between
-    /// a bad size and a bad digest — neither one reaches the device.
+    /// A failed download. A file that does not match the manifest is a corrupt or wrong file, and
+    /// saying so plainly matters more than the difference between a bad size and a bad digest.
     static func downloadFailureMessage(_ error: any Error) -> String {
         switch error {
         case is FirmwareDownloadError:
@@ -656,13 +565,12 @@ public final class FirmwareUpdateModel {
         case .imageCRCMismatch:
             return "That update file is corrupt. Download it again, then reimport."
         case .unsigned:
-            // Intact, but not ours — a different problem with a different fix, so it gets
-            // its own sentence rather than being folded into "corrupt" (OBCU_Spec.md §1.4).
+            // Intact, but not ours: a different problem with a different fix, so it gets its own
+            // sentence instead of being folded into "corrupt".
             return "That update file isn't signed for this device. Use an official release download."
         }
     }
 
-    /// "v1.2.0" — prefix a bare version with "v"; pass through one that has it.
     private static func versioned(_ version: String?) -> String? {
         guard let version, !version.isEmpty else { return nil }
         return version.hasPrefix("v") ? version : "v\(version)"

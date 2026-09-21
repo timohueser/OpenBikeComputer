@@ -3,14 +3,13 @@ import UniformTypeIdentifiers
 import OBCDomain
 import OBCTransport
 
-/// The hub (B3, design C1/C2): device top bar, serif "Routes" title with the
-/// trailing **+ import**, Planned | Tracked segments, search, and the compact
-/// track-left list. Connection status lives *only* in the top bar + the S4
-/// banner; swipe-left deletes the row directly (the reveal is the confirm —
-/// one-tap detail deletes still go through H1).
+/// The hub: device top bar, the "Routes" title with a trailing import button, the Planned and
+/// Tracked segments, search, and the compact track-left list. Connection status lives only in the
+/// top bar and the disconnected banner. A swipe-left deletes the row directly, because the reveal
+/// is the confirm.
 ///
-/// Navigation and the flows this screen *opens* stay seams the composition
-/// root wires: card tap → route detail (B4), import pick (B6), settings (B8).
+/// The flows this screen opens stay seams the composition root wires: a card tap, an import pick
+/// and settings.
 public struct MainScreenView: View {
     @Bindable private var model: MainScreenModel
     private let importFileExtensions: Set<String>
@@ -22,20 +21,17 @@ public struct MainScreenView: View {
     private let onOpenTrash: () -> Void
 
     @State private var emptyStatePickerShown = false
-    // Multi-select grouping (TR7): the primary retrofit path — enter Select from
-    // the title bar, tap loose route cards, then Group into trip…. Selection is
-    // Planned-only; entering it swaps the card taps for toggles and shows the
-    // bottom action bar.
+    // Multi-select grouping: enter Select from the title bar, tap loose route cards, then group
+    // them into a trip. Selection is Planned-only, and entering it swaps the card taps for toggles.
     @State private var isSelecting = false
     @State private var selectedRouteIDs: Set<RouteID> = []
     @State private var groupPromptShown = false
     @State private var groupName = "New trip"
-    /// The loose route whose "Add to trip…" context menu is opening the shared
-    /// picker (TR7) — `nil` when no picker is up.
+    /// The loose route whose "Add to trip" menu is opening the shared picker; nil when none is up.
     @State private var pickerRequest: RouteTripPickerRequest?
-    // Pull-to-reveal search (Mail-style): hidden until the list is tugged
-    // down past the threshold; hides again on scroll-up once the query is
-    // cleared. `scrollBaseline` is the sentinel row's resting position.
+    // Pull-to-reveal search, Mail-style: hidden until the list is tugged down past the threshold,
+    // and hidden again on scroll-up once the query is cleared. `scrollBaseline` is the sentinel
+    // row's resting position.
     @State private var searchRevealed = false
     @State private var scrollBaseline: CGFloat?
 
@@ -60,9 +56,8 @@ public struct MainScreenView: View {
     }
 
     public var body: some View {
-        // The sync state machine, read straight off the model's coordinator
-        // (#358) — `@Bindable` here because `model.sync` is a `let` the
-        // model-level `@Bindable` can't project bindings through.
+        // `@Bindable` here because `model.sync` is a `let`, which the model-level `@Bindable`
+        // cannot project bindings through.
         @Bindable var sync = model.sync
         VStack(spacing: 0) {
             DeviceTopBar(
@@ -74,9 +69,8 @@ public struct MainScreenView: View {
                 onSettings: onSettings
             )
 
-            // One banner at a time. A protocol mismatch (#303) outranks the rest:
-            // the link is up but unusable for data, so it can't be a transfer or
-            // an out-of-range story — sync is disabled until the versions match.
+            // One banner at a time. A protocol mismatch outranks the rest: the link is up but
+            // unusable for data, so it is neither a transfer nor an out-of-range story.
             if let mismatch = model.protocolMismatch {
                 OBCInlineBanner(
                     tone: .warning,
@@ -111,9 +105,8 @@ public struct MainScreenView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 6)
             } else if sync.hiddenRideCount > 0 {
-                // The bounded ride catalog can report that some
-                // rides are outside the returned window, so
-                // "up to date" would be a lie — say so plainly (iOS tone rule).
+                // The bounded ride catalog can report that some rides are outside the returned
+                // window, so "up to date" would be a lie. Say so plainly.
                 OBCInlineBanner(
                     systemImage: "externaldrive.badge.exclamationmark",
                     title: sync.hiddenRideCount == 1
@@ -133,10 +126,9 @@ public struct MainScreenView: View {
             list
         }
         .background(OBCTheme.parchment.ignoresSafeArea())
-        // The multi-select action bar (TR7): a bottom Group into trip… primary,
-        // shown only while selecting. Two or more routes make a group.
+        // The multi-select action bar, shown only while selecting. Two or more routes make a group.
         .safeAreaInset(edge: .bottom) { selectionBar }
-        // The name prompt — prefilled "New trip" (nothing fancier, locked).
+        // The name prompt, prefilled.
         .alert("Name the trip", isPresented: $groupPromptShown) {
             TextField("Trip name", text: $groupName)
             Button("Cancel", role: .cancel) {}
@@ -145,7 +137,7 @@ public struct MainScreenView: View {
                 exitSelection()
             }
         }
-        // The shared trip picker for a loose route's "Add to trip…" context menu.
+        // The shared trip picker for a loose route's "Add to trip" menu.
         .sheet(item: $pickerRequest) { request in
             TripPickerSheet(
                 title: "Add to trip",
@@ -154,7 +146,7 @@ public struct MainScreenView: View {
             )
         }
         #if os(iOS)
-        // The screen draws its own chrome (top bar + large-title row).
+        // The screen draws its own chrome: top bar and large-title row.
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .obcToast(
@@ -163,19 +155,18 @@ public struct MainScreenView: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("main.screen")
-        // Selection is a Planned-tab mode: leaving the tab ends it, so the
-        // Group bar and Cancel never float over the Tracked list.
+        // Selection is a Planned-tab mode: leaving the tab ends it, so the Group bar and Cancel
+        // never float over the Tracked list.
         .onChange(of: model.tab) { _, _ in
             if isSelecting { exitSelection() }
         }
         .task { model.start() }
     }
 
-    // MARK: Title actions + selection (TR7)
+    // MARK: Title actions and selection
 
-    /// The large-title trailing controls: Select + import normally; a single
-    /// Cancel while multi-selecting (import is out of the way mid-group). Select
-    /// is Planned-only and hidden with no loose routes to group.
+    /// The large-title trailing controls: Select and import normally, a single Cancel while
+    /// multi-selecting. Select is Planned-only, and hidden with no loose routes to group.
     @ViewBuilder
     private var titleActions: some View {
         if isSelecting {
@@ -197,7 +188,7 @@ public struct MainScreenView: View {
         }
     }
 
-    /// The bottom Group into trip… bar, present only while selecting.
+    /// The bottom Group bar, present only while selecting.
     @ViewBuilder
     private var selectionBar: some View {
         if isSelecting {
@@ -218,8 +209,7 @@ public struct MainScreenView: View {
         }
     }
 
-    /// Loose (top-level) route cards — what Select can group. Trips aren't
-    /// selectable.
+    /// Loose, top-level route cards: what Select can group. Trips are not selectable.
     private var looseRouteCount: Int {
         model.plannedItems.reduce(0) { count, item in
             if case .route = item { return count + 1 }
@@ -252,17 +242,16 @@ public struct MainScreenView: View {
 
     // MARK: List
 
-    /// Search stays visible while a query is live regardless of scroll (H6
-    /// keeps the query editable).
+    /// Search stays visible while a query is live, whatever the scroll position, so the query
+    /// stays editable.
     private var searchVisible: Bool {
         searchRevealed || !model.searchText.isEmpty
     }
 
     private var list: some View {
         List {
-            // Zero-height sentinel: its offset in the list's space measures
-            // top over-scroll. It sits above the search row, so revealing the
-            // row doesn't move the sentinel's resting position.
+            // Zero-height sentinel: its offset in the list's space measures top over-scroll. It
+            // sits above the search row, so revealing the row does not move its resting position.
             Color.clear
                 .frame(height: 0)
                 .listRowSeparator(.hidden)
@@ -271,9 +260,9 @@ public struct MainScreenView: View {
                 .background(
                     GeometryReader { geo in
                         Color.clear
-                            // Pin the baseline at rest — waiting for the first
-                            // onChange can capture it mid-pull (the sentinel
-                            // may not move at all until the first scroll).
+                            // Pin the baseline at rest: waiting for the first `onChange` can
+                            // capture it mid-pull, because the sentinel may not move at all until
+                            // the first scroll.
                             .onAppear {
                                 if scrollBaseline == nil {
                                     scrollBaseline = geo.frame(in: .named("mainList")).minY
@@ -296,12 +285,11 @@ public struct MainScreenView: View {
                         prompt: model.tab == .planned ? "Search routes" : "Search rides"
                     )
                     .accessibilityIdentifier("main.search")
-                    // Transient, Mail-style: once the (cleared) bar scrolls off
-                    // the top it un-reveals. The List culls the row exactly when
-                    // it leaves the viewport, so `onDisappear` IS the "scrolled
-                    // away" signal — and the row is off-screen, so removing it
-                    // can't visibly jump. (A frame observer can't do this: it's
-                    // torn down in the same cull that would cross the threshold.)
+                    // Transient, Mail-style: once the cleared bar scrolls off the top it
+                    // un-reveals. The List culls the row exactly when it leaves the viewport, so
+                    // `onDisappear` is the "scrolled away" signal, and the row is off-screen, so
+                    // removing it cannot visibly jump. A frame observer cannot do this: it is torn
+                    // down in the same cull that would cross the threshold.
                     .onDisappear {
                         if model.searchText.isEmpty { searchRevealed = false }
                     }
@@ -316,10 +304,9 @@ public struct MainScreenView: View {
                 case .tracked: trackedContent
                 }
 
-                // Recently Deleted (#292): the entry into the trash sits under
-                // the Tracked rows (and under the empty state — deleting the
-                // last ride must not strand the trash). Hidden while a search
-                // filters the list: the row isn't a search result.
+                // The entry into the trash sits under the Tracked rows, and under the empty state,
+                // because deleting the last ride must not strand the trash. It is hidden while a
+                // search filters the list, because the row is not a search result.
                 if model.tab == .tracked, !model.trashedRides.isEmpty, model.searchText.isEmpty {
                     OBCDisclosureRow(
                         systemImage: "trash",
@@ -337,8 +324,8 @@ public struct MainScreenView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        // The sentinel must truly be 0pt — the List default would give the
-        // empty row ~44pt and open a gap under the title.
+        // The sentinel must truly be 0pt: the List default would give the empty row about 44pt and
+        // open a gap under the title.
         .environment(\.defaultMinListRowHeight, 0)
         .coordinateSpace(name: "mainList")
         #if os(iOS)
@@ -354,8 +341,8 @@ public struct MainScreenView: View {
         if minY - baseline > 55, !searchRevealed {
             withAnimation(.easeOut(duration: 0.2)) { searchRevealed = true }
         }
-        // Un-revealing is the search row's own job (frame observer above):
-        // it fires exactly when the cleared bar scrolls off the top.
+        // Un-revealing is the search row's own job: it fires exactly when the cleared bar scrolls
+        // off the top.
     }
 
     private var tabSelection: Binding<Int> {
@@ -365,8 +352,8 @@ public struct MainScreenView: View {
         )
     }
 
-    /// The small mono line under the segments on Tracked (C2): amber ride-count
-    /// while syncing, the forest "Synced N new rides just now" confirm after.
+    /// The small mono line under the segments on Tracked: an amber ride count while syncing, then
+    /// the forest confirm.
     @ViewBuilder
     private var syncLine: some View {
         if let progress = model.sync.syncProgress {
@@ -406,8 +393,7 @@ public struct MainScreenView: View {
         } else if model.filteredPlannedItems.isEmpty && !model.searchText.isEmpty {
             noMatches(noun: "routes", scope: "all planned routes")
         } else if model.routes.isEmpty {
-            // S1 — empty ≠ broken: point at the import that fills it (B10 owns
-            // the app-state pass; the copy is the design's).
+            // Empty is not broken: point at the import that fills it.
             OBCEmptyStateView(
                 glyph: .trackTile,
                 title: "No planned routes yet",
@@ -427,9 +413,9 @@ public struct MainScreenView: View {
                 if case .success(let url) = result { onImportFile(url) }
             }
         } else {
-            // TR6: trip cards + loose route cards, interleaved by addedAt.
-            // TR7: while selecting, route cards toggle instead of navigating and
-            // trips dim out (a trip isn't a groupable stage).
+            // Trip cards and loose route cards, interleaved by `addedAt`. While selecting, route
+            // cards toggle instead of navigating and trips dim out, because a trip is not a
+            // groupable stage.
             ForEach(model.filteredPlannedItems) { item in
                 switch item {
                 case .trip(let trip):
@@ -478,10 +464,9 @@ public struct MainScreenView: View {
                         .obcSwipeToDelete {
                             model.deleteRoute(route.id)
                         }
-                        // Clip the long-press lift preview to the card's own
-                        // rounded shape — without this the system snapshots the
-                        // whole rectangular row and the card floats on a stark
-                        // white slab. (iOS-only kind; macOS is the test host.)
+                        // Clip the long-press lift preview to the card's own rounded shape, or the
+                        // system snapshots the whole rectangular row and the card floats on a stark
+                        // white slab. iOS-only kind; macOS is the test host.
                         #if os(iOS)
                         .contentShape(
                             .contextMenuPreview,
@@ -536,14 +521,14 @@ public struct MainScreenView: View {
 
     // MARK: Shared states
 
-    /// S2 — skeletons, not spinners; only an empty first read shimmers.
+    /// Skeletons, not spinners; only an empty first read shimmers.
     private var skeletons: some View {
         ForEach(0..<4, id: \.self) { _ in
             RouteCardSkeleton()
         }
     }
 
-    /// S3 — say what failed, confirm nothing was lost, offer one retry.
+    /// Say what failed, confirm nothing was lost, and offer one retry.
     private var readError: some View {
         OBCEmptyStateView(
             glyph: .warning(systemImage: "exclamationmark.triangle"),
@@ -557,7 +542,7 @@ public struct MainScreenView: View {
         .accessibilityIdentifier("main.readError")
     }
 
-    /// H6 — empty results ≠ empty library; the query stays editable above.
+    /// Empty results are not an empty library; the query stays editable above.
     private func noMatches(noun: String, scope: String) -> some View {
         VStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -581,17 +566,16 @@ public struct MainScreenView: View {
     }
 }
 
-/// A loose route whose "Add to trip…" context menu is presenting the shared
-/// picker (TR7) — the `Identifiable` handle a `.sheet(item:)` needs.
+/// A loose route whose "Add to trip" menu is presenting the shared picker: the `Identifiable`
+/// handle a `.sheet(item:)` needs.
 private struct RouteTripPickerRequest: Identifiable {
     let id: RouteID
 }
 
 #if DEBUG
 #Preview("Main · C1") {
-    // Preview-only: a model against a plain placeholder transport is not
-    // available here (OBCUI can't import OBCMock) — see the app target's
-    // RootView previews for the full mock-driven screen.
+    // Preview-only: a model against a plain placeholder transport is not available here, because
+    // OBCUI cannot import OBCMock. The app target's previews drive the full mock-backed screen.
     VStack(spacing: 0) {
         DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82)
         OBCLargeTitleBar("Routes") {

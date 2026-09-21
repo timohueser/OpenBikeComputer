@@ -1,12 +1,12 @@
-//! A plain in-memory `DrawTarget` — a packed RGB888 pixel buffer the host owns.
+//! A plain in-memory `DrawTarget`: a packed RGB888 pixel buffer the host owns.
 //!
-//! The shared [`obc_render::RenderScratch`] runs the firmware-identical rendering code but
-//! draws into this buffer; the host then uploads it to a GPU texture or encodes it to a PNG.
-//! The firmware draws into its real LS021B7DD02 driver instead — only this target differs.
+//! The shared [`obc_render::RenderScratch`] runs the firmware-identical rendering code but draws
+//! into this buffer, and the host then uploads it to a GPU texture or encodes it to a PNG. The
+//! firmware draws into its real panel driver instead, so only this target differs.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 
-/// An owned `width`×`height` RGB888 framebuffer (3 bytes/pixel, row-major).
+/// An owned RGB888 framebuffer, three bytes a pixel, row-major.
 pub struct Framebuffer {
     width: u32,
     height: u32,
@@ -26,14 +26,13 @@ impl Framebuffer {
         self.height
     }
 
-    /// The raw packed RGB888 bytes, `width * height * 3` long — ready to hand to
-    /// `image::RgbImage::from_raw` or `egui::ColorImage`.
+    /// The raw packed RGB888 bytes, `width * height * 3` long.
     pub fn as_rgb888(&self) -> &[u8] {
         &self.buf
     }
 
-    /// Write one pixel, clipping silently to the buffer bounds (the renderer
-    /// projects geometry that can land off-screen).
+    /// Write one pixel, clipping to the buffer bounds: the renderer projects geometry that can
+    /// land off-screen.
     #[inline]
     fn put(&mut self, x: i32, y: i32, c: Rgb888) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
@@ -54,7 +53,7 @@ impl OriginDimensions for Framebuffer {
 
 impl DrawTarget for Framebuffer {
     type Color = Rgb888;
-    // The buffer can't fail to accept a pixel; out-of-bounds writes are clipped.
+    // The buffer cannot fail to accept a pixel, and out-of-bounds writes are clipped.
     type Error = core::convert::Infallible;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
@@ -67,7 +66,7 @@ impl DrawTarget for Framebuffer {
         Ok(())
     }
 
-    /// Fast path for the renderer's rectangle fills: fill a clipped rectangle directly.
+    /// Fast path for the renderer's rectangle fills.
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let clipped = area.intersection(&self.bounding_box());
         if let Some(br) = clipped.bottom_right() {
@@ -121,7 +120,7 @@ mod tests {
     #[test]
     fn fill_solid_fills_subrect_and_clips() {
         let mut fb = Framebuffer::new(4, 4);
-        // Rectangle straddling the right/bottom edge: only the in-bounds part fills.
+        // A rectangle straddling an edge fills only its in-bounds part.
         fb.fill_solid(&Rectangle::new(Point::new(2, 2), Size::new(10, 10)), Rgb888::new(255, 0, 0)).unwrap();
         assert_eq!(pixel(&fb, 1, 1), (0, 0, 0)); // outside
         assert_eq!(pixel(&fb, 2, 2), (255, 0, 0)); // inside corner
@@ -142,24 +141,22 @@ mod tests {
         assert_eq!(pixel(&fb, 0, 0), (0, 0, 0));
     }
 
-    /// Existing tests only write column 0, so a stride bug (forgetting `* 3`, or
-    /// `x * 3 + y * width`) wouldn't show. Write a non-leading column on a non-power-of-two
-    /// width and assert the exact byte offset.
+    /// A stride bug does not show when only column 0 is written, so this writes a non-leading
+    /// column on a non-power-of-two width and asserts the exact byte offset.
     #[test]
     fn put_uses_the_row_major_rgb_stride() {
         let mut fb = Framebuffer::new(5, 4);
         fb.draw_iter([Pixel(Point::new(3, 2), Rgb888::new(10, 20, 30))]).unwrap();
         assert_eq!(pixel(&fb, 3, 2), (10, 20, 30), "lands at (3,2)");
-        // Exact byte offset proves the stride, not just the helper.
+        // The exact byte offset proves the stride, not just the helper.
         let i = (2 * 5 + 3) * 3;
         assert_eq!(&fb.as_rgb888()[i..i + 3], &[10, 20, 30]);
-        // The neighbouring pixels (one before, one after) stay black — no smear.
+        // The neighbouring pixels stay black, so nothing smears.
         assert_eq!(pixel(&fb, 2, 2), (0, 0, 0));
         assert_eq!(pixel(&fb, 4, 2), (0, 0, 0));
     }
 
-    /// A negative top-left must clip to the origin, never indexing with a negative coordinate.
-    /// The other fill_solid test only overruns the bottom-right; this covers the negative half.
+    /// A negative top-left must clip to the origin and never index with a negative coordinate.
     #[test]
     fn fill_solid_clips_a_negative_top_left() {
         let mut fb = Framebuffer::new(4, 4);

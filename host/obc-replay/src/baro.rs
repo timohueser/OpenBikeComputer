@@ -41,15 +41,14 @@ impl BaroSensor {
         BaroSensor { current: None, fed_t: 0.0, emitted_t: f64::NEG_INFINITY, due: false, drift_m_per_h: 0.0 }
     }
 
-    /// Inject a synthetic **barometric air pressure drift**: the emitted altitude walks away from the
-    /// track's true elevation by `m_per_h` metres per hour of playback time (negative = pressure
-    /// rising, the sensor under-reading).
+    /// Inject a synthetic barometric air pressure drift: the emitted altitude walks away from the
+    /// track's true elevation by `m_per_h` metres per hour of playback time, where a negative value
+    /// is pressure rising and the sensor under-reading.
     ///
     /// This is the simulator's stand-in for the one error the device's altimeter genuinely has and
-    /// a GPX replay otherwise cannot show: `bmp581.rs` hard-codes sea-level `P0`, so a passing front
-    /// moves every reading together. Real air pressure is on the order of 1 hPa/h ≈ 8 m/h; the map-
-    /// referenced altimeter (epic #1068, EL8) exists to cancel exactly this, so this knob is how
-    /// its cancellation is demonstrated and regression-tested. `0.0` restores the plain replay.
+    /// a GPX replay otherwise cannot show: the driver hard-codes sea-level `P0`, so a passing front
+    /// moves every reading together. Real air pressure is on the order of 1 hPa/h, or about 8 m/h.
+    /// `0.0` restores the plain replay.
     pub fn set_drift(&mut self, m_per_h: f32) {
         self.drift_m_per_h = m_per_h;
     }
@@ -117,8 +116,8 @@ mod tests {
         assert_eq!(b.poll(), None);
     }
 
-    /// The EL8 drift injector: the emitted altitude walks away from the track's true elevation at
-    /// the configured rate, and the plain replay (drift 0) is unchanged.
+    /// The drift injector: the emitted altitude walks away from the track's true elevation at the
+    /// configured rate, and the plain replay, at drift 0, is unchanged.
     #[test]
     fn injected_drift_walks_the_emitted_altitude_away() {
         let mut b = BaroSensor::new();

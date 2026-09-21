@@ -2,23 +2,18 @@
  * The flat-store v4 acceptance suite for this codec.
  *
  * `specs/vectors/flat-store-v4/` is the contract the implementations agree on: a fixture producer
- * builds those bytes straight from `FLAT_Store_Protocol.md`'s byte tables without calling any
- * production encoder, the Rust codec is pinned against them, and this file is the TypeScript half.
- * A file in that directory is not a fixture in the "some bytes I captured" sense; it is the
- * specification made executable, so a divergence here is a bug here and never a reason to move a
- * fixture.
+ * builds those bytes straight from the protocol's byte tables without calling any production
+ * encoder, the Rust codec is pinned against them, and this file is the TypeScript half. A divergence
+ * here is a bug here and never a reason to move a fixture.
  *
  * Four kinds of assertion, and each of them catches something the others cannot:
  *
- * 1. **Byte-exact decode and re-encode** for every control, stream and error fixture. That catches a
- *    field at the wrong offset.
- * 2. **The semantic body** each fixture states beside its bytes — the values the decoder read out of
- *    them. That catches three codecs agreeing on every byte and disagreeing about their meaning,
- *    which byte parity alone cannot.
- * 3. **Identical typed rejection** for every negative fixture: the same §3.9 code and detail, or
- *    §3.1's "close the record stream" where there is no `RequestId` to answer under.
- * 4. **Checked-in file hashes**, plus a guard that every row the manifest lists was exercised — so a
- *    fixture cannot be rewritten unreviewed, nor added and silently ignored.
+ * 1. **Byte-exact decode and re-encode** for every control, stream and error fixture, which catches
+ *    a field at the wrong offset.
+ * 2. **The semantic body** each fixture states beside its bytes, which catches three codecs agreeing
+ *    on every byte and disagreeing about their meaning.
+ * 3. **Identical typed rejection** for every negative fixture.
+ * 4. **Checked-in file hashes**, plus a guard that every row the manifest lists was exercised.
  */
 
 import { createHash } from "node:crypto";
@@ -114,8 +109,6 @@ function fixture<T>(row: ManifestRow): T {
 
 const ALL_ROWS = [...MANIFEST.controls, ...MANIFEST.streams, ...MANIFEST.errors, ...MANIFEST.negative];
 
-// ------------------------------------------------------------------- fixture shapes
-
 interface ControlFixture {
     name: string;
     kind: "control";
@@ -158,8 +151,6 @@ interface NegativeFixture {
     bytes: string;
 }
 
-// ------------------------------------------------------------------- helpers
-
 function hexToBytes(hex: string): Uint8Array {
     const out = new Uint8Array(hex.length / 2);
     for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
@@ -190,8 +181,6 @@ function rowsOf(list: ManifestRow[]): Array<readonly [string, ManifestRow]> {
     return list.map((row) => [row.name, row] as const);
 }
 
-// ------------------------------------------------------------------- the manifest itself
-
 describe("the manifest", () => {
     it("is the flat-store-v4 suite at wire major 4", () => {
         expect(MANIFEST.suite).toBe("flat-store-v4");
@@ -200,10 +189,9 @@ describe("the manifest", () => {
     });
 
     it("pins its own SHA-256, so the pinner cannot be edited into agreeing with a drifted fixture", () => {
-        // Every hash below lives *in* the manifest, so a change that rewrote a fixture and its row
-        // together would pass the next test silently. The manifest's own digest is checked into the
-        // producing crate (`obc-vectors`) and reproduced here; the two are the same discipline the
-        // Rust suite applies, one level up.
+            // Every hash below lives *in* the manifest, so a change that rewrote a fixture and its
+            // row together would pass the next test silently. The manifest's own digest is checked
+            // into the producing crate and reproduced here.
         const digest = createHash("sha256").update(readFileSync(join(SUITE, "manifest.json"))).digest("hex");
         expect(digest, "the manifest itself moved — re-pin this hash deliberately, never reflexively").toBe(
             MANIFEST_SHA256,
@@ -219,16 +207,12 @@ describe("the manifest", () => {
     });
 });
 
-// ------------------------------------------------------------------- control requests
-
 /**
  * Re-encode a decoded request with the encoder its opcode owns.
  *
  * Going through the *decoded* value rather than through the fixture's `body` map is deliberate: it
  * makes the round trip a property of the codec pair, so a decoder that read a field from the wrong
- * offset cannot be rescued by an encoder that writes it back to the same wrong one — the byte
- * comparison against the fixture is what catches that, and the semantic assertions below catch the
- * remaining case where both offsets are right and the meaning is not.
+ * offset cannot be rescued by an encoder that writes it back to the same wrong one.
  */
 function reencodeRequest(decoded: DecodedRequest): Uint8Array {
     const { requestId, request } = decoded;
@@ -416,8 +400,8 @@ describe("control vectors decode and re-encode byte for byte", () => {
         const decoded = decodeResponse(hexToBytes(vector.frame));
         if (!decoded.ok || decoded.response.opcode !== Opcode.List) throw new Error("not a LIST page");
         const [route, ride] = decoded.response.body.entries;
-        // `FLAT_Store_Format.md` §5.7's two objects: the route at revision 3, and the ride the
-        // device is recording — whose length and CRC are zero until the commit that ends it.
+            // The two objects: the route at revision 3, and the ride the device is recording, whose
+            // length and CRC are zero until the commit that ends it.
         expect(route).toMatchObject({
             objectId: 1n,
             revision: 3n,
@@ -439,9 +423,9 @@ describe("control vectors decode and re-encode byte for byte", () => {
     });
 
     it("carries a `u64` past 2^53 through a LIST entry without rounding it", () => {
-        // §3.3's ids, revisions, lengths and commit sequence are 64-bit, and a `number` stops being
-        // exact at 2^53. Nothing on a card mints an id this large, so the check belongs at the codec
-        // rather than at a device: these are the bytes a client must read back unchanged.
+            // Ids, revisions, lengths and commit sequences are 64-bit, and a `number` stops being
+            // exact at 2^53. Nothing on a card mints an id this large, so the check belongs at the
+            // codec rather than at a device: these are the bytes a client must read back unchanged.
         const huge = 18_446_744_073_709_551_615n; // 2^64 - 1
         const entry = {
             objectId: huge,
@@ -466,8 +450,6 @@ describe("control vectors decode and re-encode byte for byte", () => {
     });
 });
 
-// ------------------------------------------------------------------- stream records
-
 describe("stream vectors split and re-encode byte for byte", () => {
     it.each(rowsOf(MANIFEST.streams))("%s", (_name, row) => {
         const vector = fixture<StreamFixture>(row);
@@ -488,8 +470,6 @@ describe("stream vectors split and re-encode byte for byte", () => {
     });
 });
 
-// ------------------------------------------------------------------- error responses
-
 describe("error vectors decode and re-encode byte for byte", () => {
     it.each(rowsOf(MANIFEST.errors))("%s", (_name, row) => {
         const vector = fixture<ErrorFixture>(row);
@@ -502,8 +482,8 @@ describe("error vectors decode and re-encode byte for byte", () => {
         expect(decoded.refusal.code, "code").toBe(vector.body.codeValue);
         expect(decoded.refusal.detail, "detail").toBe(vector.body.detailValue);
         expect(String(decoded.refusal.context), "context").toBe(vector.body.context);
-        // The code's own name, so a table that drifted from §3.9's spelling fails here rather than
-        // in a message a rider reads.
+            // The code's own name, so a table that drifted from the spec's spelling fails here rather
+            // than in a message a rider reads.
         expect(ERROR_CODE_NAMES[decoded.refusal.code]).toBe(vector.body.code);
 
         expectSameBytes(encodeErrorResponse(decoded.opcode, decoded.requestId, decoded.refusal), bytes, vector.name);
@@ -518,24 +498,18 @@ describe("error vectors decode and re-encode byte for byte", () => {
     });
 });
 
-// ------------------------------------------------------------------- negative fixtures
-
 /** The refusal a control record earns, or the disposition that is not one. */
 function dispositionOf(bytes: Uint8Array): ControlFailure | DecodedRequest {
     return decodeRequest(bytes);
 }
 
 /**
- * Which {@link StreamRecordFault} a §3.8 negative vector is *about*, taken from the vector's **name**.
+ * Which {@link StreamRecordFault} a negative vector is *about*, taken from the vector's **name**.
  *
  * Deliberately not re-derived from the bytes: a mapping that read the reserved field and the length
  * would be a second copy of the codec, and a test that agrees with the implementation by
- * construction proves nothing. The name is the fixture's own statement of what it is for — it is
- * what the manifest indexes and what a reviewer reads — so keying on it is what makes this an
- * independent assertion rather than a mirror.
- *
- * A vector whose name this does not recognise fails loudly, because the alternative is a new
- * negative fixture silently landing in whichever bucket the default happened to name.
+ * construction proves nothing. A vector whose name this does not recognise fails loudly, because the
+ * alternative is a new negative fixture silently landing in whichever bucket the default named.
  */
 function streamFaultFor(vector: NegativeFixture): StreamRecordFault {
     switch (vector.name) {
@@ -558,8 +532,8 @@ describe("negative vectors are refused with the contract's own code and detail",
         const bytes = hexToBytes(vector.bytes);
 
         if (vector.target === "streamRecord") {
-            // §3.8 gives a malformed stream record no answer of its own: it terminates the transfer
-            // it claims to belong to, which on this side is the codec refusing to split it.
+                // A malformed stream record gets no answer of its own: it terminates the transfer it
+                // claims to belong to, which on this side is the codec refusing to split it.
             expect(vector.expect.disposition).toBe("terminateTransfer");
             // `toBeNull()` alone would pass whether the codec refused this record for the reason the
             // fixture names or for some unrelated one — three different malformations collapsing to
@@ -578,7 +552,7 @@ describe("negative vectors are refused with the contract's own code and detail",
         }
         const outcome = dispositionOf(bytes);
         if (vector.expect.disposition === "closeRecordStream") {
-            // §3.1: there is no `RequestId` to echo, so a receiver emits nothing at all.
+                // There is no `RequestId` to echo, so a receiver emits nothing at all.
             expect(isFailure(outcome) && outcome.kind === "unanswerable", vector.name).toBe(true);
             return;
         }
@@ -590,8 +564,6 @@ describe("negative vectors are refused with the contract's own code and detail",
         expect(ERROR_CODE_NAMES[outcome.refusal.code]).toBe(vector.expect.code);
     });
 });
-
-// ------------------------------------------------------------------- the codec's own table
 
 describe("the code and detail tables are §3.9's", () => {
     it("registers fourteen codes, and no code zero", () => {
@@ -609,8 +581,6 @@ describe("the code and detail tables are §3.9's", () => {
         expect(ObjectState).toEqual({ Absent: 0, Committed: 1, Superseded: 2 });
     });
 });
-
-// ------------------------------------------------------------------- the drift guard
 
 describe("the suite", () => {
     it("exercises every fixture the manifest lists", () => {

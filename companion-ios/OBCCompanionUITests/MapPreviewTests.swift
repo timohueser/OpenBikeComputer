@@ -1,13 +1,9 @@
 import XCTest
 
-/// #294 acceptance on the simulator: the route detail hero offers the
-/// interactive MapKit map when online, and degrades to the grid preview (no
-/// expand affordance, no blank map) when forced offline. The online/offline
-/// *decision* is host-tested in `MapPreviewModeTests`; this pins the wiring
-/// `-OBCNetwork` → basemap-or-grid through the real UI.
-///
-/// Network state is pinned with `-OBCNetwork offline|online` (never real
-/// connectivity) so the fallback is deterministic in CI.
+/// The route detail hero offers the interactive map when online, and degrades to the grid preview,
+/// with no expand affordance and no blank map, when forced offline. The decision itself is
+/// host-tested in `MapPreviewModeTests`; this pins the wiring through the real UI. Network state is
+/// pinned by a launch argument, never by real connectivity, so the fallback is deterministic.
 final class MapPreviewTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -35,7 +31,7 @@ final class MapPreviewTests: XCTestCase {
         )
     }
 
-    /// Online → the hero is a button into the full-screen interactive map.
+    /// Online, the hero is a button into the full-screen interactive map.
     @MainActor
     func testOnlineHeroOpensInteractiveMap() {
         let app = launch(network: "online")
@@ -45,8 +41,8 @@ final class MapPreviewTests: XCTestCase {
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "expand-map affordance missing while online")
         expand.tap()
 
-        // The cover's "Done" toolbar button is the reliable "map opened" signal —
-        // the MapKit view's own accessibility element can lag its tiles.
+        // The cover's Done toolbar button is the reliable "map opened" signal: the map view's own
+        // accessibility element can lag its tiles.
         let done = app.buttons["Done"]
         XCTAssertTrue(done.waitForExistence(timeout: 10), "interactive map cover didn't open")
         done.tap()
@@ -56,13 +52,13 @@ final class MapPreviewTests: XCTestCase {
         )
     }
 
-    /// Offline → the grid fallback: no expand affordance, no map to open.
+    /// Offline, the grid fallback has no expand affordance and no map to open.
     @MainActor
     func testOfflineHeroFallsBackToGrid() {
         let app = launch(network: "offline")
         openPlannedDetail(app)
 
-        // The detail is up; the map affordance must be absent (graceful fallback).
+        // The detail is up, and the map affordance must be absent.
         XCTAssertFalse(
             app.buttons["detail.expandMap"].exists,
             "offline detail must not offer the interactive map"

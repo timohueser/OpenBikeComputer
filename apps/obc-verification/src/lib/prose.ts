@@ -1,9 +1,9 @@
 /**
  * Spelling and grammar for the prose fields, from Harper (https://writewithharper.com).
  *
- * Harper runs in a worker on the reader's own computer: no text leaves the browser and there is no
- * account or service behind it. Its WebAssembly binary is large, so it is imported only when a
- * field first asks for a check, and the one worker is shared by every field on the page.
+ * Harper runs in a worker on the reader's own computer, so no text leaves the browser. Its
+ * WebAssembly binary is large, so it is imported only when a field first asks for a check, and one
+ * worker is shared by every field on the page.
  */
 import type { Linter } from 'harper.js';
 

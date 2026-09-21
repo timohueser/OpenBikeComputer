@@ -75,7 +75,7 @@ class BoardMeasurement:
     data: int
     # `.uninit` — cortex-m-rt's NOLOAD section, placed after `.bss` and skipped by the reset
     # handler's zeroing loop. It used to be 1 KB of `defmt_rtt::BUFFER` and nothing else, which is
-    # where the historical `uninit_max` came from. Since #1146 P2 it is also where the ~117 KB
+    # where the historical `uninit_max` came from. It is also where the ~117 KB
     # **scratch arena** lives, so it is now the second-largest resident block in the image and is
     # gated in earnest — see the `uninit_max` check in `check_board`.
     uninit: int
@@ -94,7 +94,7 @@ class BoardMeasurement:
     def resident(self) -> int:
         """The review/CI contract's linked resident figure: `.bss + .data`.
 
-        **Not** "all the RAM the image holds" — `.uninit` is resident too, and since #1146 P2 it
+        **Not** "all the RAM the image holds" — `.uninit` is resident too, and it
         carries the scratch arena. The two are gated separately (`resident_ram_max` + `uninit_max`)
         because they are separately re-approvable, but a change that only *moves* bytes between the
         two sections leaves this figure looking like a saving it is not. Read them together, and
@@ -107,8 +107,7 @@ def parse_size_output(output: str, extra_required: frozenset[str] = frozenset())
     """Section sizes from `llvm-size -A`, failing loudly on a section the caller says must be there.
 
     `extra_required` is how the **board** legs demand `.uninit`, the section that has held the
-    scratch arena (~117 KB since #1146 P3 spent the dividend on the render arm; ~92 KB as P2 left
-    it) since #1146 P2. It is not in the common set because the bootloader legitimately links none.
+    scratch arena (~117 KB). It is not in the common set because the bootloader legitimately links none.
 
     **What this catches, exactly:** llvm-size no longer printing the section (a stale parser) or the
     board linking no `.uninit` at all — either of which would otherwise measure it as zero and leave
@@ -141,7 +140,7 @@ def parse_stack_bounds(output: str) -> tuple[int, int]:
     i.e. past `.bss` **and** the arena. Their difference is the whole stack the main task, every
     `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why growth in *either*
     resident section is a stack cut, not just a RAM cost (the elevation epic's +3.7 KB of `.bss`
-    moved this from 52.3 to 48.6 KB; #1146 P2 moving ~92 KB out of `.bss` into `.uninit` while
+    moved this from 52.3 to 48.6 KB; moving ~92 KB out of `.bss` into `.uninit` while
     deleting ~76 KB net gave back exactly that net, not the 168 KB `.bss` alone suggests).
     """
     addresses: dict[str, int] = {}
@@ -180,7 +179,7 @@ def is_framebuffer_symbol(name: str) -> bool:
 
 
 def is_arena_symbol(name: str) -> bool:
-    """The scratch arena's linked static (#1146 P2), module path included.
+    """The scratch arena's linked static, module path included.
 
     Matched on `arena::ARENA` rather than a bare `ARENA` on purpose: "arena" is a common name for
     somebody else's pool (the BLE host's, embassy's task arena), and this gate pins an exact size —
@@ -211,7 +210,7 @@ CALL_RE = re.compile(r"\bbl\s+0x[0-9a-fA-F]+ <([^>]+)>")
 # `____embassy_<name>_task::____embassy_<name>_task_inner_function::{{closure}}` (demangled with
 # `_$u7b$$u7b$closure$u7d$$u7d$`), and that closure — not `TaskStorage<F>::poll` — is where a task's
 # real frame is allocated once codegen outlines it. `parse_poll_frames` never saw these, which is
-# how #1084 grew the main task's frame by 2 KB unnoticed until it bricked boot.
+# how a 2 KB growth of the main task's frame once went unnoticed until it bricked boot.
 TASK_BODY_RE = re.compile(r"____embassy_\w*?_?task.*inner_function")
 
 
@@ -337,7 +336,7 @@ def canonical_symbol(name: str) -> str:
     a **trait impl** to `<obc_storage..flat..store..FlatStore<D> as obc_storage..flat..seam..Store>
     ::commit` — legacy escaping renders the paths inside the `<... as ...>` brackets with `..`. A
     needle written the way a Rust path is written therefore matched the inherent methods and silently
-    skipped every trait method, which is how `Store::commit`'s 2,812 B frame sat outside the #1386
+    skipped every trait method, which is how `Store::commit`'s 2,812 B frame sat outside the
     gate that was supposed to be watching it. Canonicalising here fixes it once for every scoped
     needle rather than asking each caller to spell both forms.
 
@@ -364,7 +363,7 @@ def select_frames(
     Two distinct failures are reported apart on purpose: symbols missing entirely means the naming
     convention moved (a compiler/embassy upgrade), while symbols present but frameless means the
     prologue spelling moved. Collapsed into one "no results" either would silently disable a guard,
-    which is the failure mode that let #1084 through in the first place.
+    which is the failure mode that once let a boot-stack overflow through.
     """
     matched = [name for name in parsed.symbols if predicate(canonical_symbol(name))]
     if not matched:
@@ -396,7 +395,7 @@ def is_task_body_symbol(name: str) -> bool:
 
 
 def select_poll_frames(parsed: Disassembly) -> dict[str, int]:
-    """`TaskStorage<F>::poll` frames — the #677 steady-state contract, unchanged."""
+    """`TaskStorage<F>::poll` frames: the steady-state contract."""
     return select_frames(parsed, is_poll_symbol, "poll-frame", "`TaskStorage<F>::poll`")
 
 
@@ -717,7 +716,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         f"approved {profile['resident_ram_max']} B baseline; itemize/approve the increase",
     )
     # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
-    # #1146 P2 `.uninit` held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
+    # `.uninit` once held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
     # a NOLOAD section appearing by accident. It now also holds the ~117 KB scratch arena, so this is
     # the growth gate for the arena's largest arm — pinned exactly, like `resident_ram_max`, so any
     # arm crossing the max shows up here as a linked fact and not only as a `size_of` in the report.
@@ -746,8 +745,8 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     # "no accidental second framebuffer" net. It is not always 1 — the ~117 KB scratch `ARENA`
     # legitimately exceeds a frame, so the expected count is pinned per profile and any *new*
     # frame-sized allocation still trips the guard. Those bytes have moved twice and the count has
-    # stayed 2 throughout: they were inside `APP`, then #1146 P1 gave them their own `RENDER_SCRATCH`
-    # static, and #1146 P2 made them the render arm of `arena::ARENA` in `.uninit`. Membership, not
+    # stayed 2 throughout: they were inside `APP`, then they got their own `RENDER_SCRATCH`
+    # static, and then became the render arm of `arena::ARENA` in `.uninit`. Membership, not
     # the count, is what says which — so read the `candidates:` list in the failure, not just the
     # number: today it is `FB` + `ARENA`.
     expected_full_frame = profile.get("full_frame_sized_writable_count", expected_count)
@@ -772,7 +771,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
 
 
 def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMeasurement) -> None:
-    """The scratch arena (#1146 P2) as a **linked symbol**, not only as a section total.
+    """The scratch arena as a linked symbol, not only as a section total.
 
     `.uninit`'s size alone cannot say the arena is in it. The section has a second tenant
     (`defmt_rtt::BUFFER`, 1,024 B), so an arena whose `#[link_section]` is renamed to anything else
@@ -832,10 +831,10 @@ def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMe
 
 
 def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
-    """The three boot-path stack gates added after the #1108 STKOF (see `parse_task_body_frames`).
+    """The three boot-path stack gates (see `parse_task_body_frames`).
 
     Two are exact — the out-of-line task frame and the residual stack — and between them they would
-    have failed #1084 twice. The third, the chain ceiling, is a conservative over-approximation
+    have failed a real overflow twice. The third, the chain ceiling, is a conservative over-approximation
     ([`chain_cost`]) gated only against its own baseline, so it catches drift without pretending to
     be a stack-safety proof; the on-glass high-water in ARCHITECTURE_RESOURCE_BASELINE.md is that.
     """

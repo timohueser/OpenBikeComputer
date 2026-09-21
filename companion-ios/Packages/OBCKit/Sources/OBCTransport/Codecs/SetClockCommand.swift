@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// `setClock` (spec §4.4, command 5): stamp the device's trusted wall clock from the phone.
+/// `setClock`, command 5: stamp the device's trusted wall clock from the phone.
 public enum SetClockCommand {
     public static let commandByte: UInt8 = 5
 
