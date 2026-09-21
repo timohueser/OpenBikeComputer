@@ -911,7 +911,7 @@ ascent, descent, and surface totals on one shared distance axis. Adjacent interv
 conserve these integer totals. Grades use ordered endpoint heights.
 
 For byte offsets, validity rules, and the producer matrix, see the
-[OBCR specification](spec:OBCR_Spec.md).
+[OBCR specification](src:specs/OBCR_Spec.md).
 
 ## Recorded rides — the v3 ride object
 

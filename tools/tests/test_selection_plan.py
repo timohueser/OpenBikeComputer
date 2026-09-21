@@ -522,9 +522,11 @@ class ShippedPlanTests(unittest.TestCase):
             [
                 "ci.card-scheduler-guard",
                 "ci.catalog-ownership-guard",
+                "ci.changelog",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",
                 "ci.one-home-guard",
+                "ci.prose",
                 "ci.render-key-guard",
                 "ci.retired-map-stack",
                 "ci.screen-vocabulary-guard",

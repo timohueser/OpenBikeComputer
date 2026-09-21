@@ -83,6 +83,35 @@ Codex, or other — and only the owner can raise them:
 - Reviews get one round by default. A re-review covers only the delta. Small pre-approved
   errands land on green CI without a further round.
 
+## What gets recorded where
+
+Every durable artifact answers one question. If it answers two, it is in the wrong place.
+
+| Kind | Answers | Lives in | Lifetime |
+| --- | --- | --- | --- |
+| Contract | what must the bytes be? | `specs/` | until the format dies |
+| Guide | how does the product work, and why? | `docs/content/`, listed in `nav.json` | current only; rewritten, never appended |
+| Rule | what must we not break? | the guard that enforces it, with `GOVERNS` and `RULE` | until retired |
+| Requirement | what must it do for a rider? | the verification console | until the behavior changes |
+| Record | what happened, measured how? | `CHANGELOG.md` and the pull request | append-only; never read to do work |
+
+**A record never lives inside a contract, guide, rule or requirement.** A measurement, a
+version delta or a note about what a change did to a number goes in the pull request. The
+changelog is generated from merged pull request titles; do not write it by hand.
+
+Before changing a file, ask what reaches it:
+
+```sh
+obc governs firmware/obc-app/src/screen/map.rs
+```
+
+It joins the suites, contracts, guards, coverage components, snapshot frames, layering and
+prose budgets that name the path. Nothing in it is authored, so it cannot drift from CI.
+
+Prose is budgeted like every other resource here: `obc prose --check` holds guide pages,
+READMEs, guard docstrings and these policy files to a recorded size. Over-budget files must
+not grow. Run `obc prose --update` when one shrinks.
+
 ## Documentation
 
 - Use ASD-STE100 Simplified Technical English for documentation, issues, and pull requests.

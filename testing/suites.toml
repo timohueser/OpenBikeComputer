@@ -414,6 +414,20 @@ jobs = ["guards"]
 triggers = ["tools/check_screen_vocabulary.py"]
 
 [[suite]]
+id = "ci.prose"
+route = "required"
+command = "python3 tools/prose.py --check"
+jobs = ["guards"]
+triggers = ["tools/prose.py", "testing/prose-baseline.json"]
+
+[[suite]]
+id = "ci.changelog"
+route = "required"
+command = "python3 tools/changelog.py --check"
+jobs = ["guards"]
+triggers = ["tools/changelog.py", "CHANGELOG.md"]
+
+[[suite]]
 id = "ci.retired-map-stack"
 route = "required"
 command = "python3 tools/check_retired_map_stack.py"

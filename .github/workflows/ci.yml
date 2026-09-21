@@ -128,6 +128,10 @@ jobs:
         run: python3 tools/check_one_home.py
       - name: Shared screen drawing helpers live in screen/vocab
         run: python3 tools/check_screen_vocabulary.py
+      - name: Prose budgets, published pages and links
+        run: python3 tools/prose.py --check
+      - name: The changelog is generated and current
+        run: python3 tools/changelog.py --check
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
