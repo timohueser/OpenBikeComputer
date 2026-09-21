@@ -146,14 +146,19 @@ def report(found: dict[str, tuple[str, int]], base: dict[str, int]) -> None:
         if len(rows) > 8:
             print(f"  … {len(rows) - 8} more")
 
-    print("\nspec prose ratio (reported, not gated)")
+    # Specs are reported, never gated: capping words on a byte-layout contract would push out
+    # tables, not rationale. Words are the signal — the line ratio barely moves when prose is cut
+    # and every table stays.
+    print("\nspec prose words (reported, not gated)")
     for spec in sorted((ROOT / "specs").glob("*.md")):
-        lines = spec.read_text(encoding="utf-8").splitlines()
-        table = sum(1 for line in lines if line.strip().startswith("|"))
-        prose = len(lines) - table
-        pct = prose * 100 // len(lines) if lines else 0
-        flag = "  ← mostly prose" if pct > 60 else ""
-        print(f"  {pct:>3}%  {spec.name}{flag}")
+        text = spec.read_text(encoding="utf-8")
+        body = FENCE.sub("", text)
+        prose = " ".join(
+            line for line in body.splitlines()
+            if not line.strip().startswith(("|", "#"))
+        )
+        flag = "  ← worth a pass" if len(prose.split()) > 6000 else ""
+        print(f"  {len(prose.split()):>6,}  {spec.name}{flag}")
 
 
 def main() -> int:
