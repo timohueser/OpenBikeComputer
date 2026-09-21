@@ -1,0 +1,12 @@
+{
+  "name": "obc-device-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "tsx main.ts"
+  },
+  "devDependencies": {
+    "tsx": "4.20.6",
+    "usb": "3.1.0"
+  }
+}

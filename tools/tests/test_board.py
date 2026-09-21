@@ -24,6 +24,14 @@ class BoardTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--probe") + 1], "1366:1068:123")
                 self.assertNotIn("--allow-erase-all", command)
 
+    def test_preverify_reaches_programming_and_nothing_else(self):
+        self.assertIn("--preverify", board.probe_command("run", Path("firmware.elf"), preverify=True))
+        self.assertNotIn("--preverify", board.probe_command("run", Path("firmware.elf")))
+        for action in ("attach", "reset"):
+            with self.subTest(action=action), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    board.main([action, "--preverify"])
+
     def test_attach_does_not_download_reset_or_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
             elf = Path(tmp) / "exact firmware.elf"
