@@ -54,8 +54,8 @@ terrain before its map, or use the `all` target.
 | Large maps, terrain, provider captures, ride bundles | The dev fixture bucket |
 | Country-scale raw landmark captures | The map-baker's local source cache only |
 
-**Do not register or publish a country capture as a development fixture**, in any profile, and do
-not split one into smaller packages to get around that. The 1 GiB archive limit is a backstop, not
+**Do not register or publish a country capture as a development fixture**, in any profile. The
+1 GiB archive limit is a backstop, not
 a target: use the smallest input that covers the scenario. Generated design-review screenshots
 belong in a pull request, not in a runtime asset folder.
 
