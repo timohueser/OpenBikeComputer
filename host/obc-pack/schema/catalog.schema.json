@@ -818,19 +818,23 @@
       "properties": {
         "key": {
           "description": "The archive's source key, e.g. `ch`.",
-          "type": "string"
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
         },
         "product": {
           "description": "The product it is, e.g. `swissALTI3D 2 m`.",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "attribution": {
           "description": "The credit the licence requires, verbatim.",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "licence": {
           "description": "The licence the product is published under.",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": [

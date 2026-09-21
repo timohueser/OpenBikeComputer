@@ -56,7 +56,7 @@ usage:
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
         --reference DIR      reference archive mirror for the terrain stage's crest lifts
-        --allow-short-reference  publish a cell the mirror is short of tiles for
+        --allow-short-reference  publish cells the reference mirror is short of tiles for
 
       A bake runs the terrain stage FIRST, automatically: contours are traced and the
       nav graph's ascents integrated from the terrain in the tree, so a bake without
@@ -79,10 +79,12 @@ usage:
                                 crest, the baked samples carry the finer model's height
                                 (OBCT_Spec.md §9), each cell records the sources it used, and
                                 their credits reach the catalog. A reference change is a
-                                terrain revision bump (OBCC_Spec.md §13.2). A cell the
-                                mirror is short of tiles for is REFUSED: it would be
-                                lifted on one side of a coverage edge and not the other.
-        --allow-short-reference publish such a cell anyway, and warn
+                                terrain revision bump (OBCC_Spec.md §13.2), which
+                                re-stamps every cell and re-bakes only the cells the
+                                changed archive tiles reach. A cell the mirror is short
+                                of tiles for is REFUSED, with the --bbox to mirror: it
+                                would be lifted on one side of a coverage edge only.
+        --allow-short-reference publish such cells anyway, and warn
         --regions FILE          curated region list
         --base-url URL          catalog object base
         --generated-at TS       pin the catalog's generated_at

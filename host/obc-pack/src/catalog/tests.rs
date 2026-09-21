@@ -2211,6 +2211,22 @@ fn a_mixed_terrain_store_is_refused() {
     write_terrain_cell(w.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION, "2021-1", "\"no\"");
     let err = generate(w.path(), &opts()).expect_err("an uncreditable reference source must fail");
     assert!(err.contains("reference source `no`") && err.contains("§13.5"), "{err}");
+
+    // And a reference entry that cannot be displayed. A generic producer writes `terrain.json` by
+    // hand, so a blank credit is caught where the file can be named rather than in a builder.
+    for (what, field, value, expect) in [
+        ("an empty licence", "licence", "   ", "reference `ch` has an empty `licence`"),
+        ("a key that is not an id", "key", "CH 1", "reference key"),
+    ] {
+        let x = TempTree::new("bad-reference");
+        example_tree(x.path());
+        let path = x.path().join(TERRAIN_DOC);
+        let mut doc: Value = serde_json::from_str(&fs::read_to_string(&path).expect("terrain doc")).expect("JSON");
+        doc["references"][0][field] = Value::from(value);
+        write(&path, &format!("{}\n", serde_json::to_string_pretty(&doc).expect("serializes")));
+        let err = generate(x.path(), &opts()).expect_err(what);
+        assert!(err.contains(expect), "{what}: {err}");
+    }
 }
 
 #[test]

@@ -124,6 +124,24 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     if doc.revision == 0 {
         return Err(format!("{}: `revision` starts at 1 — a terrain store has no revision zero", at()));
     }
+    // A reference entry is three licence obligations and a key. Checked here, where the file can be
+    // named, rather than left to a consumer: a blank credit reads as authoritative and shows a
+    // rider nothing, and a generic producer's hand-written `terrain.json` is the likely source.
+    for reference in &doc.references {
+        validate_id(&reference.key).map_err(|e| format!("{}: reference key {e}", at()))?;
+        for (field, value) in
+            [("product", &reference.product), ("attribution", &reference.attribution), ("licence", &reference.licence)]
+        {
+            if value.trim().is_empty() {
+                return Err(format!(
+                    "{}: reference `{}` has an empty `{field}`. Every field of a listed reference is part of the \
+                     credit §13.5 requires a consumer to display.",
+                    at(),
+                    reference.key
+                ));
+            }
+        }
+    }
     // One call validates both ranges *and* the pairing: a cell smaller than one tile,
     // or one whose block would outrun the directory's `uint32` offsets, is not a
     // terrain store OBCT can express.
@@ -168,9 +186,10 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
         .map(|key| {
             doc.references.iter().find(|entry| &entry.key == key).cloned().ok_or_else(|| {
                 format!(
-                    "{}: terrain cells credit reference source `{key}`, which `{TERRAIN_DOC}` does not declare — \
-                     re-run the terrain bake against the archive those cells were baked from, so the credit travels \
-                     with the map (OBCC_Spec.md §13.5)",
+                    "{}: terrain cells credit reference source `{key}`, which `{TERRAIN_DOC}` does not declare. \
+                     Those cells are derived from it and cannot be published without its notice (OBCC_Spec.md \
+                     §13.5). Re-run `obc-bake terrain --reference <mirror>` against the archive they were baked \
+                     from, which is where the wording lives.",
                     dir.display()
                 )
             })
