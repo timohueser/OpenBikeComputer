@@ -1,4 +1,0 @@
-ELF: /Users/timo/Documents/OSM-agents/ride-assistant-speed/.artifacts/place-actions/obc-fw-place-actions-mode-fix
-SHA-256: eb426ae9f50642f9d9c8b11b8eec8a864d2ef7a4b794f009216ecc4dbfac9f05
-probe-rs download --chip nRF54LM20A --non-interactive --verify --disable-double-buffering /Users/timo/Documents/OSM-agents/ride-assistant-speed/.artifacts/place-actions/obc-fw-place-actions-mode-fix
-     Finished in 179.02s

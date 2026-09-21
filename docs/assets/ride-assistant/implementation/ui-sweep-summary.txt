@@ -1,3 +1,0 @@
-Excerpt from retained ci-ui-snapshots.log. Full log SHA-256 is in final-verification.json.
-ui-snapshots: 259 screens rendered into .artifacts/ride-assistant-release/ui-snapshots/
-ui-snapshots: 259 frames match firmware/ui-snapshots.sha256

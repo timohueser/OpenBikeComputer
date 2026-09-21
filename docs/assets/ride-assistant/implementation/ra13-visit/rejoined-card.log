@@ -1,7 +1,0 @@
-store StoreId([67, 227, 64, 0, 230, 200, 68, 48, 28, 180, 229, 194, 46, 169, 2, 194]); mode ReadWrite
-checkpoint Some(NavigatorCheckpoint { route: PayloadFingerprint { object: 6, revision: 1, length: 2680, crc: 4142442960 }, original: None, progress_m: 10091, occurrence: 65586, lon: 8184762, lat: 46727388, phase: Following, unresolved_avoidance: false, lower_m: 10091, upper_m: 11410 })
-ride EntryMeta { added_at_utc: 0, id: ObjectId(3), revision: Revision(1), kind: Ride, flags: EntryFlags(1), payload_len: 0, payload_crc: 0, name: DisplayName { bytes: [109, 101, 105, 114, 105, 110, 103, 101, 110, 45, 102, 111, 114, 119, 97, 114, 100, 45, 114, 101, 106, 111, 105, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 24 } }
-ride_objects 1
-recording ObjectId(3) Revision(1); sequence 24; bytes 7680; crc b191c783
-continuation Some((RideContinuation { ridden_m: 9656.722, moving_m: 9656.722, moving_s: 1953.0, climb_m: 339.5, descent_m: 330.5, hr_ms_sum: 0, hr_ms: 0, max_hr: 0, power_ms_sum: 0, power_ms: 0, max_power: 0, cadence_ms_sum: 0, cadence_ms: 0 }, None))
-samples 384; segments 1; max_gap_ms 5250; first Some(TrackPoint { lon: 8177272, lat: 46725350, ele: 0, t_ms: 0, segment_start: true, hr: None, cadence: None, power: None }); last Some(TrackPoint { lon: 8188421, lat: 46726702, ele: 602, t_ms: 2010750, segment_start: false, hr: None, cadence: None, power: None })

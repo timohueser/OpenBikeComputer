@@ -1,5 +1,0 @@
-checkpoint NavigatorCheckpoint { route: PayloadFingerprint { object: 11, revision: 1, length: 400, crc: 2744259934 }, original: Some(PayloadFingerprint { object: 2, revision: 1, length: 1366, crc: 1474732462 }), progress_m: 0, occurrence: 0, lon: 8194551, lat: 46723126, phase: Following, unresolved_avoidance: false, lower_m: 0, upper_m: 1034 }
-routes [2, 11]
-route RouteSummary { name: "meiringen-loop-dem", distance_km: 7, climb_m: 56, bbox: BBox { min_lon: 8177272, min_lat: 46722475, max_lon: 8196979, max_lat: 46731058 }, start_lon: 8184359, start_lat: 46727505 }
-route RouteSummary { name: "Easier route", distance_km: 1, climb_m: 4, bbox: BBox { min_lon: 8184362, min_lat: 46723126, max_lon: 8194551, max_lat: 46727512 }, start_lon: 8194551, start_lat: 46723126 }
-Exact accepted and original payload fingerprints verified after card remount.

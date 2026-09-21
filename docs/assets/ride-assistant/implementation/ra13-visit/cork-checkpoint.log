@@ -1,3 +1,0 @@
-store StoreId([200, 136, 37, 47, 152, 144, 204, 36, 104, 1, 48, 144, 111, 31, 183, 116]); mode ReadWrite
-checkpoint Some(NavigatorCheckpoint { route: PayloadFingerprint { object: 2, revision: 1, length: 253, crc: 3883278070 }, original: None, progress_m: 0, occurrence: 0, lon: -9825560, lat: 51485575, phase: Following, unresolved_avoidance: false, lower_m: 0, upper_m: 110 })
-ride_objects 0
