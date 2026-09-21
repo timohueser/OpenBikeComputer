@@ -1,14 +1,13 @@
-//! The storage-blob stage carve (`OBCU_Spec.md` §3, #1158): the CRC frame the armer writes and the
-//! bootloader validates, plus the soft-peripheral metadata parse — the runtime mirror of the board
-//! `build.rs` build-time asserts. Same bar as the other codecs: valid ⇒ `Some`, any tear/foreign
-//! bytes ⇒ `None`, total over arbitrary input.
+//! The storage-blob stage carve: the CRC frame the armer writes and the bootloader validates, plus
+//! the soft-peripheral metadata parse. Valid bytes give `Some`, a tear or foreign bytes give
+//! `None`, over any input.
 
 use obc_dfu::blobstage::{
     encode_stage_header, sp_geometry, validate_stage, MAX_BLOB_LEN, STAGE_HEADER_LEN, STAGE_LEN, STAGE_VERSION,
 };
 
-/// A synthetic soft-peripheral image with a well-formed v2 metadata header declaring the shipped
-/// blob's geometry (code 15,360 · exec/data 1,536 · VRI 512), padded to `len` bytes.
+/// A synthetic soft-peripheral image whose metadata header declares the shipped blob's geometry,
+/// padded to `len` bytes.
 fn synthetic_sp_image(len: usize) -> Vec<u8> {
     let mut blob = vec![0u8; len];
     let mut put = |i: usize, w: u32| blob[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
@@ -19,10 +18,8 @@ fn synthetic_sp_image(len: usize) -> Vec<u8> {
     blob
 }
 
-/// The RAM carve the shipped geometry fits (the board's `SEMMC_CARVE_BYTES`).
+/// The RAM carve the shipped geometry fits.
 const RAM_CARVE: usize = 20_480;
-
-// ==================== The stage frame ====================
 
 #[test]
 fn stage_roundtrip() {
@@ -78,8 +75,6 @@ fn stage_rejects_tears_and_foreign_bytes() {
     assert_eq!(validate_stage(&carve[..STAGE_HEADER_LEN - 1]), None, "short slice");
     assert_eq!(validate_stage(&carve[..STAGE_HEADER_LEN + 10]), None, "carve shorter than the length");
 }
-
-// ==================== The soft-peripheral metadata ====================
 
 #[test]
 fn sp_geometry_derives_the_shipped_layout() {

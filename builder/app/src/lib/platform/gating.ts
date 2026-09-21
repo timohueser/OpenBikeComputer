@@ -1,27 +1,21 @@
-// The gating layer (#901). Desktop-only features stay on screen, disabled,
-// each with a one-line reason and a next step — the moment of intent is where
-// the explanation belongs, not a marketing page you have to go looking for.
+// The gating layer. Desktop-only features stay on screen, disabled, each with a
+// one-line reason and a next step — the moment of intent is where the explanation
+// belongs.
 //
 // **Two questions, not one.** They look alike and they are not:
 //
-//   * **Tier** — does this *host* have the feature at all? A `Caps` flag. The
-//     remedy is the desktop app.
-//   * **Browser** — can the browser running right now reach a USB device? This
-//     has nothing to do with the tier. `caps.deviceUsb` is true on the hosted
-//     site because WebUSB is that tier's design; it is not a claim about
-//     Safari. The remedy is Chrome or Edge — *or* the desktop app, for a
-//     different reason than a Firefox user wanting a ride library.
+//   * **Tier** — does this *host* have the feature at all? A `Caps` flag. The remedy is
+//     the desktop app.
+//   * **Browser** — can the browser running right now reach a USB device? This has
+//     nothing to do with the tier: `caps.deviceUsb` is true on the hosted site because
+//     WebUSB is that tier's design, not a claim about Safari. The remedy is Chrome or
+//     Edge, or the desktop app for a different reason.
 //
-// Collapse them and half the visitors get the wrong sentence, so they stay
-// apart the whole way down: `Requirement` covers both, `unmetIn` reports
-// *which* one failed, and each has its own line in `GATES`.
-//
-// **One place for the words.** Every reason and every next step is written
-// here, once. A component declares the requirement it needs; it never reads
-// `platform.caps`, never asks which host it is on, and never writes its own
-// copy. `Record<Requirement, Gate>` makes that structural — a new capability
-// flag fails to compile until someone has written the sentence that goes with
-// it, so nothing can end up disabled with nothing to say.
+// Collapse them and half the visitors get the wrong sentence, so they stay apart the
+// whole way down. Every reason and every next step is written here, once. A component
+// declares the requirement it needs; it never reads `platform.caps` and never writes
+// its own copy. `Record<Requirement, Gate>` makes that structural — a new capability
+// flag fails to compile until someone has written the sentence that goes with it.
 
 import { RELEASE } from "../desktop/release";
 import { DESKTOP_ROUTE } from "../routes";
@@ -47,8 +41,8 @@ export const REQUIREMENTS: readonly Requirement[] = [
 ];
 
 export interface Gate {
-    /** Shown inline where the control is. One line, present tense, stating
-     *  where the feature lives — not apologising that it isn't here. */
+    /** Shown inline where the control is. One line, present tense, stating where the
+     *  feature lives — not apologising that it isn't here. */
     readonly reason: string;
     /** Its heading on the desktop page. */
     readonly title: string;
@@ -80,13 +74,13 @@ export const GATES: Record<Requirement, Gate> = {
 };
 
 /**
- * The next step every gate offers. One link, because the desktop app is the
- * answer to all of them — a Safari visitor's other remedy (switch browser) is
- * in the sentence itself, where it belongs.
+ * The next step every gate offers. One link, because the desktop app is the answer to
+ * all of them — a Safari visitor's other remedy, switching browser, is in the sentence
+ * itself.
  *
- * The label tracks reality: promising a download before D3 (#908) has published
- * one would send people to a page with nothing on it, so until `RELEASE` exists
- * the link says what the page actually holds. It flips itself when D3 lands.
+ * The label tracks reality: promising a download before one is published would send
+ * people to a page with nothing on it, so until `RELEASE` exists the link says what the
+ * page actually holds.
  */
 export const DESKTOP_LINK = {
     href: DESKTOP_ROUTE,
@@ -94,9 +88,9 @@ export const DESKTOP_LINK = {
 };
 
 /**
- * Everything a gate decision depends on. Passed in rather than read from the
- * module so all three tiers — and both answers to the browser question — are
- * reachable from a test without mocking a host.
+ * Everything a gate decision depends on. Passed in rather than read from the module so
+ * all three tiers — and both answers to the browser question — are reachable from a test
+ * without mocking a host.
  */
 export interface GateEnv {
     readonly caps: Caps;
@@ -118,15 +112,13 @@ function satisfied(env: GateEnv, need: Requirement): boolean {
 }
 
 /**
- * The first requirement in `need` this environment does not meet, or null if it
- * meets them all. *First* matters: a USB control declares
- * `["deviceUsb", "webUsb"]`, so a tier that has no USB at all says so, and only
- * a tier that does gets as far as blaming the browser.
+ * The first requirement in `need` this environment does not meet, or null if it meets
+ * them all. *First* matters: a USB control declares `["deviceUsb", "webUsb"]`, so a tier
+ * that has no USB at all says so, and only a tier that does gets as far as blaming the
+ * browser.
  *
- * `value` is the platform member the control needs, such as `platform.device`.
- * A1 pins `caps.X === (member !== null)`, so passing it lets
- * a call site make one check instead of two and hand the narrowed value
- * straight to the control.
+ * `value` is the platform member the control needs. `caps.X === (member !== null)` is
+ * pinned elsewhere, so passing it lets a call site make one check instead of two.
  */
 export function unmetIn(
     env: GateEnv,
@@ -135,8 +127,8 @@ export function unmetIn(
 ): Requirement | null {
     const needs = typeof need === "string" ? [need] : need;
     for (const one of needs) if (!satisfied(env, one)) return one;
-    // Only reachable if a host broke A1's invariant. Report the tier
-    // requirement rather than rendering a live control over a null member.
+    // Only reachable if a host broke the caps invariant. Report the tier requirement
+    // rather than rendering a live control over a null member.
     if (value === null) return needs[0];
     return null;
 }

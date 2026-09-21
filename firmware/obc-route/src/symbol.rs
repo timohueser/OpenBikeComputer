@@ -1,29 +1,20 @@
-//! The canonical GPX symbol → [`PoiCategory`] mapping (`OBCR_Spec.md` §4.1).
+//! The canonical GPX symbol to [`PoiCategory`] mapping. `OBCR_Spec.md` mirrors it row for row.
 //!
-//! A GPX `<wpt>` carries its icon as freeform text — `<sym>` (Garmin's symbol name, which most
-//! planners copy) or `<type>` (RideWithGPS' and Komoot's POI class). There is no registry: the
-//! vocabularies below were read off real Komoot / RideWithGPS / Garmin BaseCamp exports. So this
-//! table is a **curation**, not a standard, and it is deliberately the only one in the tree — the
-//! spec mirrors it row for row.
+//! A GPX `<wpt>` carries its icon as freeform text in `<sym>` or `<type>`. There is no registry,
+//! so this table is a curation read off real exports, not a standard.
 //!
-//! Two rules keep it safe:
+//! Two rules keep it safe. An unmapped symbol yields `None`, which is Generic, so no waypoint is
+//! ever dropped. And a symbol with no honest home among the six categories stays Generic instead
+//! of being forced into the nearest one, so "Restroom", "Hospital" and "Summit" are all absent.
 //!
-//! - **Never drop a waypoint.** An unmapped symbol (a hand-placed "Turn left here", a planner we
-//!   have never seen) yields `None` = Generic, and the waypoint stores and renders like any other.
-//! - **Only the six.** Waypoints share the map's `PoiCategory` ids so one icon language covers
-//!   both sources (#946). Symbols with no honest home among the six stay Generic rather than being
-//!   forced into the nearest one — "Restroom", "Parking", "Ferry", "Hospital", "First Aid",
-//!   "Viewpoint" and "Summit" are all deliberately absent.
-//!
-//! Matching is **case- and separator-insensitive**: the same class arrives as `Drinking Water`,
-//! `drinking_water` and `drinking-water` depending on who exported it, so both sides normalise to
-//! lowercase words joined by single spaces before comparing ([`normalize`]).
+//! Matching ignores case and separators, because the same class arrives as `Drinking Water`,
+//! `drinking_water` or `drinking-water` depending on the exporter.
 
 use heapless::String;
 use obc_reader::PoiCategory;
 
-/// Longest symbol we bother to normalise. Every table key is far shorter; a longer `<sym>` is
-/// freeform prose, which could not have matched anyway, so it degrades to Generic.
+/// Longest symbol that is normalised. Every table key is far shorter, so a longer `<sym>` is
+/// freeform prose that could not have matched, and it degrades to Generic.
 const NORM_CAP: usize = 32;
 
 /// One curated symbol vocabulary: the category and the symbols that mean it, already normalised
@@ -33,9 +24,8 @@ struct SymbolRow {
     symbols: &'static [&'static str],
 }
 
-/// The canonical table. Sources: **G** = Garmin BaseCamp symbol names, **R** = RideWithGPS POI
-/// types, **K** = Komoot waypoint types, **O** = OSM-derived tags (what several planners emit
-/// verbatim when a POI came from OSM).
+/// The canonical table. Source letters: G = Garmin BaseCamp, R = RideWithGPS, K = Komoot,
+/// O = OSM-derived tags.
 const SYMBOLS: [SymbolRow; 6] = [
     SymbolRow {
         category: PoiCategory::Water,
@@ -87,8 +77,8 @@ const SYMBOLS: [SymbolRow; 6] = [
         ],
     },
     SymbolRow {
-        // The six have no separate "food" class, and a rider filtering for supplies wants the
-        // bakery *and* the café in one list — so eating and shopping share Resupply.
+        // The six have no separate food class, and a rider filtering for supplies wants the
+        // bakery and the cafe in one list, so eating and shopping share Resupply.
         category: PoiCategory::Resupply,
         symbols: &[
             "resupply",
@@ -117,9 +107,8 @@ const SYMBOLS: [SymbolRow; 6] = [
         ],
     },
     SymbolRow {
-        // Strictly the pharmacy counter. "Hospital" / "First Aid" / "Medical Facility" stay
-        // Generic: a rider filtering for a pharmacy is looking to buy something, and a hospital
-        // row under that icon would mislead in both directions.
+        // Strictly the pharmacy counter. "Hospital" and "First Aid" stay Generic: a rider
+        // filtering for a pharmacy wants to buy something.
         category: PoiCategory::Pharmacy,
         symbols: &[
             "pharmacy",  // R, O
@@ -143,11 +132,8 @@ const SYMBOLS: [SymbolRow; 6] = [
     },
 ];
 
-/// The category a GPX `<sym>` / `<type>` value means, or `None` for **Generic** — an empty,
-/// unmapped, or over-long symbol. Case- and separator-insensitive (see the module docs).
-///
-/// Linear over ~70 short strings, run once per waypoint at import (≤ `MAX_WAYPOINTS` per route),
-/// never per frame.
+/// The category a GPX `<sym>` or `<type>` value means, or `None` for Generic, which covers an
+/// empty, unmapped or over-long symbol. It runs once per waypoint at import, never per frame.
 pub(crate) fn category_for_symbol(symbol: &str) -> Option<PoiCategory> {
     let norm = normalize(symbol);
     if norm.is_empty() {
@@ -161,10 +147,9 @@ pub(crate) fn category_for_symbol(symbol: &str) -> Option<PoiCategory> {
     None
 }
 
-/// Fold a raw symbol to the table's spelling: ASCII-lowercase, every non-alphanumeric byte a word
-/// break, runs collapsed to one space, ends trimmed. Non-ASCII bytes are word breaks too — no
-/// table key contains any, so an accented symbol simply can't match, and the borrowed buffer keeps
-/// the scan allocation-free.
+/// Fold a raw symbol to the table's spelling: ASCII lowercase, every non-alphanumeric byte a word
+/// break, runs collapsed to one space, ends trimmed. No table key holds a non-ASCII byte, so an
+/// accented symbol cannot match.
 fn normalize(symbol: &str) -> String<NORM_CAP> {
     let mut out: String<NORM_CAP> = String::new();
     let mut pending_space = false;
@@ -215,8 +200,7 @@ mod tests {
         assert_eq!(category_for_symbol("water water water water water water"), None);
     }
 
-    /// The table is the spec's mirror: keys must already be in normal form, or a row would be
-    /// unreachable and the spec table would lie.
+    /// Keys must already be in normal form, or a row would be unreachable.
     #[test]
     fn every_key_is_already_normalized() {
         for row in &SYMBOLS {

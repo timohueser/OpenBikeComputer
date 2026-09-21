@@ -1,31 +1,20 @@
-//! What the two paths a rider waits on cost, pinned: card **commands**, card **blocks**, and the
-//! **M33's** own share.
+//! What the two paths a rider waits on cost, pinned: card commands, card blocks, and the M33's own
+//! share.
 //!
-//! §5.5 and §5.6 state block counts, and the FS4 bench (#1409, round 2) found them exactly right on
-//! glass: 79 blocks written for a commit at 300 entries, 260 at 1,024. What was 11–35× over the plan
-//! was partly the number of card *commands* those blocks were issued in — the media charges about a
-//! program cycle per write command, and a `sync` costs nothing of its own because the sEMMC path polls
-//! CMD13 per write — and partly something no I/O model can see at all.
+//! The format states block counts. What the bench found on glass is that the cost is mostly the
+//! number of card commands those blocks are issued in — the media charges about a program cycle per
+//! write command, and a `sync` costs nothing of its own because the sEMMC path polls CMD13 per
+//! write — and partly CPU that no I/O model can see.
 //!
-//! **A third of a commit and half a mount is CPU.** The bench times its three terms separately, inside
-//! the adapter, and at 300 entries a commit is 116 ms writing / 53 ms reading / **42 ms on the M33**;
-//! at 1,024 it is 390 / 178 / **141**; a mount at 1,025 entries is 88.5 reading / **95.6 on the M33**.
-//! That last one is the important one: a mount is *CPU-bound*, not I/O-bound. The M33's work is entry
-//! decode, `Structure::accept`'s §5.3 pass, the free-bitmap claim, entry encode on the way out, and the
-//! body CRC fold — all of it per entry, and **none of it touched by batching**, which moves commands and
-//! not bytes. So it is an additive term this change cannot improve, and after the change it is the
-//! largest single term in both paths.
+//! A third of a commit and half a mount is CPU. A mount is CPU-bound, not I/O-bound: entry decode,
+//! the structural pass, the free-bitmap claim, entry encode on the way out and the body CRC fold are
+//! all per entry, and none of it is touched by batching, which moves commands and not bytes.
 //!
-//! Three counts, pinned for three reasons. **Commands** are scheduling: what this slice changed and
-//! what a regression would silently give back. **Blocks** are the format's, restated from §5.5 and
-//! §5.6, so a scheduling change that moved one fails as the format change it would be. **Entries** is
-//! what the M33 term scales with, so a projection cannot quietly drop it.
+//! Three counts, pinned for three reasons. Commands are scheduling. Blocks are the format's, so a
+//! scheduling change that moved one fails as the format change it would be. Entries is what the M33
+//! term scales with, so a projection cannot quietly drop it.
 //!
-//! **The projections are arithmetic, not measurements** — the census times the constants below. What
-//! makes them worth printing is that the same arithmetic reproduces every published round-2 figure to
-//! within 5%: 210.5 ms against a measured 220.8 at 300 entries (the bottom of its own 210.5–241.2
-//! spread), 701 against 701.8 at 1,024, and 184.0 against 184.1 for the mount. Re-measuring the *new*
-//! schedule on glass is #1409's follow-up, not this file's claim.
+//! The projections are arithmetic, not measurements: the census times the constants below.
 
 use std::vec::Vec;
 
@@ -39,22 +28,11 @@ use super::superblock::Superblock;
 
 const STORE: StoreId = StoreId([0x71; 16]);
 
-/// The card #1409's round 2 measured, in microseconds: a command's fixed cost, and each further block
-/// inside it. A `sync` is free — durability is folded into every write by the CMD13 poll — which is the
-/// measurement that contradicted §5.5's "dominated by the synchronizations".
+/// The card the bench measured, in microseconds: a command's fixed cost, and each further block
+/// inside it. A `sync` is free, because durability is folded into every write by the CMD13 poll.
 ///
-/// The fixed costs are the bench's single-block figures (79 writes = 116 ms, 156 reads = 53 ms); the
-/// marginal ones are its sequential throughputs (7,128 kB/s writing, 12,170 kB/s reading). The read
-/// pair over-predicts the one published *wide* read — a 64-block call measured 2,692 µs against this
-/// model's 2,986 — so read projections here are the conservative side of a two-point fit by about 10%.
-///
-/// **The two marginal constants are the weakest thing in this file, and nothing here checks them.**
-/// [`the_model_reproduces_the_benchs_own_measurements`] cannot: the census it replays had one block per
-/// command, so `write_blocks - writes` and `read_blocks - reads` are both zero there and the marginal
-/// terms multiply out entirely. What that test calibrates is the two *fixed* costs and the two M33
-/// terms. The marginal pair is sequential-throughput arithmetic, bounded from above by the ceilings in
-/// the cases below and by nothing from underneath — the first measurement of the batched schedule on
-/// glass is what will settle them.
+/// The fixed costs are the bench's single-block figures; the marginal ones are its sequential
+/// throughputs. Read projections are the conservative side of a two-point fit by about 10%.
 const WRITE_COMMAND_US: u64 = 1_470;
 const WRITE_BLOCK_US: u64 = 72;
 const READ_COMMAND_US: u64 = 340;
@@ -62,11 +40,9 @@ const READ_BLOCK_US: u64 = 42;
 
 /// The M33's own microseconds per entry in the body, which batching does not move.
 ///
-/// A commit pays for two decode passes over the live prefix, one encode of every entry it writes,
-/// `Structure::accept`'s §5.3 pass and the body CRC fold: 42.0 ms over 300 entries and 141.1 ms over
-/// 1,024 — 140 and 138 µs an entry, which is as linear as it looks. A mount pays for one decode pass,
-/// the same §5.3 pass, the free-bitmap claim and the same CRC fold, and no encode: 95.6 ms over 1,025
-/// entries, 93 µs an entry.
+/// A commit pays for two decode passes over the live prefix, one encode of every entry it writes, the
+/// structural pass and the body CRC fold: about 140 µs an entry. A mount pays for one decode pass,
+/// the same structural pass, the free-bitmap claim and the same fold, and no encode: about 93 µs.
 const COMMIT_M33_PER_ENTRY_US: u64 = 138;
 const MOUNT_M33_PER_ENTRY_US: u64 = 93;
 
@@ -111,19 +87,19 @@ impl Census {
         self.entries * per_entry
     }
 
-    /// Both, which is what a rider waits for. See the module note: arithmetic, not a measurement.
+    /// Both, which is what a rider waits for. Arithmetic, not a measurement.
     fn micros(&self, per_entry: u64) -> u64 {
         self.io_micros() + self.m33_micros(per_entry)
     }
 }
 
-/// A card whose catalog holds `entries` objects, each owning one extent of its own, with room for a few
-/// more. Each entry gets a real extent because the mount that builds the free bitmap rejects an overlap,
-/// so a fake catalog would not mount and the census would be of nothing.
+/// A card whose catalog holds `entries` objects, each owning one extent of its own, with room for a
+/// few more. Each entry gets a real extent because the mount that builds the free bitmap rejects an
+/// overlap, so a fake catalog would not mount and the census would be of nothing.
 fn populated(entries: u16) -> SparseDisk {
     let extents = entries as u32 + 8;
-    // The census is the *default* geometry's, deliberately: §8 gives a card this size 1 MiB extents,
-    // and a census taken at another size would not be comparable with the bench's.
+    // The census is the default geometry's, deliberately: a card this size gets 1 MiB extents, and a
+    // census taken at another size would not be comparable with the bench's.
     let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * extents as u64;
     let mut model = Model::empty(STORE, extents);
     for id in 1..=entries as u64 {
@@ -141,9 +117,8 @@ fn populated(entries: u16) -> SparseDisk {
     disk
 }
 
-/// One commit publishing one more object on a card that holds `entries`, counted from the commit alone:
-/// the allocation and the payload writes are the transfer's cost, not §5.5's, and the bench timed them
-/// apart too.
+/// One commit publishing one more object on a card that holds `entries`, counted from the commit
+/// alone: the allocation and the payload writes are the transfer's cost, not the commit's.
 fn commit_census(entries: u16) -> Census {
     let disk = populated(entries);
     let store = FlatStore::mount(&disk);
@@ -194,16 +169,14 @@ fn finish_census(flushed: u64) -> Census {
     Census::of(&disk.ledger()[before..], 1)
 }
 
-/// §5.5's commit, at an empty catalog, at the few hundred entries the budget is quoted for, and at the
-/// 1,024 the bench's worst case used. Each case publishes the *next* object, so the body it writes holds
-/// `entries + 1` — the bench's 79 write blocks at 300 entries and this case's 80 are the same figure one
-/// entry apart.
+/// The commit at an empty catalog, at the few hundred entries the budget is quoted for, and at the
+/// 1,024 the bench's worst case used. Each case publishes the next object, so the body it writes
+/// holds `entries + 1`.
 ///
-/// Writes are `1 + ceil(body_blocks / 8) + 2`: the payload's staged partial block, the body in windows,
-/// and step 1's and step 3's gate blocks. Reads are two windowed passes over the live prefix plus
-/// `find`'s binary search — 6 probes at 300 entries, 8 at 1,024 — which stays block-at-a-time on
-/// purpose, because its probes are scattered and a window would read 4 KiB to look at 128 bytes of it.
-/// The fourth `sync` is the payload's; §5.5 owns three, and none of them costs anything on this card.
+/// Writes are `1 + ceil(body_blocks / 8) + 2`: the payload's staged partial block, the body in
+/// windows, and the two gate blocks. Reads are two windowed passes over the live prefix plus `find`'s
+/// binary search, which stays block-at-a-time on purpose because its probes are scattered. The fourth
+/// `sync` is the payload's.
 ///
 /// The ceilings are the projections plus about a tenth. They are deliberately loose: what catches a
 /// regression is the census equality above them, and a ceiling that tracked the projection exactly
@@ -239,18 +212,16 @@ fn a_commit_costs_the_pinned_card_commands() {
     }
 }
 
-/// §5.6's mount, at the 1,025 entries the bench measured 184.1 ms on: one superblock, two gates, and the
-/// live prefix — header block included — in windows.
+/// The mount, at the 1,025 entries the bench measured: one superblock, two gates, and the live
+/// prefix — header block included — in windows.
 ///
-/// This is the case that makes the M33 term worth having. Batching takes the reading from 88.5 ms to
-/// **32**, and the mount still projects ~127 ms, because 95 of those milliseconds are the M33 decoding
-/// 1,025 entries, checking §5.3, claiming their extents and folding the body CRC — work the schedule
-/// cannot touch. §5.6 plans for "about 100 ms" and this **misses it**, by about a quarter. Saying so is
-/// the point: the ceiling below is where the path actually is, not where the plan wished it were.
+/// This is the case that makes the M33 term worth having. The mount projects about 127 ms because 95
+/// of those milliseconds are the M33 decoding 1,025 entries, checking the structural rules, claiming
+/// their extents and folding the body CRC. The format plans for about 100 ms and this misses it by
+/// about a quarter; the ceiling below is where the path actually is.
 ///
-/// The window here is [`MOUNT_STREAM_WINDOW`](super::layout::MOUNT_STREAM_WINDOW), half a commit's, so
-/// 69 read commands rather than the 37 a 4 KiB window would give. That is ~9 ms bought back for 2 KiB
-/// of the boot frame; see that constant for why this frame in particular could not spare it.
+/// The window here is [`MOUNT_STREAM_WINDOW`](super::layout::MOUNT_STREAM_WINDOW), half a commit's,
+/// so 69 read commands rather than the 37 a 4 KiB window would give.
 #[test]
 fn a_mount_costs_the_pinned_card_commands() {
     let census = mount_census(1_025);
@@ -271,9 +242,8 @@ fn a_mount_costs_the_pinned_card_commands() {
     assert!(census.io_micros() <= 35_000, "a mount reads {} µs, above the 35 ms this case allows", census.io_micros());
 }
 
-/// FS8's finish is O(1) in ride length: it copies only the selected tail slot and commits one
-/// catalog. One page and one thousand pages already recorded therefore issue exactly the same card
-/// commands and blocks. This is a measured simulator census, not an asymptotic comment.
+/// Finishing a ride is O(1) in ride length: it copies only the selected tail slot and commits one
+/// catalog, so one page and one thousand pages issue the same card commands and blocks.
 #[test]
 fn finishing_io_is_constant_in_the_ride_length() {
     let short = finish_census(super::layout::PROGRAM_PAGE as u64);
@@ -287,13 +257,9 @@ fn finishing_io_is_constant_in_the_ride_length() {
     );
 }
 
-/// The model, held to the measurements it came from. Applied to the census the store *used* to produce
-/// — every block its own command — the three constants have to reproduce #1409's round-2 wall times,
-/// or the projections above are arithmetic about nothing.
-///
-/// This is the test that makes the constants evidence rather than taste, and it is why the M33 term is
-/// separate: an I/O-only model reproduces the commit figures to about 20% and the *mount* to 48%, which
-/// is how the first version of this file came to claim a mount would take 28 ms.
+/// The model, held to the measurements it came from. Applied to a census with one block per
+/// command, the three constants have to reproduce the bench's wall times, or the projections above are arithmetic about nothing. This is also why the M33 term is
+/// separate: an I/O-only model reproduces the commit figures to about 20% and the mount to 48%.
 #[test]
 fn the_model_reproduces_the_benchs_own_measurements() {
     // (name, census as the block-at-a-time store issued it, per-entry M33 term, µs measured on glass)
@@ -325,15 +291,14 @@ fn the_model_reproduces_the_benchs_own_measurements() {
     }
 }
 
-/// The blocks are still the format's, unchanged: §5.5's `ceil(n / 4) + 3` writes and §5.6's
-/// `3 + 1 + ceil(n / 4)` reads. A batching change that moved a *block* would be a format change, and
-/// this is what says it did not.
+/// The blocks are still the format's, unchanged: `ceil(n / 4) + 3` writes and `3 + 1 + ceil(n / 4)`
+/// reads. A batching change that moved a block would be a format change, and this says it did not.
 #[test]
 fn the_block_counts_are_still_the_specs_own() {
     for entries in [0u16, 300, 1_024] {
         let census = commit_census(entries);
-        // §5.5's `ceil(n / 4) + 3` for the `n + 1` entries this commit publishes, and the payload's
-        // staged partial block, which is the transfer's rather than the commit's.
+        // `ceil(n / 4) + 3` for the `n + 1` entries this commit publishes, and the payload's staged
+        // partial block, which is the transfer's rather than the commit's.
         let body = 1 + (u64::from(entries) + 1).div_ceil(4);
         assert_eq!(census.write_blocks, body + 2 + 1, "§5.5's block count moved at {entries} entries");
     }

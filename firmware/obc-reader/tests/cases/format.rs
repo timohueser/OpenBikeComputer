@@ -1,9 +1,8 @@
 //! Format-contract tests for the OBCM reader.
 //!
-//! Each test builds a synthetic `.obcm` with the shared `obcm-testkit` builder (which mirrors the
-//! Rust packer's `serialize.rs`), then asserts the reader parses it back. Building the bytes rather
-//! than checking in a binary fixture keeps the encoder + reader pinned to one layout: if either
-//! drifts, these break. `obcm-testkit` shares the layout with `obc-render`'s priority test.
+//! Each test builds a synthetic `.obcm` with the shared `obcm-testkit` builder, then asserts the
+//! reader parses it back. Building the bytes rather than checking in a binary fixture keeps the
+//! encoder and the reader pinned to one layout: if either drifts, these break.
 
 use obc_formats::obcm::{
     nav_edge_id, BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, HEADER_OFFSET_SCALE_OFF, NAV_CHUNK_SIZE, NAV_DIR_LEN,
@@ -21,18 +20,15 @@ use obcm_testkit::{
 
 use crate::common::{decode_chunk, decode_filtered};
 
-/// Collect every leaf `for_each_chunk` yields — the uncapped replacement for the
-/// removed `Reader::query` test convenience.
+/// Collect every leaf `for_each_chunk` yields.
 fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
     let mut out = Vec::new();
     r.for_each_chunk(lod, view, |cid, node| out.push((cid, node))).unwrap();
     out
 }
 
-// A two-LOD file used by several tests: LOD0 (coarse, +inf) holds one line,
-// LOD1 (max_mpp 50) holds one polygon-with-hole. Both are single-leaf trees over
-// the global bbox (0,0,1000,1000), so the leaf's node bbox is the global bbox
-// and feature anchors are absolute.
+// A two-LOD file used by several tests: LOD0 (coarse) holds one line, LOD1 (max_mpp 50) a polygon
+// with a hole. Both are single-leaf trees over the global bbox, so feature anchors are absolute.
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
@@ -53,19 +49,13 @@ fn two_lod_file() -> Vec<u8> {
     )
 }
 
-/// **A file shorter than its offsets claim must fail the parse.** The board now parses these tables
-/// right after a map commits over USB, where it is the only check the bytes get, and a truncated
-/// transfer is the damage that path is most likely to produce. `rejects_bad_input` already covers a
-/// forged magic and version, and `a_scale_outside_zero_to_nine_is_bad_scale_not_bad_version` the
-/// offset scale.
 #[test]
 fn a_truncated_map_is_refused_rather_than_half_opened() {
     let good = two_lod_file();
     assert!(MapTables::parse(&SliceSource(&good)).is_ok(), "the fixture must parse while it is intact");
     let truncated = good[..good.len() / 2].to_vec();
-    // The variant matters, not only the failure: the board reads `Error::Source` as a card fault and
-    // everything else as a map this firmware cannot read, so structural damage must not arrive as
-    // `Source`. The prologue validates every region against the length before any of those reads.
+    // The variant matters, not only the failure: the board reads `Error::Source` as a card fault
+    // and everything else as a map it cannot read, so structural damage must not arrive as `Source`.
     assert!(matches!(MapTables::parse(&SliceSource(&truncated)), Err(Error::TooShort | Error::BadOffset)));
 }
 
@@ -96,7 +86,6 @@ fn header_and_lod_table() {
 
 #[test]
 fn marker_color_round_trips() {
-    // The header's marker color parses back unchanged at its fixed offset.
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -118,7 +107,6 @@ fn styles_parse() {
     assert_eq!(s1.color, 0xF800);
     assert_eq!(s1.weight, 2);
     assert_eq!(s1.priority, 3);
-    // The v10 tail defaults for a solid, single-color style.
     assert_eq!(s1.flags.line_style(), LineStyle::Solid, "STYLES are solid");
     assert_eq!(s1.color2, None, "STYLES carry no color2");
 
@@ -129,10 +117,8 @@ fn styles_parse() {
     assert!(r.style(200).is_none());
 }
 
-/// The 8-byte style record round-trips `line_style` (flag bit 2) and the optional `color2`
-/// (flag bit 3 + the u16 at record offset 6) across every (dashed, color2) combination the epic
-/// #556 semantics use. `color2 == Some(0x0000)` on the casing style pins that **black is a legit
-/// secondary color**, not a "no color2" sentinel.
+/// The style record round-trips `line_style` and the optional `color2` across every combination.
+/// `color2 == Some(0x0000)` pins black as a legitimate secondary colour, not a sentinel.
 #[test]
 fn style_record_round_trips_line_style_and_color2() {
     let styles: &[Style] = &[
@@ -169,9 +155,8 @@ fn style_record_round_trips_line_style_and_color2() {
     assert_eq!(s4.color2, Some(0x8410));
 }
 
-/// The color2 flag bit — not a `0x0000` sentinel — decides presence. A solid/no-color2 style packs
-/// its two color2 bytes as `0x0000` with bit 3 clear; forge those wire bytes to nonzero and the
-/// reader MUST still report `color2 == None`.
+/// The color2 flag bit, not a `0x0000` sentinel, decides presence: forged nonzero wire bytes with
+/// the bit clear must still read as `None`.
 #[test]
 fn color2_wire_bytes_ignored_when_flag_clear() {
     let styles: &[Style] = &[(7, 0, 0xF800, 2, 3, false, None)];
@@ -181,8 +166,7 @@ fn color2_wire_bytes_ignored_when_flag_clear() {
         styles,
         &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
     );
-    // Style table: count byte at STYLE_OFFSET, record 0 just past it; within a record, flags are
-    // at offset 5 and color2 at offset 6.
+    // Within a style record, flags are at offset 5 and color2 at offset 6.
     let flags_at = STYLE_OFFSET + 1 + 5;
     let color2_at = STYLE_OFFSET + 1 + 6;
     assert_eq!(bytes[flags_at] & 0x08, 0, "color2 flag bit is clear as packed");
@@ -196,12 +180,9 @@ fn color2_wire_bytes_ignored_when_flag_clear() {
     assert_eq!(r.style(7).unwrap().color2, None, "nonzero color2 bytes are ignored when bit 3 is clear");
 }
 
-/// #1095's style-record bits 4 (fixed width) and 5 (terrain layer). The testkit oracle writes the
-/// v10 flags only, so the bits are forged onto the packed record exactly as
-/// `color2_wire_bytes_ignored_when_flag_clear` forges its color2 bytes — which is the point: the
-/// reader must pick them out of the byte that was already on the wire, and the record stays 8 bytes.
-/// Bits 6-7 stay reserved, and a reader **ignores** them rather than rejecting the record (§2,
-/// deliberately unlike a *feature*'s reserved flag bits in §5.2, which a reader MUST reject).
+/// Style-record bits 4 and 5, forged onto the packed record: the reader must pick them out of the
+/// byte already on the wire, and the record stays 8 bytes. Bits 6-7 are reserved, and a reader
+/// ignores them rather than rejecting the record, unlike a feature's reserved bits.
 #[test]
 fn style_record_round_trips_fixed_width_and_terrain_layer() {
     let styles: &[Style] = &[(1, 8, 0xAD55, 1, 4, true, None), (2, 0, 0xF800, 2, 3, false, None)];
@@ -211,7 +192,6 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
         styles,
         &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
     );
-    // Record 0's flags: count byte at STYLE_OFFSET, then offset 5 within the record.
     let flags_at = STYLE_OFFSET + 1 + 5;
     assert_eq!(bytes[flags_at] & 0xF0, 0, "the oracle writes bits 4-7 clear");
     bytes[flags_at] |= 0x10 | 0x20 | 0x80; // fixed width + terrain layer + one still-reserved bit
@@ -234,9 +214,7 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
 
 #[test]
 fn backdrop_is_lowest_z_regardless_of_id() {
-    // STYLES = [(id 1, z 3), (id 2, z -1)]. The backdrop is the bottom of the
-    // paint order (lowest z), i.e. id 2 — not the lowest id. This guards the
-    // sea/background lookup against style-ID reassignment.
+    // The backdrop is the bottom of the paint order, the lowest z, not the lowest id.
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -272,13 +250,11 @@ fn query_single_leaf() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    // A view overlapping the global bbox hits the single leaf (chunk 0).
     let hits = query_all(&r, 0, &BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
-    // A view entirely outside the global bbox hits nothing.
     let miss = query_all(&r, 0, &BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
     assert!(miss.is_empty());
 }
@@ -329,7 +305,6 @@ fn visitor_matches_owned_decode() {
     let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
 
-    // The borrowing for_each_feature must yield exactly what decode_chunk does.
     let owned = decode_chunk(&r, 1, 0, &node);
 
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
@@ -372,10 +347,7 @@ fn decode_16bit_deltas() {
 
 #[test]
 fn quadtree_subdivision_and_node_bbox() {
-    // Root branch → 4 children (NW, NE, SW, SE); only NW is a non-empty leaf.
-    // Exercises query_rec subdivision and the NW node-bbox math.
-    // Global bbox (0,0,1000,1000); midpoints (500,500); NW = (0,500,500,1000).
-    // Anchor is relative to the NW node's min corner (0,500): ax=10, ay=10.
+    // Root branch with four children, of which only NW is a non-empty leaf.
     let line = seal(pack_line(1, 10, 10, &[(5, 5)]), CS);
     let index = vec![
         BRANCH_BIT | 1, // root: branch, children start at idx 1
@@ -393,16 +365,13 @@ fn quadtree_subdivision_and_node_bbox() {
 
     let nw = BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
-    // View inside the NW quadrant hits the leaf, with the NW node bbox.
     let hits = query_all(&r, 0, &BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
     assert_eq!(hits.as_slice(), &[(0, nw)]);
 
-    // View inside the (empty) SE quadrant hits nothing.
     let se = query_all(&r, 0, &BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
     assert!(se.is_empty());
 
-    // The feature's anchor is computed from the NW node's min corner (0,500):
-    // ax=10, ay=10 → absolute (10, 510), then +(5,5).
+    // The feature's anchor is relative to the NW node's min corner (0,500): (10,10) → (10,510).
     let feats = decode_chunk(&r, 0, 0, &nw);
     assert_eq!(feats[0].exterior, vec![(10, 510), (15, 515)]);
 }
@@ -424,8 +393,7 @@ fn empty_leaf_yields_nothing() {
 
 #[test]
 fn rejects_bad_input() {
-    // MapTables isn't Debug, so match the Err arm rather than using unwrap_err. The validation
-    // (magic / version / length) moved to `MapTables::parse`; `Reader::new` is now infallible.
+    // `MapTables` is not `Debug`, so match the `Err` arm rather than use `unwrap_err`.
     let err = |b: &[u8]| match MapTables::parse(&SliceSource(b)) {
         Ok(_) => panic!("expected Err"),
         Err(e) => e,
@@ -444,10 +412,8 @@ fn rejects_bad_input() {
 
 #[test]
 fn out_of_range_chunk_id_is_reported_as_malformed() {
-    // `chunk_id` from a quadtree leaf is never constrained to `chunk_count`. LOD0 holds one chunk,
-    // so id 1 points one past it (into LOD1's bytes); the reader must decode nothing rather than the
-    // adjacent layer, or wrap+panic on the 32-bit device. The explicit malformed result lets the
-    // renderer count the corrupt feature source. `u32::MAX` is the overflow edge.
+    // A leaf's `chunk_id` is never constrained to `chunk_count`, so id 1 points into LOD1's bytes:
+    // the reader must decode nothing rather than the adjacent layer, or wrap on the 32-bit device.
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -475,15 +441,9 @@ fn out_of_range_chunk_id_is_reported_as_malformed() {
 
 #[test]
 fn rejects_overflowing_lod_table_offset() {
-    // A `lod_table_offset` near the top of the reader's address space wraps `usize` once the
-    // table length is added on the 32-bit device, passing the file-length guard
-    // and then indexing far out of the file. Checked arithmetic rejects it up
-    // front; on the 64-bit host the same value simply exceeds data.len().
-    //
-    // The field is **scaled** since v14, so the unit count below is the one that resolves to
-    // `0xFFFF_FFF0` bytes — the same byte offset the pre-v14 test forged. Forging the raw
-    // `0xFFFF_FFF0` as a unit count would resolve to 64 GiB and be refused one step earlier, by
-    // the reader's own address-space narrowing rather than by the guard this test is about.
+    // A `lod_table_offset` near the top of the address space wraps `usize` on the 32-bit device
+    // once the table length is added, passing the guard and then indexing out of the file. The
+    // field is scaled, so the unit count below resolves to that byte offset.
     let mut bytes = two_lod_file();
     bytes[26..30].copy_from_slice(&scaled(0xFFFF_FFF0).to_le_bytes()); // header lod_table_offset
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)));
@@ -491,10 +451,8 @@ fn rejects_overflowing_lod_table_offset() {
 
 #[test]
 fn rejects_overflowing_chunk_region() {
-    // A corrupt LOD entry advertising a huge chunk_count × chunk_size must be
-    // rejected, not trusted: on the 32-bit device the product wraps `usize` and
-    // the computed chunks-end can land below data.len(), admitting a layer that
-    // indexes out of the file. Checked arithmetic turns it into BadOffset.
+    // A corrupt LOD entry advertising a huge chunk_count × chunk_size wraps `usize` on the device,
+    // so the computed chunks-end can land below data.len(). Checked arithmetic makes it BadOffset.
     let mut bytes = two_lod_file();
     let lod_tab_off = resolve_offset(&bytes, 26);
     // Entry layout: max_mpp(4) index_off(4) node_count(4) chunk_size(2) chunk_count(4).
@@ -507,12 +465,8 @@ fn rejects_overflowing_chunk_region() {
 
 #[test]
 fn filtered_decode_skips_without_drifting() {
-    // Three heterogeneous features packed back-to-back in one chunk: an 8-bit
-    // line, a polygon-with-hole, and a 16-bit line. Skipping any of them must
-    // leave the reader's byte offset exactly where a full decode would, so the
-    // features *after* a skipped one decode byte-identically. This pins
-    // `skip_ring` to `read_ring`: if they ever drift, a trailing feature would
-    // decode garbage and these assertions break.
+    // Three heterogeneous features back to back: skipping any of them must leave the byte offset
+    // where a full decode would, which pins `skip_ring` to `read_ring`.
     let mut chunk = Vec::new();
     chunk.extend_from_slice(&pack_line(1, 100, 200, &[(10, 0), (0, 10)]));
     chunk.extend_from_slice(&pack_poly_hole(
@@ -541,25 +495,18 @@ fn filtered_decode_skips_without_drifting() {
     let all = decode_chunk(&r, 0, 0, &node);
     assert_eq!(all.len(), 3);
 
-    // Keeping everything is identical to the unfiltered decode path.
     assert_eq!(decode_filtered(&r, 0, 0, &node, |_| true), all);
-    // Keeping nothing visits nothing.
     assert!(decode_filtered(&r, 0, 0, &node, |_| false).is_empty());
 
-    // Skip the middle polygon: the trailing 16-bit line must still be exact.
     assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 2), vec![all[0].clone(), all[2].clone()]);
-    // Skip the leading line: both following features must be exact.
     assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 1), vec![all[1].clone(), all[2].clone()]);
-    // Skip the trailing line: the leading two are unaffected.
     assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 3), vec![all[0].clone(), all[1].clone()]);
 }
 
 #[test]
 fn for_each_chunk_has_no_cap() {
-    // Root branch with four non-empty leaf quadrants. `for_each_chunk` streams
-    // every overlapping leaf through its callback with no upper bound — the exact
-    // behaviour the renderer depends on so a wide viewport never silently loses
-    // whole chunks.
+    // `for_each_chunk` streams every overlapping leaf with no upper bound, so a wide viewport
+    // never silently loses whole chunks.
     let mk = || seal(pack_line(1, 1, 1, &[(1, 1)]), CS);
     let index = vec![
         BRANCH_BIT | 1, // root branch, children start at idx 1
@@ -578,17 +525,13 @@ fn for_each_chunk_has_no_cap() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    // A view over the whole bbox overlaps all four leaves.
     let mut seen = 0;
     r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1).unwrap();
     assert_eq!(seen, 4);
 }
 
-/// Build a forward-only quadtree index that is a single NW-chain `levels` branches deep, ending
-/// in a non-empty leaf (chunk 0). Each branch's four children are contiguous (NW, NE, SW, SE):
-/// NE/SW/SE are empty leaves and NW continues the chain, so every child index is strictly greater
-/// than its parent's — the `child > idx` invariant of a well-formed map holds, isolating the
-/// **depth** cap as the only thing that can stop the descent.
+/// Build a forward-only quadtree index: an NW-chain `levels` deep ending in a non-empty leaf.
+/// Every child index is greater than its parent's, so only the depth cap can stop the descent.
 fn nw_chain_index(levels: usize) -> Vec<u32> {
     let mut index: Vec<u32> = vec![0]; // slot 0 is the root branch, filled below
     let mut cur = 0usize;
@@ -607,11 +550,8 @@ fn nw_chain_index(levels: usize) -> Vec<u32> {
 
 #[test]
 fn walk_terminates_on_back_referencing_branch() {
-    // A corrupt map whose root branch points its first child back at itself (`child == idx`).
-    // The node bbox would shrink toward the NW corner and then stay put, so `intersects(view)`
-    // never goes false — with no guard the walk recurses forever and stack-overflows (a HardFault
-    // on the MCU, which has no MMU guard page). The `child > idx` guard rejects the back-edge, so
-    // the walk must stop and explicitly report the malformed index.
+    // A corrupt map whose root branch points its first child back at itself. The node bbox stops
+    // shrinking while `intersects(view)` stays true, so an unguarded walk overflows the stack.
     let chunk = seal(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
         GLOBAL,
@@ -628,8 +568,7 @@ fn walk_terminates_on_back_referencing_branch() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    // A viewport over the whole bbox keeps intersecting the (degenerate) node every level — the
-    // condition under which the unguarded walk would never terminate.
+    // A viewport over the whole bbox keeps intersecting the degenerate node at every level.
     let mut seen = 0;
     assert_eq!(r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1), Err(obc_reader::MapReadError::Malformed));
     assert_eq!(seen, 0);
@@ -637,12 +576,8 @@ fn walk_terminates_on_back_referencing_branch() {
 
 #[test]
 fn walk_caps_depth_on_forward_chain() {
-    // A forward-only NW-chain (every `child > idx`, so the back-reference guard never fires) far
-    // deeper than the depth cap (~32). The node bbox degenerates to the NW corner after ~10
-    // levels but keeps intersecting a whole-bbox viewport forever, so without the depth cap the
-    // walk would descend all `LEVELS` levels and report the leaf's chunk. With the cap it stops
-    // first, pruning the over-cap leaf — so no chunk is reported. This pins the depth cap
-    // independently of the `child > idx` guard.
+    // A forward-only NW-chain far deeper than the depth cap, so the back-reference guard never
+    // fires. Without the cap the walk would reach the leaf; with it, no chunk is reported.
     const LEVELS: usize = 50; // comfortably past the ~32 cap
     let chunk = seal(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
@@ -660,29 +595,11 @@ fn walk_caps_depth_on_forward_chain() {
     assert_eq!(seen, 0, "the depth cap must prune the over-cap leaf before it is reached");
 }
 
-// === POI section (v7, spec §7) — byte-pinned contract =======================
-//
-// These pin the §7 layout explicitly: the 40-byte header + its POI-section offset
-// field, the always-present POI directory (empty + populated) with its two appended
-// hours-pool fields, a POI record's exact 36 bytes (24-byte name + hours_ref), the
-// 0xFF sentinel + padding, the tail hours-pool section (shared + distinct blobs, and
-// an empty pool), and the v6-rejected guard. Where `build_file` writes an empty
-// directory, the populated-directory test hand-assembles the section so the record +
-// index + pool bytes are pinned, not derived.
-
-/// `build_file` (empty-POI, empty-nav) is a valid v14 map: a 49-byte header carrying the offset
-/// scale and an absent terrain region, a style table on the first unit boundary past it, a
-/// POI-section offset pointing just past the LOD payload, a six-category empty directory, an empty
-/// hours pool, and an empty nav section (40-byte directory + filler + the always-present profile
-/// table) at the tail.
 #[test]
 fn header_has_scaled_section_offsets() {
     let bytes = two_lod_file();
 
-    // The header is 65 bytes, which is no whole number of units, so the style table begins at
-    // the first unit boundary at or after it — 80 at `U = 16`, giving `Style Offset = 5` — and
-    // `65..80` is `0xFF` filler. Reading the field rather than assuming the table follows the
-    // header is what it was always for; this is the first version where the two differ.
+    // The header is no whole number of units, so the style table begins at the next boundary.
     assert_eq!(HEADER_LEN, 65);
     assert_eq!(bytes[4], obc_formats::obcm::VERSION);
     assert_eq!(bytes[HEADER_OFFSET_SCALE_OFF], OFFSET_SCALE, "the scale byte producers write");
@@ -690,13 +607,11 @@ fn header_has_scaled_section_offsets() {
     assert_eq!(resolve_offset(&bytes, 21), STYLE_OFFSET);
     assert!(bytes[HEADER_LEN..STYLE_OFFSET].iter().all(|&b| b == FILLER), "the header's tail gap is 0xFF filler");
 
-    // §1.3: this map carries no elevation, which is the `(0, 0)` pair — `0` is unambiguous because
-    // the header occupies byte 0, so no region can begin there.
+    // No elevation is the `(0, 0)` pair, unambiguous because the header occupies byte 0.
     assert_eq!(u32::from_le_bytes(bytes[41..45].try_into().unwrap()), 0, "Terrain Offset");
     assert_eq!(u32::from_le_bytes(bytes[45..49].try_into().unwrap()), 0, "Terrain Length");
 
-    // The POI section offset lives at header byte 32 (right after the 2-byte marker at 30) and is
-    // never 0 — the section is always present.
+    // The POI section offset lives at header byte 32 and is never 0: the section is always present.
     let poi_off = resolve_offset(&bytes, 32);
     assert!(poi_off >= STYLE_OFFSET && poi_off < bytes.len(), "POI offset {poi_off} points into the file");
     assert_eq!(poi_off % UNIT, 0, "every scaled offset names a unit boundary");
@@ -705,9 +620,8 @@ fn header_has_scaled_section_offsets() {
     assert_eq!(bytes[poi_off], 7, "category_count");
     assert_eq!(u16::from_le_bytes(bytes[poi_off + 1..poi_off + 3].try_into().unwrap()), 512, "shared chunk_size");
 
-    // The nav-graph offset lives at header byte 36 and is likewise never 0 — an empty graph still
-    // writes its 40-byte directory + profile table. §8.5: 40 is no multiple of `U`, so the profile
-    // table sits at `align_up(nav_off + 40, U)` with the eight bytes behind the directory filler.
+    // The nav-graph offset is likewise never 0: an empty graph still writes its directory and
+    // profile table, and 40 is no multiple of `U`, so the table sits on the next boundary.
     let nav_off = resolve_offset(&bytes, 36);
     assert!(nav_off >= STYLE_OFFSET && nav_off + NAV_DIR_LEN <= bytes.len(), "nav offset {nav_off} points into file");
     let profile_off = resolve_offset(&bytes, nav_off + 22);
@@ -723,9 +637,6 @@ fn header_has_scaled_section_offsets() {
     );
 }
 
-/// The parsed empty directory: six categories, ids 1..=6, all empty, and an empty
-/// hours pool (`hours_pool_count == 0`). This is what a map with no POIs carries —
-/// always present, never a zero offset.
 #[test]
 fn empty_poi_directory_parses_six_empty_categories() {
     let bytes = two_lod_file();
@@ -743,7 +654,7 @@ fn empty_poi_directory_parses_six_empty_categories() {
         assert_eq!(e.node_count, 0);
         assert_eq!(e.chunk_count, 0);
     }
-    // The v7 hours-pool fields: an empty pool (count 0), its 2-byte `count` header lying in-file.
+    // An empty hours pool: count 0, with its 2-byte `count` header lying in file.
     assert_eq!(dir.hours_pool_count, 0, "no hours in a no-POI map");
     assert!(
         dir.hours_pool_offset >= STYLE_OFFSET as u64 && dir.hours_pool_offset + 2 <= bytes.len() as u64,
@@ -753,17 +664,11 @@ fn empty_poi_directory_parses_six_empty_categories() {
     assert_eq!(u16::from_le_bytes(bytes[pool_at..pool_at + 2].try_into().unwrap()), 0);
 }
 
-/// Hand-assemble a file whose POI section carries **one populated category** (id
-/// 3, Accommodation) with a two-record chunk plus a **two-blob hours pool**: the two
-/// records reference blob 0 and blob 1 respectively. Pins the 36-byte record layout
-/// (each field at its offset, incl. the `hours_ref` at [34..36]), the 24-byte name,
-/// the 0xFF sentinel + padding, the single-leaf index, the parsed directory counts +
-/// offsets, and the pool bytes (offset/count + each 29-byte blob at its index).
+/// Hand-assemble a POI section with one populated category: a two-record chunk and a two-blob
+/// hours pool. Pins the record layout, the sentinel and padding, the index and the pool bytes.
 #[test]
 fn populated_poi_category_round_trips_with_record_layout() {
-    // Reuse build_file for everything up to (but not including) the POI section, then
-    // replace its trailing empty directory with a populated one. build_file's POI
-    // section starts at the offset stored in the header (byte 32).
+    // Reuse build_file up to the POI section, then replace its empty directory with a populated one.
     let base = build_file(
         GLOBAL,
         STYLES,
@@ -776,9 +681,8 @@ fn populated_poi_category_round_trips_with_record_layout() {
     );
     let poi_off = resolve_offset(&base, 32);
 
-    // Two accommodation records (subtype 7 = hotel, subtype 11 = wilderness hut). One
-    // named (a full 24-byte name — pins the widened field), one unnamed. Record A refs
-    // hours-pool blob 0, record B refs blob 1.
+    // Two accommodation records, one with a full 24-byte name and one unnamed, referencing pool
+    // blob 0 and blob 1.
     const NAME_A: &str = "Grandhotel du Lac Leman"; // exactly 23 bytes; < 24-byte field
     let rec_a = pack_poi_record(48_000_000, 7_800_000, 7, NAME_A, 0);
     let rec_b = pack_poi_record(48_010_000, 7_810_000, 11, "", 1);
@@ -795,10 +699,8 @@ fn populated_poi_category_round_trips_with_record_layout() {
     blob1[2] = 96; // Mon slot0 close_q = 24:00 (24/7-style)
     let pool = hours_pool(&[blob0, blob1]);
 
-    // Layout after the POI offset: [directory][filler][cat3 index][filler][cat3 chunk][hours pool].
-    // The directory length is fixed (poi_dir_len); v14 puts the index on the first unit boundary
-    // past it and the chunks at `align_up(index + node_count * 4, U)` — §7.1's one rounding step.
-    // The 512-byte chunk is a whole number of units, so the pool lands aligned behind it.
+    // Layout: [directory][filler][cat3 index][filler][cat3 chunk][hours pool]. The index sits on
+    // the first boundary past the directory, and the chunks one rounding step later.
     let dir_gap = filler_len(poi_off + poi_dir_len());
     let cat3_index_off = poi_off + poi_dir_len() + dir_gap;
     let cat3_chunk_off = align_up(cat3_index_off + 4); // one u32 node, rounded up
@@ -817,8 +719,7 @@ fn populated_poi_category_round_trips_with_record_layout() {
         })
         .collect();
 
-    // Assemble: base up to the POI offset, then [directory][cat3 index][cat3 chunk][pool],
-    // then the (displaced) empty nav section back at the tail, header nav offset patched.
+    // Then the displaced empty nav section back at the tail, with the header offset patched.
     let mut bytes = base[..poi_off].to_vec();
     bytes.extend_from_slice(&poi_directory(512, &cats, pool_off, 2));
     bytes.resize(bytes.len() + dir_gap, FILLER);
@@ -848,11 +749,11 @@ fn populated_poi_category_round_trips_with_record_layout() {
     // Every other category is still present and empty.
     assert_eq!(dir.entries.iter().filter(|e| e.is_empty()).count(), 6);
 
-    // The two v7 hours-pool directory fields resolve to the pool + its two blobs.
+    // The hours-pool directory fields resolve to the pool and its two blobs.
     assert_eq!(dir.hours_pool_count, 2, "two pooled schedules");
     assert_eq!(dir.hours_pool_offset, pool_off as u64, "pool at the section tail");
 
-    // Pin the first record's exact 36 bytes (spec §7.3): lat, lon, subtype, name_len, name, hours_ref.
+    // Pin the first record's exact bytes: lat, lon, subtype, name_len, name, hours_ref.
     let rec = &bytes[cat3_chunk_off..cat3_chunk_off + POI_RECORD_LEN];
     assert_eq!(POI_RECORD_LEN, 64);
     assert_eq!(i32::from_le_bytes(rec[0..4].try_into().unwrap()), 48_000_000, "lat");
@@ -863,15 +764,14 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert!(rec[10 + NAME_A.len()..34].iter().all(|&b| b == 0xFF), "unused name tail is 0xFF");
     assert_eq!(u16::from_le_bytes(rec[34..36].try_into().unwrap()), 0, "hours_ref → blob 0");
 
-    // The unnamed second record: Name Len 0, whole 24-byte name field 0xFF, hours_ref → blob 1.
+    // The unnamed second record: name_len 0 and an all-0xFF name field.
     let rec2 = &bytes[cat3_chunk_off + POI_RECORD_LEN..cat3_chunk_off + 2 * POI_RECORD_LEN];
     assert_eq!(rec2[8], 11, "subtype (wilderness hut)");
     assert_eq!(rec2[9], 0, "unnamed ⇒ name_len 0");
     assert!(rec2[10..34].iter().all(|&b| b == 0xFF), "unnamed record's 24-byte name field is all 0xFF");
     assert_eq!(u16::from_le_bytes(rec2[34..36].try_into().unwrap()), 1, "hours_ref → blob 1");
 
-    // The 0xFF subtype sentinel ends the records (byte 8 of the 3rd record slot), and the chunk
-    // pads with 0xFF to 512.
+    // The 0xFF subtype sentinel ends the records, and the chunk pads with 0xFF to 512.
     let sentinel_at = cat3_chunk_off + 2 * POI_RECORD_LEN + 8;
     assert_eq!(bytes[sentinel_at], 0xFF, "a 0xFF subtype byte ends the records");
     assert!(
@@ -879,7 +779,7 @@ fn populated_poi_category_round_trips_with_record_layout() {
         "chunk padded to 512 with 0xFF"
     );
 
-    // The hours pool bytes (spec §7.5): `count u16` then the two 29-byte blobs at their indices.
+    // The hours pool: `count u16`, then the two 29-byte blobs at their indices.
     assert_eq!(u16::from_le_bytes(bytes[pool_off..pool_off + 2].try_into().unwrap()), 2, "pool count");
     let blob0_at = pool_off + 2; // hours_pool_offset + 2 + 0*29
     let blob1_at = pool_off + 2 + POI_HOURS_BLOB_LEN; // + 1*29
@@ -887,10 +787,6 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(&bytes[blob1_at..blob1_at + POI_HOURS_BLOB_LEN], &blob1, "blob 1 at index 1");
 }
 
-/// An old file (version byte 10, the immediately-prior format) is rejected — the reader accepts v11
-/// only ("current version only": old maps get repacked). Forging the version byte alone is enough;
-/// the rest of the bytes never get parsed. This is a **distinct** error (`BadVersion`) from a
-/// mis-sized nav chunk (`BadOffset`, see `nav_directory_rejects_corrupt_fields`).
 #[test]
 fn old_version_file_is_rejected() {
     let mut bytes = two_lod_file();
@@ -912,12 +808,8 @@ fn the_version_cut_refuses_both_neighbours() {
     }
 }
 
-/// §1.1's `Offset Scale` is `0..=9`, and a value outside it is **`BadScale`, deliberately not
-/// `BadVersion`**: a scale a reader cannot resolve is an unreadable file, not an old one, and
-/// telling a rider the map is from a future firmware when the byte is simply corrupt is the wrong
-/// answer. The two ends of the legal range are the two things a unit sits between, so both are
-/// checked for admission — `0` (a unit is one byte, v13's arithmetic exactly) and `9` (512, the
-/// largest scale at which `512 % U == 0`) parse as far as the scale byte, and `10` does not.
+/// An `Offset Scale` outside `0..=9` is `BadScale`, not `BadVersion`: a scale a reader cannot
+/// resolve is an unreadable file, not an old one. `0` and `9` are the legal ends.
 #[test]
 fn a_scale_outside_zero_to_nine_is_bad_scale_not_bad_version() {
     let bytes = two_lod_file();
@@ -930,8 +822,7 @@ fn a_scale_outside_zero_to_nine_is_bad_scale_not_bad_version() {
             "scale {scale} is unreadable, which is a different answer from an unreadable *version*"
         );
     }
-    // A legal scale byte gets past the scale check — the offsets in this file are written for
-    // scale 4, so anything else then fails on an offset, never on the scale itself.
+    // A legal scale byte gets past the check; this file's offsets are written for scale 4.
     for scale in [0u8, 9] {
         let mut forged = bytes.clone();
         forged[HEADER_OFFSET_SCALE_OFF] = scale;
@@ -939,8 +830,7 @@ fn a_scale_outside_zero_to_nine_is_bad_scale_not_bad_version() {
     }
 }
 
-/// §1.3: `Terrain Offset == 0` means the map carries no elevation and `Terrain Length` MUST then be
-/// `0` too — a file that sets one without the other is refused rather than half-believed.
+/// `Terrain Offset == 0` means no elevation, and `Terrain Length` must then be `0` too.
 #[test]
 fn a_half_written_terrain_pair_is_refused() {
     let bytes = two_lod_file();
@@ -954,10 +844,8 @@ fn a_half_written_terrain_pair_is_refused() {
     assert_eq!(MapTables::parse(&SliceSource(&length_only)).err(), Some(Error::BadOffset), "length without offset");
 }
 
-/// The §1.3 window seam: a spliced terrain region is handed back as a byte window whose offset is
-/// the region's **first byte** and whose length is `Terrain Length × U`. The reader forms it; it
-/// never parses the container — so the fixture is deliberately not an OBCT file, and the map still
-/// mounts, renders and routes around it.
+/// A spliced terrain region is handed back as a byte window. The reader forms the window and never
+/// parses the container, so the fixture is deliberately not an OBCT file.
 #[test]
 fn a_spliced_terrain_region_is_handed_back_as_a_window() {
     let plain = two_lod_file();
@@ -989,10 +877,8 @@ fn a_spliced_terrain_region_is_handed_back_as_a_window() {
     assert_eq!(MapTables::parse(&SliceSource(&plain)).unwrap().terrain(), None);
 }
 
-/// A directory whose `category_count` exceeds the reader's bound, whose `chunk_size`
-/// exceeds the POI cap, or whose hours-pool region runs past EOF is a corrupt header
-/// ⇒ rejected (not an unbounded parse). The POI analogue of the LOD-table overflow
-/// guards, extended to the v7 pool fields.
+/// A directory whose counts or `chunk_size` exceed their caps, or whose hours-pool region runs
+/// past EOF, is rejected rather than parsed unbounded.
 #[test]
 fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
     let bytes = two_lod_file();
@@ -1008,35 +894,30 @@ fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
     forged[poi_off + 1..poi_off + 3].copy_from_slice(&8192u16.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "chunk_size 8192 > cap");
 
-    // A POI section offset past EOF is likewise rejected (always-present section, no zero-sentinel).
+    // A POI section offset past EOF is likewise rejected: the section is always present.
     let mut forged = bytes.clone();
     forged[32..36].copy_from_slice(&scaled(bytes.len()).to_le_bytes()); // the file ends on a boundary
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "POI offset at EOF");
 
-    // A hours_pool_count large enough to run the pool region past EOF is rejected (the pool fields
-    // trail the six per-category entries: offset = poi_off + 3 + 6*13).
+    // A hours_pool_count large enough to run the pool past EOF is rejected.
     let mut forged = bytes.clone();
     let pool_count_at = poi_off + 3 + 7 * 13 + 4; // hours_pool_offset u32, then the u16 count
     forged[pool_count_at..pool_count_at + 2].copy_from_slice(&0xFFFFu16.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "pool count runs past EOF");
 }
 
-/// The `empty_poi_directory` builder and the reader agree on the empty §7 layout — a
-/// direct pin of the testkit helper the other suites lean on.
 #[test]
 fn empty_poi_directory_builder_matches_reader() {
     const AT: usize = 1024; // a unit boundary, as any section offset must be
     let dir = empty_poi_directory(AT);
-    // count(1) + chunk_size(2) + 7 × 13-byte entries + pool fields (offset u32 + count u16), then
-    // §1.2 filler to the boundary the seven zero-length indexes and the pool are all named at, the
-    // 2-byte empty-pool `count` header, and filler to the boundary the nav directory follows on.
+    // The fixed-length directory, then filler to the boundary the zero-length indexes and the pool
+    // are named at, the 2-byte empty-pool header, and filler to the nav directory's boundary.
     assert_eq!(poi_dir_len(), 3 + 7 * 13 + 6);
     let pool_at = align_up(AT + poi_dir_len());
     assert_eq!(dir.len(), align_up(pool_at - AT + 2), "the section ends on a unit boundary");
     assert_eq!(dir[0], 7);
     assert_eq!(u16::from_le_bytes([dir[1], dir[2]]), 512);
-    // Every zero-length region is still nameable: an offset cannot point at the directory's last
-    // byte, so all seven indexes and the pool point at the first boundary past it.
+    // An offset cannot point at the directory's last byte, so they point at the next boundary.
     for k in 0..7usize {
         let entry = 3 + k * 13;
         assert_eq!(resolve_offset(&dir, entry + 1), pool_at, "category {k}'s empty index is nameable");
@@ -1047,58 +928,38 @@ fn empty_poi_directory_builder_matches_reader() {
     assert!(dir[poi_dir_len()..pool_at - AT].iter().all(|&b| b == FILLER), "the gap behind the directory is 0xFF");
 }
 
-// === Nav-graph section (v13, spec §8) — byte-pinned contract =================
-//
-// These pin the §8 layout explicitly: the 40-byte nav directory (with the profile-table and sparse
-// snap-index offset/count fields), the always-present §8.6 profile table right after it (56 B per record in
-// v12: the multipliers plus `climb_weight` and its three reserved zeros), the §8.3
-// variable-length junction record with **17-byte** inline neighbor entries (i16 coord deltas +
-// cost_m u16 + way_kind + the v12 directional `ascent_m` u16, the 0xFF degree sentinel + padding),
-// the §8.4 edge record (15-byte head with way_kind + anchor + i16 delta pairs — byte-identical to
-// v11) and its pool-relative-byte-offset addressing, the empty-graph convention, and the
-// corrupt-directory guards (incl. chunk-size != 512 and profile_count == 0). Where `build_file`
-// writes an empty nav section, the populated test hand-assembles it so the bytes are pinned, not
-// derived.
-
 /// The distinctive `way_kind` byte the hand-assembled section carries on both the edge and the
-/// adjacency entries (so the byte-pins can locate it).
+/// adjacency entries, so the byte-pins can locate it.
 const NAV_TEST_KIND: u8 = 0x2A;
 
-/// The v12 `Ascent M` of the hand-assembled edge, per direction. Deliberately different values:
-/// the §8.3 "both sides agree" rule has exactly one exception and this is what pins it.
+/// The hand-assembled edge's ascent, per direction. The two differ on purpose: it is the one
+/// neighbor field that legitimately disagrees between the two ends.
 const NAV_TEST_ASCENT_AB: u16 = 300;
 const NAV_TEST_ASCENT_BA: u16 = 42;
 
-/// Replace `base`'s tail (empty) nav section with a hand-assembled populated one: two junction
-/// nodes joined by one 3-point edge that climbs 300 m eastward. Returns `(bytes, nav_off)`. Layout
-/// at `nav_off`: `[40-byte directory][filler][profile table (1 profile, 56 B)][1-node index]
-/// [filler][one 512 B node chunk][one 512 B edge-pool chunk][empty snap index]` — §8.5's shape,
-/// with every gap `0xFF` since v14.
+/// Replace `base`'s empty tail nav section with a hand-assembled populated one: two junction nodes
+/// joined by one 3-point edge. Returns `(bytes, nav_off)`, laid out as directory, filler, profile
+/// table, index, filler, node chunk, edge-pool chunk and an empty snap index.
 fn nav_two_node_map() -> (Vec<u8>, usize) {
     let base = two_lod_file();
     let nav_off = resolve_offset(&base, 36);
-    // `build_file` writes the empty nav section (40-byte dir + filler + profile table) as the file
-    // tail; truncate at the section start and hand-assemble a populated section.
+    // `build_file` writes the empty nav section as the tail; truncate and hand-assemble.
     let mut bytes = base[..nav_off].to_vec();
 
     // One edge, polyline (lat, lon): (100,200) → (500,500) → (900,800), 1234 m, kind 0x2A.
-    // It is the first record of the first pool chunk ⇒ §8.4 wire id `(0 << 5) | 0`.
+    // It is the first record of the first pool chunk, so the wire id is `(0 << 5) | 0`.
     let edge = pack_nav_edge_record(1234, NAV_TEST_KIND, &[(100, 200), (500, 500), (900, 800)]);
     assert_eq!(edge.len(), NAV_EDGE_FIXED_LEN + 2 * 4, "3-point record: 15-byte head + two delta pairs");
     let edge_id = nav_edge_id(0, 0).expect("chunk 0, ordinal 0");
 
-    // Two degree-1 junctions, each carrying the other inline (as an i16 delta) + the edge id + cost
-    // + kind + the v12 ascent. The two ascents differ **on purpose**: riding 0 → 1 climbs 300 m, and
-    // riding 1 → 0 is that descent, which books 42 m of its own re-climb here. Same edge, same
-    // `edge_id`, same `cost_m`, same `way_kind` — one field that legitimately disagrees.
+    // Two degree-1 junctions, each carrying the other inline. The ascents differ on purpose: same
+    // edge, same cost and kind, one field that legitimately disagrees.
     let rec0 = pack_nav_record(100, 200, 0, &[(1, 900, 800, edge_id, 1234, NAV_TEST_KIND, NAV_TEST_ASCENT_AB)]);
     let rec1 = pack_nav_record(900, 800, 1, &[(0, 100, 200, edge_id, 1234, NAV_TEST_KIND, NAV_TEST_ASCENT_BA)]);
     assert_eq!(rec0.len(), NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_LEN, "degree-1 record is 30 bytes");
 
-    // §8.5: the 40-byte directory is no whole number of units, so the always-present profile table
-    // sits on the first boundary past it. The index follows the table, and the node chunks begin at
-    // `align_up(index_offset * U + node_count * 4, U)` — one rounding step, which is what lets an
-    // index of any node count end below its chunks' boundary rather than exactly on it.
+    // The directory is no whole number of units, so the profile table sits on the next boundary,
+    // the index follows it, and the node chunks begin one rounding step past the index.
     let profile_table = default_nav_profile_table();
     let dir_gap = filler_len(nav_off + NAV_DIR_LEN);
     let profile_table_offset = nav_off + NAV_DIR_LEN + dir_gap;
@@ -1127,9 +988,6 @@ fn nav_two_node_map() -> (Vec<u8>, usize) {
     (bytes, nav_off)
 }
 
-/// The parsed empty nav directory: what a map with no routable ways carries —
-/// always present, never a zero offset; walks visit nothing and edge fetches fail
-/// cleanly, exactly like an empty POI category.
 #[test]
 fn empty_nav_directory_parses_and_walks_nothing() {
     let bytes = two_lod_file();
@@ -1159,20 +1017,14 @@ fn empty_nav_directory_parses_and_walks_nothing() {
     assert_eq!(r.nav_edge(0, &mut pts), None, "no edge pool ⇒ no edge");
 }
 
-/// Pin the populated v13 §8 bytes: the 40-byte directory fields (incl. the profile-table and empty
-/// snap-index offset/count), the §8.6 profile table right after the directory (climb weight + reserved zeros),
-/// the exact junction-record layout (lat, lon, id, degree, then a 17-byte neighbor entry — id, i16
-/// dlat/dlon, edge_id, u16 cost_m, way_kind, u16 ascent_m), the 0xFF degree sentinel + padding, and
-/// the §8.4 edge record (length, pt_count, way_kind, anchor, i16 delta pairs) — then parse it all
-/// back through the reader, checking the exact delta reconstruction of the neighbor coords and that
-/// the two directions of one edge carry their own ascents.
+/// Pin the populated nav bytes: the directory fields, the profile table, the junction record with
+/// its neighbor entry, the degree sentinel and the edge record, then parse it all back.
 #[test]
 fn populated_nav_section_round_trips_with_record_layout() {
     let (bytes, nav_off) = nav_two_node_map();
 
-    // Directory bytes (§8.1) at their fixed offsets, every offset field a **unit count** (§1.1).
-    // Populated producers may insert an alignment run between the profile table and index so the
-    // first node chunk is sector-aligned; since v14 that run is `0xFF`, not zeros.
+    // Directory bytes at their fixed offsets, every offset field a unit count. A populated
+    // producer may insert an alignment run before the index, and that run is `0xFF`.
     let index_offset = resolve_offset(&bytes, nav_off);
     let profile_end = align_up(nav_off + NAV_DIR_LEN) + 56;
     assert!(index_offset >= profile_end, "the index follows the directory + filler + 1-profile table");
@@ -1184,8 +1036,7 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(edge_pool_offset, align_up(index_offset + 4) + 512, "edge pool follows the node chunks");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 16..nav_off + 20].try_into().unwrap()), 1, "edge_chunk_count");
     assert_eq!(u16::from_le_bytes(bytes[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "chunk_size pinned");
-    // §8.6 profile-table fields: the table on the boundary past the 40-byte directory, count 1,
-    // reserved 0 — a **field**, so zero, unlike the `0xFF` gap in front of it.
+    // Profile-table fields. `reserved` is a field, so it is zero, unlike the `0xFF` gap in front.
     let profile_off = resolve_offset(&bytes, nav_off + 22);
     assert_eq!(profile_off, align_up(nav_off + NAV_DIR_LEN), "the profile table sits on the boundary past the dir");
     assert!(bytes[nav_off + NAV_DIR_LEN..profile_off].iter().all(|&b| b == FILLER), "§1.2 gap, not zeros");
@@ -1196,17 +1047,15 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(snap_index_offset, bytes.len(), "an empty snap index contributes no tail bytes");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 32..nav_off + 36].try_into().unwrap()), 0, "snap_index_node_count");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 36..nav_off + 40].try_into().unwrap()), 0, "snap_chunk_count");
-    // The profile record: 12-byte name ("Default", 0xFF-padded), 32 highway + 8 surface bytes, then
-    // v12's climb weight and its three reserved bytes — which are **zero**, not 0xFF padding.
+    // The profile record: name, the two multiplier tables, then the climb weight and three
+    // reserved bytes, which are zero rather than 0xFF padding.
     assert_eq!(&bytes[profile_off..profile_off + 7], b"Default", "profile name");
     assert_eq!(bytes[profile_off + 7], 0xFF, "name is 0xFF-padded");
     assert_eq!(bytes[profile_off + NAV_PROFILE_CLIMB_WEIGHT_OFF], 0, "the testkit profile is climb-blind");
     assert_eq!(&bytes[profile_off + 53..profile_off + 56], &[0, 0, 0], "reserved tail is zero");
     assert_eq!(NAV_PROFILE_LEN, 56, "v12 §8.6 record width");
 
-    // Node chunks start at `align_up(index_offset + node_count * 4, U)` — the §3/§4 convention plus
-    // v14's one rounding step. Pin record 0's exact 30 bytes: lat, lon, id, degree, then the
-    // 17-byte neighbor entry.
+    // Node chunks start one rounding step past the index; pin record 0's exact bytes.
     let chunk_off = align_up(index_offset + 4);
     assert!(bytes[index_offset + 4..chunk_off].iter().all(|&b| b == FILLER), "the pre-chunk gap is 0xFF filler");
     let rec = &bytes[chunk_off..chunk_off + 30];
@@ -1226,18 +1075,16 @@ fn populated_nav_section_round_trips_with_record_layout() {
         28,
         "the ascent field sits at record offset 28 = 13-byte head + entry offset 15"
     );
-    // Record 1 is the same edge from the other end: identical edge_id / cost_m / way_kind, its own
-    // ascent. That inequality is the §8.3 v12 exception, pinned in bytes.
+    // Record 1 is the same edge from the other end, with its own ascent.
     let rec1 = &bytes[chunk_off + 30..chunk_off + 60];
     assert_eq!(u32::from_le_bytes(rec1[21..25].try_into().unwrap()), 0, "same edge_id from the far end");
     assert_eq!(u16::from_le_bytes(rec1[25..27].try_into().unwrap()), 1234, "same cost_m");
     assert_eq!(rec1[27], NAV_TEST_KIND, "same way_kind");
     assert_eq!(u16::from_le_bytes(rec1[28..30].try_into().unwrap()), NAV_TEST_ASCENT_BA, "its own ascent_m");
-    // After the two 30-byte records the padding's first byte lands on the next degree slot — but
-    // every padding byte is 0xFF, so the whole tail is the sentinel.
+    // Every padding byte is 0xFF, so the whole tail reads as the degree sentinel.
     assert!(bytes[chunk_off + 60..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
 
-    // Edge record bytes (§8.4) at pool offset 0: length, pt_count, way_kind, anchor, deltas (23 B).
+    // Edge record bytes at pool offset 0: length, pt_count, way_kind, anchor, deltas.
     let e = &bytes[edge_pool_offset..edge_pool_offset + 23];
     assert_eq!(u32::from_le_bytes(e[0..4].try_into().unwrap()), 1234, "length_m");
     assert_eq!(u16::from_le_bytes(e[4..6].try_into().unwrap()), 3, "pt_count");
@@ -1278,19 +1125,15 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!((n.id, n.lat, n.lon, n.edge_id, n.cost_m, n.way_kind), (0, 100, 200, 0, 1234, NAV_TEST_KIND));
     assert_eq!(n.ascent_m, NAV_TEST_ASCENT_BA, "…and the b→a entry decodes the other one");
 
-    // Edge fetch by pool-relative byte offset: id 0 decodes the polyline as the crate's (lon, lat)
-    // pairs and returns length_m.
+    // Edge fetch by pool-relative byte offset, decoding the polyline as (lon, lat) pairs.
     let mut pts = heapless::Vec::<(i32, i32), 8>::new();
     assert_eq!(r.nav_edge(0, &mut pts), Some(1234));
     assert_eq!(pts.as_slice(), &[(200, 100), (500, 500), (800, 900)]);
 
-    // A mis-addressed id degrades to None, never a panic: id 100 lands well inside the 0xFF padding
-    // (pt_count reads 0xFFFF ⇒ record overflows the chunk), and an id past the pool fails the bounds
-    // check.
+    // A mis-addressed id degrades to None: id 100 lands in the padding, and 512 is past the pool.
     assert_eq!(r.nav_edge(100, &mut pts), None, "padding is not a record");
     assert_eq!(r.nav_edge(512, &mut pts), None, "past the one-chunk pool");
-    // …and an id at the top of the `u32` range, where the pool/EOF bounds would wrap on a 32-bit
-    // `usize` (the device) if the adds weren't checked.
+    // …and an id at the top of the `u32` range, where unchecked bounds math would wrap.
     assert_eq!(r.nav_edge(u32::MAX, &mut pts), None, "an id that would wrap the bounds math");
     assert_eq!(r.nav_edge(u32::MAX - 3, &mut pts), None, "…record-aligned, still out of pool");
 
@@ -1299,10 +1142,8 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert!(matches!(r.for_each_nav_node(&r.bbox, &mut small, |_| {}), Err(Error::TooShort)));
 }
 
-/// Corrupt v9 nav directories are rejected at parse — the §8 analogue of the LOD / POI overflow
-/// guards: an offset past EOF, a `chunk_size` that isn't the pinned 512, a `profile_count` outside
-/// 1..=8, and counts whose regions wrap/overrun the file. All are `BadOffset`, distinct from a v8
-/// file's `BadVersion`.
+/// Corrupt nav directories are rejected at parse: an offset past EOF, a `chunk_size` that is not
+/// 512, a `profile_count` outside 1..=8, and counts whose regions overrun the file.
 #[test]
 fn nav_directory_rejects_corrupt_fields() {
     let bytes = two_lod_file();
@@ -1318,14 +1159,12 @@ fn nav_directory_rejects_corrupt_fields() {
     forged[nav_off + 20..nav_off + 22].copy_from_slice(&0u16.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "chunk_size 0");
 
-    // A chunk_size other than the pinned 512 is rejected — v9 fixes the nav chunk size. 1024 was a
-    // legal v8 value; a v9 reader must refuse it (the epic's "reject a 1024-chunk file"), distinct
-    // from the v8 file's BadVersion.
+    // A chunk_size other than the pinned 512 is rejected: the nav chunk size is fixed.
     let mut forged = bytes.clone();
     forged[nav_off + 20..nav_off + 22].copy_from_slice(&1024u16.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "chunk_size must be 512");
 
-    // profile_count 0 (a v9 file must carry ≥ 1 profile — malformed, not degraded).
+    // profile_count 0: a file must carry at least one profile.
     let mut forged = bytes.clone();
     forged[nav_off + 26] = 0;
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "profile_count 0");
@@ -1346,7 +1185,7 @@ fn nav_directory_rejects_corrupt_fields() {
     forged[nav_off + 16..nav_off + 20].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "edge pool overruns");
 
-    // The empty v13 snap index still carries an in-file offset and must carry zero chunks.
+    // The empty snap index still carries an in-file offset and must carry zero chunks.
     let mut forged = bytes.clone();
     forged[nav_off + 28..nav_off + 32].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "empty snap offset past EOF");
@@ -1355,22 +1194,15 @@ fn nav_directory_rejects_corrupt_fields() {
     forged[nav_off + 36..nav_off + 40].copy_from_slice(&1u32.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "empty snap index has chunks");
 
-    // A populated-looking snap index whose node/chunk region overruns the file is rejected before
-    // any quadtree walk.
+    // A populated-looking snap index whose region overruns the file is rejected before any walk.
     let mut forged = bytes.clone();
     forged[nav_off + 32..nav_off + 36].copy_from_slice(&u32::MAX.to_le_bytes());
     forged[nav_off + 36..nav_off + 40].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "snap region overruns");
 }
 
-// === v11 chunk-offset table (§5, issue #1009) ================================
-// The offset table replaced the fixed `k * chunk_size` stride, so a corrupt table is a *new* way to
-// aim a read out of the chunk region. Every case below must come back as a typed error — never a
-// panic, never bytes from an adjacent region.
-
-/// Locate LOD `k`'s offset table: `(table_offset, chunk_count)`. The table sits immediately behind
-/// the index — it is read by 4-byte indexing from a start the LOD table names, so unlike the chunks
-/// it needs no unit boundary of its own (§3).
+/// Locate LOD `k`'s offset table. It sits behind the index and is read by 4-byte indexing, so
+/// unlike the chunks it needs no unit boundary.
 fn offset_table_at(bytes: &[u8], k: usize) -> (usize, usize) {
     let lod_tab_off = resolve_offset(bytes, 26);
     let entry = lod_tab_off + k * 18;
@@ -1395,10 +1227,8 @@ fn fetch(bytes: &[u8], cid: u32) -> Result<(), obc_reader::MapReadError> {
     r.for_each_feature(0, cid, &node, &mut points, &mut ring_lens, |_| {}).map(|_| ())
 }
 
-/// The table the packer writes: `chunk_count + 1` entries, `[0]` zero, strictly the running
-/// **unit** total (§5.1 — entry `e` names byte `data_start + e * U`, so each chunk's content is
-/// rounded up to a unit), last entry the region size — and chunk `k` decodes from
-/// `offsets[k]..offsets[k+1]`.
+/// The table the packer writes: `chunk_count + 1` entries, `[0]` zero, the running unit total.
+/// Chunk `k` decodes from `offsets[k]..offsets[k+1]`.
 #[test]
 fn offset_table_addresses_every_chunk() {
     let a = seal(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
@@ -1440,8 +1270,8 @@ fn offset_table_addresses_every_chunk() {
     assert_eq!(decode_chunk(&r, 0, 1, &node)[0].kind, Kind::Polygon, "chunk 1 is the polygon");
 }
 
-/// A chunkless LOD still carries its table — the single `0` entry — and the LOD after it starts
-/// right behind that, so the empty case is not a special case for the reader's arithmetic.
+/// A chunkless LOD still carries its table, the single `0` entry, so the empty case is not special
+/// for the reader's arithmetic.
 #[test]
 fn a_chunkless_lod_still_writes_its_one_entry_table() {
     let bytes = build_file(
@@ -1468,8 +1298,7 @@ fn a_chunkless_lod_still_writes_its_one_entry_table() {
     assert_eq!(decode_chunk(&r, 1, 0, &r.bbox).len(), 1, "the next LOD is found right after that one entry");
 }
 
-/// A non-monotonic pair (`offsets[k] > offsets[k+1]`) would make the chunk length negative. Rejected
-/// per fetch, not trusted.
+/// A non-monotonic pair (`offsets[k] > offsets[k+1]`) would make the chunk length negative.
 #[test]
 fn non_monotonic_offset_pair_is_malformed() {
     let mut bytes = two_lod_file();
@@ -1479,8 +1308,7 @@ fn non_monotonic_offset_pair_is_malformed() {
     assert_eq!(fetch(&bytes, 0), Err(obc_reader::MapReadError::Malformed));
 }
 
-/// An interior entry pointing past the region's own total (`offsets[chunk_count]`, the bound
-/// `parse_lod_table` keeps resident) would read beyond the LOD's chunk bytes.
+/// An interior entry past the region's own total would read beyond the LOD's chunk bytes.
 #[test]
 fn offset_past_the_region_total_is_malformed() {
     let a = seal(pack_line(1, 100, 200, &[(10, 0)]), CS);
@@ -1501,15 +1329,11 @@ fn offset_past_the_region_total_is_malformed() {
     assert_eq!(fetch(&bytes, 0), Err(obc_reader::MapReadError::Malformed));
 }
 
-/// A pair whose span exceeds the LOD's declared `chunk_size` — the v11 meaning of that field is the
-/// capacity bound, so this is exactly what it is for. (The reader's companion `MAX_CHUNK_BYTES`
-/// check on the same length is belt-and-braces: `parse_lod_table` already rejects a `chunk_size`
-/// above it, so `len ≤ chunk_size ≤ MAX_CHUNK_BYTES` holds for anything that parses — as the second
-/// half of this test shows.)
+/// A pair whose span exceeds the LOD's declared `chunk_size`, the capacity bound. The companion
+/// `MAX_CHUNK_BYTES` check is belt and braces.
 #[test]
 fn chunk_longer_than_chunk_size_is_malformed() {
-    // A 48-byte chunk (one whole span at `U = 16`) under a forged 32-byte `chunk_size`: the §5.1
-    // bound is `align_up(32, 16) = 32`, below the 48-byte span, so the fetch is refused.
+    // A 48-byte chunk under a forged 32-byte `chunk_size`, so the fetch is refused.
     let long = seal(pack_line(1, 100, 200, &[(1, 1); 20]), CS);
     assert_eq!(align_up(long.len()), 48, "the fixture chunk spans three units");
     let build = || {
@@ -1530,11 +1354,8 @@ fn chunk_longer_than_chunk_size_is_malformed() {
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)), "never reaches a fetch");
 }
 
-/// §5.1's span bound is **`align_up(Chunk Size, U)`**, not `Chunk Size`: a chunk's *content* may
-/// not exceed `Chunk Size`, but its *span* is that content rounded up to a unit, so a chunk filled
-/// exactly to a `Chunk Size` that is no unit multiple spans past the field's own value — and is
-/// perfectly legal. A reader that kept v13's `span <= Chunk Size` would refuse the largest chunk a
-/// writer can produce, which is why this is pinned rather than left to the malformed case above.
+/// The span bound is `align_up(Chunk Size, U)`: a chunk's content may not exceed `Chunk Size`, but
+/// its span is that content rounded up, so a chunk filled to an unaligned `Chunk Size` is legal.
 #[test]
 fn a_chunk_filled_to_an_unaligned_chunk_size_still_fetches() {
     // 8 + 2 × 19 = 46 bytes sealed, which is exactly `chunk_size` and is no multiple of `U`.
@@ -1549,8 +1370,7 @@ fn a_chunk_filled_to_an_unaligned_chunk_size_still_fetches() {
     assert_eq!(fetch(&bytes, 0), Ok(()), "align_up(46) = 48 is the bound, so a 48-byte span passes");
 }
 
-/// A `chunk_count` whose table alone would run past EOF: the table is part of the region
-/// `parse_lod_table` bounds, so this is a corrupt header, not a lazily-discovered read failure.
+/// A `chunk_count` whose table alone would run past EOF is a corrupt header, rejected at parse.
 #[test]
 fn offset_table_running_past_eof_is_rejected_at_parse() {
     let mut bytes = two_lod_file();
@@ -1560,15 +1380,13 @@ fn offset_table_running_past_eof_is_rejected_at_parse() {
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)));
 }
 
-/// A chunk whose feature stream never reaches the `0xFF` sentinel is truncated. The features that do
-/// decode are published, and the walk reports a malformed drop — the alternative, ending quietly at
-/// the offset-derived length, would hide a lost tail.
+/// A chunk whose feature stream never reaches the `0xFF` sentinel is truncated: the features that
+/// do decode are published, and the walk reports a malformed drop.
 #[test]
 fn chunk_without_its_sentinel_reports_a_malformed_drop() {
-    // Since v14 the filler behind a chunk is `0xFF` too, so a walk that runs off the end of a
-    // short chunk's content meets a sentinel either way (§5.1). To express *truncated* the content
-    // must therefore fill its span exactly, leaving no filler to stop on — which needs an even
-    // length, so the feature takes the wide header (12 bytes) an out-of-`u16` anchor forces.
+    // The filler behind a chunk is `0xFF` too, so a short chunk meets a sentinel either way. To
+    // express truncated, the content must fill its span exactly, which needs the wide header an
+    // out-of-`u16` anchor forces.
     let chunk = pack_line(1, 70_000, 200, &[(10, 0), (0, 10)]); // deliberately not sealed
     let cs = chunk.len();
     assert_eq!(cs, UNIT, "the chunk fills its whole span, so no 0xFF filler follows it");
@@ -1590,17 +1408,12 @@ fn chunk_without_its_sentinel_reports_a_malformed_drop() {
     assert_eq!(status.malformed, 1, "the missing sentinel is reported");
 }
 
-// === v11 feature header: compact and wide (§5, issue #1009) =================
-
-/// A chunk holding both header forms decodes identically through the full-chunk walk **and** through
-/// the pass-B `decode_feature_at` refetch. The refetch takes a `FeatureRef::offset` from pass A, and
-/// v11 moved what those offsets mean (7 bytes per compact header instead of 12), so the two paths
-/// must be pinned to agree across a mixed chunk — a compact feature after a wide one only lands
-/// right if the wide one's width was read from its flags.
+/// A chunk holding both header forms decodes identically through the full-chunk walk and through
+/// the pass-B refetch. A compact feature after a wide one only lands right if the wide one's width
+/// was read from its flags.
 #[test]
 fn mixed_compact_and_wide_headers_decode_the_same_both_ways() {
-    // `pack_line`'s anchors decide the form: 65 536 forces wide, 100 stays compact. The leaf bbox is
-    // the global one, so the anchors are absolute here.
+    // `pack_line`'s anchor decides the form: a large anchor forces wide, a small one stays compact.
     const BIG: (i32, i32, i32, i32) = (0, 0, 200_000, 200_000);
     let mut chunk = Vec::new();
     chunk.extend_from_slice(&pack_line(1, 100, 200, &[(10, 0), (0, 10)])); // compact
@@ -1638,7 +1451,7 @@ fn mixed_compact_and_wide_headers_decode_the_same_both_ways() {
         ]
     );
     // The offsets pin the two widths: the compact feature is 7 + 2 deltas × 2 = 11 bytes, the wide
-    // one 12 + 1 delta × 2 = 14. A reader that assumed one fixed width would land elsewhere.
+    // one 12 + 1 delta × 2 = 14.
     assert_eq!(walked.iter().map(|(_, off, _)| *off).collect::<Vec<_>>(), vec![0, 11, 25]);
 
     // Pass B: re-decode each one from its offset alone.
@@ -1651,8 +1464,8 @@ fn mixed_compact_and_wide_headers_decode_the_same_both_ways() {
     }
 }
 
-/// An unknown flag bit is still rejected — v11 widened the accepted mask to `0x0F` (the new `WIDE`
-/// bit), so `0x10` is the first invalid one, and it must not be mistaken for a header field.
+/// An unknown flag bit is rejected: the accepted mask is `0x0F`, so `0x10` is the first invalid
+/// one, and it must not be mistaken for a header field.
 #[test]
 fn unknown_feature_flag_bit_is_malformed() {
     let mut chunk = pack_line(1, 100, 200, &[(10, 0)]);

@@ -10,15 +10,12 @@ use super::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
 /// The screen-level result of one action-row gesture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CardEvent {
-    /// The gesture did not activate or dismiss the card.
     None,
-    /// The card's Back action was requested.
     Dismiss,
-    /// Row `usize` was activated by its required gesture.
     Activate(usize),
 }
 
-/// The selected row and shared interaction mechanics for a card's action list.
+/// The selected row and the interaction mechanics for a card's action list.
 #[derive(Debug, Default)]
 pub(crate) struct ActionRows {
     selected: usize,
@@ -29,7 +26,7 @@ impl ActionRows {
         ActionRows { selected: initial_selected }
     }
 
-    /// Apply one gesture against the caller's guard declaration.
+    /// Apply one gesture. `guards` tells which rows need a hold instead of a press.
     pub(crate) fn handle(&mut self, gesture: Gesture, guards: &[bool]) -> CardEvent {
         if guards.is_empty() {
             return if matches!(gesture, Gesture::Back) { CardEvent::Dismiss } else { CardEvent::None };
@@ -52,7 +49,6 @@ impl ActionRows {
         guards.get(self.selected).copied().unwrap_or(false)
     }
 
-    /// Draw the caller's labels, guards, color, and geometry through the shared row vocabulary.
     pub(crate) fn draw(
         &self,
         cv: &mut impl Surface,

@@ -8,19 +8,17 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-/// A position/orientation fix, however it was obtained.
+/// A position and orientation fix.
 ///
 /// Position is integer microdegrees (1e-6°), matching the persistent map formats and renderer.
 /// `course` and `speed_mps` are optional because a real GPS only knows them while moving.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fix {
-    /// Latitude in microdegrees (1e-6°).
     pub lat: i32,
-    /// Longitude in microdegrees (1e-6°).
     pub lon: i32,
-    /// Course over ground in degrees clockwise from north, or `None` when unknown.
+    /// Course over ground in degrees clockwise from north.
     pub course: Option<f32>,
-    /// Ground speed in metres per second, or `None` when unknown.
+    /// Ground speed in metres per second.
     pub speed_mps: Option<f32>,
 }
 
@@ -34,31 +32,22 @@ impl Fix {
 
 /// Source of fresh location samples.
 pub trait LocationSource {
-    /// A fix only when a fresh sample is available this poll; `None` means no new sample.
-    /// Identical-position stationary fixes remain fresh samples and must not be deduplicated.
+    /// `None` means no new sample. Identical-position stationary fixes are still fresh samples
+    /// and must not be deduplicated.
     fn poll(&mut self) -> Option<Fix>;
 }
 
 /// Source of fresh barometric-altitude samples in metres.
-///
-/// The shipping board reads barometer and temperature coherently with each GPS fix. The port does
-/// not prescribe that scheduling: callers still receive `Some` only for a fresh sample and `None`
-/// between readings.
 pub trait AltimeterSource {
-    /// The next fresh barometric altitude, or `None` when no sample arrived.
     fn poll(&mut self) -> Option<f32>;
 }
 
 /// Source of fresh ambient-temperature samples in degrees Celsius.
 pub trait TemperatureSource {
-    /// The next fresh ambient temperature, or `None` when no sample arrived.
     fn poll(&mut self) -> Option<f32>;
 }
 
 /// A wall-clock date and time of day, at minute resolution.
-///
-/// This is also stored in the app settings model. Defining it here lets [`GpsTime`] and settings use
-/// one nominal value without copying every fresh GPS timestamp across a crate-specific twin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateTime {
     pub year: u16,
@@ -80,14 +69,12 @@ impl Default for DateTime {
 }
 
 impl DateTime {
-    /// The [`Default`] stamp as a `const` — one link in the const `Settings::DEFAULT` chain
-    /// (`obc-app`), which exists so the board can build its object store from a `.rodata` image
-    /// instead of a stack temporary (the #1197 boot-chain fix).
+    /// The [`Default`] stamp as a `const`, one link in the const `Settings::DEFAULT` chain that
+    /// lets the board build its object store from a `.rodata` image, not a stack temporary.
     pub const DEFAULT: DateTime = DateTime { year: 2025, month: 1, day: 1, hour: 12, minute: 0 };
 }
 
 impl DateTime {
-    /// Gregorian leap-year test.
     pub const fn is_leap(year: u16) -> bool {
         (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
     }
@@ -112,11 +99,10 @@ impl DateTime {
 
     /// Advance this stamp by `mins`.
     ///
-    /// O(1): the whole shift is one epoch-second round trip, not a day-at-a-time walk — this is on
-    /// the per-frame path (`WallClock::now`, which Home and Map read every frame). The result
-    /// saturates at the representable window's edges (`1970-01-01 00:00` / `2106-02-07 06:28`, the
-    /// `u32` epoch-second ceiling) rather than wrapping; callers wanting a narrower calendar (the
-    /// app's 2020–2099) clamp on top.
+    /// One epoch-second round trip, not a day-at-a-time walk, because this is on the per-frame
+    /// path. The result saturates at the representable window's edges (`1970-01-01 00:00` and
+    /// `2106-02-07 06:28`) instead of wrapping; a caller that wants a narrower calendar clamps
+    /// on top.
     pub fn add_minutes(self, mins: u32) -> Self {
         Self::from_unix_clamped(self.pinned().to_unix_i64() + mins as i64 * 60)
     }
@@ -170,10 +156,9 @@ impl DateTime {
     }
 }
 
-/// Why a [`SettingsStore::save`] failed — a bounded, `Copy` reason a host can carry back to the app
-/// in a settings-persistence failure outcome without borrowing a
-/// backend error. The variants are intentionally coarse: the app retries the same revision on any of
-/// them, so a rider-visible advisory is all the detail the protocol needs.
+/// Why a [`SettingsStore::save`] failed: a bounded, `Copy` reason a host can carry back to the
+/// app without borrowing a backend error. The variants are coarse on purpose, because the app
+/// retries the same revision on any of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSaveError {
     /// The backing store rejected or failed the write (RRAM line-write error, a file I/O failure, a
@@ -183,9 +168,9 @@ pub enum SettingsSaveError {
 
 /// Persistence for an owner-defined settings value.
 ///
-/// `None` from [`load`](SettingsStore::load) means no valid persisted value is available.
-/// [`save`](SettingsStore::save) returns a typed result so the app can acknowledge a durable write
-/// and keep a failed one retryable (#810) — the live value remains authoritative in RAM regardless.
+/// `None` from [`load`](SettingsStore::load) means no valid persisted value is available. The
+/// typed result from [`save`](SettingsStore::save) lets the app acknowledge a durable write and
+/// keep a failed one retryable; the live value stays authoritative in RAM either way.
 pub trait SettingsStore {
     /// The settings model owned by the consumer of this port.
     type Value;
@@ -193,58 +178,44 @@ pub trait SettingsStore {
     /// Load the persisted value, or `None` when storage is blank, invalid, or unavailable.
     fn load(&mut self) -> Option<Self::Value>;
 
-    /// Persist `value`, reporting whether the write reached durable storage. A returned
-    /// [`SettingsSaveError`] leaves the revision retryable; `Ok(())` is the app's cue to mark it
-    /// acknowledged.
+    /// Persist `value`, reporting whether the write reached durable storage. An error leaves the
+    /// revision retryable; `Ok(())` is the app's cue to mark it acknowledged.
     fn save(&mut self, value: &Self::Value) -> Result<(), SettingsSaveError>;
 }
 
 /// How many discrete brightness steps a [`Backlight`] accepts: levels `0..BACKLIGHT_LEVELS`, from
-/// the dimmest lit step to full. **There is no level that turns the light off** — a rider who
-/// cannot read the panel cannot find the control that turns it back on.
+/// the dimmest lit step to full. No level turns the light off, because a rider who cannot read
+/// the panel cannot find the control that turns it back on.
 pub const BACKLIGHT_LEVELS: u8 = 5;
 
-/// A board that has no controllable panel light. Returned by every call of a [`Backlight`] the
-/// hardware cannot honour, so a refusal is a value the caller can log rather than a silent no-op
-/// that pretends the panel dimmed.
+/// A board that has no controllable panel light. Every [`Backlight`] call returns it, so a
+/// refusal is a value the caller can log instead of a silent no-op that pretends the panel dimmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BacklightUnsupported;
 
 /// The panel's brightness control.
 ///
-/// **One call, three meanings**, sequenced by the caller — which is why there is no separate
-/// `preview` / `commit` / `revert`. Each of the three is "drive the panel at this level now", and
-/// the *only* difference is what the caller does with the value afterwards:
-///
-/// * **preview** — the rider stepped the editor: apply the staged level, persist nothing;
-/// * **commit** — the rider confirmed: apply the same level, and the caller stores it;
-/// * **revert** — the rider cancelled: apply the level that is still stored.
-///
-/// So a host that applies the app's answer every frame gets all three for free, and the port keeps
-/// no state a cancel would have to unwind.
+/// One call covers preview, commit, and revert, which is why there are no separate methods. Each
+/// of the three is "drive the panel at this level now", and only what the caller does with the
+/// value afterwards differs. So the port keeps no state that a cancel would have to unwind.
 pub trait Backlight {
     /// Whether this panel has a light at all. `false` is a standing property of the hardware, not
-    /// a transient state, and it means every [`apply`](Backlight::apply) refuses.
-    ///
-    /// It exists because a *refusal the rider cannot see* is not honesty. A host states this
-    /// answer to the app once at composition, and the app removes the brightness control rather
-    /// than drawing a slider that moves while nothing changes.
+    /// a transient state, and it means every [`apply`](Backlight::apply) refuses. A host states
+    /// this once at composition, and the app removes the brightness control instead of drawing a
+    /// slider that moves while nothing changes.
     fn available(&self) -> bool;
 
     /// Drive the panel at `level` (`0..`[`BACKLIGHT_LEVELS`], saturating above), or refuse when
-    /// this hardware has no light to drive. Idempotent: applying the level already showing is a
-    /// no-op, so a caller may apply every frame.
-    ///
-    /// Refusal and [`available`](Backlight::available) must agree: an implementation that answers
-    /// `false` refuses every level, and one that answers `true` accepts every level in range.
+    /// this hardware has no light to drive. Idempotent, so a caller may apply every frame.
+    /// Refusal and [`available`](Backlight::available) must agree.
     fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported>;
 }
 
-/// Turning the device off, for good — the port the quick drawer's guarded confirmation ends in.
+/// Turning the device off for good, where the quick drawer's guarded confirmation ends.
 ///
-/// It **does not return**: on hardware the part enters system-off and only a wake source restarts
-/// it, and a host stands in with whatever ending is honest for it. The caller must therefore have
-/// presented its last frame before calling, because nothing after the call runs.
+/// It does not return: on hardware the part enters system-off and only a wake source restarts it,
+/// and a host stands in with whatever ending is honest for it. The caller must have presented its
+/// last frame before calling, because nothing after the call runs.
 pub trait PowerOff {
     /// Enter the deepest off state this device has.
     fn power_off(&mut self) -> !;
@@ -260,31 +231,27 @@ pub struct GpsTime {
 
 /// Source of fresh resolved UTC timestamps.
 pub trait ClockSource {
-    /// The next fresh receiver timestamp, or `None` when no stamp arrived.
     fn poll(&mut self) -> Option<GpsTime>;
 }
 
 /// Source of fresh heart-rate samples in beats per minute.
 pub trait HeartRateSource {
-    /// The next fresh heart-rate sample, or `None` when no sample arrived.
     fn poll(&mut self) -> Option<u16>;
 }
 
 /// Source of fresh power samples in watts.
 pub trait PowerSource {
-    /// The next fresh power sample, or `None` when no sample arrived.
     fn poll(&mut self) -> Option<u16>;
 }
 
 /// Source of fresh cadence samples in revolutions per minute.
 pub trait CadenceSource {
-    /// The next fresh cadence sample, or `None` when no sample arrived. `Some(0)` means coasting.
+    /// `Some(0)` means coasting.
     fn poll(&mut self) -> Option<u8>;
 }
 
 /// Source of fresh electronic-compass headings in degrees clockwise from north.
 pub trait CompassSource {
-    /// The next fresh heading, or `None` when no sample arrived.
     fn poll(&mut self) -> Option<f32>;
 }
 
@@ -294,11 +261,9 @@ pub trait FuelGauge {
     fn poll(&mut self) -> Option<u8>;
 }
 
-/// One accepted recorded fix and its sensor values.
-///
-/// The app stages these itself and an executor writes them when it serves an append; the route
-/// crate re-exports this same nominal type and encodes it directly into the fixed-size track
-/// record, so there is no conversion and no second copy anywhere on the way out.
+/// One accepted recorded fix and its sensor values. The route crate re-exports this same type and
+/// encodes it straight into the fixed-size track record, so there is no conversion and no second
+/// copy on the way out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackPoint {
     /// Longitude in microdegrees.
@@ -321,30 +286,21 @@ pub struct TrackPoint {
 
 /// The polled sensor capabilities handed to the app each frame.
 pub struct Sensors<'a> {
-    /// User location source.
     pub loc: &'a mut dyn LocationSource,
-    /// Optional barometric altitude source.
     pub altimeter: Option<&'a mut dyn AltimeterSource>,
-    /// Optional ambient temperature source.
     pub temperature: Option<&'a mut dyn TemperatureSource>,
-    /// Optional resolved GPS time source.
     pub clock: Option<&'a mut dyn ClockSource>,
-    /// Optional electronic compass.
     pub compass: Option<&'a mut dyn CompassSource>,
-    /// Optional battery fuel gauge.
     pub fuel: Option<&'a mut dyn FuelGauge>,
-    /// Optional heart-rate source.
     pub hr: Option<&'a mut dyn HeartRateSource>,
-    /// Optional power source.
     pub power: Option<&'a mut dyn PowerSource>,
-    /// Optional cadence source.
     pub cadence: Option<&'a mut dyn CadenceSource>,
 }
 
 impl<'a> Sensors<'a> {
-    /// The location-only set: every optional capability absent. A host that has more fills them in
-    /// with struct-update syntax (`Sensors { fuel: Some(g), ..Sensors::new(loc) }`), so adding a
-    /// tenth optional here doesn't ripple through every caller.
+    /// The location-only set, with every optional capability absent. A host that has more fills
+    /// them in with struct-update syntax (`Sensors { fuel: Some(g), ..Sensors::new(loc) }`), so a
+    /// tenth optional here does not ripple through every caller.
     pub fn new(loc: &'a mut dyn LocationSource) -> Self {
         Sensors {
             loc,
@@ -360,21 +316,20 @@ impl<'a> Sensors<'a> {
     }
 }
 
-/// A physical control button whose press **edges** the gesture layer times.
+/// A physical control button whose press edges the gesture layer times.
 ///
-/// The device has four buttons: **Up** / **Down** on the left flank, **Select** / **Back** on the
-/// right, and **all four** reach the gesture layer as edges. So one timing model — the step
-/// cadence as well as the long-press threshold — lives in the shared recognizer, and a host that
-/// models real buttons gets exactly the device's behaviour.
+/// The device has four: Up and Down on the left flank, Select and Back on the right. All four
+/// reach the gesture layer as edges, so one timing model, the step cadence and the long-press
+/// threshold alike, lives in the shared recognizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
-    /// The left-flank **Up** button (upper): previous / decrease.
+    /// The left-flank Up button (upper): previous or decrease.
     Up,
-    /// The left-flank **Down** button (lower): next / increase.
+    /// The left-flank Down button (lower): next or increase.
     Down,
-    /// The right-flank **Select** button (upper): confirm / open.
+    /// The right-flank Select button (upper): confirm or open.
     Select,
-    /// The right-flank **Back** button (lower).
+    /// The right-flank Back button (lower).
     Back,
 }
 
@@ -390,11 +345,11 @@ pub enum ButtonEvent {
 /// A raw control event before gesture recognition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Signed selection steps **injected directly**, bypassing the Up/Down edges: **negative = Up**
-    /// ("previous"), **positive = Down** ("next"). This is the variant for the sources a device has
-    /// no button for — a mouse wheel, a `--script` recipe, the debug link's `K t` line — and it may
-    /// carry a batched jump of several steps at once. Physical buttons never use it: they forward
-    /// [`Button::Up`] / [`Button::Down`] edges and the recognizer derives the steps.
+    /// Signed selection steps injected directly, bypassing the Up/Down edges: negative is Up
+    /// ("previous"), positive is Down ("next"). It is the variant for sources the device has no
+    /// button for, such as a mouse wheel, a `--script` recipe, or the debug link, and it may carry
+    /// several steps at once. Physical buttons forward [`Button::Up`] and [`Button::Down`] edges
+    /// instead, and the recognizer derives the steps.
     Step(i32),
     /// One button edge.
     Button(ButtonEvent),

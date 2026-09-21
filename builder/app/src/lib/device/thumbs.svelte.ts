@@ -4,15 +4,12 @@
  * desktop app keeps a bounded local cache so reconnecting a device does not download every object
  * again after each restart.
  *
- * The module singleton survives tab switches inside the app. Persistent storage is selected from
- * the build-time platform: desktop gets `localStorage`, while web and dev get no persistent store.
  * Cache keys carry the device scope and an object fingerprint, so changed routes are never shown
  * with an old track. Entries without a stable fingerprint remain session-only on every host.
  *
  * `fill` walks the dashboard's lists sequentially. Every load runs through the page's `enqueue`,
  * FIFO with whatever the rider clicks, because the cable has one transfer slot and thumbnails are
- * the least important work on it. Tiles render immediately with an empty box and fill in as tracks
- * land. What is held is points, not pixels; the tiles draw them through `fitTracks` (`library.ts`).
+ * the least important work on it. What is held is points, not pixels.
  */
 
 import { SvelteMap } from "svelte/reactivity";
@@ -31,7 +28,7 @@ export const STAGE_COLORS = ["#3c6b39", "#cf6a2a", "#33575b", "#e3ad33", "#5f7d3
 
 const PREFIX = "obc-thumb:v1:";
 
-/** About 1.5 MiB at the usual track size; older entries are removed least-recently-used first. */
+/** A chosen cap: about 1.5 MiB at the usual track size. Older entries go least-recently-used first. */
 export const THUMB_CACHE_CAP = 300;
 
 /** The small persistent-storage seam, injectable for tests. */
@@ -45,11 +42,9 @@ export interface ThumbStorage {
 /**
  * A catalog entry's content identity, for the cache key.
  *
- * One function for every kind, because §3.3 gives every kind the same identity: a committed object's
- * payload never changes under one revision, so the payload's CRC names exactly those bytes — and a
- * replace publishes a new revision with a new CRC, which is what makes a stale thumbnail impossible.
- * The two it replaces keyed a route on its CRC and a ride on `(start time, byte length)`, which was
- * the v1 catalog's way of saying the same thing in the two shapes it had.
+ * One function for every kind, because a committed object's payload never changes under one
+ * revision: the payload's CRC names exactly those bytes, and a replace publishes a new revision with
+ * a new CRC, which is what makes a stale thumbnail impossible.
  *
  * `null` where the device declared no CRC — a ride it is still recording — which keeps that entry
  * out of the durable cache rather than caching a thumbnail of a payload that is still growing.

@@ -1,17 +1,16 @@
-//! [`CatalogState`] — the resident route / ride / trip catalogs, keyed by durable object ids.
+//! [`CatalogState`] — the resident route, ride and trip catalogs, keyed by durable object ids.
 //!
-//! One component owns every id ↔ summary pairing and every piece of state keyed by catalog
-//! *identity* (the #450 contract): the route and ride catalogs with their durable ids, the trip
-//! folders resolving stage ids against the route catalog, and the executor-filled derived targets
-//! (the viewed ride's profile/preview, the route overview's shape preview) held under the
-//! [`derived`](crate::device_core::derived) keys of #1437 — durable identity plus a source and view
+//! One component owns every id-to-summary pairing and every piece of state keyed by catalog
+//! identity: the route and ride catalogs with their durable ids, the trip folders resolving stage
+//! ids against the route catalog, and the executor-filled derived targets held under the
+//! [`derived`](crate::device_core::derived) keys — a durable identity plus a source and a view
 //! revision, so no cache key has to be walked across a live rescan.
 //!
-//! Ride rows own their durable identity and summary together. Route summaries remain
-//! contiguous with a parallel id column and are exposed through [`RouteEntry`].
+//! Ride rows own their durable identity and summary together. Route summaries stay contiguous with
+//! a parallel id column and are exposed through [`RouteEntry`].
 //!
-//! `App` remains the composition root: screen-stack remaps and `Activity` key remaps stay there
-//! (this component never sees a `Screen`), driven by the old-id snapshot each `replace_*` returns.
+//! `App` stays the composition root: screen-stack remaps and `Activity` key remaps live there, and
+//! this component never sees a `Screen`.
 
 use obc_route::Profile;
 
@@ -24,113 +23,101 @@ use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 use crate::CatalogObjectId;
 
-/// One route-catalog entry: the durable object id and its summary, handed out **together** so the
-/// id ↔ summary pairing is a type, not a convention (issue #802's catalog invariant).
+/// One route-catalog entry: the durable object id and its summary, handed out together so the
+/// pairing is a type, not a convention.
 #[derive(Debug, Clone, Copy)]
 pub struct RouteEntry<'a> {
-    /// The route's durable object id (#450) — what survives a live rescan.
+    /// The route's durable object id, which survives a live rescan.
     pub id: CatalogObjectId,
-    /// The resident summary the menus render.
     pub summary: &'a RouteSummary,
 }
 
-/// The snapshot of a catalog's ids **before** a replacement — what
-/// [`CatalogState::remap_route`] / [`CatalogState::remap_ride`] resolve an old index through to
-/// find its new home. Returned by the `replace_*` methods so `App` can re-point the screen stack
-/// and Navigator keys with the exact mapping the component itself used.
+/// The snapshot of a catalog's ids before a replacement, which
+/// [`CatalogState::remap_route`] and [`CatalogState::remap_ride`] resolve an old index through.
+/// Returned by the `replace_*` methods so `App` can re-point the screen stack and Navigator keys
+/// with the exact mapping the component used.
 pub(crate) type OldRouteIds = heapless::Vec<CatalogObjectId, MAX_ROUTES>;
-/// The ride twin of [`OldRouteIds`].
 pub(crate) type OldRideIds = heapless::Vec<CatalogObjectId, UI_RIDES_CAP>;
 
-/// The resident catalogs + identity-keyed view caches. See the module docs.
+/// The resident catalogs and identity-keyed view caches. See the module docs.
 pub(crate) struct CatalogState {
-    /// The resident route catalog (summaries) — what the Route menu lists;
-    /// Navigator's active route indexes it.
     routes: Catalog,
-    /// Each route's **durable object id**, pairwise with [`routes`](CatalogState::routes) (#450) —
-    /// only ever written in lock step with it (the component's whole point).
+    /// Each route's durable object id, pairwise with [`routes`](CatalogState::routes) and only ever
+    /// written in lock step with it.
     route_ids: heapless::Vec<CatalogObjectId, MAX_ROUTES>,
-    /// The resident **trip** catalog (epic #526): grouped-route folders resolving their stage
-    /// route ids against [`route_ids`](CatalogState::route_ids); re-resolved on every route
-    /// replacement so an appeared/vanished route re-files.
+    /// Grouped-route folders resolving their stage route ids against
+    /// [`route_ids`](CatalogState::route_ids). Re-resolved on every route replacement, so a route
+    /// that appeared or vanished re-files.
     trips: Trips,
-    /// The resident ride catalog (paired entries) — what the Rides screen lists (epic #447, P7).
     rides: RideCatalog,
-    /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
-    /// detail's band source, host-filled once per detail entry. `None` while unanswered.
+    /// The viewed ride's recorded-track elevation profile: the Ride detail's band source,
+    /// host-filled once per detail entry.
     ride_profile: Profile,
-    /// Whether [`ride_profile`](CatalogState::ride_profile) contains a successful host answer.
-    /// Kept separate so the board can stream directly into the resident buffer without returning
-    /// a ~5 KiB value through its task frame.
+    /// Whether [`ride_profile`](CatalogState::ride_profile) holds a successful host answer. Kept
+    /// separate so the board can stream into the resident buffer without returning a ~5 KiB value
+    /// through its task frame.
     ride_profile_present: bool,
-    /// The [`RideTrackKey`] [`ride_profile`](CatalogState::ride_profile) was **answered** for — a
-    /// failed fill parks the same key with `present == false`, so a dead file is answered once
-    /// rather than re-streamed every pass.
+    /// The key [`ride_profile`](CatalogState::ride_profile) was answered for. A failed fill parks
+    /// the same key with `present == false`, so a dead file is answered once rather than
+    /// re-streamed every pass.
     ride_profile_for: Option<RideTrackKey>,
-    /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3), host-filled in
-    /// the same drain as the profile.
+    /// The viewed ride's decimated recorded-track shape, host-filled in the same drain as the
+    /// profile.
     ride_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The key the [`ride_preview`](CatalogState::ride_preview) was handed in for.
     ride_preview_for: Option<RideTrackKey>,
-    /// The Route overview's decimated route-shape preview polyline (#685 §4), host-decimated and
-    /// handed in via [`accept_nav_preview`](CatalogState::accept_nav_preview).
+    /// The Route overview's decimated route shape, host-decimated and handed in through
+    /// [`accept_nav_preview`](CatalogState::accept_nav_preview).
     nav_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The [`NavPreviewKey`] the [`nav_preview`](CatalogState::nav_preview) was handed in for — the
-    /// staleness key (the render gates on it so an old plan's shape can never draw under a
-    /// different route, and a *re-committed* one can never draw under fresh geometry).
+    /// The staleness key for [`nav_preview`](CatalogState::nav_preview): the render gates on it, so
+    /// an old plan's shape can never draw under a different route or under fresh geometry.
     nav_preview_route: Option<NavPreviewKey>,
-    /// The revision of the object bytes this component knows about: bumped by
-    /// [`note_commit`](CatalogState::note_commit) whenever something committed new bytes over a
-    /// durable identity. It is the `source` half of every derived key, and the reason a route
-    /// upload that *replaces* a stored route cannot leave its old preview standing.
+    /// The revision of the object bytes this component knows about, bumped by
+    /// [`note_commit`](CatalogState::note_commit). It is the `source` half of every derived key,
+    /// and the reason a route upload that replaces a stored route cannot leave its old preview
+    /// standing.
     ///
-    /// Deliberately one store-wide counter rather than one per namespace: a re-commit is rare, the
-    /// only cost of the coarser key is one extra derived read when an unrelated route is replaced
-    /// while a ride detail is open, and a rides-only revision would have nothing to bump it — a
-    /// finalised ride's bytes never change.
+    /// One store-wide counter rather than one per namespace: a re-commit is rare, and the only cost
+    /// of the coarser key is one extra derived read when an unrelated route is replaced while a
+    /// ride detail is open.
     source_revision: Revision,
-    /// The ride-track view generation — bumped by an explicit invalidate (an in-place fill that
-    /// starts), so an abandoned fill leaves the need up instead of a half-written buffer answered.
+    /// The ride-track view generation, bumped when an in-place fill starts, so an abandoned fill
+    /// leaves the need up instead of a half-written buffer answered.
     ride_track_view: Revision,
-    /// The nav-preview view generation — bumped by
+    /// The nav-preview view generation, bumped by
     /// [`invalidate_nav_preview`](CatalogState::invalidate_nav_preview) so every committed plan
     /// starts preview-less even when the route identity and its bytes are unchanged.
     nav_preview_view: Revision,
-    /// The **detour preview** polyline (#882): the planned-but-uncommitted detour's decimated
-    /// shape, drawn by the Detour preview screen *over* the still-active original route.
-    /// Host-filled when the detour plan completes; cleared on commit, cancel, or route change.
+    /// The planned-but-uncommitted detour's decimated shape, drawn by the Detour preview screen
+    /// over the still-active original route. Cleared on commit, cancel, or route change.
     detour_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The route index the [`detour_preview`](CatalogState::detour_preview) was planned against —
-    /// its staleness key (a route swap or rescan mid-preview blanks the overlay rather than
-    /// drawing a stale detour over different geometry).
+    /// The staleness key for [`detour_preview`](CatalogState::detour_preview): a route swap or
+    /// rescan mid-preview blanks the overlay rather than drawing a stale detour over different
+    /// geometry.
     detour_preview_route: Option<usize>,
-    /// The token source for the catalog's one operation (#1438). One operation is in flight at a
-    /// time — the domain's single effect slot — so one source is all it needs.
+    /// One operation is in flight at a time, so one token source is all the domain needs.
     ops: crate::device_core::TokenSource<crate::device_core::CatalogTag>,
     /// An admitted [`CatalogIntent`] that has not become an effect yet. Capacity one: later work
     /// stays with whoever asked for it, where it can still be superseded or cancelled.
     ///
-    /// A [`DeleteTrip`](CatalogIntent::DeleteTrip) stays here for the **whole** cascade rather than
-    /// one effect — see [`cascade`](CatalogState::cascade) — so the same one slot that delays a
-    /// second delete also delays one behind a running cascade.
+    /// A [`DeleteTrip`](CatalogIntent::DeleteTrip) stays here for the whole cascade rather than one
+    /// effect, so the one slot that delays a second delete also delays one behind a cascade.
     pending: Option<CatalogIntent>,
-    /// How far the trip cascade has walked: the **stage ordinal** the next member removal takes,
-    /// or `None` when no cascade is running. Two bytes, and that is the whole resident cost of the
-    /// cascade — the member ids are already resident in
-    /// [`trips`](CatalogState::trips)`[..].stage_ids`, kept verbatim exactly so a delete has
-    /// something to key on, so there is no member buffer to add (#1491).
+    /// How far the trip cascade has walked: the stage ordinal the next member removal takes, or
+    /// `None` when no cascade is running. Two bytes is the whole resident cost of the cascade,
+    /// because the member ids are already resident in
+    /// [`trips`](CatalogState::trips)`[..].stage_ids`.
     cascade: Option<u8>,
     /// Whether an effect is out with the executor. Its outcome clears this, which is what lets the
     /// next intent go out.
     in_flight: bool,
     cleanup_running: bool,
     /// The resident catalogs are behind the store, and a re-read has not gone out yet. Armed by
-    /// [`note_store_moved`](CatalogState::note_store_moved) (the store-revision fact), by a
-    /// completed removal, and by a read the store could not answer; spent by
-    /// [`next_effect`](CatalogState::next_effect_at) once nothing is pending.
+    /// [`note_store_moved`](CatalogState::note_store_moved), by a completed removal, and by a read
+    /// the store could not answer; spent by [`next_effect_at`](CatalogState::next_effect_at) once
+    /// nothing is pending.
     ///
-    /// A **bit, not a counter**, and that is the whole coalescing rule: a delete that also moves
-    /// the store arms the same bit twice and costs one read, not two.
+    /// A bit, not a counter, and that is the whole coalescing rule: a delete that also moves the
+    /// store arms the same bit twice and costs one read, not two.
     refresh_owed: bool,
     pub(crate) loaded_scope: Option<StoreRevision>,
     pub(crate) remount_required: bool,
@@ -139,11 +126,11 @@ pub(crate) struct CatalogState {
 
 impl CatalogState {
     define_placement_constructors!(
-        /// Empty catalogs, nothing cached — the boot state.
+        /// Empty catalogs, nothing cached: the boot state.
         pub(crate) fn new();
-        /// Initialize `slot` **in place** to the [`new`](CatalogState::new) state — the placement
-        /// path the firmware boots through (the catalogs are several KB; nothing here may form a
-        /// by-value `CatalogState` on the stack).
+        /// Initialize `slot` in place to the [`new`](CatalogState::new) state. The catalogs are
+        /// several KB, so the firmware boots through this path and never forms a by-value
+        /// `CatalogState` on the stack.
         pub(crate) unsafe fn init_in_place;
         fields {
             routes: Catalog::new(),
@@ -174,9 +161,6 @@ impl CatalogState {
         }
     );
 
-    // ---- route catalog ----
-
-    /// The resident route summaries (what `Ctx`/`Render` hand the screens).
     pub(crate) fn routes(&self) -> &[RouteSummary] {
         &self.routes
     }
@@ -186,18 +170,16 @@ impl CatalogState {
         &self.route_ids
     }
 
-    /// The durable id at catalog index `idx`, or `None` out of range — drain-time id resolution
-    /// (#837: a vanished subject resolves to nothing).
+    /// The durable id at catalog index `idx`, or `None` out of range. A vanished subject resolves
+    /// to nothing.
     pub(crate) fn route_id_at(&self, idx: usize) -> Option<CatalogObjectId> {
         self.route_ids.get(idx).copied()
     }
 
-    /// The catalog index currently holding durable id `id`, or `None` when it isn't resident.
     pub(crate) fn route_index_of(&self, id: CatalogObjectId) -> Option<usize> {
         self.route_ids.iter().position(|&x| x == id)
     }
 
-    /// How many routes are resident.
     pub(crate) fn route_len(&self) -> usize {
         self.routes.len()
     }
@@ -214,29 +196,25 @@ impl CatalogState {
             let _ = self.routes.push(s.clone());
             let _ = self.route_ids.push(id);
         }
-        // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them:
-        // a route that appeared re-files, one that vanished dangles (dropped from the resolved
-        // list, its stats no longer summed). Re-resolved here — before the caller's stack walk —
-        // so the Route menu's remap sees the regrouped folders (epic #526).
+        // Trips resolve stage ids into catalog indices, so a catalog replacement re-points them: a
+        // route that appeared re-files, one that vanished dangles. Re-resolved here, before the
+        // caller's stack walk, so the Route menu's remap sees the regrouped folders.
         for t in self.trips.iter_mut() {
             t.reresolve(&self.routes, &self.route_ids);
         }
         old_ids
     }
 
-    /// Old route index → new route index by durable identity: the id `old_ids` recorded at `idx`,
-    /// found in the replaced catalog — or `None` when that route vanished. The one mapping every
-    /// held index (`active_route`, cache keys, open screens) follows across a rescan (#450).
+    /// Old route index to new route index by durable identity, or `None` when that route vanished.
+    /// Every held index — `active_route`, cache keys, open screens — follows a rescan through this.
     pub(crate) fn remap_route(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.route_index_of(id)
     }
-    // ---- trips ----
 
-    /// Replace the resident trip catalog (epic #526, TR2), resolving each trip's stage ids against
-    /// the current route catalog. Trips past [`MAX_TRIPS`] are ignored (the host warns and lists
-    /// the first N). Call **after** the routes are set so the stage ids resolve; a later
-    /// [`replace_routes`](CatalogState::replace_routes) re-resolves them in place.
+    /// Replace the resident trip catalog, resolving each trip's stage ids against the current route
+    /// catalog. Trips past [`MAX_TRIPS`] are ignored. Call after the routes are set so the stage
+    /// ids resolve; a later [`replace_routes`](CatalogState::replace_routes) re-resolves them.
     pub(crate) fn set_trips(&mut self, trips: &[TripInput]) {
         self.trips.clear();
         for input in trips.iter().take(MAX_TRIPS) {
@@ -244,21 +222,17 @@ impl CatalogState {
         }
     }
 
-    /// The resident trip catalog — the grouped-route folders.
     pub(crate) fn trips(&self) -> &[TripSummary] {
         &self.trips
     }
 
-    /// Whether the route at catalog index `idx` is **filed** into some trip (epic #526) — a filed
-    /// route shows only inside its folder.
+    /// Whether the route at catalog index `idx` is filed into some trip. A filed route shows only
+    /// inside its folder.
     pub(crate) fn route_filed(&self, idx: usize) -> bool {
         let i = idx as u16;
         self.trips.iter().any(|t| t.stage_indices.contains(&i))
     }
 
-    // ---- ride catalog ----
-
-    /// The resident ride summaries — what the Rides screen lists.
     pub(crate) fn rides(&self) -> &[RideEntry] {
         &self.rides
     }
@@ -270,95 +244,81 @@ impl CatalogState {
         }
     }
 
-    /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
-    /// [`route_entry`](CatalogState::route_entry).
     pub(crate) fn ride_entry(&self, idx: usize) -> Option<&RideEntry> {
         self.rides.get(idx)
     }
 
-    /// How many rides are resident.
     pub(crate) fn ride_len(&self) -> usize {
         self.rides.len()
     }
 
-    /// Replace the newest visible rides.
     pub(crate) fn replace_rides(&mut self, entries: &[RideEntry]) -> OldRideIds {
         let old_ids = self.rides.iter().map(|ride| ride.id).collect();
         self.rides.clear();
         for entry in entries.iter().take(UI_RIDES_CAP) {
             let _ = self.rides.push(entry.clone());
         }
-        // The view caches need no remap at all: their keys name a *durable ride identity*, so a
-        // surviving ride keeps its answer (no re-stream) and a vanished one simply stops matching
-        // any key the need can produce. That is the whole point of #1437's keyed derived data —
-        // the index walk that used to live here was the bug surface it removes.
+        // The view caches need no remap: their keys name a durable ride identity, so a surviving
+        // ride keeps its answer and a vanished one stops matching any key the need can produce.
         old_ids
     }
 
-    /// Old ride index → new ride index by durable identity — the ride twin of
+    /// Old ride index to new ride index by durable identity, the twin of
     /// [`remap_route`](CatalogState::remap_route).
     pub(crate) fn remap_ride(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.rides.iter().position(|ride| ride.id == id)
     }
 
-    // ---- keyed derived data (#1437) ----
-    //
-    // Two derived reads, two [`DerivedNeeds`](crate::device_core::derived::DerivedNeeds) slots, and
-    // one rule for both: the answer is stored under the key the need carried, and every read
-    // compares that key with the key the need would carry *now*. Nothing is remapped, nothing is
-    // "invalidated on rescan" — a subject change, fresh bytes, or an explicit invalidate simply
-    // produces a different key, and the old answer becomes unreachable in the same instant.
+    // Keyed derived data. Two derived reads, two
+    // [`DerivedNeeds`](crate::device_core::derived::DerivedNeeds) slots, and one rule for both: the
+    // answer is stored under the key the need carried, and every read compares that key with the
+    // key the need would carry now. Nothing is remapped and nothing is invalidated on rescan — a
+    // subject change, fresh bytes or an explicit invalidate produces a different key, and the old
+    // answer becomes unreachable in the same instant.
 
-    /// The derived **ride-track** key for the ride at catalog index `viewed_ride`, or `None` when
-    /// no detail is open (or its subject vanished) — the key the need carries and the key an answer
-    /// must bring back.
+    /// The derived ride-track key for the ride at catalog index `viewed_ride`, or `None` when no
+    /// detail is open or its subject vanished. An answer must bring the same key back.
     pub(crate) fn ride_track_key(&self, viewed_ride: Option<usize>) -> Option<RideTrackKey> {
         let ride = self.rides.get(viewed_ride?)?.id;
         Some(RideTrackKey { ride, source: self.source_revision, view: self.ride_track_view })
     }
 
-    /// The derived **nav-preview** key for the route at catalog index `active_route` — the route
-    /// twin of [`ride_track_key`](Self::ride_track_key).
+    /// The derived nav-preview key for the route at catalog index `active_route`, the twin of
+    /// [`ride_track_key`](Self::ride_track_key).
     pub(crate) fn nav_preview_key(&self, active_route: Option<usize>, assistant: bool) -> Option<NavPreviewKey> {
         let route = *self.route_ids.get(active_route?)?;
         Some(NavPreviewKey { assistant, route, source: self.source_revision, view: self.nav_preview_view })
     }
 
-    /// Whether the ride-track need for `key` is already answered — a recorded failure counts, so a
+    /// Whether the ride-track need for `key` is already answered. A recorded failure counts, so a
     /// dead file is read once rather than on every pass.
     ///
-    /// The **profile** is the authoritative answer, not the profile *and* the preview, and that is
-    /// deliberate: it is the rule the index-keyed `ride_profile_answered_for` had before #1437, and
-    /// all three hosts fill both targets in one drain of the same read (the board's `flat_store`
-    /// pair, the simulator, and `obc-host-core`'s dispatcher). Requiring both would make a host that
-    /// legitimately has no track shape to hand in re-fire the read on every pass forever — the exact
-    /// grind the level is built to avoid.
+    /// The profile alone is the authoritative answer, not the profile and the preview: every host
+    /// fills both targets in one drain of the same read, and requiring both would make a host with
+    /// no track shape to hand in re-fire the read forever.
     pub(crate) fn ride_track_answered(&self, key: RideTrackKey) -> bool {
         self.ride_profile_for == Some(key)
     }
 
-    /// Whether the nav-preview need for `key` is already answered.
     pub(crate) fn nav_preview_answered(&self, key: NavPreviewKey) -> bool {
         self.nav_preview_route == Some(key)
     }
 
-    /// Note that something committed **new bytes over a durable identity** (an upload that replaced
-    /// a stored object, a spliced route). Every derived key moves with it, so an answer produced
-    /// from the previous bytes stops matching — the one case identity alone cannot catch.
+    /// Note that something committed new bytes over a durable identity, such as an upload that
+    /// replaced a stored object. Every derived key moves with it, so an answer produced from the
+    /// previous bytes stops matching. This is the one case identity alone cannot catch.
     pub(crate) fn note_commit(&mut self) {
         self.source_revision = self.source_revision.next();
     }
 
-    /// Accept a keyed ride-**profile** answer. A stale key changes nothing at all: the payload is
-    /// dropped and the need stays up, so a fill that finished after the rider moved on cannot land
-    /// on the ride they are looking at now. Returns whether it was accepted.
+    /// Accept a keyed ride-profile answer, and report whether it was accepted. A stale key changes
+    /// nothing: the payload is dropped and the need stays up, so a fill that finished after the
+    /// rider moved on cannot land on the ride they are looking at now.
     ///
-    /// That refusal only *bites* once an executor carries the key it was asked with. The temporary
-    /// The keyed ride-track answer derives `current` from the
-    /// live subject and hands the same value as `input.key`, so it can never refuse — the legacy
-    /// command it answers carries no key back. DC6 #1439 is where the guard starts holding; until
-    /// then the late-answer misattribution stays the characterized defect the DC1 traces record.
+    /// The refusal only bites once an executor carries the key it was asked with. Today the caller
+    /// derives `current` from the live subject and hands the same value as `input.key`, so it can
+    /// never refuse, and a late answer can still be misattributed.
     pub(crate) fn accept_ride_profile(
         &mut self,
         current: Option<RideTrackKey>,
@@ -377,17 +337,17 @@ impl CatalogState {
         true
     }
 
-    /// Borrow the one resident profile buffer for an in-place fill, **invalidating** the ride-track
-    /// view first: until the matching accept lands, the need carries a new key and re-emits. An
-    /// abandoned fill therefore leaves a need up rather than a half-written buffer marked answered.
+    /// Borrow the one resident profile buffer for an in-place fill, invalidating the ride-track
+    /// view first: until the matching accept lands, the need carries a new key and re-emits, so an
+    /// abandoned fill leaves a need up rather than a half-written buffer marked answered.
     pub(crate) fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.ride_profile_present = false;
         self.ride_track_view = self.ride_track_view.next();
         &mut self.ride_profile
     }
 
-    /// Accept a keyed ride-**preview** answer (≤ [`NAV_PREVIEW_MAX`] points, more truncated), under
-    /// the same staleness rule as the profile.
+    /// Accept a keyed ride-preview answer, truncated to [`NAV_PREVIEW_MAX`] points, under the same
+    /// staleness rule as the profile.
     pub(crate) fn accept_ride_preview(
         &mut self,
         current: Option<RideTrackKey>,
@@ -407,14 +367,14 @@ impl CatalogState {
         true
     }
 
-    /// The resident ride profile **iff** it was answered for `key` — the buffer is only reachable
-    /// through the exact key it was filled for.
+    /// The resident ride profile only if it was answered for `key`: the buffer is reachable through
+    /// the exact key it was filled for and no other.
     pub(crate) fn ride_profile_for(&self, key: Option<RideTrackKey>) -> Option<&Profile> {
         (self.ride_profile_present && key.is_some() && self.ride_profile_for == key).then_some(&self.ride_profile)
     }
 
-    /// The ride-shape preview for `key`, or the empty slice when missing or stale — the screens
-    /// draw whatever this hands them, so a stale shape is unreachable.
+    /// The ride-shape preview for `key`, or the empty slice when missing or stale. The screens draw
+    /// whatever this hands them, so a stale shape is unreachable.
     pub(crate) fn ride_preview_for(&self, key: Option<RideTrackKey>) -> &[(i32, i32)] {
         if key.is_some() && self.ride_preview_for == key {
             &self.ride_preview
@@ -423,9 +383,9 @@ impl CatalogState {
         }
     }
 
-    /// Release the ride profile + preview once they stop matching the live key (#680): the detail
-    /// exited or moved subjects. The key gate already makes them unreachable; dropping the keys is
-    /// what lets the need re-fire when the rider comes back.
+    /// Release the ride profile and preview once they stop matching the live key, because the
+    /// detail exited or moved subjects. The key gate already makes them unreachable; dropping the
+    /// keys is what lets the need re-fire when the rider comes back.
     pub(crate) fn drop_stale_ride_views(&mut self, key: Option<RideTrackKey>) {
         if self.ride_profile_for != key {
             self.ride_profile_present = false;
@@ -437,7 +397,7 @@ impl CatalogState {
         }
     }
 
-    /// Accept a keyed **nav-preview** answer (#685 §4) — the previewed route's decimated shape.
+    /// Accept a keyed nav-preview answer: the previewed route's decimated shape.
     pub(crate) fn accept_nav_preview(
         &mut self,
         current: Option<NavPreviewKey>,
@@ -466,17 +426,17 @@ impl CatalogState {
         }
     }
 
-    /// Invalidate the nav preview: drop it **and bump the view generation**, so every committed
-    /// plan starts preview-less (#685 §4) even when the route identity and its bytes are unchanged.
-    /// The bump is what makes this an invalidate rather than a clear a late answer could undo.
+    /// Invalidate the nav preview: drop it and bump the view generation, so every committed plan
+    /// starts preview-less even when the route identity and its bytes are unchanged. The bump is
+    /// what makes this an invalidate rather than a clear a late answer could undo.
     pub(crate) fn invalidate_nav_preview(&mut self) {
         self.nav_preview.clear();
         self.nav_preview_route = None;
         self.nav_preview_view = self.nav_preview_view.next();
     }
 
-    /// Hand in a planned detour's decimated polyline (#882), keyed to the route it was planned
-    /// against ([`detour_preview_for`](CatalogState::detour_preview_for) gates on the same key).
+    /// Hand in a planned detour's decimated polyline, keyed to the route it was planned against.
+    /// [`detour_preview_for`](CatalogState::detour_preview_for) gates on the same key.
     pub(crate) fn set_detour_preview(&mut self, pts: &[(i32, i32)], active_route: Option<usize>) {
         self.detour_preview.clear();
         for &p in pts.iter().take(NAV_PREVIEW_MAX) {
@@ -485,7 +445,7 @@ impl CatalogState {
         self.detour_preview_route = active_route;
     }
 
-    /// The detour-preview polyline for `active_route`, or the empty slice when missing/stale.
+    /// The detour-preview polyline for `active_route`, or the empty slice when missing or stale.
     pub(crate) fn detour_preview_for(&self, active_route: Option<usize>) -> &[(i32, i32)] {
         if self.detour_preview_route.is_some() && self.detour_preview_route == active_route {
             &self.detour_preview
@@ -494,26 +454,24 @@ impl CatalogState {
         }
     }
 
-    /// Clear the detour preview and its key — a commit, cancel, or failure ends the preview.
+    /// Clear the detour preview and its key. A commit, cancel or failure ends the preview.
     pub(crate) fn clear_detour_preview(&mut self) {
         self.detour_preview.clear();
         self.detour_preview_route = None;
     }
 }
 
-// ==================== the Catalog domain protocol (#1436) ====================
-//
-// CatalogMachine owns every ordering the host used to improvise: delete-then-refresh, the trip
+// The catalog domain protocol. This domain owns every ordering: delete-then-refresh, the trip
 // cascade's member-then-folder order, and the identity remap a refresh implies. The store executor
-// is left with two operations — read the catalog, remove an object — and no say in what either of
+// is left with two operations, read the catalog and remove an object, and no say in what either of
 // them means.
 //
-// **Every re-read is ordered here.** Three events say the resident catalogs are behind the store —
-// the store moved underneath us, a removal completed, a read failed — and all three arm one bit
-// (#1541). No executor decides whether, when, or how many times a refresh happens.
+// Every re-read is ordered here. Three events say the resident catalogs are behind the store — the
+// store moved underneath us, a removal completed, a read failed — and all three arm one bit. No
+// executor decides whether, when, or how many times a refresh happens.
 //
-// Bulk stays out. A catalog read fills the resident catalogs through their existing feeders and the
-// outcome reports only that the operation is over.
+// Bulk stays out. A catalog read fills the resident catalogs through their existing feeders, and
+// the outcome reports only that the operation is over.
 
 use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
@@ -527,15 +485,13 @@ pub enum CatalogIntent {
         store: crate::device_core::StoreIdentity,
     },
 
-    /// Delete one route.
     DeleteRoute {
         id: CatalogObjectId,
     },
-    /// Delete one ride.
     DeleteRide {
         id: CatalogObjectId,
     },
-    /// Delete one trip **and its member routes** — the cascade, whose order the domain owns.
+    /// Delete one trip and its member routes: the cascade, whose order the domain owns.
     DeleteTrip {
         id: CatalogObjectId,
     },
@@ -566,7 +522,6 @@ pub enum CatalogEffect {
     ReadCatalog {
         token: OperationToken<CatalogTag>,
     },
-    /// Remove one object of the family selected by the domain.
     RemoveObject {
         token: OperationToken<CatalogTag>,
         object: CatalogObjectId,
@@ -575,7 +530,6 @@ pub enum CatalogEffect {
 }
 
 impl CatalogEffect {
-    /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
             CatalogEffect::CleanupRoute { token, .. }
@@ -586,15 +540,13 @@ impl CatalogEffect {
     }
 }
 
-/// Why a catalog operation failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogError {
     Stale,
     RemountRequired,
     Unsupported,
-    /// The store could not be read.
     Unreadable,
-    /// The store refused or failed the removal. A *missing* object is not this — see
+    /// The store refused or failed the removal. A missing object is not this; see
     /// [`ObjectRemoved`](CatalogOutcome::ObjectRemoved)'s `existed`.
     RemoveFailed,
 }
@@ -609,21 +561,19 @@ pub enum CatalogOutcome {
     CleanupFinished {
         token: OperationToken<CatalogTag>,
     },
-    /// The catalogs were re-read. No revision: that arrives as an external *fact*, and all a read
+    /// The catalogs were re-read. No revision: that arrives as an external fact, and all a read
     /// owes back is that the operation is over.
     CatalogRead {
         token: OperationToken<CatalogTag>,
         scope: Option<StoreRevision>,
     },
-    /// `object` is gone from the store. `existed` is `false` when it was already absent — the
-    /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
-    /// the cascade (the goal state holds) and must not read as a failure.
+    /// `object` is gone from the store. `existed` is `false` when it was already absent, which is a
+    /// success for the cascade — the goal state holds — and must not read as a failure.
     ObjectRemoved {
         token: OperationToken<CatalogTag>,
         object: CatalogObjectId,
         existed: bool,
     },
-    /// The operation failed.
     Failed {
         token: OperationToken<CatalogTag>,
         error: CatalogError,
@@ -635,7 +585,6 @@ pub enum CatalogOutcome {
 }
 
 impl CatalogOutcome {
-    /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
             CatalogOutcome::CleanupFinished { token }
@@ -648,12 +597,11 @@ impl CatalogOutcome {
     }
 }
 
-/// The catalog domain's operation seam (#1438): admit an intent, issue the effects it implies, and
-/// accept each answer.
+/// The catalog domain's operation seam: admit an intent, issue the effects it implies, and accept
+/// each answer.
 ///
-/// It owns the two things a domain owner must own — its [`OperationToken`] and how many operations
-/// may be in flight — plus the one ordering no single bounded operation can express: the **trip
-/// cascade**, member routes first and the folder last.
+/// It owns its [`OperationToken`] and how many operations may be in flight, plus the one ordering
+/// no single bounded operation can express: the trip cascade, member routes first, folder last.
 impl CatalogState {
     pub(crate) fn can_admit_intent(&self) -> bool {
         self.pending.is_none() && !self.in_flight && !self.refresh_owed && !self.remount_required
@@ -661,9 +609,9 @@ impl CatalogState {
 
     /// Admit `intent`, or refuse it and hand it back.
     ///
-    /// One refusal, and it is backpressure rather than failure: something is already in the slot —
-    /// an intent waiting to become an effect, or a cascade still walking. Its producer keeps it, so
-    /// "a busy catalog delays a delete, it never loses one" holds for every intent alike.
+    /// There is one refusal, and it is backpressure rather than failure: something is already in
+    /// the slot, either an intent waiting to become an effect or a cascade still walking. Its
+    /// producer keeps it, so a busy catalog delays a delete and never loses one.
     pub(crate) fn admit_intent(
         &mut self,
         intent: CatalogIntent,
@@ -678,16 +626,15 @@ impl CatalogState {
     /// The next bounded catalog operation, or `None` while one is already in flight and nothing is
     /// admitted or owed.
     ///
-    /// **Deletions first, the owed re-read last**, and by construction rather than by a priority
-    /// list: an admitted intent is a rider's deletion request, and the re-read is only reached
-    /// when there is none. It is also why the re-read never occupies the one intent slot — a second
-    /// copy of it there is a second read (a store commit and the delete it caused would each get
-    /// one), which is exactly what the single owed bit exists to prevent.
+    /// Deletions come first and the owed re-read last, by construction rather than by a priority
+    /// list: an admitted intent is a rider's deletion request, and the re-read is only reached when
+    /// there is none. It is also why the re-read never occupies the one intent slot, where a second
+    /// copy of it would be a second read.
     ///
-    /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
+    /// The admitted intent is taken before the match, so no arm can leave the domain holding an
     /// intent it has already decided about. A cascade is the one arm that puts it back, and it
-    /// advances [`cascade`](CatalogState::cascade) every time it does — the ordinal only ever grows
-    /// and the stage list is bounded. The walk reaches the folder or stops at its first failure.
+    /// advances [`cascade`](CatalogState::cascade) every time it does, so the walk reaches the
+    /// folder or stops at its first failure.
     #[cfg(test)]
     pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
         self.next_effect_at(0)
@@ -746,7 +693,7 @@ impl CatalogState {
             }
             // The cascade, one member per operation. The trip's stage ids are already resident and
             // the `.obt` is untouched until the last step, so ordinal `n` names the same member on
-            // every pass — the domain needs a cursor, not a member buffer.
+            // every pass: the domain needs a cursor, not a member buffer.
             CatalogIntent::DeleteTrip { id } => {
                 let ordinal = self.cascade.unwrap_or(0);
                 match self.trip_member(id, ordinal) {
@@ -777,7 +724,7 @@ impl CatalogState {
     }
 
     /// The member route id at stage `ordinal` of the resident trip `trip`, or `None` past its last
-    /// stage (or when the trip is not resident at all, which ends the walk at the folder).
+    /// stage. A trip that is not resident also answers `None`, which ends the walk at the folder.
     fn trip_member(&self, trip: CatalogObjectId, ordinal: u8) -> Option<CatalogObjectId> {
         let trip = self.trips.iter().find(|t| t.id == trip)?;
         trip.stage_ids.get(usize::from(ordinal)).copied()
@@ -833,24 +780,23 @@ impl CatalogState {
         }
     }
 
-    /// Note that the object store moved underneath us — the store-revision fact, read at stage 2.
-    /// The fact is a level; the owed bit is what turns it into a read.
+    /// Note that the object store moved underneath us. The fact is a level; the owed bit is what
+    /// turns it into a read.
     pub(crate) fn note_store_moved(&mut self) {
         self.refresh_owed = !self.remount_required;
     }
 
-    /// Note that Recorder committed a ride — the `RideFinalized` connection, taken at stage 6.
+    /// Note that Recorder committed a ride.
     ///
-    /// The same owed bit, and that is the point: a saved ride, a completed removal and a store
-    /// commit all order **one** re-read between them, whichever of them a pass sees. The separate
-    /// entry point is so the producer is named at the call site rather than inferred from a level
-    /// that happens to have moved.
+    /// It arms the same owed bit: a saved ride, a completed removal and a store commit order one
+    /// re-read between them, whichever of them a pass sees. The separate entry point names the
+    /// producer at the call site.
     pub(crate) fn note_ride_finalized(&mut self) {
         self.refresh_owed = !self.remount_required;
     }
 }
 
-// Layout tripwires: an identity, a revision, a count — never a catalog.
+// Layout tripwires: an identity, a revision, a count, never a catalog.
 const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 40, "a request with one identity");
 const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 40, "kind fits the existing effect allocation");
 const _: () = assert!(core::mem::size_of::<CatalogOutcome>() <= 40, "a token, an identity and a flag");
@@ -859,7 +805,7 @@ const _: () = assert!(core::mem::size_of::<CatalogError>() <= 1, "a verdict, not
 #[cfg(test)]
 impl CatalogState {
     /// Assert the [`new`](CatalogState::new) boot state, field by field. The destructure is
-    /// exhaustive, so a field added to the plan must state its boot value here too.
+    /// exhaustive, so a field added here must state its boot value too.
     pub(crate) fn assert_boot_state(&self) {
         let CatalogState {
             routes,
@@ -975,11 +921,10 @@ mod tests {
     }
 
     /// Take the whole cascade, answering each step as the executor would, and stop at the re-read
-    /// the finished walk orders (#1541) — which is the walk's own end marker.
+    /// the finished walk orders, which is the walk's own end marker.
     ///
-    /// Bounded, and that is the point: the walk terminates because the ordinal only ever grows, so a
-    /// cursor that stopped advancing is exactly the bug this helper must **report**. An unbounded
-    /// loop would hang the suite on it instead of failing.
+    /// The loop is bounded on purpose: a cursor that stopped advancing is the bug this helper must
+    /// report, and an unbounded loop would hang the suite on it instead of failing.
     fn drain_cascade(catalogs: &mut CatalogState) -> heapless::Vec<CatalogObjectId, 8> {
         let mut removed = heapless::Vec::new();
         for _ in 0..=removed.capacity() {
@@ -992,8 +937,8 @@ mod tests {
     }
 
     /// The cascade is the domain's ordering, made of the same bounded removal every other delete
-    /// uses: each member route in stage order, then the folder — and nothing else is admitted while
-    /// it walks, so the slot that delays a second delete delays one behind a cascade too.
+    /// uses: each member route in stage order, then the folder. Nothing else is admitted while it
+    /// walks.
     #[test]
     fn a_trip_cascade_removes_every_member_before_the_folder() {
         let mut catalogs = with_trip(50, &[10, 20, 30], &[10, 20, 30]);
@@ -1011,10 +956,9 @@ mod tests {
         catalogs.admit_intent(later).expect("the cascade released the slot");
     }
 
-    /// **The same-numbering trap.** A trip and a route may carry the same id (a host that numbers
-    /// its families from separate counters), and an id-only cascade would then take the route's
-    /// file for the folder. The members are resolved through the *trip's own* stage list, so the
-    /// route that merely shares the trip's number is never touched.
+    /// A trip and a route may carry the same id, because a host can number its families from
+    /// separate counters, and an id-only cascade would then take the route's file for the folder.
+    /// The members are resolved through the trip's own stage list instead.
     #[test]
     fn a_route_that_shares_the_trips_id_is_not_cascaded() {
         // Trip 1 has one member, route 7. Route 1 exists too, and shares the trip's number.
@@ -1066,11 +1010,10 @@ mod tests {
         assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50]);
     }
 
-    /// **Ordinal stability.** The walk holds a cursor, not a copy of the member list, so the only
-    /// thing that keeps ordinal `n` naming the same member is that nothing rewrites the list under
-    /// it. Nothing does: a host re-feed reads the trip's own stage refs verbatim, and the cascade
-    /// leaves the folder alone until its last step — so a member already removed is still named,
-    /// as a dangling id, and the list is the one the walk started on.
+    /// The walk holds a cursor, not a copy of the member list, so ordinal `n` keeps naming the same
+    /// member only while nothing rewrites the list under it. Nothing does: a host re-feed reads the
+    /// trip's own stage refs verbatim, and the cascade leaves the folder alone until its last step,
+    /// so a member already removed is still named as a dangling id.
     #[test]
     fn a_catalog_re_feed_mid_cascade_does_not_move_the_cursor() {
         let mut catalogs = with_trip(50, &[10, 20, 30], &[10, 20, 30]);
@@ -1099,10 +1042,8 @@ mod tests {
         assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[50], "no members to walk, the folder still goes");
     }
 
-    // ==================== the owed re-read (#1541) ====================
-
-    /// A completed removal orders a re-read: the store moved, so the resident catalogs are behind
-    /// it. **Exactly one** — the owed bit is a bit, and taking it is what spends it.
+    /// A completed removal orders exactly one re-read: the store moved, so the resident catalogs
+    /// are behind it, and taking the owed bit is what spends it.
     ///
     /// Both `existed` verdicts arm it. An object the store did not have may still be a resident
     /// row, and the only way to find out is to read.
@@ -1126,9 +1067,8 @@ mod tests {
         }
     }
 
-    /// The cascade orders **one** re-read, after the folder — never one per member. The cursor is
-    /// `Some` for every member step and `None` by the time the folder's answer arrives, which is
-    /// the whole of the rule.
+    /// The cascade orders one re-read, after the folder, never one per member. The cursor is `Some`
+    /// for every member step and `None` by the time the folder's answer arrives.
     #[test]
     fn a_cascade_orders_one_re_read_after_the_folder() {
         let mut catalogs = with_trip(50, &[10, 20, 30], &[10, 20, 30]);
@@ -1166,7 +1106,7 @@ mod tests {
         assert!(catalogs.next_effect().is_none(), "a refused removal moved nothing, so it orders nothing");
     }
 
-    /// The placement path must land exactly the state the by-value path builds.
+    /// The placement path must land the same state the by-value path builds.
     #[test]
     fn init_in_place_matches_new() {
         CatalogState::new().assert_boot_state();

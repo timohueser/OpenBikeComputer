@@ -1,30 +1,29 @@
 /**
- * A dropped GPX, on its way to the device (C4, #903).
+ * A dropped GPX, on its way to the device.
  *
- * Two rules shape this, both of them older than this issue:
+ * Two rules shape this:
  *
- * - **The device never parses XML** ([interface spec](../../../../../specs/obc-ble-interface-spec.md)
- *   principle 3). A route crosses the wire as an [OBCR](../../../../../specs/OBCR_Spec.md) file and is
- *   written to storage verbatim, so the peer converts. Here that is A2's wasm bridge, which is the
- *   same `obc-route` code the device and the CLI run — byte-identical, pinned by `bridge.test.ts`.
- * - **Show what was dropped before sending it.** A GPX file's name says nothing about what is
- *   inside it, and the rider is about to put it on the thing they will navigate by. The distance,
- *   the ascent and the point count come from the OBCR header the conversion just produced — not
- *   from re-reading the GPX — so what is shown is exactly what the device will read back.
+ * - **The device never parses XML.** A route crosses the wire as an OBCR file and is written to
+ *   storage verbatim, so the peer converts. Here that is the wasm bridge, which is the same
+ *   `obc-route` code the device and the CLI run, pinned byte-for-byte by `bridge.test.ts`.
+ * - **Show what was dropped before sending it.** A GPX file's name says nothing about what is inside
+ *   it, and the rider is about to put it on the thing they will navigate by. The distance, the
+ *   ascent and the point count come from the OBCR header the conversion just produced, not from
+ *   re-reading the GPX.
  */
 
 import { gpxToObcr } from "../convert/bridge";
 import { truncateUtf8 } from "../format";
 import { viewOf } from "../usb/protocol";
 
-/** The route name field's cap, and the OBCR header's own (`Name Len`, §1). */
+/** The route name field's cap, and the OBCR header's own. */
 export const ROUTE_NAME_MAX = 48;
 
-/** Complete current OBCR header, including waypoint and Visit descriptors (§1). */
+/** Complete current OBCR header, including waypoint and Visit descriptors. */
 const HEADER_LEN = 160;
 const MAGIC = 0x4f424352; // "OBCR", big-endian read of the four ASCII bytes
 
-/** The header fields worth showing a rider, read back out of the produced file (`OBCR_Spec.md` §1). */
+/** The header fields worth showing a rider, read back out of the produced file. */
 export interface RouteHeader {
     version: number;
     name: string;
@@ -47,9 +46,8 @@ export class RouteError extends Error {
 /**
  * Read an OBCR header.
  *
- * Deliberately a *reader*, not a validator: the file it is handed came out of `gpx_to_obcr` a
- * moment ago, so the checks here exist to catch a wrong file being fed in (someone's `.obcm`, a
- * truncated download), not to re-verify the converter.
+ * Deliberately a *reader*, not a validator: the file it is handed came out of `gpx_to_obcr` a moment
+ * ago, so the checks here exist to catch a wrong file being fed in, not to re-verify the converter.
  */
 export function decodeRouteHeader(bytes: Uint8Array): RouteHeader {
     if (bytes.length < HEADER_LEN) {
@@ -86,9 +84,8 @@ export interface PreparedRoute {
  *
  * The route's name is the file's stem, trimmed to the format's 48 **bytes** — the OBCR header
  * measures the field in bytes, so trimming by JavaScript string length would produce a name the
- * converter then truncates differently. Anything the conversion rejects arrives as a
- * `ConvertError` with a message written for a rider (`convert/bridge.ts`); it is not re-wrapped,
- * because that message is already the right one.
+ * converter then truncates differently. Anything the conversion rejects arrives as a `ConvertError`
+ * with a message written for a rider; it is not re-wrapped, because that message is already right.
  */
 export async function prepareRoute(file: File): Promise<PreparedRoute> {
     const bytes = new Uint8Array(await file.arrayBuffer());

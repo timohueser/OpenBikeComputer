@@ -1,19 +1,15 @@
-//! The S0 BLE data-plane core: control-plane descriptor codecs, CRC-32/IEEE, and the whole-object
-//! transfer state machine — everything the link needs *except* the radio. `no_std`, no-alloc, and
-//! free of any trouble-host / SDC type, so it builds and `cargo test`s on the host.
+//! The BLE data-plane core: control-plane descriptor codecs, CRC-32/IEEE, and the whole-object
+//! transfer state machine — everything the link needs except the radio. It holds no radio type, so
+//! it builds and tests on the host.
 //!
-//! The wire has two planes and this crate models both halves:
+//! The control plane is GATT: the fixed 12-byte [`TransferControl`] descriptor the app writes to
+//! open a transfer, and the [`StatusMessage`] envelope, the only device-to-app channel. The data
+//! plane is the L2CAP CoC, which carries the object's payload bytes and nothing else: there is no
+//! per-chunk header. [`Receiver`] and [`StreamSender`] verify one whole-object [`Crc32`] and never
+//! buffer the object.
 //!
-//! - **Control plane** (GATT, small + typed): the fixed 12-byte [`TransferControl`] descriptor (the
-//!   app writes it to open a transfer) and the [`StatusMessage`] envelope (the sole device → app
-//!   channel — it even carries a download's announce). There is **no per-chunk header on the CoC**.
-//! - **Data plane** (L2CAP CoC, raw bytes): the channel carries exactly the object's payload bytes.
-//!   [`Receiver`] sinks them with a running [`Crc32`] and verifies **one** whole-object CRC at
-//!   commit; [`StreamSender`] streams an object out the same way. Both restart rather than resume,
-//!   and neither buffers the whole object.
-//!
-//! The board crate owns the `L2capChannel` and GATT table; the companion app's Swift mirror
-//! implements the same layouts, and the shared `specs/vectors/` fixtures pin both.
+//! The board crate owns the `L2capChannel` and the GATT table. The Swift companion implements the
+//! same layouts, and the `specs/vectors/` fixtures pin both.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -39,14 +35,9 @@ pub use sensors::{
 };
 pub use transfer::{HeldMagic, Receiver, StreamSender, TransferError, MAGIC_LEN};
 
-/// The protocol version this crate implements. The app reads it (with the store epoch and the
-/// reader's OBCM version, as a [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees
-/// this `u16 = 2` first and surfaces its mismatch path. There is no dual-version serving.
-///
-/// **Not the map-format version.** `obc_formats::obcm::VERSION` is a different number in a
-/// different sequence — this is the wire contract, that is the file format on the card — and
-/// [`VersionRead::obcm_version`] carries the latter precisely because neither can be derived from
-/// the other. Appending that field did **not** bump this: the identity read is decoded by length
-/// (spec §1), so a trailing field is additive in both directions, and a bump would stop two peers
-/// that remain fully interoperable.
+/// The protocol version this crate implements. The app reads it on connect as part of a
+/// [`VersionRead`] and stops on a mismatch; the device never serves two versions. This is the wire
+/// contract, not the map-format version: [`VersionRead::obcm_version`] carries that, because
+/// neither number can be derived from the other. The identity read decodes by length, so a
+/// trailing field is additive and does not bump this.
 pub const PROTOCOL_VERSION: u16 = 2;

@@ -29,8 +29,7 @@ enum MenuItem {
 
 const ITEMS: [MenuItem; 5] = [MenuItem::Routes, MenuItem::Rides, MenuItem::Map, MenuItem::Peaks, MenuItem::Settings];
 
-/// The menu's per-language copy, resolved once per frame — the bar caption plus the active entry
-/// labels in ring order. Built fresh each draw because the language is a runtime value.
+/// The menu copy, resolved each frame because the language is a runtime value.
 struct MenuText {
     title: &'static str,
     items: [&'static str; ITEMS.len()],
@@ -61,33 +60,31 @@ impl MenuText {
 /// Prototype switch: `true` draws the compass dial, `false` the 2×2 card grid.
 const COMPASS: bool = true;
 
-/// The station's unit direction for item `i` of `n`, starting at N (0°) and stepping clockwise, so a
-/// clockwise a Down step walks the ring clockwise. Replaces the old fixed N/E/S/W table now that the
-/// menu holds five entries (`Rides` joined Routes/POIs/Map/Settings).
+/// The unit direction of station `i` of `n`, from N and clockwise, so a Down step walks the ring
+/// clockwise.
 fn station_dir(i: usize, n: usize) -> (f32, f32) {
     let a = (i as f32 / n as f32) * core::f32::consts::TAU;
     (libm::sinf(a), -libm::cosf(a)) // screen coords: 0° = up, clockwise positive
 }
 
-/// Degrees the needle sweeps per Up/Down step — one station step around a ring of `len` entries.
+/// Degrees the needle sweeps for one step around a ring of `len` entries.
 fn step_deg(len: usize) -> f32 {
     360.0 / len.max(1) as f32
 }
 
-/// Needle sweep tuning: an ease-out — the needle moves at `SWEEP_RATE` of the remaining arc per
-/// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A single step lands in ≈200 ms.
+/// The needle eases out: it moves this part of the remaining arc per second, with a floor below,
+/// so the tail does not crawl.
 const SWEEP_RATE: f32 = 8.0;
 const SWEEP_MIN_DEG_S: f32 = 180.0;
 /// The frame cadence the sweep asks the host for while in flight.
 const SWEEP_FRAME_MS: u32 = 16;
 
-/// The main-menu compass state: selection plus the eased needle sweep.
 #[derive(Debug, Default)]
 pub(super) struct CompassDial {
     selected: usize,
     needle_deg: f32,
     target_deg: f32,
-    /// Clock of the previous sweep tick, for the per-frame `dt`; `None` while the needle rests.
+    /// The clock of the previous sweep tick. `None` while the needle rests.
     last_anim_ms: Option<u32>,
 }
 
@@ -101,9 +98,8 @@ impl CompassDial {
         list::on_step(&mut self.selected, n, len)
     }
 
-    /// [`Screen::tick_timers`] arm: advance the needle toward the target by the eased step for the
-    /// elapsed `dt`, requesting a [`SWEEP_FRAME_MS`] wake while in flight. Settled (the common
-    /// case) is [`ScreenTick::idle`] — a resting menu costs no timed repaints.
+    /// Advance the needle toward the target and ask for a wake while it is in flight. A resting
+    /// menu is idle, so it costs no timed repaints.
     pub(super) fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         let diff = self.target_deg - self.needle_deg;
         if diff == 0.0 {
@@ -115,8 +111,8 @@ impl CompassDial {
         let dt = (now_ms.wrapping_sub(last) as f32 / 1000.0).min(0.1);
         let step = (diff.abs() * SWEEP_RATE).max(SWEEP_MIN_DEG_S) * dt;
         if step >= diff.abs() {
-            // Landed: snap to the target and fold both angles back into one revolution
-            // (`%` is core; `rem_euclid` on floats is std-only, hence the manual sign fix).
+            // Fold both angles back into one revolution. `rem_euclid` on floats is std-only,
+            // so the sign is fixed by hand.
             let mut landed = self.target_deg % 360.0;
             if landed < 0.0 {
                 landed += 360.0;
@@ -131,8 +127,6 @@ impl CompassDial {
     }
 }
 
-/// The main menu. Its selection and sweep are the shared [`CompassDial`]; only Press dispatch and
-/// per-language station copy are main-menu-specific.
 #[derive(Debug, Default)]
 pub struct MenuScreen {
     dial: CompassDial,
@@ -154,9 +148,9 @@ impl MenuScreen {
 
                 MenuItem::Settings => Transition::Push(Screen::Settings(SettingsScreen::new())),
             },
-            Gesture::Back => Transition::Pop, // return to caller (Home or Map)
+            Gesture::Back => Transition::Pop,
             Gesture::Hold => Transition::None,
-            Gesture::BackHold => Transition::None, // Shutdown prompt — later slice
+            Gesture::BackHold => Transition::None,
         }
     }
 
@@ -169,7 +163,6 @@ impl MenuScreen {
         let ble = device.ble_connected();
         let kinds = &ITEMS;
         let txt = MenuText::resolve(rx, kinds);
-        // The title bar's right readout: the battery percentage, in Home's `NN%` formatting.
         let mut batt: heapless::String<8> = heapless::String::new();
         let _ = write!(batt, "{}%", device.battery_pct);
         if COMPASS {
@@ -191,18 +184,13 @@ impl MenuScreen {
     }
 }
 
-/// Open the Map station. **While tracking**, land the rider on the live riding map — the ride base
-/// — by rooting the stack to a clean `[Home, Map]`, exactly the normalization
-/// [`App::apply_idle_return`](crate::App::apply_idle_return) does when the idle timeout returns a
-/// tracking rider to the Map (so a second Map is never stacked and stale overlays are cleared). The
-/// camera is already following in the riding view. **Not tracking**, it's a route-less *browse* map:
-/// enter the riding view (GPS-follow, zoomed in) and push the Map over the Menu, so `back` returns
-/// here and `press` opens the start card.
+/// Open the Map station. While tracking, root the stack to `[Home, Map]`, so a second Map is
+/// never stacked and stale overlays clear. Otherwise push a route-less browse map over the Menu.
 fn open_map(cx: &mut Ctx) -> Transition {
     if cx.recorder.recording() {
         return Transition::Root(Screen::Map(MapScreen::new()));
     }
-    // Seed the browse camera on the rider (last fix) if there is one; Follow recenters on each fix.
+    // Seed the browse camera on the last fix if there is one.
     if let Some(fix) = cx.state.user_fix {
         cx.state.enter_riding_view(fix.lon, fix.lat);
     } else {
@@ -211,12 +199,10 @@ fn open_map(cx: &mut Ctx) -> Transition {
     Transition::Push(Screen::Map(MapScreen::new()))
 }
 
-/// The compass-dial layout under the standard title bar: bezel ring, station-midpoint ticks, needle,
-/// five icon stations, and the selected entry's name in Display type at the bottom. The ring sits
-/// centred between the bar and the name strip — which works out to exactly `h / 2`. The needle
-/// points at `needle_deg` (0° = N, clockwise) — mid-sweep that's between stations; the station
-/// highlight and the name snap to the selection immediately.
-#[allow(clippy::too_many_arguments)] // one flat draw fn; bundling the geometry+state adds no clarity
+/// The compass-dial layout: bezel ring, midpoint ticks, needle, icon stations, and the name of
+/// the selected entry. The needle points at `needle_deg`, which is between stations mid-sweep,
+/// but the station highlight and the name go to the selection immediately.
+#[allow(clippy::too_many_arguments)] // one flat draw fn; bundling the geometry and state adds no clarity
 fn draw_compass(
     cv: &mut impl Surface,
     w: i32,
@@ -234,12 +220,10 @@ fn draw_compass(
 
     let c = Point::new(w / 2, h / 2);
 
-    // Bezel ring: a wood disc with the parchment punched back out of the middle.
     cv.disc(c, 106, WOOD);
     cv.disc(c, 98, PARCHMENT);
-    // Bezel ticks at the **station midpoints** — one per entry, halfway between adjacent
-    // stations, so no tick sits under a station disc. Count + angle both derive from the ring's
-    // entry count. Doubled 1px lines for a visible 2px stroke, radial extent r 88→96, in WOOD.
+    // The ticks sit at the station midpoints, so no tick is below a station disc. Doubled 1 px
+    // lines make a 2 px stroke.
     let n_ring = items.len();
     for k in 0..n_ring {
         let a = (k as f32 + 0.5) / n_ring as f32 * core::f32::consts::TAU;
@@ -253,8 +237,6 @@ fn draw_compass(
 
     draw_needle(cv, c, needle_deg, 42.0, 10.0);
 
-    // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
-    // by `station_dir`, so the five entries sit at 72° steps starting from N.
     let n = items.len();
     for (i, item) in kinds.iter().copied().enumerate() {
         let (dx, dy) = station_dir(i, n);
@@ -270,16 +252,12 @@ fn draw_compass(
         draw_icon(cv, item, sc, 1.2, ink, bg);
     }
 
-    // The selected entry's name, plain Display type — the A2 amber underline was tried and
-    // vetoed by the owner in review round 3 ("just visual noise").
     cv.text(items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
 }
 
-/// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
-/// length `r`, grey counterweight, ink hub with a parchment cap. Screen coords: the direction is
-/// `(sin, -cos)` and its perpendicular `(cos, sin)`; `half_w` is the base half-width. Shared by
-/// the Menu compass dial, the nav **planning** screen's spinner (#499), and the warning card's
-/// mini compass glyph (#679), so the needles can never drift apart.
+/// Draw the compass needle at `c`, pointing `deg` (0° = N, clockwise): an amber head of length
+/// `r` with a base half-width of `half_w`, a grey counterweight, and an ink hub. The menu dial,
+/// the nav spinner, and the warning card glyph share it, so the needles cannot drift apart.
 pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, half_w: f32) {
     use palette::*;
     let rad = deg.to_radians();
@@ -290,9 +268,7 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
     let b2 = at(-px, -py, half_w);
     cv.triangle(at(dx, dy, r), b1, b2, AMBER);
     cv.triangle(at(-dx, -dy, r), b1, b2, CONTOUR);
-    // The hub scales with the sweep radius so the warning card's mini needle (r ≈ 5) isn't
-    // swallowed by it; every full-size call site (r = 42) keeps the original 6 px ink hub +
-    // 2 px parchment cap, pixel-identical.
+    // The hub scales with the radius, so it does not swallow the mini needle of the warning card.
     let hub = (r / 7.0) as i32;
     cv.disc(c, hub.max(1) as u32, INK);
     if hub >= 3 {
@@ -300,9 +276,8 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
     }
 }
 
-/// The two-column card-grid layout under the standard title bar: amber fill on the selected card,
-/// a tan outline on the rest, each with its icon over a centred label. Card height derives from
-/// the row count so six entries still fit the 320-px panel.
+/// The two-column card grid: an amber fill on the selected card, a tan outline on the rest. The
+/// card height comes from the row count, so all rows fit the panel.
 #[allow(clippy::too_many_arguments)] // one flat layout function; the kind/label slices stay pairwise
 fn draw_grid(
     cv: &mut impl Surface,
@@ -338,8 +313,7 @@ fn draw_grid(
     }
 }
 
-/// Dispatch a station's icon, centred at `c` and scaled by `k` (`1.0` fits a station disc, the
-/// grid uses `1.5`). `bg` is the surface behind the icon, for punched-out details.
+/// Draw a station icon at `c`, scaled by `k`. `bg` is the surface behind it, for punched details.
 fn draw_icon(cv: &mut impl Surface, item: MenuItem, c: Point, k: f32, color: u16, bg: u16) {
     match item {
         MenuItem::Routes => icon_route(cv, c, k, color),
@@ -373,17 +347,14 @@ fn icon_peaks(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
     );
 }
 
-/// The Rides glyph: a stopwatch — a round face with a top stem/button and a single hand, reading as
-/// "recorded ride" (time + distance) distinct from the route icon's road line.
+/// The Rides glyph: a stopwatch, which reads differently from the route icon's road line.
 fn icon_rides(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
     let r = si(k, 9.0) as u32;
     cv.disc(c, r, color);
     cv.disc(c, si(k, 6.5) as u32, bg); // punch the face out to a ring
-                                       // Top button/stem.
     cv.fill(rect(c.x - si(k, 2.0), c.y - si(k, 13.0), si(k, 4.0), si(k, 4.0)), color);
-    // A single hand from the centre up-right.
     cv.line(c, Point::new(c.x + si(k, 4.0), c.y - si(k, 4.0)), color);
-    cv.disc(c, si(k, 1.5).max(1) as u32, color); // hub
+    cv.disc(c, si(k, 1.5).max(1) as u32, color);
 }
 
 /// Scale an icon-space offset by `k`, rounding away from zero so mirrored offsets stay symmetric.
@@ -412,9 +383,8 @@ fn icon_route(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     cv.disc(Point::new(c.x + si(k, 12.0), c.y + si(k, -6.0)), si(k, 3.0) as u32, color);
 }
 
-/// A folded map with a "you are here" dot: an outlined sheet, two *hairline* fold creases inset
-/// from the edges (heavier bars read as a grill at this size), and a marker dot in the middle
-/// panel — Map-without-a-route is exactly "just you on the map".
+/// A folded map with a "you are here" dot. The fold creases stay hairlines, because heavier bars
+/// read as a grill at this size.
 fn icon_map(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     let (hw, hh) = (si(k, 14.0), si(k, 10.0));
     cv.round_outline(rect(c.x - hw, c.y - hh, 2 * hw, 2 * hh), 2, color);
@@ -461,8 +431,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Pressing the Map station while idle (not tracking) pushes the Map over the Menu — the
-    /// route-less browse map, reached without a route or session.
     #[test]
     fn map_station_idle_pushes_the_browse_map() {
         let mut rec = crate::RecorderMachine::new();
@@ -473,13 +441,11 @@ mod tests {
         assert!(matches!(t, Transition::Push(Screen::Map(_))), "idle → push the browse Map over the Menu");
     }
 
-    /// Pressing the Map station **while tracking** lands the rider on the live riding map by rooting
-    /// the stack to a clean `[Home, Map]` — never a second stacked Map.
     #[test]
     fn map_station_while_tracking_roots_to_the_ride_base() {
         let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Riding);
-        rec.test_open(); // now tracking
+        rec.test_open();
         let mut scr = MenuScreen::new();
         scr.dial.selected = 2;
         let t = run(&mut scr, &mut act, &mut rec, Gesture::Press);

@@ -76,8 +76,8 @@ fn journaled_recording(seed: u64) -> (SparseDisk, (u64, u64)) {
 /// Where finalisation first touches the fixed region, measured on a throwaway card's own write log.
 /// Cutting before that operation means every journaled byte is durable and no catalog byte is.
 ///
-/// This is a copy of `obc-storage`'s `finalisation_retry_does_not_rewrite_an_intact_tail` recipe and
-/// not a call into it, so neither suite can move the other's cut point without noticing.
+/// It copies `obc-storage`'s `finalisation_retry_does_not_rewrite_an_intact_tail` recipe rather than
+/// calling it, so neither suite can move the other's cut point without noticing.
 fn catalog_write_offset() -> u32 {
     let (disk, key) = journaled_recording(1_420);
     let device = boot(&disk);
@@ -95,10 +95,8 @@ fn catalog_write_offset() -> u32 {
 /// between the last journal write and the first catalog write, recovered by the store on the next
 /// mount, finalised by the retried commit, served over `GET`, and exported to the pinned GPX.
 ///
-/// This crosses the line `flat_break_matrix.rs` draws — a cut *inside* a commit belongs to the
-/// storage crash matrix, a link break to this suite — deliberately, because the composition is the
-/// claim: nowhere else do the recovered bytes leave over the wire and become the file the phone
-/// saves. Each link of it is proved elsewhere; that they hold end to end is proved only here.
+/// It crosses the line `flat_break_matrix.rs` draws on purpose: each link is proved elsewhere, but
+/// only here do the recovered bytes leave over the wire and become the file the phone saves.
 #[test]
 fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     let cut_at = catalog_write_offset();

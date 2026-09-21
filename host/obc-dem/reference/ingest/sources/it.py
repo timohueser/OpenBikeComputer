@@ -29,14 +29,11 @@ BZ = Wcs20Source(
     scale=False,
 )
 
-# Trentino's 0.5 m DTM looked like three protocols: its WCS lists no coverage, and the
-# geoportal reaches the data through a job API — a WFS index of 25 201 half-kilometre
-# tiles, a POST that starts a merge, a poll, and a zip of zips of ESRI ASCII grids.
-#
-# The same tiles are published as plain files, keyless, one ESRI ASCII grid per square, so
-# none of that is needed. The WFS index says the square's name is arithmetic: the tile
-# whose corner is (643 500, 5 112 000) in EPSG:25832 is `5h643551120_DTM.asc`, which is
-# the corner in hundreds of metres. A square the survey did not cover answers 404.
+# Trentino's 0.5 m DTM is published as plain files, keyless, one ESRI ASCII grid per square,
+# so neither its WCS, which lists no coverage, nor its geoportal job API is needed. The square's
+# name is arithmetic: the tile whose corner is (643 500, 5 112 000) in EPSG:25832 is
+# `5h643551120_DTM.asc`, which is the corner in hundreds of metres. A square the survey did not
+# cover answers 404.
 class TrentoGrids(BulkSource):
     """Half-kilometre ESRI ASCII grids, named after the corner they start at."""
 

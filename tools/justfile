@@ -588,17 +588,6 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/web"
 
-# Count the committed flat-store layer as production vs test/harness lines, with
-# the rule that classified each file. This is the acceptance command for #1256's
-# 6,000-line storage budget: `--check-budget` exits 1 above the limit. It reads
-# one commit, never the working tree, so commit before you measure.
-# Flat-store line budget. Args: --storage-total [--head REF] [--check-budget]
-[group('agent')]
-loc-ledger *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"; _run python3 "$OBC_TOOLS/loc_ledger.py" "$@"
 
 # Build the host workspace (simulator + shared crates + packer).
 [group('build')]

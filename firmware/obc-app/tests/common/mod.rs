@@ -1,9 +1,7 @@
-//! The integration tests' half of the shared test support. The helpers themselves live in the crate
-//! (`src/harness/support.rs`) because the relocated staging harnesses (FAR-19, #812) need exactly
-//! the same `Buf` / `.obcm` builder / scripted-hardware set, and two copies of 300 lines drift.
-//! Pulled in by path rather than duplicated, so there is one source of truth; it names `App` as
-//! `obc_app::App`, which resolves here as the extern crate and in-crate through lib.rs's
-//! `cfg(test)` self-alias.
+//! The integration tests' half of the shared test support. The helpers themselves live in the
+//! crate (`src/harness/support.rs`), because the in-crate staging harnesses need exactly the same
+//! `Buf` / `.obcm` builder / scripted-hardware set. Pulled in by path rather than duplicated, so
+//! there is one source of truth.
 
 #[path = "../../src/harness/support.rs"]
 mod support;

@@ -1,22 +1,18 @@
-//! FAR-12/FAR-13 (#805/#806) contract tests: the conformance suite run against **two pairings**
-//! with nothing in common but the contracts —
+//! Contract tests: the conformance suite run against two pairings with nothing in common but the
+//! contracts.
 //!
-//! 1. the **FLPR-semantics host double** — `Device64Frame` (RGB222, one byte per pixel) +
-//!    [`SpanPresenter`]: the board presenter's host-testable half, built from the *same shared
-//!    parts* the board backend runs — the row-hash self-diff ([`RowDiff::diff_clipped`]), the
-//!    [`RowDamage`]/[`RowWindow`] vocabulary, and the mutate-and-restore overlay composite
-//!    ([`composite_into_resident`], the engine the FLPR transport needs because the coprocessor
-//!    scans the resident frame) — with only the transport faked (pushed rows copy to a host
-//!    "glass" instead of the wire), and the exact-diff oracle ([`spans_missed_changes`]) asserted
-//!    inside every present. The conformance clean-frame postcondition therefore checks the *real*
-//!    save/composite/push/restore path.
-//! 2. the **compile-only proof pairing** — [`MiniFrame`] (16×8, *padded* 20-cell stride, native
-//!    RGB565 `u16` cells) + [`TilePresenter`] (4×4-tile damage grain, bounded-scratch overlay
-//!    composite). It exists to prove the contracts hard-code no LS021 assumption; it is test-only
-//!    code, never linked into a shipping image, and no RGB222 byte ever passes through its format.
+//! 1. The FLPR-semantics host double: `Device64Frame` plus [`SpanPresenter`], the board
+//!    presenter's host-testable half, built from the same shared parts the board backend runs
+//!    (the row-hash self-diff, the [`RowDamage`] and [`RowWindow`] vocabulary, and the
+//!    mutate-and-restore overlay composite), with only the transport faked and the exact-diff
+//!    oracle asserted inside every present. The clean-frame postcondition therefore checks the
+//!    real save, composite, push and restore path.
+//! 2. The compile-only proof pairing: [`MiniFrame`] (16×8, a padded 20-cell stride, native RGB565
+//!    `u16` cells) plus [`TilePresenter`] (a 4×4-tile damage grain and a bounded-scratch overlay
+//!    composite). It proves the contracts hard-code no LS021 assumption, and it is test-only.
 //!
-//! (The simulator presenter — the other shipping backend — runs the same conformance suite in
-//! `obc-sim/src/present.rs`.)
+//! The simulator presenter, the other shipping backend, runs the same suite in
+//! `obc-sim/src/present.rs`.
 
 use core::convert::Infallible;
 
@@ -39,20 +35,17 @@ const RED: u16 = 0xF800;
 const GREEN: u16 = 0x07E0;
 const BLUE: u16 = 0x001F;
 
-/// A simulated transport fault (a stalled FLPR / SPI error) — the outcome a caller retries on.
+/// A simulated transport fault, the outcome a caller retries on.
 #[derive(Debug)]
 struct Fault;
 
-// ─── Pairing 1: the LS021-semantics reference presenter over `Device64Frame` ───
-
-/// The board presenter minus the FLPR transport: per-row-hash self-diff, exclusion clipped by the
-/// shared [`RowDiff::diff_clipped`], the shared mutate-and-restore composite
-/// ([`composite_into_resident`]), and a host "glass" reconstruction updated only from pushed
-/// spans/rows — checked by the exact-diff oracle on every present, exactly like the simulator
-/// backend.
+/// The board presenter minus the FLPR transport: the per-row-hash self-diff, exclusion clipped by
+/// the shared [`RowDiff::diff_clipped`], the shared mutate-and-restore composite, and a host
+/// "glass" reconstruction updated only from pushed spans, checked by the exact-diff oracle on
+/// every present.
 struct SpanPresenter<const W: usize, const H: usize> {
     diff: RowDiff<H>,
-    /// Device-64 bytes on glass, reconstructed from partial pushes (the oracle's `prev`).
+    /// Device-64 bytes on glass, reconstructed from partial pushes.
     glass: Vec<u8>,
     /// Inject one transport fault into the next present.
     fail_next: bool,
@@ -128,11 +121,10 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
         if std::mem::take(&mut self.fail_next) {
             return Err(Fault);
         }
-        // The REAL mutate-and-restore engine the board backend runs (`composite_into_resident`):
-        // composite through the shared window helper, save the clean window bytes, write the
-        // re-quantized composite into the resident frame, "push" (here: the full-width rows
-        // [y0, y0+rows) copy to the host glass — the LS021 grain, wire replaced by a memcpy), and
-        // restore the clean bytes. The conformance snapshot check outside proves the restore.
+        // The real mutate-and-restore engine the board backend runs: composite through the shared
+        // window helper, save the clean window bytes, write the re-quantized composite into the
+        // resident frame, push the full-width rows to the host glass, and restore the clean
+        // bytes. The conformance snapshot check outside proves the restore.
         let (w, rows) = (r.w as usize, r.rows as usize);
         let mut scratch = vec![0u16; w * rows];
         let mut save = vec![0u8; w * rows];
@@ -164,8 +156,6 @@ impl<'b, const W: usize, const H: usize> GlassProbe<Device64Frame<'b, W, H>> for
     }
 }
 
-// ─── Pairing 2: the compile-only proof backend (different geometry / storage / grain) ───
-
 const MW: usize = 16;
 const MH: usize = 8;
 const MSTRIDE: usize = 20; // padded backing: 4 unused cells per row
@@ -173,8 +163,8 @@ const TILE: usize = 4;
 const TILES_X: usize = MW / TILE;
 const TILES: usize = TILES_X * (MH / TILE); // 8 tiles
 
-/// 16×8 frame of native-RGB565 `u16` cells on a padded 20-cell stride — nothing like the shipping
-/// RGB222 plane, which is the point.
+/// A 16×8 frame of native-RGB565 `u16` cells on a padded 20-cell stride: nothing like the
+/// shipping RGB222 plane, which is the point.
 struct MiniFrame {
     cells: [u16; MSTRIDE * MH],
 }
@@ -233,7 +223,7 @@ impl NativeFrame for MiniFrame {
     }
 }
 
-/// A tile bitmask — the proof backend's region *and* exclusion grain.
+/// A tile bitmask: the proof backend's region and exclusion grain.
 #[derive(Clone, Copy)]
 struct TileSet(u8);
 
@@ -249,9 +239,9 @@ fn tile_rect(t: usize) -> Rectangle {
     )
 }
 
-/// Tile-grained presenter: damage = exact per-tile compare against its glass copy, overlay =
-/// bounded-scratch composite. Its glass is *tightly* packed (stride `MW`, not the frame's padded
-/// `MSTRIDE`), so any stride-blind indexing in the contracts would shear visibly here.
+/// Tile-grained presenter: damage is an exact per-tile compare against its glass copy, and the
+/// overlay is a bounded-scratch composite. Its glass is tightly packed, so any stride-blind
+/// indexing in the contracts would shear visibly here.
 struct TilePresenter {
     glass: [u16; MW * MH],
 }
@@ -360,9 +350,9 @@ impl OverlayPresenter<MiniFrame> for TilePresenter {
         region: TileSet,
         draw: impl for<'t> FnOnce(&mut MiniOverlay<'t>),
     ) -> Result<PresentStats, Fault> {
-        // Bounded scratch composite (a different strategy from the FLPR's composite-into-frame):
-        // backdrop = the clean frame's region tiles, then the drawer, then push scratch → glass.
-        // The frame is provably untouched — this impl never writes it.
+        // Bounded scratch composite, a different strategy from the FLPR's composite-into-frame:
+        // the backdrop is the clean frame's region tiles, then the drawer, then scratch to glass.
+        // This impl never writes the frame.
         let mut scratch = [0u16; MW * MH];
         let mut pushed = 0u32;
         for t in (0..TILES).filter(|t| region.0 & (1 << t) != 0) {
@@ -388,10 +378,8 @@ impl GlassProbe<MiniFrame> for TilePresenter {
     }
 }
 
-// ─── Conformance runs ───
-
-// The reference pairing's probe geometry: a right-edge 4×4 overlay window on a 16×16 frame (the
-// bulge shape). The LS021 widening is full-width rows, so "outside" = a row clear of [4, 8).
+// The reference pairing's probe geometry: a right-edge 4×4 overlay window on a 16×16 frame. The
+// LS021 widening is full-width rows, so "outside" is a row clear of [4, 8).
 const SPAN_RECT: Rectangle = Rectangle { top_left: Point::new(12, 4), size: Size::new(4, 4) };
 
 #[test]
@@ -547,11 +535,11 @@ fn mini_frame_padded_stride_cells_stay_untouched() {
     }
 }
 
-/// The tile overlay path never writes the frame at all — the strongest form of "transient overlays
-/// never become persistent framebuffer contents". (The span pairing's equivalent is checked below.)
+/// The tile overlay path never writes the frame at all, the strongest form of "transient overlays
+/// never become persistent framebuffer contents".
 #[test]
 fn overlay_leaves_the_frame_byte_identical() {
-    // Tile pairing: bounded-scratch composite, frame untouched by construction — verify anyway.
+    // Tile pairing: bounded-scratch composite, so the frame is untouched by construction.
     let mut frame = MiniFrame { cells: [0x1234; MSTRIDE * MH] };
     let mut p = TilePresenter::new();
     block_on(p.present(&frame, TilePresenter::damage_full())).unwrap();

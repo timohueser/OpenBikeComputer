@@ -1,27 +1,23 @@
 //! Deterministic square previews for every catalog skin.
 //!
-//! A preview is presentation, so it must not depend on which region subset an
-//! operator happened to refresh. The bakery therefore carries one small,
-//! canonical Teningen map. It restamps only that map's style table through
-//! [`obcm_assemble::Skin::resolve`] and renders the result through the production
-//! [`obc_render::RenderScratch`]. Geometry, LOD selection, RGB565 expansion and
-//! painter ordering are consequently the device's; only the host framebuffer and
-//! PNG encoder are preview-specific.
+//! A preview is presentation, so it must not depend on which region subset an operator happened to
+//! refresh. The bakery therefore carries one small, canonical Teningen map. It restamps only that
+//! map's style table through [`obcm_assemble::Skin::resolve`] and renders the result through the
+//! production [`obc_render::RenderScratch`], so geometry, LOD selection, RGB565 expansion and
+//! painter ordering are the device's; only the host framebuffer and PNG encoder are
+//! preview-specific.
 //!
-//! The fixture is deliberately an ordinary OBCM rather than a hand-authored
-//! picture. A schema change that renumbers styles makes [`check_source`] fail
-//! before a long bake begins, forcing the maintainer to refresh the Teningen cut
-//! instead of publishing a plausible-looking but stale thumbnail.
+//! The fixture is deliberately an ordinary OBCM rather than a hand-authored picture. A schema
+//! change that renumbers styles makes [`check_source`] fail before a long bake begins, forcing the
+//! maintainer to refresh the Teningen cut instead of publishing a plausible-looking but stale
+//! thumbnail.
 //!
-//! **What the fixture may lag by, and only that.** Style ids are assigned in
-//! schema document order, so a feature type *appended* to the schema takes the
-//! next free id and changes nothing about the ids already in the fixture. The
-//! preview is a sample of geometry, and a type the sample contains none of
-//! cannot alter the picture — so the fixture's table is required to be a
-//! **prefix** of the schema's assignment rather than all of it, and the trailing
-//! styles are simply not stamped. A schema that stops covering an id the fixture
-//! carries still fails: there the fixture's bytes mean something the schema no
-//! longer says, which is exactly the stale-thumbnail case.
+//! Style ids are assigned in schema document order, so a feature type appended to the schema takes
+//! the next free id and changes nothing about the ids already in the fixture. The preview is a
+//! sample of geometry, and a type the sample contains none of cannot alter the picture, so the
+//! fixture's table has to be a prefix of the schema's assignment rather than all of it. A schema
+//! that stops covering an id the fixture carries still fails: there the fixture's bytes mean
+//! something the schema no longer says.
 
 use std::fs::File;
 use std::io::Write;
@@ -46,8 +42,8 @@ pub const PREVIEWS_DIR: &str = "previews";
 const SOURCE: &[u8] = include_bytes!("../assets/teningen-preview.obcm");
 const WIDTH: u32 = 240;
 const HEIGHT: u32 = 240;
-/// Teningen town centre: residential streets, the B3, rail, water, fields,
-/// buildings and the edge of the Black Forest all share one device-sized frame.
+/// Teningen town centre: residential streets, the B3, rail, water, fields, buildings and the edge
+/// of the Black Forest all share one device-sized frame.
 const CAMERA_LON: i32 = 7_814_000;
 const CAMERA_LAT: i32 = 48_130_000;
 /// Mid-riding scale: 1.2 km across the 240 px square.
@@ -79,9 +75,9 @@ pub fn check_source(schema: &Config) -> Result<(), String> {
 
 /// Regenerate one square PNG per skin in `tree/previews/`.
 ///
-/// `catalog` is a just-generated view of the tree. Its schema and inlined skins
-/// are the exact OBCC documents the assembler consumes, so no second config-to-
-/// style-table translation is allowed to grow here.
+/// `catalog` is a just-generated view of the tree. Its schema and inlined skins are the exact
+/// documents the assembler consumes, so no second config-to-style-table translation may grow
+/// here.
 pub fn generate(tree: &Path, catalog: &Catalog) -> Result<PreviewReport, String> {
     let schema_json = serde_json::to_string(&catalog.schema).map_err(|e| e.to_string())?;
     let schema = Schema::parse(&schema_json)?;
@@ -128,8 +124,8 @@ fn prune(dir: &Path, skin_ids: &[&str]) -> Result<(), String> {
 fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
     let styles = skin.resolve(schema)?;
     let mut map = SOURCE.to_vec();
-    // Style table + marker colour, in place — the assembler owns that algorithm (the fixture's
-    // table is allowed to be a *prefix* of the schema's assignment; see the module header).
+    // Style table and marker colour, in place — the assembler owns that algorithm. The fixture's
+    // table is allowed to be a prefix of the schema's assignment; see the module header.
     restamp_style_table(&mut map, &styles, skin.marker_color).map_err(|e| match e {
         RestampError::ShorterThanHeader => "Teningen preview fixture is shorter than the OBCM header".to_string(),
         RestampError::BadStyleOffset => "Teningen preview fixture has a bad style offset".to_string(),
@@ -187,9 +183,8 @@ fn write_atomic_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
-/// Minimal RGB888 target for the host-side PNG encoder. Pixel clipping and the
-/// rectangle fast path match the simulator framebuffer, while map drawing itself
-/// stays entirely in `obc-render`.
+/// Minimal RGB888 target for the host-side PNG encoder. Pixel clipping and the rectangle fast path
+/// match the simulator framebuffer, while map drawing itself stays entirely in `obc-render`.
 struct Frame {
     width: u32,
     height: u32,
@@ -335,8 +330,8 @@ mod tests {
         check_source(&config).expect("fixture style ids match");
     }
 
-    /// The fixture may lag the schema by *appended* feature types, and by nothing else: a schema
-    /// that no longer covers what the fixture's table carries is still refused before a bake.
+    /// The fixture may lag the schema by appended feature types and by nothing else: a schema that
+    /// no longer covers what the fixture's table carries is still refused before a bake.
     #[test]
     fn the_fixture_may_lag_the_schema_only_by_appended_types() {
         let schema: serde_json::Value =
@@ -380,10 +375,9 @@ mod tests {
         assert_ne!(default, dusk, "two color schemes should not produce the same preview");
         assert_eq!(default, render(&schema, &shipped_skin("default")).unwrap());
 
-        // Teningen's lower half is predominantly residential landuse. This is a
-        // deliberately broad coverage assertion rather than a PNG hash: it
-        // catches an ingest crop dropping the town's multipolygon while allowing
-        // unrelated renderer or compression changes.
+        // Teningen's lower half is predominantly residential landuse. A deliberately broad coverage
+        // assertion rather than a PNG hash: it catches an ingest crop dropping the town's
+        // multipolygon while allowing unrelated renderer or compression changes.
         let (r, g, b) = rgb565_to_rgb888(residential_color);
         let residential = [r, g, b];
         let lower_residential =

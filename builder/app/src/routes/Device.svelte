@@ -1,23 +1,19 @@
 <!--
   The device page: what is on the card, as a gallery — trips as combined-preview bands, routes and
-  rides as track-thumbnail tiles, the drop zone as the grid's ghost tile (#894 epic, gallery
-  redesign of 2026-07-29; the wireframe's Option A).
+  rides as track-thumbnail tiles, the drop zone as the grid's ghost tile.
 
-  This route is loaded through a dynamic import (`App.svelte`), which is what lets it reach the
-  protocol client and codecs directly: nothing here may leak into the entry chunk, and nothing
-  here needs to — the session already exists in `deviceHolder`, opened by the header chip.
+  This route is loaded through a dynamic import, which is what lets it reach the protocol client and
+  codecs directly: nothing here may leak into the entry chunk, and nothing here needs to.
 
-  Division of labour with the tiles: the tile components (`TripBand`, `RouteTiles`, `RideTiles`)
-  render lists and take callbacks; every operation that touches the cable lives here, funneled
-  through `dashboard.enqueue` so the page cannot trip the client's one-transfer rule over itself.
-  That includes the thumbnails: `deviceThumbs.fill` walks the lists one small download at a time
-  through the same queue, so a tile filling in never races a click.
+  Division of labour with the tiles: the tile components render lists and take callbacks; every
+  operation that touches the cable lives here, funneled through `dashboard.enqueue` so the page
+  cannot trip the client's one-transfer rule over itself. That includes the thumbnails.
 
-  **A tile shows what a catalog listing knows, a modal shows what a payload knows.** §3.3's entry is
-  id, revision, payload length, payload CRC, kind, flags and a display name — so a route's distance
-  and a ride's start time are not on a tile, because putting them there would mean downloading every
-  object to draw the page. Opening one downloads it, and the modal has the figures. Nothing is
-  drawn as a dash in the meantime.
+  **A tile shows what a catalog listing knows, a modal shows what a payload knows.** A catalog entry
+  is id, revision, payload length, payload CRC, kind, flags and a display name — so a route's
+  distance and a ride's start time are not on a tile, because putting them there would mean
+  downloading every object to draw the page. Opening one downloads it, and the modal has the
+  figures. Nothing is drawn as a dash in the meantime.
 -->
 <script lang="ts">
     import { untrack } from "svelte";
@@ -106,8 +102,8 @@
      * Put a route in a trip: an existing one, or a new trip built around it.
      *
      * The trip is looked up by id in the list the menu was drawn from, because an edit is a
-     * read-modify-write that has to carry the revision it expects (§3.6) — a trip something else
-     * replaced in between fails the compare-and-swap and the page re-lists, rather than clobbering.
+     * read-modify-write that has to carry the revision it expects — a trip something else replaced
+     * in between fails the compare-and-swap and the page re-lists, rather than clobbering.
      */
     const doAddToTrip = (route: CatalogEntry, tripId: bigint | null) =>
         void mutate((c) => {
@@ -151,10 +147,9 @@
     }
 
     /**
-     * Remove an object, treating the device's "not found" as success: an object already gone
-     * **is** the state the remove was asked to produce, so a stale plan (or a repeat click)
-     * must not abort a delete sequence or surface a banner about it. Real errors still throw.
-     * One transfer — callers run it through `mutate`/`enqueue` like any other cable operation.
+     * Remove an object, treating the device's "not found" as success: an object already gone **is**
+     * the state the remove was asked to produce, so a stale plan or a repeat click must not abort a
+     * delete sequence. Real errors still throw.
      */
     const removeIfPresent = (c: FlatStoreClient, ref: ObjectRef) =>
         c.remove(ref).catch((cause: unknown) => {
@@ -165,19 +160,16 @@
     /**
      * Delete a trip — and, when the card's state allows it, offer to take its routes with it.
      *
-     * The offer is computed up front (`planTripDelete`): a route that is also a stage of another
-     * trip is never deleted here, and if any other trip's stage list is unreadable the dialog
-     * degrades to the grouping-only delete rather than guessing.
+     * The offer is computed up front: a route that is also a stage of another trip is never deleted
+     * here, and if any other trip's stage list is unreadable the dialog degrades to the
+     * grouping-only delete rather than guessing.
      *
-     * The dialog can stay open for any amount of time, and the card can change under it — a
-     * paired phone editing trips over BLE, most plainly. So what is actually deleted is decided
-     * **after** the confirm, not before it: the lists are re-read, the plan recomputed from the
-     * fresh state, and (a) a shrunken deletable set simply proceeds — it is strictly safer than
-     * what was shown — while (b) a trip whose stage list grew or became unreadable aborts with a
-     * one-line note instead of deleting routes the rider was never shown. The deletions then run
-     * sequentially through the page's queue — trip first, then each route — with **one** refresh
-     * at the end; a mid-sequence failure surfaces one error after that refresh, and whatever was
-     * already deleted stays deleted (the refresh shows exactly that).
+     * The dialog can stay open for any amount of time and the card can change under it — a paired
+     * phone editing trips over BLE, most plainly. So what is actually deleted is decided **after**
+     * the confirm: the lists are re-read and the plan recomputed, a shrunken deletable set simply
+     * proceeds because it is strictly safer than what was shown, and a trip whose stage list grew or
+     * became unreadable aborts with a one-line note instead of deleting routes the rider never saw.
+     * The deletions then run sequentially through the page's queue with **one** refresh at the end.
      */
     async function deleteTrip(trip: TripView) {
         const c = client;
@@ -268,7 +260,7 @@
         await dropJob.run(
             async (ctx) => {
                 // Sequential — the wire takes one transfer at a time. Each `PUT` creates an
-                // object and answers with the id the commit assigned (§3.6), which is what the
+                // object and answers with the id the commit assigned, which is what the
                 // trip's stage list is then built from.
                 const ids: bigint[] = [];
                 for (const route of routes) {
@@ -305,7 +297,7 @@
         });
     });
 
-    /** Rides the device will actually serve: §3.5 refuses a `GET` of one it is still recording. */
+    /** Rides the device will actually serve: a `GET` of one it is still recording is refused. */
     const pullable = $derived(recordedRides(dashboard.rides));
 
     /** Ride ids a durable copy of which is in the folder — inverse of the library's own list. */
@@ -386,7 +378,7 @@
         }
         const requests: ThumbRequest[] = [
             ...dashboard.routes.map((route) => thumbRequest(c, "route", route, undefined)),
-            // A ride still being recorded has no payload to draw yet (§3.5), so it is not asked for.
+            // A ride still being recorded has no payload to draw yet, so it is not asked for.
             ...pullable.map((ride) => thumbRequest(c, "ride", ride, heldTracks.get(ride.objectId))),
         ];
         const aborter = new AbortController();
@@ -443,7 +435,7 @@
         previewing = `route-${route.objectId}`;
         try {
             const obcr = (await dashboard.enqueue(() => c.get(refOf(route)))).bytes;
-            // Every figure below comes from the OBCR header (§1) of the bytes just downloaded. The
+            // Every figure below comes from the OBCR header of the bytes just downloaded. The
             // catalog carries none of them, and this is the download that makes them knowable.
             const header = decodeRouteHeader(obcr);
             preview = {
@@ -478,7 +470,7 @@
                 title: object.name || ride.displayName || `Ride ${ride.objectId}`,
                 points: object.points.map((p) => ({ lat: p.latMicrodegrees / 1e6, lon: p.lonMicrodegrees / 1e6, ele: p.elevationM })),
                 segments: null,
-                // The ride object's own summary fields (§7.2) — the device computed these at Finish.
+                // The ride object's own summary fields — the device computed these at Finish.
                 stats: [
                     { label: "Distance", value: rideDistance(object.distanceM) },
                     { label: "Moving time", value: rideDuration(object.movingTimeS) },

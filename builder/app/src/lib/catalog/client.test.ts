@@ -1,10 +1,10 @@
 // The client, against the real documents.
 //
-// `catalog.example.json` pins its satellites by digest, and the two satellite
-// examples checked in beside it *are* those bytes — verified here rather than
-// assumed, since the whole §9 guarantee is that pin. So this suite serves the
-// real files over a fake fetch and lets the real SHA-256 decide, which means a
-// producer that regenerates one example and not the others fails here.
+// `catalog.example.json` pins its satellites by digest, and the two satellite examples
+// checked in beside it *are* those bytes — verified here rather than assumed, since the
+// whole guarantee is that pin. So this suite serves the real files over a fake fetch and
+// lets the real SHA-256 decide, which means a producer that regenerates one example and
+// not the others fails here.
 
 import { describe, expect, it, vi } from "vitest";
 import { BytesVerificationError } from "../download";
@@ -83,8 +83,8 @@ describe("CatalogClient.load", () => {
 
 describe("CatalogClient.fromBody", () => {
     it("builds a client from a body already in hand, fetching nothing", async () => {
-        // Envelope detection's whole point (#1038): the root was fetched once
-        // to be peeked at, and constructing the client must not fetch it again.
+            // Envelope detection's whole point: the root was fetched once to be peeked at,
+            // and constructing the client must not fetch it again.
         const { impl, calls } = serving(allBodies());
         const client = CatalogClient.fromBody(EXAMPLE_ROOT, ROOT_URL, { fetchImpl: impl });
         expect(calls).toHaveLength(0);
@@ -115,7 +115,7 @@ describe("cellIndex", () => {
     });
 
     it("rejects a satellite whose bytes are not the ones the root hashed", async () => {
-        // A byte the digest did not cover — the failure §9 exists to catch.
+            // A byte the digest did not cover — the failure the pin exists to catch.
         const tampered = EXAMPLE_CELL_INDEX + "\n";
         const { impl } = serving(allBodies({ [FINE_INDEX_URL]: tampered }));
         const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
@@ -214,12 +214,11 @@ describe("regionCellList", () => {
     });
 
     it("catches a region naming a cell its band's index does not have", async () => {
-        // §6's cross-document MUST, end to end: a bakery that published a
-        // region list one cell ahead of the index it points into. Both documents
-        // are internally valid and correctly pinned — the root is re-pinned here
-        // so they are — which is precisely why the check has to be a third one.
-        // Not a hole, either: a hole is ground with no cell, this is a named
-        // cell with no bytes, size or digest.
+            // The cross-document MUST, end to end: a bakery that published a region list one
+            // cell ahead of the index it points into. Both documents are internally valid and
+            // correctly pinned — the root is re-pinned here so they are — which is precisely
+            // why the check has to be a third one. Not a hole, either: a hole is ground with
+            // no cell, this is a named cell with no bytes, size or digest.
         const thinned = JSON.parse(EXAMPLE_CELL_INDEX);
         thinned.cells.pop();
         const body = JSON.stringify(thinned);

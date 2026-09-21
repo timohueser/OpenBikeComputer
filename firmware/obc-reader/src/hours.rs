@@ -2,9 +2,9 @@
 //! Overnight intervals belong to their start day and spill into the following day.
 
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_DAYS, POI_HOURS_SLOTS_PER_DAY};
-// The normative flag bits are owned by `obc-formats`; imported under the module-local `HOURS_FLAG_*`
-// name this decoder reads. Not re-exported — consumers reach the flags via `obc_formats::obcm`
-// (which is also where the seasonal bit is read from: the decoder only names the one it acts on).
+// The normative flag bits are owned by `obc-formats` and imported under the module-local
+// `HOURS_FLAG_*` name this decoder reads. Not re-exported: consumers reach the flags through
+// `obc_formats::obcm`.
 use obc_formats::obcm::POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED;
 
 /// Shared eligibility fact. Only `Closed` excludes a place.
@@ -16,9 +16,8 @@ pub enum OpeningStatus {
     Unknown,
 }
 
-/// One open interval, quarter-hours from midnight (`0..=96`, `96` = 24:00). Mirrors
-/// the packer's `hours::Interval`; `close_q <= open_q` (both nonzero) is an overnight
-/// wrap, `(0, 0)` an unused slot. Defined here so obc-reader carries no obc-pack dep.
+/// One open interval, quarter-hours from midnight (`0..=96`, where `96` is 24:00). `close_q <=
+/// open_q` with both non-zero is an overnight wrap, and `(0, 0)` an unused slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Interval {
     /// Opening time, quarter-hours from midnight (`0..=96`).
@@ -28,47 +27,41 @@ pub struct Interval {
 }
 
 impl Interval {
-    /// An unused slot is `(0, 0)` — a day's second (or only) slot when it holds no
-    /// second (or any) interval.
+    /// An unused slot is `(0, 0)`.
     #[inline]
     fn is_unused(&self) -> bool {
         self.open_q == 0 && self.close_q == 0
     }
 }
 
-/// A weekly opening-hours schedule decoded from one pooled 29-byte blob (spec §7.5).
-/// Seven days (`Mon` index 0 .. `Sun` index 6), each up to two [`Interval`]s, plus
-/// the `flags` byte (seasonal / truncated — baked but UI-ignored in v1). A small
-/// `Copy` stack value: [`Reader::poi_hours`](crate::Reader::poi_hours) reads one on
-/// demand for the detail screen, no cache or static involved.
+/// A weekly opening-hours schedule decoded from one pooled 29-byte blob. Seven days, Monday
+/// first, each with up to two [`Interval`]s, plus the `flags` byte. A small `Copy` stack value:
+/// [`Reader::poi_hours`](crate::Reader::poi_hours) reads one on demand, with no cache involved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WeeklySchedule {
-    /// `days[0]` = Monday .. `days[6]` = Sunday; each up to two intervals (unused
-    /// slots are `(0, 0)`).
+    /// `days[0]` is Monday; unused slots are `(0, 0)`.
     days: [[Interval; POI_HOURS_SLOTS_PER_DAY]; POI_HOURS_DAYS],
-    /// `flags` bit 0 = seasonal, bit 1 = truncated (spec §7.5). Baked but ignored by
-    /// the v1 UI; exposed via [`WeeklySchedule::flags`] for a future season-aware pass.
+    /// `flags` bit 0 is seasonal, bit 1 truncated. Baked but ignored by the UI; exposed through
+    /// [`WeeklySchedule::flags`].
     flags: u8,
 }
 
-/// Minutes in a day. `minute_of_day` passed to [`WeeklySchedule::is_open`] is
-/// `0..=1439`; `24:00` (a `96`-quarter close) maps to this value.
+/// Minutes in a day. The `minute_of_day` passed to [`WeeklySchedule::is_open`] is `0..=1439`, and
+/// a `96`-quarter close maps to this value.
 pub(crate) const MINUTES_PER_DAY: u16 = 1440;
 
 impl WeeklySchedule {
-    /// Decode a 29-byte pool blob (spec §7.5) into a schedule. `blob` must contain exactly
-    /// `POI_HOURS_BLOB_LEN` bytes; a shorter slice yields
-    /// `None` (a corrupt/truncated pool is handled cleanly, never a panic). Every
-    /// quarter-hour byte is taken as-is — the packer guarantees `0..=96`, and the eval
-    /// helpers stay total for any byte value regardless.
+    /// Decode a 29-byte pool blob into a schedule. A shorter slice yields `None`, so a truncated
+    /// pool is handled cleanly. Every quarter-hour byte is taken as-is: the packer guarantees
+    /// `0..=96`, and the eval helpers stay total for any byte value regardless.
     pub fn decode(blob: &[u8]) -> Option<WeeklySchedule> {
         if blob.len() < POI_HOURS_BLOB_LEN {
             return None;
         }
         let flags = blob[0];
         let mut days = [[Interval::default(); POI_HOURS_SLOTS_PER_DAY]; POI_HOURS_DAYS];
-        // Day d, slot s occupies bytes [1 + (d*2 + s)*2 .. +2]; the fixed 29-byte
-        // layout means every index below is in-bounds for a >= 29-byte slice.
+        // Day d, slot s occupies bytes `[1 + (d*2 + s)*2 .. +2]`, so the fixed 29-byte layout
+        // makes every index below in-bounds.
         let mut i = 1;
         for day in &mut days {
             for slot in day.iter_mut() {
@@ -83,35 +76,31 @@ impl WeeklySchedule {
         Some(WeeklySchedule { days, flags })
     }
 
-    /// The raw `flags` byte (spec §7.5): bit 0 seasonal, bit 1 truncated. Any flag makes current status unknown.
+    /// The raw `flags` byte. Any flag makes the current status unknown.
     #[inline]
     pub fn flags(&self) -> u8 {
         self.flags
     }
 
-    /// True if the packer dropped a rule it couldn't model (truncated flag set).
+    /// True if the packer dropped a rule it could not model.
     #[inline]
     pub fn is_truncated(&self) -> bool {
         self.flags & HOURS_FLAG_TRUNCATED != 0
     }
 
-    /// The up-to-two intervals for `weekday` (`0` = Monday .. `6` = Sunday), with any
-    /// trailing unused `(0, 0)` slot trimmed: a closed day returns `&[]`, a one-interval
-    /// day a 1-slot slice, a two-interval day both. An out-of-range `weekday` returns
-    /// `&[]` (clamped-empty, never a panic) — the detail screen renders "Closed today".
+    /// The up-to-two intervals for `weekday`, Monday first, with any trailing unused slot
+    /// trimmed. An out-of-range `weekday` returns `&[]` rather than panicking.
     ///
-    /// An **overnight** interval (e.g. `22:00–02:00`) belongs to its **start** weekday
-    /// and is returned on that day only — it is never split into the next morning's
-    /// day. So "today's intervals" shows an interval that opened today, even if it runs
-    /// past midnight; [`is_open`](Self::is_open) evaluates the wrap on that same start day.
+    /// An overnight interval belongs to its start weekday and is returned on that day only, never
+    /// split into the next morning. [`is_open`](Self::is_open) evaluates the wrap on that same day.
     pub fn today_intervals(&self, weekday: u8) -> &[Interval] {
         let Some(day) = self.days.get(weekday as usize) else {
             return &[];
         };
-        // Both closed ⇒ empty. Otherwise slot 0 is always meaningful; slot 1 only if used.
+        // Both closed is empty. Slot 0 is always meaningful; slot 1 only if used.
         if day[0].is_unused() {
-            // A day whose first slot is unused is a closed day (the packer never leaves a
-            // gap before a used slot), so nothing is open.
+            // A day whose first slot is unused is a closed day: the packer never leaves a gap
+            // before a used slot.
             &day[..0]
         } else if day[1].is_unused() {
             &day[..1]
@@ -121,7 +110,6 @@ impl WeeklySchedule {
     }
 
     /// Exact ranges within this calendar day, including the previous day's overnight spillover.
-    /// At most one merged spillover plus the two source intervals can remain.
     pub fn intervals_on_day(&self, weekday: u8) -> heapless::Vec<Interval, 3> {
         let mut ranges = heapless::Vec::<Interval, 3>::new();
         if weekday >= 7 {
@@ -168,8 +156,8 @@ impl WeeklySchedule {
         }
     }
 
-    /// Evaluate intervals on their start day and overnight spillover from the previous day.
-    /// Opening is inclusive; closing is exclusive.
+    /// Evaluate intervals on their start day plus overnight spillover from the previous day.
+    /// Opening is inclusive, closing exclusive.
     pub fn is_open(&self, weekday: u8, minute_of_day: u16) -> bool {
         let Some(day) = self.days.get(weekday as usize) else { return false };
         let minute = minute_of_day.min(MINUTES_PER_DAY - 1);
@@ -188,18 +176,14 @@ impl WeeklySchedule {
     }
 }
 
-/// Weekday of a Gregorian date, **Mon = 0 .. Sun = 6** (the blob's day order, spec
-/// §7.5), via Zeller's congruence. Pure, `DateTime`-free — the shared bottom of the
-/// hours stack that `obc-app` (#444) calls as `weekday_from_ymd(dt.year, dt.month,
-/// dt.day)` before [`WeeklySchedule::is_open`]/[`WeeklySchedule::today_intervals`].
+/// Weekday of a Gregorian date, Monday 0 to Sunday 6, the blob's day order, via Zeller's
+/// congruence. Pure and `DateTime`-free, so the app can call it before
+/// [`WeeklySchedule::is_open`].
 ///
-/// `month` is `1..=12`, `day` `1..=31`; an out-of-range `month` is clamped into range
-/// so the function stays total (a corrupt clock never panics). Valid for any Gregorian
-/// year the `u16` holds. Anchors pinned in the tests: `2000-01-01` = Sat (5),
-/// `2024-02-29` = Thu (3), `1900-01-01` = Mon (0), `2100-03-01` = Mon (0),
-/// `1970-01-01` = Thu (3).
+/// `month` is `1..=12` and `day` `1..=31`; an out-of-range `month` is clamped, so a corrupt clock
+/// never panics. Anchors are pinned in the tests.
 pub fn weekday_from_ymd(year: u16, month: u8, day: u8) -> u8 {
-    // Zeller's congruence (Gregorian). Treat Jan/Feb as months 13/14 of the prior year.
+    // Zeller's congruence. Jan and Feb count as months 13 and 14 of the prior year.
     let mut m = month.clamp(1, 12) as i32;
     let mut y = year as i32;
     if m < 3 {
@@ -209,9 +193,9 @@ pub fn weekday_from_ymd(year: u16, month: u8, day: u8) -> u8 {
     let k = y % 100; // year of century
     let j = y / 100; // zero-based century
     let q = day as i32;
-    // Zeller: h = 0 = Saturday, 1 = Sunday, 2 = Monday, ... 6 = Friday.
+    // Zeller: h = 0 is Saturday, 1 Sunday, 2 Monday, and so on.
     let h = (q + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j).rem_euclid(7);
-    // Remap Zeller's h (Sat=0) to Mon=0..Sun=6: (h + 5) mod 7.
+    // Remap Zeller's h to Monday 0 through Sunday 6.
     ((h + 5) % 7) as u8
 }
 
@@ -240,8 +224,7 @@ mod tests {
 
     #[test]
     fn decode_round_trips_a_known_blob() {
-        // Mon 08:00-18:00 (32,72); Tue split 08:00-12:00,14:00-18:00; rest closed;
-        // truncated flag set.
+        // Mon 08:00-18:00; Tue split 08:00-12:00 and 14:00-18:00; rest closed; truncated set.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (32, 72);
         days[1][0] = (32, 48);
@@ -249,7 +232,6 @@ mod tests {
         let b = blob(HOURS_FLAG_TRUNCATED, days);
         let s = WeeklySchedule::decode(&b).expect("29-byte blob decodes");
         assert_eq!(s.flags(), HOURS_FLAG_TRUNCATED);
-        // The seasonal bit being clear is already pinned by the `flags()` equality above.
         assert!(s.is_truncated());
         assert_eq!(s.today_intervals(0), &[iv(32, 72)], "Mon one interval");
         assert_eq!(s.today_intervals(1), &[iv(32, 48), iv(56, 72)], "Tue two intervals");
@@ -260,7 +242,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_short_slice() {
-        // A truncated pool buffer (< 29 bytes) decodes to None, never a panic/UB.
+        // A truncated pool buffer decodes to None, never a panic.
         let short = [0u8; POI_HOURS_BLOB_LEN - 1];
         assert_eq!(WeeklySchedule::decode(&short), None);
         assert_eq!(WeeklySchedule::decode(&[]), None);
@@ -326,8 +308,8 @@ mod tests {
 
     #[test]
     fn is_open_overnight_wrap() {
-        // Mon 22:00-02:00 → open_q=88 (1320 min), close_q=8 (120 min). Open late evening
-        // and early morning, closed midday — evaluated on Monday, the start weekday.
+        // Mon 22:00-02:00, so open late evening and early morning and closed midday, evaluated on
+        // Monday, the start weekday.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (88, 8); // 22:00-02:00
         let s = WeeklySchedule::decode(&blob(0, days)).unwrap();
@@ -371,7 +353,7 @@ mod tests {
 
     #[test]
     fn weekday_from_ymd_matches_verified_anchors() {
-        // Anchors verified against the system `date` command (Mon=0..Sun=6).
+        // Anchors verified against the system `date` command.
         assert_eq!(weekday_from_ymd(2000, 1, 1), 5, "2000-01-01 Saturday");
         assert_eq!(weekday_from_ymd(2024, 2, 29), 3, "2024-02-29 Thursday (leap)");
         assert_eq!(weekday_from_ymd(1900, 1, 1), 0, "1900-01-01 Monday");
@@ -383,7 +365,7 @@ mod tests {
 
     #[test]
     fn weekday_from_ymd_stays_total_on_bad_month() {
-        // A corrupt month clamps into 1..=12 rather than panicking.
+        // A corrupt month clamps into range rather than panicking.
         let _ = weekday_from_ymd(2026, 0, 1);
         let _ = weekday_from_ymd(2026, 13, 1);
         let _ = weekday_from_ymd(2026, 255, 1);

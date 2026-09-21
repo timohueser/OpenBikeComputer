@@ -1,39 +1,12 @@
 /**
- * The flat-store client: protocol v4's eight opcodes driven over a {@link DeviceLink}.
+ * The flat-store client: protocol v4's eight opcodes driven over a {@link DeviceLink}. One
+ * implementation serves WebUSB, the desktop `nusb` bridge and an in-memory loopback, because
+ * everything below it is two record channels and one optional EP0 read.
  *
- * One implementation serves both tiers. The hosted site drives it over WebUSB (`webusb.ts`), the
- * desktop app over `nusb` behind Tauri (`lib/desktop/usb.ts`), and CI over an in-memory loopback
- * (`loopback.ts`) — the client cannot tell, because everything below it is two record channels and
- * one optional EP0 read. That is the whole point of building this once: a parallel desktop
- * implementation would drift, and the thing it would drift from is a byte-exact wire contract with a
- * device that ships in the field.
- *
- * ## The rules this file exists to hold
- *
- * - **`RequestId` is the transfer identifier** (§3.1). It is chosen here, never reused while
- *   outstanding, and §3.8's "SHOULD NOT reuse immediately after an answer" is met by never going
- *   back: a counter advances and 32 bits cost nothing. A response is correlated by it and by nothing
- *   else, so a late answer to an abandoned request is dropped rather than mistaken for this one's.
- * - **One transfer at a time, device-wide** (§1). A second `PUT` or `GET` is `busy` with the live
- *   `RequestId` as context — and the device is the authority on that, because the other transfer may
- *   be a phone's over BLE. The latch below is the *local* half: it stops this client colliding with
- *   itself without a round trip, and it is not what makes the rule true.
- * - **A transfer's outcome is the answer to its own request** (§3.1). There are no unsolicited
- *   control frames, no status envelope and no store-changed edge; a store movement is a commit
- *   sequence read back from `LIST`. Anything that wants to know the catalog moved re-lists.
- * - **The whole-payload CRC is the client's to compute and to check** (§3.6, §3.5). An upload
- *   declares it before the first byte moves; a download verifies it before a byte reaches a caller.
- * - **A lost create is reconciled with `LIST`, a lost replace with `STATUS`** (§3.4). The device
- *   assigned the id on a create, so there is nothing to ask `STATUS` about — see
- *   {@link findCreated}, which is that reconciliation and the reason the CRC is in it.
- *
- * ## What is not here, and where it went
- *
- * There is no identity read: §5.2 settles the wire major by descriptor matching before a record is
- * exchanged (`webusb.ts`), and the store's identity and cache freshness come from `LIST`. There is
- * no free-space query: §5.2.2 retires it, and a `PUT` that does not fit is `noSpace` whose context
- * is the bytes required. There are no device-local commands — clock, bond, retention, ride
- * acknowledgement — because they have no store meaning and keep the BLE control surface they had.
+ * A `RequestId` is chosen here and never reused: a response is correlated by it and by nothing else,
+ * so a late answer to an abandoned request is dropped. Only one transfer runs at a time device-wide,
+ * and the device is the authority on that, because the other transfer can be a phone's over BLE.
+ * There are no unsolicited control frames: anything that wants to know the catalog moved re-lists.
  */
 
 import { Crc32 } from "./crc32";
@@ -102,12 +75,9 @@ function mintStoreId(avoid: string): string {
 /**
  * Why a device operation failed.
  *
- * §3.9's fourteen codes each get their own member rather than collapsing onto a handful, because a
- * client's response to them genuinely differs: `no-space` asks the rider to delete something and
- * knows how many bytes short it was, `busy` retries, `catalog-changed` restarts a listing, `rejected`
- * is the kind's validator refusing this particular object. The five that are not §3.9's are this
- * side of the wire: the link, a timeout, the caller's own cancel, a frame this build cannot read,
- * and a host that cannot ask at all.
+ * The wire's fourteen refusal codes each get their own member, because a client's response to them
+ * differs: `no-space` asks the rider to delete something, `busy` retries, `catalog-changed` restarts
+ * a listing. The last five are this side of the wire, not the device's.
  */
 export type DeviceErrorCode =
     | "link"
@@ -131,10 +101,10 @@ export type DeviceErrorCode =
     | "read-only"
     | "device-error";
 
-/** A failure at the protocol layer. `refusal` carries §3.9's body where the device sent one. */
+/** A failure at the protocol layer. `refusal` carries the device's own refusal body. */
 export class DeviceError extends Error {
     readonly code: DeviceErrorCode;
-    /** The wire refusal, when this error is one. Its `context` is code-scoped (§3.9). */
+    /** The wire refusal, when this error is one. Its `context` is code-scoped. */
     readonly refusal?: Refusal;
 
     constructor(code: DeviceErrorCode, message: string, options?: { cause?: unknown; refusal?: Refusal }) {
@@ -158,59 +128,38 @@ export function isFormatRecoveryState(cause: unknown): cause is DeviceError {
 /**
  * Payload bytes handed to the transport per `write`, batched into whole stream records.
  *
- * §5.2 fixes a full stream record at 8,192 payload bytes — eight of them fill one 64 KiB card stage
- * on the device, and the record size is not a
- * tuning knob. This is a different number: how many of those records go into one `transferOut`.
- * Records concatenate on the wire (each carries its own length prefix and padding), so batching costs nothing on
- * the device and saves the renderer → USB-service round trip WebUSB pays per transfer. 64 KiB is
- * eight records.
- *
- * Sweep it together with {@link UPLOAD_WINDOW}: the bytes the browser keeps queued at the endpoint
- * are their product (256 KiB today), which is what has to cover a device-side flush without the wire
- * going idle.
+ * A full stream record is 8,192 payload bytes and is not a tuning knob; this is how many of those go
+ * into one `transferOut`. Sweep it with {@link UPLOAD_WINDOW}: their product is what the browser
+ * keeps queued at the endpoint, which has to cover a device-side flush without the wire going idle.
  */
 export const DEFAULT_BATCH_BYTES = 64 * 1024;
 
 /**
- * How many batched writes an upload keeps in flight at once.
- *
- * **The single biggest host-side lever, and the reason is latency, not bandwidth.** WebUSB hands a
- * transfer from the renderer process to the browser's USB service and back; with exactly one
- * outstanding, the wire is idle for that round trip between *every* batch, and the device — which
- * NAKs anyway while it writes a staging half to the card — has nothing queued to absorb the moment
- * it comes back.
- *
- * Small on purpose. Backpressure is what stops a 300 MB map from being read into the tab faster than
- * the card can take it (`BytePipe.write`'s doc), and a deep queue would defeat it.
+ * How many batched writes an upload keeps in flight at once. A chosen value, and the lever is
+ * latency rather than bandwidth: with exactly one outstanding, the wire is idle for a renderer to
+ * USB-service round trip between every batch. Small on purpose — backpressure is what stops a 300 MB
+ * map being read into the tab faster than the card can take it.
  */
 export const UPLOAD_WINDOW = 4;
 
 /**
- * How long to wait for a device answer before giving up.
- *
- * 15 s, matching the bounded status-wait the iOS app settled on after an unbounded one wedged the
- * transfer slot forever (trips epic #526). A device that has stopped answering must produce an
- * error, never a spinner that outlives the ride. It bounds a *round trip*, never a transfer: a
- * `PUT`'s answer is only due once the last byte has been sent, so the clock starts there.
+ * How long to wait for a device answer before giving up. 15 s, a chosen value: a device that has
+ * stopped answering must produce an error, never a spinner that outlives the ride. It bounds a round
+ * trip, never a transfer, so a `PUT`'s clock starts when the last byte has been sent.
  */
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
- * How long a cancel waits for the transfer's own `cancelled` response before giving up.
- *
- * A guess, and a deliberately short one: this runs on the failure path with the caller already
- * waiting, and §3.8 makes the cancel bilateral — the allocation is released and the catalog is
- * unchanged whether or not this side sees the answer. The wait exists so the channels are quiet
- * before they are reset, not because anything depends on it.
+ * How long a cancel waits for the transfer's own `cancelled` response. A guess, and deliberately
+ * short: the cancel is bilateral, so the allocation is released and the catalog is unchanged whether
+ * or not this side sees the answer. The wait exists so the channels are quiet before they are reset.
  */
 const CANCEL_ACK_TIMEOUT_MS = 2_000;
 
 /**
- * How many times a paged listing restarts on `catalogChanged` before giving up.
- *
- * A guess. §3.3 says a stale page restarts the listing, and nothing bounds how often the catalog may
- * move underneath one — but a device whose catalog changes four times during one listing is a device
- * something else is writing to continuously, and looping forever would be worse than saying so.
+ * How many times a paged listing restarts on `catalogChanged` before giving up. A guess: a device
+ * whose catalog changes four times during one listing is one that something else is writing to
+ * continuously, and looping forever would be worse than saying so.
  */
 const LIST_RESTARTS = 4;
 
@@ -236,12 +185,10 @@ export function bytesSource(bytes: Uint8Array): ObjectSource {
 }
 
 /**
- * A `Blob` — a fetched map, a picked file — without ever holding it twice.
- *
- * §3.6 needs the CRC before the first byte streams and the payload cannot be re-derived from a
- * suffix, so the blob is read **twice**: once to fingerprint, once to send. That is the right trade
- * for a 200 MB regional map, where the alternative is a second 200 MB JavaScript buffer. A Blob
- * keeps its own backing-store policy opaque while this client holds only the current stream chunk.
+ * A `Blob` — a fetched map, a picked file — without ever holding it twice. The CRC is needed before
+ * the first byte streams and the payload cannot be re-derived from a suffix, so the blob is read
+ * twice: once to fingerprint, once to send. For a 200 MB map the alternative is a second 200 MB
+ * JavaScript buffer.
  */
 export async function blobSource(
     blob: Blob,
@@ -290,29 +237,22 @@ async function* streamChunks(
 
 /** Per-call knobs shared by both transfer directions. */
 export interface TransferOptions {
-    /** Cancel the transfer. A cancelled transfer sends §3.8's `CANCEL` before it unwinds. */
+    /** Cancel the transfer. A cancelled transfer sends `CANCEL` before it unwinds. */
     signal?: AbortSignal;
     /** Called as bytes move, for a progress bar. `done` and `total` are byte counts. */
     onProgress?: (done: number, total: number) => void;
     /** Override {@link DEFAULT_BATCH_BYTES} for one upload. Rounded up to whole stream records. */
     batchBytes?: number;
     /**
-     * The payload length the caller already knows — a `LIST` entry's — used **only** to give a
-     * download's progress bar a denominator.
-     *
-     * §3.5 states the length in the answer, which arrives when the last byte has been handed to the
-     * transport. Without a hint a download therefore has no total for the whole of its run, and a
-     * 300 MB map would sit at zero for twenty minutes and then jump. It is never used to decide when
-     * to stop reading or what to verify: that is always the device's own answer, checked against the
-     * bytes that actually arrived.
+     * The payload length the caller already knows, used only to give a download's progress bar a
+     * denominator. Without it a 300 MB map sits at zero for twenty minutes and then jumps. It never
+     * decides when to stop reading or what to verify: that is always the device's own answer.
      */
     expectedLength?: number;
     /**
      * Called once the last byte has been handed to the transport, before the wait for the device's
-     * verdict.
-     *
-     * The gap between those two is invisible from the outside — the bar is at 100 %, the rate is 0,
-     * and nothing is moving — so a caller that shows progress wants to say what is happening.
+     * verdict. That gap is invisible from the outside — the bar is at 100 %, nothing is moving — so
+     * a caller that shows progress wants to say what is happening.
      */
     onSent?: () => void;
 }
@@ -324,9 +264,9 @@ export interface PutTarget {
     /** The revision the device last reported for `objectId`. Omitted (zero) when creating. */
     expectedRevision?: bigint;
     kind: ObjectKind;
-    /** Up to 48 UTF-8 bytes (§3.6). The caller trims; this refuses a longer one. */
+    /** Up to 48 UTF-8 bytes. The caller trims; this refuses a longer one. */
     displayName: string;
-    /** Ask the same commit to leave the displaced revision `RETAINED` (§3.6). */
+    /** Ask the same commit to leave the displaced revision `RETAINED`. */
 }
 
 /** A downloaded object: its bytes, and what the device said it served. */
@@ -334,7 +274,7 @@ export interface GetResult extends GetResponse {
     readonly bytes: Uint8Array;
 }
 
-/** A whole catalog: §3.3's identity prefix and every page's entries, concatenated. */
+/** A whole catalog: the identity prefix and every page's entries, concatenated. */
 export interface Catalog {
     readonly storeId: string;
     /** The sequence every page of this listing agreed on. A movement changes it. */
@@ -356,23 +296,18 @@ interface Pending {
     /** Non-null once this request has an outcome — what a streaming upload polls between batches. */
     outcome: { ok: true; response: Response } | { ok: false; cause: unknown } | null;
     /**
-     * True only when the **device** answered.
-     *
-     * Distinct from `outcome`, and the distinction is what makes a cancel work: a caller's abort and
-     * a link failure both settle a waiter without the device having said anything, and the transfer
-     * is then still live on the far end holding §1's one slot. Only this flag says the device is
-     * done with it, so only this flag may skip §3.8's `CANCEL`.
+     * True only when the device answered. Distinct from `outcome`: a caller's abort and a link
+     * failure both settle a waiter without the device having said anything, and the transfer is then
+     * still live on the far end holding the one transfer slot. Only this flag may skip the `CANCEL`.
      */
     answered: boolean;
     readonly promise: Promise<Response>;
 }
 
 /**
- * A connected device, speaking protocol v4 over two record channels.
- *
- * Construct it around an open {@link DeviceLink}; it starts a read loop on the control channel
- * immediately, so an answer that overtakes the last stream bytes — the two channels are independent
- * — is waiting for its request rather than lost.
+ * A connected device, speaking protocol v4 over two record channels. It starts a read loop on the
+ * control channel immediately, so an answer that overtakes the last stream bytes — the two channels
+ * are independent — is waiting for its request rather than lost.
  */
 export class FlatStoreClient {
     private readonly link: DeviceLink;
@@ -383,7 +318,7 @@ export class FlatStoreClient {
     private readonly pending = new Map<number, Pending>();
     private nextRequestId = 1;
 
-    /** Held from a `PUT`/`GET`'s request until its answer — the local half of §1's one-at-a-time. */
+    /** Held from a `PUT`/`GET`'s request until its answer — the local half of one-at-a-time. */
     private liveTransferId: number | null = null;
 
     private closed = false;
@@ -404,12 +339,10 @@ export class FlatStoreClient {
     }
 
     /**
-     * The three §5.2.1 strings, over EP0.
-     *
-     * Not a §3 request: it sits below the record framing and is readable the moment the interface is
-     * claimed. A transport that cannot issue an EP0 vendor request says so here rather than
-     * answering with a version nobody read off the device — a fabricated firmware revision would
-     * feed "an update is available" a lie.
+     * The three identity strings, over EP0. Not a protocol request: it sits below the record framing
+     * and is readable the moment the interface is claimed. A transport that cannot issue an EP0
+     * vendor request says so here, because a fabricated firmware revision would feed "an update is
+     * available" a lie.
      */
     async deviceInfo(signal?: AbortSignal): Promise<DeviceInfo> {
         if (!this.link.vendorIn) {
@@ -428,12 +361,7 @@ export class FlatStoreClient {
         }
     }
 
-    // --- reads ----------------------------------------------------------------
-
-    /**
-     * One `LIST` page, exactly as asked (§3.3). The paging loop is {@link list}; this is what a test
-     * — and the cursor rule — is written against.
-     */
+    /** One `LIST` page, exactly as asked. The paging loop is {@link list}. */
     async listPage(
         request: { kind?: ObjectKind | null; cursor?: { objectId: bigint; revision: bigint; commitSequence: bigint } },
         signal?: AbortSignal,
@@ -447,15 +375,14 @@ export class FlatStoreClient {
     }
 
     /**
-     * The whole catalog, paged with §3.3's `(ObjectId, Revision)` cursor.
+     * The whole catalog, paged with a `(ObjectId, Revision)` cursor.
      *
-     * The cursor is the **pair** and the page resumes strictly after it, because an object may hold
-     * two entries while a previous revision is retained; a cursor of `ObjectId` alone would skip the
+     * The cursor is the pair and the page resumes strictly after it, because an object may hold two
+     * entries while a previous revision is retained; a cursor of `ObjectId` alone would skip the
      * head of an object whose retained revision ended the previous page.
      *
      * `catalogChanged` restarts the listing from the first page rather than resuming: the sequence
-     * the client was told is the only thing that made the earlier pages consistent with each other,
-     * so once it is stale so are they.
+     * the client was told is the only thing that made the earlier pages consistent with each other.
      */
     async list(options: { kind?: ObjectKind; signal?: AbortSignal } = {}): Promise<Catalog> {
         for (let attempt = 0; ; attempt++) {
@@ -475,8 +402,8 @@ export class FlatStoreClient {
         while (page.more) {
             const last = page.entries[page.entries.length - 1];
             if (!last) {
-                // `more` with nothing to resume from: the device promised a further page and gave no
-                // cursor to ask for it. There is no legal next request, so this is not a retry.
+                // The device promised a further page and gave no cursor to ask for it. There is no
+                // legal next request, so this is not a retry.
                 throw new DeviceError("protocol", "The device announced a further catalog page but sent no entries.");
             }
             page = await this.listPage(
@@ -496,11 +423,9 @@ export class FlatStoreClient {
     }
 
     /**
-     * `STATUS` (§3.4): is this object at this revision the catalog's head?
-     *
-     * The reconcile path for a **replace** whose link broke. A create cannot be reconciled this way
-     * — the device assigned the id and that assignment was in the lost response — which is what
-     * {@link findCreated} is for.
+     * Is this object at this revision the catalog's head? The reconcile path for a replace whose
+     * link broke. A create cannot be reconciled this way — the device assigned the id, and that
+     * assignment was in the lost response — which is what {@link findCreated} is for.
      */
     async status(ref: ObjectRef, signal?: AbortSignal): Promise<StatusResponse> {
         const response = await this.exchange(Opcode.Status, (id) => encodeStatusRequest(id, ref), signal);
@@ -508,12 +433,11 @@ export class FlatStoreClient {
     }
 
     /**
-     * Reconcile a lost **create** against the catalog (§3.4).
+     * Reconcile a lost create against the catalog.
      *
      * The match is `(kind, payload length, payload CRC, display name)`, and the CRC is what makes it
-     * sound — two routes of the same length and name are common, two with the same CRC are the same
-     * bytes. Finding it means the create landed; not finding it means it did not, and a false
-     * negative costs one duplicate object the caller removes once it sees both.
+     * sound: two routes of the same length and name are common, two with the same CRC are the same
+     * bytes. A false negative costs one duplicate object the caller removes once it sees both.
      */
     async findCreated(
         want: { kind: ObjectKind; payloadLength: bigint; payloadCrc32: number; displayName: string },
@@ -532,12 +456,12 @@ export class FlatStoreClient {
     }
 
     /**
-     * `GET` (§3.5): the device streams the payload, then answers with what it served.
+     * The device streams the payload, then answers with what it served.
      *
      * The two channels are independent, so the answer may arrive before the last stream records have
-     * been read off this side's endpoint — which is why the loop below keeps reading until it has
-     * the length the answer named, rather than stopping when the answer lands. Length and CRC are
-     * verified here; a mismatch throws and nothing is handed back.
+     * been read off this side's endpoint. The loop below therefore keeps reading until it has the
+     * length the answer named. Length and CRC are verified here; a mismatch throws and nothing is
+     * handed back.
      */
     async get(ref: ObjectRef, options: TransferOptions = {}): Promise<GetResult> {
         const { signal, onProgress } = options;
@@ -573,9 +497,8 @@ export class FlatStoreClient {
                     if (!split) {
                         throw new DeviceError("protocol", "The device sent a stream record that is not one (§3.8).");
                     }
-                    // §3.8: a frame bearing a `RequestId` that is not the live transfer's is
-                    // discarded in silence. Late frames from a transfer the peer has already been
-                    // told about are ordinary in-flight traffic, not an attack.
+                    // A frame bearing a `RequestId` that is not the live transfer's is discarded in
+                    // silence. Late frames from an already-answered transfer are ordinary traffic.
                     if (split.frame.transferRequestId !== requestId) continue;
                     if (split.frame.offset !== nextOffset) {
                         throw new DeviceError(
@@ -590,9 +513,8 @@ export class FlatStoreClient {
                     onProgress?.(got, expected ?? options.expectedLength ?? got);
                 }
             })();
-            // The answer can refuse before a byte streams (§3.5), in which case the reader below is
-            // aborted and rejects with nobody awaiting it yet. This is that handler; the `await` a
-            // few lines down still sees the original rejection.
+            // The answer can refuse before a byte streams, in which case the reader below is aborted
+            // and rejects with nobody awaiting it yet. This is that handler.
             void reading.catch(() => {});
 
             const answer = (await this.settle(pending, signal, `the ${opcodeName(Opcode.Get)} answer`)) as Extract<
@@ -628,17 +550,14 @@ export class FlatStoreClient {
         }, options.signal);
     }
 
-    // --- writes ---------------------------------------------------------------
-
     /**
-     * `PUT` (§3.6): announce, stream, and read back what the commit published.
+     * Announce, stream, and read back what the commit published.
      *
-     * The payload streams **immediately**, without waiting for an acceptance — §3.6 says it may, and
-     * the cost of a refusal is one round trip of wasted bytes rather than a round trip on every
-     * upload. What makes that safe is the adapter obligation in §5: the control frame reaches the
-     * engine before any stream frame bearing the same `RequestId`. Between batches this side polls
-     * for an early answer, so a device that refused on the first megabyte is not pushed the
-     * remaining 299.
+     * The payload streams immediately, without waiting for an acceptance: the cost of a refusal is
+     * one round trip of wasted bytes rather than a round trip on every upload. What makes that safe
+     * is the adapter obligation that the control frame reaches the engine before any stream frame
+     * bearing the same `RequestId`. Between batches this side polls for an early answer, so a device
+     * that refused on the first megabyte is not pushed the remaining 299.
      */
     async put(target: PutTarget, source: ObjectSource | Uint8Array, options: TransferOptions = {}): Promise<PutResponse> {
         const src = source instanceof Uint8Array ? bytesSource(source) : source;
@@ -670,9 +589,8 @@ export class FlatStoreClient {
                 );
             }
 
-            // Guarded, and the guard is load-bearing: this hook runs inside the transfer slot's try,
-            // so a caller whose UI update threw would unwind into the catch and cancel a transfer
-            // the device is at that moment committing. A progress label is not worth that.
+            // Guarded, and the guard is load-bearing: this hook runs inside the transfer slot's
+            // try, so a caller whose UI update threw would cancel a transfer mid-commit.
             try {
                 options.onSent?.();
             } catch (cause) {
@@ -694,18 +612,18 @@ export class FlatStoreClient {
         }, options.signal);
     }
 
-    /** `REMOVE` (§3.7). One commit; a retained previous revision goes with the head. */
+    /** One commit; a retained previous revision goes with the head. */
     async remove(ref: ObjectRef, signal?: AbortSignal): Promise<bigint> {
         const response = await this.exchange(Opcode.Remove, (id) => encodeRemoveRequest(id, ref), signal);
         return (response as Extract<Response, { opcode: typeof Opcode.Remove }>).body.commitSequence;
     }
 
     /**
-     * `CANCEL` (§3.8). `true` when a transfer was dropped, `false` for "no such transfer".
+     * `true` when a transfer was dropped, `false` for "no such transfer".
      *
      * Bilateral and symmetric: the cancelled `PUT` or `GET` also receives its own `cancelled` error
-     * response, so a caller that cancels its own transfer sees both — this answer and the transfer's
-     * rejection. Either way the allocation is released and the catalog is unchanged.
+     * response, so a caller that cancels its own transfer sees both. Either way the allocation is
+     * released and the catalog is unchanged.
      */
     async cancel(transferRequestId: number, signal?: AbortSignal): Promise<boolean> {
         const response = await this.exchange(
@@ -718,13 +636,11 @@ export class FlatStoreClient {
     }
 
     /**
-     * `ARM` (§4): make an uploaded update package the next boot.
+     * Make an uploaded update package the next boot.
      *
-     * **The device's current policy refuses this**, answering `rejected`, and that is a stated
-     * dev-window gap rather than a bug in this call. The request is wired because the shape is
-     * settled and the refusal is honest; a UI that offered it as working would be the dishonest
-     * half. Uploading never installs, and arming is a separate authenticated decision precisely so
-     * delivery and installation stay different.
+     * The device's current policy refuses this and answers `rejected`; that is a stated gap rather
+     * than a bug in this call. Uploading never installs, and arming is a separate authenticated
+     * decision precisely so that delivery and installation stay different.
      */
     async arm(ref: { objectId: bigint; expectedRevision: bigint }, signal?: AbortSignal): Promise<ArmResponse> {
         const response = await this.exchange(
@@ -736,11 +652,11 @@ export class FlatStoreClient {
     }
 
     /**
-     * `FORMAT` (§3.10): replace the card with a new, empty flat store and reboot the device.
+     * Replace the card with a new, empty flat store and reboot the device.
      *
      * `expectedStoreId` is the identity LIST reported, or `null` on the recovery path where LIST
-     * answered `readOnly/unformatted`. The replacement is minted from the host's CSPRNG;
-     * it is an era identifier rather than a secret, but re-use would make stale object ids look live.
+     * answered `readOnly/unformatted`. The replacement is minted from the host's CSPRNG; it is an
+     * era identifier rather than a secret, but re-use would make stale object ids look live.
      */
     async format(
         expectedStoreId: string | null,
@@ -771,19 +687,16 @@ export class FlatStoreClient {
         this.failAll(new DeviceError("link", "The device link was closed."));
     }
 
-    // --- the control read loop ------------------------------------------------
-
     /**
      * The single reader on the control channel.
      *
      * It runs for the client's whole life, which is what lets a `CANCEL` go out mid-download and be
-     * answered, and a `LIST` be served beside a live transfer. When the channel dies (an unplug),
-     * every waiter is failed at once instead of being left to time out: that difference is a
-     * one-second error message versus a fifteen-second spinner.
+     * answered, and a `LIST` be served beside a live transfer. When the channel dies every waiter is
+     * failed at once instead of being left to time out: a one-second error message rather than a
+     * fifteen-second spinner.
      *
-     * A record this build cannot read as a response is **fatal to the channel**, not skipped. §3.1
-     * has no unsolicited frames and no unknown-message rule, so an unreadable answer means the two
-     * ends disagree about the wire — and the next answer would be just as unreadable, silently.
+     * A record this build cannot read as a response is fatal to the channel, not skipped. There are
+     * no unsolicited frames, so an unreadable answer means the two ends disagree about the wire.
      */
     private async pumpControl(): Promise<void> {
         for (;;) {
@@ -810,8 +723,8 @@ export class FlatStoreClient {
 
     private dispatch(answer: ReturnType<typeof decodeResponse>): void {
         const waiter = this.pending.get(answer.requestId);
-        // §3.8's silence, on the control channel: an answer to a request nobody is waiting for is a
-        // late answer to one that was abandoned, and there is nothing to do with it.
+        // An answer to a request nobody is waiting for is a late answer to one that was abandoned,
+        // and there is nothing to do with it.
         if (!waiter) return;
         waiter.answered = true;
         if (!answer.ok) {
@@ -837,8 +750,6 @@ export class FlatStoreClient {
         this.pending.clear();
     }
 
-    // --- request plumbing -----------------------------------------------------
-
     /** One request, one answer — everything that is not a transfer. */
     private async exchange(
         opcode: number,
@@ -859,11 +770,10 @@ export class FlatStoreClient {
     /**
      * Run a transfer holding the single slot, cancelling and resetting on any unhappy exit.
      *
-     * The cancel is not defensive tidying. A `PUT` this side walked away from is still live on the
-     * device, holding the engine against every later request; §3.8's `CANCEL` is what releases it,
-     * and it is bilateral precisely so that either end can end a transfer the other has given up on.
-     * The channel reset then discards whatever the abandoned transfer left buffered here, so the
-     * next transfer starts at a record boundary rather than inside somebody else's payload.
+     * A `PUT` this side walked away from is still live on the device, holding the engine against
+     * every later request, and the `CANCEL` is what releases it. The channel reset then discards
+     * whatever the abandoned transfer left buffered here, so the next transfer starts at a record
+     * boundary rather than inside somebody else's payload.
      */
     private async withTransferSlot<T>(body: (requestId: number) => Promise<T>, signal?: AbortSignal): Promise<T> {
         if (this.liveTransferId !== null) {
@@ -887,44 +797,39 @@ export class FlatStoreClient {
     /**
      * Best-effort `CANCEL`, then empty the stream channel of whatever the transfer left.
      *
-     * The cancel is skipped only when the **device** has already answered: §3.8's answer would then
-     * be `1` — no such transfer — and spending a round trip to be told that, on a path where the
-     * caller is already holding an error, buys nothing. Every other way out of a transfer needs it,
-     * and a cancel this side merely *decided* on is exactly the case: the transfer is still live on
-     * the device, holding §1's one slot against every later request, and only `CANCEL` releases it.
+     * The cancel is skipped only when the device has already answered, because the answer would then
+     * be "no such transfer". Every other way out of a transfer needs it, and a cancel this side
+     * merely decided on is exactly the case: the transfer is still live on the device, holding the
+     * one slot against every later request.
      *
-     * What is never skipped is the channel reset, because a transfer abandoned mid-record leaves
-     * this side's reader inside somebody else's payload.
+     * The channel reset is never skipped, because a transfer abandoned mid-record leaves this side's
+     * reader inside somebody else's payload.
      */
     private async abandon(requestId: number): Promise<void> {
         if (this.closed || this.linkFailure) return;
         if (this.pending.get(requestId)?.answered === false) {
             try {
-                // **The signal bounds the WRITE; the fourth argument only bounds the wait for an
-                // answer.** Passing neither left the `CANCEL` send itself unbounded, so a device that
-                // is enumerated but hung — the endpoint NAKing forever rather than failing — parked
-                // here and never released `liveTransferId`. That is precisely the wedge the latch's
-                // own comment claims to have retired, reintroduced one call deeper.
+                // The signal bounds the write; the fourth argument only bounds the wait for an
+                // answer. Without both, a device that is enumerated but hung — the endpoint NAKing
+                // forever rather than failing — parks here and never releases `liveTransferId`.
                 await this.cancel(requestId, AbortSignal.timeout(CANCEL_ACK_TIMEOUT_MS));
             } catch {
-                // A device that is gone, one that never answers, and one that never even accepts the
-                // write are all the same thing here: no reason to hide the caller's original error,
-                // and the reset below is the backstop either way.
+                // A device that is gone, one that never answers, and one that never even accepts
+                // the write are all the same thing here. The reset below is the backstop either way.
             }
         }
         await this.stream.reset().catch(() => undefined);
     }
 
     /**
-     * Stream a source's payload as §3.8 records, with up to {@link UPLOAD_WINDOW} writes in flight.
+     * Stream a source's payload as records, with up to {@link UPLOAD_WINDOW} writes in flight.
      *
      * Records are exactly {@link MAX_STREAM_PAYLOAD} payload bytes except the last, because that is
-     * what the device writes to the card in one go; several are batched into one transport write, so
+     * what the device writes to the card in one go. Several are batched into one transport write, so
      * the window is measured in batches rather than in records.
      *
-     * **Progress counts settled bytes only.** A queued transfer is not yet the device's, so reporting
-     * on hand-off would run the bar to 100 % while a quarter-megabyte was still on the wire — and
-     * would make a failure look like it happened after the bytes landed.
+     * Progress counts settled bytes only. A queued transfer is not yet the device's, so reporting on
+     * hand-off would run the bar to 100 % while a quarter-megabyte was still on the wire.
      */
     private async pumpStream(
         requestId: number,
@@ -955,12 +860,9 @@ export class FlatStoreClient {
             batch = [];
             batchPayload = 0;
             const promise = this.link.stream.write(bytes, signal);
-            // **Observed at queue time, awaited at retire time.** A rejection is "unhandled" from
-            // the microtask turn it happens in until something has attached a handler, and with a
-            // window open the fourth batch can reject while the first three are still pending — an
-            // `unhandledrejection` over the top of the caller's real error. This throwaway `.catch`
-            // is the handler; `retireOldest` still awaits the original promise, so nothing is
-            // swallowed.
+            // Observed at queue time, awaited at retire time. A rejection is unhandled from the
+            // microtask turn it happens in until something attaches a handler, so this throwaway
+            // `.catch` is that handler; `retireOldest` still awaits the original promise.
             void promise.catch(() => {});
             queued.push({ promise, payload });
             if (queued.length >= UPLOAD_WINDOW) await retireOldest();
@@ -972,9 +874,7 @@ export class FlatStoreClient {
                     this.checkUploadOpen(pending, signal);
                     const payload = chunk.subarray(at, Math.min(at + MAX_STREAM_PAYLOAD, chunk.length));
                     // Framed here rather than through `RecordChannel.send`, because several records
-                    // go out in one transport write and the channel sends one at a time. The framing
-                    // is the same aligned binding record either way; what is saved is a renderer →
-                    // USB-service round trip per 8 KiB.
+                    // go out in one transport write and the channel sends one at a time.
                     batch.push(frameRecord(encodeStreamRecord(requestId, offset, payload)));
                     batchPayload += payload.length;
                     offset += BigInt(payload.length);
@@ -985,8 +885,7 @@ export class FlatStoreClient {
             while (queued.length > 0) await retireOldest();
         } catch (cause) {
             // Wait for the rest of the window before unwinding, so the caller's error is not raced
-            // by a later batch's. It does not mean the endpoint is idle: on a cancel, `write` rejects
-            // the caller while the transfer stays on the wire.
+            // by a later batch's. It does not mean the endpoint is idle.
             await Promise.allSettled(queued.map((entry) => entry.promise));
             throw cause;
         }
@@ -994,26 +893,22 @@ export class FlatStoreClient {
     }
 
     /**
-     * May the upload keep pushing bytes?
-     *
-     * Two reasons it may not, and the second is the one that is easy to miss: the caller cancelled,
-     * or the device has already answered. §3.6 lets a refusal arrive while these bytes are queued —
-     * that is the price of streaming without an acceptance — so it is checked between every record.
+     * May the upload keep pushing bytes? Two reasons it may not, and the second is easy to miss: the
+     * caller cancelled, or the device has already answered. A refusal can arrive while these bytes
+     * are queued — the price of streaming without an acceptance — so it is checked between records.
      */
     private checkUploadOpen(pending: Pending, signal?: AbortSignal): void {
         throwIfAborted(signal, "the upload");
         const outcome = pending.outcome;
         if (!outcome) return;
         if (!outcome.ok) throw outcome.cause;
-        // A success before the last byte would mean the device committed a payload it has not seen,
-        // which is not a state §3.6 has. Refusing is the only honest read of it.
+        // A success before the last byte would mean the device committed a payload it has not seen.
         throw new DeviceError("protocol", "The device answered the upload before its payload had been sent.");
     }
 
     private mintRequestId(): number {
-        // §3.8: a client SHOULD NOT reuse a `RequestId` immediately after an answer, because a
-        // terminated transfer can leave in-flight stream frames a reuse would absorb as its own.
-        // Advancing is the whole remedy, and `0` is skipped because it is unanswerable (§3.1).
+        // A `RequestId` is never reused after an answer: a terminated transfer can leave in-flight
+        // stream frames that a reuse would absorb as its own. `0` is skipped as unanswerable.
         const id = this.nextRequestId;
         this.nextRequestId = this.nextRequestId >= 0xffffffff ? 1 : this.nextRequestId + 1;
         return id;
@@ -1103,7 +998,7 @@ export class FlatStoreClient {
     }
 }
 
-/** Map §3.9's refusal onto a caller-facing error, with the sentence that code deserves. */
+/** Map a wire refusal onto a caller-facing error, with the sentence that code deserves. */
 export function refusalError(refusal: Refusal, opcode: number): DeviceError {
     const what = opcodeName(opcode);
     const named = refusalName(refusal);
@@ -1195,8 +1090,7 @@ export function refusalError(refusal: Refusal, opcode: number): DeviceError {
                 { refusal },
             );
         default:
-            // §3.9: a receiver reads a code it does not know as a failure it cannot classify, and it
-            // never treats an unknown code as success.
+            // An unknown code is a failure that cannot be classified, never a success.
             return new DeviceError("device-error", `The device answered the ${what} with ${named}.`, { refusal });
     }
 }

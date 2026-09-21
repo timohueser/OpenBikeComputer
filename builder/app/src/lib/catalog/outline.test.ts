@@ -1,9 +1,8 @@
 // The coverage drawing: rectangles to fill, rings to stroke.
 //
-// The shapes below are the ones the §8 U1 mock draws — a block, a staircase, an
-// L, a country with a hole in it — because those are the cases where "the true
-// stair-edged shape" stops being a phrase and starts being a decision about a
-// vertex.
+// The shapes below are the ones the map draws — a block, a staircase, an L, a country
+// with a hole in it — because those are the cases where "the true stair-edged shape"
+// stops being a phrase and starts being a decision about a vertex.
 
 import { describe, expect, it } from "vitest";
 import { cellSize, cellSquare, GridError, onGridLine, type CellId } from "./grid";
@@ -136,9 +135,9 @@ describe("coverageRings", () => {
     });
 
     it("drops the vertices a straight run passes through", () => {
-        // Twelve cells in a row have thirteen lattice corners along the top,
-        // and an outline that named all of them would be a drawing of the grid
-        // — which §8 U1 decided the user never sees.
+            // Twelve cells in a row have thirteen lattice corners along the top, and an
+            // outline that named all of them would be a drawing of the grid — which the
+            // user never sees.
         const row: CellId[] = [];
         for (let j = 0; j < 12; j++) row.push({ log2: LOG2, i: 7, j: 100 + j });
         const [ring] = coverageRings(row);

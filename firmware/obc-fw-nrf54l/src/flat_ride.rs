@@ -1,11 +1,11 @@
-//! Flat-store ride recording (FS8 #1390) — the board's half of the Recorder protocol (#1398).
+//! Flat-store ride recording: the board's half of the Recorder protocol.
 //!
-//! [`RecorderMachine`](obc_app::RecorderMachine) decides what a ride is and when it closes; this
+//! [`RecorderMachine`](obc_app::RecorderMachine) decides what a ride is and when it closes, and this
 //! module performs the physical operations that decision names: start one `RECORDING` object,
-//! collect the final 20-byte sample bytes, checkpoint them through the tail journal, append one
-//! final footer, and clear `RECORDING` in one commit. There is no temporary file and no finish-time
-//! conversion, and no lifecycle rule here — one method per `RecorderEffect`, each answering whether
-//! the store did it.
+//! collect the 20-byte sample bytes, checkpoint them through the tail journal, append one footer,
+//! and clear `RECORDING` in one commit. There is no temporary file and no finish-time conversion,
+//! and no lifecycle rule here: one method per `RecorderEffect`, each answering whether the store did
+//! it.
 
 use core::ptr::{addr_of, addr_of_mut};
 
@@ -26,9 +26,9 @@ use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
 
 const RIDE_RESERVE: u64 = 32 * 1024 * 1024;
 // At the minimum 1 s fix cadence, one checkpoint interval contributes at most ten records. Six
-// extra records cover a delayed pass, and the fixed footer always keeps its own reserved space.
-// The store owns the durable partial 16 KiB page; the board retains only bytes appended since the
-// last successful logical checkpoint.
+// extra records cover a delayed pass, and the footer always keeps its own reserved space. The store
+// owns the durable partial page; the board retains only bytes appended since the last successful
+// logical checkpoint.
 const DELTA_SAMPLES: usize = 16;
 const DELTA_BYTES: usize = DELTA_SAMPLES * SAMPLE_LEN + FOOTER_LEN;
 
@@ -55,19 +55,19 @@ struct Live {
     points: u32,
     first_t_ms: Option<u32>,
     last_t_ms: Option<u32>,
-    /// Stable UTC start persisted with every logical checkpoint. A same-boot short ride can derive
-    /// it at Finish; a continued ride must never combine an old monotonic sample with a new boot's
-    /// wall-clock anchor.
+    /// Stable UTC start, persisted with every logical checkpoint. A same-boot short ride can derive
+    /// it at Finish, but a continued ride must never combine an old monotonic sample with a new
+    /// boot's wall-clock anchor.
     start_time: Option<u32>,
-    /// Only a ride that is still in the boot where its first sample was recorded may derive a
-    /// trusted UTC start later. Once recovered, `first_t_ms` belongs to the old monotonic domain;
-    /// combining it with this boot's wall anchor would back-date the ride by nearly 2^32 ms.
+    /// Only a ride still in the boot where its first sample was recorded may derive a trusted UTC
+    /// start later. Once recovered, `first_t_ms` belongs to the old monotonic domain, and combining
+    /// it with this boot's wall anchor would back-date the ride by nearly 2^32 ms.
     can_upgrade_start: bool,
     clock_rebase: Option<ClockRebase>,
     continuation: obc_app::RideContinuation,
-    /// A failed checkpoint blocks further samples until the exact same append has been retried. This
-    /// preserves storage's already-gated rollover recovery anchor and bounds loss under repeated
-    /// media faults instead of letting the caller mutate the retry payload.
+    /// A failed checkpoint blocks further samples until the exact same append has been retried. That
+    /// preserves storage's gated rollover recovery anchor and bounds loss under repeated media
+    /// faults, instead of letting the caller mutate the retry payload.
     journal_blocked: bool,
     crc: Crc32,
     last_checkpoint_ms: u32,
@@ -89,13 +89,13 @@ enum State {
     Idle,
     Live(Live),
     /// Finish was requested while an ordinary checkpoint was blocked. The footer is staged after
-    /// `live.delta_len` but is not part of that length or CRC yet: storage must first see the exact
-    /// failed append + resume again. Once repair succeeds the footer moves to offset zero and the
-    /// normal final checkpoint publishes it.
+    /// `live.delta_len` but is not yet part of that length or CRC: storage must first see the exact
+    /// failed append and resume again. Once the repair succeeds the footer moves to offset zero and
+    /// the normal final checkpoint publishes it.
     FinaliseAfterRepair(Live),
-    /// A durable `RECORDING` object this executor could not attach to a session, carrying **which**
-    /// of the three refusals produced it. It stays visible to recovery diagnostics, is never
-    /// appended to, and its only exit is the rider-confirmed exact removal.
+    /// A durable `RECORDING` object this executor could not attach to a session, carrying which of
+    /// the three refusals produced it. It stays visible to recovery diagnostics, is never appended
+    /// to, and its only exit is the rider-confirmed exact removal.
     Faulted {
         id: ObjectId,
         revision: Revision,
@@ -119,9 +119,9 @@ pub(crate) struct Recorder {
     state: State,
     writer: Writer,
     warning_pending: bool,
-    /// `debug-uart` only (#1591): the next exact removal answers as a media failure would, without
-    /// issuing the commit. A genuine media fault cannot be produced on a working board safely, and
-    /// the executor's answer is exactly where a real one surfaces.
+    /// `debug-uart` only: the next exact removal answers as a media failure would, without issuing
+    /// the commit. A genuine media fault cannot be produced safely on a working board, and the
+    /// executor's answer is exactly where a real one surfaces.
     #[cfg(feature = "debug-uart")]
     repair_fail_once: bool,
 }
@@ -154,9 +154,9 @@ impl Recorder {
                 }
                 let catalog_name = catalog_name.unwrap_or_default();
 
-                // A footer-bearing checkpoint means Finish made the final bytes durable and only
-                // the clearing commit was cut. Validate the footer before completing it; otherwise
-                // the payload remains a resumable sequence of exact 20-byte samples.
+                // A footer-bearing checkpoint means Finish made the final bytes durable and only the
+                // clearing commit was cut. Validate the footer before completing it; otherwise the
+                // payload stays a resumable sequence of exact 20-byte samples.
                 if total >= FOOTER_LEN as u64 && (total - FOOTER_LEN as u64).is_multiple_of(SAMPLE_LEN as u64) {
                     let mut bytes = [0u8; FOOTER_LEN];
                     let at = total - FOOTER_LEN as u64;
@@ -223,9 +223,9 @@ impl Recorder {
                         last_checkpoint_ms: now_ms,
                     })
                 } else {
-                    // The store proved a durable checkpoint, but it is not a ride-v3 sample/footer
-                    // boundary. Keep the RECORDING object intact and loud; never append to or
-                    // publish bytes whose domain format this executor cannot prove.
+                    // The store proved a durable checkpoint, but it is not a sample or footer
+                    // boundary. Keep the RECORDING object intact and loud, and never append to or
+                    // publish bytes whose format this executor cannot prove.
                     defmt::error!("flat ride: recovered payload is not a v3 sample/footer boundary");
                     faulted(recovered.id, recovered.revision, RideDamage::Payload)
                 }
@@ -240,14 +240,14 @@ impl Recorder {
         }
     }
 
-    /// Whether a durable `RECORDING` object is open, closing, or faulted — the DFU arm's refusal
+    /// Whether a durable `RECORDING` object is open, closing or faulted: the DFU arm's refusal
     /// check.
     pub(crate) fn is_recording(&self) -> bool {
         !matches!(self.state, State::Idle)
     }
 
-    /// The ride session the **live** object belongs to, or `None` when no object is attached to
-    /// one. A faulted or closing object answers `None`: neither is a session's to record into.
+    /// The ride session the live object belongs to, or `None` when no object is attached to one. A
+    /// faulted or closing object answers `None`: neither is a session's to record into.
     pub(crate) fn open_session(&self) -> Option<u32> {
         match self.state {
             State::Live(live) => live.session,
@@ -255,15 +255,15 @@ impl Recorder {
         }
     }
 
-    /// The app-side state paired with a recovered logical checkpoint. The board restores this
-    /// before showing the explicit Continue/Discard card; malformed metadata never reaches the UI.
+    /// The app-side state paired with a recovered logical checkpoint. The board restores this before
+    /// showing the Continue or Discard card, so malformed metadata never reaches the UI.
     pub(crate) fn recovered_continuation(&self) -> Option<obc_app::RideContinuation> {
         let State::Live(Live { session: None, continuation, .. }) = self.state else { return None };
         Some(continuation)
     }
 
-    /// What is wrong with the recovered object, or `None` when nothing is. The app decides from
-    /// this whether a repair may be offered at all.
+    /// What is wrong with the recovered object, or `None`. The app decides from this whether a
+    /// repair may be offered at all.
     pub(crate) fn recovery_damage(&self) -> Option<RideDamage> {
         match self.state {
             State::Faulted { damage, .. } => Some(damage),
@@ -275,16 +275,16 @@ impl Recorder {
         core::mem::take(&mut self.warning_pending)
     }
 
-    /// Service a terminal state left over from a reset — a footer-bearing recovered object whose
+    /// Service a terminal state left over from a reset: a footer-bearing recovered object whose
     /// clearing commit was cut. Run once at boot, before the first UI pass.
     pub(crate) async fn settle(&mut self) {
         let _ = self.service_terminal().await;
     }
 
-    /// Open a ride object for `session`, saved as `name` — Recorder's session edge.
+    /// Open a ride object for `session`, saved as `name`.
     ///
-    /// A recovered object with no session attached adopts this one instead of starting a second:
-    /// that is what "continue" means, and it is the only way the restored samples keep their object.
+    /// A recovered object with no session attached adopts this one instead of starting a second.
+    /// That is what continuing means, and it is the only way the restored samples keep their object.
     pub(crate) async fn open(&mut self, store: &'static FlatStore<FlatCard>, session: u32, name: &str, now_ms: u32) {
         match self.state {
             State::Idle => {
@@ -309,8 +309,8 @@ impl Recorder {
         }
     }
 
-    /// Open the owed session before serving its effect, including samples from the Start pass.
-    /// Keep the opened identity after a close: its outcome reaches App on the next pass.
+    /// Open the owed session before serving its effect, including samples from the Start pass. Keep
+    /// the opened identity after a close: its outcome reaches App on the next pass.
     pub(crate) async fn execute(
         &mut self,
         store: &'static FlatStore<FlatCard>,
@@ -338,10 +338,9 @@ impl Recorder {
                 }
             }
             RecorderEffect::Finalize { token } => {
-                // Recorder has already drained the samples through acknowledged appends.
-                // The footer facts come from Recorder, which stamped its wall-clock anchor
-                // as it minted this close. The save name is not read at all: it was frozen
-                // when the ride opened.
+                // Recorder has already drained the samples through acknowledged appends, and the
+                // footer facts come from Recorder, which stamped its wall-clock anchor as it minted
+                // this close. The save name is not read at all: it was frozen when the ride opened.
                 let stats = app.recorder.ride_stats();
                 match self.finalize(&stats).await {
                     RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
@@ -352,16 +351,16 @@ impl Recorder {
                     RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
                 }
             }
-            // The store's refusal is reported by kind. A card that will take no mutation at
-            // all is the one answer a retry cannot help, so Recorder must be able to tell it
-            // from a write that went wrong.
+            // The store's refusal is reported by kind. A card that will take no mutation at all is
+            // the one answer a retry cannot help, so Recorder must be able to tell it from a write
+            // that went wrong.
             RecorderEffect::Discard { token } => match self.discard().await {
                 Ok(()) => RecorderOutcome::Discarded { token },
                 Err(StoreError::ReadOnly) => RecorderOutcome::Failed { token, error: RecorderError::ReadOnly },
                 Err(_) => RecorderOutcome::Failed { token, error: RecorderError::Write },
             },
-            // The immutable App borrow binds the full issued batch to its observation
-            // context. A changed cohort is reissued before any board storage work.
+            // The immutable App borrow binds the full issued batch to its observation context. A
+            // changed cohort is reissued before any board storage work.
             RecorderEffect::Append { token, samples } => match app.recorder.append_context(samples) {
                 None => RecorderOutcome::Cancelled { token },
                 Some(context) => match self.append(app.recorder.staged(), context) {
@@ -375,16 +374,13 @@ impl Recorder {
 
     /// Close the ride into a durable ride object.
     ///
-    /// [`RideClose::Failed`](obc_app::recorder::RideClose) leaves the object `RECORDING` on the
-    /// card with its staged footer staged, and Recorder re-offers the same finalize — which
-    /// re-enters the terminal service below at exactly the step that failed. `Nothing` is the
-    /// honest answer when no object was ever created: a start this card refused already warned the
-    /// rider, and reporting a failure would retry a close against something that does not exist for
-    /// the rest of the boot.
+    /// [`RideClose::Failed`](obc_app::recorder::RideClose) leaves the object `RECORDING` on the card
+    /// with its footer staged, and Recorder re-offers the same finalize, which re-enters the
+    /// terminal service below at exactly the step that failed. `Nothing` is the honest answer when
+    /// no object was ever created: a start this card refused already warned the rider.
     ///
-    /// The save name is **not** a parameter: it was frozen when the ride opened
-    /// ([`open`](Self::open)), so a mid-ride route swap cannot rename a ride that is already
-    /// recording.
+    /// The save name is not a parameter: it was frozen when the ride opened, so a mid-ride route
+    /// swap cannot rename a ride that is already recording.
     pub(crate) async fn finalize(&mut self, stats: &obc_route::RideStats) -> obc_app::recorder::RideClose {
         use obc_app::recorder::RideClose;
         if let State::Live(live) = self.state {
@@ -408,14 +404,14 @@ impl Recorder {
         }
     }
 
-    /// Delete the open ride and its journal, and say **why** if the store refused. The typed error
-    /// is what separates a write that went wrong from a store that will take no mutation at all.
+    /// Delete the open ride and its journal, and say why if the store refused. The typed error is
+    /// what separates a write that went wrong from a store that will take no mutation at all.
     ///
     /// Deletion deliberately does not repair a blocked checkpoint. `Remove` never enters storage's
-    /// final-tail flush: the atomic catalog mutation first makes the ride/proof unreachable, then
-    /// `settle_ride` clears its pending recovery state and invalidates the journal headers. Repair
-    /// would add fallible I/O to an object the rider explicitly asked to destroy — and it is exactly
-    /// why a damaged object can be removed when it can be repaired no other way.
+    /// final-tail flush: the atomic catalog mutation first makes the ride unreachable, then
+    /// `settle_ride` clears its pending recovery state. Repair would add fallible I/O to an object
+    /// the rider explicitly asked to destroy, which is exactly why a damaged object can be removed
+    /// when it can be repaired no other way.
     pub(crate) async fn discard(&mut self) -> Result<(), StoreError> {
         match self.state {
             State::Live(live) | State::FinaliseAfterRepair(live) => {
@@ -429,9 +425,9 @@ impl Recorder {
         }
         #[cfg(feature = "debug-uart")]
         if core::mem::take(&mut self.repair_fail_once) && matches!(self.state, State::Discarding { .. }) {
-            // No commit is issued, so the card is untouched — the injection sits exactly where a
-            // real media failure would reach Recorder. The state stays `Discarding`, so the rider's
-            // retry re-attempts the very same removal.
+            // No commit is issued, so the card is untouched: the injection sits exactly where a real
+            // media failure would reach Recorder. The state stays `Discarding`, so the rider's retry
+            // re-attempts the very same removal.
             defmt::warn!("flat ride: exact removal refused: {}", defmt::Debug2Format(&StoreError::Media));
             return Err(StoreError::Media);
         }
@@ -447,7 +443,7 @@ impl Recorder {
         }
     }
 
-    /// Admit the whole issued batch and its App observation boundary together. Capacity refusal
+    /// Admit the whole issued batch and its App observation boundary together. A capacity refusal
     /// leaves the previous bytes, CRC, times, point count and continuation untouched.
     pub(crate) fn append(&mut self, points: &[TrackPoint], continuation: obc_app::RideContinuation) -> AppendResult {
         let State::Live(mut live) = self.state else { return AppendResult::Failed };
@@ -476,8 +472,8 @@ impl Recorder {
         AppendResult::Accepted
     }
 
-    /// Checkpoint the accepted boundary. A current continuation is supplied only when App staging
-    /// is empty. A failed attempt always replays its frozen tuple before considering fresh context.
+    /// Checkpoint the accepted boundary. A current continuation is supplied only when App staging is
+    /// empty. A failed attempt always replays its frozen tuple before considering fresh context.
     pub(crate) async fn checkpoint(
         &mut self,
         now_ms: u32,
@@ -485,9 +481,9 @@ impl Recorder {
         continuation: Option<obc_app::RideContinuation>,
     ) -> Result<CheckpointStatus, RecorderError> {
         let State::Live(live) = self.state else { return Err(RecorderError::Write) };
-        // Once an attempt fails, storage's equality contract requires the *entire* logical
-        // checkpoint to be replayed: append, CRC and opaque resume. App totals can keep moving even
-        // while samples are frozen, so never rebuild resume from the current app on a retry.
+        // Once an attempt fails, storage's equality contract requires the entire logical checkpoint
+        // to be replayed: append, CRC and opaque resume. App totals can keep moving while samples
+        // are frozen, so never rebuild resume from the current app on a retry.
         let (resume, attempted_continuation, attempted_start) = if live.journal_blocked {
             (unsafe { *resume_slice() }, live.continuation, live.start_time)
         } else {
@@ -513,7 +509,7 @@ impl Recorder {
                 let mut blocked = live;
                 // These now name the staged resume, not the last durable one. Keeping them beside
                 // `journal_blocked` makes a later successful retry advance the in-RAM state to the
-                // exact snapshot storage just accepted rather than to newer app totals.
+                // snapshot storage just accepted, rather than to newer app totals.
                 blocked.start_time = attempted_start;
                 blocked.continuation = attempted_continuation;
                 blocked.journal_blocked = true;
@@ -554,7 +550,7 @@ impl Recorder {
         let mut footer_stats = *stats;
         // A trusted checkpoint wins permanently. A fresh same-boot ride may still acquire UTC at
         // Finish; a recovered ride without a trusted checkpoint cannot mix its old monotonic
-        // first-sample timestamp with this boot's wall anchor and therefore reports start 0.
+        // first-sample timestamp with this boot's wall anchor, and therefore reports start 0.
         let stable_start = live
             .start_time
             .or_else(|| (live.can_upgrade_start && stats.clock_trusted).then(|| start_time(stats, live.first_t_ms)))
@@ -638,10 +634,9 @@ impl Recorder {
         }
     }
 
-    /// `debug-uart` only (#1591 on-device acceptance): fabricate a damaged `RECORDING` object
-    /// through the **production seam** — one `start` and one journalled checkpoint whose bytes fail
-    /// exactly one of the two logical recovery checks at the next mount. No card surgery, no block
-    /// editing, no card removal.
+    /// `debug-uart` only: fabricate a damaged `RECORDING` object through the production seam — one
+    /// `start` and one journalled checkpoint whose bytes fail exactly one of the two logical
+    /// recovery checks at the next mount. No card surgery and no block editing.
     #[cfg(feature = "debug-uart")]
     pub(crate) async fn debug_fabricate_damage(
         &mut self,
@@ -661,10 +656,10 @@ impl Recorder {
         let State::Live(mut live) = self.state else { return };
         let (len, resume, name) = match kind {
             // 7 is below `FOOTER_LEN` and is not a whole number of samples, so the mount takes the
-            // sample/footer-boundary refusal with a resume image that would otherwise decode.
+            // sample and footer boundary refusal with a resume image that would otherwise decode.
             RideDamageKind::Payload => (7usize, encode_resume(obc_app::RideContinuation::default(), None), "payload"),
-            // One whole sample keeps the boundary valid, so the refusal is the resume image's — which
-            // is exactly what separates this cause from the first.
+            // One whole sample keeps the boundary valid, so the refusal is the resume image's, which
+            // is what separates this cause from the first.
             RideDamageKind::Metadata => (SAMPLE_LEN, [0u8; RIDE_RESUME_LEN], "metadata"),
         };
         unsafe { delta_mut()[..len].fill(0) };
@@ -682,7 +677,7 @@ impl Recorder {
         }
     }
 
-    /// `debug-uart` only (#1591): arm the one-shot refusal of the next exact removal.
+    /// `debug-uart` only: arm the one-shot refusal of the next exact removal.
     #[cfg(feature = "debug-uart")]
     pub(crate) fn debug_arm_repair_failure(&mut self) {
         self.repair_fail_once = true;
@@ -706,10 +701,9 @@ impl Recorder {
 
     /// Run the state's own next step and say what the store answered.
     ///
-    /// The typed error is load-bearing for exactly one caller — [`discard`](Self::discard), whose
+    /// The typed error is load-bearing for exactly one caller, [`discard`](Self::discard), whose
     /// answer decides whether the rider is offered another attempt. [`finalize`](Self::finalize) and
-    /// [`settle`](Self::settle) still read the resulting *state*, which is what "the close is over"
-    /// has always meant.
+    /// [`settle`](Self::settle) read the resulting state instead.
     async fn service_terminal(&mut self) -> Result<(), StoreError> {
         match self.state {
             State::FinaliseAfterRepair(mut live) => {
@@ -798,8 +792,8 @@ impl Recorder {
                 let mut batch = Vec::new();
                 let _ = batch.push(Mutation::Remove { id, revision });
                 match self.writer.call(Request::Commit { batch }, &REPLY).await {
-                    // The catalog no longer holding the entry **is** the goal state: an earlier
-                    // attempt landed and only its answer was lost.
+                    // The catalog no longer holding the entry is the goal state: an earlier attempt
+                    // landed and only its answer was lost.
                     Ok(Outcome::Committed(_)) | Err(StoreError::NotFound) => {
                         self.state = State::Idle;
                         Ok(())
@@ -816,7 +810,7 @@ impl Recorder {
 }
 
 /// The one place a `Faulted` state is built, so every classified refusal announces itself the same
-/// way: which object, which cause, and whether a repair may be offered for it at all.
+/// way: which object, which cause, and whether a repair may be offered for it.
 fn faulted(id: ObjectId, revision: Revision, damage: RideDamage) -> State {
     let (name, repairable) = match damage {
         RideDamage::Payload => ("payload", true),
@@ -854,7 +848,7 @@ fn start_time(stats: &obc_route::RideStats, first_t_ms: Option<u32>) -> u32 {
 
 /// The ride loop is the only mutable owner. A journal request lends the storage task an immutable
 /// view and waits for its reply before the loop can touch the buffer again. These raw-slice helpers
-/// express that cross-task handoff without manufacturing a permanent Rust borrow of a `static mut`.
+/// express that cross-task handoff without manufacturing a permanent borrow of a `static mut`.
 unsafe fn delta_mut() -> &'static mut [u8; DELTA_BYTES] {
     &mut *addr_of_mut!(DELTA)
 }

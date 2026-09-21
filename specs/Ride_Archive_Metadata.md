@@ -35,7 +35,7 @@ Absence of a row means no proof. A zero timestamp still proves archive possessio
 There is no background timestamp update.
 
 The [two-ride vector](vectors/ride-archive-metadata/two-rides.bin) binds two exact source tuples
-on StoreId `42` repeated 16 times. The codec tests verify the complete bytes and malformed rows.
+on StoreId `42` repeated 16 times.
 
 ## Navigator checkpoint
 

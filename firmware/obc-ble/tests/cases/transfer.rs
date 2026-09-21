@@ -1,18 +1,15 @@
-//! The transfer state machine, exercised end-to-end over an in-memory byte stream. Covers the happy
-//! path, wrong-op rejection in both directions (transfers restart, not resume — the v2 descriptor
-//! has no offset to reject), CRC-corruption rejection, arbitrary CoC segmentation, over-run, and the
-//! echo loopback.
+//! The transfer state machine, exercised end-to-end over an in-memory byte stream.
 
 use obc_ble::descriptor::{ObjectType, Op, TransferControl, TransferStatus};
 use obc_ble::transfer::TransferError;
 use obc_ble::{Crc32, Receiver, StreamSender};
 
-/// A deterministic pseudo-random payload of `n` bytes (a route-sized object).
+/// A deterministic pseudo-random payload.
 fn payload(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i.wrapping_mul(31).wrapping_add(7)) as u8).collect()
 }
 
-/// A fresh upload descriptor for `object` (echo id 0), CRC from the production hasher.
+/// The CRC comes from the production hasher.
 fn upload_desc(object: &[u8]) -> TransferControl {
     TransferControl {
         op: Op::Upload,
@@ -42,7 +39,6 @@ fn upload_happy_path_commits() {
 
 #[test]
 fn upload_accepts_any_segmentation() {
-    // The CoC delivers arbitrary byte runs: every chunk split must reach the same commit.
     let object = payload(257);
     for chunk in [1usize, 2, 7, 64, 244, 256, 300] {
         let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
@@ -57,7 +53,7 @@ fn upload_accepts_any_segmentation() {
 fn crc_corruption_is_rejected_typed() {
     let object = payload(300);
     let mut desc = upload_desc(&object);
-    desc.crc32 ^= 0x0000_0001; // flip one bit of the announced CRC
+    desc.crc32 ^= 0x0000_0001;
     let mut rx = Receiver::new(&desc).unwrap();
     rx.push(&object);
 
@@ -68,8 +64,7 @@ fn crc_corruption_is_rejected_typed() {
 
 #[test]
 fn corrupt_payload_same_len_is_rejected() {
-    // The link delivered the right length but a wrong byte — the whole-object CRC catches this where
-    // the on-air CRC can't.
+    // The right length but a wrong byte: the whole-object CRC catches what the on-air CRC cannot.
     let object = payload(128);
     let desc = upload_desc(&object);
     let mut corrupt = object.clone();
@@ -93,11 +88,11 @@ fn link_checked_receiver_counts_without_software_crc() {
 
 #[test]
 fn push_clamps_to_remaining() {
-    // A receiver never consumes past total_len; the surplus is the caller's protocol error to see.
+    // The surplus is the caller's protocol error to see.
     let object = payload(50);
     let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
     let mut overrun = object.clone();
-    overrun.extend_from_slice(&[0xAA; 10]); // 10 bytes too many
+    overrun.extend_from_slice(&[0xAA; 10]);
     let consumed = rx.push(&overrun);
     assert_eq!(consumed, 50);
     assert!(rx.is_complete());
@@ -122,20 +117,17 @@ fn receiver_rejects_wrong_op() {
 
 #[test]
 fn echo_loopback_round_trips() {
-    // The loopback: the device receives an echo object and streams back exactly what it received,
-    // CRC-verified — modeled as Receiver.push → echo the consumed bytes → compare.
+    // Modeled as push, then echo the consumed bytes back, then compare.
     let object = payload(1024);
     let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
     let mut echoed = Vec::with_capacity(object.len());
     for part in object.chunks(244) {
         let consumed = rx.push(part);
-        echoed.extend_from_slice(&part[..consumed]); // what the board writes back over the CoC
+        echoed.extend_from_slice(&part[..consumed]);
     }
     assert_eq!(echoed, object, "byte-identical loopback");
     assert_eq!(rx.outcome().unwrap().status, TransferStatus::Committed);
 }
-
-// ---- StreamSender (download direction) ----
 
 fn download_request(ty: ObjectType) -> TransferControl {
     TransferControl { op: Op::Download, ty, object_id: 0, total_len: 0, crc32: 0 }
@@ -143,9 +135,7 @@ fn download_request(ty: ObjectType) -> TransferControl {
 
 #[test]
 fn download_announces_and_streams() {
-    // The download direction: StreamSender owns the announce + chunk sequencing + close, while the
-    // bytes live outside the core (the board reads them from the SD card, or here from a slice). A
-    // read closure stands in for that storage read — object[position .. position + n].
+    // The read closure stands in for the board's storage read.
     let object = payload(500);
     let crc = Crc32::checksum(&object);
     let read = |at: usize, n: usize| &object[at..at + n];
@@ -174,8 +164,6 @@ fn download_announces_and_streams() {
 
 #[test]
 fn download_rejects_wrong_op() {
-    // Downloads restart whole, exactly like uploads: a wrong op is rejected typed, and an
-    // interrupted download is simply re-requested from the start (no offset on the v2 wire).
     let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route) };
     assert_eq!(StreamSender::new(&upload, 100, 0).unwrap_err(), TransferError::WrongOp);
 }

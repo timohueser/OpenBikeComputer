@@ -2,16 +2,13 @@
 // the per-band cell indices. Normative in `OBCC_Spec.md`, produced by
 // `obc-pack catalog` / `obc-bake`.
 //
-// The whole-document contract is why this takes a *string*: a document
-// is read whole and parsed as one JSON value, and a failure rejects all of it
-// rather than leaving a half-populated catalog on screen. The guarantee spans
-// four kinds of document, so the
-// root **pins each satellite by `bytes` + `sha256`** and this parser's job
-// extends to checking that the root is internally consistent before any of those
-// satellites is fetched: a band with no cell index, a skin missing a feature
-// type, a region whose `bytes_by_band` does not add up to its `bytes` — each is
-// a document that would price a selection wrongly, and pricing is the one thing
-// the builder promises to get right before a download starts (§6).
+// This takes a *string* because a document is read whole and parsed as one JSON
+// value: a failure rejects all of it rather than leaving a half-populated catalog
+// on screen. The root pins each satellite by `bytes` + `sha256`, and this parser
+// also checks that the root is internally consistent before any satellite is
+// fetched — a band with no cell index, a skin missing a feature type, a region
+// whose `bytes_by_band` does not add up. Each would price a selection wrongly, and
+// pricing is the one thing the builder promises to get right before a download.
 //
 // The checks below are the spec's MUSTs, not a taste for strictness. Every
 // consumer-side rejection has a `fail()` here with its reason in the message.
@@ -41,8 +38,7 @@ export { CatalogFormatError };
 /** The envelope version this client implements. Checked before any other field. */
 export const CATALOG_SCHEMA_VERSION = 3;
 
-/** Which physical file of a volume set a band's content assembles into
- *  (`OBCA_Spec.md` §5.1). */
+/** Which physical file of a volume set a band's content assembles into. */
 export type BandRole = "core" | "coarse" | "geometry";
 
 /** A non-geometry OBCM section a band may carry. */
@@ -108,10 +104,10 @@ export interface SkinStyle {
     /** How the line is stroked. `ticked` is the cableway mark: a solid stroke with regular
      *  perpendicular ticks, told apart by shape rather than by colour alone. */
     line_style: LineStyle;
-    /** OBCM style-record flag bit 4 (#1095): the weight is the on-screen stroke in device
+    /** OBCM style-record flag bit 4: the weight is the on-screen stroke in device
      *  pixels, off the renderer's zoom width ramp. */
     fixed_width: boolean;
-    /** OBCM style-record flag bit 5 (#1095): part of the suppressible terrain layer. */
+    /** OBCM style-record flag bit 5: part of the suppressible terrain layer. */
     terrain_layer: boolean;
     color2: number | null;
 }
@@ -133,9 +129,9 @@ export interface SkinEntry {
     preview: SkinPreview | null;
 }
 
-/** A region's simplified outline: rings of `[lat, lon]` integer microdegrees
- *  (§7). **Presentation only** — it MUST NOT be used to compute a cell set
- *  (that is stored, §6), to price a selection, or as a packer input bbox. */
+/** A region's simplified outline: rings of `[lat, lon]` integer microdegrees.
+ *  **Presentation only** — it MUST NOT be used to compute a cell set (that is
+ *  stored), to price a selection, or as a packer input bbox. */
 export interface Boundary {
     tolerance_udeg: number;
     rings: [number, number][][];
@@ -143,15 +139,15 @@ export interface Boundary {
 
 export interface RegionEntry {
     id: string;
-    /** This region's terrain selection, priced (§13.3); `null` for a catalog
-     *  with no terrain block. */
+    /** This region's terrain selection, priced; `null` for a catalog with no
+     *  terrain block. */
     terrain: RegionTerrain | null;
     name: string;
     parent: string | null;
     boundary: Boundary;
     /** Total bytes of every cell in this region's set, across all bands. */
     bytes: number;
-    /** Those bytes per band — the per-file split a volume set needs (§5.7). */
+    /** Those bytes per band — the per-file split a volume set needs. */
     bytes_by_band: Record<string, number>;
     cell_count: Record<string, number>;
     partial_cell_count_by_band: Record<string, number>;
@@ -172,7 +168,7 @@ export interface CellIndexRef {
     url: string;
 }
 
-/** A region's terrain price (§13.3). Deliberately **not** part of `bytes` /
+/** A region's terrain price. Deliberately **not** part of `bytes` /
  *  `bytes_by_band`: a rider may take the map without the raster, so the two
  *  prices are separate numbers and a consumer MUST present them separately. */
 export interface RegionTerrain {
@@ -181,34 +177,33 @@ export interface RegionTerrain {
     bytes: number;
 }
 
-/** The root's `terrain` block (§13.1): a **second artifact class with its own
- *  revision track**, not a band and not covered by the OBCM lockstep.
+/** The root's `terrain` block: a **second artifact class with its own revision
+ *  track**, not a band and not covered by the OBCM lockstep.
  *
  *  Absent is complete and valid — everything degrades to "no elevation is known
- *  here", which is the behaviour of every map before terrain existed. A consumer
- *  MUST NOT synthesize elevation from any other source. */
+ *  here". A consumer MUST NOT synthesize elevation from any other source. */
 export interface TerrainEntry {
     dataset_id: string;
     /** Opaque: compared for equality, never parsed. */
     dataset_version: string;
-    /** `log2(P)` of the sample lattice, µdeg (`OBCT_Spec.md` §1.1). */
+    /** `log2(P)` of the sample lattice, µdeg. */
     posting_log2: number;
     /** `log2(S)` of the terrain cell, µdeg. Independent of any band's. */
     cell_log2: number;
     terrain_revision: number;
-    /** The source dataset's required credit, verbatim. §13.5 makes taking it
-     *  from here rather than hard-coding it a MUST, so a dataset change carries
-     *  its own notice with it. */
+    /** The source dataset's required credit, verbatim. Taking it from here rather
+     *  than hard-coding it is a MUST, so a dataset change carries its own notice
+     *  with it. */
     attribution: string;
-    /** The finer reference models the raster's crest lifts come from (§13.1).
-     *  Empty when no published cell used one. §13.5's obligation covers each
-     *  entry exactly as it covers `attribution`, so a consumer that shows the
-     *  one shows all of them. */
+    /** The finer reference models the raster's crest lifts come from. Empty when
+     *  no published cell used one. The licence obligation covers each entry
+     *  exactly as it covers `attribution`, so a consumer that shows the one shows
+     *  all of them. */
     references: ReferenceEntry[];
     cell_index: TerrainIndexRef;
 }
 
-/** One reference elevation model a terrain cell's crest heights came from (§13.1). */
+/** One reference elevation model a terrain cell's crest heights came from. */
 export interface ReferenceEntry {
     key: string;
     product: string;
@@ -216,7 +211,7 @@ export interface ReferenceEntry {
     licence: string;
 }
 
-/** The root's pin on the single terrain index (§13.1). */
+/** The root's pin on the single terrain index. */
 export interface TerrainIndexRef {
     cell_count: number;
     known_empty_count: number;
@@ -225,10 +220,10 @@ export interface TerrainIndexRef {
     url: string;
 }
 
-/** §3.1's source declaration: what the cells derive from and the licence the
- *  published store — a derivative database — is offered under. A consumer that
- *  describes the map data takes these strings from here rather than hard-coding
- *  them, the same rule §13.5 sets for terrain. */
+/** What the cells derive from, and the licence the published store — a
+ *  derivative database — is offered under. A consumer that describes the map data
+ *  takes these strings from here rather than hard-coding them, the same rule the
+ *  terrain attribution sets. */
 export interface SourceEntry {
     dataset_id: string;
     attribution: string;
@@ -239,22 +234,21 @@ export interface SourceEntry {
 export interface Catalog {
     schema_version: number;
     generated_at: string;
-    /** `null` only for catalogs published before §3.1 existed — every current
-     *  producer writes it. */
+    /** `null` only for older catalogs; every current producer writes it. */
     source: SourceEntry | null;
     schema: SchemaEntry;
     skins: SkinEntry[];
     regions: RegionEntry[];
     cell_index: CellIndexRef[];
-    /** `null` for a catalog that publishes no raster (§13). */
+    /** `null` for a catalog that publishes no raster. */
     terrain: TerrainEntry | null;
     /** The terrain revision the network band's baked ascents were integrated
-     *  from (§13.4), or `null` when the store was baked with no terrain. Root
-     *  level and deliberately not in `SchemaEntry`. */
+     *  from, or `null` when the store was baked with no terrain. Root level and
+     *  deliberately not in `SchemaEntry`. */
     network_terrain_revision: number | null;
 }
 
-/** What a satellite has to match before it is believed (§9). */
+/** What a satellite has to match before it is believed. */
 export interface DocumentPin {
     bytes: number;
     sha256: string;
@@ -273,11 +267,10 @@ function parseGrid(v: unknown, where: string): GridConstants {
         origin_udeg: int(o, "origin_udeg", where, GRID_ORIGIN, GRID_ORIGIN),
         world_side_udeg: int(o, "world_side_udeg", where, WORLD_SIDE, WORLD_SIDE),
     };
-    // §4 restates the constants so no consumer hard-codes them — but this one
-    // does, in `grid.ts`, because they are OBCA §1.1 format constants and every
-    // cell id in the document was minted with them. A catalog stating anything
-    // else is not a catalog whose ids this client can turn into squares, so it is
-    // refused rather than silently computed with the wrong lattice.
+    // The spec restates the grid constants so no consumer hard-codes them — but
+    // this one does, in `grid.ts`, because every cell id in the document was
+    // minted with them. A catalog stating anything else is not a catalog whose ids
+    // this client can turn into squares, so it is refused.
     return grid;
 }
 
@@ -302,8 +295,8 @@ function parseBands(v: unknown, where: string, lodCount: number): BandEntry[] {
             return l as number;
         });
         for (const lod of lods) {
-            // §1.2's partition rule, first half: a LOD in two bands would be
-            // written into the assembly twice.
+            // The partition rule, first half: a LOD in two bands would be written
+            // into the assembly twice.
             const other = lodOwner.get(lod);
             if (other) fail(`${at}: LOD ${lod} is in both band "${other}" and band "${id}"`);
             lodOwner.set(lod, id);
@@ -335,7 +328,7 @@ function parseBands(v: unknown, where: string, lodCount: number): BandEntry[] {
         if (!sectionOwner.has(section)) fail(`${where}: the ${section} section is in no band`);
     }
 
-    // §5.1's roles, which decide which physical file each band's bytes land in.
+    // The roles, which decide which physical file each band's bytes land in.
     const cores = bands.filter((b) => b.role === "core");
     if (cores.length !== 1) fail(`${where}: exactly one band must have role "core", found ${cores.length}`);
     const core = cores[0];
@@ -374,8 +367,8 @@ function parseSchema(v: unknown, where: string): SchemaEntry {
         // "LOD 3" mean two different rungs in one document.
         const index = int(e, "index", at, k, k);
         // Absent and `null` both mean the `+inf` coarsest level: the JSON schema
-        // does not require the key, and a parser stricter than the schema
-        // refuses documents the generator is entitled to write.
+        // does not require the key, and a parser stricter than the schema refuses
+        // documents the generator is entitled to write.
         const maxMpp = e.max_mpp === undefined ? null : e.max_mpp;
         if (maxMpp !== null && (typeof maxMpp !== "number" || !Number.isFinite(maxMpp))) {
             fail(`${at}: max_mpp must be a number or null`);
@@ -447,8 +440,8 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
             const sat = `${at}.styles[${n}]`;
             const e = obj(s, sat);
             const featureType = str(e, "feature_type", sat);
-            // §5: a skin naming a feature type the schema lacks is a stale
-            // skin claiming a layer that no longer exists.
+            // A skin naming a feature type the schema lacks is a stale skin
+            // claiming a layer that no longer exists.
             if (!schemaTypes.has(featureType)) {
                 fail(`${sat}: feature type ${JSON.stringify(featureType)} is not in schema.styles`);
             }
@@ -463,8 +456,8 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
                 z_index: int(e, "z_index", sat, -128, 127),
                 priority: int(e, "priority", sat, 1, 4),
                 line_style: oneOf(e, "line_style", sat, LINE_STYLES),
-                // #1095's two flag bits. Absent in a catalog published before they existed, and
-                // absent means clear — an older tree's skins simply carry neither.
+            // The two flag bits are absent in a catalog published before they existed,
+            // and absent means clear.
                 fixed_width: e.fixed_width === undefined ? false : bool(e, "fixed_width", sat),
                 terrain_layer: e.terrain_layer === undefined ? false : bool(e, "terrain_layer", sat),
                 color2: (color2 as number | null | undefined) ?? null,
@@ -476,9 +469,9 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
             fail(`${at}: skin "${id}" styles nothing for ${missing.join(", ")}`);
         }
 
-        // §3: sorted by id. Enforced for the same reason the cell index's
-        // ordering is: a document whose order is stated and not kept is a
-        // document a consumer cannot binary-search or diff.
+        // Sorted by id. Enforced for the same reason the cell index's ordering is:
+        // a document whose order is stated and not kept is a document a consumer
+        // cannot binary-search or diff.
         if (k > 0 && id <= str(obj(raw[k - 1], at), "id", at)) {
             fail(`${at}: skins must be sorted by id`);
         }
@@ -537,7 +530,7 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
         const o = obj(entry, at);
         const id = str(o, "id", at, PATH_ID);
         if (seen.has(id)) fail(`${at}: two regions share the id ${JSON.stringify(id)}`);
-        // §3, as for the skins: the order is part of the document.
+        // As for the skins: the order is part of the document.
         if (k > 0 && id <= str(obj(raw[k - 1], at), "id", at)) {
             fail(`${at}: regions must be sorted by id`);
         }
@@ -555,9 +548,9 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
         }
         const bytes = int(o, "bytes", at, 0);
         const summed = Object.values(bytesByBand).reduce((a, b) => a + b, 0);
-        // §6: the split is what makes pricing per *file* rather than merely
-        // per set, so a split that does not add up is a price that is wrong for
-        // at least one file — and the core file's price is a hard ceiling.
+        // The split is what makes pricing per *file* rather than merely per set, so
+        // a split that does not add up is a price that is wrong for at least one
+        // file — and the core file's price is a hard ceiling.
         if (summed !== bytes) {
             fail(`${at}: bytes_by_band sums to ${summed}, but bytes is ${bytes}`);
         }
@@ -568,9 +561,9 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
             }
         }
         const cellsSha256 = str(o, "cells_sha256", at, SHA256);
-        // §13.3. Optional, because a terrain-less catalog is complete — but its
-        // bytes are separate from `bytes` on purpose, so nothing here folds them
-        // into the sum checked above.
+        // Optional, because a terrain-less catalog is complete — but its bytes are
+        // separate from `bytes` on purpose, so nothing here folds them into the sum
+        // checked above.
         const terrain: RegionTerrain | null =
             o.terrain === undefined || o.terrain === null
                 ? null
@@ -652,13 +645,12 @@ function parseCellIndexRefs(v: unknown, where: string, bands: BandEntry[]): Cell
 }
 
 /**
- * §13.1's terrain block, or `null`.
+ * The terrain block, or `null`.
  *
  * The whole block is optional; every field inside it is required when it is
- * present. That asymmetry is the spec's, and it is the right one: a catalog
- * without terrain says "no elevation is known here", while a catalog with half a
- * terrain block says nothing a consumer can act on — it could not verify a cell's
- * lattice, price the download, or credit the source.
+ * present. That asymmetry is the right one: a catalog without terrain says "no
+ * elevation is known here", while a catalog with half a terrain block says
+ * nothing a consumer can act on.
  */
 function parseTerrain(v: unknown, where: string): TerrainEntry | null {
     if (v === undefined || v === null) return null;
@@ -666,17 +658,17 @@ function parseTerrain(v: unknown, where: string): TerrainEntry | null {
     const refAt = `${where}.cell_index`;
     const ref = obj(o.cell_index, refAt);
     const sha256 = str(ref, "sha256", refAt, SHA256);
-    // §13.5: a producer MUST NOT publish an empty attribution, and a consumer
-    // that displays terrain MUST take the string from here. An empty one would
-    // ship derived Copernicus raster with no credit at all, which is a licence
-    // problem rather than a cosmetic one.
+    // A producer MUST NOT publish an empty attribution, and a consumer that
+    // displays terrain MUST take the string from here. An empty one would ship
+    // derived Copernicus raster with no credit at all, which is a licence problem
+    // rather than a cosmetic one.
     const attribution = str(o, "attribution", where);
     if (!attribution.trim()) fail(`${where}.attribution: a terrain block credits its source (§13.5)`);
     return {
         dataset_id: str(o, "dataset_id", where, KEBAB),
         dataset_version: str(o, "dataset_version", where),
-        // The OBCT §4.5 ranges, checked here so a shard can never be planned at
-        // a pairing the format does not admit.
+        // The format's ranges, checked here so a shard can never be planned at a
+        // pairing the format does not admit.
         posting_log2: int(o, "posting_log2", where, 4, 16),
         cell_log2: int(o, "cell_log2", where, MIN_CELL_LOG2, MAX_CELL_LOG2),
         terrain_revision: int(o, "terrain_revision", where, 1),
@@ -693,11 +685,11 @@ function parseTerrain(v: unknown, where: string): TerrainEntry | null {
 }
 
 /**
- * §13.1's reference list: the finer models a crest height came from, or none.
+ * The reference list: the finer models a crest height came from, or none.
  *
  * Absent is normal — most maps have no reference coverage at all. Present and
- * broken is not tolerated: every field carries a licence obligation §13.5 makes
- * a MUST, and an entry a consumer cannot display is a credit nobody sees.
+ * broken is not tolerated: every field carries a licence obligation, and an entry
+ * a consumer cannot display is a credit nobody sees.
  */
 function parseReferences(v: unknown, where: string): ReferenceEntry[] {
     if (v === undefined || v === null) return [];
@@ -718,11 +710,11 @@ function parseReferences(v: unknown, where: string): ReferenceEntry[] {
 }
 
 /**
- * §3.1's source block, or `null`.
+ * The source block, or `null`.
  *
  * The block is required of every current producer; absence is tolerated only
- * because catalogs published before the field existed are still live. When it
- * is present, every field is required and non-empty — a half-stated licence
+ * because catalogs published before the field existed are still live. When it is
+ * present, every field is required and non-empty — a half-stated licence
  * declaration is worse than none, because it reads as authoritative.
  */
 function parseSource(v: unknown, where: string): SourceEntry | null {
@@ -744,7 +736,7 @@ function parseSource(v: unknown, where: string): SourceEntry | null {
 export function parseRoot(body: string): Catalog {
     const root = obj(json(body, "catalog"), "catalog");
 
-    // Before any other field (§7): a document from another envelope may spell
+    // Before any other field: a document from another envelope may spell
     // everything below differently, so nothing else is worth reading.
     if (root.schema_version !== CATALOG_SCHEMA_VERSION) {
         fail(
@@ -777,9 +769,8 @@ export function band(catalog: Catalog, id: string): BandEntry | undefined {
     return catalog.schema.bands.find((b) => b.id === id);
 }
 
-/** The one band whose bytes become the core file — the file with the ceiling
- *  (`OBCA_Spec.md` §5.7). Guaranteed to exist: the parser rejects a schema
- *  without exactly one. */
+/** The one band whose bytes become the core file — the file with the ceiling.
+ *  Guaranteed to exist: the parser rejects a schema without exactly one. */
 export function coreBand(catalog: Catalog): BandEntry {
     return catalog.schema.bands.find((b) => b.role === "core")!;
 }

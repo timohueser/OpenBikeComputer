@@ -1,20 +1,13 @@
-//! Trips — the grouped-route folders shown above the loose routes in the Route menu (epic #526).
+//! Trips — the grouped-route folders shown above the loose routes in the Route menu.
 //!
-//! A **trip** is a tiny metadata object ([`obc_route::TripMeta`], `TP{id}.OBT` on the device) that
+//! A trip is a small metadata object ([`obc_route::TripMeta`], `TP{id}.OBT` on the device) that
 //! references route object ids in ride order. The app resolves those ids against its resident route
-//! [`Catalog`](crate::route::Catalog) — whose parallel `catalog_ids` (#450) carry each route's
-//! durable object id — into a [`TripSummary`]: the stage *indices* into the catalog (ride order,
-//! dangling refs dropped) plus the summed distance / climb over the resolvable stages.
+//! [`Catalog`](crate::route::Catalog) into a [`TripSummary`]: the stage indices into the catalog, in
+//! ride order, plus the summed distance and climb over the resolvable stages.
 //!
-//! Grouping rule (spec §7.7): a route referenced by a stored trip is **filed** and shows only inside
-//! its folder; the menu's top level lists trips + unfiled routes. A dangling ref (a member route
-//! deleted individually) resolves to nothing and drops from `stage_indices` — the stats sum only
-//! what resolves — but a trip whose every ref dangles still lists (empty folder) so it can be
-//! deleted on-device.
-//!
-//! The device UI rows land in TR3; this module only builds the grouped model. The flat Route menu
-//! (which reads the full [`Catalog`](crate::route::Catalog)) is untouched, so filed routes keep
-//! listing until TR3 wires the folders.
+//! A route a stored trip references is filed and shows only inside its folder. A dangling ref
+//! resolves to nothing and drops from `stage_indices`, but a trip whose every ref dangles still
+//! lists, so it can be deleted on-device.
 
 use heapless::{String, Vec};
 
@@ -24,18 +17,16 @@ use obc_route::MAX_TRIP_STAGES;
 use crate::route::RouteSummary;
 use crate::CatalogObjectId;
 
-/// Maximum trips the resident menu catalog holds (epic #526: cap 16). Each [`TripSummary`] costs
-/// a name + two small stage `Vec`s (~`4·MAX_TRIP_STAGES` bytes), so the table is a couple of KB
-/// of static RAM.
+/// Maximum trips the resident menu catalog holds. Each [`TripSummary`] costs a name and two small
+/// stage `Vec`s, so the table is a couple of KB of static RAM.
 pub const MAX_TRIPS: usize = 16;
 
 /// The app's resident trip catalog: the folders the Route menu lists above the unfiled routes.
 pub type Trips = heapless::Vec<TripSummary, MAX_TRIPS>;
 
-/// A host-scanned trip handed to [`App::set_trips`](crate::App::set_trips): the trip's durable object
-/// id, its name, and its stage route ids in ride order (as stored — dangling ids and all). The app
-/// resolves the ids against the live route catalog; the host owns only the raw metadata (the sim
-/// scans `TP{id}.OBT`, the board its `ObjectStore`).
+/// A host-scanned trip handed to [`App::set_trips`](crate::App::set_trips): the trip's durable
+/// object id, its name, and its stage route ids in ride order, as stored. The host owns only the raw
+/// metadata; the app resolves the ids against the live route catalog.
 #[derive(Debug, Clone, Copy)]
 pub struct TripInput<'a> {
     pub id: CatalogObjectId,
@@ -43,38 +34,34 @@ pub struct TripInput<'a> {
     pub stage_ids: &'a [CatalogObjectId],
 }
 
-/// A resolved trip: its identity + name, the route object ids it references (kept verbatim so a
-/// catalog rescan can re-resolve and so a fully-dangling trip is still deletable), the resolved
-/// catalog **indices** in ride order (dangling refs dropped), and the summed stats over the
-/// resolvable stages.
+/// A resolved trip: its identity and name, the route object ids it references, the resolved catalog
+/// indices in ride order, and the summed stats over the resolvable stages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TripSummary {
     /// The trip's durable object id (its own device counter, separate from routes/rides).
     pub id: CatalogObjectId,
     pub name: String<NAME_CAP>,
-    /// The stage route ids **as stored**, ride order — the resolution source of truth (re-run on a
-    /// catalog rescan) and, for a fully-dangling trip, the only thing left to key a delete on.
+    /// The stage route ids as stored, in ride order. They are the resolution source of truth on a
+    /// catalog rescan, and for a fully-dangling trip the only thing left to key a delete on.
     pub stage_ids: Vec<CatalogObjectId, MAX_TRIP_STAGES>,
-    /// The resolved catalog indices, ride order — one per **resolvable** stage (a dangling id is
-    /// skipped, so this can be shorter than [`stage_ids`](TripSummary::stage_ids)).
+    /// The resolved catalog indices, ride order — one per resolvable stage, so a dangling id makes
+    /// this shorter than [`stage_ids`](TripSummary::stage_ids).
     pub stage_indices: Vec<u16, MAX_TRIP_STAGES>,
-    /// Summed distance over the resolvable stages, km (rounded — the catalog's display unit).
+    /// Summed distance over the resolvable stages, km — the catalog's display unit.
     pub distance_km: u32,
-    /// Summed ascent over the resolvable stages, m.
     pub climb_m: u32,
 }
 
 impl TripSummary {
-    /// Whether every stored stage dangled — a folder that resolves to no routes. Still listed (so it
-    /// can be deleted on-device) but empty.
+    /// Whether every stored stage dangled. An empty folder is still listed, so it can be deleted
+    /// on-device.
     pub fn is_empty_folder(&self) -> bool {
         self.stage_indices.is_empty()
     }
 
-    /// Build a resolved trip from a host [`TripInput`] against the route catalog: `catalog[i]` is the
-    /// summary whose durable id is `catalog_ids[i]`. Each stage id is looked up in `catalog_ids`;
-    /// a hit contributes its catalog index (ride order) and its distance/climb, a miss (dangling ref)
-    /// is dropped from the resolved list but stays in `stage_ids`.
+    /// Build a resolved trip from a host [`TripInput`] against the route catalog: `catalog[i]` is
+    /// the summary whose durable id is `catalog_ids[i]`. A dangling stage id is dropped from the
+    /// resolved list but stays in `stage_ids`.
     pub fn resolve(input: &TripInput, catalog: &[RouteSummary], catalog_ids: &[CatalogObjectId]) -> TripSummary {
         let mut name = String::new();
         let _ = name.push_str(truncate_on_char_boundary(input.name, NAME_CAP));
@@ -96,10 +83,9 @@ impl TripSummary {
         TripSummary { id: input.id, name, stage_ids, stage_indices, distance_km, climb_m }
     }
 
-    /// Re-resolve this trip's [`stage_indices`](TripSummary::stage_indices) + stats against a
-    /// (possibly changed) catalog, from the verbatim [`stage_ids`](TripSummary::stage_ids). Called
-    /// on a route rescan so a route that appeared/vanished re-files correctly without the host having
-    /// to re-feed the trips.
+    /// Re-resolve this trip's [`stage_indices`](TripSummary::stage_indices) and stats from
+    /// [`stage_ids`](TripSummary::stage_ids). A route rescan calls it, so a route that appeared or
+    /// vanished re-files without the host re-feeding the trips.
     pub fn reresolve(&mut self, catalog: &[RouteSummary], catalog_ids: &[CatalogObjectId]) {
         self.stage_indices.clear();
         self.distance_km = 0;

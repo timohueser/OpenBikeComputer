@@ -1,6 +1,4 @@
-//! Screen-stack tests: navigation [`Transition`]s per gesture, the guarded-action "needs a completed
-//! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving pausing swaps the
-//! map view for the full-screen Paused page.
+//! Screen-stack tests: per-gesture transitions, the guarded-hold rule, and stack discipline.
 
 use crate::activity::Activity;
 use crate::catalog_state::CatalogEffect;
@@ -20,13 +18,11 @@ use obc_reader::{MapTables, SliceSource};
 
 use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ReplayFix};
 
-/// Positional durable ids, `0..n` — what a catalog fed without an id column carried.
 fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
     (0..n as crate::CatalogObjectId).collect()
 }
 
-/// The object one pass asks the store to remove, if the rider's guarded hold requested a delete.
-/// The durable id is the pass's own resolve of the menu index.
+/// The durable object id one pass asks the store to remove, if a guarded hold requested a delete.
 fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
     match quiet_pass(app, 0).effects.catalog.take() {
         Some(CatalogEffect::RemoveObject { object, .. }) => Some(object),
@@ -34,20 +30,17 @@ fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
     }
 }
 
-/// Whether one pass owes the platform a settings write — the debounced save leaving the subtree.
+/// Whether one pass owes the platform a settings write.
 fn settings_dirty(app: &mut App) -> bool {
     quiet_pass(app, 0).effects.settings.take().is_some()
 }
 
-/// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
-/// under test never touch it, so each call leaks a fresh (non-aliasing) block — fine in a short-lived
-/// test process.
+/// A throwaway [`Settings`] to satisfy [`Ctx`]'s `&mut` borrow. Each call leaks a fresh block,
+/// which is fine in a short-lived test process.
 fn leaked_settings() -> &'static mut Settings {
     Box::leak(Box::new(Settings::default()))
 }
 
-/// A handle [`Ctx`] over fresh camera, Activity, and Recorder state. Route-menu tests use
-/// [`route_ctx_with_nav`] when they also need Navigator and a route catalog.
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, recorder: &'a mut RecorderMachine) -> Ctx<'a> {
     Ctx { recorder, ..test_ctx(state, activity, leaked_settings()) }
 }
@@ -71,7 +64,6 @@ fn route_ctx_with_nav<'a>(
     Ctx { routes, ..ctx_with_nav(state, activity, recorder, navigator) }
 }
 
-/// A small synthetic route catalog (names + totals + a unit bbox to center on).
 fn test_routes() -> [RouteSummary; 3] {
     let mk = |n: &str, d: u32, c: u32| {
         let mut name = heapless::String::<48>::new();
@@ -87,8 +79,6 @@ fn test_routes() -> [RouteSummary; 3] {
     };
     [mk("Alpha", 10, 100), mk("Beta", 20, 200), mk("Gamma", 30, 300)]
 }
-
-// Per-gesture navigation transitions.
 
 #[test]
 fn map_press_pauses_into_ride_control() {
@@ -110,8 +100,6 @@ fn map_turn_zooms_in_place() {
     assert!(st.zoom > z0, "a Down step zooms in");
 }
 
-/// Map zoom is `×ZOOM_STEP` per step, compounding — pins the per-step multiply so a regression
-/// to an additive step is caught.
 #[test]
 fn map_turn_multiplies_zoom_per_step() {
     let mut rec = RecorderMachine::new();
@@ -120,12 +108,10 @@ fn map_turn_multiplies_zoom_per_step() {
     let one = st.zoom;
     assert!(one > 1.0, "one step zooms in past 1.0, got {one}");
     MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act, &mut rec));
-    // The second step multiplies again: zoom/one == one/1.0 (a constant ratio per step).
     assert!((st.zoom / one - one).abs() < 1e-3, "each step is the same ×ratio, got {} then {}", one, st.zoom);
 }
 
-/// A huge forward step saturates at `MAX_ZOOM` instead of overflowing to `inf` (a `Step(1000)` would
-/// multiply `1.2^1000` straight to infinity).
+/// A huge step must clamp: `1.2^1000` would multiply straight to infinity.
 #[test]
 fn map_turn_saturates_at_max_zoom() {
     let mut rec = RecorderMachine::new();
@@ -133,13 +119,11 @@ fn map_turn_saturates_at_max_zoom() {
     MapScreen::new().handle(Gesture::Step(1000), &mut ctx(&mut st, &mut act, &mut rec));
     let saturated = st.zoom;
     assert!(saturated.is_finite(), "a huge step must clamp, not overflow to inf, got {saturated}");
-    // A second huge step can't push it any higher — it's pinned at the cap.
     MapScreen::new().handle(Gesture::Step(1000), &mut ctx(&mut st, &mut act, &mut rec));
     assert_eq!(st.zoom, saturated, "already at MAX_ZOOM — further zoom-in is a no-op");
 }
 
-/// A huge backward step saturates at `MIN_ZOOM` instead of underflowing toward 0 (which would invert
-/// / blank the view).
+/// A huge backward step clamps at `MIN_ZOOM`; a scale near 0 would blank the view.
 #[test]
 fn map_turn_saturates_at_min_zoom() {
     let mut rec = RecorderMachine::new();
@@ -162,8 +146,6 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
         Screen::Map(MapScreen::new()).context().unwrap(),
         Screen::Statistics(StatisticsScreen::new()).context().unwrap(),
     ));
-    // D4a's one addition, and it is a *different* table: the timeline's two scope controls, not
-    // the ride's four actions.
     assert!(declared(&Screen::WhatsNext(crate::screen::WhatsNextScreen::new())));
     assert_ne!(
         Screen::WhatsNext(crate::screen::WhatsNextScreen::new()).context().map(|m| m.rows.len()),
@@ -171,8 +153,7 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
         "the timeline declares its own table, not the ride's"
     );
 
-    // D4d's addition, and it is the **one** screen of the create-route flow that declares
-    // anything: the card whose next press consumes the routing profile.
+    // The one screen of the create-route flow that declares anything.
     let confirm = || crate::harness::support::selected_place();
     assert!(declared(&confirm()));
     assert!(core::ptr::eq(
@@ -180,12 +161,10 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
         &crate::screen::context_drawer::ROUTE_PLAN
     ));
     assert_eq!(confirm().context().map(|m| m.rows.len()), Some(1), "one row: there is no second route option");
-    // The rest of the flow declares nothing. `NavPlanning` because the planner already captured the
-    // profile; `RouteOverview` because its BIKE TYPE row promises the profile the route was planned
-    // *under* (the POI browser is covered below, with the other families).
+    // The rest of the flow declares nothing: the planner already captured the profile, and the
+    // overview's BIKE TYPE row promises the profile the route was planned under.
     assert!(!declared(&Screen::NavPlanning(crate::screen::NavPlanningScreen::new("Fontaine"))));
     assert!(!declared(&Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(0, None))));
-    // …and a representative of every other family declares nothing, so the chord does nothing.
     assert!(!declared(&Screen::Home(HomeScreen::new())));
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
     assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
@@ -193,13 +172,9 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&crate::navigator::RouteState::new(),))));
 }
 
-/// **The Map declares the ride's four actions plus its own display row** (#1515 D4c), and its three
-/// siblings keep the ride table unchanged.
-///
-/// Rows 0-3 are pinned *equal*, label for label and action for action, rather than merely both
-/// present: a rider who squeezes on the Map and a rider who squeezes on Statistics must reach the
-/// same four things by the same four steps, and two tables side by side is exactly how that drifts.
-/// The display sheet is declared by no screen at all — the only way to it is the Map's fifth row.
+/// Rows 0-3 are pinned equal, label for label and action for action: a rider who squeezes on the
+/// Map and one who squeezes on Statistics must reach the same four things. The display sheet is
+/// declared by no screen; the only way to it is the Map's fifth row.
 #[test]
 fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
     use crate::screen::context_drawer::{MAP, MAP_DISPLAY, RIDE};
@@ -221,7 +196,6 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
         assert_eq!(crate::i18n::t(m.label, lang), crate::i18n::t(r.label, lang), "the ride actions must not drift");
     }
 
-    // Nothing declares the display sheet: it is reached only by swapping the Map's sheet for it.
     for screen in [
         Screen::Map(MapScreen::new()),
         Screen::Statistics(StatisticsScreen::new()),
@@ -233,8 +207,7 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
     }
 }
 
-/// The chord opens the sheet over a riding view and does nothing anywhere else — the "unsupported
-/// screens must not show an empty drawer" rule, driven through the one drawer owner.
+/// Unsupported screens must not show an empty drawer.
 #[test]
 fn the_context_chord_opens_a_sheet_only_where_content_is_declared() {
     let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -248,8 +221,6 @@ fn the_context_chord_opens_a_sheet_only_where_content_is_declared() {
     assert!(matches!(app.top_screen(), Screen::Menu(_)), "and nothing was pushed over it");
 }
 
-/// **Mutual exclusion**, both ways: one sheet at a time, and the other chord swaps rather than
-/// stacks. The base underneath is untouched either way.
 #[test]
 fn the_two_drawers_swap_rather_than_stack() {
     let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -264,8 +235,6 @@ fn the_two_drawers_swap_rather_than_stack() {
     assert!(matches!(app.ui.stack.first(), Some(Screen::Home(_))));
 }
 
-/// Opening the sheet from a paused ride neither resumes nor re-pauses the session, exactly as the
-/// compass menu it replaced did not.
 #[test]
 fn the_ride_context_opens_over_a_paused_ride_without_touching_the_session() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -280,11 +249,8 @@ fn the_ride_context_opens_over_a_paused_ride_without_touching_the_session() {
     assert_eq!(app.ride_session(), session, "…on the same session");
 }
 
-/// Whole-App ride-chrome path: Map -> the context sheet -> press **Up ahead** (epic #946, U3); row
-/// gestures preserve the tracking session/mode, and Back returns to the riding view the rider
-/// squeezed from — **one** Back, because the row replaced the sheet rather than stacking over it.
-/// Also pins the **corridor-snapshot lifecycle** the screen drives through the App: armed while the
-/// timeline is up, disarmed the moment it isn't.
+/// Map -> the context sheet -> Up ahead. Row gestures keep the tracking session and mode, and one
+/// Back returns to the riding view, because the row replaced the sheet rather than stacking over it.
 #[test]
 fn assistant_whats_next_preserves_the_session_and_back_returns_through_the_questions() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -336,13 +302,11 @@ fn guarded_action_needs_a_completed_hold_not_a_press() {
     rc.handle(Gesture::Step(1), &mut ctx(&mut st, &mut act, &mut rec)); // move to Finish (guarded)
     assert!(rc.selection_is_guarded());
 
-    // A press must NOT commit an irreversible action.
     let t = rc.handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(t, Transition::None));
     assert_eq!(act.mode, Mode::Paused, "a stray press can't finish the ride");
 
-    // A completed hold (the recognizer only emits `Hold` once the threshold is
-    // crossed) is what confirms it.
+    // The recognizer only emits `Hold` once the hold threshold is crossed.
     let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(t, Transition::Home), "Finish clears back to Home");
     assert_eq!(act.mode, Mode::Idle);
@@ -365,10 +329,8 @@ fn menu_back_returns_to_caller() {
     assert!(matches!(t, Transition::Pop));
 }
 
-/// The Menu's compass-needle sweep contract: a step arms a per-frame wake, the sweep converges in
-/// well under a second of ticks, and a settled menu is [`ScreenTick::idle`] — so a resting menu
-/// costs the event-driven host no timed repaints (the invariant
-/// `ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu` also leans on).
+/// A step arms a per-frame wake and the sweep settles back to [`ScreenTick::idle`], so a resting
+/// menu costs the event-driven host no timed repaints.
 #[test]
 fn menu_needle_sweep_arms_then_settles() {
     let mut rec = RecorderMachine::new();
@@ -395,8 +357,6 @@ fn menu_needle_sweep_arms_then_settles() {
     assert_eq!(m.tick_timers(now + 16), ScreenTick::idle(), "after landing the menu is idle again");
 }
 
-// The Home → Menu → Route menu → Map flow.
-
 #[test]
 fn home_press_opens_the_menu_and_a_step_is_ignored() {
     let mut rec = RecorderMachine::new();
@@ -405,13 +365,11 @@ fn home_press_opens_the_menu_and_a_step_is_ignored() {
     assert!(matches!(p, Transition::Push(Screen::Menu(_))), "press opens the Menu");
     let t = HomeScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(t, Transition::None), "Up/Down steps on Home are ignored");
-    // Back-hold also reaches the Menu from Home, but through the global escape rather than through
-    // this screen — see `the_global_escape_reaches_the_menu_from_every_family`.
 }
 
 #[test]
 fn menu_routes_station_opens_the_route_menu() {
-    // The Route menu is reached from the Menu's Routes station (selected 0 by default).
+    // Routes is the Menu's default station.
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let t = MenuScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
@@ -452,7 +410,6 @@ fn overview_start_begins_the_session_and_opens_the_map() {
     assert_eq!(act.mode, Mode::Riding, "START begins tracking");
     assert_eq!(navigator.route_state().active_route, Some(1), "the previewed route is the active one");
     assert_eq!(rec.test_take_intent(), Some(RecorderIntent::Start), "START names the ride to Recorder");
-    // Starting drops into the riding view: follow + heading-up, seeded at the start.
     assert_eq!(st.mode, CameraMode::Follow);
     assert!(st.heading_up);
     assert_eq!((st.cam_lon, st.cam_lat), (100, 100), "camera seeded at the route start");
@@ -484,7 +441,6 @@ fn route_menu_back_returns_to_caller() {
 
 #[test]
 fn route_menu_with_no_routes_ignores_press() {
-    // An empty catalog: press/step are no-ops, so a routeless device can't "load" one.
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let mut navigator = crate::navigator::NavigatorMachine::new();
@@ -493,8 +449,6 @@ fn route_menu_with_no_routes_ignores_press() {
     assert!(matches!(t, Transition::None));
     assert_eq!(navigator.route_state().active_route, None);
 }
-
-// Loading a route mid-session: the swap / save prompt, Finish / Discard.
 
 /// An Activity in Riding mode and a Navigator following route `r`, with `rec` already recording.
 fn tracking(r: usize, rec: &mut RecorderMachine) -> (Activity, crate::navigator::NavigatorMachine) {
@@ -556,7 +510,6 @@ fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
     let mut rs = RouteSwapScreen::new(2);
     rs.handle(Gesture::Step(1), &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes)); // highlight "Save & new"
     assert!(rs.selection_is_guarded());
-    // A press must not commit the guarded option — only a completed hold.
     let t = rs.handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::None), "a press can't confirm Save & new");
     assert!(rec.test_take_intent().is_none());
@@ -615,8 +568,6 @@ fn list_window_keeps_the_selection_visible() {
 
 #[test]
 fn boot_flow_walks_home_to_route_menu_to_riding_map() {
-    // End to end through `App`: Idle Home → press → Menu → press (Routes) → Route menu → press →
-    // overview → press → Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.test_mount_store();
     app.set_routes_with_ids(&test_routes(), &IDS3);
@@ -632,10 +583,6 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.active_route_index(), Some(0));
 }
-
-// Route catalog capacity: the catalog feed truncates a host store larger than the resident catalog
-// (`MAX_ROUTES = 64`). A full SD card hits this; an off-by-one or missing `.take` would overflow the
-// fixed `heapless::Vec`.
 
 /// Build `n` distinctly-named route summaries (`R0`, `R1`, …) so the survivors are identifiable.
 fn many_routes(n: usize) -> Vec<RouteSummary> {
@@ -655,7 +602,6 @@ fn many_routes(n: usize) -> Vec<RouteSummary> {
         .collect()
 }
 
-/// A store larger than `MAX_ROUTES` is truncated to the first `MAX_ROUTES` in order, not overflowed.
 #[test]
 fn the_catalog_feed_truncates_at_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -671,8 +617,6 @@ fn the_catalog_feed_truncates_at_max_routes() {
     );
 }
 
-/// Exactly `MAX_ROUTES` routes fit with none dropped — the cap is inclusive, guarding a `>=`/`>`
-/// off-by-one.
 #[test]
 fn the_catalog_feed_keeps_exactly_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -682,8 +626,6 @@ fn the_catalog_feed_keeps_exactly_max_routes() {
     assert_eq!(app.routes().len(), MAX_ROUTES, "a card with exactly 64 routes loses none");
 }
 
-/// The catalog feed replaces, not appends: a rescan of a now-emptied card leaves an empty catalog, not
-/// the stale entries.
 #[test]
 fn the_catalog_feed_replaces_the_previous_catalog() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -695,18 +637,12 @@ fn the_catalog_feed_replaces_the_previous_catalog() {
     assert!(app.routes().is_empty(), "a rescan replaces the catalog rather than appending");
 }
 
-// ==================== live catalog: identity remap across rescans (#450) ====================
-//
-// The catalog carries durable object ids; every held catalog index — `active_route`, an open
-// Route-menu highlight, a pending swap — is remapped by id on every `set_routes_with_ids`. These
-// pin the sharpest latent bug in epic #447: a rescan that inserts/removes a route must never
-// silently shift which route is navigated.
+// The catalog carries durable object ids: every held index — `active_route`, an open Route-menu
+// highlight, a pending swap — is remapped by id on every `set_routes_with_ids`.
 
 /// Ids for [`test_routes`] — deliberately non-positional, so an index-as-id shortcut can't pass.
 const IDS3: [crate::CatalogObjectId; 3] = [10, 20, 30];
 
-/// The DoD case: while navigating route X, a *different* route is uploaded/deleted → the app
-/// still navigates X, at its new index.
 #[test]
 fn rescan_keeps_active_route_on_the_same_route() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -715,7 +651,7 @@ fn rescan_keeps_active_route_on_the_same_route() {
     app.set_routes_with_ids(&routes, &IDS3);
     app.activate_route(1); // navigating Beta (id 20)
 
-    // Delete Alpha: the list shrinks, Beta shifts 1 → 0 — navigation follows the identity.
+    // Delete Alpha: the list shrinks, Beta shifts 1 → 0.
     app.set_routes_with_ids(&routes[1..], &IDS3[1..]);
     assert_eq!(app.active_route_index(), Some(0), "shrunk list: the index moved with the route");
     assert_eq!(app.routes()[0].name.as_str(), "Beta");
@@ -726,8 +662,6 @@ fn rescan_keeps_active_route_on_the_same_route() {
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "grown list: still the same route");
 }
 
-/// The *navigated* route vanishing unloads navigation — `None`, never a neighbour aliased in by
-/// the index shift.
 #[test]
 fn rescan_unloads_a_vanished_active_route() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -740,8 +674,6 @@ fn rescan_unloads_a_vanished_active_route() {
     assert_eq!(app.active_route_index(), None, "the deleted route unloads; Gamma is not aliased in");
 }
 
-/// An open Route menu across a rescan: the highlight follows the previously-highlighted route's
-/// identity to its new row.
 #[test]
 fn rescan_follows_the_open_route_menu_selection() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -757,7 +689,6 @@ fn rescan_follows_the_open_route_menu_selection() {
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight followed Beta to its new row");
 }
 
-/// A vanished highlight falls back to the nearest row (clamped), never a dangling index.
 #[test]
 fn rescan_clamps_a_vanished_menu_selection() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -773,14 +704,6 @@ fn rescan_clamps_a_vanished_menu_selection() {
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the last row");
 }
 
-// ==================== on-device route delete (epic #447, P6; epic #678 T3) ====================
-//
-// The Route overview's guarded Delete row records a delete request the host drains as the route's
-// durable object id; after the delete + rescan, P3's remap keeps `active_route` + the highlight on
-// the right routes. (T3 moved the hold-to-delete off the Route-menu footer onto the overview.)
-
-/// A completed hold over the overview's Delete row records a delete request the host drains as that
-/// route's **durable object id** (not its index) — the id lookup is `App`'s.
 #[test]
 fn hold_delete_requests_the_highlighted_route_id() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -791,7 +714,7 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.apply_gesture(Gesture::Step(1)); // highlight Beta (id 20)
     app.apply_gesture(Gesture::Press); // Beta → Route overview
     assert_eq!(took_route_delete(&mut app), None, "no request until the hold completes");
-    app.apply_gesture(Gesture::Hold); // hold with START selected (the entry state) — round 2: no delete
+    app.apply_gesture(Gesture::Hold); // hold with START selected (the entry state)
     assert_eq!(took_route_delete(&mut app), None, "a hold with START selected records nothing");
     app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = delete Beta
@@ -800,8 +723,6 @@ fn hold_delete_requests_the_highlighted_route_id() {
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the delete popped back to the Routes list");
 }
 
-/// The DoD case: deleting a *non-highlighted* route (the host removes it + re-feeds the catalog)
-/// keeps the highlight on the same route, by identity — not on whatever slid into its old row.
 #[test]
 fn deleting_a_non_highlighted_route_keeps_the_highlight_by_id() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -812,18 +733,15 @@ fn deleting_a_non_highlighted_route_keeps_the_highlight_by_id() {
     app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Step(1)); // highlight Beta (id 20)
 
-    // Simulate the host handling a delete of Alpha (a *different* route) — remove it and rescan.
+    // Simulate the host handling a delete of Alpha, a different route: remove it and rescan.
     let keep = [routes[1].clone(), routes[2].clone()];
     app.set_routes_with_ids(&keep, &[IDS3[1], IDS3[2]]); // Beta shifts 1 → 0
 
-    // Pressing opens the highlighted route: still Beta, now at its new row.
     app.apply_gesture(Gesture::Press);
     let active = app.active_route_index().expect("the overview loaded the highlighted route");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight stayed on Beta across the delete");
 }
 
-/// Deleting the *highlighted* route moves the highlight sanely (clamped to the nearest surviving
-/// row), never a dangling index — the host removed the route the menu was pointing at.
 #[test]
 fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -834,20 +752,18 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Step(2)); // highlight Gamma (id 30, last row)
     app.apply_gesture(Gesture::Press); // Gamma → Route overview
-    app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row (round 2: no hold-anywhere)
+    app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = request its delete
     assert_eq!(took_route_delete(&mut app), Some(30));
 
-    // The delete popped back to the Routes list; the host deletes Gamma and re-feeds the catalog,
-    // so the highlight clamps to the new last row.
+    // The host deletes Gamma and re-feeds the catalog, so the highlight clamps to the new last row.
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]);
     app.apply_gesture(Gesture::Press); // open whatever is highlighted now
     let active = app.active_route_index().expect("a clamped highlight still opens a real route");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the surviving last row");
 }
 
-/// Ride to the Map on Alpha, then open the swap prompt for Gamma — the shared mid-ride setup for
-/// the pending-swap remap cases.
+/// Ride the Map on Alpha, then open the swap prompt for Gamma.
 fn app_with_pending_swap_on_gamma() -> App {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.test_mount_store();
@@ -867,8 +783,6 @@ fn app_with_pending_swap_on_gamma() -> App {
     app
 }
 
-/// A pending swap follows its pick's identity across a rescan: firing "Swap route" navigates the
-/// route the rider picked, not whatever slid into its old index.
 #[test]
 fn rescan_remaps_a_pending_swap_by_identity() {
     let mut app = app_with_pending_swap_on_gamma();
@@ -880,7 +794,6 @@ fn rescan_remaps_a_pending_swap_by_identity() {
     assert_eq!(app.routes()[active].name.as_str(), "Gamma", "the swap followed the picked route");
 }
 
-/// A pending swap whose pick vanished cancels — it must not navigate an aliased neighbour.
 #[test]
 fn rescan_cancels_a_swap_whose_pick_vanished() {
     let mut app = app_with_pending_swap_on_gamma();
@@ -901,37 +814,29 @@ fn press(app: &mut App) {
     app.handle_input(InputClock(0), &mut s);
 }
 
-// Stack discipline.
-
 #[test]
 fn apply_pushes_pops_replaces_and_returns_home() {
     let mut stack: Stack = Stack::new();
     let _ = stack.push(Screen::Home(HomeScreen::new()));
     let _ = stack.push(Screen::Map(MapScreen::new()));
 
-    // Overlay an Menu, then back out to the caller (Map).
     apply(&mut stack, Transition::Push(Screen::Menu(MenuScreen::new())));
     assert_eq!(stack.len(), 3);
     assert!(matches!(stack.last(), Some(Screen::Menu(_))));
     apply(&mut stack, Transition::Pop);
     assert!(matches!(stack.last(), Some(Screen::Map(_))), "Pop returns to caller");
 
-    // Replace swaps the top without growing the stack.
     apply(&mut stack, Transition::Replace(Screen::Menu(MenuScreen::new())));
     assert_eq!(stack.len(), 2);
     assert!(matches!(stack.last(), Some(Screen::Menu(_))));
 
-    // Home clears every overlay back to the root.
     apply(&mut stack, Transition::Home);
     assert_eq!(stack.len(), 1);
     assert!(matches!(stack.last(), Some(Screen::Home(_))));
 
-    // The root is the guaranteed floor — Pop can't empty the stack.
     apply(&mut stack, Transition::Pop);
     assert_eq!(stack.len(), 1, "the Home root is never popped");
 }
-
-// Render snapshot: pausing swaps the riding map for the full-screen Paused page.
 
 #[test]
 fn pausing_swaps_the_map_for_the_paused_page() {
@@ -940,13 +845,12 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     app.test_mount_store();
     app.test_start_ride(); // a tracking ride, so the map's press pauses (not the browse-map start card)
 
-    // Riding: sample the (blue sea) backdrop at a point clear of the map chrome — the clock digits
-    // end ~y28, the bottom-centre "No GPS Fix" chip band starts ~y74 on the 120px test frame, and
-    // the scale bar + label own the bottom-left, so mid-right between them is bare map.
+    // Sample the sea backdrop clear of the map chrome: the clock digits end ~y28, the bottom-centre
+    // "No GPS Fix" chip band starts ~y74 on the 120px test frame, and the scale bar owns the
+    // bottom-left, so mid-right between them is bare map.
     let map = render_120(&mut app, &bytes);
     let backdrop = map.get(95, 45);
 
-    // A press (Down+Up within the threshold) pauses into the Paused page.
     let mut press = keys(&[
         InputEvent::Button(ButtonEvent::Down(Button::Select)),
         InputEvent::Button(ButtonEvent::Up(Button::Select)),
@@ -954,18 +858,14 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     app.handle_input(InputClock(0), &mut press);
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
 
-    // Now the same point carries the parchment Paused page, not the map.
     let paused = render_120(&mut app, &bytes);
     let page = paused.get(95, 45);
     assert_ne!(page, backdrop, "pausing replaced the view");
     assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
 }
 
-// Inspect/Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit, the Move/Zoom
-// tool toggle, separate Route/Free and Free-axis holds, route/free movement, and the camera freeze.
+// Inspect/Pan mode: a Map sub-mode driven by the shared `AppState::pan`.
 
-/// `hold` on the Follow map enters pan: the camera detaches (Free) and a pan state
-/// appears. With no route, Free Vertical is the useful default and Move is active.
 #[test]
 fn map_hold_enters_pan_mode() {
     let mut rec = RecorderMachine::new();
@@ -978,8 +878,6 @@ fn map_hold_enters_pan_mode() {
     assert_eq!(st.mode, CameraMode::Free, "the camera detaches while panning");
 }
 
-/// While panning, a fresh fix no longer recenters the frozen camera (but is still
-/// recorded for the marker).
 #[test]
 fn pan_freezes_camera_against_fixes() {
     let (mut st, _act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
@@ -989,8 +887,7 @@ fn pan_freezes_camera_against_fixes() {
     assert_eq!(st.user_fix.map(|f| (f.lon, f.lat)), Some((7000, 5000)), "but the fix is recorded");
 }
 
-/// Inspect snapshots the live heading once. Removing the old orientation toggle must not let
-/// later GPS courses rotate the map under a detached camera.
+/// Inspect snapshots the live heading once, so later GPS courses cannot rotate a detached map.
 #[test]
 fn pan_freezes_orientation_at_entry() {
     let mut st = AppState::new(0, 0, 1.0);
@@ -1006,9 +903,6 @@ fn pan_freezes_orientation_at_entry() {
     );
 }
 
-/// Up/Down moves the frozen camera along the active axis: a positive step on a
-/// north-up map pans up (+latitude), leaving longitude alone, and reversing returns
-/// to the start (within microdegree rounding).
 #[test]
 fn pan_turn_moves_camera_along_axis() {
     let mut rec = RecorderMachine::new();
@@ -1021,8 +915,6 @@ fn pan_turn_moves_camera_along_axis() {
     assert!(st.cam_lat.abs() <= 1 && st.cam_lon.abs() <= 1, "reversing returns to the start (±1 µdeg)");
 }
 
-/// `press` toggles Move ↔ Zoom in place. Up/Down can therefore change zoom without leaving
-/// Inspect or moving the camera, and another tap restores the prior movement basis.
 #[test]
 fn pan_press_toggles_move_and_zoom() {
     let mut rec = RecorderMachine::new();
@@ -1044,9 +936,6 @@ fn pan_press_toggles_move_and_zoom() {
 
 /// With a route loaded, Back-hold changes the Route/Free family while Select-hold changes only an
 /// already-active Free axis, and is inert in Zoom and Route.
-///
-/// **The ring is where the family lives since #1515 D3** — Back-hold became the global escape, so
-/// the Route/Free switch joined the tool on the tap that already changed mode.
 #[test]
 fn the_pan_ring_walks_route_move_free_move_and_zoom() {
     let mut rec = RecorderMachine::new();
@@ -1069,7 +958,6 @@ fn the_pan_ring_walks_route_move_free_move_and_zoom() {
     MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Route, PanTool::Move), "Zoom -> Route Move closes the lap");
 
-    // The axis survives the lap: pick Horizontal in Free, go round, and come back to it.
     MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     MapScreen::new().handle(Gesture::Hold, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "Select-hold flips the Free axis");
@@ -1083,8 +971,7 @@ fn the_pan_ring_walks_route_move_free_move_and_zoom() {
     assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Move));
 }
 
-/// Without a route the ring is its two remaining stations — exactly the Move/Zoom toggle a
-/// route-less pan had before the family joined the tap. Select-hold alternates the Free axes.
+/// Without a route the ring is its two remaining stations; Select-hold alternates the Free axes.
 #[test]
 fn the_route_less_pan_ring_is_free_move_and_zoom() {
     let mut rec = RecorderMachine::new();
@@ -1102,8 +989,7 @@ fn the_route_less_pan_ring_is_free_move_and_zoom() {
     assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "the axis survives the shorter lap too");
 }
 
-/// Route movement advances and retreats the distance cursor rather than forcing north/south or
-/// east/west movement. Large turns clamp at the route ends.
+/// Route movement moves the distance cursor rather than a compass axis, and clamps at both ends.
 #[test]
 fn pan_route_steps_move_and_clamp_progress() {
     let mut rec = RecorderMachine::new();
@@ -1122,7 +1008,6 @@ fn pan_route_steps_move_and_clamp_progress() {
     assert_eq!(st.pan.unwrap().route_progress_m, 1_000, "route movement clamps at the end");
 }
 
-/// Back tap is the reserved, one-gesture exit to Follow and implicitly recenters.
 #[test]
 fn pan_back_exits_and_recenters() {
     let mut rec = RecorderMachine::new();
@@ -1139,18 +1024,8 @@ fn pan_back_exits_and_recenters() {
     assert_eq!(st.mode, CameraMode::Follow, "exiting resumes Follow");
 }
 
-// The Bike-type setting (routing-v2 N5, #538): the whole-App loop — profiles mirrored from a real
-// parsed map, the setting edited by gesture on the route-plan sheet (#1515 D4d), the save armed,
-// and the persisted byte surviving a simulated reboot through the shared codec both stores write.
-
-/// Pick the bike type on a 4-profile map from the **create-route sheet** — the only home it has
-/// since #1515 D4d — then "reboot": encode → decode → a fresh App adopts the blob and the selected
-/// index survives. The store side is a trivial file/RRAM write of exactly these bytes, so the codec
-/// round-trip *is* the reboot.
-///
-/// The save half **inverts** what this test used to assert. The deleted screen lived inside the
-/// settings subtree, so its edit was held until the rider climbed out; a drawer is `Caps::overlay()`
-/// and `top_is_settings()` is false over it, so the commit arms the save on its own pass.
+/// Pick the bike type on the create-route sheet, then "reboot": encode → decode → a fresh App
+/// adopts the blob. A drawer is not a settings subtree, so the commit arms the save on its own pass.
 #[test]
 fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     let bytes = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
@@ -1163,14 +1038,13 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     assert_eq!(app.nav_profiles().len(), 4, "all four §8.6 names resident");
     assert_eq!(app.nav_profiles().name(2), Some("MTB"));
 
-    // The confirm card the rider would reach from a POI detail, seeded directly: the POI browse
-    // that gets there needs a fix, a corridor snapshot and a queried map, none of which this test
-    // is about.
+    // The confirm card the rider reaches from a POI detail, seeded directly: the browse that gets
+    // there needs a fix, a corridor snapshot and a queried map, none of which this test is about.
     app.ui.stack.truncate(1); // [Home]
     let _ = app.ui.stack.push(crate::harness::support::selected_place());
 
-    // A page slide owns the sheet's input while it runs, so each gesture waits for the last one's
-    // slide to land — on a clock that only ever moves forward, which the passes below share.
+    // A page slide owns the sheet's input while it runs, so each gesture waits for the last slide
+    // to land, on a clock that only moves forward.
     let mut ms = 0;
     let owes_a_save = |app: &mut App, ms: u32| quiet_pass(app, ms).effects.settings.take().is_some();
 
@@ -1190,7 +1064,6 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     assert_eq!(app.settings().bike_profile_idx, 2, "Select wrote the profile the editor was on");
     assert!(owes_a_save(&mut app, ms), "a drawer is not a settings subtree: the save is armed now");
 
-    // Back closes the sheet onto the card the rider squeezed from — not a navigation.
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), crate::Screen::PoiDetail(_)), "the card is still under it");
 
@@ -1203,18 +1076,8 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     assert_eq!(app2.settings().bike_profile_idx, 2, "the bike profile survives the reboot");
 }
 
-/// **The map sheet is the only way to all three display switches, and their answers survive a
-/// reboot** (#1515 D4c) — end to end through the App, from the real Down+Back chord on the riding
-/// Map to a decoded blob in a fresh App.
-///
-/// It replaces the old Display-screen route to `map_contours` (elevation EL10c, #1096), and keeps
-/// that row's provenance: the contour switch is still **provisional**, still there so #1097's ride
-/// review can A/B contours on the same ride, and still expected to leave with that verdict — it
-/// migrated here, it was not retired.
-///
-/// The persistence half is the difference from a settings screen: a drawer is not a settings
-/// subtree, so each flip arms a save on the pass it happened on rather than waiting for the rider to
-/// climb out of somewhere.
+/// The map sheet is the only way to all three display switches, and their answers survive a
+/// reboot. A drawer is not a settings subtree, so each flip arms a save on the pass it happened on.
 #[test]
 fn the_map_sheet_reaches_all_three_settings_and_survives_a_reboot() {
     let mut app = App::new(AppState::new(0, 0, 0.05)); // [Home, Map]
@@ -1228,7 +1091,6 @@ fn the_map_sheet_reaches_all_three_settings_and_survives_a_reboot() {
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), crate::Screen::ContextDrawer(_)), "a sheet, not a screen");
 
-    // Each flip writes its own field and arms a save on its own pass.
     app.apply_gesture(Gesture::Press);
     assert!(!app.settings().map_clock, "row 0 flipped the clock");
     assert!(settings_dirty(&mut app), "a drawer is not a settings subtree: the save is armed now");
@@ -1243,7 +1105,6 @@ fn the_map_sheet_reaches_all_three_settings_and_survives_a_reboot() {
     assert!(!app.settings().map_contours, "row 2 flipped the contours");
     assert!(settings_dirty(&mut app));
 
-    // The sheet is still up — three flips, one visit, and one map redraw when Back closes it.
     assert!(matches!(app.top_screen(), crate::Screen::ContextDrawer(_)));
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), crate::Screen::Map(_)), "Back lands on the Map, not on the sheet above");
@@ -1258,11 +1119,8 @@ fn the_map_sheet_reaches_all_three_settings_and_survives_a_reboot() {
     assert!(!s.map_clock && !s.map_scale_bar && !s.map_contours, "all three choices survive the reboot");
 }
 
-/// A stored index past the loaded map's profile count (a stale setting against a smaller map)
-/// renders **profile 0's name** — the profile the router actually falls back to (N3), so the UI
-/// never names a profile the map doesn't have — and an in-range index renders the map's name.
-/// Pinned through the App's resident mirror, i.e. exactly what the Bike-type row and the overview
-/// label draw.
+/// A stored index past the loaded map's profile count renders profile 0's name — the profile the
+/// router falls back to — so the UI never names a profile the map does not have.
 #[test]
 fn bike_type_out_of_range_renders_fallback() {
     let bytes = build_min_obcm_profiles(0, &["Road", "MTB"]);
@@ -1283,18 +1141,11 @@ fn bike_type_out_of_range_renders_fallback() {
     assert_eq!(ok.as_str(), "MTB", "an in-range index shows the map's name");
 }
 
-// ---- The global Back-hold escape (#1515 D3) ----------------------------------------------------
-
-/// **Back hold always reaches the main menu.** One representative of every screen family, plus the
-/// two places D2 explicitly could not leave — a drawer subpage and the power confirmation.
-///
-/// The mutant this kills: resolve `BackHold` after screen dispatch instead of before it, and each
-/// screen's inert arm swallows it again — the exception list the acceptance criteria forbid.
+/// Back-hold always reaches the main menu, from one representative of every screen family.
 #[test]
 fn the_global_escape_reaches_the_menu_from_every_family() {
     /// One family: its name, and how to reach it from `[Home, Map]`.
     type Family = (&'static str, fn(&mut App));
-    // Each case is (name, how to get there). The escape then has to land on the Menu.
     let families: [Family; 7] = [
         ("the Home root", |app| apply(&mut app.ui.stack, Transition::Home)),
         ("a riding view", |app| apply(&mut app.ui.stack, Transition::Root(Screen::Map(MapScreen::new())))),
@@ -1304,8 +1155,6 @@ fn the_global_escape_reaches_the_menu_from_every_family() {
             apply(&mut app.ui.stack, Transition::Push(Screen::Display(crate::screen::DisplayScreen::new())));
         }),
         ("a nav list", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())))),
-        // D2 handover 1: the quick drawer's own pages, including the power confirmation, whose
-        // `BackHold` arm was `Transition::None`.
         ("the quick drawer", |app| {
             assert!(app.apply_chord(crate::input::Chord::Quick));
         }),
@@ -1329,8 +1178,6 @@ fn the_global_escape_reaches_the_menu_from_every_family() {
     }
 }
 
-/// The context sheet is a drawer subpage too, and the escape takes it with it rather than burying
-/// it under the Menu.
 #[test]
 fn the_escape_takes_the_context_sheet_with_it() {
     let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -1341,8 +1188,6 @@ fn the_escape_takes_the_context_sheet_with_it() {
     assert!(matches!(app.top_screen(), Screen::Map(_)), "Back out of the Menu lands on the base, not the sheet");
 }
 
-/// **It goes to the Menu, it never adds one.** A rider squeezing the bar repeatedly must not walk
-/// the stack toward `MAX_DEPTH`.
 #[test]
 fn a_repeated_escape_does_not_stack_menus() {
     let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -1354,10 +1199,8 @@ fn a_repeated_escape_does_not_stack_menus() {
     assert_eq!(app.ui.stack.len(), depth, "the escape is idempotent once it has arrived");
 }
 
-/// The escape's refusal set, driven rather than read off the table: a **blocking** modal refuses
-/// both the chord and the escape, and the recovered-ride card refuses only the escape — a sheet
-/// over it is harmless, but leaving it would strand the recovered recording that Back already
-/// cannot dismiss.
+/// A blocking modal refuses both the chord and the escape. The recovered-ride card refuses only
+/// the escape: leaving it would strand a recovered recording that Back cannot dismiss either.
 #[test]
 fn a_card_the_rider_must_answer_refuses_the_escape() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1366,8 +1209,7 @@ fn a_card_the_rider_must_answer_refuses_the_escape() {
     app.apply_gesture(Gesture::BackHold);
     assert!(matches!(app.top_screen(), Screen::Passkey(_)), "a blocking modal refuses the escape");
 
-    // A sheet the rider opened *over* the recovery card is not consent to walk away from it: the
-    // refusal is asked of the base, not of whatever is on top.
+    // The refusal is asked of the base screen, not of whatever sheet is on top.
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     assert!(app.offer_damaged_ride(crate::RideDamage::Payload), "the recovery card is offered");
     assert!(app.apply_chord(crate::input::Chord::Quick), "…and a quick sheet over it is harmless");
@@ -1383,16 +1225,8 @@ fn a_card_the_rider_must_answer_refuses_the_escape() {
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the recovery decision stays put");
 }
 
-/// **The escape is bounded, and the host's card still lands** — the rider-gesture-only walk that
-/// used to fill the stack.
-///
-/// Escape → re-descend → escape is the escape's *most ordinary* use ("get me out of six levels of
-/// settings"). While it pushed unconditionally, two laps of it reached `MAX_DEPTH`, where the next
-/// host-pushed card is dropped in release and panics in debug — exactly the reserve
-/// [`deepest_mid_ride_settings_path_keeps_room_for_host_warning`] exists to protect, defeated by a
-/// path that test does not walk. The rewind makes every lap after the first *shrink* the stack.
-///
-/// Driven the way a rider drives it: no `stack` surgery, only gestures.
+/// The escape rewinds to the Menu instead of pushing a new one, so repeated laps of escape and
+/// re-descent cannot walk the stack to `MAX_DEPTH`, where the next host-pushed card is dropped.
 #[test]
 fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
     let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
@@ -1405,9 +1239,8 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
         if lap == 0 {
             app.apply_gesture(Gesture::Step(-1)); // Routes → the Settings station
         }
-        // From lap 1 the dial is *still* on Settings: the escape rewinds to the same Menu, with
-        // the station the rider last used selected. That is a property of rewinding rather than
-        // pushing a fresh Menu, so it is asserted here instead of worked around.
+        // From lap 1 the dial is still on Settings: the escape rewinds to the same Menu, with the
+        // station the rider last used selected.
         app.apply_gesture(Gesture::Press); // → the Settings list (Ride first)
         assert!(matches!(app.top_screen(), Screen::Settings(_)), "lap {lap}: the Menu kept its station");
         app.apply_gesture(Gesture::Press); // → Ride (Data fields is the first row)
@@ -1417,7 +1250,6 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
 
         app.apply_gesture(Gesture::BackHold);
         assert!(matches!(app.top_screen(), Screen::Menu(_)), "lap {lap} escaped to the Menu");
-        // Idempotent once it has arrived: a second squeeze of the bar costs nothing.
         let settled = app.ui.stack.len();
         app.apply_gesture(Gesture::BackHold);
         assert_eq!(app.ui.stack.len(), settled, "lap {lap}: a second escape moved the stack");
@@ -1425,24 +1257,19 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
     }
     assert!(deepest < crate::screen::MAX_DEPTH, "the reachable depth is {deepest}, at the ceiling of MAX_DEPTH");
 
-    // The card the reserve exists for: after all that, it must still land.
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
 }
 
-/// **A shutdown in progress is not cancellable, by either device-wide input.** The rider completed
-/// the guarded hold and the host is about to call the power-off port; the terminal frame's own
-/// contract is that nothing dismisses it, and that has to hold for the escape *and* for a squeeze.
-///
-/// It cannot be expressed in `Caps`: the frame is a **page** of the quick drawer, and a drawer must
-/// never declare `blocks_chords` — that is the declaration the chord which closes it would trip
-/// over. So the refusal is a runtime check in both owners, and this is its only guard.
+/// A shutdown in progress is not cancellable by either device-wide input. It cannot be expressed
+/// in `Caps`: the frame is a page of the quick drawer, and a drawer must never declare
+/// `blocks_chords`, because the chord that closes it would trip over that. Both owners check it at
+/// run time instead.
 #[test]
 fn nothing_cancels_a_shutdown_already_in_progress() {
     /// A device on the terminal POWERING OFF frame, reached the way a rider reaches it.
     fn powering_off() -> App {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
-                                                          // A panel with a light, so the root row is the issue's four and Power is the last of them.
         app.set_backlight_available(true);
         assert!(app.apply_chord(crate::input::Chord::Quick));
         for _ in 0..3 {
@@ -1468,25 +1295,20 @@ fn nothing_cancels_a_shutdown_already_in_progress() {
         assert!(app.power_off_requested(), "{chord:?} cancelled a shutdown already in progress");
     }
 
-    // The third door, and the least obvious: the card sweep runs in the same `handle_input` that
-    // applied the completed hold, so a card landing there would take the frame away — by rewriting
-    // a slot under it, or by the "nothing lands on top of a drawer" rule popping the sheet. The
-    // card is refused instead, and refusing is already how a card keeps its one-shot fact.
+    // The card sweep runs in the same `handle_input` that applied the completed hold, so a card
+    // landing there would take the frame away. It is refused instead.
     let mut app = powering_off();
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(app.power_off_requested(), "a host card must not cancel a shutdown in progress");
     assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
-    // The fourth door: the remote DFU card is the one arrival that comes from neither the card
-    // scheduler nor a screen transition, so it has to say this itself. Deferring is already its
-    // answer to an inconvenient moment.
+    // The remote DFU card arrives from neither the card scheduler nor a screen transition, so it
+    // refuses this on its own.
     let mut app = powering_off();
     assert!(!app.open_remote_dfu_check(), "a phone's install request must not open over a shutdown");
     assert!(app.power_off_requested(), "…and must not cancel it");
     assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
 }
 
-/// The same remote card is also the one arrival that used to push **raw**, stepping around the rule
-/// every other one obeys: it landed on top of an open sheet instead of taking it.
 #[test]
 fn the_remote_dfu_card_takes_an_open_sheet_with_it() {
     for chord in [crate::input::Chord::Quick, crate::input::Chord::Context] {
@@ -1498,10 +1320,8 @@ fn the_remote_dfu_card_takes_an_open_sheet_with_it() {
     }
 }
 
-/// **A drawer is transient chrome: nothing lands on top of one.** A host card arriving over an open
-/// sheet takes the sheet with it, so dismissing the card lands the rider on the screen they were on
-/// rather than back inside a drawer they had finished with — and the escape's "any sheet goes with
-/// it" rule holds for every slot, not only the top one.
+/// A drawer is transient chrome: a host card arriving over an open sheet takes the sheet with it,
+/// so dismissing the card lands the rider on the screen they were on.
 #[test]
 fn a_card_landing_over_a_sheet_takes_the_sheet_with_it() {
     for chord in [crate::input::Chord::Quick, crate::input::Chord::Context] {

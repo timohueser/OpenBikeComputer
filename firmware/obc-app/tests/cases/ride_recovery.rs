@@ -106,8 +106,8 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     let effect = crate::common::quiet_pass(&mut app, 1).effects.recorder.take().expect("the confirmed removal");
     let RecorderEffect::Discard { token } = effect else { panic!("the repair is the exact removal: {effect:?}") };
 
-    // The store refuses it. The card comes back in its failed mode — and **no warning card lands on
-    // top of it**: the typed card is the one explanation, and `REC_ERROR` means a ride log went
+    // The store refuses it. The card comes back in its failed mode, and no warning card lands on
+    // top of it: the typed card is the one explanation, and `REC_ERROR` means a ride log went
     // incomplete, which is not what happened here.
     let mut outcomes = OutcomeSlots::new();
     outcomes.recorder.try_put(RecorderOutcome::Failed { token, error: RecorderError::Write }).unwrap();
@@ -116,7 +116,7 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     assert!(plan.effects.recorder.is_empty(), "the failure ordered nothing behind itself");
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the card is back, with no warning over it");
 
-    // Nothing happens by itself from here — the finding this slice closes.
+    // Nothing happens by itself from here.
     for pass in 0..5 {
         assert!(
             crate::common::quiet_pass(&mut app, 3 + pass * 15_000).effects.recorder.is_empty(),

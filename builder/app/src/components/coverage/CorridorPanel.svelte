@@ -1,18 +1,16 @@
 <script lang="ts">
-    // The corridor panel (#1038) — mock R2·2, both states. Opened by the ◠
-    // rail tool; everything in it is a *candidate* until "Add to map": checked
-    // routes are pushed into the store's preview parts, the map draws them
-    // dashed, the adds-line prices them live, and the one global width slider
-    // (§8 U3's decided shape) re-buffers every checked route as it moves.
+    // The corridor panel. Opened by the rail tool; everything in it is a
+    // *candidate* until "Add to map": checked routes are pushed into the store's
+    // preview parts, the map draws them dashed, the adds-line prices them live, and
+    // the one global width slider re-buffers every checked route as it moves.
     //
-    // "From device" uses the same shared USB session as step 4. The chooser is
-    // opened directly from its click (WebUSB's user-gesture rule), list entries
-    // stay cheap, and an OBCR is downloaded/decoded only when selected.
+    // "From device" uses the same shared USB session as the send step. The chooser is
+    // opened directly from its click, because of WebUSB's user-gesture rule, list
+    // entries stay cheap, and an OBCR is downloaded and decoded only when selected.
     //
-    // A catalog entry carries the name and the payload's size and nothing else
-    // about a route (`FLAT_Store_Protocol.md` §3.3), so the rows show those; the
-    // length in km comes out of the OBCR header once a route is actually picked
-    // and downloaded, which is the only moment this side can know it.
+    // A catalog entry carries the name and the payload's size and nothing else about a
+    // route, so the rows show those; the length in km comes out of the OBCR header once
+    // a route is picked and downloaded, which is the only moment this side can know it.
 
     import { onDestroy, onMount } from "svelte";
     import { GpxError, parseGpx, type GpxRoute } from "../../lib/coverage/gpx";
@@ -31,12 +29,10 @@
     let { store, onclose }: { store: CoverageStore; onclose: () => void } = $props();
 
     /**
-     * Whether the panel may close (#1041 A7). The corridor tool is the one
-     * tool holding user data the map cannot restore — files someone chose,
-     * uploaded, maybe renamed their ride after — so Esc or a stray click on
-     * another tool must not silently discard them. Committed parts are safe in
-     * the selection; this guards only the panel's own uploaded rows, checked
-     * or not.
+     * Whether the panel may close. The corridor tool is the one tool holding user
+     * data the map cannot restore — files someone chose and uploaded — so Esc or a
+     * stray click on another tool must not silently discard them. Committed parts are
+     * safe in the selection; this guards only the panel's own uploaded rows.
      */
     export async function requestClose(): Promise<boolean> {
         if (routes.length === 0) return true;
@@ -97,11 +93,9 @@
         store.previewParts = [];
     });
 
-    // A dialog receives focus when it opens (#1041 low sweep): the keyboard
-    // and a screen reader arrive where the conversation moved, instead of
-    // being left on the rail button behind it. Non-modal on purpose — Tab
-    // walks the panel's own controls and out again, like the app's other
-    // dialog.
+    // A dialog receives focus when it opens: the keyboard and a screen reader arrive
+    // where the conversation moved, instead of being left on the rail button behind it.
+    // Non-modal on purpose — Tab walks the panel's own controls and out again.
     let panelEl = $state<HTMLDivElement>();
     onMount(() => {
         panelEl?.focus();
@@ -133,10 +127,9 @@
         dragOver = false;
         const files = [...(e.dataTransfer?.files ?? [])].filter((f) => /\.gpx$/i.test(f.name));
         if (files.length) {
-            // A drop is a GPX act wherever it lands: switch the panel to the
-            // side that shows the rows it just gained, or they would arrive
-            // invisibly behind the device stub (the two sources are exclusive
-            // layouts, #1041 low sweep).
+            // A drop is a GPX act wherever it lands: switch the panel to the side that
+            // shows the rows it just gained, or they would arrive invisibly behind the
+            // device stub, since the two sources are exclusive layouts.
             source = "gpx";
             void addFiles(files);
         } else {
@@ -216,8 +209,8 @@
                 route: {
                     name: entry.displayName,
                     points,
-                    // From the OBCR header just downloaded (`OBCR_Spec.md` §1) — the catalog has no
-                    // distance to offer, and this is the same number the device navigates by.
+                    // From the OBCR header just downloaded — the catalog has no distance to offer,
+                    // and this is the same number the device navigates by.
                     distanceKm: decodeRouteHeader(obcr).distanceM / 1000,
                 },
             });
@@ -368,7 +361,7 @@
         </p>
     {/if}
 
-    <!-- The two sources are exclusive layouts (#1041 low sweep): the uploaded
+    <!-- The two sources are exclusive layouts: the uploaded
          rows, the width slider and the commit belong to the GPX side, and
          rendering them under the device stub conflated where the routes came
          from. Switching tabs keeps the rows — only the view changes. -->

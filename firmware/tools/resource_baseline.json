@@ -6,10 +6,9 @@
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
     "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
-    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident`, `resident_ram_max` and `measured_flash`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident and a different flash figure, neither of which is gated.",
+    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident` and `resident_ram_max`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident, which is not gated.",
     "target": "thumbv8m.main-none-eabihf",
-    "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 480 KiB M33 carve — the 20 KiB below the display FLPR's carve holds the sEMMC soft-peripheral image, the live storage transport; default = all-features/ble + the unconditional USB device plane; SDC size measured on glass 2026-07-24)",
-    "_measured_flash_note": "`measured_flash` is a record, not a gate: `resource_guard.py board` prints flash and requires nothing of it, so it drifts unless a change re-pins it. The only enforced flash budget is the bootloader's `flash_budget`."
+    "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 480 KiB M33 carve \u2014 the 20 KiB below the display FLPR's carve holds the sEMMC soft-peripheral image, the live storage transport; default = all-features/ble + the unconditional USB device plane; SDC size measured on glass 2026-07-24)"
   },
   "board": {
     "default": {
@@ -17,7 +16,6 @@
       "measured_resident": 305192,
       "resident_ram_max": 320688,
       "uninit_max": 132096,
-      "measured_flash": 1449768,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9792,
@@ -96,7 +94,6 @@
   },
   "bootloader": {
     "features": "default (no RTT)",
-    "measured_flash": 16708,
     "flash_budget": 32768
   }
 }

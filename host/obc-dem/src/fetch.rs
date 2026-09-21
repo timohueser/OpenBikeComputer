@@ -1,14 +1,12 @@
 //! `obc-dem fetch` — downloading the GLO-30 tiles a box needs, over HTTPS.
 //!
-//! Deliberately the thinnest thing that works, and deliberately **separate from `bake`**: a bake is
-//! a pure function of a directory of tiles, so it must never reach for the network. Splitting them
-//! is what lets a bake be re-run offline and byte-compared, and what keeps this module's failure
-//! modes (a 404, a flaky link) out of the determinism contract.
+//! Deliberately separate from `bake`: a bake is a pure function of a directory of tiles, so it must
+//! never reach for the network. Splitting them is what lets a bake be re-run offline and
+//! byte-compared, and what keeps this module's failure modes out of the determinism contract.
 //!
 //! The AWS Open Data mirror of the Copernicus DEM publishes one object per 1° × 1° tile, named by
-//! the tile's **south-west corner**. Ocean-only squares have no object at all, so a `404` is
-//! coverage information rather than an error: the bake writes `NODATA` there, per the format's "a
-//! hole is silence, never a guess" principle.
+//! the tile's south-west corner. Ocean-only squares have no object at all, so a `404` is coverage
+//! information rather than an error: the bake writes `NODATA` there.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,13 +16,13 @@ use crate::BboxUdeg;
 /// The AWS Open Data mirror of the Copernicus DEM GLO-30 instance, public HTTPS, no credentials.
 pub const GLO30_BASE_URL: &str = "https://copernicus-dem-30m.s3.amazonaws.com";
 
-/// Read size for the download loop — big enough that syscall overhead is irrelevant on a ~40 MB
+/// Read size for the download loop — big enough that syscall overhead is irrelevant on a 40 MB
 /// body, small enough that a partial file is never far from the last byte that arrived.
 const CHUNK: usize = 1 << 16;
 
 /// Attempts per tile. An attempt restarts from zero rather than resuming: the mirror is not
 /// guaranteed to honour a `Range` request, and a silently truncated DEM tile would bake a plausible
-/// raster with a torn edge — far worse than a slow download.
+/// raster with a torn edge.
 const ATTEMPTS: usize = 3;
 
 /// One GLO-30 tile, named by the integer degree of its south-west corner.
@@ -58,14 +56,14 @@ impl TileId {
 
 /// The tiles a box needs, in a fixed order.
 ///
-/// Two edge rules, both consequences of GLO-30 being **`PixelIsPoint`** (see [`crate::geotiff`]):
+/// Two edge rules, both consequences of GLO-30 being `PixelIsPoint`:
 ///
 /// - A tile named `N46` carries posts at latitudes `(46, 47]` — its own south edge post belongs to
 ///   `N45`. So the tile owning latitude `L` is `ceil(L) − 1`, not `floor(L)`.
 /// - A tile named `E008` carries posts at longitudes `[8, 9)`, so longitude is plain `floor`.
 ///
 /// The box is grown by [`EDGE_PAD_DEG`] first, because a lattice point on the very edge of the box
-/// interpolates over source posts just outside it — and a missing neighbour tile would void that
+/// interpolates over source posts just outside it, and a missing neighbour tile would void that
 /// sample instead of interpolating it.
 pub fn tiles_for(bbox: BboxUdeg) -> Vec<TileId> {
     let pad = EDGE_PAD_DEG;
@@ -84,10 +82,10 @@ pub fn tiles_for(bbox: BboxUdeg) -> Vec<TileId> {
     tiles
 }
 
-/// How far outside the requested box a fetch reaches, degrees. One GLO-30 post is 1/3600° ≈ 0.00028°
-/// and a bilinear sample needs the post *beyond* the one it sits on, so a couple of thousandths of a
-/// degree is several posts of slack — enough to never lose an edge sample, small enough that it
-/// almost never pulls in a 40 MB tile the box did not really touch.
+/// How far outside the requested box a fetch reaches, degrees. One GLO-30 post is 1/3600° and a
+/// bilinear sample needs the post beyond the one it sits on, so a couple of thousandths of a degree
+/// is several posts of slack — enough to never lose an edge sample, small enough that it almost
+/// never pulls in a 40 MB tile the box did not really touch.
 pub const EDGE_PAD_DEG: f64 = 0.002;
 
 /// What one fetch did, per tile.
@@ -197,8 +195,8 @@ mod tests {
         assert_eq!(TileId { lat: 0, lon: 0 }.stem(), "Copernicus_DSM_COG_10_N00_00_E000_00_DEM");
     }
 
-    /// The two ownership rules, which are not the same rule: latitude posts belong to the tile
-    /// *below* their integer, longitude posts to the tile at it.
+    /// The two ownership rules, which are not the same rule: latitude posts belong to the tile below
+    /// their integer, longitude posts to the tile at it.
     #[test]
     fn tile_selection_follows_the_pixel_is_point_ownership() {
         // Grimsel: wholly inside N46E008 despite the box's own name suggesting nothing about it.
@@ -209,7 +207,7 @@ mod tests {
         let teningen = BboxUdeg::parse("48.119,7.798,48.141,7.830").unwrap();
         assert_eq!(tiles_for(teningen), vec![TileId { lat: 48, lon: 7 }]);
 
-        // A box reaching an integer latitude needs the tile *below* it, because that tile owns the
+        // A box reaching an integer latitude needs the tile below it, because that tile owns the
         // post exactly on the degree line.
         let across_lat = BboxUdeg::parse("45.99,8.2,46.10,8.3").unwrap();
         assert_eq!(tiles_for(across_lat), vec![TileId { lat: 45, lon: 8 }, TileId { lat: 46, lon: 8 }]);

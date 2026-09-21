@@ -1,5 +1,5 @@
 /**
- * Lazy browser bridge for #1045's live skin preview.
+ * Lazy browser bridge for the live skin preview.
  *
  * The OBCM is the bakery's canonical Teningen fixture, emitted by Vite as a
  * separate asset rather than copied into the JS or wasm module. Opening the

@@ -1,21 +1,9 @@
-//! **The read cutover, held to the seam it crosses** (FS7.5-c2, #1420): a real OBCM map committed
-//! into a flat store, and the renderer's own reader driven over it through [`StoreSource`].
+//! The read cutover, held to the seam it crosses: a real OBCM map committed into a flat store, and
+//! the renderer's own reader driven over it through [`StoreSource`].
 //!
-//! Every other test of this store is about the *store*: extents, gates, commits, recovery. This one
-//! is about the sentence the board now depends on — *"a map object in a flat store is a map"* — and
-//! it is the flat arm's answer to the FAT arm's fixtures, which have been reading `.obcm` bytes off
-//! a `SliceSource` since the first reader test.
-//!
-//! The oracle is deliberately the **same bytes through a second path**: `SliceSource` over the file
-//! the testkit built, against `StoreSource` over the object the store committed. If the two ever
-//! disagree, the disagreement is the store's or the adapter's, because the map is one array of bytes
-//! in both. That is a stronger check than asserting field values, and it is what a golden-frame
-//! comparison would be measuring anyway one layer up.
-//!
-//! What this does **not** cover, and where it is covered instead: the board's boot wiring
-//! (`flat_store::open_map` — bare metal, no tests run there, so the on-glass row of the pair's
-//! acceptance is what closes it), and the renderer's pixels (`obc-render`'s suites, which are
-//! source-agnostic by construction).
+//! The oracle is the same bytes through a second path — `SliceSource` over the file the testkit
+//! built, against `StoreSource` over the object the store committed. A disagreement is the store's or
+//! the adapter's, because the map is one array of bytes in both.
 
 use std::vec::Vec;
 
@@ -35,8 +23,7 @@ const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 
-/// A two-LOD map: one line at the coarse rung, one polygon-with-hole at the fine one. The same
-/// shape `obc-reader`'s own format suite reads off a slice.
+/// A two-LOD map: one line at the coarse rung, one polygon-with-hole at the fine one.
 fn map_bytes() -> Vec<u8> {
     let line = seal(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
     let poly = seal(
@@ -53,7 +40,6 @@ fn map_bytes() -> Vec<u8> {
     )
 }
 
-/// Publish `payload` as a committed object of `kind` under `name`, and hand back its id.
 fn publish(store: &FlatStore<&SparseDisk>, payload: &[u8], name: &str) -> ObjectId {
     let id = store.next_object_id();
     let mut allocation = store.allocate(payload.len() as u64).expect("the extents are free");
@@ -74,14 +60,9 @@ fn publish(store: &FlatStore<&SparseDisk>, payload: &[u8], name: &str) -> Object
 
 /// A card carrying `payload` as one committed map object, and the id it went in under.
 ///
-/// **The map is laid down over a hole, on purpose.** A blank card would give it one contiguous run,
-/// and a contiguous run is the case `StoreSource` is *least* interesting for — the whole reason the
-/// adapter exists is that an object's bytes are a list of ranges and a read has to walk them. So
-/// this fills two extents, frees the first, and then publishes the map: the allocator takes the hole
-/// and continues past the survivor, leaving the map on **two non-adjacent ranges** with the seam at
-/// exactly one extent. Callers size their payload past [`Geometry::extent_size`] to be sure of it,
-/// and the reads below straddle that seam deliberately. (The same shape `crash.rs` uses to build a
-/// fragmented free map.)
+/// The map is laid down over a hole on purpose: the adapter exists because an object's bytes are a
+/// list of ranges and a read has to walk them, so this leaves the map on two non-adjacent ranges with
+/// the seam at exactly one extent. Callers size their payload past [`Geometry::extent_size`].
 fn card_with_map(payload: &[u8]) -> (SparseDisk, ObjectId) {
     let extent = Geometry::DEFAULT.extent_size() as usize;
     // The map, the two spacers, and a few spare so the commit is never the thing under test.
@@ -98,9 +79,8 @@ fn card_with_map(payload: &[u8]) -> (SparseDisk, ObjectId) {
 
     let id = publish(&store, payload, "two-lod");
     assert!(payload.len() > extent, "the map must outgrow one extent, or the hole buys nothing");
-    // **The fixture proves its own shape.** The straddling reads below would keep passing on a
-    // contiguous object, so an allocator that stopped taking the hole would silently turn this file
-    // back into the test it was before the review round — green, and measuring nothing.
+    // The fixture proves its own shape. The straddling reads below would keep passing on a contiguous
+    // object, so an allocator that stopped taking the hole would leave this file measuring nothing.
     assert_eq!(
         store.head_range_count(id),
         Some(2),
@@ -112,12 +92,8 @@ fn card_with_map(payload: &[u8]) -> (SparseDisk, ObjectId) {
 }
 
 /// The map, padded past one extent so it is guaranteed to span the fragmented allocation
-/// [`card_with_map`] builds.
-///
-/// The padding is trailing bytes past every section OBCM's header points at, so the file parses and
-/// renders exactly as the unpadded one does — the reader bounds-checks each offset against the
-/// source's length and never reads the tail. What it buys is a *real* multi-extent object rather
-/// than a few hundred bytes that would fit any single range.
+/// [`card_with_map`] builds. The padding is trailing bytes past every section the header points at,
+/// so the file parses and renders exactly as the unpadded one does.
 fn padded_map_bytes() -> Vec<u8> {
     let mut bytes = map_bytes();
     let want = Geometry::DEFAULT.extent_size() as usize + 4_096;
@@ -129,9 +105,8 @@ fn padded_map_bytes() -> Vec<u8> {
     bytes
 }
 
-/// The whole point of the slice: **the map the store hands back is the map that went in.** Read
-/// through the seam the renderer uses, at every window size a chunk read can take, against the
-/// bytes as an oracle.
+/// The map the store hands back is the map that went in: read through the seam the renderer uses, at
+/// every window size a chunk read can take, against the bytes as an oracle.
 #[test]
 fn a_map_committed_to_the_store_reads_back_byte_for_byte() {
     let bytes = padded_map_bytes();
@@ -142,8 +117,7 @@ fn a_map_committed_to_the_store_reads_back_byte_for_byte() {
 
     assert_eq!(source.len(), bytes.len() as u64, "the source is as long as the map");
     // Windows that matter to a reader: the header, a style-table read, a 512-byte block, the file's
-    // last byte — and four that **straddle the extent seam**, which is the case a contiguous fixture
-    // cannot reach and the one the adapter's range walk exists for.
+    // last byte, and four that straddle the extent seam.
     let windows = [
         (0usize, 49usize),
         (49, 15),
@@ -164,12 +138,8 @@ fn a_map_committed_to_the_store_reads_back_byte_for_byte() {
     store.close(handle);
 }
 
-/// **The renderer's own parse and query, over the store.** `MapTables` and a `Reader` are what the
-/// board builds at boot and per frame; driving them here is what makes "a flat card renders" a
-/// checked claim at this layer rather than only an on-glass one.
-///
-/// Both sides are asserted against a `SliceSource` over the same bytes, so a divergence names the
-/// adapter rather than the format.
+/// The renderer's own parse and query, over the store. Both sides are asserted against a
+/// `SliceSource` over the same bytes, so a divergence names the adapter rather than the format.
 #[test]
 fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice() {
     let bytes = padded_map_bytes();
@@ -188,9 +158,9 @@ fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice
             assert_eq!(over_store.lods().len(), over_slice.lods().len(), "the same ladder");
             assert_eq!(over_store.terrain(), over_slice.terrain(), "and the same §1.3 answer");
 
-            // One viewport query per rung, against the slice-backed reader's answer. This is the
-            // call the render path makes; a cache keyed differently, an offset resolved against the
-            // wrong scale, or a short read would all show up as a different chunk list.
+            // One viewport query per rung, against the slice-backed reader's answer. A cache keyed
+            // differently, an offset resolved against the wrong scale, or a short read would all show
+            // up as a different chunk list.
             let store_cache = MapCache::new();
             let slice_cache = MapCache::new();
             let reader = Reader::new(source, &over_store, &store_cache);
@@ -207,14 +177,13 @@ fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice
         .expect("the map object opens");
 }
 
-/// **Terrain comes through the same handle.** A map with a spliced §1.3 region hands back a window
-/// whose bytes are the container's, read through the store — which is the whole reason the board no
-/// longer opens a second file for elevation, and the reason a flat card can have terrain at all
-/// (there is no filesystem to hang a sidecar off).
+/// Terrain comes through the same handle. A map with a spliced terrain region hands back a window
+/// whose bytes are the container's, read through the store, which is why a flat card can have terrain
+/// at all: there is no filesystem to hang a sidecar off.
 #[test]
 fn the_embedded_terrain_region_windows_onto_the_same_store_object() {
-    // Padded, so the region lands **past** the extent seam: the window's own arithmetic is then
-    // composed with the store's range walk, which is the shape the board actually reads terrain in.
+    // Padded, so the region lands past the extent seam: the window's own arithmetic is then composed
+    // with the store's range walk, which is the shape the board reads terrain in.
     let plain = padded_map_bytes();
     let stub = terrain_stub(300); // not a whole number of units — the window's tail is §1.2 filler
     let bytes = splice_terrain(&plain, &stub);

@@ -1,76 +1,27 @@
 # Skin-preview source
 
-`teningen-preview.obcm` is the canonical geometry behind the catalog's square
-skin previews. `obc-bake` embeds it, stamps each current skin onto its style
-table, and renders the fixed Teningen camera through the production map renderer.
-It is never published itself.
+`teningen-preview.obcm` is the canonical geometry behind the catalog's square skin previews.
+`obc-bake` embeds it, stamps each current skin onto its style table, and renders the fixed
+Teningen camera through the production map renderer. The file is never published itself.
 
-Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
-snapshot `2026-08-03`, packed as OBCM v13 with
-`builder/presets/schema.json` (Bikepacking v6 — the 7-tier ladder, before the two
-far-zoom tiers) and this padded crop:
+`teningen-preview.obcd` is the OBCT terrain sidecar for the same square. `obc-bake` does not use
+it yet; it exists so the preview geometry has real elevation available when terrain reaches the
+shared render path.
+
+## Regenerate
+
+`fixtures/build-map-package.sh` is the only supported way, as it is for every built fixture here.
+The map is packed from a Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez` extract
+with `builder/presets/schema.json`, on this canonical crop, with `--no-land` and no terrain:
 
 ```text
-obc pack freiburg-regbez-260803.osm.pbf builder/presets/schema.json \
+obc pack freiburg-regbez.osm.pbf builder/presets/schema.json \
   /tmp/teningen-preview.obcm -- \
   --bbox 7.798,48.119,7.830,48.141
 ```
 
-No `--terrain`, as before: the Rhine plain has nothing to show in a 1.2 km frame,
-and a preview whose subject is the skin should not double as a contour test. So
-this file carries no contours at any tier — which is why it took the two contour
-style records (below) and no contour geometry.
-
-The published 240×240 image is centred at `7.814,48.130` and uses `5 m/px`.
-The live skin editor starts at that camera, allows pan/zoom, and treats the bbox
-above as its dense camera coverage. OSM complete-way retention can expand the
-OBCM header beyond the requested bbox; those overhanging coordinates are not a
-licence to pan into sparse space. At wide scales the camera remains centred in
-the requested crop while the full viewport stays within the file header.
-
-The crop is wider than the initial frame, while the packer's relation-complete
-selection also pulls in every member of a land-cover multipolygon reached from
-inside it. That keeps residential, forest, and farmland fills whole even when a
-ring segment lies outside the crop. It is already large enough for the
-interactive preview to select every LOD on the ladder, so no second browser fixture is
-needed.
-
-Size log: 472 061 B at OBCM v11 → **481 517 B at v12** (#1073). The +9 456 B is
-the v12 §8.3 ascent field — `2 × 4 700` adjacency entries plus 4 B of profile
-table, realised as +18 whole 512-byte node chunks. The snapshot moved at the same
-time and cost nothing: the v11 packer produces the identical 472 061 B from the
-2026-08-01 extract.
-
-481 517 B → **481 533 B**, still v12 (#1105 re-packed it, #1114 returned the
-format). The **+16 B is not a format change at all**: it is the two contour style
-records (ids 51/52, 8 B each) that #1094 appended to the schema, landing here for
-the first time — this file was last packed before them. Those styles are real and
-stay. Content is otherwise untouched: `obcm_diff --dump` is identical feature for
-feature, and the two new records take the next free ids so nothing this file
-already carried was renumbered.
-
-The earlier temporary version byte went 12 → 13 → 12 in between, which cost this
-file nothing in either direction: that draft v13's only substance was a feature
-field for contours and a style bit for index ones, and the Rhine plain has
-neither. The map was byte-identical across that round trip apart from the
-header's version byte.
-
-481 533 B → **483 328 B at v13** (#1184). Exact road-edge snapping adds the
-v13 navigation-directory fields plus a sparse quadtree of interior anchors for
-long graph edges. This crop grows by 1 795 B (+0.37%); the rendered geometry and
-the no-contour choice are unchanged.
-
-## `teningen-preview.obcd` — the terrain companion
-
-`teningen-preview.obcd` is the OBCT terrain sidecar for the same square (epic
-#1068 / #1070). `obc-bake` does not use it yet; it exists so the skin-preview
-geometry has real elevation available when EL7 wires terrain into the shared
-render path, and because a Rhine-plain fixture is the flat counterpart to the
-simulator's alpine one.
-
-Provenance: Copernicus DEM GLO-30, tile `N48_00_E007_00` from the AWS Open Data
-mirror, over the same crop as the `.obcm` above, written latitude-first (which is
-`obc-dem`'s argument order, the opposite of `obc-pack`'s):
+The terrain sidecar comes from Copernicus DEM GLO-30 tile `N48_00_E007_00`, over the same crop
+but written latitude-first, which is `obc-dem`'s argument order and the opposite of `obc-pack`'s:
 
 ```text
 fixtures/build-map-package.sh terrain
@@ -78,88 +29,45 @@ fixtures/build-map-package.sh terrain
 #     --cell-log2 16 --shard host/obc-bake/assets/teningen-preview.obcd
 ```
 
-That script is the only supported way to regenerate it, like every other built
-fixture in the repo. It is baked at the **real v1 posting** (`2^9` µdeg) with a
-`2^16` cell, so the 1 × 2 cell rectangle is 65576 B rather than a 2 MiB v1 cell
-mostly outside the crop — `OBCT_Spec.md` §1.3 makes both header data and §4.5
-requires a reader to accept the pairing. `obc-dem`'s `tests/assets.rs` checks it
-parses and covers the published camera centre.
+It is baked at the real v1 posting (`2^9` µdeg) with a `2^16` cell, so the 1 × 2 cell rectangle is
+65 576 B rather than a 2 MiB v1 cell that is mostly outside the crop. `OBCT_Spec.md` §1.3 makes
+both header data and §4.5 requires a reader to accept the pairing.
 
-**Attribution is a licence obligation.** Anything derived from these bytes must
-carry *"produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus
-Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union
-and ESA; all rights reserved"*. The string lives once, in
+There is no terrain in the map, deliberately: the Rhine plain has nothing to show in a 1.2 km
+frame, and a preview whose subject is the skin should not double as a contour test. There is no
+golden preview PNG either — the tests assert that the skins render distinctly and
+deterministically, and that residential fills cover the frame.
+
+## When to refresh it
+
+**Refresh whenever the schema's style-id assignment or the OBCM version changes.** `obc-bake`
+checks the assignment before it starts a region bake and fails with this path rather than
+publishing stale previews.
+
+One case deliberately owes no refresh: feature types *appended* to the schema take the next free
+ids and leave every id in this file meaning what it meant, so `check_source` in
+`host/obc-bake/src/previews.rs` requires the fixture's table to be a leading run of the schema's
+assignment rather than all of it. A schema that stops covering an id this file carries still
+fails.
+
+## The published camera
+
+The 240 × 240 image is centred at `7.814,48.130` at 5 m/px. The live skin editor starts at that
+camera, allows pan and zoom, and treats the crop above as its dense coverage. The crop is wider
+than the frame, and the packer's relation-complete selection also pulls in every member of a
+land-cover multipolygon reached from inside it, which keeps residential, forest and farmland fills
+whole. That is already enough for the interactive preview to select every rung of the ladder, so
+no second browser fixture is needed.
+
+OSM complete-way retention can push the OBCM header beyond the requested bbox. **Those
+overhanging coordinates are not a licence to pan into sparse space**: at wide scales the camera
+stays centred in the requested crop while the viewport stays inside the file header.
+
+## Attribution
+
+Anything derived from `teningen-preview.obcd` must carry *"produced using Copernicus WorldDEM-30
+© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by
+the European Union and ESA; all rights reserved"*. The string lives once, in
 `obc_elevation::COPERNICUS_ATTRIBUTION`.
 
-Refresh this fixture whenever the schema's style-id assignment or OBCM version
-changes. `obc-bake` checks the assignment before starting a region bake and
-fails with this path rather than publishing stale previews.
-
-One case deliberately does **not** owe a refresh: feature types *appended* to the
-schema take the next free ids and leave every id in this file meaning exactly
-what it meant, so the check requires the fixture's table to be a leading run of
-the schema's assignment rather than all of it, and the trailing styles are not
-stamped (`previews.rs`). A schema that stops covering an id this file carries
-still fails. `features.contour.*` (#1094) was the first type to ride that rule,
-and rode it until the #1105 re-pack, so the fixture now carries ids 51/52 like any
-other.
-
-## Repacked at OBCM v14 (FS7.5b, #1420)
-
-`teningen-preview.obcm` is now a **v14** file. The pinned `2026-08-03`
-`freiburg-regbez` snapshot is no longer hosted by Geofabrik (it serves roughly
-the last 90 days), so this repack necessarily used the current one:
-
-Provenance is therefore Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
-snapshot **`2026-08-17`**, same bbox and same `builder/presets/schema.json`
-invocation as above. No golden preview PNG is pinned — the tests assert the
-skins render distinctly and deterministically, not to fixed pixels — so a
-two-week content delta in a 2.4 km crop of the Rhine plain is absorbed rather
-than reviewed pixel by pixel.
-
-**The ladder came with it, and that is the more visible change.** The fixture had
-been packed against the 7-tier Bikepacking v6 preset and had not been repacked
-since the schema gained its far-zoom tiers, a lag the `obc-skin-preview` tests
-called out in a comment. Repacking against today's `builder/presets/schema.json`
-picks up all **fourteen** rungs. Six of them describe ground scales a 2.4 km crop
-can never fill, so the widest view the preview's own extent allows now selects
-rung 7 rather than rung 0 — the tests say so directly, because asserting rung 0
-would be asserting a blank frame.
-
-Size log, continued: 481 533 B at v12 → **483 328 B at v14**, and the reader
-should be told that this is a **coincidence rather than a null result**:
-303 216 of the file's bytes changed. Two independent movements happen to land
-within a couple of kilobytes of each other — v14's §1.2 unit filler adds roughly
-half a percent of the geometry bytes plus a gap at each region boundary, and the
-fortnight of OSM edits moved content the other way. A repack that produced a
-*byte-identical* file would be the surprising outcome; an equally-sized one is
-not, and the version byte (`0x0D` → `0x0E`) is what to check.
-
-## Repacked at OBCM v17
-
-The preview was packed on 2026-09-18 with Bikepacking v10, the canonical bbox
-above, `--no-land`, and no terrain. This refresh includes the current style ID
-assignment and the fourteen-level detail ladder. The cached Geofabrik Freiburg
-source has replication timestamp `2026-08-03T20:21:36Z`, Last-Modified
-`2026-08-04T03:56:44Z`, size 158362659 bytes, and SHA-256
-`1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707`.
-The source URL is
-`https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf`.
-The repack used the cached source without a download.
-The output is 477184 bytes, with an OBCM v17 header and an empty peak section.
-Its SHA-256 is `4dcdc11168aa1d5076ef0dea3a78607230ca3e29a954a1fb32893537a8f206a4`.
-The tests check distinct, deterministic skin renders and residential coverage;
-they do not use a fixed golden PNG.
-
-## Current OBCM v18 source
-
-The preview was packed again on 2026-09-18 for the settlement category, with the same
-canonical bbox, `--no-land`, no terrain, and the same cached Geofabrik source (SHA-256
-`1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707`, 158362659 bytes,
-replication timestamp `2026-08-03T20:21:36Z`). The repack used the cached source without a
-download.
-
-The output is 477696 bytes, 512 bytes more than the v17 one. Its SHA-256 is
-`a451a907e083e7cfd0b0c3d363bfdaa545f52563eee7735af97badf00782ad6e`. The crop holds two
-settlements, the villages Teningen and Köndringen, which is one 512-byte POI chunk with its
-index. The rendered geometry is unchanged, and the terrain companion did not move.
+OSM data is under ODbL-1.0, © OpenStreetMap contributors.

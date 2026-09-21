@@ -11,47 +11,39 @@ use obc_formats::obcm::{
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox};
 
-/// POI directory categories (spec §7.1): services 1..6 and 8, plus the optional summit landmarks 7
-/// and settlements 9. The parsed `MapTables::pois`
-/// bounds its `heapless::Vec` at this so a corrupt `category_count` can't request an unbounded
-/// allocation; a directory declaring more categories than this is rejected.
+/// POI directory categories: services 1..6 and 8, plus summit landmarks 7 and settlements 9. The
+/// parsed directory bounds its `Vec` at this, so a corrupt `category_count` cannot request an
+/// unbounded allocation.
 pub const POI_MAX_CATEGORIES: usize = 9;
 
-/// Upper bound on the POI `chunk_size` the reader accepts (spec §7.1). POI records are a fixed 32
-/// bytes and the packer writes 512-byte chunks (16 records); this caps the on-wire `u16` well below
-/// the geometry [`super::MAX_CHUNK_BYTES`] so a corrupt directory can't advertise a huge chunk the
-/// nearest-N query (#424) would try to buffer. Generous headroom over the packer's 512 without
-/// approaching the geometry scratch.
+/// Upper bound on the POI `chunk_size` the reader accepts. The packer writes 512-byte chunks, so
+/// this caps the on-wire `u16` well below the geometry [`super::MAX_CHUNK_BYTES`] and a corrupt
+/// directory cannot advertise a huge chunk the nearest-N query would buffer.
 pub const POI_MAX_CHUNK_BYTES: usize = 4096;
 
-/// Max results the nearest-N POI query returns (locked on epic #115). The caller owns a
-/// `heapless::Vec<Poi, MAX_POI_RESULTS>`; the query fills it ascending by distance and never
-/// exceeds it. 16 × ≈36 B ≈ 600 B, on the caller's stack.
+/// Max results the nearest-N POI query returns. The caller owns the `Vec`, and the query fills it
+/// ascending by distance.
 pub const MAX_POI_RESULTS: usize = 16;
 
-/// The POI-scan stack scratch window, in bytes (spec §7.1's default chunk size, 8 records of 64 =
-/// 504 bytes, plus a few slack bytes). One chunk streams through this fixed window at a time
-/// regardless of the accepted `chunk_size`, so the query's scratch stays tiny (no `MapCache`
-/// growth). Each read pulls a whole number of records (`take * POI_RECORD_LEN`), so a record never
-/// straddles two reads.
+/// The POI-scan stack scratch window, in bytes. One chunk streams through this fixed window at a
+/// time whatever the accepted `chunk_size`, and each read pulls a whole number of records, so a
+/// record never straddles two reads.
 const POI_SCAN_WINDOW: usize = 512;
 
-/// One category's entry in the parsed POI directory (spec §7.1). The nearest-N query (#424)
-/// walks this category's quadtree exactly as it walks a
-/// [`super::Lod`] index — the layout is shared, so its `data_start`/`chunk_range` math
-/// reuses the same convention.
+/// One category's entry in the parsed POI directory. The nearest-N query walks this category's
+/// quadtree exactly as it walks a [`super::Lod`] index, so the same `data_start` and
+/// `chunk_range` math serves both.
 #[derive(Debug, Clone, Copy)]
 pub struct PoiCatEntry {
-    /// Canonical category id (services 1..6 and 8, summit landmarks 7, settlements 9; spec §7.4).
     pub category_id: u8,
     /// Byte offset to this category's quadtree index.
     pub index_offset: u64,
-    /// Number of `uint32` nodes in the index; `0` ⇒ the category is empty in this map.
+    /// Number of `uint32` nodes in the index; `0` means the category is empty in this map.
     pub node_count: usize,
     /// Number of POI data chunks in this category.
     pub chunk_count: usize,
-    /// This file's offset unit (§1.1), carried so the category's chunk start is rounded with the
-    /// scale of the file the entry was read from.
+    /// This file's offset unit, carried so the category's chunk start is rounded with the scale
+    /// of the file the entry came from.
     pub scale: OffsetScale,
 }
 
@@ -62,68 +54,61 @@ impl PoiCatEntry {
         self.node_count == 0
     }
 
-    /// Byte offset where this category's data chunks begin (right after its index),
-    /// or `None` if the arithmetic overflows `u64` (a corrupt directory) — the
-    /// shared §7.1 convention, see `index_end`.
+    /// Byte offset where this category's data chunks begin, right after its index, or `None` on
+    /// `u64` overflow from a corrupt directory.
     #[inline]
     pub fn data_start(&self) -> Option<u64> {
         aligned_index_end(self.scale, self.index_offset, self.node_count)
     }
 
-    /// Byte range `[start, end)` of POI chunk `chunk_id` given the directory's shared `chunk_size`
-    /// (the §7.1 chunk size is directory-wide, not per-entry, so it's passed in). See
-    /// [`fixed_chunk_range`].
+    /// Byte range `[start, end)` of POI chunk `chunk_id`. The chunk size is directory-wide, not
+    /// per-entry, so it is passed in.
     #[inline]
     pub(super) fn chunk_range(&self, chunk_id: u32, chunk_size: usize) -> Option<(u64, u64)> {
         fixed_chunk_range(self.data_start(), self.chunk_count, chunk_size, chunk_id)
     }
 }
 
-/// A single POI result from [`Reader::nearest_pois`]. Coordinates are absolute microdegrees (§7.3);
-/// `distance_m` is the ground distance from the query position, computed during the scan. `name` is
-/// empty for an unnamed POI — the app then shows the subtype's fallback label
-/// ([`poi_label_of`](obc_formats::obcm::poi_label_of)).
+/// A single POI result from [`Reader::nearest_pois`]. Coordinates are absolute microdegrees and
+/// `distance_m` is the ground distance from the query position. An empty `name` is unnamed, and
+/// the app then shows the subtype's fallback label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Poi {
     pub opening: crate::hours::OpeningStatus,
     pub metadata: obc_formats::obcm::PoiMetadata,
     pub lat: i32,
     pub lon: i32,
-    /// Canonical subtype id (§7.4), always in `1..=18` for a returned POI.
     pub subtype: u8,
-    /// Stored name (≤ [`POI_NAME_LEN`] bytes); empty ⇒ unnamed.
+    /// Stored name; empty means unnamed.
     pub name: heapless::String<POI_NAME_LEN>,
-    /// 0-based index into the hours pool (§7.5), decoded from record bytes `[34..36]`; `0xFFFF` = no
-    /// hours. Carried into the detail screen (#444) so it can resolve the schedule via
-    /// [`Reader::poi_hours`] without re-running the query.
+    /// 0-based index into the hours pool, or `0xFFFF` for no hours. Carried into the detail
+    /// screen so it can resolve the schedule without re-running the query.
     pub hours_ref: u16,
     /// Ground distance from the query position, rounded to whole meters.
     pub distance_m: u32,
 }
 
-/// The parsed POI directory (spec §7.1): the shared chunk size, one bounded entry per category, and
-/// (v7) the hours-pool section's absolute offset + blob count. [`super::MapTables::parse`] fills it; the
-/// nearest-N query walks each `entries[i]`'s quadtree, and the hours fields locate the pool for the
-/// P3 (#443) per-POI hours lookup + open-now evaluation — parse-only here, the pool bytes are just
-/// bounds-validated to lie in-file.
+/// The parsed POI directory: the shared chunk size, one bounded entry per category, and the
+/// hours-pool offset and blob count. Parse-only here; the pool bytes are bounds-validated to lie
+/// in file.
 #[derive(Debug, Clone)]
 pub struct PoiDirectory {
-    /// Fixed capacity (bytes) of every POI chunk, shared by all categories (spec §7.1).
+    /// Fixed capacity in bytes of every POI chunk, shared by all categories.
     pub chunk_size: usize,
     /// One entry per category present in the directory (bounded at [`POI_MAX_CATEGORIES`]).
     pub entries: Vec<PoiCatEntry, POI_MAX_CATEGORIES>,
-    /// Absolute byte offset of the hours-pool section (spec §7.5): a `count u16` then `count ×
-    /// 29-byte` blobs. Blob `i` (a record's `hours_ref`) lives at `hours_pool_offset + 2 + i*29`.
-    /// Meaningful only when `hours_pool_count > 0`.
+    /// Absolute byte offset of the hours-pool section: a `count u16`, then `count` 29-byte blobs,
+    /// so blob `i` lives at `hours_pool_offset + 2 + i*29`. Meaningful only when the count is
+    /// non-zero.
     pub hours_pool_offset: u64,
-    /// Number of 29-byte blobs in the hours pool (spec §7.5); `0` ⇒ no hours in this map. Equals the
-    /// `count u16` written at `hours_pool_offset`, validated equal at parse.
+    /// Number of 29-byte blobs in the hours pool; `0` means no hours in this map. Validated equal
+    /// to the `count u16` at `hours_pool_offset`.
     pub hours_pool_count: usize,
 }
 
 impl PoiDirectory {
-    /// A directory with nothing in it — no categories, no chunks, no hours pool. The POI twin of
-    /// [`super::NavDirectory::EMPTY`], and the base an assembler builds a real one onto.
+    /// A directory with nothing in it. The POI twin of [`super::NavDirectory::EMPTY`], and the
+    /// base an assembler builds a real one onto.
     pub const EMPTY: PoiDirectory =
         PoiDirectory { chunk_size: 0, entries: Vec::new(), hours_pool_offset: 0, hours_pool_count: 0 };
 }
@@ -149,31 +134,20 @@ pub struct MapPoint {
 }
 
 impl<'a> Reader<'a> {
-    /// The parsed POI directory (spec §7): the shared chunk size, one entry per category, and the
-    /// v7 hours-pool offset/count. Always present (seven categories, some possibly empty).
-    /// [`Reader::nearest_pois`] walks the per-category quadtrees; P3 (#443) reads
-    /// [`PoiDirectory::hours_pool_offset`]/[`PoiDirectory::hours_pool_count`] to resolve a POI's
-    /// pooled schedule.
+    /// The parsed POI directory: the shared chunk size, one entry per category, and the
+    /// hours-pool offset and count. Always present, with some categories possibly empty.
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
         &self.tables.pois
     }
 
-    /// Resolve a POI's pooled weekly schedule (spec §7.5) from its `hours_ref`. `None` for the
-    /// no-hours sentinel `0xFFFF`, an index `>= hours_pool_count`, or any read/decode failure — so a
-    /// corrupt directory (a bad `hours_pool_offset`/`count`) or a flaky read yields `None`, never a
-    /// panic/UB. On-demand: the detail screen (#444) calls this once with the [`Poi::hours_ref`] the
-    /// list snapshot carried; it reads the single 29-byte blob into a **stack** buffer via
-    /// [`ByteSource::read_at`] (no [`super::MapCache`] growth, no static/`.bss` buffer).
+    /// Resolve a POI's pooled weekly schedule from its `hours_ref`. `None` for the no-hours
+    /// sentinel, an index past `hours_pool_count`, or any read or decode failure, so a corrupt
+    /// directory yields `None` and never a panic.
     ///
-    /// Blob `hours_ref` lives at `hours_pool_offset + 2 + hours_ref*29` (the `+2` skips the pool's
-    /// `count u16`). Every step is checked 32-bit so a corrupt offset/count can't wrap or read past
-    /// the file.
-    ///
-    /// # Reentrancy
-    ///
-    /// Unlike [`Reader::nearest_pois`], this does **not** touch the [`super::MapCache`] — it's a plain
-    /// stack read, safe to call from anywhere (including inside a `for_each_*` callback).
+    /// Blob `hours_ref` lives at `hours_pool_offset + 2 + hours_ref*29`, and every step is checked
+    /// for the 32-bit target. It reads the single 29-byte blob into a stack buffer and touches no
+    /// [`super::MapCache`], so it is safe to call from inside a `for_each_*` callback.
     pub fn poi_hours(&self, hours_ref: u16) -> Option<crate::hours::WeeklySchedule> {
         self.try_poi_hours(hours_ref).ok().flatten()
     }
@@ -199,8 +173,8 @@ impl<'a> Reader<'a> {
         crate::hours::WeeklySchedule::decode(&blob).map(Some).ok_or(Error::BadOffset)
     }
 
-    /// Synchronous first-page adapter. Interactive callers use `PlaceQuery` to bound work,
-    /// supply current hours, and continue beyond this page.
+    /// Synchronous first-page adapter. Interactive callers use `PlaceQuery` to bound work and
+    /// continue beyond this page.
     pub fn nearest_pois(
         &self,
         category: PoiCategory,
@@ -243,19 +217,14 @@ impl<'a> Reader<'a> {
     }
 
     /// Walk `entry`'s quadtree for leaves overlapping `search` and stream every non-empty leaf's
-    /// chunk through `scan`, which is handed the chunk's byte offset and the per-chunk record cap.
-    /// The shared skeleton behind both POI queries — the expanding-ring
-    /// [`nearest_pois`](Reader::nearest_pois) pass and the per-route-chunk
-    /// [`corridor_pois`](Reader::corridor_pois) pass — which differ only in what they do with a
-    /// record.
+    /// chunk through `scan`, which gets the chunk's byte offset and the per-chunk record cap. The
+    /// shared skeleton behind both POI queries, which differ only in what they do with a record.
     ///
-    /// The chunk decode runs **inside** the walk callback: `walk_leaves` releases its index-cache
-    /// borrow before invoking the callback, and the POI chunk read goes through a plain
-    /// `src.read_at` stack scratch (never the `MapCache`), so the two never nest — and the pass is
-    /// truly streaming with **no per-leaf buffer**, so an exhaustive (map-covering) final pass can't
-    /// silently drop a leaf however dense the category. A leaf whose chunk id is out of range or
-    /// whose extent runs past EOF is skipped; the first read failure stops the walk and is replayed
-    /// as the return value (a `walk_leaves` callback cannot itself fail).
+    /// The chunk decode runs inside the walk callback: `walk_leaves` releases its index-cache
+    /// borrow first, and the POI chunk read goes through a plain stack scratch rather than the
+    /// `MapCache`, so the two never nest and the pass needs no per-leaf buffer. A leaf whose chunk
+    /// id is out of range or whose extent runs past EOF is skipped; the first read failure stops
+    /// the walk and is replayed as the return value.
     pub(super) fn scan_poi_leaves(
         &self,
         entry: &PoiCatEntry,
@@ -263,8 +232,8 @@ impl<'a> Reader<'a> {
         search: &BBox,
         mut scan: impl FnMut(u64, usize) -> Result<(), IoError>,
     ) -> Result<(), Error> {
-        // The whole chunk's record count. A chunk with no sentinel room (records × 32 == chunk_size)
-        // is bounded by this count instead (mirrors `for_each_feature_filtered`).
+        // The whole chunk's record count. A chunk with no sentinel room is bounded by this count
+        // instead.
         let records_per_chunk = chunk_size / POI_RECORD_LEN;
         let mut read_error = None;
         self.walk_leaves(entry, 0, self.bbox, search, 0, &mut |cid, _node| {
@@ -289,14 +258,11 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Stream one POI chunk's records through a single **512-byte** stack scratch — `POI_SCAN_WINDOW`
-    /// bytes (16 records) at a time — handing each *valid* record to `visit` as
-    /// `(window, record offset, lat, lon, subtype)`; the window slice stays borrowed so the caller
-    /// can pull the name/hours fields out of it without a copy. Reading in a fixed window keeps the
-    /// scratch tiny regardless of the accepted `chunk_size` (up to `POI_MAX_CHUNK_BYTES`);
-    /// `POI_RECORD_LEN` divides the window so a record never straddles two reads. `start` is the
-    /// chunk's byte offset, already bounds-checked by the caller. Terminates on the `0xFF` subtype
-    /// sentinel or after `record_cap` records (a sentinel-less full chunk).
+    /// Stream one POI chunk's records through a single 512-byte stack scratch, handing each valid
+    /// record to `visit` as `(window, record offset, lat, lon, subtype)`. The window slice stays
+    /// borrowed, so the caller can pull the name and hours fields out of it without a copy.
+    /// `POI_RECORD_LEN` divides the window, so a record never straddles two reads. Terminates on
+    /// the `0xFF` subtype sentinel or after `record_cap` records.
     pub(super) fn stream_poi_records(
         &self,
         start: u64,
@@ -352,20 +318,18 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Decode a POI record's name (spec §7.3) from `buf` at record offset `off`: `name_len` at `off+9`,
-/// the up-to-24-byte `Name` at `off+10` (bytes `[off+10 .. off+34]`; `hours_ref` follows at
-/// `[off+34 .. off+36]`). Empty for an unnamed record (`name_len == 0`). The stored name is already
-/// pre-folded printable ASCII, but this stays defensive — `name_len` is clamped to what the field
-/// and the buffer hold, and any non-printable byte (a corrupt record) is dropped — so a bad chunk
-/// yields a short/empty name, never a panic or garbage glyph.
+/// Decode a POI record's name from `buf` at record offset `off`: `name_len` at `off+9` and the
+/// name at `off+10`. Empty for an unnamed record. The stored name is already pre-folded printable
+/// ASCII, but this stays defensive: `name_len` is clamped to what the field and the buffer hold,
+/// and a non-printable byte is dropped, so a bad chunk yields a short name and never a panic.
 pub(super) fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_LEN> {
     let mut name = heapless::String::new();
     let name_off = off + 10;
     // Clamp to the 24-byte field and to the bytes actually present in the buffer.
     let len = (buf[off + 9] as usize).min(POI_NAME_LEN).min(buf.len().saturating_sub(name_off));
     for &b in &buf[name_off..name_off + len] {
-        // Printable ASCII only (the device font's range); drop anything else rather than trust a
-        // corrupt byte. `push` can't fail — `len <= POI_NAME_LEN` == the String capacity.
+        // Printable ASCII only, the device font's range. `push` cannot fail, because
+        // `len <= POI_NAME_LEN`, the String capacity.
         if (0x20..=0x7E).contains(&b) {
             let _ = name.push(b as char);
         }
@@ -373,26 +337,23 @@ pub(super) fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NA
     name
 }
 
-/// Parse the POI directory (spec §7.1) at `offset` from `src` (file is `total` bytes): the count
-/// byte, the shared `chunk_size`, one 13-byte entry per category, then (v7) the `hours_pool_offset
-/// u32` + `hours_pool_count u16`. Parse-only — validates the directory layout, each category's
-/// index/chunk region, and that the hours-pool region lies in-file, but does **not** walk the trees
-/// or decode any blob (the nearest-N query and the P3 (#443) hours lookup do). The directory is
-/// always present, so `offset` at/past EOF, a `category_count` past [`POI_MAX_CATEGORIES`], a
-/// `chunk_size` past [`POI_MAX_CHUNK_BYTES`], an out-of-file index/chunk region, or an out-of-file
-/// hours-pool region is a corrupt header ⇒ [`Error::BadOffset`].
+/// Parse the POI directory at `offset` from `src`: the count byte, the shared `chunk_size`, one
+/// 13-byte entry per category, then the `hours_pool_offset u32` and `hours_pool_count u16`.
+/// Parse-only: it validates the layout, each category's index and chunk region, and that the
+/// hours-pool region lies in file, but walks no tree and decodes no blob. The directory is always
+/// present, so an `offset` at or past EOF, a count or `chunk_size` past its cap, or any
+/// out-of-file region is [`Error::BadOffset`].
 ///
-/// Every offset/length product is checked (32-bit target): a corrupt `node_count`/`chunk_count`/
-/// `hours_pool_count` can wrap `u64`, so the region-end could land below `total` and admit a
-/// category (or a pool blob) indexing out of the file — the same overflow guard style as
-/// [`super::parse_lod_table`]/[`Reader::chunk_range`].
+/// Every offset and length product is checked for the 32-bit target: a corrupt count can wrap
+/// `u64`, and the region end could then land below `total` and admit a category indexing out of
+/// the file.
 pub(super) fn parse_poi_directory(
     src: &dyn ByteSource,
     scale: OffsetScale,
     offset: u64,
     total: u64,
 ) -> Result<PoiDirectory, Error> {
-    // The lowest byte a scaled offset in this file can name past the header (§1.2).
+    // The lowest byte a scaled offset in this file can name past the header.
     let floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
     // The directory header is 3 bytes (count + chunk_size u16); it must fit the file.
     if offset < floor || offset.checked_add(3).is_none_or(|end| end > total) {
@@ -428,10 +389,9 @@ pub(super) fn parse_poi_directory(
             chunk_count: rd_u32(&e, 9) as usize,
             scale,
         };
-        // An empty category (node_count 0) still carries an entry; its index/chunk region is
-        // zero-length, so only the offset itself needs to be in-file. A populated one must have its
-        // whole index + chunk region inside the file — checked, so a corrupt count can't wrap past
-        // `total`.
+        // An empty category still carries an entry, and its index and chunk region are
+        // zero-length, so only the offset itself must be in file. A populated one must have its
+        // whole region inside the file, checked so a corrupt count cannot wrap past `total`.
         if entry.node_count > 0 {
             let region_end = entry
                 .data_start()
@@ -448,10 +408,9 @@ pub(super) fn parse_poi_directory(
         let _ = entries.push(entry);
     }
 
-    // The two v7 hours-pool directory fields (spec §7.5): the section's absolute offset + blob
-    // count. When the count is non-zero, the whole pool region (`count u16` + `count × 29-byte`
-    // blobs) must lie in-file — checked, so a corrupt count can't wrap `u64` past `total`. An
-    // empty pool (count 0) still validates its 2-byte `count` header lies in-file.
+    // The two hours-pool directory fields: the section's absolute offset and blob count. With a
+    // non-zero count the whole pool region must lie in file, checked so a corrupt count cannot
+    // wrap `u64`. An empty pool still validates its 2-byte header.
     let mut pf = [0u8; 6];
     src.read_at(pool_fields_off, &mut pf).map_err(Error::Source)?;
     let hours_pool_offset = resolve(scale.offset(rd_u32(&pf, 0)));

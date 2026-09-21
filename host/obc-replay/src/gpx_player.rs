@@ -1,23 +1,19 @@
 //! GPX replay as a simulated GPS sensor.
 //!
 //! [`GpxPlayer`] is the host's stand-in for the device's GPS chip when replaying a recorded
-//! [`Track`]: it implements [`LocationSource`] like a real receiver's driver would, so the
-//! shared app can't tell a replay from a live fix.
+//! [`Track`]: it implements [`LocationSource`] like a real receiver's driver would, so the shared
+//! app cannot tell a replay from a live fix.
 //!
-//! ## Fidelity
-//! GPX stores only position + time, never course or speed, so they're derived the
-//! way a GPS receiver does — from motion. Course is the bearing over a short
-//! look-ahead window (smoothing per-point jitter), and **when the track is
-//! stationary the reported course is `None`**, matching a real receiver that
-//! drops its heading when it isn't moving. That `None` flows straight into the
-//! user marker (becomes a non-directional dot) and heading-up rotation (holds its
-//! last orientation), so heading behaves identically to a live sensor.
+//! GPX stores only position and time, never course or speed, so both are derived the way a GPS
+//! receiver does, from motion. Course is the bearing over a short look-ahead window, which smooths
+//! per-point jitter, and a stationary track reports no course at all, matching a real receiver that
+//! drops its heading when it is not moving. That `None` flows into the user marker, which becomes a
+//! non-directional dot, and into heading-up rotation, which holds its last orientation.
 //!
-//! ## Clock
-//! The player is a pure *playback-time → [`Fix`]* function; the host drives it by
-//! calling [`advance`](GpxPlayer::advance) with each frame's elapsed wall-clock
-//! time (scaled by the playback-speed multiplier). Keeping the clock external
-//! makes the interpolation unit-testable without a real timer.
+//! The player is a pure playback-time to [`Fix`] function; the host drives it by calling
+//! [`advance`](GpxPlayer::advance) with each frame's elapsed wall-clock time, scaled by the
+//! playback-speed multiplier. Keeping the clock external makes the interpolation unit-testable
+//! without a real timer.
 
 use obc_ports::{Fix, LocationSource};
 
@@ -30,14 +26,14 @@ const EARTH_R_M: f64 = 6_371_000.0;
 /// mirroring a real GPS that can't determine heading while stationary.
 const MOVING_THRESHOLD_MPS: f32 = 0.5;
 
-/// Seconds of look-ahead used to derive course/speed. A small window smooths the
-/// per-point bearing jitter you'd otherwise get from dense, noisy track points.
+/// Seconds of look-ahead used to derive course and speed. A small window smooths the per-point
+/// bearing jitter of dense, noisy track points.
 const LOOK_AHEAD_S: f64 = 2.0;
 
-/// Simulated GPS fix cadence, in **seconds of playback time**. Real consumer GPS / bike
-/// computers deliver fixes on a fixed ~1 Hz clock, not once per render frame — throttling
-/// [`poll`](GpxPlayer::poll) to this keeps the recorded track + breadcrumb at a realistic
-/// point density no matter how fast the host renders or how high the replay speed is set.
+/// Simulated GPS fix cadence, in seconds of playback time. Real consumer GPS delivers fixes on a
+/// fixed 1 Hz clock, not once per render frame, so throttling [`poll`](GpxPlayer::poll) to this
+/// keeps the recorded track and breadcrumb at a realistic point density however fast the host
+/// renders.
 const GPS_PERIOD_S: f64 = 1.0;
 
 /// Replays a parsed [`Track`] as a [`LocationSource`]. Holds the playback cursor
@@ -209,8 +205,8 @@ impl GpxPlayer {
         let dur = self.duration();
         let (lat0, lon0) = self.interp_pos(t);
 
-        // Prefer a forward window; within `LOOK_AHEAD_S` of the end, look back so
-        // the heading stays defined right up to the final fix.
+        // Prefer a forward window; within `LOOK_AHEAD_S` of the end, look back so the heading stays
+        // defined right up to the final fix.
         let (t1, behind) =
             if t + LOOK_AHEAD_S <= dur { (t + LOOK_AHEAD_S, false) } else { ((t - LOOK_AHEAD_S).max(0.0), true) };
         let dt = (t1 - t).abs();
@@ -219,8 +215,8 @@ impl GpxPlayer {
         }
         let (lat1, lon1) = self.interp_pos(t1);
 
-        // Order the endpoints along the direction of travel so the bearing points
-        // the way the user is moving.
+        // Order the endpoints along the direction of travel so the bearing points the way the user
+        // is moving.
         let (from, to) = if behind { ((lat1, lon1), (lat0, lon0)) } else { ((lat0, lon0), (lat1, lon1)) };
         let dist = haversine_m(from.0, from.1, to.0, to.1);
         let speed = (dist / dt) as f32;
@@ -232,10 +228,10 @@ impl GpxPlayer {
 
 impl LocationSource for GpxPlayer {
     fn poll(&mut self) -> Option<Fix> {
-        // Throttle to ~GPS_PERIOD_S of playback time: real GPS delivers fixes on a fixed
-        // cadence, so a 60 fps host (or a 10× replay) must not flood the matcher / recorder /
-        // breadcrumb with a fix every frame. `None` between ticks = "no new fix yet".
-        // A paused cursor still supplies fresh receiver fixes on the host clock.
+        // Throttle to one `GPS_PERIOD_S` of playback time: real GPS delivers fixes on a fixed
+        // cadence, so a 60 fps host, or a 10× replay, must not flood the matcher, recorder and
+        // breadcrumb with a fix every frame. A paused cursor still supplies fresh receiver fixes on
+        // the host clock.
         if self.last_fix_t.is_some_and(|last| (self.t - last).abs() < GPS_PERIOD_S)
             && self.paused_fix_elapsed < GPS_PERIOD_S
         {
@@ -356,8 +352,8 @@ mod tests {
 
     #[test]
     fn poll_throttles_to_a_realistic_gps_rate() {
-        // A 60 fps host replaying 5 s of track at 1×: poll runs every frame, but a real GPS
-        // only delivers ~1 fix/s — so we expect ~5 fixes, not ~300.
+        // A 60 fps host replaying 5 s of track at 1×: poll runs every frame, but a real GPS only
+        // delivers about one fix a second, so about 5 fixes, not about 300.
         let mut p = GpxPlayer::new(track(&[(0, 0, 0.0), (1_000_000, 0, 100.0)]));
         p.play();
         let mut fixes = 0;
@@ -456,15 +452,15 @@ mod tests {
         assert_eq!(f.course, None, "no span to derive a heading from");
     }
 
-    /// `interp_pos` / `elevation_at` assume `points` are sorted ascending by `t` (both use
-    /// `partition_point`, correct only on a monotone predicate). With out-of-order times the
-    /// result is unspecified; we assert only that the player stays memory-safe, not sensible.
+    /// `interp_pos` and `elevation_at` assume `points` are sorted ascending by `t`, because both use
+    /// `partition_point`. With out-of-order times the result is unspecified, and this asserts only
+    /// that the player stays memory-safe.
     #[test]
     fn non_monotonic_times_are_a_documented_precondition() {
         // Times descend then jump — violating the sorted-`t` precondition on purpose.
         let p = GpxPlayer::new(track(&[(0, 0, 10.0), (10_000, 0, 5.0), (20_000, 0, 20.0)]));
-        // We make NO claim about which segment is chosen — only that it doesn't panic and
-        // returns a real, in-range coordinate (the points span lat 0..20_000).
+        // No claim about which segment is chosen — only that it does not panic and returns a real,
+        // in-range coordinate. The points span lat 0..20_000.
         let f = p.fix_at(7.0).expect("non-empty track yields a fix");
         assert!((0..=20_000).contains(&f.lat), "stays within the track's points, got lat {}", f.lat);
     }
@@ -490,9 +486,9 @@ mod tests {
         assert_eq!(ele(None, None), None, "a gap with no elevation either side returns None");
     }
 
-    /// Within `LOOK_AHEAD_S` of the end there's no forward window, so `course_speed` looks
-    /// *behind* and reverses the endpoints so the bearing still points forward. On a due-east
-    /// track the course at the last fix must read ~90°, not ~270° (a sign-flip).
+    /// Within `LOOK_AHEAD_S` of the end there is no forward window, so `course_speed` looks behind
+    /// and reverses the endpoints so the bearing still points forward. On a due-east track the
+    /// course at the last fix must read about 90°, not about 270°.
     #[test]
     fn course_at_track_end_still_points_forward() {
         // Due east, three points over 10 s; sample the final fix (look-behind territory).

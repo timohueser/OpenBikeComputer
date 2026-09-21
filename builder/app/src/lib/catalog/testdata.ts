@@ -88,7 +88,7 @@ export function fixtureIndex(
 }
 
 /**
- * The example catalog's own terrain index, through the real parser (§13.1).
+ * The example catalog's own terrain index, through the real parser.
  *
  * The example ships one — `terrain-index.example.json`, the document the
  * generator's tests pin — so this is the producer's shape rather than a guess,

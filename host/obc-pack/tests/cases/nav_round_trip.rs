@@ -1,11 +1,9 @@
-//! End-to-end §8 nav-graph round-trip: serialize a hand-built [`NavGraph`] with the
-//! real `obc-pack` serializer, read it back with the real `obc-reader`, and assert
-//! **identical topology** — nodes, adjacency (ids + inline coords + costs), edge
-//! lengths, and edge geometry. The sibling byte-pinned suites (this crate's
-//! `serialize.rs`, the reader's `format.rs`) pin each half against hand-coded
-//! bytes; this closes the writer/reader loop the same way `round_trip.rs` does for
-//! geometry, plus the §8-specific normalizations (densify, long-edge split, degree
-//! cap, self-loops) that only show up through the full path.
+//! End-to-end nav-graph round-trip: serialize a hand-built [`NavGraph`] with the real `obc-pack`
+//! serializer, read it back with the real `obc-reader`, and assert identical topology — nodes,
+//! adjacency (ids, inline coords, costs), edge lengths and edge geometry. The byte-pinned suites
+//! beside it pin each half against hand-coded bytes; this closes the writer/reader loop, plus the
+//! normalizations — densify, long-edge split, degree cap, self-loops — that only show up through
+//! the full path.
 
 use obc_elevation::{ElevationSource, NullElevation};
 use std::collections::BTreeMap;
@@ -15,7 +13,7 @@ use obc_formats::obcm::{
     OffsetScale, FILLER, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN,
 };
 
-/// The nav section's byte offset, resolved out of the header's own scaled field (§1.1).
+/// The nav section's byte offset, resolved out of the header's own scaled field.
 fn nav_section_offset(bytes: &[u8]) -> usize {
     let scale = OffsetScale::new(bytes[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF]).expect("a legal scale");
     scale.offset(u32::from_le_bytes(bytes[36..40].try_into().unwrap())).bytes() as usize
@@ -32,17 +30,17 @@ use obc_reader::{MapCache, MapTables, NavNeighbor, Reader, SliceSource};
 const GLOBAL: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
 
 /// Serialize `graph` into a minimal map (one empty geometry leaf, no styles, the four default
-/// routing profiles) with **no terrain** — the degrade path, so every §8.3 `Ascent M` is `0`.
+/// routing profiles) with no terrain — the degrade path, so every `Ascent M` is `0`.
 fn map_with(graph: &NavGraph) -> Vec<u8> {
     map_with_profiles(graph, &default_profiles())
 }
 
-/// [`map_with`] with an explicit §8.6 profile table.
+/// [`map_with`] with an explicit profile table.
 fn map_with_profiles(graph: &NavGraph, profiles: &[NavProfile]) -> Vec<u8> {
     map_with_terrain(graph, profiles, &mut NullElevation)
 }
 
-/// [`map_with_profiles`] over a caller-supplied elevation source — the v12 ascent path.
+/// [`map_with_profiles`] over a caller-supplied elevation source — the ascent path.
 fn map_with_terrain(graph: &NavGraph, profiles: &[NavProfile], terrain: &mut dyn ElevationSource) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
@@ -58,10 +56,10 @@ struct Decoded {
     neighbors: Vec<NavNeighbor>,
 }
 
-/// Parse `bytes` and walk the whole nav graph into `id → Decoded`. v9 bin-packs node chunks, so
+/// Parse `bytes` and walk the whole nav graph into `id -> Decoded`. Node chunks are bin-packed, so
 /// distinct index leaves may share a chunk and the walk can hand the same junction record back more
-/// than once — the documented §8.3 contract. This dedups by id and **asserts every repeat decode is
-/// byte-identical** (the idempotency the reference consumers rely on).
+/// than once. This dedups by id and asserts every repeat decode is byte-identical, which is the
+/// idempotency the reference consumers rely on.
 fn decode_all(bytes: &[u8]) -> BTreeMap<u32, Decoded> {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("a serialized v9 map parses");
@@ -113,10 +111,9 @@ fn fetch_edge(bytes: &[u8], edge_id: u32) -> (Vec<(i32, i32)>, u32) {
     (pts.to_vec(), len)
 }
 
-/// A 4-way crossing (the R1 fixture shape): the crossing + 4 arm ends, 4 edges,
-/// each with one interior shape point. The reader must hand back the identical
-/// topology: 5 nodes at their coords, degree 4 / degree 1, inline neighbor coords,
-/// per-arc costs, and each edge's exact polyline + length via its wire edge_id.
+/// A 4-way crossing: the crossing plus 4 arm ends, 4 edges, each with one interior shape point. The
+/// reader must hand back the identical topology: 5 nodes at their coords, degree 4 and degree 1,
+/// inline neighbor coords, per-arc costs, and each edge's exact polyline and length.
 #[test]
 fn four_way_crossing_round_trips_identically() {
     // Arms stay within the 30 000-µdeg densify threshold so geometry is byte-exact
@@ -181,8 +178,8 @@ fn empty_graph_round_trips() {
     assert!(decoded.is_empty());
 }
 
-/// Populated nav payloads begin on physical-card sector boundaries. This is a producer guarantee,
-/// not a new reader requirement: directory offsets keep older compact v12 maps valid.
+/// Populated nav payloads begin on physical-card sector boundaries. It is a producer guarantee and
+/// not a reader requirement: the reader follows the directory's offsets either way.
 #[test]
 fn populated_nav_chunk_regions_are_sector_aligned() {
     let graph = NavGraph {
@@ -205,11 +202,10 @@ fn populated_nav_chunk_regions_are_sector_aligned() {
     let index_start = nav.index_offset as usize;
 
     assert_ne!(nav.node_count, 0);
-    // **All of §8's filler is `0xFF` since v14**, where v13 wrote zeros for this alignment run and
-    // `0xFF` for the padding inside a chunk. One fill byte, one rule (§1.2): a gap is `0xFF` and a
+    // All of the section's filler is `0xFF`: one fill byte, one rule — a gap is `0xFF` and a
     // reserved field is `0`. The alignment run is a gap no offset reaches, so it takes the gap's
-    // byte. Both runs are checked — the one behind the 40-byte directory, which v14 introduced
-    // because 40 is not a unit multiple, and the sector run behind the profile table.
+    // byte. Both runs are checked: the one behind the 40-byte directory, and the sector run behind
+    // the profile table.
     let section = nav_section_offset(&bytes);
     let dir_gap = &bytes[section + NAV_DIR_LEN..nav.profile_table_offset as usize];
     assert_eq!(dir_gap.len(), 8, "the 40-byte directory ends mid-unit at U = 16");
@@ -251,10 +247,9 @@ fn long_segment_edge_is_densified() {
     }
 }
 
-/// An edge whose densified polyline exceeds one chunk's record capacity is split
-/// at pack time into pieces joined by a synthetic degree-2 junction — the §8.4
-/// no-straddle guarantee. Topology stays routable and the concatenated pieces
-/// reconstruct the original geometry.
+/// An edge whose densified polyline exceeds one chunk's record capacity is split at pack time into
+/// pieces joined by a synthetic degree-2 junction, which is the no-straddle guarantee. Topology
+/// stays routable and the concatenated pieces reconstruct the original geometry.
 #[test]
 fn over_long_edge_splits_at_a_synthetic_node() {
     // 200 points, 100 µdeg apart: nothing densifies, but 200 > NAV_MAX_EDGE_PTS
@@ -293,8 +288,8 @@ fn over_long_edge_splits_at_a_synthetic_node() {
     assert_eq!(e1.cost_m, len1);
 }
 
-/// A node past the degree cap keeps its first 24 arcs; the dropped arcs survive
-/// one-way through the spoke nodes' own records (documented §8.3 behavior).
+/// A node past the degree cap keeps its first 24 arcs; the dropped arcs survive one-way through the
+/// spoke nodes' own records.
 #[test]
 fn absurd_degree_node_is_capped_at_24() {
     let hub = (500_000, 500_000);
@@ -398,8 +393,8 @@ fn dense_graph_subdivides_and_point_query_descends() {
     assert!(visited < 144, "…without decoding the whole graph ({visited} of 144)");
 }
 
-/// The §8.6 profile table round-trips: names, the quantized multipliers, forbidden classes, and the
-/// effective-multiplier formula `(mh × ms) >> 4`.
+/// The profile table round-trips: names, the quantized multipliers, forbidden classes, and the
+/// effective-multiplier formula `(mh * ms) >> 4`.
 #[test]
 fn profile_table_round_trips() {
     // A tiny graph so the section is populated but trivial; the profiles are the point.
@@ -466,11 +461,10 @@ fn grid_graph(g: i32) -> NavGraph {
     NavGraph { nodes, edges }
 }
 
-/// v9 bin-packs node chunks (§8.3): distinct index leaves share 512-byte chunks first-fit. Over a
-/// multi-chunk grid this must (a) keep the node-chunk region **≥ 80 % payload** (the headline shrink
-/// — v8 wasted ~58 % to `0xFF` padding), and (b) actually **share** chunks, which shows up as a
-/// whole-graph walk handing some records back more than once (`total_visits > distinct`, the
-/// idempotency contract). Every node still round-trips exactly once by id.
+/// Node chunks are bin-packed: distinct index leaves share 512-byte chunks first-fit. Over a
+/// multi-chunk grid this must keep the node-chunk region at 80 % payload or better, and actually
+/// share chunks, which shows up as a whole-graph walk handing some records back more than once.
+/// Every node still round-trips exactly once by id.
 #[test]
 fn bin_packed_node_chunks_share_and_stay_dense() {
     let graph = grid_graph(20); // 20×20 cells → 800 degree-1 nodes → several 512-byte chunks
@@ -486,20 +480,19 @@ fn bin_packed_node_chunks_share_and_stay_dense() {
     );
 }
 
-// === v12 §8.3 directional ascent (epic #1068 EL5) ==============================================
-//
-// The ascent field is the only part of an adjacency entry that is *sampled* rather than derived
-// from the graph, so these pin the whole path: a real OBCT container on disk → `--terrain`'s
-// `TerrainSet` → the shared dead-banded integrator → the two bytes each direction gets.
+// Directional ascent. The ascent field is the only part of an adjacency entry that is sampled
+// rather than derived from the graph, so these pin the whole path: a real OBCT container on disk,
+// `--terrain`'s `TerrainSet`, the shared dead-banded integrator, and the two bytes each direction
+// gets.
 //
 // Every fixture edge stays inside the 30 000 µdeg densify bound and the 32 000 µdeg neighbour-delta
-// bound, so the serializer's own split pass never fires and node ids 0/1 really are the two ends.
+// bound, so the serializer's own split pass never fires and node ids 0 and 1 really are the two
+// ends.
 
-/// The synthetic terrain's posting and cell size. Both are legal OBCT v1 values and both are
-/// deliberately *small*: 2^14 µdeg cells are 32 samples on a side, so the rectangle covering the
-/// fixtures' corner of the bbox is tens of KB rather than the tens of MB a production 2^19 cell
-/// pair would be. The sampler cannot tell the difference — posting and cell size are header data
-/// (`OBCT_Spec.md` §1.3), which is exactly why they are.
+/// The synthetic terrain's posting and cell size. Both are legal OBCT values and both are
+/// deliberately small: `2^14` µdeg cells are 32 samples on a side, so the rectangle covering the
+/// fixtures' corner of the bbox is tens of KB rather than tens of MB. The sampler cannot tell the
+/// difference, because posting and cell size are header data.
 const T_POSTING_LOG2: u8 = 9;
 const T_CELL_LOG2: u8 = 14;
 /// Metres of rise per lattice row of the synthetic ramp. At a 512 µdeg posting (≈ 57 m) this is a
@@ -602,21 +595,19 @@ fn tilted_plane(di: u32, dj: u32) -> i16 {
     (1_000 + T_TILT_PER_ROW * di as i32 + T_TILT_PER_COL * dj as i32) as i16
 }
 
-/// **The lat/lon swap pin.** `ascent_along` samples with `source.sample(p.1, p.0)` — the polyline's
-/// tuples are `(lon, lat)` and [`ElevationSource::sample`] takes `(lat, lon)`, so the two are
-/// deliberately crossed at exactly one place. A silent swap there is the classic elevation bug and
-/// most synthetic terrains are far too symmetric to notice it: any surface that treats the axes
-/// alike, or any test edge that moves along only one of them, will pass either way round.
+/// The lat/lon swap pin. `ascent_along` samples with `source.sample(p.1, p.0)`, because the
+/// polyline's tuples are `(lon, lat)` and [`ElevationSource::sample`] takes `(lat, lon)`, so the two
+/// are deliberately crossed at exactly one place. A silent swap there is the classic elevation bug,
+/// and a symmetric synthetic terrain would not notice it.
 ///
-/// So this one is built to fail loudly. The surface is a plane tilted **3 m per latitude row and
-/// 11 m per longitude column**; the edge climbs **4 rows and 12 columns**, both endpoints landing
-/// exactly on lattice points where bilinear returns the stored sample untouched. The rise is then
-/// `3×4 + 11×12 = 144 m` — and with the axes swapped it would be `11×4 + 3×12 = 80 m`. Both numbers
-/// are asserted: the right one as an equality, the wrong one as an inequality that names the bug.
+/// So the surface is a plane tilted 3 m per latitude row and 11 m per longitude column, and the edge
+/// climbs 4 rows and 12 columns, both endpoints landing exactly on lattice points where bilinear
+/// returns the stored sample untouched. The rise is `3*4 + 11*12 = 144 m`, and with the axes swapped
+/// it would be `11*4 + 3*12 = 80 m`. Both numbers are asserted: the right one as an equality, the
+/// wrong one as an inequality that names the bug.
 ///
-/// The dead-band cannot blur the answer either. Every ~50 m step of this plane rises far more than
-/// the 3 m threshold, so every step books its whole delta and re-anchors — the sum telescopes to
-/// `last − first`, which is exact because both ends are lattice points.
+/// Every ~50 m step of this plane rises far more than the 3 m dead-band, so every step books its
+/// whole delta and re-anchors, and the sum telescopes to `last - first`.
 #[test]
 fn the_sampler_reads_latitude_and_longitude_the_right_way_round() {
     let dir = Scratch::new("axes");
@@ -651,13 +642,13 @@ fn the_sampler_reads_latitude_and_longitude_the_right_way_round() {
     assert_eq!(arc(&decoded, 1, 0).ascent_m, 0, "the plane rises monotonically in both axes");
 }
 
-/// **The headline v12 property.** A straight climb books its rise riding up and *nothing* riding
-/// down — the two entries of one edge carry different `Ascent M` while agreeing on `Edge Id`,
-/// `Cost M` and `Way Kind`, which is §8.3's single exception to "both sides are identical".
+/// The headline property. A straight climb books its rise riding up and nothing riding down: the
+/// two entries of one edge carry different `Ascent M` while agreeing on `Edge Id`, `Cost M` and
+/// `Way Kind`, which is the single exception to "both sides are identical".
 ///
 /// The expected number is not hand-written: it is the endpoint height difference read back through
-/// the same sampler, so the assertion survives any future change to the surface constants. The 3 m
-/// slack is the dead-band's unbookable remainder and nothing else.
+/// the same sampler, so the assertion survives a change to the surface constants. The 3 m slack is
+/// the dead-band's unbookable remainder.
 #[test]
 fn a_climb_books_ascent_one_way_and_zero_the_other() {
     let dir = Scratch::new("climb");
@@ -719,10 +710,10 @@ fn a_pass_between_equal_heights_climbs_in_both_directions() {
     );
 }
 
-/// The forward and backward passes sample the **same points in the opposite order**, so one
-/// direction's ascent is exactly the other's descent. That identity is not free — it is what the
-/// symmetric interpolation and the direction-independent segment length buy — and it is what lets
-/// EL7's emit-time profile agree with the number the route was costed by.
+/// The forward and backward passes sample the same points in the opposite order, so one direction's
+/// ascent is exactly the other's descent. That identity is what the symmetric interpolation and the
+/// direction-independent segment length buy, and it is what lets an emit-time profile agree with the
+/// number the route was costed by.
 #[test]
 fn reversing_a_polyline_swaps_the_two_directions_exactly() {
     let dir = Scratch::new("symmetry");
@@ -750,8 +741,8 @@ fn reversing_a_polyline_swaps_the_two_directions_exactly() {
     assert!(fwd > 0 && back > 0, "the staircase climbs both ways: {fwd} / {back}");
 }
 
-/// No `--terrain` ⇒ every entry is `0`. This is the degrade path the whole bump rests on: a v12 map
-/// packed without terrain is decode-valid and routes exactly as v11 did.
+/// No `--terrain` gives every entry `0`. This is the degrade path: a map packed without terrain is
+/// decode-valid and routes climb-blind.
 #[test]
 fn without_terrain_every_ascent_is_zero() {
     let (a, b) = ((500_000, 490_000), (500_000, 510_000));
@@ -841,9 +832,9 @@ fn a_directory_of_containers_samples_like_one_file() {
     assert_eq!(one, many, "a directory and the file inside it must pack the same bytes");
 }
 
-/// The §8.6 climb weight round-trips per profile, `0` included — the field the router reads
-/// alongside `Ascent M`. Its admissibility story is the opposite of a multiplier's: there is no
-/// floor, because the term is additive and non-negative, so `0` and `255` are both legal.
+/// The climb weight round-trips per profile, `0` included. Its admissibility story is the opposite
+/// of a multiplier's: there is no floor, because the term is additive and non-negative, so `0` and
+/// `255` are both legal.
 #[test]
 fn profile_climb_weights_round_trip() {
     let profiles = vec![

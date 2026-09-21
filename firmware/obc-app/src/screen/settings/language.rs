@@ -1,7 +1,5 @@
-//! The Language screen — the UI language (epic #602). [`Language`](crate::settings::Language) will
-//! re-translate every user-facing string once the catalog lands; today it only persists the choice.
-//! A single value row cycling the four languages by their **endonyms**, so it reads to a speaker who
-//! can't yet read the current UI language — press (or a step) walks it in place, no field sub-mode.
+//! The Language screen: one value row that cycles the four languages. It shows each language by its
+//! own name, so it reads to a speaker who cannot read the current UI language.
 
 use obc_render::Surface;
 
@@ -11,8 +9,7 @@ use crate::screen::vocab::rows::value_row_with_arrows;
 use crate::screen::{Ctx, Render, Transition};
 use crate::Msg;
 
-/// The Language screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row is
-/// always the cursor.
+/// Stateless. The value lives in [`Settings`](crate::Settings), and the one row is always the cursor.
 #[derive(Debug, Default)]
 pub struct LanguageScreen;
 
@@ -23,8 +20,7 @@ impl LanguageScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // A short ring, so — like Units — there's no separate edit mode: press cycles one
-            // forward, a step walks the ring in place.
+            // The ring is short, so there is no separate edit mode.
             Gesture::Press => {
                 cx.settings.language = cx.settings.language.cycled();
                 Transition::None
@@ -43,8 +39,6 @@ impl LanguageScreen {
         let language = rx.settings.language;
         title_frame(cv, w, h, rx.t(Msg::LanguageTitle), "");
 
-        // The single value row — the current language's endonym centred, flanked by left/right arrows
-        // to read as "rotate to switch". Shared with the Units picker (`value_row_with_arrows`).
         value_row_with_arrows(cv, LIST_TOP + 8, w, language.name());
     }
 }
@@ -64,8 +58,6 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Press cycles one language forward and a step walks the ring in place (no edit sub-mode);
-    /// Back pops the screen.
     #[test]
     fn press_cycles_and_turn_walks() {
         let mut s = Settings { language: Language::En, ..Settings::default() };

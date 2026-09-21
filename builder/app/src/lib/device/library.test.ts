@@ -1,28 +1,20 @@
 /**
- * The managed ride library's pull, end to end against the simulated device (E2, #912).
+ * The managed ride library's pull, end to end against the simulated device.
  *
  * Each test here is a *library* assertion rather than a call-count assertion: what the library holds
- * afterwards, and whether the files behind those rows exist. That is deliberate, because the failure
- * modes this feature has are not "the wrong function was called" — they are "the app believes it has
- * a rider's only copy of a ride and it does not".
+ * afterwards, and whether the files behind those rows exist. The failure modes this feature has are
+ * not "the wrong function was called" — they are "the app believes it has a rider's only copy of a
+ * ride and it does not".
  *
- * ## Where the fsync lives, and what this file can and cannot prove
+ * The real durable write is Rust (`apps/obc-desktop/src/rides.rs`) and is tested there, against the
+ * real filesystem, with the power cut between `write()` and `fsync()`. What *this* file owns is the
+ * other half of the same claim: a ride only counts as held once the library's `import()` has
+ * resolved. {@link RecordingLibrary} is a fake, not a mock of the Tauri boundary: it holds real
+ * state, it can fail, and the tests read its state rather than its call log.
  *
- * The real durable write is Rust (`apps/obc-desktop/src/rides.rs`), and it is tested there,
- * against the real filesystem, with the power cut between `write()` and `fsync()`. Node cannot run
- * that code. What *this* file owns is the other half of the same claim: that a ride only counts as
- * held once the library's `import()` has resolved, so a library that fails — or that comes back from
- * a crash without the file — is reported as a failure and fetched again next time.
- * {@link RecordingLibrary} is a fake, not a mock of the Tauri boundary: it holds real state, it can
- * fail, and the tests read its state rather than its call log.
- *
- * ## What is not here any more
- *
- * A possession acknowledgement is deliberately absent from this cable surface.
- * `FLAT_Store_Protocol.md` §5.2.2 has no `command` selector: a possession ack changes no
- * object, so it has no store meaning and USB does not carry it. It keeps the BLE control surface it
- * already had, which is why the phone still acks and the cable does not. The ordering discipline the
- * ack needed — an import resolves only after fsync — is kept regardless, because it is what makes
+ * A possession acknowledgement is deliberately absent from this cable surface: it changes no object,
+ * so it has no store meaning and USB does not carry it. The ordering discipline it needed — an
+ * import resolves only after fsync — is kept regardless, because it is what makes
  * {@link PullReport} true.
  */
 
@@ -51,8 +43,6 @@ import {
 import { rideAccess, rideKey, rideScope, type RideScope } from "./rides";
 import type { JobContext, JobPhase } from "./progress";
 
-// --- scaffolding ---------------------------------------------------------------
-
 beforeAll(async () => {
     const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "convert", "pkg", "obc_web_convert_bg.wasm");
     if (!existsSync(wasm)) {
@@ -62,7 +52,7 @@ beforeAll(async () => {
     await loadFlatDevice();
 });
 
-/** The loopback link's default §5.2.1 serial, and the two cards these tests swap between. */
+/** The loopback link's default serial, and the two cards these tests swap between. */
 const SERIAL = "0011223344556677";
 const CARD_A = "8f2c41d96b074ea3b1559c207de83466";
 const CARD_B = CARD_A.slice(0, 8) + "00000000000000000000abcd";
@@ -112,10 +102,9 @@ function rideObject(name: string, startTime: number, points = 24): RideObject {
 /**
  * A ride library that keeps real state and can be made to fail.
  *
- * Not a mock of `lib/desktop/library.ts`'s `invoke()` calls — the tests below never look at what was
- * called. It models the one property the interface promises and the whole feature hangs off:
- * **`import()` resolving is what makes a ride held**. A rejected import leaves nothing behind,
- * exactly as a power cut before fsync does on the real thing.
+ * Not a mock of the `invoke()` calls — the tests below never look at what was called. It models the
+ * one property the whole feature hangs off: **`import()` resolving is what makes a ride held**. A
+ * rejected import leaves nothing behind, exactly as a power cut before fsync does on the real thing.
  */
 class RecordingLibrary implements RideLibrary {
     readonly rides = new Map<string, LibraryRide>();
@@ -214,9 +203,8 @@ function connect(options: { storeId?: string } = {}) {
 }
 
 /**
- * The connected device's `(serial, era)`, derived exactly as the UI derives it — `rideScope()` over
- * the two reads every connection already does: §5.2.1's strings over EP0, and the identity prefix of
- * the first `LIST` page (§3.3). Re-read rather than remembered, because that is the point of the
+ * The connected device's `(serial, era)`, derived exactly as the UI derives it — over the two reads
+ * every connection already does. Re-read rather than remembered, because that is the point of the
  * era: a card swap changes it under a running app.
  */
 async function scopeNow(client: FlatStoreClient): Promise<RideScope> {
@@ -287,7 +275,7 @@ describe("pulling rides into the library", () => {
     });
 
     it("skips a ride the device is still recording, and names it in the report", async () => {
-        // §3.5 refuses a `GET` of a `RECORDING` entry — its length and CRC are zero until the commit
+        // A `GET` of a `RECORDING` entry is refused — its length and CRC are zero until the commit
         // that ends it — so there is nothing to copy yet. Counting it is what lets the page say "one
         // ride is still being recorded" rather than silently listing fewer rides than the device has.
         const { device, client, source, close } = connect();
@@ -336,8 +324,7 @@ describe("pulling rides into the library", () => {
     });
 
     it("imports both rides when a card swap recycles an object id", async () => {
-        // The 2026-07-12 incident the iOS `LibraryScopingE2ETests` replays, in this app's terms: a
-        // re-initialized card mints a new `StoreId` and starts its ids at 1 again, so a *different*
+        // A re-initialized card mints a new `StoreId` and starts its ids at 1 again, so a *different*
         // ride lands on id 1. A bare-id library would hold one row and answer "up to date" forever.
         const library = new RecordingLibrary();
 
@@ -396,9 +383,9 @@ describe("pulling rides into the library", () => {
     });
 
     it("refuses to import anything from a device whose card identity it could not read", async () => {
-        // The fail-closed posture is the phone's (#769): without both halves of the era, an id from
-        // this device cannot be told apart from another device's, so nothing is keyed and nothing is
-        // copied. A missing StoreId never shares an identity with a readable card.
+        // The fail-closed posture: without both halves of the era, an id from this device cannot be
+        // told apart from another device's, so nothing is keyed and nothing is copied. A missing
+        // StoreId never shares an identity with a readable card.
         const { device, source, close } = connect();
         try {
             seedRide(device, "Unkeyable", 1_700_000_000);
@@ -438,8 +425,8 @@ describe("pulling rides into the library", () => {
     });
 
     it("takes every figure but the id and the name from the payload, because the entry has none", async () => {
-        // §3.3's 88-byte entry is id, revision, length, CRC, kind, flags and a display name. A ride's
-        // start time, distance and moving time exist only inside the object — which this path
+        // An 88-byte catalog entry is id, revision, length, CRC, kind, flags and a display name. A
+        // ride's start time, distance and moving time exist only inside the object — which this path
         // downloads anyway, so nothing is lost; what is gone is showing those figures beforehand.
         const { device, client, source, close } = connect();
         try {
@@ -488,8 +475,6 @@ describe("pulling rides into the library", () => {
         }
     });
 });
-
-// --- the preview ----------------------------------------------------------------
 
 describe("the track preview", () => {
     it("is drawn from the ride's own points, keeping the first and the last", () => {

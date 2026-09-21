@@ -1,89 +1,67 @@
-//! Level-triggered **derived data** — the one boundary that is not a command (#1437, epic #1433).
+//! Level-triggered derived data: the one DeviceCore boundary that is not a command.
 //!
-//! A derived read is not an operation. Nobody asks for it once and waits: DeviceCore simply *needs*
-//! the viewed ride's track, or the previewed route's shape, and keeps saying so until an answer for
-//! exactly that subject arrives. That is why nothing here carries an
-//! [`OperationToken`](super::OperationToken) — the key **is** the guard:
+//! A derived read is not an operation. Nobody asks for it once and waits: DeviceCore needs the
+//! viewed ride's track, or the previewed route's shape, and keeps saying so until an answer for
+//! exactly that subject arrives. Nothing here carries an [`OperationToken`](super::OperationToken),
+//! because the key is the guard: an answer is wanted while its key equals the current need's key.
 //!
-//! | Question | Answer |
-//! |---|---|
-//! | What is needed? | [`DerivedNeeds`] — one optional key per need, recomputed every pass. |
-//! | What came back? | [`DerivedInputs`] — the same key, plus a bounded [`DerivedResult`]. |
-//! | Is this answer still wanted? | The input's key equals the current need's key. |
-//! | Did a failure end the work? | Yes. [`DerivedResult::Failed`] answers the key like any fill. |
+//! A token says "this is the answer to the request I made"; a key says "this is the answer about
+//! this subject, read at this revision, for this view". The second survives what the first cannot: a
+//! need re-emitted over many passes, several executors answering, and an answer that arrives two
+//! passes late. Change the ride, commit new bytes, or invalidate the view, and the key changes, so
+//! the late answer is about something else and is dropped.
 //!
-//! ## Why a key and not a token
+//! A key has three parts. Identity says which object, as a durable [`CatalogObjectId`] and never a
+//! catalog index, because an index moves under a live rescan. Source revision says which bytes, so
+//! an upload that replaces a stored route under the same identity does not keep the old preview.
+//! View revision says which presentation, and is bumped when the owner deliberately drops a derived
+//! result without the subject or its bytes changing.
 //!
-//! A token says "this is the answer to the request I made". A key says "this is the answer *about*
-//! this subject, read at this revision, for this view". The second survives what the first cannot:
-//! DeviceCore may re-emit the same need across many passes, several executors may answer, and an
-//! answer that arrives two passes late is still perfectly good **as long as nothing about the
-//! subject moved**. Change the ride, commit new bytes over the route, or invalidate the view, and
-//! the key changes — the late answer is then simply about something else, and is dropped.
-//!
-//! ## The three parts of a key
-//!
-//! - **Identity** — which object. A durable [`CatalogObjectId`], never a catalog index: an index
-//!   moves under a live rescan, and the answer would land on a different ride.
-//! - **Source revision** — which *bytes*. A route upload that replaces a stored route keeps the
-//!   identity and changes the geometry; without this the old preview would outlive it.
-//! - **View revision** — which *presentation*. Bumped when the owner deliberately drops a derived
-//!   result without the subject or its bytes changing (a committed plan starts preview-less; an
-//!   abandoned in-place fill leaves a half-written buffer). It is what makes "invalidate" a first
-//!   class move rather than a flag beside the key.
-//!
-//! ## The failure rule
-//!
-//! A dead file must cost one read, not one read per pass. [`DerivedResult::Failed`] is a *matching
-//! answer*: it clears the need for that key exactly like a fill, and only a new key (a different
-//! ride, fresh bytes, an explicit invalidate) asks again.
+//! [`DerivedResult::Failed`] is a matching answer: it clears the need for that key exactly like a
+//! fill, so a dead file costs one read rather than one read per pass.
 
 use crate::CatalogObjectId;
 
 use super::Revision;
 
-/// The subject of one derived **ride track** read: the Ride detail's elevation profile and its
+/// The subject of one derived ride-track read: the Ride detail's elevation profile and its
 /// decimated track shape, both produced from the same stored ride object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RideTrackKey {
-    /// Which ride — the durable object identity, not a catalog index.
     pub ride: CatalogObjectId,
     /// The store revision the ride's bytes were last known to change at.
     pub source: Revision,
-    /// The view generation this result must match — bumped by an explicit invalidate.
+    /// The view generation this result must match, bumped by an explicit invalidate.
     pub view: Revision,
 }
 
-/// The subject of one derived **navigation preview** read: the previewed route's decimated shape
+/// The subject of one derived navigation-preview read: the previewed route's decimated shape
 /// polyline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavPreviewKey {
     /// Assistant reviews show a Visit through rejoin; ordinary overviews show the whole route.
     pub assistant: bool,
-    /// Which route — the durable object identity.
     pub route: CatalogObjectId,
     /// The store revision the route's bytes were last known to change at. A re-plan or a spliced
     /// detour commits new geometry under the same identity; this is what separates them.
     pub source: Revision,
-    /// The view generation this result must match — bumped when a committed plan drops the old
+    /// The view generation this result must match, bumped when a committed plan drops the old
     /// preview so the overview never opens on the shape of the route it replaced.
     pub view: Revision,
 }
 
-/// How one derived read ended. Bounded by construction: the target buffer stays DeviceCore-owned
-/// and the executor fills it in place, so this says only whether it may be shown — never the data,
-/// and deliberately not a length either (the target knows its own).
+/// How one derived read ended. The target buffer stays DeviceCore-owned and the executor fills it
+/// in place, so this says only whether it may be shown: never the data, and not a length either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DerivedResult {
     /// The DeviceCore-owned target holds usable data and may be shown.
     Filled,
-    /// The read did not produce usable data. This still **answers** the key: a source that cannot
-    /// be read must not cause the same work on every pass.
+    /// The read did not produce usable data. This still answers the key: a source that cannot be
+    /// read must not cause the same work on every pass.
     Failed,
 }
 
 impl DerivedResult {
-    /// Whether the target holds showable data.
     pub fn is_filled(self) -> bool {
         matches!(self, DerivedResult::Filled)
     }
@@ -94,83 +72,71 @@ impl DerivedResult {
 pub struct DerivedInput<K> {
     /// The key the need carried when this read was started.
     pub key: K,
-    /// How it ended.
     pub result: DerivedResult,
 }
 
 impl<K> DerivedInput<K> {
-    /// A successful fill for `key`.
     pub const fn filled(key: K) -> Self {
         DerivedInput { key, result: DerivedResult::Filled }
     }
 
-    /// A failed read for `key` — an answer, not a retry.
+    /// A failed read for `key`: an answer, not a retry.
     pub const fn failed(key: K) -> Self {
         DerivedInput { key, result: DerivedResult::Failed }
     }
 }
 
-/// What DeviceCore needs read right now — a **level**, recomputed from state on every pass and
+/// What DeviceCore needs read right now: a level, recomputed from state on every pass and
 /// re-emitted until a matching input is accepted. `None` means nothing is wanted, not "already
 /// asked": an executor that misses a pass simply sees the need again on the next one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedNeeds {
     /// The viewed ride's track, or `None` when no detail is open or the current key is answered.
     pub ride_track: Option<RideTrackKey>,
-    /// The previewed route's shape, or `None` when no overview is open or the current key is
-    /// answered.
+    /// The previewed route's shape, or `None` when no overview is open or the key is answered.
     pub nav_preview: Option<NavPreviewKey>,
 }
 
 impl DerivedNeeds {
-    /// Nothing needed.
     pub const NONE: DerivedNeeds = DerivedNeeds { ride_track: None, nav_preview: None };
 
-    /// Whether no derived read is wanted this pass.
     pub fn is_empty(&self) -> bool {
         self.ride_track.is_none() && self.nav_preview.is_none()
     }
 }
 
-/// The bulk that rides *beside* the keyed inputs — the small polyline targets, which are cheaper to
+/// The bulk that rides beside the keyed inputs: the small polyline targets, which are cheaper to
 /// copy in than to expose as borrowed buffers.
 ///
-/// Named fields rather than two positional `&[(i32, i32)]` parameters: they are the same type, one
-/// call site fills only one of them, and swapping them would draw a ride's track over a route
-/// overview with nothing to catch it. The profile target is absent for the opposite reason — at
-/// ~5 KiB it stays DeviceCore-owned and the executor fills it in place.
+/// Named fields rather than two positional `&[(i32, i32)]` parameters, because they are the same
+/// type and swapping them would draw a ride's track over a route overview with nothing to catch it.
+/// The profile target is absent for the opposite reason: at ~5 KiB it stays DeviceCore-owned and
+/// the executor fills it in place.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DerivedTargets<'a> {
-    /// The viewed ride's decimated track shape, for a ride-track answer.
     pub ride_preview: &'a [(i32, i32)],
-    /// The previewed route's decimated shape, for a nav-preview answer.
     pub nav_preview: &'a [(i32, i32)],
 }
 
 impl DerivedTargets<'_> {
-    /// No polylines — an answer that carries none (a failure, or an in-place profile fill).
+    /// No polylines: an answer that carries none, such as a failure or an in-place profile fill.
     pub const NONE: DerivedTargets<'static> = DerivedTargets { ride_preview: &[], nav_preview: &[] };
 }
 
 /// The keyed answers arriving this pass — one optional input per need, mirroring [`DerivedNeeds`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedInputs {
-    /// An answer to the ride-track need.
     pub ride_track: Option<DerivedInput<RideTrackKey>>,
-    /// An answer to the nav-preview need.
     pub nav_preview: Option<DerivedInput<NavPreviewKey>>,
 }
 
 impl DerivedInputs {
-    /// No answers.
     pub const NONE: DerivedInputs = DerivedInputs { ride_track: None, nav_preview: None };
 
-    /// Only a ride-track answer.
     pub const fn ride_track(input: DerivedInput<RideTrackKey>) -> Self {
         DerivedInputs { ride_track: Some(input), ..DerivedInputs::NONE }
     }
 
-    /// Only a nav-preview answer.
     pub const fn nav_preview(input: DerivedInput<NavPreviewKey>) -> Self {
         DerivedInputs { nav_preview: Some(input), ..DerivedInputs::NONE }
     }
@@ -194,7 +160,7 @@ mod tests {
     }
 
     /// Each of the three parts of a key is load-bearing: a different subject, different bytes, or a
-    /// different view is a *different need*, and an answer to one is not an answer to another.
+    /// different view is a different need.
     #[test]
     fn every_part_of_a_key_separates_two_needs() {
         let base = key(7, 2, 1);
@@ -204,8 +170,8 @@ mod tests {
         assert_ne!(base, key(7, 2, 2), "the same bytes, an invalidated view");
     }
 
-    /// A failure is an answer. The two results differ, and only one of them has data to show — the
-    /// distinction the need's owner uses to stop re-asking without claiming a profile it never got.
+    /// A failure is an answer. Only one of the two results has data to show, which is how the need's
+    /// owner stops re-asking without claiming a profile it never got.
     #[test]
     fn a_failure_answers_the_key_without_claiming_data() {
         let k = key(3, 1, 0);
@@ -218,7 +184,6 @@ mod tests {
         assert_eq!(filled.result, DerivedResult::Filled);
     }
 
-    /// The two needs are independent slots: answering one never touches the other.
     #[test]
     fn the_two_needs_are_separate_slots() {
         let ride = DerivedInput::filled(key(1, 0, 0));

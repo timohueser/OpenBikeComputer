@@ -14,10 +14,8 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obc_map_scene::{BBox, Kind};
 use obc_reader::{DecodeStatus, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
-/// A [`ByteSource`] that counts the `read_at` calls it serves and the bytes they move — the SD-read
-/// proxy the cost conversation runs on (the device reads one block per `read_at`), and the way a
-/// test asserts which *files* a query touched: the observable §5.6 property of a volume set is the
-/// **absence** of I/O, not a return value.
+/// A [`ByteSource`] that counts the `read_at` calls it serves and the bytes they move: the SD-read
+/// proxy the cost assertions run on, because the device reads one block per `read_at`.
 pub struct CountingSource<'a> {
     inner: SliceSource<'a>,
     pub reads: Cell<u32>,

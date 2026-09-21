@@ -1,8 +1,6 @@
-//! The route-upload popups (epic #447, P4): the committed-upload fact and the locked popup
-//! rules — the three variants (idle "ROUTE RECEIVED" / tracking swap prompt / active-replaced
-//! info card), replace-not-stack on consecutive uploads (by object id, selection reset), the 30 s
-//! auto-close = dismiss, passkey priority in both directions, hold deferral, deleted-route
-//! validation, and the forced-adoption invalidation of stale match state on an active replace.
+//! The route-upload popups: the three variants (idle "ROUTE RECEIVED", the tracking swap prompt,
+//! the active-replaced info card), the single-slot replace rule, the 30 s auto-close, passkey
+//! priority, hold deferral, deleted-route validation, and the trip-received card.
 
 use super::support::{down, keys, quiet_pass, up};
 use crate::catalog_state::CatalogEffect;
@@ -11,9 +9,8 @@ use crate::{App, AppState, BleLink, BleStatus, Gesture, IdleReturn, Mode, RouteS
 use obc_map_scene::BBox;
 use obc_ports::{Button, InputClock};
 
-/// A committed route upload, landed exactly as the pass's fact stage lands it: the platform reports
-/// it through [`ExternalFacts::note_route_upload`](crate::device_core::ExternalFacts::note_route_upload)
-/// and stage 2 hands it to the popup rules under test. The fact plumbing itself is `pass.rs`'s.
+/// A committed route upload, landed exactly as the pass's fact stage lands it. The fact plumbing
+/// itself is `pass.rs`'s.
 fn route_upload(app: &mut App, id: crate::CatalogObjectId, replaced: bool) {
     app.on_route_uploaded(id, replaced, None);
 }
@@ -23,8 +20,7 @@ fn trip_upload(app: &mut App, id: crate::CatalogObjectId, replaced: bool) {
     app.on_trip_uploaded(id, replaced);
 }
 
-/// The object one pass asks the store to remove, if the rider's hold requested a delete. The
-/// durable id is the *pass's* resolve of the menu index, which is what these tests are checking.
+/// The durable object id one pass asks the store to remove, if the rider's hold requested a delete.
 fn took_route_delete(app: &mut App, ms: u32) -> Option<crate::CatalogObjectId> {
     match quiet_pass(app, ms).effects.catalog.take() {
         Some(CatalogEffect::RemoveObject { object, .. }) => Some(object),
@@ -32,8 +28,8 @@ fn took_route_delete(app: &mut App, ms: u32) -> Option<crate::CatalogObjectId> {
     }
 }
 
-/// A three-route catalog with deliberately non-positional durable ids (10 / 11 / 12), so any test
-/// passing an *id* where an *index* is expected fails loudly.
+/// Deliberately non-positional durable ids, so a test passing an id where an index is expected
+/// fails loudly.
 fn ids() -> [crate::CatalogObjectId; 3] {
     [10, 11, 12]
 }
@@ -55,8 +51,7 @@ fn routes() -> [RouteSummary; 3] {
 }
 
 /// An idle app (Home root) with the id-carrying catalog loaded and the boot paint drained. The
-/// idle-return timeout is disabled so these popup-timing tests (which advance the clock past the
-/// 30 s popup deadline — the same span as the default idle return) isolate the popup auto-close.
+/// idle-return timeout is off, so these popup-timing tests isolate the popup auto-close.
 fn idle_app() -> App {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.test_mount_store(); // a device with a card — a ride cannot start without one
@@ -66,9 +61,7 @@ fn idle_app() -> App {
     app
 }
 
-/// Start riding catalog route 0 (id 10) through the real navigation: Home `press` → Menu, `press`
-/// (Routes) → Route menu, `press` → Route overview, `press` → START RIDE. Leaves the stack at
-/// `[Home, Map]`, tracking.
+/// Start riding catalog route 0 (id 10) through the real navigation, leaving `[Home, Map]`.
 fn start_riding(app: &mut App) {
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // press Routes → Route menu
@@ -80,8 +73,6 @@ fn start_riding(app: &mut App) {
     let _ = app.take_dirty();
 }
 
-// --- variant 1: idle → "ROUTE RECEIVED", View route / Dismiss ---------------------------------
-
 #[test]
 fn idle_upload_opens_the_prompt_and_view_route_opens_the_overview() {
     let mut app = idle_app();
@@ -89,15 +80,13 @@ fn idle_upload_opens_the_prompt_and_view_route_opens_the_overview() {
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)), "idle upload → ROUTE RECEIVED");
     assert!(app.take_dirty().map, "the popup covers the screen below — one repaint");
 
-    // View route (row 0) = exactly the Routes-list press path: the Route overview for the uploaded
-    // route (active_route pointed at it by id so the host streams it open), but *no* session yet —
-    // START RIDE on the overview is a further press away. The advisory popup gives way to it.
+    // View route (row 0) is exactly the Routes-list press path: the overview for the uploaded
+    // route, resolved by id, with no session yet.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "View route lands on the Route overview");
     assert_eq!(app.active_route_index(), Some(1), "the overview previews the *uploaded* route, resolved by id");
     assert!(!app.recording(), "View route does not start a ride — the overview's START does");
 
-    // The overview's START then rides it, exactly the Routes-list flow.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "START RIDE on the overview lands on the riding Map");
     assert_eq!(app.mode(), Mode::Riding);
@@ -121,8 +110,6 @@ fn idle_prompt_dismisses_on_back_and_on_the_dismiss_row() {
     assert_eq!(app.mode(), Mode::Idle);
     assert_eq!(app.active_route_index(), None, "still nothing loaded — the prompt was advisory");
 }
-
-// --- variant 2: tracking → the retitled Route-swap prompt --------------------------------------
 
 #[test]
 fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
@@ -150,22 +137,19 @@ fn tracking_swap_prompt_cancel_keeps_the_current_route() {
     assert_eq!(app.active_route_index(), Some(0), "still navigating the original route");
 }
 
-// --- variant 3: replacing the actively-navigated route -----------------------------------------
-
 #[test]
 fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     let mut app = idle_app();
     start_riding(&mut app); // riding index 0 = id 10
     let session = app.ride_session();
-    // Simulate an established match on the *old* geometry.
+    // Simulate an established match on the old geometry.
     app.navigator.route_state_mut().progress_m = 4_321;
     app.navigator.route_state_mut().off_route = true;
     app.navigator.route_state_mut().dist_to_route_m = 55;
 
     route_upload(&mut app, 10, true); // the navigated id re-uploaded — bytes swapped
     assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)), "active replace → the info-only card");
-    // Forced adoption: everything derived from the old bytes is dropped — the matcher re-runs
-    // from the current fix, the readouts clear until recomputed.
+    // Forced adoption: everything derived from the old bytes is dropped.
     assert_eq!(app.navigator.route_state_mut().progress_m, 0, "stale progress over the old geometry is dropped");
     assert!(!app.navigator.route_state_mut().off_route, "the stale off-route verdict is dropped");
     assert_eq!(app.navigator.route_state_mut().dist_to_route_m, 0);
@@ -201,8 +185,8 @@ fn active_replace_adoption_happens_even_when_the_prompt_is_suppressed() {
 
 #[test]
 fn replace_of_a_non_active_route_is_not_the_info_card() {
-    // A replace of a route we are *not* navigating is an ordinary arrival: swap prompt while
-    // tracking (nothing to invalidate — no cached state exists for a non-active route).
+    // A replace of a route we are not navigating is an ordinary arrival: the swap prompt while
+    // tracking, with nothing to invalidate.
     let mut app = idle_app();
     start_riding(&mut app); // riding id 10
     app.navigator.route_state_mut().progress_m = 777;
@@ -210,8 +194,6 @@ fn replace_of_a_non_active_route_is_not_the_info_card() {
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "non-active replace → the swap prompt");
     assert_eq!(app.navigator.route_state_mut().progress_m, 777, "the active route's match state is untouched");
 }
-
-// --- replace-the-popup: consecutive uploads, and the manual swap prompt ------------------------
 
 #[test]
 fn consecutive_uploads_replace_the_popup_most_recent_wins() {
@@ -221,8 +203,7 @@ fn consecutive_uploads_replace_the_popup_most_recent_wins() {
     route_upload(&mut app, 11, false); // …then a newer upload lands
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
-    // Selection reset with the fresh screen: press fires *View route* (row 0 again), opening the
-    // overview for the newest route — the popup was replaced, not stacked, and re-targeted by id.
+    // Selection reset with the fresh screen: press fires View route (row 0) for the newest route.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
     assert_eq!(app.active_route_index(), Some(1), "most recent upload wins (id 11 = index 1)");
@@ -241,8 +222,8 @@ fn a_second_upload_does_not_stack_a_second_popup() {
 fn an_upload_replaces_the_manual_swap_prompt_too() {
     let mut app = idle_app();
     start_riding(&mut app);
-    // Open the *manual* swap prompt from the ride context: Map → the sheet (Down+Back) → Routes →
-    // highlight route 1 (step down) → press (tracking + different route ⇒ the swap prompt).
+    // Open the manual swap prompt from the ride context: Map → the sheet → Routes → highlight
+    // route 1 → press (tracking + a different route ⇒ the swap prompt).
     assert!(app.apply_chord(crate::input::Chord::Context));
     app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
@@ -259,8 +240,6 @@ fn an_upload_replaces_the_manual_swap_prompt_too() {
     app.advance_animations(InputClock(UPLOAD_POPUP_TIMEOUT_MS + 1));
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "auto-close reveals the screen underneath");
 }
-
-// --- the 30 s auto-close = dismiss --------------------------------------------------------------
 
 #[test]
 fn auto_close_timeout_is_a_dismiss() {
@@ -281,8 +260,7 @@ fn auto_close_timeout_is_a_dismiss() {
 
 #[test]
 fn the_popup_arms_a_timed_wake_for_its_deadline() {
-    // The event-driven host must be *woken* for the auto-close — the popup reports its residual
-    // deadline through the shared tick machinery, no new timer path.
+    // The popup reports its residual deadline through the shared tick machinery, not a new timer.
     let mut app = idle_app();
     app.advance_animations(InputClock(2_000));
     route_upload(&mut app, 11, false);
@@ -291,8 +269,6 @@ fn the_popup_arms_a_timed_wake_for_its_deadline() {
     app.advance_animations(InputClock(2_000 + 10_000));
     assert_eq!(app.ms_until_next_wake(12_000), Some(UPLOAD_POPUP_TIMEOUT_MS - 10_000), "10 s in, 20 s left");
 }
-
-// --- passkey priority, both directions ----------------------------------------------------------
 
 #[test]
 fn a_prompt_is_dropped_not_queued_while_the_passkey_card_shows() {
@@ -303,8 +279,7 @@ fn a_prompt_is_dropped_not_queued_while_the_passkey_card_shows() {
     route_upload(&mut app, 11, false);
     assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the card outranks — no popup lands");
 
-    // Pairing ends: the card closes and the suppressed prompt must NOT surface (dropped, the
-    // route is in the menu anyway).
+    // Pairing ends: the suppressed prompt must not surface — the route is in the menu anyway.
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: false });
     app.advance_animations(InputClock(500));
     assert!(matches!(app.top_screen(), Screen::Home(_)), "the dropped prompt never resurfaces");
@@ -325,8 +300,8 @@ fn a_passkey_replaces_an_open_route_popup() {
 
 #[test]
 fn a_passkey_does_not_remove_the_manual_swap_prompt() {
-    // The rider opened the manual swap prompt themselves — it is not an advisory popup, so the
-    // card composites over it and returns to it after pairing.
+    // The rider opened the manual swap prompt themselves. It is not an advisory popup, so the card
+    // composites over it and returns to it after pairing.
     let mut app = idle_app();
     start_riding(&mut app);
     assert!(app.apply_chord(crate::input::Chord::Context));
@@ -341,8 +316,6 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: false });
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the manual prompt is restored, not dropped");
 }
-
-// --- hold deferral -------------------------------------------------------------------------------
 
 #[test]
 fn a_charging_hold_defers_the_prompt_a_tick() {
@@ -372,8 +345,6 @@ fn a_charging_hold_defers_the_auto_close_too() {
     app.advance_animations(InputClock(1_000 + UPLOAD_POPUP_TIMEOUT_MS + 60));
     assert!(matches!(app.top_screen(), Screen::Home(_)), "…and lands once the hold settles");
 }
-
-// --- deleted-route validation --------------------------------------------------------------------
 
 #[test]
 fn a_route_deleted_under_the_popup_dismisses_on_action() {
@@ -408,13 +379,10 @@ fn a_pending_deferred_prompt_for_a_deleted_route_is_dropped() {
     assert!(matches!(app.top_screen(), Screen::Home(_)), "a prompt for a vanished id never lands");
 }
 
-// --- stray holds across a popup dismissal (the #480 vanishing-routes delete) --------------------
-
-/// The user-reported loss path (T3-updated): an upload popup covers the Route overview; the rider
-/// starts a hold on the popup (aiming at its guarded action), thinks better of it and taps **Back
-/// while Select is still held**. Back pops the popup — and the Select hold then crosses its
-/// threshold with the Route overview as the new top, whose own hold is the hold-to-**delete** row:
-/// without the transition-cancels-holds rule, the previewed route is silently deleted from SD.
+/// The loss path: an upload popup covers the Route overview; the rider starts a hold on the popup,
+/// thinks better of it and taps Back while Select is still held. Back pops the popup, and the
+/// Select hold then crosses its threshold with the Route overview as the new top, whose own hold is
+/// the hold-to-delete row. Without the transition-cancels-holds rule, the route is silently deleted.
 #[test]
 fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     let mut app = idle_app(); // idle, catalog ids 10/11/12
@@ -434,8 +402,8 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     // Select down (the hold starts charging on the popup)…
     app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Select)]));
     // …then a Back tap while Select is still held: the popup pops, the overview is top. The Back
-    // press is deliberately past the chord window — inside it, Select+Back is the reserved chord
-    // (#1515 D2), which swallows both and dismisses nothing.
+    // press is deliberately past the chord window — inside it, Select+Back is the reserved chord,
+    // which swallows both and dismisses nothing.
     app.handle_input(InputClock(1_200), &mut keys(&[down(Button::Back)]));
     app.handle_input(InputClock(1_280), &mut keys(&[up(Button::Back)]));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "Back dismissed the popup");
@@ -451,16 +419,16 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // A fresh, deliberate delete afterwards still works (the cancel is one-shot, not a lockout):
-    // select the Delete row (owner review round 2 — no hold-anywhere), then hold.
+    // select the Delete row, then hold.
     app.apply_gesture(Gesture::Step(1));
     app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(2_600), &mut keys(&[]));
     assert_eq!(took_route_delete(&mut app, 2_600), Some(11), "a real hold on the overview still requests its delete");
 }
 
-/// The same rule holds within one recognition batch: a `Hold` recognised *behind* the
-/// stack-changing gesture (both queued before the app saw either) is dropped, not delivered to
-/// the screen that replaced its target.
+/// The same rule holds within one recognition batch: a `Hold` recognised behind the stack-changing
+/// gesture, both queued before the app saw either, is dropped rather than delivered to the screen
+/// that replaced its target.
 #[test]
 fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     let mut app = idle_app();
@@ -482,8 +450,8 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
 }
 
 /// The two-plane firmware's surface for the same rule: a gesture that changes the screen stack
-/// raises the one-shot [`App::take_hold_cancel`] edge (its input plane charges holds out of the
-/// app's sight, so the board must be told to cancel them).
+/// raises the one-shot [`App::take_hold_cancel`] edge, because that input plane charges holds out
+/// of the app's sight.
 #[test]
 fn a_stack_transition_raises_the_hold_cancel_edge_for_the_two_plane_host() {
     let mut app = idle_app();
@@ -504,10 +472,8 @@ fn an_upload_for_an_unknown_id_is_dropped() {
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no popup for an id the catalog doesn't hold");
 }
 
-// --- the trip-received popup: one card for a routes-then-trip upload burst ----------------------
-
-/// File routes 10 + 11 into trip 5 ("Schwarzwald") — the re-fed trip catalog a committed trip
-/// upload fact resolves against (the trip twin of the routes-then-fact ordering contract).
+/// File routes 10 + 11 into trip 5, the re-fed trip catalog a committed trip upload resolves
+/// against.
 fn feed_trip(app: &mut App) {
     app.set_trips(&[crate::TripInput { id: 5, name: "Schwarzwald", stage_ids: &[10, 11] }]);
 }
@@ -515,8 +481,8 @@ fn feed_trip(app: &mut App) {
 #[test]
 fn a_trip_upload_collapses_the_route_popup_burst_into_one_trip_card() {
     // The desktop app's trip send: each member route commits (its popup replacing the previous),
-    // then the trip object lands last — the trip card replaces the final route popup, so exactly
-    // one card is left standing and one dismiss clears everything.
+    // The desktop app's trip send: each member route commits, its popup replacing the previous,
+    // then the trip object lands last, so exactly one card is left standing.
     let mut app = idle_app();
     route_upload(&mut app, 10, false);
     route_upload(&mut app, 11, false);
@@ -536,8 +502,7 @@ fn the_trip_card_view_trip_opens_the_folder() {
     trip_upload(&mut app, 5, false);
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)));
 
-    // View trip (row 0) = exactly the Route-menu folder press: the trip's stage list, scoped by
-    // durable id. The advisory popup gives way to it (Replace, like the route card's View route).
+    // View trip (row 0) is exactly the Route-menu folder press: the trip's stage list, by id.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "View trip lands in the trip's folder");
     assert!(!app.recording(), "viewing navigates nothing");
@@ -571,8 +536,7 @@ fn the_trip_card_auto_closes_like_the_family() {
 
 #[test]
 fn a_trip_upload_for_an_unknown_id_is_dropped() {
-    // Defensive, like the route twin: the trip catalog was re-fed first, so an unknown id means
-    // the trip vanished again already — advisory, drop it.
+    // Defensive, like the route twin: an unknown id means the trip vanished again already.
     let mut app = idle_app();
     trip_upload(&mut app, 99, false);
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no popup for a trip the catalog doesn't hold");
@@ -632,9 +596,8 @@ fn a_later_route_upload_replaces_the_trip_card_most_recent_wins() {
 
 #[test]
 fn a_trip_replace_is_silent() {
-    // A replace is a host-side trip *edit* (the desktop edits exclusively by replace-at-same-id —
-    // rename, add/remove/move stage, one upload per click): the user just made the change, so no
-    // card. Only a fresh trip — a delivery — announces itself.
+    // A replace is a host-side trip edit (the desktop edits by replace-at-same-id, one upload per
+    // click): the rider just made the change, so no card. Only a fresh delivery announces itself.
     let mut app = idle_app();
     feed_trip(&mut app);
     let _ = app.take_dirty(); // drain the catalog re-feed's repaint — the upload itself is under test
@@ -642,8 +605,7 @@ fn a_trip_replace_is_silent() {
     assert!(matches!(app.top_screen(), Screen::Home(_)), "a trip edit raises no popup");
     assert!(!app.take_dirty().map, "…and dirties nothing");
 
-    // The desktop reorder sequence: several replace-commits in a row (one per reorder click) stay
-    // completely silent — the exact parade the fresh-trip popup exists to kill.
+    // The desktop reorder sequence: several replace-commits in a row stay completely silent.
     for _ in 0..4 {
         trip_upload(&mut app, 5, true);
     }
@@ -653,8 +615,7 @@ fn a_trip_replace_is_silent() {
 
 #[test]
 fn a_trip_replace_does_not_disturb_an_open_popup() {
-    // An edit landing while the fresh-delivery card is still up must neither re-open, replace, nor
-    // dismiss it — the silent replace leaves the popup slot alone entirely.
+    // An edit landing while the fresh-delivery card is still up must leave the popup slot alone.
     let mut app = idle_app();
     feed_trip(&mut app);
     trip_upload(&mut app, 5, false);

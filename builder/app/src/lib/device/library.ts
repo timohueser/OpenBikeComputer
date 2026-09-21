@@ -1,42 +1,30 @@
 /**
- * The managed ride library, and the pull that fills it (E2, #912).
+ * The managed ride library, and the pull that fills it.
  *
- * The counterpart to `rides.ts`, which is the *hosted* tier's one-shot GPX export and is
- * deliberately a dead end. This is the real product for Android and no-phone riders, who have no
- * sync path at all today: rides land in a folder they can see, back up and drag into anything, and
- * the device is told — which is what lets them delete a ride there without losing it.
+ * The counterpart to `rides.ts`, which is the hosted tier's one-shot GPX export and is deliberately
+ * a dead end. This is the real product for Android and no-phone riders: rides land in a folder they
+ * can see, back up and drag into anything.
  *
  * Nothing in this file is Tauri-aware. The {@link RideLibrary} it writes through is an interface
- * whose only shipped implementation is `lib/desktop/library.ts` (five Rust commands), and whose
- * other implementation is the fake in `library.test.ts`. That split is what lets the four rules
- * below be tested as *behaviour* rather than as a mocked call sequence.
+ * whose only shipped implementation is `lib/desktop/library.ts`, and whose other implementation is
+ * the fake in `library.test.ts`. That split is what lets the two rules below be tested as behaviour
+ * rather than as a mocked call sequence.
  *
- * ## The two rules, and what each one is protecting
+ * **Always pull the full ride list and dedupe locally.** What decides whether a ride is fetched is
+ * whether *this library* already holds it, never anything the device says about it. Pulling twice is
+ * then a no-op by construction. `LIST` makes that cheap: a catalog page is metadata, and nothing is
+ * downloaded to decide what to download.
  *
- * **1. Always pull the full ride list and dedupe locally.** What decides whether a ride is fetched
- * is whether *this library* already holds it — never anything the device says about it. Pulling
- * twice is then a no-op by construction rather than by remembering to check. `LIST` makes that
- * cheap: a catalog page is metadata, and nothing is downloaded to decide what to download.
+ * **The key is `(serial, StoreId, ObjectId)`.** An `ObjectId` is never reused within one card, but a
+ * re-initialized card mints a new `StoreId` and starts its ids again, so a bare id names two
+ * different rides on either side of one. The iOS companion uses the same key, so the two libraries
+ * agree about what "the same ride" is.
  *
- * **2. The key is `(serial, StoreId, ObjectId)`.** An `ObjectId` is never reused within one card,
- * but a re-initialized card mints a new `StoreId` and starts its ids again, so a bare id names two
- * different rides on either side of one. The iOS companion learned this the hard way
- * (`LibraryScopingE2ETests` replays the 2026-07-12 incident: an old synced set filtered out the new
- * era's rides and "sync" answered *up to date* forever). Same key here, same meaning, so the two
- * libraries agree about what "the same ride" is.
- *
- * ## What the acknowledgement was, and why it is gone
- *
- * This module used to end every pull by telling the device which rides it now held durably, so the
- * device could start an expiry countdown against a ride that had a copy elsewhere. That command is
- * **not on the cable any more**: `FLAT_Store_Protocol.md` §5.2.2 retires the v1 `command` selector
- * outright, because a possession ack changes no object and therefore has no store meaning. It keeps
- * the BLE control surface it already had, so the phone still acks; USB does not.
- *
- * The consequence is worth stating rather than discovering: a rider who syncs only over the cable
- * gets their rides copied and the device is not told. Nothing here pretends otherwise — there is no
- * report field claiming an ack, and the ordering discipline the ack needed (import resolves only
- * after fsync) is kept anyway, because it is what makes {@link PullReport} true.
+ * A possession acknowledgement is not on the USB cable: it changes no object and therefore has no
+ * store meaning, so it keeps the BLE control surface it already had. A rider who syncs only over the
+ * cable gets their rides copied and the device is not told. The ordering discipline that ack needed
+ * — import resolves only after fsync — is kept anyway, because it is what makes
+ * {@link PullReport} true.
  */
 
 import { trackToGpx } from "../convert/bridge";
@@ -54,17 +42,14 @@ import type { JobContext } from "./progress";
 
 export type { CatalogEntry, RideObject, RideScope };
 
-// --- what the library holds ----------------------------------------------------
-
 /**
  * One ride in the library, as the index stores it.
  *
- * Mirrors `rides::LibraryRide` in `apps/obc-desktop/src/rides.rs` field for field. `present`
- * and `gpxPresent` are recomputed against the filesystem on every read there, so they describe the
- * disk now rather than what it looked like when the entry was written. Since the GPX-only split,
- * the two paths point at different places: `ridePath` is the archived `.obcride` in **app data**
- * (internal, not relocatable), `gpxPath` the `.gpx` in the **visible** folder — and `present`
- * means "the archive file exists", which is the durability the ack stands on.
+ * Mirrors `rides::LibraryRide` in `apps/obc-desktop/src/rides.rs` field for field. `present` and
+ * `gpxPresent` are recomputed against the filesystem on every read there, so they describe the disk
+ * now rather than when the entry was written. The two paths point at different places: `ridePath` is
+ * the archived `.obcride` in **app data**, `gpxPath` the `.gpx` in the **visible** folder, and
+ * `present` means the archive file exists.
  */
 export interface LibraryRide {
     readonly key: string;
@@ -120,8 +105,8 @@ export interface LibraryView {
 /**
  * The managed folder, as this module needs it.
  *
- * Every method is a promise because the only implementation is a filesystem behind an IPC
- * boundary — and because {@link import} has to be awaited for the ack to mean anything.
+ * Every method is a promise because the only implementation is a filesystem behind an IPC boundary,
+ * and because {@link import} has to be awaited for its durability to mean anything.
  */
 export interface RideLibrary {
     view(): Promise<LibraryView>;
@@ -141,19 +126,9 @@ export interface RideLibrary {
     chooseFolder(): Promise<string | null>;
 }
 
-// --- the device surface the library is given ------------------------------------
-//
-// The two reads of `rides.ts`'s `RideSource`, and nothing beside them. There used to be a third —
-// the acknowledgement — and the type that carried it is gone with the command: a `RideSyncSource`
-// that differed from a `RideSource` by a method neither the wire nor any implementation has would
-// be a distinction with nothing behind it.
-
-// --- failures ------------------------------------------------------------------
-
 /**
  * - `no-scope` — the device reported no serial, or no `StoreId`. Ids from it cannot be keyed to an
- *   era, so nothing is imported: the same fail-closed posture as the phone's `libraryScope == nil`
- *   (#769).
+ *   era, so nothing is imported.
  */
 export type RideLibraryErrorCode = "no-scope";
 
@@ -166,8 +141,6 @@ export class RideLibraryError extends Error {
         this.code = code;
     }
 }
-
-// --- the pull ------------------------------------------------------------------
 
 /** One ride the pull could not land, and why. The rest of the batch still lands. */
 interface RideFailure {
@@ -190,19 +163,19 @@ export interface PullReport {
     /** Rides the library already held whole, so nothing was downloaded. */
     readonly alreadyHeld: number;
     readonly failed: readonly RideFailure[];
-    /** Rides the device is still recording, which §3.5 refuses to serve. Named, never silent. */
+    /** Rides the device is still recording, which it refuses to serve. Named, never silent. */
     readonly recording: number;
 }
 
 /**
  * Pull every ride the device does not already hold a durable copy of here.
  *
- * The order is the contract and it is worth reading as a sequence:
+ * The order is the contract:
  *
- * 1. **list** — the whole ride catalog, unconditionally, minus what is still recording (§3.5);
- * 2. **dedupe locally** by `(serial, StoreId, ObjectId)` against the library's own index;
- * 3. **download → decode → GPX → import** each missing ride, one at a time (§1 serves one transfer
- *    at a time anyway), each import resolving only after its fsync.
+ * 1. list the whole ride catalog, unconditionally, minus what is still recording;
+ * 2. dedupe locally by `(serial, StoreId, ObjectId)` against the library's own index;
+ * 3. download, decode, convert and import each missing ride one at a time, each import resolving
+ *    only after its fsync.
  *
  * A ride that fails at step 3 is reported and skipped; the others still land.
  */
@@ -220,18 +193,17 @@ export async function pullRides(
     const listed = await source.listRides(ctx.signal);
     const available = recordedRides(listed);
 
-    // Rule 2: dedupe here, by the composite key. `present` is part of the test on purpose — a
-    // record whose ride object the rider deleted is not a durable copy, so it is fetched again.
+    // Rule 2: dedupe here, by the composite key. `present` is part of the test on purpose — a record
+    // whose ride object the rider deleted is not a durable copy, so it is fetched again.
     //
-    // `gpxPresent` deliberately is *not*: a missing GPX is a derived file, and the archive it is
-    // derived from is right there. Pulling a ride over the cable to rewrite a file that can be
-    // regenerated locally would be a transfer nobody needed. The logbook's quiet auto-repair does
-    // that instead ({@link reexportGpx}, run on open and after every pull).
+    // `gpxPresent` deliberately is *not*: a missing GPX is a derived file and the archive it comes
+    // from is right there, so the logbook's auto-repair regenerates it locally instead
+    // ({@link reexportGpx}).
     const held = new Map((await library.view()).rides.map((ride) => [ride.key, ride]));
     const wanted = [...available]
-        // Oldest first, by `ObjectId`. A `LIST` entry carries no start time (§3.3), and the id is a
-        // monotonic allocation cursor (`FLAT_Store_Format.md` §3) — so on one card, id order *is*
-        // recording order. It is a proxy, and it is the only one the catalog offers.
+        // Oldest first, by `ObjectId`. A `LIST` entry carries no start time, and the id is a
+        // monotonic allocation cursor — so on one card, id order *is* recording order. It is a proxy,
+        // and it is the only one the catalog offers.
         .sort((a, b) => (a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0))
         .filter((entry) => !held.get(rideKey(scope, entry.objectId))?.present);
 
@@ -292,9 +264,8 @@ async function importRide(
     });
 
     ctx.phase("converting", object.length);
-    // §3.5 has the device declare the whole-payload CRC and the client verify it before returning,
-    // so a decode failure here is a *format* disagreement — firmware newer than this build — and
-    // needs the other sentence.
+    // The client verified the whole-payload CRC before returning, so a decode failure here is a
+    // *format* disagreement — firmware newer than this build — and needs the other sentence.
     let ride: RideObject;
     try {
         ride = decodeRideObject(object);
@@ -317,10 +288,9 @@ async function importRide(
     ctx.phase("verifying");
     // Everything below this line is the durable write.
     //
-    // Every field but the id and the name now comes from the **payload**, and that is the shape of
-    // the change rather than an oversight: a `LIST` entry carries id, revision, length, CRC, kind,
-    // flags and a display name (§3.3), so the distance, the duration and the start time exist only
-    // inside the ride object. Since this path downloads the object anyway, nothing is lost — what is
+    // Every field but the id and the name comes from the **payload**: a `LIST` entry carries id,
+    // revision, length, CRC, kind, flags and a display name, so the distance, the duration and the
+    // start time exist only inside the ride object. This path downloads the object anyway; what is
     // gone is the ability to show those figures *before* downloading.
     return library.import({
         serial: scope.serial,
@@ -333,7 +303,7 @@ async function importRide(
         climbM: ride.climbM,
         points: ride.points.length,
         // The device's own CRC-32 over the same bytes, kept in the index so the archive can be
-        // re-checked without the device. It is also what §3.4 reconciles a lost create against.
+        // re-checked without the device. It is also what a lost create is reconciled against.
         crc32: Crc32.of(object),
         track: previewTrack(ride),
         object,
@@ -358,10 +328,10 @@ export async function pullRide(
 /**
  * The GPX, from the same `obc_route::track_to_gpx` the device runs at Finish.
  *
- * Through the wasm bridge over the same finished v3 bytes the device serves, pinned byte-for-byte
- * against `specs/vectors/track-export.gpx`. There is no
- * TypeScript GPX writer in this app and there must never be one — a library whose files disagreed
- * with the device's own export would be a slow-burning support problem.
+ * Through the wasm bridge over the same finished bytes the device serves, pinned byte-for-byte
+ * against `specs/vectors/track-export.gpx`. There is no TypeScript GPX writer in this app and there
+ * must never be one — a library whose files disagreed with the device's own export would be a
+ * slow-burning support problem.
  */
 export async function gpxOf(ride: RideObject): Promise<string> {
     return trackToGpx(encodeRideObject(ride), ride.name);
@@ -372,8 +342,6 @@ export async function reexportGpx(library: RideLibrary, ride: LibraryRide): Prom
     const object = await library.readObject(ride.key);
     return library.writeGpx(ride.key, await gpxOf(decodeRideObject(object)));
 }
-
-// --- the preview track ----------------------------------------------------------
 
 /**
  * How many points a stored preview keeps.
@@ -388,11 +356,9 @@ export const PREVIEW_POINTS = 256;
  * Downsample any `[lat, lon]` track to at most {@link PREVIEW_POINTS}, rounded to six decimals.
  *
  * Uniform stride rather than Douglas–Peucker: this is a thumbnail, the input is already a recorded
- * track (or a route the converter has decimated once), and a stride cannot introduce a shortcut
- * across a switchback that a tolerance-based simplifier can. The first and last points are always
- * kept, so the preview starts and ends where the track did. Shared by the library index and the
- * device page's session thumbnail store (`thumbs.svelte.ts`), so a ride thumbnail is the same points in
- * both places.
+ * track, and a stride cannot introduce a shortcut across a switchback the way a tolerance-based
+ * simplifier can. The first and last points are always kept. Shared by the library index and the
+ * device page's thumbnail store, so a ride thumbnail is the same points in both places.
  */
 export function downsampleTrack(points: readonly (readonly [number, number])[]): Array<[number, number]> {
     if (points.length === 0) return [];
@@ -435,9 +401,9 @@ export interface FittedTrack {
  * Fit one or more `[lat, lon]` tracks into a shared `width × height` box.
  *
  * One projection for the lot — a trip's stages are drawn against common bounds, so where stage 2
- * begins is where stage 1 ended. Equirectangular with a `cos(lat)` correction on longitude, which
- * is the projection a few kilometres of track deserves: anything more would be a map library, and
- * anything less draws the Alps as an oval. A track with fewer than two points maps to `null`.
+ * begins is where stage 1 ended. Equirectangular with a `cos(lat)` correction on longitude, which is
+ * the projection a few kilometres of track deserves. A track with fewer than two points maps to
+ * `null`.
  */
 export function fitTracks(
     tracks: ReadonlyArray<readonly (readonly [number, number])[]>,

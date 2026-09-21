@@ -1,21 +1,17 @@
-//! `--terrain`: the packer's host-side view of baked OBCT tiles (epic #1068 EL5).
+//! `--terrain`: the packer's host-side view of baked OBCT tiles.
 //!
-//! This module owns **only** the plumbing — finding the `.obcd` files, opening them, and routing a
-//! query to the one that covers it. Every byte of policy (what a malformed container is, how a
-//! sample interpolates, what a hole answers) belongs to `obc-elevation`, which is the same `no_std`
-//! code the device runs. That split is epic #1068's "one sampling truth": the packer must not be
-//! able to sample terrain differently from the firmware, so it does not get its own sampler.
+//! This module owns only the plumbing: finding the `.obcd` files, opening them, and routing a query
+//! to the one that covers it. Every byte of policy — what a malformed container is, how a sample
+//! interpolates, what a hole answers — belongs to `obc-elevation`, the same `no_std` code the device
+//! runs, so the packer cannot sample terrain differently from the firmware.
 //!
-//! What the packer accepts is deliberately layout-agnostic: `--terrain` may name a single container
-//! (a shard covering a whole region, or one cell) **or** a directory, which is scanned recursively
-//! for `*.obcd`. Nothing here parses a path into cell indices — a container states its own
-//! rectangle in its header (`OBCT_Spec.md` §4.2), so the directory tree can be `<i>/<j>.obcd`, a
-//! flat dump, or whatever the bakery settles on, and this code keeps working.
+//! `--terrain` may name a single container or a directory, which is scanned recursively for
+//! `*.obcd`. Nothing here parses a path into cell indices: a container states its own rectangle in
+//! its header, so any directory layout keeps working.
 //!
-//! **Threading.** [`TerrainSet`] is immutable and `Sync`; a [`TerrainSampler`] borrows it and is the
-//! `&mut` thing an [`ElevationSource`] must be. The cell cutter builds one sampler per cell inside
-//! its rayon map, which is also where the bbox filter pays for itself: a cell only opens the
-//! containers its own square touches.
+//! [`TerrainSet`] is immutable and `Sync`; a [`TerrainSampler`] borrows it and is the `&mut` thing
+//! an [`ElevationSource`] must be. The cell cutter builds one sampler per cell inside its rayon map,
+//! which is where the bbox filter pays for itself.
 
 use std::path::{Path, PathBuf};
 
@@ -36,10 +32,10 @@ const HOST_TILE_SLOTS: usize = 64;
 struct TerrainFile {
     path: PathBuf,
     src: FileSource,
-    /// `(min_lat, min_lon, max_lat, max_lon)` µdeg, half-open on the max edges (`OBCT_Spec.md`
-    /// §4.2). `i64` because the world box legally overhangs ±90/±180.
+    /// `(min_lat, min_lon, max_lat, max_lon)` µdeg, half-open on the max edges. `i64` because the
+    /// world box legally overhangs ±90/±180.
     bbox: (i64, i64, i64, i64),
-    /// `log2` of this container's sample posting in µdeg (`OBCT_Spec.md` §4.2).
+    /// `log2` of this container's sample posting in µdeg.
     posting_log2: u8,
 }
 
@@ -107,24 +103,24 @@ impl TerrainSet {
         })
     }
 
-    /// The **coarsest** sample posting in the set as a `log2`, or `None` when the set is empty.
+    /// The coarsest sample posting in the set as a `log2`, or `None` when the set is empty.
     ///
-    /// Read by the contour tracer ([`crate::contour`]), which walks one lattice across the whole
-    /// set. Taking the coarsest is what makes that single lattice legal everywhere: postings are
-    /// powers of two on the shared grid origin (`OBCT_Spec.md` §1), so every coarse lattice point is
-    /// also a lattice point of any finer container — and a query that lands exactly on a sample
-    /// reads that sample back rather than interpolating. Taking the *finest* would ask a coarse
-    /// container for points between its samples and trace the bilinear ramp instead of the DEM.
+    /// Read by the contour tracer, which walks one lattice across the whole set. Taking the coarsest
+    /// is what makes that single lattice legal everywhere: postings are powers of two on the shared
+    /// grid origin, so every coarse lattice point is also a lattice point of any finer container, and
+    /// a query that lands exactly on a sample reads it back rather than interpolating. Taking the
+    /// finest would ask a coarse container for points between its samples and trace the bilinear
+    /// ramp instead of the DEM.
     pub fn posting_log2(&self) -> Option<u8> {
         self.files.iter().map(|f| f.posting_log2).max()
     }
 
-    /// A sampler over every container whose rectangle intersects `bbox` (µdeg
-    /// `(min_lon, min_lat, max_lon, max_lat)` — the packer's global-bbox convention), or over all of
-    /// them when `bbox` is `None`.
+    /// A sampler over every container whose rectangle intersects `bbox`, in the packer's lon-first
+    /// convention, or over all of them when `bbox` is `None`.
     ///
     /// Filtering is not an optimisation detail: the cutter builds one of these per cell, and without
     /// it every cell would re-validate every container in the set.
+    ///
     pub fn sampler_for(&self, bbox: Option<(i64, i64, i64, i64)>) -> Result<TerrainSampler<'_>, String> {
         let mut open = Vec::new();
         for f in &self.files {
@@ -202,14 +198,12 @@ fn collect_obcd(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 /// An OBCT container open for the packer.
 ///
 /// The shared adapter is `Sync` and locks around each read, which is what a [`TerrainSet`] shared
-/// across the cutter's rayon workers needs — every one of their samplers borrows the *same*
-/// handle, so the seek/read pair has to be atomic. The lock is held for one ≤ 512-byte read and
-/// each sampler's 32 KB tile cache keeps those rare, so the contention is nothing next to the GEOS
-/// work the same threads are doing.
+/// across the cutter's rayon workers needs: every sampler borrows the same handle, so the seek and
+/// read pair has to be atomic. The lock is held for one read of at most 512 bytes, and each
+/// sampler's tile cache keeps those rare.
 ///
-/// The size refusal is **OBCT's own** wall, not the read seam's: the container's directory entries
-/// and cell offsets are `uint32`, so nothing past 4 GiB − 1 of an `.obcd` can be named from inside
-/// it however far a `read_at` could reach. The seam widened; this did not.
+/// The size refusal is OBCT's own wall, not the read seam's: the container's directory entries and
+/// cell offsets are `uint32`, so nothing past 4 GiB - 1 of an `.obcd` can be named from inside it.
 pub(crate) fn open_obct(path: &Path) -> Result<FileSource, String> {
     let src = FileSource::open(path).map_err(|e| format!("--terrain {}: {e}", path.display()))?;
     let len = src.len();
