@@ -195,10 +195,15 @@ makes the mountain recognisable.
 
 The bakery corrects this with a **crest lift**. Where a finer national elevation model says the
 ground inside a sample's own cell stands more than 10 m above our surface, **and** the ground
-there is convex, the baker raises that sample to the finer model's height. The convexity test is
-what keeps a steep flat face and a mountain pass unchanged: only a crest moves. The lift goes
-into the baked sample, so contours, ascent, the route profile, the altimeter and Peak View all
-read one surface.
+there is convex, the baker raises that sample. The convexity test is what keeps a steep flat face
+and a mountain pass unchanged: only a crest moves. The lift goes into the baked sample, so
+contours, ascent, the route profile, the altimeter and Peak View all read one surface.
+
+The sample rises by the **gap**: how far the finer model stands above the surface we draw. It does
+not rise to the highest ground in its cell, because on a slope most of that height is the cell's
+own fall and a lift by it makes the ground around a summit too high. The highest ground in the
+cell is still the ceiling, so a lift never puts a sample above what the finer model measured
+there.
 
 Copernicus stays the base model. A national model gives lifts only, because it measures bare
 ground and therefore sits below Copernicus over every forest and town.
@@ -212,6 +217,10 @@ A cell with no finer coverage is identical to a cell baked without one.
 
 Each finer model keeps its own attribution, which must travel with the map. A change of finer
 model changes the baked heights, so it is a new terrain revision.
+
+Seven photographs of the Engelberg mountains measure the result. Each one records the skyline the
+owner saw from a known position, and a test draws the panorama there and compares the two. See
+[the fixture package](src:fixtures/sources/peak-view/photos/README.md).
 
 ## One sampling truth
 
@@ -343,6 +352,10 @@ The source code stores this text in [`COPERNICUS_ATTRIBUTION`](src:host/obc-dem/
 The bakery copies it to the catalog terrain block.
 Consumers read the text from the catalog.
 A map with derived contour geometry also requires this attribution.
+
+A map with crest lifts also requires the attribution of each finer model the lifts come from.
+The reference archive records that text for each source, and the bake reports the sources it
+read. Swiss lifts require `© swisstopo`.
 
 Map data remains © OpenStreetMap contributors.
 
