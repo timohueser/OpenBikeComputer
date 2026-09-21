@@ -1,92 +1,63 @@
-//! The map/ride thread-mode plane (in every build) — split out of `main.rs` (issue #351).
+//! The map/ride thread-mode plane.
 //!
-//! [`run_app`], the shared backend-agnostic ride loop, plus its loop-only helpers: the sensor-wake
+//! [`run_app`], the shared backend-agnostic ride loop, and its loop-only helpers: the sensor-wake
 //! select arm, the GPS power policy, the watchdog cadence, the per-frame render clock, and the
-//! route-catalog scan. `main` still owns bring-up + the resident statics and awaits [`run_app`]
-//! as its tail future (single call site — see the `#[inline(always)]` note on the fn).
+//! route-catalog scan. `main` owns bring-up and the resident statics, and awaits [`run_app`] as its
+//! tail future.
 
 use core::sync::atomic::Ordering;
 
-// The event-driven loop's wake select: `select5` over gesture / hold-wake / sensor / BLE link-edge /
-// deadline.
 use embassy_futures::select::select5;
 use embassy_nrf::gpio::Output;
 use embassy_nrf::wdt;
 use embassy_time::{Instant, Timer};
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-// The Recalculating banner's framebuffer clip (#1146 P2) — the band `App::reroute_banner_rows`
-// reports, expressed in the same `Rectangle` vocabulary `Dirty::region` already uses.
 use embedded_graphics::prelude::{Point, Size};
 use embedded_graphics::primitives::Rectangle;
-// `SettingsStore` (the load/save trait) is the ride loop's seam over the RRAM store; the `ble`
-// build's store lives inside `object_store` (which imports it itself).
 use obc_app::App;
-use obc_ports::{InputClock, RideClock, Sensors, SettingsStore};
-// The instance-owned sensor hub's control handle + GPS power enum (#808): the ride loop sets the
-// rate/power latches the `sensors::sensor_task` awaits. Real-sensor build only.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use obc_platform::sensor_hub::SensorDemand;
-// The hub consumer handle threaded from `main` (the ZST `*Source` drains + presence + the event
-// wake) — present on every build that uses the hub (real-sensor GPS, or debug-uart HR/power/cadence
-// injection); absent only on the pure `synth` build.
-#[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
-use obc_platform::sensor_hub::SensorConsumer;
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use obc_platform::sensor_hub::SensorControl;
-// The `synth`-build stand-in GPS: walks a slow square loop so a saved ride is a non-degenerate
-// ride object (the default streams the real SAM-M10Q; `debug-uart` a recorded host ride).
-#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
-use obc_platform::SynthLocation;
-// The map render's framebuffer adapter (the status screen builds its own inside `ble.rs`) + the
-// battery stand-in until the nPM1300 PMIC gauge is read.
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
 #[cfg(has_nav)]
 use obc_formats::io::{ByteSink, Error as ByteError};
 #[cfg(has_nav)]
 use obc_formats::obcr::HEADER_FULL_LEN;
+#[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
+use obc_platform::sensor_hub::SensorConsumer;
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+use obc_platform::sensor_hub::SensorControl;
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+use obc_platform::sensor_hub::SensorDemand;
 use obc_platform::StubFuelGauge;
+#[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
+use obc_platform::SynthLocation;
+use obc_ports::{InputClock, RideClock, Sensors, SettingsStore};
 use obc_reader::{MapCache, MapTables, Reader};
-// The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
-// index, and the streamed route reader the matcher + map render share.
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::input_plane::{CHORDS, GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
 use crate::map_plane::MapDisplay;
 use crate::{stackmeter, SharedStore, SharedStoreMutex};
 
-// ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
-// gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
-// thread mode staying alive. Deliberately generous: it must never fire on a slow frame or a deep
-// SD reconcile, only on a genuine wedge. ──
-/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band). The value lives in
-/// `obc-dfu` since DR1 (#729): it is a boot-chain handoff contract — the bootloader must build
-/// the byte-identical WDT config to adopt this dog across a DFU install and to pre-start the one
-/// a trial boot runs under (see the contract note on the constant).
+/// Watchdog period: 24 s of 32768 Hz ticks. It lives in `obc-dfu` because the bootloader must
+/// build the byte-identical WDT config to adopt this dog across a DFU install, and to pre-start the
+/// one a trial boot runs under.
 pub(crate) const WDT_TIMEOUT_TICKS: u32 = obc_dfu::WDT_TIMEOUT_TICKS;
-/// Cap (ms) on the ride loop's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes
-/// to feed the dog. One extra wake per ~12 s is negligible next to [`IDLE_REPOLL_MS`].
+/// Cap (ms) on the ride loop's event-driven sleep, about half the watchdog period, so an otherwise
+/// idle device still wakes to feed the dog.
 const WDT_FEED_CAP_MS: u32 = 12_000;
-/// How stale [`INPUT_HB_MS`] may be before the ride loop **withholds** the feed. The idle input
-/// plane legitimately sleeps [`IDLE_REPOLL_MS`] (30 s) between stamps, so the window is 2× that
-/// plus margin — no false trip on a parked device; a wedged input plane trips the dog within
-/// roughly this window + the WDT period (~90 s worst case, fine for a last resort). A stamp
-/// slightly *newer* than the loop's own `now` (the planes race on `Instant::now()`) counts as
-/// fresh, not as a wrapped ~u32::MAX staleness.
+/// How stale [`INPUT_HB_MS`] may be before the ride loop withholds the feed. The idle input plane
+/// sleeps 30 s between stamps, so this is twice that plus margin. A stamp slightly newer than the
+/// loop's own `now` counts as fresh, not as a wrapped staleness.
 const INPUT_HB_STALE_MS: u32 = 65_000;
 
-/// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
-/// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
-/// square-loop walk. The walk position is time-based, so a slower tick just lowers the demo frame rate.
+/// Synthetic-walk advance cadence on the `synth` build. The stand-in GPS publishes no signal, so
+/// the event-driven loop has no sensor event to wake on. The walk position is time-based.
 #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
 const SYNTH_TICK_MS: u64 = 250;
 
-/// The single sensor/host wake the event-driven map loop selects on — one `await` that covers the
-/// whole sensor set so the loop sleeps until a datapoint actually arrives. Three builds:
-/// - default (real sensors): the hub's unified `wait_event` datapoint edge (fix / baro / temp / GPS
-///   time / heading) — exactly one wake per published sample, zero I²C at the frame rate;
-/// - `debug-uart`: the host-streamed datapoint edge from the VCOM debug link;
-/// - `synth`: no event source, so a coarse timer steps the synthetic walk.
+/// The single sensor or host wake the event-driven map loop selects on, so the loop sleeps until a
+/// datapoint arrives. With real sensors it is the hub's datapoint edge, with `debug-uart` the
+/// host-streamed edge, and with `synth` a coarse timer that steps the synthetic walk.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 async fn wait_sensor_event(consumer: SensorConsumer<'static>) {
     consumer.wait_event().await
@@ -101,9 +72,8 @@ async fn wait_sensor_event() {
     Timer::after_millis(SYNTH_TICK_MS).await
 }
 
-/// The loop's third select arm: a sensor/host datapoint, or a flat-store movement on either link —
-/// a route/trip commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
-/// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
+/// The loop's third select arm: a sensor or host datapoint, or a flat-store movement on either
+/// link, so a route or trip commit wakes the loop and the catalog rescan lands now.
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
@@ -123,22 +93,18 @@ async fn wait_host_or_sensor_event(
     .await;
 }
 
-/// Report successful protocol-v4 route/trip uploads as [`ExternalFacts`], and only after the catalog
-/// snapshots containing their committed heads have been fed to `App`. This ordering is what lets a
-/// same-id active route replacement invalidate geometry-derived state: the next pass's
-/// `on_route_uploaded` resolves the identity against the snapshot that was just read.
+/// Report successful protocol-v4 route and trip uploads as [`ExternalFacts`], and only after the
+/// catalog snapshots that hold their committed heads have been fed to `App`. This ordering is what
+/// lets a same-id active route replacement invalidate geometry-derived state.
 ///
-/// The fact slots are *latest-wins*, so several uploads inside one catalog read collapse to the
-/// newest of each kind — which is what the card should show anyway, and the identity remap is the
-/// catalog read's own work, not the fact's.
+/// The fact slots are latest-wins, so several uploads inside one catalog read collapse to the
+/// newest of each kind.
 fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFacts) {
     use obc_app::device_core::{RouteUpload, TripUpload};
-    // More than one full catalog of distinct facts can only happen when rapid remove/create churn
-    // leaves stale ids queued. If that exhausted the bounded handoff, conservatively refresh the
-    // active route first: even if its exact replace fact was the evicted oldest entry, no geometry
-    // derived from the displaced revision survives. Exact retained facts then land in commit order
-    // and retain the final advisory card. The store-revision level cannot stand in for this — it
-    // orders a *re-read*, and only a `replaced` upload drops the geometry-derived state.
+    // More than one full catalog of distinct facts can only happen when rapid churn leaves stale ids
+    // queued. If that exhausted the bounded handoff, refresh the active route first: no geometry
+    // derived from the displaced revision survives. The store-revision level cannot stand in for
+    // this, because it orders a re-read and only a `replaced` upload drops geometry-derived state.
     if crate::flat_store::take_catalog_upload_loss() {
         if let Some(id) = app.active_route_index().and_then(|i| app.route_ids().get(i).copied()) {
             facts.note_route_upload(RouteUpload { id, replaced: true, elevation: None });
@@ -182,9 +148,8 @@ async fn read_catalogs(
     Ok(start)
 }
 
-/// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
-/// time base for the map render's per-stage timing (collect / sort / draw) the VCOM telemetry
-/// carries. The same monotonic clock the loop's frame `Instant` reads, so the stages reconcile.
+/// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds: the
+/// time base for the map render's per-stage timing.
 struct InstantClock;
 impl obc_render::Clock for InstantClock {
     fn now_us(&self) -> u64 {
@@ -192,63 +157,48 @@ impl obc_render::Clock for InstantClock {
     }
 }
 
-/// The router's **resident** half (epic #116 R4 + EL7, #1068) — everything the planner needs that
-/// is *not* an arm of the scratch arena.
-///
-/// Since #1146 P2 that is one field. The A* table, the graph-tile cache and the resumable planner's
-/// slot moved into [`arena::NavArm`](crate::arena::NavArm), claimed for the span of a search; the
-/// terrain stayed here because it is read at **fix** cadence during a ride
-/// (`App::sample_terrain`, EL8) — while the map plane is rendering and no search is running — so it
-/// is state, not scratch, and folding it into an arm would have handed the render arm's `memset` the
-/// altimeter's tile cache.
+/// The router's resident half: everything the planner needs that is not an arm of the scratch
+/// arena. The terrain stays here because `App::sample_terrain` reads it at fix cadence during a
+/// ride, while the map plane renders and no search runs. It is state, not scratch.
 #[cfg(has_nav)]
 pub(crate) struct NavResident {
-    /// The map's terrain, or the null source: the emit phase samples it per point, and the ride
-    /// loop's altimeter fuse samples it per fix. `&'static mut` because a `TerrainElevation` carries
-    /// its ~2.1 KB tile cache inline and must never be copied into a plan frame (#419/#501).
+    /// The map's terrain, or the null source. It is a `&'static mut` because a `TerrainElevation`
+    /// carries its tile cache inline and must never be copied into a plan frame.
     pub(crate) elev: &'static mut dyn obc_route::ElevationSource,
 }
-/// The `ble` build's stand-in: the router isn't in the combined image — its statics would push the
-/// 256 KB DK's stack region below the measured deep-render peak (see build.rs's `has_nav` note).
-/// The ride loop still drains create-route requests and answers the generic failure tier, so the POI
-/// confirm never hangs. The 512 KB LM20 deletes this arm.
+/// The stand-in for a build without the router. The ride loop still drains create-route requests
+/// and answers the generic failure tier, so the confirm never hangs.
 #[cfg(not(has_nav))]
 pub(crate) struct NavResident;
 
 /// One plan step's view of everything the planner touches: the scratch arena's nav arm, borrowed
-/// from the guard the ride loop holds for the whole search, plus the resident terrain beside it.
-///
-/// A **view**, not an owner — rebuilt per call from `(&mut NavGuard, &mut NavResident)`, so the arm
-/// and the terrain are borrowed only for the length of one synchronous planner step and no reference
-/// into the arena is ever live across an `.await`.
+/// from the guard the ride loop holds for the whole search, and the resident terrain beside it. It
+/// is rebuilt per call, so no reference into the arena is ever live across an `.await`.
 #[cfg(has_nav)]
 struct NavBuffers<'a> {
-    /// The guard itself rather than the arm behind it: the planner slot is a `MaybeUninit` the
-    /// claim deliberately leaves unwritten, and the guard is what carries "a plan has been written
-    /// into it" (`NavGuard::plan_parts` / `planner_ref`). Reaching past it to `&mut NavArm` would
-    /// put that fact back in this loop's bookkeeping, where nothing checks it.
+    /// The guard itself, not the arm behind it: the planner slot is a `MaybeUninit` the claim
+    /// leaves unwritten, and the guard is what carries "a plan has been written into it".
     guard: &'a mut crate::arena::NavGuard,
     elev: &'a mut dyn obc_route::ElevationSource,
 }
 
-/// One in-flight plan's **board-side bookkeeping** (#499): the open reserved-file handle and the
-/// per-phase wall-time accumulators the RTT line reports. Loop-local (small); the ~9.5 KB planner
-/// itself sits in the [`NavBuffers`] `.bss` slot this struct guards.
+/// One in-flight plan's board-side bookkeeping: the open reserved-file handle and the per-phase
+/// wall-time accumulators the log line reports.
 #[cfg(has_nav)]
 struct NavRun {
     allocation: Option<obc_storage::flat::Allocation>,
     io: NavIo,
     cancel_requested: bool,
     io_started: Instant,
-    /// Wall time when the request was drained — the RTT line's user-perceived `total_ms`.
+    /// Wall time when the request was drained, which is the log line's user-perceived `total_ms`.
     t0: Instant,
     /// Per-phase step time (µs), attributed by the planner's phase **before** each step:
     /// `[snap, search, emit]`.
     phase_us: [u64; 3],
     /// Store-task time spent flushing bounded output stages before the final checksum/commit.
     write_us: u64,
-    /// Physical-card reads issued inside planner steps, split by the same phase. Unlike the cache
-    /// counters this sees sector-splitting and alignment bounces at the block-device boundary.
+    /// Physical-card reads issued inside planner steps, by phase. Unlike the cache counters this
+    /// sees sector splitting and alignment bounces at the block-device boundary.
     #[cfg(feature = "sd-bench")]
     read_perf: [crate::card_io::ReadPerf; 3],
 }
@@ -332,21 +282,16 @@ fn start_nav_flush(
     writer.try_call(request, &NAV_STORE_REPLY).map_err(|_| step)
 }
 
-/// Construct + write a fresh request's planner into its `.bss` slot, in this immediately-popped
-/// frame — the #419/#501 stack discipline: `NavPlanner::new` materializes a ~9 kB temporary, and
-/// inlined into the ride loop that slot landed in the **main task's poll frame**, allocated at
-/// entry of every poll (measured 25.3 kB poll body; stacked under the 26.5 kB pre-flattening
-/// `nav_step` frame it overflowed the 50.6 kB stack region at ~60.5 kB on glass — the #501
-/// HardFault's true cause). The one plan-start defmt line lives here with it.
+/// Construct and write a fresh request's planner into its slot, in this immediately-popped frame.
+/// `NavPlanner::new` materializes a ~9 KB temporary, and inlined into the ride loop that slot lands
+/// in the main task's poll frame, which is allocated at the entry of every poll.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
-    // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
+    // The rider's bike-type setting. An out-of-range index falls back to profile 0 in the router.
     nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
-    // One diagnostic line per plan start (#501 fault dossiers): the three addresses pin the memory
-    // map without needing the ELF at hand. Since #1146 P2 they are offsets **inside the scratch
-    // arena's nav arm** rather than three separate `.bss` statics — so the line now also says which
-    // arm the block is serving, which is the first thing to check if a plan ever comes back wrong.
+    // One diagnostic line per plan start: the three addresses pin the memory map without the ELF at
+    // hand. They are offsets inside the scratch arena's nav arm.
     let (planner, scratch, tiles) = nav.guard.arm_addrs();
     defmt::debug!(
         "nav plan: start planner=0x{=usize:08x} scratch=0x{=usize:08x} tiles=0x{=usize:08x}",
@@ -356,18 +301,15 @@ fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
     );
 }
 
-/// Take the scratch arena's **nav arm** for a fresh route search, against the app's own
-/// quiesced-map proof.
+/// Take the scratch arena's nav arm for a fresh route search, against the app's own quiesced-map
+/// proof.
 ///
-/// `Err(why)` = the caller must answer the failure tier now rather than arm a plan; a refused claim
-/// took nothing, so no spinner can hang behind a half-claim. A request arriving while a plan is
-/// still in flight is *not* a refusal: we already hold the arm, and the drain overwrites the
-/// planner slot for the new plan exactly as it did before.
+/// `Err(why)` means the caller must answer the failure tier now rather than arm a plan. A refused
+/// claim took nothing, so no spinner can hang behind a half-claim. A request that arrives while a
+/// plan is in flight is not a refusal: the arm is already held.
 ///
-/// The arena's own owner is what enforces `nav ⊥ usb` — a cable transfer streaming into the same
-/// store holds the block, so the claim is refused by ownership rather than by a second gate
-/// tracking the same fact. The refusal *names* that holder, because "wait for the cable" is
-/// something the rider can act on and "the scratch arena is busy" is not.
+/// The arena's own owner is what enforces `nav ⊥ usb`. The refusal names the holder, because "wait
+/// for the cable" is something the rider can act on.
 #[cfg(has_nav)]
 fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Result<(), &'static str> {
     use obc_app::{ArenaError, ArenaOwner};
@@ -376,8 +318,7 @@ fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Resu
     }
     let Some(quiesced) = app.nav_arena_precondition() else {
         // Unreachable by construction: draining a plan command is what engages the Recalculating
-        // freeze, so by the time we are here the map plane is already quiet over a map base — and
-        // menu planning has no map base to quiet. Loud in debug, handled in release.
+        // freeze, so the map plane is already quiet. Loud in debug, handled in release.
         debug_assert!(false, "a plan drained with the map plane still drawing — the freeze did not engage");
         return Err("the map plane is not quiesced");
     };
@@ -391,8 +332,8 @@ fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Resu
     }
 }
 
-/// The fixed slot index (0 HR · 1 Power · 2 Cadence) a scanned sensor's kind maps to (SE7, #714) —
-/// used to tag a board scan hit for the app seam, which speaks slot indices, not `obc_ble` kinds.
+/// The fixed slot index (0 heart rate, 1 power, 2 cadence) a scanned sensor's kind maps to. The app
+/// seam speaks slot indices, not `obc_ble` kinds.
 fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
     match kind {
         obc_ble::SensorKind::HeartRate => 0,
@@ -401,10 +342,8 @@ fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
     }
 }
 
-/// Distil the central manager's per-quantity sensor status into
-/// the app-vocabulary [`SensorStatus`](obc_app::SensorStatus) the Sensors screen renders (SE7, #714):
-/// `NotSet` when nothing is saved, else the connection phase, carrying battery + the freshest-value
-/// tick.
+/// Distil the central manager's per-quantity sensor status into the app-vocabulary
+/// [`SensorStatus`](obc_app::SensorStatus) the Sensors screen renders.
 fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
     use crate::ble::SensorSlotState;
     let s = crate::ble::sensor_slot_status(q);
@@ -420,16 +359,13 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
     obc_app::SensorStatus { phase, battery: s.battery, last_value_ms: s.last_value_ms }
 }
 
-/// Run **one bounded planner step** at the ride loop's shallow per-pass depth (#270/#419: the
-/// step's frame carries only the cheap boot-parsed-tables `Reader` view, the bounded staging sink,
-/// and the planner's own shallow call tree — the emitter lives in the planner's
-/// `.bss` slot, not this frame; the deepest transient is the one emitter-sized move when the
-/// emit phase constructs it). Everything long-running (render, input, the watchdog feed) runs
-/// normally **between** steps — that is the whole point of #499.
+/// Run one bounded planner step at the ride loop's shallow per-pass depth. The step's frame carries
+/// only the `Reader` view, the bounded staging sink and the planner's own shallow call tree; the
+/// emitter lives in the planner's slot. Everything long-running — the render, the input, the
+/// watchdog feed — runs between steps.
 ///
-/// The reader is `Reader::new` over the flat map object. Emitted OBCR bytes are staged in the arena
-/// and flushed through the flat store's sole writer between steps, so no card write occurs inside
-/// the synchronous planner call and the arena remains the only route-output scratch owner.
+/// Emitted OBCR bytes are staged in the arena and flushed through the flat store's sole writer
+/// between steps, so no card write happens inside the synchronous planner call.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
@@ -440,8 +376,8 @@ fn nav_step(
 ) -> NavStep {
     let reader = Reader::new(map_src, map_tables, map_cache);
     // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
-    // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
-    // slot answers the generic failure tier instead of stepping a planner nobody built.
+    // planner, but the guard is what knows that, so ask it rather than assert it. An unwritten slot
+    // answers the generic failure tier instead of stepping a planner nobody built.
     let Some((planner, scratch, tiles, output)) = nav.guard.plan_parts() else {
         debug_assert!(false, "a plan step with no planner written — the run outlived (or preceded) its drain");
         return NavStep { outcome: obc_route::Step::Failed(obc_route::NavError::NoPath), appended: 0, patch_len: 0 };
@@ -451,21 +387,14 @@ fn nav_step(
     NavStep { outcome, appended: sink.appended, patch_len: sink.patch_len }
 }
 
-/// Finish a **completed** plan: hash and publish or cancel the flat-store reservation, rescan +
-/// re-feed the id-carrying catalog on success (sequential with — never nested under — the step frames, the
-/// #496 de-nesting kept) and emit the one `nav route:` RTT line with the per-phase breakdown
-/// (issue #499's DoD). The *answer* is the caller's: it delivers a terminal
-/// [`NavigatorOutcome`](obc_app::navigator::NavigatorOutcome) under the operation's token, and the
-/// next pass activates the route and swaps the planning screen for the computed-route overview (or
-/// the failure card).
+/// Finish a completed plan: hash and publish or cancel the flat-store reservation, and emit the one
+/// `nav route:` log line with the per-phase breakdown. The answer itself is the caller's.
 ///
-/// The RTT line (grep `nav route:`): outcome; route length; `total_ms` = wall time from the
-/// request drain (it spans every pass the plan was spread over); `snap/search/emit_ms` = step
-/// time attributed to the planner's phase before each step (emit includes the finishing header
-/// patch); `write_ms` = flat-store write/hash/commit time; `rescan_ms` = the catalog rescan; `source_reads` =
-/// logical graph-chunk plus index-window fills; `settles`; and the stackmeter high-water,
-/// force-rescanned here — sentinel evidence is permanent, so it still reads the in-step peak.
-/// With `sd-bench`, a second line reports the planner steps' physical card commands and time.
+/// In that line, `total_ms` is wall time from the request drain, so it spans every pass the plan was
+/// spread over; `snap/search/emit_ms` is step time attributed to the planner's phase before each
+/// step; `write_ms` is the flat-store write, hash and commit; and `source_reads` is logical
+/// graph-chunk plus index-window fills. The stack high-water is force-rescanned here and still reads
+/// the in-step peak, because sentinel evidence is permanent.
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -479,17 +408,14 @@ fn nav_finish(
     let write_us = run.write_us;
     let rescan_us = 0;
     let cache = nav.guard.tiles.stats();
-    // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
-    // the ε-escalation ladder retried on exhaustion. `settles` is cumulative across the rungs. Both
-    // read through the guard's checked accessor — a finish with no planner written reports zeroes
-    // rather than an uninitialized read.
+    // The ε rung the plan ended on. `settles` is cumulative across the rungs. Both read through the
+    // guard's checked accessor, so a finish with no planner written reports zeroes.
     let (settles, eps_num, eps_den) = nav.guard.planner_ref().map_or((0, 0, 0), |p| {
         let (n, d) = p.epsilon_used();
         (p.settles(), n, d)
     });
     let hw = stackmeter::rescan(now);
-    // `exhausted` is the range tier ("Too far to route here" on glass — no distance cap);
-    // `no-path` the generic tier.
+    // `exhausted` is the range tier; `no-path` the generic one.
     let outcome_str = match &result {
         Ok(_) => "ok",
         Err(obc_app::navigator::NavigatorError::Plan(NavError::NoPath)) => "no-path",
@@ -544,10 +470,8 @@ fn nav_finish(
     }
 }
 
-/// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
-/// (issue #755 field forensics). Lives board-side because `obc-app` stays defmt-free
-/// (host-agnostic); `Step`'s count is logged separately at the call site. Ungated — the
-/// breadcrumb logs in every build variant.
+/// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb. It
+/// lives board-side because `obc-app` stays defmt-free.
 fn gesture_name(g: obc_app::Gesture) -> &'static str {
     match g {
         obc_app::Gesture::Step(_) => "Step",
@@ -558,7 +482,7 @@ fn gesture_name(g: obc_app::Gesture) -> &'static str {
     }
 }
 
-/// The drained chord's name, for the same field-forensics RTT record as [`gesture_name`].
+/// The drained chord's name, for the same log record as [`gesture_name`].
 fn chord_name(c: obc_app::Chord) -> &'static str {
     match c {
         obc_app::Chord::Quick => "Quick",
@@ -567,15 +491,13 @@ fn chord_name(c: obc_app::Chord) -> &'static str {
     }
 }
 
-/// One pass's sync-render output, carried from the **store phase** (render, under the guard) to
-/// the **present phase** (push, guard-free) — the #809 split. `None` = no frame rendered this
-/// pass, so nothing to present. `needs_map` picks the RTT log line's shape (map vs. UI frame).
+/// One pass's sync-render output, carried from the store phase (render, under the guard) to the
+/// present phase (push, guard-free). `None` means no frame was rendered this pass.
 struct RenderedFrame {
     needs_map: bool,
     /// Whether this frame drew the **sheet and nothing else** — the base's draw was skipped, so its
-    /// rows on the panel are the ones the sheet arrived over (#1559). Carried because the RTT line
-    /// below is the only instrument an open step is measured with, and such a frame is not the
-    /// "screen redraw" a menu is (#1569).
+    /// Whether this frame drew the sheet and nothing else. The base's draw was skipped, so its rows
+    /// on the panel are the ones the sheet arrived over.
     sheet_only: bool,
     stats: obc_render::RenderStats,
     render_us: u64,
@@ -592,13 +514,11 @@ const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_cor
     storage_space_report: true,
 };
 
-/// One in-flight `CatalogEffect::RemoveObject` on the flat store's **ticketed** writer path: the
+/// One in-flight `CatalogEffect::RemoveObject` on the flat store's ticketed writer path: the
 /// storage task's answer slip, and the operation token that answer has to carry back.
 ///
-/// The removal moved off the answerless `MENU_DELETES` channel with #1397 S6b, because a full queue
-/// there *drops* the id — which the domain would read as an operation that never completes, leaving
-/// its one catalog slot occupied for the rest of the boot. Here a full queue is simply a pass where
-/// the effect was not taken, and a refused commit is a `Failed` the domain re-queues.
+/// A full queue here is simply a pass where the effect was not taken, and a refused commit is a
+/// `Failed` the domain re-queues.
 struct CatalogRemoval {
     ticket: crate::flat_store::Ticket,
     token: obc_app::device_core::OperationToken<obc_app::device_core::CatalogTag>,
@@ -609,18 +529,10 @@ struct CatalogRemoval {
 /// the domain admits one catalog operation at a time, so this is exactly one.
 static CATALOG_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Signal::new();
 
-/// **The board's typed effect executor** — everything owed between two `App::run_pass` calls.
-///
-/// It is the [`RideRuntime`](https://github.com/timohueser/OpenBikeComputer/issues/1262) shape
-/// #1262's amendment accepted, without the module: bounded effects are *staged* out of the plan and
-/// executed in the physical phase that already owns them, and token-carrying outcomes are returned
-/// on a later pass. The phase order is the board's — the guard split (#809), bulge-first (#348) and
-/// the arena claims (#1146 P2) are physical facts this struct does not get a vote on; the pass order
-/// is DeviceCore's.
-///
-/// What is **not** here is as deliberate: no `PassPlan` (it is destructured and dropped inside the
-/// store phase — FAR-19's rule, restated for the typed protocol), no polyline (the derived reads are
-/// served into a stack buffer immediately before the pass, so 512 B never becomes resident).
+/// The board's typed effect executor: everything owed between two `App::run_pass` calls. Bounded
+/// effects are staged out of the plan and executed in the physical phase that already owns them,
+/// and token-carrying outcomes are returned on a later pass. The phase order is the board's; the
+/// pass order is DeviceCore's.
 #[derive(Default)]
 struct RideExec {
     /// What the executor finished, for the next pass's stage 1.
@@ -629,9 +541,7 @@ struct RideExec {
     facts: obc_app::device_core::ExternalFacts,
     /// The previous plan's derived needs, answered at the top of the next store phase.
     needs: obc_app::device_core::DerivedNeeds,
-    /// The bounded effects the previous pass decided, each served in its own physical phase: the
-    /// catalog / settings / storage-info / navigator ones at the top of the store phase, the DFU one
-    /// in the guard-free block ahead of it (#809 — the card's present must not hold the store).
+    /// The bounded effects the previous pass decided, each served in its own physical phase.
     effects: obc_app::device_core::EffectSlots,
     /// The in-flight removal, held across passes and polled without parking.
     catalog: Option<CatalogRemoval>,
@@ -639,16 +549,11 @@ struct RideExec {
     #[cfg(has_nav)]
     nav_token: Option<obc_app::device_core::OperationToken<obc_app::device_core::NavigatorTag>>,
     /// A `DfuEffect::ArmInstall` passed its go/no-go and is waiting for the "Installing update" card
-    /// to reach glass — the count is how many frames it has waited. The arm runs in the store
-    /// **tail**, after the present, and never returns on success, so the frame the MIP holds through
-    /// the whole flash is a real presented frame rather than a hand-rolled render inside the effect.
-    ///
-    /// It waits because `CardScheduler::deliver_dfu` can **bounce** an install-began answer that has
-    /// to *push* rather than replace a wait (the `dfu-install` debug arm, with no spinner up) when
-    /// the stack is full; it re-queues, and arming meanwhile would freeze a frame showing something
-    /// else onto the panel for the whole flash and the reboot. The wait is bounded by
-    /// [`ARM_CARD_FRAMES`] rather than open-ended: the install matters more than the frame, which is
-    /// the same stance the inline path took when a present failed.
+    /// to reach glass; the count is how many frames it has waited. The arm runs in the store tail,
+    /// after the present, and never returns on success, so the frame the panel holds through the
+    /// whole flash is a real presented frame. It waits because the card's push can be bounced when
+    /// the screen stack is full, and the wait is bounded by [`ARM_CARD_FRAMES`], because the install
+    /// matters more than the frame.
     arm_pending: Option<u8>,
 }
 
@@ -657,34 +562,26 @@ struct RideExec {
 const ARM_CARD_FRAMES: u8 = 8;
 
 impl RideExec {
-    /// Whether the executor is holding something the next pass must see — an answer to consume, or
-    /// an effect to serve, or a derived read it has been asked for.
+    /// Whether the executor is holding something the next pass must see: an answer to consume, an
+    /// effect to serve, or a derived read it has been asked for.
     ///
-    /// The in-flight catalog removal is deliberately **not** here: it keeps the short animation
-    /// cadence instead of an immediate re-pass, because it is a round trip to another task, and
-    /// spinning at full speed against a commit that takes hundreds of milliseconds would starve the
-    /// executor that has to answer it. The re-read a failed read owes is not here either — the
-    /// domain holds it (#1541) and offers it once per pass, which is once per wake.
-    ///
-    /// Folds into the wake exactly as [`PassPlan::immediate`] does for a deferred connection: the
-    /// work is already decided, and parking on it would leave it sitting until the next rider input.
+    /// The in-flight catalog removal is deliberately not here. It keeps the short animation cadence,
+    /// because spinning at full speed against a commit that takes hundreds of milliseconds would
+    /// starve the executor that has to answer it.
     fn owed(&self) -> bool {
         self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
     }
 
-    /// Whether a store round trip is outstanding — the removal ticket. A committed removal wakes the
-    /// loop through `CATALOG_WAKE`, but an `existed: false` answer and a refused commit move no
-    /// sequence and therefore raise no wake, so without this the answer would sit until something
-    /// else happened to wake the loop.
+    /// Whether a store round trip is outstanding. A committed removal wakes the loop, but an
+    /// `existed: false` answer and a refused commit move no sequence and raise no wake.
     fn polling_store(&self) -> bool {
         self.catalog.is_some()
     }
 
     /// Hand one outcome to its domain's slot.
     ///
-    /// The pass drains every slot at stage 1 unconditionally, so a full slot means two answers were
-    /// produced for one domain inside a single frame. That cannot happen — each arm serves at most
-    /// one effect — and a change that made it happen would otherwise lose the second answer.
+    /// The pass drains every slot at stage 1, so a full slot means two answers were produced for one
+    /// domain inside a single frame. Each arm serves at most one effect, so that cannot happen.
     fn deliver<T>(slot: &mut obc_app::device_core::Slot<T>, outcome: T, domain: &str) {
         if slot.try_put(outcome).is_err() {
             defmt::error!("exec: {=str} answered twice in one frame — the second answer was lost", domain);
@@ -705,10 +602,8 @@ fn desired_sensor_power(app: &App) -> SensorDemand {
 
 /// Drive the panel at `level`, remembering it in `last` so the PWM is written only on a change.
 ///
-/// Two callers, one rule: the boot seed applies the persisted level before the first frame, and the
-/// loop applies the app's derived answer every pass. Both go through here so the change gate cannot
-/// drift between them. Today's PWM port never refuses; a refusal would be a port that cannot reach
-/// its hardware, which is worth one line per change and never one per frame.
+/// The boot seed and the per-pass apply both go through here, so the change gate cannot drift
+/// between them.
 fn apply_backlight(backlight: &mut crate::panel_power::PanelBacklight, last: &mut u8, level: u8) {
     if level == *last {
         return;
@@ -719,33 +614,24 @@ fn apply_backlight(backlight: &mut crate::panel_power::PanelBacklight, last: &mu
     }
 }
 
-/// The shared map plane + ride loop, driving present through [`MapDisplay`] so it carries **no backend
-/// `#[cfg]`**. Each tick: drain the gestures the input plane recognised, advance the visible screens'
-/// timed content, reconcile the card to the app's intent (open the selected route's geometry; begin /
-/// finalise the ride object), feed the sensors → `tick` (integrate the fix, map-match, record the
-/// track point), then re-render the map only on `dirty.map` and present it. A static screen does zero
-/// map renders. LED0 keeps a ~1 Hz heartbeat. Never returns.
+/// The shared map plane and ride loop. It drives present through [`MapDisplay`], so it carries no
+/// backend `#[cfg]`. Each pass: drain the gestures the input plane recognised, advance the visible
+/// screens' timed content, reconcile the card to the app's intent, feed the sensors into the pass
+/// (integrate the fix, map-match, record the track point), then re-render the map only when it is
+/// dirty and present it. A static screen does zero map renders. Never returns.
 ///
-/// A finished ride is the flat object's recorded 20-byte samples followed by one summary footer —
-/// the device writes no GPX (the phone owns human-format export after sync). Finish journals that
-/// bounded footer tail and clears `RECORDING` in one commit; it never rereads or converts the ride.
-///
-/// The remaining `#[cfg]`s here are the orthogonal `debug-uart` *feature* (a host sensor feed +
-/// telemetry vs. the `SynthLocation` stand-in), not the display backend — that is wholly behind
-/// `MapDisplay`.
+/// A finished ride is the flat object's recorded 20-byte samples followed by one summary footer.
+/// The device writes no GPX: the phone owns export after sync.
 #[allow(clippy::too_many_arguments)]
-// `#[inline(always)]`: this is a single-call-site `-> !` future. Inlining folds it (and the present
-// methods above) back into `main`'s frame — recovering the ~5 KB of stack the bare extraction cost
-// (the deep route-load render then overran the 256 KB part's stack).
+// `#[inline(always)]`: this is a single-call-site `-> !` future. Inlining folds it back into
+// `main`'s frame, which recovers the stack the bare extraction costs.
 #[inline(always)]
 pub(crate) async fn run_app(
     mut display: MapDisplay,
     app: &mut App,
-    // The SD card + RRAM settings behind one async mutex (#193, #270). The loop takes it in two
-    // short scopes per pass — the store phase (reconcile + sources + the sync render) and the
-    // post-present tail (trial confirm) — and **never holds it across the present
-    // await** (#809), so the BLE object plane reaches the card during the FLPR scan and between
-    // passes alike. Replaces the by-value `Storage`/settings store this fn used to own.
+    // The card and the RRAM settings behind one async mutex. The loop takes it in two short scopes
+    // per pass — the store phase and the post-present tail — and never holds it across the present
+    // await, so the object planes reach the card during the panel scan.
     shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
@@ -753,62 +639,44 @@ pub(crate) async fn run_app(
     flat_map: &'static dyn obc_formats::io::ByteSource,
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     route_cache: &RouteCache,
-    // The router's resident half (epic #116 R4 + EL7): the map's terrain, threaded from `main`
-    // (never a local — the #270/#419 discipline). Its A* table, tile cache and planner slot are the
-    // scratch arena's nav arm now (#1146 P2), claimed per search below. On `not(has_nav)` (the `ble`
-    // build) this is the unit stand-in — the router isn't in that image.
+    // The router's resident half: the map's terrain, threaded from `main` and never a local. Its A*
+    // table, tile cache and planner slot are the scratch arena's nav arm, claimed per search below.
     #[cfg(has_nav)] nav: NavResident,
     #[cfg(not(has_nav))] nav: NavResident,
     led: &mut Output<'static>,
-    // The panel's brightness port (#1558), armed in `main` where the peripherals live and driven
-    // from the per-pass apply below. By value: this loop is its only user for the life of the
-    // device, and it never returns.
+    // The panel's brightness port, armed in `main` where the peripherals live. By value: this loop
+    // is its only user, and it never returns.
     mut backlight: crate::panel_power::PanelBacklight,
-    // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
-    // dog already running with a foreign config. Fed once per pass below, gated on the input
-    // plane's heartbeat.
+    // The watchdog feed handle, `None` only if the dog was already running with a foreign config.
     mut wdt: Option<wdt::WatchdogHandle>,
-    // The sensor hub's consumer handle (#808): the `*Source` drains + presence + the event wake.
-    // Threaded from `main`'s `static SensorHub` on every build that uses the hub — the real-sensor
-    // GPS sources, or the `debug-uart`/`ble` HR/power/cadence sources — so ownership is visible in
-    // composition, not reached through a global. Absent only on the pure `synth` build.
+    // The sensor hub's consumer handle: the source drains, the presence flag and the event wake.
+    // Absent only on the pure `synth` build.
     #[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))] consumer: SensorConsumer<'static>,
-    // The hub's control handle (#808): the GPS rate + power latches the sensor task awaits. Only the
-    // real-sensor build drives a power-managed receiver.
+    // The hub's control handle: the GPS rate and power latches the sensor task awaits.
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] control: SensorControl<'static>,
-    // The OBCM bbox centre (lon, lat) — only the `SynthLocation` stand-in needs it (the host feed and
-    // the real GPS both stream absolute positions). So it's threaded only on the `synth` build.
+    // The map bbox centre. Only the `SynthLocation` stand-in needs it, because the host feed and the
+    // real GPS both stream absolute positions.
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))] cam_center: (i32, i32),
 ) -> ! {
     // Native renderer colour → identity `Rgb565`; `FbDevice64` quantizes to RGB222 on store.
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
 
-    // Sensor sources — three builds, one `Sensors` either way (the app can't tell which):
-    // - `debug-uart`: the host-streamed GPS / altimeter / compass, parsed by the VCOM tasks into
-    //   obc-platform's debug-link signals; these ZST handles just `try_take` on the ~1 Hz contract.
-    // - default (real sensors, #218): the SAM-M10Q + BMP581 task publishes through the hub;
-    //   these consumer sources drain its mailboxes. Absolute positions, so no camera re-centre below.
-    // - `synth`: the `SynthLocation` square loop (walked from a boot-relative `start`), no baro.
+    // Sensor sources: three builds, and one `Sensors` either way, so the app cannot tell which.
     #[cfg(feature = "debug-uart")]
     let (mut debug_loc, mut debug_alt, mut debug_compass) = (
         obc_platform::debug_link::DebugLocation,
         obc_platform::debug_link::DebugAltimeter,
         obc_platform::debug_link::DebugCompass,
     );
-    // The hub sources (`consumer.location()` etc.) are *not* bound here: they're stateless
-    // one-pointer drains, so each `app.tick` site below constructs them as call-expression
-    // temporaries. `tick` is synchronous, so the temporaries never live across an `await` — binding
-    // them for the loop's lifetime would park one hub pointer per source in this task's future
-    // (measured in #808: ~40 B of `__embassy_main` arena) for no behavioral difference.
+    // The hub sources are not bound here. They are stateless one-pointer drains, so each pass site
+    // builds them as call temporaries; a binding would park one hub pointer per source in this
+    // task's future for no behavioural difference.
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
-    // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in. Polled in `Sensors`
-    // like any other sensor.
+    // Battery: a fixed stand-in until the PMIC fuel gauge is wired in.
     let mut fuel = StubFuelGauge::new(75);
 
-    // **The board's typed effect executor** (#1397 S6b) — the outcomes, facts and staged effects
-    // that live between two `App::run_pass` calls. Built here, beside the other loop-lifetime state,
-    // because it is exactly that: one per boot, owned by the one task that touches the `App`.
+    // The outcomes, facts and staged effects that live between two `App::run_pass` calls.
     let mut exec = RideExec::default();
     let mut ride_recorder = crate::flat_ride::Recorder::new(
         flat,
@@ -816,8 +684,8 @@ pub(crate) async fn run_app(
         Instant::now().as_millis() as u32,
     );
     // A reset may have landed after the footer checkpoint but before the single clearing commit.
-    // Service that terminal state before the first UI pass; it must not wait for a later route or
-    // session edge, and it must never expose a footer-bearing object as resumable samples.
+    // Service that terminal state before the first UI pass. It must never expose a footer-bearing
+    // object as resumable samples.
     ride_recorder.settle().await;
     let recovery_warning = ride_recorder.take_warning();
     if let Some(continuation) = ride_recorder.recovered_continuation() {
@@ -830,21 +698,14 @@ pub(crate) async fn run_app(
         exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
     }
 
-    // Per-frame ride-loop state:
-    // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
-    // - `prev_active` gates the SD route reconcile on actual change, `opened_session` the ride object;
-    // - `route_index`/`index_route` cache the active route's chunk index, rebuilt only on a route change;
-    // - `pending_map_redraw` re-arms a redraw a transient SD glitch couldn't service;
-    // - `last_telem*` throttle the host telemetry (debug-uart only).
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut prev_route: Option<usize> = None;
     let mut prev_active: Option<usize> = None;
     // The ride session this executor has opened an object for. Never cleared by a close: a session
-    // that has been served is served, whatever became of its object. See `RecorderMachine::object_owed`
-    // for why this is an id rather than "is anything recording".
+    // that has been served is served, whatever became of its object.
     let mut opened_session: Option<u32> = None;
-    // The in-flight route plan's bookkeeping (#499): `Some` while a plan is being stepped, one
-    // bounded step per pass. Guards the planner slot's initialization.
+    // The in-flight route plan's bookkeeping: `Some` while a plan is being stepped, one bounded step
+    // per pass. It guards the planner slot's initialization.
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
     #[cfg(has_nav)]
@@ -855,21 +716,18 @@ pub(crate) async fn run_app(
     let mut detour = crate::detour::Executor::new();
     #[cfg(has_nav)]
     let mut visit = crate::visit::Executor::new();
-    // The scratch arena's **nav arm**, held for the whole search (#1146 P2) — many passes, by
-    // design: the A* table, the tile cache and the planner all have to survive from one bounded step
-    // to the next. This loop is the arena's sole owner-switcher, and the Recalculating freeze is what
-    // keeps render claims away while it is held. Taken at the plan drain, given back on the answer
-    // and on every cancel/abort path.
+    // The scratch arena's nav arm, held for the whole search and so for many passes: the A* table,
+    // the tile cache and the planner must all survive from one bounded step to the next. This loop
+    // is the arena's sole owner-switcher. Taken at the plan drain, given back on the answer and on
+    // every cancel path.
     #[cfg(has_nav)]
     let mut nav_guard: Option<crate::arena::NavGuard> = None;
-    // A map upload's 64 KiB write-combining arm. Only this loop switches arena owners; the USB
-    // task asks through a level+edge handshake and borrows the bytes synchronously in storage.
+    // A map upload's write-combining arm. Only this loop switches arena owners; the USB task asks
+    // through a level and edge handshake.
     let mut usb_stage_guard: Option<crate::arena::UsbGuard> = None;
-    // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
-    // `Option<RouteIndex>` built by value: the slot is ~12.3 KB and permanently part of this frame
-    // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
-    // the pass's deepest point — which is what overflowed the 44 KB main stack on the post-upload
-    // rescan (STKOF HardFault, 2026-07-12). `build_route_index_into` fills it in place.
+    // The active route's resident chunk-index slot: a bare `RouteIndex` and a validity flag, not an
+    // `Option<RouteIndex>` built by value. The slot is about 12.3 KB either way, but a by-value
+    // build also transits the stack at the pass's deepest point, which overflows it.
     let mut route_index: RouteIndex = RouteIndex::empty();
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
@@ -879,103 +737,87 @@ pub(crate) async fn run_app(
     // The level last handed to the backlight, so the PWM is touched on a change rather than every
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
     let mut backlight_level = u8::MAX;
-    // The panel-light capability, straight from the port that answers it (#1515 D2). `true` since
-    // the board drives a real PWM (#1558), which is what puts the brightness control on the
-    // drawer's root row.
+    // The panel-light capability, straight from the port that answers it.
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
-    // The map plane is one resident RGB222 framebuffer that the present scans out of, so every
-    // repaint here is a repaint *over the last frame*. That is what lets the app leave the frozen
-    // base's rows alone while a drawer's sheet grows over them (#1559).
+    // The map plane is one resident framebuffer that the present scans out of, so every repaint is a
+    // repaint over the last frame. That is what lets the app leave a frozen base's rows alone while
+    // a drawer's sheet grows over them.
     app.set_resident_frame(true);
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]
     let mut last_telem = obc_platform::debug_link::Telemetry::default();
-    // Stack-guard bookkeeping: log only when a new deepest reach is seen, so a future change that pushes
-    // the deep render path closer to the 256 KB-DK's ~36 KB stack ceiling shows up immediately.
+    // Stack-guard bookkeeping: log only when a new deepest reach is seen.
     let mut stack_hw = 0usize;
     let mut last_led = 0u32;
-    // Previous frame's hold-progress, so a hold that retracts on a non-map screen (released early, or
-    // just completed) gets one trailing redraw to clear its on-screen bar — the falling edge the
-    // charging redraw below would otherwise miss now that a cancelled long-press emits no gesture.
+    // The previous frame's hold progress, so a hold that retracts on a non-map screen gets one
+    // trailing redraw to clear its bar. A cancelled long press emits no gesture.
     let mut prev_hold_p = 0.0f32;
-    // Terrain samples taken this boot (EL8), purely to throttle the `altfuse:` RTT line to one per
-    // 64 fixes. Not state the app reads — the estimator's own counters live on `Activity`.
+    // Terrain samples taken this boot, only to throttle the `altfuse:` log line.
     #[cfg(has_nav)]
     let mut elev_fixes: u32 = 0;
-    // The DFU trial confirm (epic #615 S4, #619) is anchored at "first frame presented AND SD
-    // mounted" — precisely the first successful `render_present` below (main mounts the card and
-    // faults out *before* this loop can run, so storage being live is already implied here; a
-    // boot that can't reach a presented frame never confirms, and S3's rollback fires next boot).
+    // The DFU trial confirm is anchored at "first frame presented and card mounted", which is the
+    // first successful present below. A boot that cannot reach a presented frame never confirms, and
+    // the rollback fires next boot.
     let mut trial_confirm_pending = true;
-    // DR6 (#734): the scan's validated `StagedRef`, parked between the `DfuAction::Scan` that
-    // produced it and the confirm's `DfuAction::Install`, so the arm reuses that full read + CRC
-    // pass instead of redoing it. `Copy`, ~850 B; it lives in this loop task's future storage, off
-    // `arm_update`'s sync stack (see the stack note in `dfu.rs`). A failed re-scan clears it; a stale
-    // ref is safe — the bootloader re-verifies post-reboot regardless. `None` ⇒ `run_install` falls
-    // back to a fresh scan (an Install with no preceding Scan, e.g. the `dfu-install` debug path).
+    // The scan's validated `StagedRef`, parked between the scan that produced it and the confirm's
+    // install, so the arm reuses that read and CRC pass. A failed re-scan clears it, and a stale ref
+    // is safe because the bootloader re-verifies after the reboot. `None` makes `run_install` fall
+    // back to a fresh scan.
     let mut cached_staged: Option<obc_dfu::StagedRef> = None;
 
-    // SE7 (#714): the saved-sensor addresses last pushed to the central manager, so the per-pass
-    // reconcile below drives a save/forget only on an actual change (the `set_radio_enabled` shape,
-    // fired once per change — never re-signalled, so a steady state never interrupts a live link).
-    // Starts empty → the first pass seeds the manager from the persisted `Settings.saved_sensors`.
+    // The saved-sensor addresses last pushed to the central manager, so the reconcile below drives a
+    // save or forget only on an actual change and a steady state never interrupts a live link. It
+    // starts empty, so the first pass seeds the manager from the persisted settings.
     let mut pushed_sensors: [Option<([u8; 6], bool)>; obc_app::SENSOR_SLOTS] = [None; obc_app::SENSOR_SLOTS];
-    // SE7 (#714): the next-re-arm deadline (loop-millis) for the discovery scan while the scan list is
-    // up — `0` = not scanning (rings `request_scan` on the rising edge, then re-arms just under the
-    // board's ~10 s window), so the scan stays live without pulsing the manager's work edge every pass.
+    // The next re-arm deadline (loop ms) for the discovery scan while the scan list is up. `0` means
+    // not scanning. It re-arms just under the manager's 10 s window, so the scan stays live without
+    // pulsing the manager's work edge every pass.
     let mut sensor_scan_rearm_ms: u32 = 0;
 
-    // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes to
-    // `None` → defaults), then persist on any change the settings screens make. One brief lock,
-    // released at once — the loop re-locks the shared store each pass.
+    // Seed the app from the persistent RRAM store at boot; a blank or corrupt page decodes to the
+    // defaults. One brief lock, released at once.
     app.set_settings({
         let mut store = shared.lock().await;
         store.settings.load().unwrap_or_default()
     });
-    // …and the brightness in that seed reaches the panel **here**, before the first frame is drawn.
-    // The per-pass apply at the end of the loop would otherwise leave the light at the factory level
-    // `PanelBacklight::new` armed it with until the first render finished, so a rider who set a dim
-    // panel would watch it start bright and then drop.
+    // The brightness in that seed reaches the panel here, before the first frame is drawn. The
+    // per-pass apply at the end of the loop would otherwise leave the light at the level
+    // `PanelBacklight::new` armed, so a rider who set a dim panel would watch it start bright.
     apply_backlight(&mut backlight, &mut backlight_level, app.backlight_level());
 
-    // The DFU boot-outcome reconcile: boot-state page + the armer's breadcrumb → the one-time
-    // post-update verdict card ("UPDATE FAILED" / the accepted-trial toast). A `Trial` boot is
-    // left alone — the health-anchor confirm below owns that verdict. Same brief-lock idiom.
+    // The DFU boot-outcome reconcile: the boot-state page and the armer's breadcrumb give the
+    // one-time post-update verdict card. A trial boot is left alone; the confirm below owns it.
     {
         let mut store = shared.lock().await;
         crate::dfu::reconcile_boot_outcome(&mut exec.facts, &mut store.settings);
     }
 
-    // Align the GPS to the persisted fix interval: push it to the sensor task once at boot (the task
-    // boots at a 1 s default), then again whenever the Power screen edits it. `prev_interval` gates the
-    // re-VALSET so an unrelated settings change (units, clock) doesn't reconfigure the M10.
+    // Align the GPS to the persisted fix interval: push it to the sensor task once at boot, then
+    // again whenever the Power screen edits it. `prev_interval` gates the re-VALSET, so an unrelated
+    // settings change does not reconfigure the receiver.
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     let mut prev_interval = app.settings().fix_interval_s;
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     control.set_rate(prev_interval);
 
-    // Drive the GPS power state: the sensor task acquires one boot fix regardless, then honours this —
-    // Seed receiver and compass demand, then publish only changed levels after each pass.
+    // Seed the receiver and compass demand; only changed levels are published after each pass.
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     let mut prev_power = desired_sensor_power(app);
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     control.set_power(prev_power);
 
-    // Whether the map-transfer card (issue #927) was **observed** on the stack last pass — the latch
-    // that turns "the card is gone" into "the rider dismissed it". See the reconcile below.
+    // Whether the map-transfer card was observed on the stack last pass: the latch that turns "the
+    // card is gone" into "the rider dismissed it".
     let mut map_card_shown = false;
-    // Map-upload pacing (#889, the WDT-reset episode): while bytes are landing, the card is the
-    // only thing on glass and every repaint is ~85 ms of render+push stolen from the SD write
-    // path — so `Receiving` progress is fed to the app at most once per this interval, and the
-    // loop's own timer is clamped up to it. Wakes still happen (gestures, sensors, the WDT feed
-    // cap), they just find an unchanged card and repaint nothing. Terminal states bypass the
-    // throttle: `Installed`/`Failed` must land on glass the pass they happen.
+    // Map-upload pacing: while bytes are landing the card is the only thing on glass, and every
+    // repaint is about 85 ms of render and push stolen from the write path. Progress is fed to the
+    // app at most once per this interval, and the loop's own timer is clamped up to it. Terminal
+    // states bypass the throttle.
     const MAP_XFER_PACE_MS: u32 = 2_000;
     let mut map_uploading = false;
     let mut map_xfer_fed_ms: u32 = 0;
-    // The transfer level last reported to `CoreMode`, so the RTT line below logs its edge and not
-    // one line per pass. `debug-uart` only — see the line.
+    // The transfer level last reported, so the log line below reports its edge and not every pass.
     #[cfg(feature = "debug-uart")]
     let mut prev_transferring = false;
 
@@ -986,18 +828,15 @@ pub(crate) async fn run_app(
         let hw = stackmeter::used(now);
         if hw > stack_hw {
             stack_hw = hw;
-            // Surface the peak in the diagnostics blob for the A9 soak rig (#277) — the ride loop owns the
-            // stackmeter, so it publishes the mark into the BLE state the blob reads.
+            // Surface the peak in the diagnostics blob: the ride loop owns the stackmeter, so it
+            // publishes the mark into the state the blob reads.
             crate::link::publish_stack_high_water(hw);
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
         }
 
-        // ── #349 fault tolerance, once per pass ──
-        // The FLPR degraded for good (MAX_CONSEC_RELAUNCHES relaunches failed) → drop to the
-        // heartbeat idle. This loop **keeps feeding the watchdog**: degraded is a deliberate
-        // terminal state, not a wedge — an unfed dog here would just boot-loop the device against
-        // a dead FLPR. COM + the input plane keep running (the glass holds its last image,
-        // DC-bias-safe); only a power-cycle retries the panel.
+        // The panel degraded for good, so drop to the heartbeat idle. This loop keeps feeding the
+        // watchdog: degraded is a deliberate terminal state, not a wedge, and an unfed dog would just
+        // boot-loop the device against a dead FLPR. Only a power cycle retries the panel.
         if display.degraded() {
             defmt::error!("display degraded — heartbeat idle (ride loop stopped; power-cycle to retry)");
             loop {
@@ -1009,12 +848,11 @@ pub(crate) async fn run_app(
             }
         }
         // Feed the watchdog, gated on the input plane's heartbeat: this pass proves thread mode
-        // alive, the stamp proves the P3 recognizer alive — either plane wedging stops the feed
-        // and the dog resets the device within its period.
+        // alive and the stamp proves the recognizer alive, so either plane wedging stops the feed.
         if let Some(h) = wdt.as_mut() {
-            // The input plane stamps from its own `Instant::now()`, which can be a hair newer
-            // than this loop's `now` — the subtraction then wraps to ~u32::MAX. A wrapped
-            // (top-half) age means the heartbeat is *ahead* of us, i.e. maximally fresh.
+            // The input plane stamps from its own `Instant::now()`, which can be a hair newer than
+            // this loop's `now`, and the subtraction then wraps. A wrapped age means the heartbeat is
+            // ahead of us, so it is maximally fresh.
             let age = now.wrapping_sub(INPUT_HB_MS.load(Ordering::Relaxed));
             if age <= INPUT_HB_STALE_MS || age > u32::MAX / 2 {
                 h.pet();
@@ -1023,11 +861,9 @@ pub(crate) async fn run_app(
             }
         }
 
-        // Feed the input plane's live hold-progress before anything below consults it: every
-        // hold-deferral rule this pass runs (`hold_charging` — the upload popups' delivery and
-        // auto-close, the passkey card's open/close) must read *this* pass's charge state. A loop
-        // woken from warm sleep by INPUT_WAKE otherwise saw the previous pass's seconds-stale 0.0
-        // and could land or close a host-pushed screen mid-charge.
+        // Feed the live hold progress before anything below consults it: every hold-deferral rule
+        // this pass runs must read this pass's charge state. A loop woken from warm sleep otherwise
+        // saw a seconds-stale 0.0 and could land or close a pushed screen mid-charge.
         app.set_hold_progress(display.hold_progress());
 
         let transferring = crate::flat_store::transfer_active();
@@ -1042,9 +878,8 @@ pub(crate) async fn run_app(
             defmt::info!("xfer: transfer level {=str} (flat engine)", if transferring { "active" } else { "idle" });
         }
 
-        // ── Sensor presence → warning (issue #504), real-sensor build, once ──
-        // The sensor task publishes once GPS responds or its startup deadline passes. Map chips
-        // absent at that point to a dismissable warning; this is not a live-availability stream.
+        // The sensor task publishes once GPS responds or its startup deadline passes. Map chips that
+        // are absent at that point to a dismissable warning; this is not a live-availability stream.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         if let Some(p) = consumer.take_presence() {
             let mut w = obc_app::WarningFlags::NONE;
@@ -1060,25 +895,17 @@ pub(crate) async fn run_app(
             exec.facts.raise_warnings(w);
         }
 
-        // ── BLE → app seam (epic #447), FEEDING half: everything that hands the app a value the
-        // pass below reads. The half that *acts on* what the pass decided runs after it, inside the
-        // store phase — that is the only reordering the typed cutover forced here. ──
+        // The BLE feeding half: everything that hands the app a value the pass below reads. The half
+        // that acts on what the pass decided runs after it, inside the store phase.
         {
-            // The link snapshot (connected + passkey) as a **level**: the pass compares it against
-            // what it last saw and calls `set_ble_status` only on a change, so a steady state
-            // dirties nothing.
+            // The link snapshot as a level: the pass compares it against what it last saw, so a
+            // steady state dirties nothing.
             exec.facts.note_link(crate::ble::app_ble_status());
 
-            // Mirror the ride-recording state to the BLE plane's `installFw` busy-gate (S6, #621), and
-            // drain a BLE-initiated install request into the on-glass flow: `open_remote_dfu_check`
-            // pushes the "Checking card..." wait and posts `DfuAction::Scan` — the System menu's press
-            // arriving over the air, NEVER `DfuAction::Install` (spec §4.4: the phone can request, only
-            // the rider installs; direct Install stays the physical debug link's + the confirm screen's).
-            // The atomic is consumed only when the flow actually opened — a `false` is a *deferral*
-            // (passkey card up, a DFU screen already on the stack, a hold charging, recording), so the
-            // request stays pending, retries next pass, and keeps the BLE edge's `dfu_install_pending()`
-            // busy-gate accurate while it waits. The Scan posted here is drained by the DFU match below
-            // in this same pass, so the wait card swaps to the confirm/error promptly.
+            // Mirror the ride-recording state to the BLE plane's install busy-gate, and drain a
+            // BLE-initiated install request into the on-glass flow. The phone can request an install;
+            // only the rider installs. The atomic is consumed only when the flow actually opened: a
+            // `false` is a deferral, so the request stays pending and retries next pass.
             crate::link::set_recording(app.recording());
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
@@ -1086,29 +913,18 @@ pub(crate) async fn run_app(
             if let Some((utc, offset_min)) = crate::object_store::take_ble_clock() {
                 app.stamp_clock_ble(utc, offset_min);
             }
-            // The settings→radio switch (#455): push the persisted Bluetooth toggle across the
-            // plane boundary — one atomic swap; the radio plane wakes only on a change (off = stop
-            // advertising + drop the link; on = the normal lifecycle). Fire-and-forget by design:
-            // this loop never blocks on the radio winding down, so no wake source here can go dead
-            // with the radio off (#438's lesson).
+            // Push the persisted Bluetooth toggle across the plane boundary. The radio plane wakes
+            // only on a change. Fire and forget: this loop never blocks on the radio winding down.
             crate::ble::set_radio_enabled(app.settings().ble_enabled);
         }
 
-        // ── Map-transfer card (issue #927): the on-glass half of a write that runs for minutes ──
-        // The USB data plane publishes the transfer state into `link`'s atomics; this is the one task
-        // allowed to touch the `App`, so it reads them once per pass and reconciles the card. Fed an
-        // unchanged state the reconcile repaints nothing.
+        // The on-glass half of a write that runs for minutes. The USB data plane publishes the
+        // transfer state into atomics, and this is the one task allowed to touch the `App`, so it
+        // reads them once per pass and reconciles the card. An unchanged state repaints nothing.
         //
-        // Dismissal has to be observed rather than signalled: the terminal card pops itself on a
-        // press, and without this the next pass would simply push it back. `card_shown` latches the
-        // *observed* card (never the intent, so a push deferred mid-hold isn't mistaken for a
-        // dismissal), and a card that was up and no longer is means the rider closed it — so the
-        // published state is cleared instead of re-fed.
-        //
-        // This block is a **feed**, so it runs ahead of the pass that applies the gestures — which
-        // means the press that pops the card is observed on the frame *after* it happens. Benign,
-        // and it is the shape the latch was built for: it observes rather than being told, and a
-        // terminal state is never re-fed once cleared.
+        // Dismissal has to be observed rather than signalled, because the terminal card pops itself
+        // on a press and the next pass would push it back. The latch holds the observed card, so a
+        // push deferred mid-hold is not mistaken for a dismissal.
         {
             if map_card_shown && !app.map_transfer_card_up() {
                 crate::link::clear_map_transfer();
@@ -1117,9 +933,8 @@ pub(crate) async fn run_app(
             } else {
                 let state = crate::link::map_transfer_state();
                 let receiving = state.is_some_and(|s| s.is_receiving());
-                // The throttle (see MAP_XFER_PACE_MS): a Receiving→Receiving pass inside the pace
-                // window skips the feed, so a sensor-paced wake doesn't turn a progress tick into
-                // a full repaint. Any transition — into, out of, or the first Receiving — feeds.
+                // The throttle: a Receiving-to-Receiving pass inside the pace window skips the feed,
+                // so a sensor-paced wake does not turn a progress tick into a full repaint.
                 if !(receiving && map_uploading && now.wrapping_sub(map_xfer_fed_ms) < MAP_XFER_PACE_MS) {
                     app.set_map_transfer(state);
                     map_card_shown = app.map_transfer_card_up();
@@ -1146,13 +961,11 @@ pub(crate) async fn run_app(
             }
         }
 
-        // ── BLE → app seam, FEEDING half (continued): the sensor snapshots the pass reads ──
-        // The *requests* that keep discovery alive and reconcile the saved slots are the acting
-        // half, and they moved after the pass with #1397 S6b: both key on screen and settings state
-        // this frame's gestures produce, and gestures are applied inside the pass now.
+        // The sensor snapshots the pass reads. The requests that keep discovery alive are the acting
+        // half and run after the pass, because both key on state this frame's gestures produce.
         {
-            // The scan list's hits, as a feed: the manager's snapshot into the app, so a wake for
-            // any reason renders what discovery has found so far.
+            // The scan list's hits as a feed, so a wake for any reason renders what discovery has
+            // found so far.
             if app.sensor_scan_active() {
                 let mut hits: heapless::Vec<obc_app::SensorScanHit, { obc_app::sensors::SCAN_HITS_MAX }> =
                     heapless::Vec::new();
@@ -1171,43 +984,31 @@ pub(crate) async fn run_app(
             } else {
                 app.set_sensor_scan_hits(&[]);
             }
-            // Push the per-slot status snapshot (the Sensors screen's row status lines).
             let sensor_status = [sensor_status_of(0), sensor_status_of(1), sensor_status_of(2)];
             app.set_sensor_status(&sensor_status);
         }
 
-        // This frame's hold-bulge state, sampled once: the live row span the present goes around and
-        // the bulge re-push is driven from.
+        // This frame's hold-bulge state, sampled once.
         //
-        // The bulge pushes **first in the pass**, before the store lock, the SD reconcile, and any
-        // screen redraw (#348 follow-up, widened here): a fired hold usually navigates — and a
-        // fired *Finish* triggers the ride save — so with the bulge later in the pass its confirm
-        // pop queued behind the new screen's render (~40–300 ms) or, worse, the whole SD save,
-        // and the 220 ms pop expired unseen ("sometimes it just snaps"). Bulge-first, the pop's
-        // attack lands on glass within ~10 ms of the fire — composited over the *old* fb for that
-        // one frame, which is correct: that is what is on glass until the present below.
+        // The bulge pushes first in the pass, before the store lock and any screen redraw: a fired
+        // hold usually navigates, and a fired Finish triggers the ride save, so with the bulge later
+        // its confirm pop queued behind the new screen's render or the whole save and the 220 ms pop
+        // expired unseen. Bulge-first, the pop lands on glass within about 10 ms, composited over the
+        // old framebuffer, which is what is on glass until the present below.
         let overlay_span = display.poll_overlay();
         display.present_bulge(overlay_span).await;
 
-        // ── The staged DFU effect (epic #615 S4/S5), served BEFORE the store phase ──
-        //
-        // `DfuEffect` is the one effect the board deliberately serves a pass *late*: the guard-free
-        // block it belongs in is here, ahead of the store phase (#809 — the "Installing update"
-        // card's present must not hold the store guard, or a BLE object operation queues behind a
-        // ~44 ms FLPR scan). One pass of latency on an operation that ends in a reboot is not a
-        // cost; moving this block under the guard would be. The outcome is delivered into the inbox
-        // and consumed by *this* frame's pass, so the confirm/error card still lands in one frame.
-        //
-        // The `dfu-install` debug command reaches the same path by naming the intent to `DfuState`
-        // rather than reaching for the executor — so it produces the same `ArmInstall` under the
-        // same operation token the confirm screen's press does.
+        // `DfuEffect` is the one effect the board serves a pass late. The guard-free block it
+        // belongs in is here, ahead of the store phase, because the "Installing update" card's
+        // present must not hold the store guard. One pass of latency on an operation that ends in a
+        // reboot is not a cost. The outcome is consumed by this frame's pass, so the confirm or error
+        // card still lands in one frame.
         #[cfg(feature = "debug-uart")]
         if obc_platform::debug_link::take_dfu_install() {
             app.debug_request_dfu_install();
         }
-        // The #1591 recovery acceptance commands, drained in the same guard-free block and for the
-        // same reason as `dfu-install`: they make an on-glass gate runnable over the VCOM harness.
-        // All three dead-strip from the release image.
+        // The recovery acceptance commands, drained in the same guard-free block and for the same
+        // reason as `dfu-install`. All three dead-strip from the release image.
         #[cfg(feature = "debug-uart")]
         if let Some(kind) = obc_platform::debug_link::take_ride_damage() {
             ride_recorder.debug_fabricate_damage(flat, kind, now).await;
@@ -1224,12 +1025,10 @@ pub(crate) async fn run_app(
             use obc_app::dfu::{DfuEffect, DfuOutcome};
             match effect {
                 DfuEffect::ArmInstall { token } => {
-                    // The irreversible arm-and-reboot. Guards mirror what the System menu greys out:
-                    // never mid-recording (the arm ends in a reboot — a live ride would be lost) and
-                    // never while the flat recorder still owns an active `RECORDING` object. A
-                    // refusal is a typed reason and lands the error card (issue #755) so the
-                    // confirm's "Preparing update..." spinner can't strand the rider. The `D`-line
-                    // breadcrumbs name the guard that refused (the field-debugging motivation).
+                    // The irreversible arm and reboot. The guards mirror what the System menu greys
+                    // out: never mid-recording, and never while the flat recorder still owns an
+                    // active object. A refusal is a typed reason and lands the error card, so the
+                    // spinner cannot strand the rider.
                     let refusal = {
                         // One short store guard: just the go/no-go checks.
                         let store_guard = shared.lock().await;
@@ -1248,30 +1047,19 @@ pub(crate) async fn run_app(
                             RideExec::deliver(&mut exec.outcomes.dfu, DfuOutcome::InstallFailed { token, error }, "dfu")
                         }
                         None => {
-                            // The guards passed: answer the arm **now** so this frame's pass swaps
-                            // the confirm's "Preparing update..." spinner for the static
-                            // "Installing update" card, and let the ordinary render + present put
-                            // that frame on glass. The arm itself runs in the store tail, after the
-                            // present — the warm reset into the bootloader never paints (it only
-                            // parks the panel pins and keeps the COM wave alternating,
-                            // `obc-boot/src/com.rs`), so the MIP holds THAT frame for the whole
-                            // snapshot + flash.
-                            //
-                            // This replaces a hand-rolled render/present pair inside the effect with
-                            // the frame the loop already knows how to produce, and it is what makes
-                            // the guard-free present a property of the phase rather than of this
-                            // block remembering to release the lock.
+                            // The guards passed: answer the arm now, so this frame's pass swaps the
+                            // spinner for the static "Installing update" card and the ordinary render
+                            // and present put that frame on glass. The arm itself runs in the store
+                            // tail, after the present: the warm reset into the bootloader never
+                            // paints, so the panel holds that frame for the whole snapshot and flash.
                             RideExec::deliver(&mut exec.outcomes.dfu, DfuOutcome::InstallBegan { token }, "dfu");
                             exec.arm_pending = Some(0);
                         }
                     }
                 }
                 DfuEffect::Scan { token } => {
-                    // The UI's read-only "Checking card..." step: validate `UPDATE.BIN` and answer
-                    // the app (the wait screen swaps to the confirm or an error card). No card ⇒
-                    // report the update file as missing. The scan touches nothing, so no ride-state
-                    // guard is needed (the menu greys the row mid-ride anyway). One short store
-                    // guard of its own.
+                    // The read-only "Checking card..." step: validate the staged image and answer the
+                    // app. The scan touches nothing, so it needs no ride-state guard.
                     let result = {
                         let mut store_guard = shared.lock().await;
                         let SharedStore { storage, settings: settings_store } = &mut *store_guard;
@@ -1280,9 +1068,9 @@ pub(crate) async fn run_app(
                             None => Err(obc_app::DfuScanError::NotFound),
                         }
                     };
-                    // DR6 (#734): park the validated ref for the confirm's Install; answer the app
-                    // with just the report. A failed scan clears any prior ref (the card may have
-                    // changed).
+                    // Park the validated ref for the confirm's install and answer the app with just
+                    // the report. A failed scan clears any prior ref, because the card may have
+                    // changed.
                     let outcome = match result {
                         Ok((report, staged)) => {
                             cached_staged = Some(staged);
@@ -1298,28 +1086,21 @@ pub(crate) async fn run_app(
             }
         }
 
-        // ═══ Store phase (#809): ONE lexical block owns the store guard ═══
-        // The settings save, the card reconcile, the per-frame route/track/map sources, and the
-        // map *render* that reads them all run under this guard; the block's close is the guard's
-        // death — **before** the present phase below, so a BLE object operation waits behind at
-        // most the render, never the ~44 ms FLPR scan on top of it (#270 → #809). The phase is
-        // render runs while the reader/source borrows of the open SD handles are live, which is
-        // exactly what keeps an upload/delete from invalidating a reader mid-render. A route plan
-        // may await bounded calls to the independent flat-store writer in this block; neither that
-        // task nor the flat map reader borrows this legacy/settings mutex. Destructured into the two
-        // names the body uses (`storage`, `settings_store`).
+        // One lexical block owns the store guard. The settings save, the card reconcile, the
+        // per-frame sources and the map render all run under it, and the block's close is the
+        // guard's death — before the present phase below, so a BLE object operation waits behind at
+        // most the render and never the panel scan on top of it. The render runs while the reader
+        // borrows of the open handles are live, which is what keeps an upload or delete from
+        // invalidating a reader mid-render.
         let (rendered, dirty_map, hold_p, next_wake_ms, immediate, store_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_store = Instant::now();
             let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
-            // ═══ The staged effects, each in the physical phase that already owns it ═══
-            //
-            // These are the bounded operations the **previous** pass decided. They run at the top of
-            // the store phase because that is where the work they name has always lived: a catalog
-            // re-read has to precede this frame's route source/index build (it closes and reopens the
-            // held revision, so a reader built before it would outlive its source), and the settings
-            // write needs the store this block holds.
+            // The bounded operations the previous pass decided. They run at the top of the store
+            // phase because that is where the work they name lives: a catalog re-read must precede
+            // this frame's route source and index build, and the settings write needs the store this
+            // block holds.
             flat.set_route_added_at(app.clock_trusted().then(|| app.wall_unix_now()));
             if crate::flat_store::take_route_storage_full() {
                 app.offer_route_cleanup(crate::flat_store::catalog_scope(flat).store);
@@ -1370,8 +1151,8 @@ pub(crate) async fn run_app(
                             ),
                         }
                     }
-                    // The rescan block: rebuild the flat route/trip/ride identities and remap the
-                    // app's held indices by durable ObjectId.
+                    // Rebuild the flat route, trip and ride identities and remap the app's held
+                    // indices by durable object id.
                     CatalogEffect::ReadCatalog { token } => {
                         let old_source = crate::flat_store::route_source_key();
                         let read = read_catalogs(flat, app, &mut exec.facts).await;
@@ -1388,23 +1169,19 @@ pub(crate) async fn run_app(
                             route_index_valid = false;
                         }
 
-                        // A partial read is answered `Unreadable`, and the **domain** re-offers the read from there
-                        // (#1541) — one per pass, which is one per wake.
+                        // A partial read is answered `Unreadable`, and the domain re-offers the read
+                        // from there, once per pass.
                         let outcome = match read {
                             Ok(scope) => CatalogOutcome::CatalogRead { token, scope: Some(scope) },
                             Err(error) => CatalogOutcome::Failed { token, error },
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                     }
-                    // The rider's removal — a route, a ride, or one step of a trip
-                    // cascade — on the **answering** writer path. The effect is namespace-free (FS7
-                    // numbers every object out of one id space), so the store resolves the head at
-                    // that id and reports whether it was there. The cascade's member-then-folder
-                    // order is `CatalogMachine`'s, and arrives here as one removal at a time
-                    // (#1491), so this executor composes nothing.
-                    //
-                    // A full request queue is not an answer: the effect simply was not taken this
-                    // pass, so the domain re-offers it.
+                    // The rider's removal of a route, a ride, or one step of a trip cascade, on the
+                    // answering writer path. The effect is namespace-free, so the store resolves the
+                    // head at that id and reports whether it was there. A full request queue is not
+                    // an answer: the effect was simply not taken this pass, so the domain re-offers
+                    // it.
                     CatalogEffect::RemoveObject { token, object, kind } => {
                         match crate::flat_store::writer().ok_or(()).and_then(|w| {
                             w.try_call(
@@ -1432,9 +1209,9 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // The in-flight removal's answer, polled without parking. `existed: false` is a
-            // **success** — the subject vanished before the commit and the goal state holds (#1433
-            // §13) — while a refused or failed commit is a `Failed` the domain re-queues.
+            // The in-flight removal's answer, polled without parking. `existed: false` is a success,
+            // because the subject vanished before the commit and the goal state holds, while a
+            // refused or failed commit is a `Failed` the domain re-queues.
             if let Some(removal) = exec.catalog.take() {
                 use obc_app::catalog_state::{CatalogError, CatalogOutcome};
                 let answer =
@@ -1469,10 +1246,9 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // The System settings screen's card-free scan (T8 item 6): one bounded FAT free-cluster
-            // read off the card. `None` — no mounted card, or no FSInfo free count — is a
-            // measurement that produced no figure, and `StorageInfo` blanks the row back to `--`
-            // rather than leaving a byte count from a card that may no longer be in the device.
+            // The System settings screen's card-free scan: one bounded free-space read. `None` is a
+            // measurement that produced no figure, and the row blanks back to `--` rather than
+            // showing a byte count from a card that may no longer be in the device.
             if let Some(effect) = exec.effects.storage_info.take() {
                 use obc_app::device_core::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
                 let StorageInfoEffect::MeasureFreeSpace { token } = effect;
@@ -1586,8 +1362,6 @@ pub(crate) async fn run_app(
             if let Some(outcome) = crate::ble::take_bond_outcome() {
                 RideExec::deliver(&mut exec.outcomes.bond, outcome, "bond");
             }
-            // ── The Ride detail's track profile and the route overview's shape (#678 T2 / #680) ──
-            // Answered below, immediately before the pass that consumes them — see the derived fill.
 
             // Navigator requests each step and commit. Physical I/O may span several passes;
             // release is acknowledged only after the pending ticket and its cleanup settle.
@@ -1688,17 +1462,15 @@ pub(crate) async fn run_app(
                                     "navigator",
                                 );
                             } else {
-                                // Since #1146 P2 the planner slot lives in the scratch arena, so the search
-                                // must *take* the arena first — and a cable transfer streaming into the same
-                                // store outranks a reroute, which `nav_take_arena` enforces by asking the
-                                // arena who holds it. A refusal names the holder and answers the operation,
-                                // so no spinner hangs behind a half-claim and the freeze comes off.
+                                // The planner slot lives in the scratch arena, so the search must
+                                // take the arena first, and a cable transfer into the same store
+                                // outranks a reroute. A refusal names the holder and answers the
+                                // operation, so no spinner hangs behind a half-claim.
                                 let refusal = match nav_take_arena(app, &mut nav_guard) {
                                     Err(why) => Some(why),
-                                    // Impossible through the UI (the planning screen blocks a second
-                                    // confirm), and fail-closed rather than lending one reply slot to two
-                                    // live tickets: refuse the *new* operation so the rider gets the failure
-                                    // card instead of a spinner nothing will ever resolve.
+                                    // Impossible through the UI, and fail-closed rather than lending
+                                    // one reply slot to two live tickets: refuse the new operation, so
+                                    // the rider gets the failure card instead of a spinner.
                                     Ok(()) if nav_run.is_some() => {
                                         debug_assert!(false, "a second route plan arrived while one was active");
                                         if let Some(run) = nav_run.as_mut() {
@@ -1751,8 +1523,8 @@ pub(crate) async fn run_app(
                                 }
                             }
                         }
-                        // The `ble` image ships without the router (the 256 KB DK's statics), so the
-                        // workspace this operation asks for does not exist in it.
+                        // This image ships without the router, so the workspace this operation asks
+                        // for does not exist in it.
                         #[cfg(not(has_nav))]
                         NavigatorEffect::Acquire {
                             token,
@@ -1934,14 +1706,12 @@ pub(crate) async fn run_app(
 
             #[cfg(has_nav)]
             {
-                // Whether this pass ended the search — the one place the arena's nav arm is given
-                // back. A flag rather than an inline release because the guard is borrowed by the
-                // step view below and must die first.
+                // Whether this pass ended the search: the one place the arena's nav arm is given
+                // back. It is a flag rather than an inline release, because the guard is borrowed by
+                // the step view below and must die first.
                 let mut search_ended = false;
-                // A `Release` and an `Acquire` can never arrive in one pass — the plan's navigator
-                // slot holds exactly one effect, and Navigator offers releases before new work — so
-                // the old `&& !plan_armed` guard against a cancel closing the *new* run's file is
-                // now a property of the protocol rather than a rule this block has to remember.
+                // A `Release` and an `Acquire` can never arrive in one pass: the navigator slot holds
+                // exactly one effect, and releases are offered before new work.
                 if nav_cancel {
                     if let Some(run) = nav_run.as_mut() {
                         run.cancel_requested = true;
@@ -2003,11 +1773,10 @@ pub(crate) async fn run_app(
                             } else {
                                 let map_src = flat_map;
                                 let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
-                                // The step's view over the arena arm + the resident terrain, alive only for
-                                // the length of these synchronous calls.
-                                // The run is active ⇒ the slot was written for this plan; a `None` here
-                                // would mean the bookkeeping and the arm disagree, and the step below
-                                // answers the failure tier for the same reason.
+                                // The step's view over the arena arm and the resident terrain, alive
+                                // only for these synchronous calls. A `None` here would mean the
+                                // bookkeeping and the arm disagree, and the step below answers the
+                                // failure tier for the same reason.
                                 let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
                                 let phase_idx = match phase {
                                     obc_route::NavPhase::Snap => 0,
@@ -2237,10 +2006,10 @@ pub(crate) async fn run_app(
                                     Err(obc_storage::flat::StoreError::Media | obc_storage::flat::StoreError::Busy) => {
                                         Status::Retry
                                     }
-                                    // The exact id/revision makes every other refusal permanent or
-                                    // an invariant violation. Most importantly, ReadOnly cannot be
-                                    // repaired in-session. Publish reserved a second sequence, so
-                                    // seeing it here means another writer consumed that last slot.
+                                    // Every other refusal is permanent or an invariant violation.
+                                    // `ReadOnly` cannot be repaired in-session, and publish reserved a
+                                    // second sequence, so seeing it here means another writer
+                                    // consumed that last slot.
                                     _ => Status::Terminal,
                                 };
                                 match nav_compensation_disposition(status) {
@@ -2253,9 +2022,9 @@ pub(crate) async fn run_app(
                                         run.io = NavIo::NeedPublishCompensation(id);
                                     }
                                     Disposition::CancelledAfterTerminalFailure => {
-                                        // Never report route success, and never retain NavGuard/the
-                                        // planner arena forever. This should be unreachable under
-                                        // PublishComputedRoute's two-sequence admission invariant.
+                                        // Never report route success, and never retain the guard or
+                                        // the planner arena forever. This should be unreachable under
+                                        // the publish path's two-sequence admission invariant.
                                         defmt::error!(
                                             "nav route: terminal cancellation compensation failure for object {=u64}; releasing planner",
                                             id.0
@@ -2361,7 +2130,7 @@ pub(crate) async fn run_app(
                             && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview)
                             || app.assistant_review_status() == obc_app::navigator::ReviewStatus::Unresolved,
                     );
-                    // Acknowledge only after dropping the arena guard. Navigator can then unfreeze
+                    // Acknowledge only after dropping the arena guard, so the navigator can unfreeze
                     // rendering or admit a replacement operation.
                     nav_guard = None;
                     if let Some(token) = exec.nav_token.take() {
@@ -2377,34 +2146,28 @@ pub(crate) async fn run_app(
             {
                 let _ = nav_cancel; // no plan can be in flight — the release is inert here
                 let _: &NavResident = &nav; // the unit stand-in — nothing to plan with
-                                            // An `Acquire` was already refused above (the `ble` image ships no router).
             }
 
-            // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
-            // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
-            // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's
-            // `==`-diff save can't clobber the phone's write with its own stale copy. Only units + name
-            // are BLE-writable, so the merge is narrow (`adopt_ble_fields`) — a device-only edit pending
-            // this frame is untouched. Board-crate flag, drained once per BLE write; a no-op otherwise.
+            // A BLE Config write persists units and name to RRAM, but the live `App` copy never
+            // learns. Reload the BLE-owned fields before the change-detection save below, so the UI
+            // re-captions in the same session and the app's diff save cannot clobber the phone's
+            // write with its own stale copy. Only units and name are BLE-writable.
             if crate::object_store::take_ble_config_written() {
-                // Merge only the BLE-owned fields; `merge_ble_settings` preserves any pending device-edit
-                // save (its revision is untouched) so neither the phone's write nor the rider's edit is
-                // lost (#456 + #810).
+                // Merge only the BLE-owned fields. `merge_ble_settings` preserves a pending device
+                // edit, so neither the phone's write nor the rider's edit is lost.
                 app.merge_ble_settings(&settings_store.load().unwrap_or_default());
             }
 
             // Persist settings the moment an edited value leaves the settings subtree: one in-place
-            // 16-byte RRAM line, skipped when nothing is owed. The write is acknowledged back to the app
-            // by revision (#810) — a durable write clears the dirty state; a failed one keeps it retryable
-            // (the app re-arms a bounded backoff) and surfaces the advisory warning card.
+            // RRAM line, skipped when nothing is owed. The write is acknowledged back by revision, so
+            // a failed one stays retryable and surfaces the advisory warning card.
             if let Some(effect) = exec.effects.settings.take() {
                 use obc_app::settings::{SettingsEffect, SettingsOutcome};
                 let outcome = match effect {
                     SettingsEffect::PersistRevision { token, revision } => match settings_store.save(app.settings()) {
                         Ok(()) => {
-                            // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
-                            // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
-                            // its next Config read / advertised-name read. One relaxed store.
+                            // The RRAM blob just moved, so the BLE config-read cache is stale. Flag
+                            // it, so the BLE plane refreshes before its next read.
                             crate::object_store::mark_device_settings_changed();
                             // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
                             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
@@ -2420,30 +2183,27 @@ pub(crate) async fn run_app(
                 RideExec::deliver(&mut exec.outcomes.settings, outcome, "settings");
             }
 
-            // Every effect this frame carried has now been offered a home. Anything left is a
-            // domain with no board executor at all, and saying so loudly is what stops it becoming a
-            // silent wedge.
+            // Every effect this frame carried has now been offered a home. Anything left is a domain
+            // with no board executor at all, and saying so loudly is what stops it becoming a silent
+            // wedge.
             if exec.effects.has_pending() {
                 defmt::error!("exec: an effect this board cannot serve was decided");
             }
 
-            // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
-            // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
-            // stage-timed frame per setting instead of stepping the selection's 1.2× steps.
+            // A debug camera-scale command: pin the map to an exact metres-per-pixel and force one
+            // redraw, so a host zoom sweep gets exactly one stage-timed frame per setting.
             #[cfg(feature = "debug-uart")]
             if let Some(mpp) = obc_platform::debug_link::take_zoom() {
                 app.set_map_mpp(mpp);
             }
 
-            // A pending debug `N` route-plan trigger (#500 perf bench): start a plan between two fixed
-            // coords exactly as the POI confirm would (request + planning screen), so a host over VCOM
-            // can drive the resumable router repeatably and read the `nav route:` RTT breakdown — no
-            // POI-browser navigation needed. `has_nav` only (the router isn't in the `ble` image).
+            // A debug route-plan trigger: start a plan between two fixed coordinates exactly as the
+            // confirm would, so a host can drive the resumable router repeatably and read the
+            // `nav route:` breakdown.
             #[cfg(all(feature = "debug-uart", has_nav))]
             if let Some((from, to)) = obc_platform::debug_link::take_nav() {
-                // `NavPlanning` normally mirrors this, but test the host's actual ownership too:
-                // Back may already have popped the screen while its cancellation is still queued.
-                // A debug N in that window must not become a replacement plan that overwrites the
+                // Back may already have popped the screen while its cancellation is still queued. A
+                // debug trigger in that window must not become a replacement plan that overwrites the
                 // resident planner before the old run has released its allocation.
                 if nav_run.is_some() || !app.debug_start_nav(from, to, "Bench") {
                     defmt::warn!("nav plan: ignored repeated debug N while a plan is active");
@@ -2467,8 +2227,8 @@ pub(crate) async fn run_app(
                 index_route = None;
             }
             let active = app.active_route_index();
-            // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
-            // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).
+            // Re-centre the synthetic GPS onto a freshly loaded route's start, so Follow does not
+            // yank the camera off it.
             #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
             if active != prev_route {
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
@@ -2484,23 +2244,23 @@ pub(crate) async fn run_app(
                 prev_active = active;
             }
 
-            // Cache the active route's chunk index across frames: rebuild it (the header + full chunk-meta
-            // walk off SD) only when the route changes, or retry if a prior build failed on a flaky link.
-            // Not gated on rendering — the matcher in `tick` needs the index on every fresh fix.
+            // Cache the active route's chunk index across frames: rebuild it only when the route
+            // changes, or retry if a build failed. It is not gated on rendering, because the matcher
+            // needs the index on every fresh fix.
             if index_route != active {
                 route_index_valid = false;
                 match active {
                     Some(_) => {
-                        // In place into the resident slot — see its declaration; a by-value build here
-                        // is the stack-overflow footgun.
+                        // In place into the resident slot: a by-value build here is the
+                        // stack-overflow footgun.
                         let id = active.and_then(|i| app.route_ids().get(i).copied());
                         let source = crate::flat_store::reconcile_route(flat, id);
                         if source.is_some_and(|source| route_index.read_into(source).is_ok()) {
                             route_index_valid = true;
                             index_route = active; // cached — no more rebuilds until the route changes
                         } else {
-                            // Transient SD glitch: leave the key mismatched so every frame retries, hiding
-                            // the route this frame rather than the whole ride.
+                            // Transient card glitch: leave the key mismatched so every frame retries,
+                            // hiding the route this frame rather than the whole ride.
                             index_route = None;
                             defmt::warn!("flat: route index read failed — retrying next frame");
                         }
@@ -2510,53 +2270,42 @@ pub(crate) async fn run_app(
                     }
                 }
             }
-            // This frame's route reader = the cached index + a fresh geometry source (both cheap, no I/O —
-            // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
-            // on a fresh fix, the renderer on a redraw frame.
+            // This frame's route reader is the cached index plus a fresh geometry source, both cheap.
+            // Geometry streams lazily where it is read: the matcher on a fresh fix, the renderer on a
+            // redraw frame.
             let id = active.and_then(|i| app.route_ids().get(i).copied());
             let route_src = crate::flat_store::reconcile_route(flat, id);
             let route = match (route_index_valid.then_some(&route_index), route_src) {
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
-            // ═══ The pass, and everything that only exists for it ═══
-            //
-            // **One tight scope that ends before the next `.await`.** The 512 B polyline buffer, the
-            // gesture batch and the `PassPlan` itself are stack temporaries here; a binding still
-            // live across an await would instead become a permanent slot in this task's future
-            // (#808/#1084 — `run_app` is `#[inline(always)]` into `__embassy_main`, whose task
-            // storage is `.bss`, so "in the future" and "resident" are the same thing).
+            // One tight scope that ends before the next `.await`. The polyline buffer, the gesture
+            // batch and the `PassPlan` are stack temporaries here; a binding still live across an
+            // await would become a permanent slot in this task's future, which on this board is
+            // resident `.bss`.
             app.bind_place_map(Some(crate::flat_store::planner_map_key(flat)));
             let plan = {
-                // ── The keyed derived reads (#1437), answered immediately before the pass ──
+                // The keyed derived reads, answered immediately before the pass, into that stack
+                // buffer and handed straight into `PassInputs::targets`: a polyline is 512 B and the
+                // board's resident headroom is two orders of magnitude smaller, so no executor-owned
+                // copy may exist.
                 //
-                // Into that stack buffer, handed straight into `PassInputs::targets`: at
-                // `NAV_PREVIEW_MAX` a polyline is 512 B and the board's resident headroom is two
-                // orders of magnitude smaller, so no executor-owned copy may exist.
-                //
-                // **At most one read per pass.** The need is a level and re-emits, so a second want
-                // lands a pass later — one bounded read per frame is the pacing this board already
-                // had. Both reads are flat-store reads and take no guard.
+                // At most one read per pass. The need is a level and re-emits, so a second want lands
+                // a pass later.
                 let mut derived_pts: heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }> = heapless::Vec::new();
                 let mut derived = obc_app::device_core::DerivedInputs::NONE;
                 if let Some(key) = exec.needs.ride_track {
-                    // The Ride detail's track profile + shape (#678 T2 / #680): stream the flat ride
-                    // object once into the app's resident profile buffer and this frame's stack buffer.
+                    // Stream the flat ride object once into the app's resident profile buffer and
+                    // this frame's stack buffer.
                     let filled = crate::flat_store::fill_ride_track(flat, app, key.ride, &mut derived_pts);
-                    // The ~5 KB profile is filled **in place**, which invalidates the view — so the
-                    // `view` generation the answer carries has to be the one the need has *after*
-                    // the fill, not before, or the domain would reject its own executor's answer.
+                    // The profile is filled in place, which invalidates the view, so the `view`
+                    // generation the answer carries must be the one the need has after the fill.
                     //
-                    // The **subject** is the opposite: it must stay the one that was actually read.
-                    // `accept_ride_profile`'s only staleness guard is that the answer's key equals
-                    // the need's, so minting the whole key from the *current* need would make that
-                    // check vacuous here — and it is reachable, not theoretical: `read_catalogs`
-                    // ran earlier in this same store phase and remaps the held indices by durable
-                    // id, so a delete landing between the plan and this fill can move the viewed
-                    // ride. Answering under the new ride's key would put ride A's profile and
-                    // polyline on ride B's detail screen. A moved subject (or fresh bytes under it)
-                    // is answered by *not answering*: the need re-emits and the next pass reads the
-                    // ride the rider is actually looking at.
+                    // The subject is the opposite: it must stay the one that was actually read. A
+                    // delete landing between the plan and this fill can move the viewed ride, and
+                    // answering under the new ride's key would put one ride's profile and polyline on
+                    // another ride's detail screen. A moved subject is answered by not answering: the
+                    // need re-emits and the next pass reads the ride the rider is looking at.
                     match app.derived_needs().ride_track {
                         Some(now) if now.ride == key.ride && now.source == key.source => {
                             derived.ride_track = Some(if filled {
@@ -2568,14 +2317,10 @@ pub(crate) async fn run_app(
                         _ => defmt::info!("derived: the ride-track subject moved under the read — re-asking next pass"),
                     }
                 } else if let Some(key) = exec.needs.nav_preview {
-                    // The Route overview's shape preview (#685 §4; widened to stored routes by #678
-                    // rework 3's track/elevation pager). The previewed route is the active one, and its
-                    // reader was built just above — a computed plan's finish forced this frame's index
-                    // rebuild, and a stored route's overview entry pointed `active_route` at it.
-                    //
-                    // Answered either way: a failure *is* an answer (a dead file must cost one read, not
-                    // one per pass), so an unreadable route settles with no shape instead of re-firing
-                    // the level forever.
+                    // The Route overview's shape preview. The previewed route is the active one, and
+                    // its reader was built just above. It is answered either way, because a failure is
+                    // an answer: an unreadable route settles with no shape instead of re-firing the
+                    // level forever.
                     derived.nav_preview = Some(match route.as_ref() {
                         Some(r) => {
                             let points = if key.assistant {
@@ -2600,10 +2345,9 @@ pub(crate) async fn run_app(
                     obc_app::device_core::DerivedTargets { ride_preview: &[], nav_preview: derived_pts.as_slice() }
                 };
 
-                // ── This frame's chords, above the screen stack ──
-                // A drawer opens or closes before the gestures below are handed to whatever screen
-                // it left on top. The constituents were swallowed by the recogniser, so nothing
-                // here can also move the selection underneath.
+                // This frame's chords, above the screen stack: a drawer opens or closes before the
+                // gestures below are handed to whatever screen it left on top. The constituents were
+                // swallowed by the recogniser, so nothing here can also move the selection.
                 while let Ok(chord) = CHORDS.try_receive() {
                     let acted = app.apply_chord(chord);
                     defmt::info!(
@@ -2614,17 +2358,15 @@ pub(crate) async fn run_app(
                     );
                 }
 
-                // ── This frame's gestures, as one batch ──
-                // The high-priority plane recognised them; the pass applies them in order and owns
-                // #480's rule that a `Hold`/`BackHold` queued behind a stack-changing gesture is dropped
-                // rather than delivered to the screen that replaced its target. Collected here, with no
-                // `.await` between the collect and the pass, so the batch is a stack temporary.
+                // This frame's gestures, as one batch. The pass applies them in order and drops a
+                // `Hold` or `BackHold` queued behind a stack-changing gesture rather than delivering
+                // it to the screen that replaced its target. Collected with no `.await` in between,
+                // so the batch is a stack temporary.
                 let mut gestures: heapless::Vec<obc_app::Gesture, { crate::input_plane::GESTURE_QUEUE }> =
                     heapless::Vec::new();
                 while let Ok(g) = GESTURES.try_receive() {
-                    // Field forensics (#755): every drained gesture, with the screen it lands on — the
-                    // RTT record that discriminates "the press never happened" (input-plane dead window)
-                    // from "the press landed on the wrong screen/row". Human-rate events; always on.
+                    // Every drained gesture, with the screen it lands on: the record that separates
+                    // "the press never happened" from "the press landed on the wrong screen".
                     if let obc_app::Gesture::Step(n) = g {
                         defmt::info!("input: Step {=i32} on {=str}", n, app.top_screen().name());
                     } else {
@@ -2634,36 +2376,22 @@ pub(crate) async fn run_app(
                         defmt::warn!("input: {=str} dropped — the frame's gesture batch is full", gesture_name(g));
                     }
                 }
-                // ═══ **One `App::run_pass` per frame** (#1433 §6, #1397 S6b) ═══
-                //
-                // Run here — in place of the `app.tick` this replaces — because this is the only point
-                // where the sensors and the route reader are both live at once.
-                // Fourteen stages in, one bounded `PassPlan` out. Three builds: the VCOM-streamed GPS +
-                // altimeter + compass (`debug-uart`); the real SAM-M10Q + BMP581, coherent per fix
-                // (default); or the SynthLocation square loop, no other sensors (`synth`).
-                // ── The store's own level, reported *after* this frame's staged effects ──
-                //
-                // The store's monotonic sequence **is** the revision, so the board reports a level
-                // rather than counting commit edges. Reported here, and not with the other levels
-                // at the top of the frame, because the staged effects above are where a commit
-                // happens: a ride finalized or a removal committed at the top of this iteration
-                // moves the sequence, and a level sampled before them carries the pre-commit value.
-                //
-                // That ordering is the whole of "one saved ride is one catalog read". Both the
-                // commit's `StoreRevision` and Recorder's `RideFinalized` then reach the **same**
-                // pass, and both arm the one `refresh_owed` bit — which `CatalogState::next_effect`
-                // spends when it *issues* the read, not when the read is answered. Sampling before
-                // the effects split the two arms across consecutive passes, so the bit was armed,
-                // spent, and armed again, and the domain read the store twice for one save.
+                // One `App::run_pass` per frame, here, because this is the only point where the
+                // sensors and the route reader are both live at once.
+                // The store's own level, reported after this frame's staged effects. The store's
+                // monotonic sequence is the revision, so the board reports a level rather than
+                // counting commit edges. It is reported here, and not with the other levels at the
+                // top of the frame, because the staged effects above are where a commit happens: a
+                // level sampled before them carries the pre-commit value, which splits the commit's
+                // revision and the recorder's finalized fact across two passes and makes the domain
+                // read the store twice for one save.
                 exec.facts.note_store_revision(crate::flat_store::catalog_scope(flat));
                 peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
-                // The hub sources (`consumer.location()` etc.) are constructed as **call-expression
-                // temporaries**, exactly as they were at the `app.tick` sites this replaces: they are
-                // stateless one-pointer drains, and binding them for the loop's lifetime would park one
-                // hub pointer per source in this task's future (~40 B of `__embassy_main` arena,
-                // measured in #808) for no behavioural difference. That is why the three builds each
-                // spell the whole call rather than sharing a `let sensors`.
+                // The hub sources are call-expression temporaries: they are stateless one-pointer
+                // drains, and binding them for the loop's lifetime would park one hub pointer per
+                // source in this task's future for no behavioural difference. That is why the three
+                // builds each spell the whole call.
                 #[cfg(feature = "debug-uart")]
                 let plan = app.run_pass(obc_app::device_core::PassInputs {
                     now: clock,
@@ -2672,8 +2400,8 @@ pub(crate) async fn run_app(
                         altimeter: Some(&mut debug_alt),
                         compass: Some(&mut debug_compass),
                         fuel: Some(&mut fuel),
-                        // Host-injected `H`/`P`/`R` land in the shared hub mailboxes; on a
-                        // `ble` + `debug-uart` build a real strap feeds the same ones (last-writer-wins).
+                        // Host-injected values land in the shared hub mailboxes, and a real strap
+                        // feeds the same ones.
                         hr: Some(&mut consumer.hr()),
                         power: Some(&mut consumer.power()),
                         cadence: Some(&mut consumer.cadence()),
@@ -2729,22 +2457,20 @@ pub(crate) async fn run_app(
                 plan
             };
 
-            // The hold-cancel latch is the board's input plane's, and `stage_input` deliberately
-            // does not drain it: a gesture that changed the screen stack invalidates a hold charging
-            // *right now* on the high-priority plane, whose recogniser only this side can cancel.
+            // The hold-cancel latch is the board's, and `stage_input` deliberately does not drain it:
+            // a gesture that changed the screen stack invalidates a hold charging right now on the
+            // high-priority plane, whose recogniser only this side can cancel.
             if app.take_hold_cancel() {
                 display.cancel_holds();
             }
-            // **`PassPlan` never crosses an `.await`** (FAR-19, restated for the typed protocol): the
-            // three fields the tail needs are copied out here and the plan is dropped inside the
-            // store phase. Only the staged `EffectSlots` and the small executor state survive to the
-            // present and sleep phases.
+            // The `PassPlan` never crosses an `.await`: the three fields the tail needs are copied
+            // out here and the plan is dropped inside the store phase.
             let obc_app::device_core::PassPlan { render, next_wake_ms: _, derived_needs, sources, effects, immediate } =
                 plan;
             peak_view.reconcile(app);
 
-            // Reconcile after input and fix delivery so opening, fulfillment, and leaving take
-            // effect before this pass sleeps.
+            // Reconcile after input and fix delivery, so opening, fulfillment and leaving take effect
+            // before this pass sleeps.
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             {
                 let power = desired_sensor_power(app);
@@ -2760,38 +2486,33 @@ pub(crate) async fn run_app(
             );
             exec.effects = effects;
 
-            // ── BLE → app seam, ACTING half: what the pass just decided, out to the radio plane ──
-            // Both of these key on screen and settings state **this** frame's gestures produced, so
-            // they read the app after the pass rather than before it.
+            // The BLE acting half: what the pass just decided, out to the radio plane. Both of these
+            // key on state this frame's gestures produced, so they read the app after the pass.
             {
-                // Scan mode: while the Sensors screen's scan list is up, keep a discovery scan
-                // running. `request_scan` **must not** be rung every pass — it pulses the manager's
-                // `WORK_EDGE`, which the manager's own scan window selects on, so a per-pass ring
-                // would collapse the ~10 s window (and re-clear the hit snapshot) every ~40 ms.
-                // Ring once on the rising edge, then re-arm every ~9 s.
+                // While the Sensors screen's scan list is up, keep a discovery scan running.
+                // `request_scan` must not be rung every pass: it pulses the manager's work edge,
+                // which the manager's own scan window selects on, so a per-pass ring would collapse
+                // that window. Ring once on the rising edge, then re-arm every 9 s.
                 if app.sensor_scan_active() {
-                    // `now >= rearm` in wrapping-monotonic terms (the signed diff handles the ~49-day
-                    // u32 wrap); `0` is the "not scanning yet" sentinel that fires on the rising edge.
+                    // `now >= rearm` in wrapping-monotonic terms; `0` is the "not scanning yet"
+                    // sentinel that fires on the rising edge.
                     let due = sensor_scan_rearm_ms == 0 || now.wrapping_sub(sensor_scan_rearm_ms) as i32 >= 0;
                     if due {
                         crate::ble::request_scan();
                         sensor_scan_rearm_ms = now.wrapping_add(9_000).max(1); // never 0 (the "off" sentinel)
                     }
                 } else {
-                    // Falling edge: the scan list closed (a pick or a Back). Cancel discovery — the
-                    // re-arm may have left a *stale* scan request latched, which would outrank the
-                    // fresh save at the manager's loop top and hold the connect hostage for a full
-                    // 10 s window (epic #744, SR4); the cancel also ends a still-running window early
-                    // so a picked sensor connects now, not when the window expires.
+                    // Falling edge: the scan list closed. Cancel discovery, because the re-arm may
+                    // have left a stale scan request latched that would outrank the fresh save and
+                    // hold the connect hostage for a whole window.
                     if sensor_scan_rearm_ms != 0 {
                         crate::ble::cancel_scan();
                     }
                     sensor_scan_rearm_ms = 0; // reset so the next entry rings on its rising edge
                 }
                 // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of
-                // truth. Diff each slot against what was last pushed and drive the change through
-                // SE6's save/forget latches — fired once per change (seed at boot from all-`None`, a
-                // screen pair/forget, a factory reset clearing a slot).
+                // truth. Diff each slot against what was last pushed and drive the change through the
+                // save and forget latches, fired once per change.
                 for (q, slot) in app.settings().saved_sensors.iter().enumerate() {
                     let want = slot.present.then_some((slot.addr, slot.addr_kind != 0));
                     if want != pushed_sensors[q] {
@@ -2821,19 +2542,15 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // Feed the high-priority plane's Select hold-progress to the map render so the in-screen
-            // confirm fills (the factory-Reset bar) track the hold — `App`'s own input plane isn't
-            // driven here, so the render would otherwise read 0 and the bar would never fill.
+            // Feed the Select hold progress to the map render so the in-screen confirm bars track the
+            // hold. `App`'s own input plane is not driven here, so the render would otherwise read 0.
             let hold_p = display.hold_progress();
             app.set_hold_progress(hold_p);
 
-            // The pass's own render decision (`plan.render`) is this frame's dirty signal — the same
-            // `take_dirty` level edge the loop used to drain itself, now taken by stage 14 and handed
-            // over in the plan. What it replaces is the *input* to the four board redraw folds below,
-            // not the folds: each demand here is physical (a latched redraw, a FLPR relaunch, a live
-            // hold fill, the freeze) and stays the board's until S4 #1447 lands render keys. Every one
-            // of them is full-frame, so each also drops a region-scoped clip (`dirty.region`) — the
-            // region only survives when the pass's own ticks were the sole dirt.
+            // The pass's own render decision is this frame's dirty signal. What it replaces is the
+            // input to the board redraw folds below, not the folds: each demand here is physical and
+            // stays the board's. Every one of them is full-frame, so each also drops a region-scoped
+            // clip; the region only survives when the pass's own ticks were the sole dirt.
             let mut dirty = render;
             // Keep an already-painted loading base while reader work advances between planner owners.
             find_loading_painted &= app.find_preparing() && app.find_place_state() != obc_app::find_place::State::Start;
@@ -2860,8 +2577,8 @@ pub(crate) async fn run_app(
                 dirty.region = None;
             }
             pending_map_redraw = false;
-            // A FLPR relaunch landed since the last pass (#349): the fresh core has no frame history
-            // and the diff store was reset — schedule the full repaint even if nothing else is dirty.
+            // A panel relaunch landed since the last pass: the fresh core has no frame history and
+            // the diff store was reset, so schedule the full repaint even if nothing else is dirty.
             if display.take_relaunch_repaint() {
                 find_loading_painted = false;
                 dirty.map = true;
@@ -2869,62 +2586,49 @@ pub(crate) async fn run_app(
             }
             // An install is armed and this is the frame the panel keeps: the warm reset into the
             // bootloader never paints, so whatever is on glass when the tail arms stays there for the
-            // whole SD→flash stream and the reboot — and there is no later frame to fix it with. The
-            // "Installing update" card landing does dirty the screen full-frame in practice, but on an
-            // irreversible path that must be a property of *this* code rather than of the domain's
-            // dirty behaviour, so the fullness is forced here beside the other board demands.
+            // whole flash and the reboot, and there is no later frame to fix it with. On an
+            // irreversible path that must be a property of this code rather than of the domain's
+            // dirty behaviour.
             if exec.arm_pending.is_some() {
                 dirty.map = true;
                 dirty.region = None;
             }
-            // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt, the
-            // hold-to-delete bar — redraw it each frame so its bar tracks the live progress, **and** once
-            // more on the frame the hold drops back to 0 (the falling edge), so an early release clears the
-            // bar instead of leaving it stuck mid-fill. A pure hold-charge (and a *cancelled* one) emits no
-            // gesture, so nothing else dirties the map. Gated on `!base_draws_map` so the expensive map view
-            // is never re-rendered for a hold (there the overlay bulge is the live feedback), and on
-            // `top_wants_hold_fill` so a hold charging where no fill would draw — the menus, an un-armed
-            // Reset, the Fields Add row — repaints nothing.
+            // While a hold charges on a cheap (non-map) screen, redraw it each frame so its bar
+            // tracks the live progress, and once more on the frame the hold drops back to 0, so an
+            // early release clears the bar instead of leaving it stuck mid-fill. A pure hold charge
+            // emits no gesture, so nothing else dirties the map. It is gated so the expensive map
+            // view is never re-rendered for a hold, and so a hold where no fill would draw repaints
+            // nothing.
             if (hold_p > 0.0 || prev_hold_p > 0.0) && !app.base_draws_map() && app.top_wants_hold_fill() {
                 dirty.map = true;
                 dirty.region = None;
             }
             prev_hold_p = hold_p;
 
-            // While a hold is *charging* on the **map view**, defer expensive map redraws instead of
-            // rendering them: a 150–300 ms map frame between two bulge pushes is exactly the mid-charge
-            // freeze that made the bulge jerky while riding (a 1 Hz fix redraw deferred ≤500 ms is
-            // invisible; the latched frame lands on the pass after the hold resolves). Only the map
-            // base is deferred — cheap screens redraw per-frame anyway for their in-screen hold fills.
-            // Once the hold *fires*, charging drops to 0, so a navigation's redraw is never held up.
+            // While a hold charges on the map view, defer expensive map redraws instead of rendering
+            // them: a 150 to 300 ms map frame between two bulge pushes is the mid-charge freeze that
+            // made the bulge jerky while riding. Only the map base is deferred. Once the hold fires,
+            // charging drops to 0, so a navigation's redraw is never held up.
             if dirty.map && app.base_draws_map() && display.hold_charging() {
                 pending_map_redraw = true;
                 dirty.map = false;
             }
 
-            // ── The Recalculating freeze (#1146 P2) ──
-            // A planner run is live over a map base: the map plane holds still until it answers, and
-            // the reflective panel keeps the last frame on glass for free. Two things follow, and
-            // both are load-bearing. The map redraw is **skipped, not queued** — latched into
-            // `pending_map_redraw` so nothing is lost and the catch-up lands the pass the freeze
-            // lifts (Navigator dirties the map for exactly that). And the *overlay*
-            // still paints: `dirty.overlay` carries the freeze's edge, and the banner is what turns
-            // a frozen screen from "the device wedged" into "it is recalculating".
+            // The Recalculating freeze. A planner run is live over a map base, so the map plane
+            // holds still until it answers, and the reflective panel keeps the last frame on glass
+            // for free. The map redraw is skipped, not queued: it is latched into
+            // `pending_map_redraw`, so nothing is lost and the catch-up lands the pass the freeze
+            // lifts. The overlay still paints, and the banner is what turns a frozen screen from
+            // "the device wedged" into "it is recalculating".
             //
-            // That edge is the **engaged level's**, minted inside `App::take_dirty` — not the plan
-            // start's. The two differ exactly where it matters: a plan drained under the opaque
-            // planning spinner freezes nothing (chrome base, and that frame renders normally), and
-            // the pass that puts a map base back under the still-running search is a screen change
-            // with no plan edge in it at all. Keyed on the plan's edge, this branch would find
-            // `dirty.overlay` already spent on the chrome frame and paint nothing for the rest of
-            // the search — a stale screen, no explanation, and input going to the base underneath.
-            // Whatever the frame under the banner happens to be (the last map, or the spinner the
-            // rider just left), the banner is what says the device is working; the full repaint when
-            // the freeze lifts restores the rest.
+            // That edge is the engaged level's, not the plan start's. A plan drained under the
+            // opaque planning spinner freezes nothing, and the pass that puts a map base back under
+            // a still-running search has no plan edge in it at all. Keyed on the plan's edge, this
+            // branch would find `dirty.overlay` already spent on the chrome frame and paint nothing
+            // for the rest of the search.
             //
             // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
-            // only at the gate: no map render is attempted while the nav arm is out, so the claim
-            // below is never refused on the ordinary path.
+            // only at the gate: no map render is attempted while the nav arm is out.
             let frozen = app.reroute_freeze_active() || find_loading_painted;
             if frozen && dirty.map {
                 pending_map_redraw = true;
@@ -2932,26 +2636,21 @@ pub(crate) async fn run_app(
                 dirty.region = None;
             }
 
-            // ═══ The store phase ends HERE: the tuple is the block's value and `store_guard` dies at
-            // the closing brace — every reader/source/track borrow of the card ended above, and the
-            // present await below *cannot* hold the guard, by construction. ═══
+            // The store phase ends here: the tuple is the block's value and `store_guard` dies at the
+            // closing brace, so the present await below cannot hold the guard.
             let banner_rows = app.reroute_banner_rows(FRAME_H as f32);
             let rendered: Option<RenderedFrame> = if frozen || (!dirty.map && dirty.overlay && banner_rows.is_some()) {
-                // The banner rides the overlay plane, which on this board means: draw it straight
-                // into the resident framebuffer and let the self-diffing present push the handful of
-                // rows it changed. It deliberately does **not** go through the FLPR's
-                // `present_overlay` composite path the hold bulge uses. That scratch holds only
-                // twelve rows; the banner is resident content while the base stays frozen, so it
-                // does not need a transient save/restore composite. Painting into the
-                // frame is safe while its base is unchanged. The same path advances the activity
-                // dots between planner runs; a pending base redraw paints its banner in that pass.
+                // The banner rides the overlay plane, which on this board means: draw it into the
+                // resident framebuffer and let the self-diffing present push the rows it changed. It
+                // deliberately does not use the composite path the hold bulge uses, whose scratch
+                // holds only twelve rows. Painting into the frame is safe while its base is
+                // unchanged.
                 match banner_rows.filter(|_| dirty.overlay) {
                     Some((y0, rows)) => {
                         let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                             let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
-                            // Clip the framebuffer to the banner's own band — belt and braces over
-                            // the drawing itself, so a future overlay item cannot quietly repaint
-                            // map pixels the freeze is preserving.
+                            // Clip the framebuffer to the banner's own band, so a future overlay item
+                            // cannot repaint map pixels the freeze is preserving.
                             fbdev.set_clip(Rectangle::new(
                                 Point::new(0, y0 as i32),
                                 Size::new(FRAME_W as u32, rows as u32),
@@ -2959,35 +2658,27 @@ pub(crate) async fn run_app(
                             app.render_overlay(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
                             obc_render::RenderStats::default()
                         });
-                        // Named apart from the `ui frame:` line every other non-map redraw shares:
-                        // the menus, the station steps and the planning spinner all take this same
-                        // branch, so a log reader (and the #1487 soak driver) cannot tell a banner
-                        // repaint from a menu repaint without it. `debug-uart` only — the harness is
-                        // its only reader and the shipping image should not carry the string.
+                        // Named apart from the `ui frame:` line every other non-map redraw shares, so
+                        // a log reader can tell a banner repaint from a menu repaint. `debug-uart`
+                        // only: the harness is its only reader.
                         #[cfg(feature = "debug-uart")]
                         defmt::info!("freeze: banner repaint rows {=u16}..{=u16}", y0, y0 + rows);
-                        // The banner is what this frame drew, whatever a sheet above it would
-                        // otherwise have made of the base.
+                        // The banner is what this frame drew.
                         Some(RenderedFrame { needs_map: false, sheet_only: false, stats, render_us })
                     }
                     // Mid-freeze with no edge: nothing changed on either plane, so nothing to push.
                     None => None,
                 }
             } else if dirty.map {
-                // The map pipeline runs **only when the base screen needs the streamed `Reader`** — the
-                // Map view, and the POI list on the frame it takes its one-shot snapshot (#425, its
-                // query runs in the draw path off `rx.reader`). On a menu / Statistics / Home redraw, or
-                // a POI list already showing its frozen snapshot, it's skipped entirely — no SD
-                // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
-                // draws just its own chrome. Such a frame costs only its own draw + the push.
-                // `plan.sources.map` — the pass's own answer to "the base screen draws the map", so
-                // the reader this frame opens is the one the pass planned for rather than a second
-                // derivation of the same predicate. Its sibling `sources.route` is consumed above:
-                // it is `active_route.is_some()`, which is exactly what the index/reader build keys
-                // on (`index_route != active`), only coarser — the board keeps the finer edge.
+                // The map pipeline runs only when the base screen needs the streamed `Reader`. On a
+                // menu, Statistics or Home redraw it is skipped entirely: no style-table parse, no
+                // `Reader` build and so no stack spike, and no map render, so such a frame costs only
+                // its own draw and the push. `sources.map` is the pass's own answer to "the base
+                // screen draws the map", so the reader this frame opens is the one the pass planned
+                // for rather than a second derivation of the same predicate.
                 let needs_map = sources.map;
                 // The flat map source is resolved once at boot and skipped on chrome-only frames,
-                // keeping menu redraws free of map I/O.
+                // which keeps menu redraws free of map I/O.
                 let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
                 if needs_map && reader.is_none() {
                     pending_map_redraw = true;
@@ -2996,23 +2687,18 @@ pub(crate) async fn run_app(
                     );
                     None
                 } else {
-                    // ── The scratch arena's render arm (#1146 P2) ──
-                    // A base that **draws the map** claims it for the render span and gives it back
-                    // at the end of this block — the arena's whole render ⊥ nav / render ⊥ usb
-                    // enforcement, since a live search or a live transfer is literally the holder.
-                    // A chrome base claims nothing and renders with **no scratch at all**: only the
-                    // Map screen's draw touches it, and the app's render entry point takes it as an
-                    // `Option`. That's what keeps those frames drawing *while* another arm is out —
-                    // the nav-planning spinner is the only sign of life during a menu plan, and the
-                    // map-transfer card the only explanation for a saturated SD bus.
+                    // A base that draws the map claims the arena's render arm for the render span and
+                    // gives it back at the end of this block, which is the whole `render ⊥ nav` and
+                    // `render ⊥ usb` enforcement: a live search or a live transfer is literally the
+                    // holder. A chrome base claims nothing and renders with no scratch at all, which
+                    // is what keeps those frames drawing while another arm is out.
                     let draws_map = app.base_draws_map();
                     let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
                     let photo_active = app.photo_base_active();
                     let mut photo_guard = if photo_active { crate::arena::claim_photo() } else { None };
-                    // Unreachable on the ordinary path (the freeze above skips map frames during a
-                    // search, and a transfer puts its card over the map), so a refusal is a gating
-                    // bug — already reported loudly by `arena::claim_render`. Degrade the way every
-                    // other transient render failure does: keep the frame on glass, retry next pass.
+                    // Unreachable on the ordinary path, so a refusal is a gating bug, and
+                    // `arena::claim_render` already reports it loudly. Degrade the way every other
+                    // transient render failure does: keep the frame on glass and retry next pass.
                     if (draws_map && render_guard.is_none()) || (photo_active && photo_guard.is_none()) {
                         pending_map_redraw = true;
                         defmt::warn!(
@@ -3021,32 +2707,23 @@ pub(crate) async fn run_app(
                         );
                         None
                     } else {
-                        // Render the whole frame into the resident RGB222 plane — the display boundary,
-                        // behind `MapDisplay::render_frame`; the present below (after the guard is gone)
-                        // scans it out, going *around* a live bulge's rows so the composite paints them.
-                        // `render_map_timed` threads `InstantClock` so the stats
-                        // carry the collect/sort/draw timings; the hold bulge is **not** composited here — it
-                        // rides `present_bulge` on its own plane.
+                        // Render the whole frame into the resident plane, behind
+                        // `MapDisplay::render_frame`. The present below, after the guard is gone,
+                        // scans it out and goes around a live bulge's rows. The hold bulge is not
+                        // composited here: it rides `present_bulge` on its own plane.
                         //
-                        // A surviving `dirty.region` (the nav spinner's needle disc — only ever on a non-map
-                        // chrome frame) clips the render at both layers (#500 follow-up): the app's Canvas
-                        // rejects whole primitives whose bounds miss the region (the glyph/scanline machinery
-                        // a pixel clip can't skip), and the framebuffer discards any straddler's out-of-region
-                        // pixel writes — so a spinner frame costs the disc instead of the whole chrome, and
-                        // the row-diffed push scales down with it.
+                        // A surviving `dirty.region` clips the render at both layers: the app's
+                        // canvas rejects whole primitives whose bounds miss the region, and the
+                        // framebuffer discards a straddler's out-of-region pixel writes. A spinner
+                        // frame then costs the disc instead of the whole chrome.
                         //
-                        // `needs_map` reads "**the `Reader` was built**", which since #1569 is narrower than
-                        // "the base draws the map": a sheet-only frame over the riding Map skips the base's
-                        // draw, so it asks for no `Reader` and arrives here `false`. The region arm is still
-                        // the right one for it. `take_dirty` keeps a region only when a region tick was the
-                        // *sole* dirt, and a sheet arriving or stepping sets the full-frame `map_dirty` — so
-                        // every frame of an open comes through with `None` and clips nothing. A region does
-                        // survive on a settled sheet whose *own* overlay ticked one, and clipping that frame
-                        // to it is exactly right: the sheet is all that is drawn, and only that part moved.
+                        // `needs_map` reads "the `Reader` was built", which is narrower than "the
+                        // base draws the map": a sheet-only frame over the riding Map skips the
+                        // base's draw, so it arrives here `false`, and the region arm is still the
+                        // right one for it.
                         let clip = if needs_map || photo_active { None } else { dirty.region };
                         app.set_render_clip(clip);
-                        // Sampled before the render closure borrows `app`; nothing between here and the log
-                        // below moves the screen stack.
+                        // Sampled before the render closure borrows `app`.
                         let sheet_only = app.sheet_only();
 
                         {
@@ -3058,10 +2735,7 @@ pub(crate) async fn run_app(
                                     fbdev.set_clip(r);
                                 }
                                 // One scene, because there is one map file: the `Reader` is both the
-                                // geometry source and the POI/hours/nav one. The volume-set arm that
-                                // used to sit beside this — `render_scene_map_timed` with a
-                                // `MountedSet` as the scene and the core `Reader` for everything else
-                                // — is gone with the set mount (FS7.5-c2, #1420).
+                                // geometry source and the POI, hours and nav one.
                                 let panorama = peak_view.panorama();
                                 let stats = app.render_scene_map_photo_timed(
                                     render_guard.as_deref_mut(),
@@ -3096,8 +2770,8 @@ pub(crate) async fn run_app(
                                 reads.multi_commands
                                 );
                             }
-                            // The guard (when a map base took one) dies here, at the end of the render
-                            // span — before the present's await, never across it (#677).
+                            // The guard, when a map base took one, dies here at the end of the render
+                            // span, never across the present's await.
                             drop(render_guard);
                             Some(RenderedFrame { needs_map, sheet_only, stats, render_us })
                         }
@@ -3136,15 +2810,14 @@ pub(crate) async fn run_app(
             (rendered, dirty.map, hold_p, app.ms_until_next_wake(now), immediate, t_store.elapsed().as_micros())
         };
 
-        // ═══ Present phase (#809): guard-free — the FLPR scans the frame (~44 ms full-frame)
-        // with the store released, so a BLE object operation interleaves with the scan instead
-        // of queueing behind it. `presented_ok` anchors the DFU trial confirm in the tail. ═══
+        // Present phase, guard-free: the panel scans the frame with the store released, so a BLE
+        // object operation interleaves with the scan instead of queueing behind it. `presented_ok`
+        // anchors the DFU trial confirm in the tail.
         let mut presented_ok = false;
         if let Some(rf) = rendered {
-            // A frame that is about to be frozen on the panel by a warm reset is presented
-            // **full-frame**: the arm's `exclude` would leave the bulge rows showing the previous
-            // screen for the whole install, and a live hold mid-confirm is gone after the reset
-            // anyway. Every other frame goes around a live bulge as usual.
+            // A frame that a warm reset is about to freeze on the panel is presented full-frame: the
+            // arm's `exclude` would leave the bulge rows showing the previous screen for the whole
+            // install. Every other frame goes around a live bulge as usual.
             let exclude = if exec.arm_pending.is_some() { None } else { overlay_span };
             let (ok, push_us) = display.present_frame(exclude).await;
             presented_ok = ok;
@@ -3152,10 +2825,9 @@ pub(crate) async fn run_app(
                 peak_view.note_frame_presented(app);
             }
 
-            // Snapshot this frame's render stats for the host telemetry line — the same numbers as
-            // the RTT `map frame` log. The nRF reader isn't `TimedSource`-wrapped, so the SD/cache
-            // I/O folds into `collect_us` (`read_us` stays 0); the bulge composites on its own
-            // overlay push, so `overlay_us` stays 0.
+            // Snapshot this frame's render stats for the host telemetry line. The reader is not
+            // `TimedSource`-wrapped, so the card I/O folds into `collect_us`, and the bulge
+            // composites on its own push, so `overlay_us` stays 0.
             #[cfg(feature = "debug-uart")]
             {
                 let mpp_milli = (app.state.viewport(FRAME_W as f32, FRAME_H as f32).meters_per_pixel() * 1000.0) as u32;
@@ -3179,20 +2851,17 @@ pub(crate) async fn run_app(
                 };
             }
 
-            // A transport fault (`present` → false, e.g. a stalled FLPR) latches a retry like the
-            // reader-build failure rather than faulting.
+            // A transport fault latches a retry, like the reader-build failure, rather than
+            // faulting.
             if !ok {
                 find_loading_painted = false;
                 pending_map_redraw = true;
             }
 
-            // Three lines, because there are three kinds of frame and the RTT record is what every
-            // one of them is measured with. A **sheet** frame drew the sheet over a base it left
-            // standing, so it carries neither map stats nor the claim that a whole screen was
-            // redrawn — an open step is a sheet band, and a line calling it a screen redraw with no
-            // map is how #1569's open read as a full-frame cut for a whole bench round. A **map**
-            // frame carries the map render stats. Anything else (menu / Statistics / Home) really
-            // is its own chrome, with no meaningful lod/feat/chunks.
+            // Three lines, because there are three kinds of frame and this record is what each one is
+            // measured with. A sheet frame drew the sheet over a base it left standing, so it carries
+            // neither map stats nor the claim that a whole screen was redrawn. A map frame carries
+            // the map render stats. Anything else really is its own chrome.
             if rf.sheet_only {
                 defmt::info!(
                     "sheet frame: render {=u64} us + push {=u64} us (sheet band, base left standing)",
@@ -3212,8 +2881,7 @@ pub(crate) async fn run_app(
                     rf.stats.map_chunk_misses
                 );
             } else {
-                // A menu / Statistics / Home redraw: just its own chrome + the (now self-diffed)
-                // push, so the partial-push win shows as a small `push` next to the full `render`.
+                // A menu, Statistics or Home redraw: just its own chrome plus the self-diffed push.
                 defmt::info!(
                     "ui frame: render {=u64} us + push {=u64} us (screen redraw, no map)",
                     rf.render_us,
@@ -3222,10 +2890,9 @@ pub(crate) async fn run_app(
             }
         }
 
-        // The panel's brightness follows whatever the app says it should be this frame — the quick
+        // The panel's brightness follows whatever the app says it should be this frame: the quick
         // drawer's live preview while its editor is open, the committed setting otherwise. That
-        // derived answer is why a cancelled edit needs no undo path here: the editor closes and the
-        // next frame reads the committed row again.
+        // derived answer is why a cancelled edit needs no undo path here.
         apply_backlight(&mut backlight, &mut backlight_level, app.backlight_level());
 
         // The rider completed the guarded power-off hold, and the frame that says so has just been
@@ -3234,28 +2901,25 @@ pub(crate) async fn run_app(
             obc_ports::PowerOff::power_off(&mut power_off);
         }
 
-        // The hold bulge already pushed at the top of this pass (bulge-first, see above). But if a
-        // screen present just landed, its `exclude` skipped the bulge rows — they still show the *old*
-        // frame under the bulge. Re-composite them over the fresh fb now (a ~12 ms partial push, only
-        // on the rare pass where a redraw and a live bulge coincide) so the band never lags the screen.
+        // The hold bulge already pushed at the top of this pass. But if a screen present just landed,
+        // its `exclude` skipped the bulge rows, which still show the old frame under the bulge.
+        // Re-composite them over the fresh framebuffer now, so the band never lags the screen.
         if dirty_map && overlay_span.is_some() {
             display.present_bulge(overlay_span).await;
         }
 
-        // ═══ Store tail (#809): a second short guard for the store work that must FOLLOW the
-        // present — the trial confirm is anchored on a frame having reached glass, and the
-        // deferred ride save must grind against an already-presented screen, not delay it. ═══
+        // Store tail: a second short guard for the store work that must follow the present. The
+        // trial confirm is anchored on a frame having reached glass, and the deferred ride save must
+        // grind against an already-presented screen rather than delay it.
         let tail_held_us = {
             let mut store_guard = shared.lock().await;
             let t_tail = Instant::now();
             let SharedStore { storage: _, settings: settings_store } = &mut *store_guard;
 
-            // ── DFU trial confirm (epic #615 S4, #619), once, at the health anchor ──
-            // A frame just landed on glass and the SD mounted at boot: if this boot is a
-            // trial (`Trial { installed, .. }` on the boot-state page), write
-            // `Idle { installed }` — the whole confirm — and hand the app the one-time
-            // "updated to vX" fact for S5's toast. A failed first present retries the
-            // anchor on a later pass; an unconfirmed trial rolls back next boot by design.
+            // The DFU trial confirm, once, at the health anchor. A frame just landed on glass and the
+            // card mounted at boot, so if this boot is a trial, write `Idle { installed }` — the
+            // whole confirm — and hand the app the one-time "updated to vX" fact. A failed first
+            // present retries the anchor later, and an unconfirmed trial rolls back next boot.
             if trial_confirm_pending && presented_ok {
                 trial_confirm_pending = false;
                 if let Some(installed) = crate::dfu::confirm_trial(settings_store) {
@@ -3268,23 +2932,17 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // ── The staged install arm (epic #615 S4), once, AFTER the present ──
-            // The "Installing update" card is on glass now: the warm reset into the bootloader never
-            // paints — it only parks the panel pins and keeps the COM wave alternating
-            // (`obc-boot/src/com.rs`) — so the MIP holds *this* frame for the whole snapshot + flash.
-            // The arm holds the store exclusively across its whole SD→flash stream, deliberately (a
-            // BLE `UPDATE.BIN` write must not interleave with it), which is why it belongs in the
-            // tail rather than in the guard-free block that decided it.
+            // The staged install arm, once, after the present. The "Installing update" card is on
+            // glass now, and the warm reset into the bootloader never paints — it only parks the
+            // panel pins and keeps the COM wave alternating — so the panel holds this frame for the
+            // whole snapshot and flash. The arm holds the store exclusively across its whole
+            // card-to-flash stream, which is why it belongs in the tail rather than in the
+            // guard-free block that decided it.
             //
-            // The check→present→arm window this opens is benign: recording / pending-save state is
-            // ride-loop-owned (neither can appear meanwhile), a yanked card re-refuses here, and a
-            // BLE `UPDATE.BIN` rewrite in the window is the DR6 stale-ref case — the bootloader
-            // re-verifies the staged image after the reset regardless.
-            // The card must actually be on the stack before the panel is handed to the reset: the
-            // scheduler can bounce an install-began answer it has to *push* onto a full stack (the
-            // debug arm, with no spinner to replace) and re-queue it, and arming meanwhile would
-            // freeze the previous frame on for the whole flash. Bounded, because the install matters
-            // more than the frame — the same stance the inline path took when a present failed.
+            // The card must be on the stack before the panel is handed to the reset: the scheduler
+            // can bounce a push onto a full stack and re-queue it, and arming meanwhile would freeze
+            // the previous frame for the whole flash. The wait is bounded, because the install
+            // matters more than the frame.
             let arm_now = match exec.arm_pending {
                 None => false,
                 Some(_) if app.dfu_installing_card_up() => true,
@@ -3300,9 +2958,8 @@ pub(crate) async fn run_app(
             if arm_now {
                 exec.arm_pending = None;
                 let SharedStore { storage, settings: settings_store } = &mut *store_guard;
-                // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either way).
-                // Absent ⇒ `run_install` re-scans (the `dfu-install` debug path). On success this
-                // never returns.
+                // Hand the confirm's carried scan ref to the arm; it is consumed either way. Absent
+                // means `run_install` re-scans. On success this never returns.
                 let failed = match storage.as_mut() {
                     Some(s) => crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await,
                     None => {
@@ -3311,16 +2968,10 @@ pub(crate) async fn run_app(
                     }
                 };
                 if let Some(error) = failed {
-                    // `InstallBegan` is the operation's **terminal** answer — `DfuState` invalidated
-                    // its token when it accepted it — so an arm that then failed cannot ride the same
-                    // operation, and inventing a second one would be an operation the rider never
-                    // started. It is a *fact* instead, and the vocabulary already has the right one:
-                    // the update did not start. The rider sees the update-failed card rather than an
-                    // installing card that never becomes a reboot.
-                    //
-                    // What this costs, stated: the specific `DfuInstallError` tier is lost on this
-                    // path (it survives on the guard refusals above, which answer the operation while
-                    // it is still live). The exact reason is on RTT and in the `D`-line breadcrumbs.
+                    // `InstallBegan` is the operation's terminal answer, so an arm that then failed
+                    // cannot ride the same operation, and inventing a second one would be an
+                    // operation the rider never started. It is a fact instead: the update did not
+                    // start. The specific error tier is lost on this path and lives on the log.
                     defmt::error!("dfu: the arm failed after the card was presented: {}", defmt::Debug2Format(&error));
                     let verdict = obc_app::device_core::UpdateResult::Failed {
                         why: obc_app::DfuFailure::NotStarted,
@@ -3335,18 +2986,15 @@ pub(crate) async fn run_app(
             t_tail.elapsed().as_micros()
         };
 
-        // #809 instrumentation — debug level, outside the timed render/push spans: the pass's two
-        // guard holds, proving on RTT that neither contains the present (compare with `map frame`'s
-        // `push`; before this split the single hold contained render *and* push). `tail` spikes on
-        // the rare deferred-save pass — that stretch is the store-contention floor stage 2 would
-        // attack, so this line is also its measurement.
+        // The pass's two guard holds, proving that neither contains the present. `tail` spikes on the
+        // rare deferred-save pass.
         defmt::debug!(
             "store guard: phase {=u64} us + tail {=u64} us (present ran guard-free)",
             store_held_us,
             tail_held_us
         );
 
-        // Publish render-stats telemetry host-ward at ~2 Hz: throttled here (not in the TX task) so the
+        // Publish render-stats telemetry at about 2 Hz, throttled here and not in the TX task, so the
         // link never floods and the device never stalls on it.
         #[cfg(feature = "debug-uart")]
         if now.wrapping_sub(last_telem_ms) >= 500 {
@@ -3359,37 +3007,25 @@ pub(crate) async fn run_app(
             last_led = now;
         }
 
-        // ===================== Event-driven sleep =====================
-        // Instead of a fixed ~8 ms tick, block until the next *real* wake: a recognised gesture
-        // (`GESTURES` non-empty — a non-consuming `ready_to_receive`, so the drain at the loop top still
-        // gets it), a hold starting to charge (`INPUT_WAKE` — a press emits no gesture, so without this
-        // arm the loop slept through the whole charge on a quiet screen and the bulge's first frame on
-        // glass was the confirm pop), a fresh sensor/host datapoint (`wait_sensor_event`), a BLE link
-        // edge (`ble::wait_status_change` — connect/disconnect *and* the pairing passkey, so the
-        // passkey card wakes the loop from warm sleep), or the soonest screen animation deadline the
-        // app reports.
-        // A wake does not itself require a repaint. Even with GPS asleep and no screen deadline,
-        // the watchdog feed cap below bounds the timer; input, sensor/store and BLE events can wake
-        // the loop sooner. Pending effects and store work also affect the next pass's cadence.
-        // While something is **actively animating** — a live hold bulge (`overlay_*`, incl. its retract),
-        // a charging hold on either button (`charging`), a redraw a flaky SD glitch couldn't service
-        // (`pending_map_redraw`) — keep the short cadence so
-        // it stays fluid; otherwise use the app's next-wake deadline, bounded by the watchdog cap
-        // and the build/transfer pacing rules below.
+        // Event-driven sleep: block until the next real wake — a recognised gesture, a hold starting
+        // to charge (a press emits no gesture, so without this arm the loop slept through the whole
+        // charge and the bulge's first frame on glass was the confirm pop), a fresh sensor or host
+        // datapoint, a BLE link edge (connect, disconnect and the pairing passkey, so the passkey
+        // card wakes the loop from warm sleep), or the soonest screen animation deadline the app
+        // reports.
+        //
+        // A wake does not itself require a repaint. While something is actively animating, keep the
+        // short cadence so it stays fluid; otherwise use the app's next-wake deadline, bounded by the
+        // watchdog cap and the transfer pacing below.
         let charging = hold_p > 0.0 || display.hold_charging();
-        // "A search is live" is the app's fact, never the board's run handle: `CoreMode` is set when
+        // "A search is live" is the app's fact, never the board's run handle: the mode is set when
         // the plan command drains and cleared by the answer, which brackets `nav_run` on both sides.
-        // It costs a hot loop rather than an exclusion if it is wrong, and it is the last place the
-        // board derived this a second way.
         let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
         let animating = charging || planning || pending_map_redraw || display.overlay_owed() || overlay_span.is_some();
-        // The app's deadline (read after the render), plus the reasons to come straight back: the
-        // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
-        // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
-        // to consume, an effect to serve, or a derived read it was asked for.
-        // An outstanding store round trip takes the short animation cadence instead,
-        // because spinning at full speed against a commit that runs for hundreds of milliseconds
-        // would starve the task answering it.
+        // The app's deadline, plus the reasons to come straight back: the plan's `immediate`, and the
+        // executor's own `owed`. An outstanding store round trip takes the short animation cadence
+        // instead, because spinning at full speed against a commit that runs for hundreds of
+        // milliseconds would starve the task answering it.
         let immediate = immediate || peak_view.busy();
         #[cfg(has_nav)]
         let visit_immediate = visit.immediate(&NAV_STORE_REPLY, immediate || exec.owed());
@@ -3405,33 +3041,32 @@ pub(crate) async fn run_app(
             next_wake_ms
         };
         let next_ms = if peak_view.busy() { Some(0) } else { next_ms };
-        // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
-        // responsive even on an otherwise-quiet screen (well under the WDT feed cap).
+        // The debug-uart build keeps a 2 Hz floor, so streamed telemetry and zoom commands stay
+        // responsive on an otherwise-quiet screen.
         #[cfg(feature = "debug-uart")]
         let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(500);
-        // The indefinite sleep is capped at ~WDT/2 (#349) so an otherwise-idle device still wakes
-        // to feed the watchdog — the `None` (sleep-until-input/sensor) arm becomes a long timer.
+        // The indefinite sleep is capped at about half the watchdog period, so an otherwise idle
+        // device still wakes to feed the dog.
         #[cfg(not(feature = "debug-uart"))]
         let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(WDT_FEED_CAP_MS);
-        // A map upload owns the device (#889): the card is the only thing on glass, so don't let
-        // an animation flag or a short app deadline wake the loop faster than the progress pace —
-        // every avoided repaint is ~85 ms handed back to the SD write path. Gestures and sensor
-        // events still wake the loop early; the feed throttle above makes those wakes repaint
-        // nothing. Well under the WDT feed cap, which is the ceiling this must never approach —
-        // the un-yielding upload loop starving this feed is exactly what reset the device on
-        // glass (2026-07-30).
+        // A map upload owns the device: the card is the only thing on glass, so no animation flag or
+        // short app deadline may wake the loop faster than the progress pace, because every avoided
+        // repaint is about 85 ms handed back to the write path. Gestures and sensor events still wake
+        // the loop early, and the feed throttle above makes those wakes repaint nothing. This must
+        // stay well under the watchdog feed cap: an upload loop starving that feed is what reset the
+        // device on glass.
         let ms = if map_uploading { ms.max(MAP_XFER_PACE_MS) } else { ms };
         let _ = select5(
             GESTURES.ready_to_receive(),
             INPUT_WAKE.wait(),
-            // A sensor/host datapoint, or a store movement — an upload/delete rescans the catalog
-            // now, not at the next timer wake (#450).
+            // A sensor or host datapoint, or a store movement, so an upload or delete rescans the
+            // catalog now rather than at the next timer wake.
             wait_host_or_sensor_event(
                 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
                 consumer,
             ),
-            // A BLE link edge — connect/disconnect *and* the pairing passkey — so the passkey card
-            // wakes the loop from warm sleep (epic #447, P2).
+            // A BLE link edge — connect, disconnect and the pairing passkey — so the passkey card
+            // wakes the loop from warm sleep.
             crate::ble::wait_status_change(),
             Timer::after_millis(ms as u64),
         )
