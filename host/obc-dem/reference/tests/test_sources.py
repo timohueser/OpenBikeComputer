@@ -217,8 +217,8 @@ class Requests(unittest.TestCase):
             def request(self, box):
                 return None if box[0] < BOX[0] + 0.012 else b"II*\x00" + repr(box).encode()
 
-        fake = Fake("fk", "Testland", "fake", 1.0, "CC0", "© fake", "EGM2008", (-180, -90, 180, 90))
-        boxes = list(request_boxes(BOX, 1.0))
+        fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "© fake", "EGM2008", (-180, -90, 180, 90))
+        boxes = list(request_boxes(BOX, 0.5))
         self.assertGreater(len(boxes), 2)
         with TemporaryDirectory() as directory:
             paths = fake.fetch(BOX, Path(directory))
