@@ -116,6 +116,17 @@ fn scan_rejects_bad_image_crc() {
     assert_eq!(scan_with(&mut stage), Err(ScanError::BadCrc));
 }
 
+/// The cap is the app slot, so a slot-filling image is a normal image: it must scan, not trip the
+/// oversize gate one byte before the bootloader would have flashed it.
+#[test]
+fn scan_accepts_an_image_that_fills_the_slot() {
+    let image = vec![0x5Au8; MAX_IMAGE_LEN as usize];
+    let (mut stage, header) = FakeStage::happy(&image, "v9.9.9");
+    let staged = scan_with(&mut stage).expect("an image the size of the slot scans");
+    assert_eq!(staged.header, header);
+    assert_eq!(staged.len, MAX_IMAGE_LEN);
+}
+
 #[test]
 fn scan_rejects_oversize_before_any_bulk_read() {
     // A valid header CRC, an `image_len` over the cap, and no body: the scan must reject on the

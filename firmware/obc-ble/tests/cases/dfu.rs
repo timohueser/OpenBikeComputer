@@ -1,5 +1,5 @@
 //! The DFU wire surface: the `fwImage` object type through the unchanged whole-object transfer
-//! machinery, the announce-time size reject, and the `installFw` reply matrix. This crate has no
+//! machinery, and the `installFw` reply matrix. This crate has no
 //! storage, so these tests pin the protocol precondition the board's promote hangs off: a
 //! CRC-mismatching stream reports `crcMismatch`, a matching one reports `committed`.
 
@@ -60,30 +60,6 @@ fn fwimage_crc_mismatch_leaves_nothing_to_commit() {
     let result = rx.outcome().expect("complete");
     assert_eq!(result.status, TransferStatus::CrcMismatch);
     assert_eq!(result.committed_offset, 0, "nothing is handed on");
-}
-
-#[test]
-fn oversize_fwimage_rejected_at_announce() {
-    const MAX: u32 = 1_480_000; // stands in for obc_dfu::MAX_IMAGE_LEN
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX, MAX), None);
-    assert_eq!(TransferStatus::fwimage_announce_reject(1, MAX), None);
-    assert_eq!(TransferStatus::fwimage_announce_reject(0, MAX), None);
-    // Over the ceiling: rejected at the descriptor write, before any byte streams.
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX + 1, MAX), Some(TransferStatus::Error));
-    assert_eq!(TransferStatus::fwimage_announce_reject(u32::MAX, MAX), Some(TransferStatus::Error));
-}
-
-#[test]
-fn fwimage_announce_ceiling_is_container_sized_not_raw() {
-    // `total_len` is the whole OBCU container, so the ceiling must be container-sized. A raw-image
-    // ceiling would reject an image in the top 64 bytes of the range that the armer flashes fine.
-    const MAX_IMAGE_LEN: u32 = 1_480_000; // obc_dfu::MAX_IMAGE_LEN
-    const HEADER_LEN: u32 = 64; // obc_dfu::HEADER_LEN
-    const MAX_CONTAINER: u32 = MAX_IMAGE_LEN + HEADER_LEN;
-    // A raw image at the cap: the container is 64 bytes larger.
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 64, MAX_CONTAINER), None);
-    // One raw byte over.
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 65, MAX_CONTAINER), Some(TransferStatus::Error));
 }
 
 /// The command answers from edge state only: it can act, or it is busy. Whether a package is
