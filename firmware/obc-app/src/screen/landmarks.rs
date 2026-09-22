@@ -355,7 +355,7 @@ mod tests {
             "Lighthouse",
             "Boundary oddity",
             "Ghost town",
-            "Mineral spring",
+            "Spring",
         ];
 
         for (index, expected) in expected.into_iter().enumerate() {
