@@ -184,9 +184,11 @@ impl QuickDrawerScreen {
                     cx.settings.ble_enabled = !cx.settings.ble_enabled;
                     Transition::None
                 }
-                // Central settings replace the sheet, so Back out of settings lands on the base
-                // screen rather than on a drawer the rider has finished with.
-                Some(Control::Settings) => Transition::Replace(Screen::Settings(SettingsScreen::new())),
+                // Central settings take the sheet's slot, so Back out of settings lands on the base
+                // screen rather than on a drawer the rider has finished with. The rider gets the
+                // Settings already on the stack back, because the squeeze reaches this row from
+                // inside settings too and a second one would cost a slot every lap.
+                Some(Control::Settings) => Transition::Resume(Screen::Settings(SettingsScreen::new())),
                 Some(Control::Power) => {
                     self.slide_to(Page::PowerConfirm, cx.now_ms);
                     Transition::None
@@ -571,15 +573,15 @@ mod tests {
         assert!(d.powering_off(), "only a completed hold gets there");
     }
 
-    /// The settings icon replaces the sheet, so Back out of central settings lands on the base
-    /// screen rather than back inside a drawer.
+    /// The settings icon takes the sheet's slot, so Back out of central settings lands on the base
+    /// screen rather than back inside a drawer, and it resumes a Settings the rider already has.
     #[test]
-    fn the_settings_icon_replaces_the_sheet() {
+    fn the_settings_icon_takes_the_sheets_slot() {
         let mut w = World::new();
         let mut d = settled(w.now_ms);
         w.press(&mut d, Gesture::Step(2)); // the settings control
         let t = w.press(&mut d, Gesture::Press);
-        assert!(matches!(t, Transition::Replace(Screen::Settings(_))));
+        assert!(matches!(t, Transition::Resume(Screen::Settings(_))));
     }
 
     #[test]

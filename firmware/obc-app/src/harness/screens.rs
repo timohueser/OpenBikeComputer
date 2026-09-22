@@ -1261,6 +1261,41 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
 }
 
+/// The quick drawer's Settings row resumes the Settings the rider already has instead of stacking
+/// a second one. The sheet opens over anything, the settings subtree included, so a lap of squeeze
+/// and press would otherwise cost a slot each time until `MAX_DEPTH` defers what comes next.
+#[test]
+fn laps_of_the_drawer_settings_row_do_not_stack_settings() {
+    /// One lap: the squeeze, the steps to the settings control, and the press.
+    fn lap(app: &mut App, ms: &mut u32) {
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the squeeze opens the sheet");
+        *ms += 1_000;
+        app.advance_animations(InputClock(*ms)); // settle the open slide
+        for _ in 0..2 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → bluetooth → settings
+        }
+        app.apply_gesture(Gesture::Press);
+    }
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.set_backlight_available(true);
+    let mut ms = 1_000;
+    lap(&mut app, &mut ms);
+    assert!(matches!(app.top_screen(), Screen::Settings(_)), "the row opens settings over the base");
+    let settled = app.ui.stack.len();
+
+    for lap_no in 0..8 {
+        app.apply_gesture(Gesture::Press); // one settings page down, so the lap has something to drop
+        assert!(app.ui.stack.len() > settled, "lap {lap_no}: the descent went nowhere");
+        lap(&mut app, &mut ms);
+        assert!(matches!(app.top_screen(), Screen::Settings(_)), "lap {lap_no} landed on the settings it had");
+        assert_eq!(app.ui.stack.len(), settled, "lap {lap_no} spent a slot, and the sheet went with it");
+    }
+
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host card still has room after the laps");
+}
+
 /// The deepest screen stack a descent reaches, walked instead of asserted from one hand-written
 /// path. The alphabet is the three navigating gestures — a step, a press and a guarded hold — so
 /// this bounds the ordinary way down and the reserve it leaves for host-pushed cards. A sheet is
