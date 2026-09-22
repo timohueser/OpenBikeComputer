@@ -23,7 +23,7 @@ pub const MIN_LIST_ENTRY_LEN: usize = RIDE_ENTRY_LEN;
 /// ```
 ///
 /// `total` makes a truncation visible on the wire: the device dropped `total - count` entries in
-/// FAT order, and the app warns instead of answering "up to date".
+/// catalog order, and the app warns instead of answering "up to date".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListHeader {
     pub count: u16,

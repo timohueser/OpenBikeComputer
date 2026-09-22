@@ -151,7 +151,7 @@ obc-display = { path = "../obc-display" }
 # The pure sensor chip/protocol decoders (#807): UBX / BMP581 / ICM-20948 / compass. The board owns
 # the concrete `Twim` transactions in `sensors.rs`; these decode the bytes. No embassy, host-tested.
 obc-sensors = { path = "../obc-sensors" }
-# The board-agnostic flat store and retained FAT byte adapters (#807).
+# The board-agnostic flat store (#807).
 obc-storage = { path = "../obc-storage" }
 # The transport-free v4 engine and wire codecs shared by BLE, USB, and the flat store.
 obc-link = { path = "../obc-link", features = ["fast-crc"] }
@@ -162,8 +162,8 @@ obc-render = { path = "../obc-render" }
 # colour + target types unify across the path.
 embedded-graphics = "0.8"
 
-# microSD storage (issue #123). The board-agnostic raw-card mechanics and retained updater byte
-# adapters live in obc-storage; format parsers live in obc-reader/obc-route.
+# microSD storage (issue #123). The board owns the physical card driver; the raw-card store lives
+# in obc-storage, and format parsers live in obc-reader/obc-route.
 obc-app = { path = "../obc-app" } # the screen tree, the pass, and the map render
 obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
 obc-formats = { path = "../obc-formats" } # Shared object codecs used by board composition.
@@ -176,13 +176,7 @@ obc-elevation = { path = "../obc-elevation" }
 # The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side
 # armer reads/writes (S4, #619), plus its pure scan/arm/confirm decision core (`obc_dfu::armer`).
 obc-dfu = { path = "../obc-dfu" }
-# FatFs over SPI. `default-features = false` (no `log`/`defmt-log`): embedded-sdmmc 0.9 pins
-# `defmt = "0.3"`, which would clash with this crate's defmt 1.0 — so its internal logging stays
-# the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
-# Matches obc-storage's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
-embedded-sdmmc = { version = "0.9", default-features = false }
-# `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the
-# shared crates use, so heapless types unify.
+# Bounded strings and vectors used by the app and link planes.
 heapless = "0.8"
 # (The runtime-built `'static` shared state the two planes split — the bus `Mutex<Display>`, the
 # `InputPlane` mutex, the VCOM ring buffers — is parked in `.bss` via an in-place `MaybeUninit` +
@@ -261,27 +255,6 @@ codegen-units = 1
 debug = 2
 
 # ---------------------------------------------------------------------------------------------
-# Our embedded-sdmmc fork, branched from the v0.9.0 tag: `VolumeManager::write` batches the
-# block-aligned run inside the current cluster into ONE `BlockDevice::write`, which the transport
-# then issues as a single multi-block command. Stock 0.9's one-block `BlockCache` can never hand
-# the device more than a block, so a map upload paid a whole card program cycle per 512 B.
-# The batching is transport-agnostic and is exactly what feeds CMD25 runs to the sEMMC host that
-# replaced the SPI path (epic #1158): the same edge that was worth 5.3x over SPI is what turns
-# 8.2 MB/s of raw write bandwidth into upload throughput instead of one program cycle per block.
-#
-# The fork carries a **second** edge now, from the upload retune: `VolumeManager::preallocate`
-# reserves a streamed file's whole cluster chain up front, chaining a run of free clusters inside one
-# FAT block and writing that block back once. Without it, `write` extends the file a cluster at a
-# time and each extension is four single-block writes — four program cycles landing *between* the
-# CMD25 bursts above, which is where they cost the most. `sd::Storage::upload_reserve` is the caller.
-#
-# **This stanza is per resolve root, and there are three.** The workspace root carries the same
-# patch so `obc-storage`'s host tests exercise the crate the device actually runs; `obc-boot`
-# does not (it only reads the card, so it gains nothing).
-[patch.crates-io]
-embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }
-
-# ---------------------------------------------------------------------------------------------
 # The vendored Synopsys OTG driver `embassy-nrf`'s USBHS wrapper is a thin shell over. It is where
 # the bulk OUT endpoint's transfer arming lives, and upstream arms exactly **one** max packet at a
 # time — the endpoint NAKs from the moment a packet lands until this firmware's task has been
@@ -294,4 +267,5 @@ embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", bran
 # `vendor/embassy-usb-synopsys-otg/VENDORING.md`.
 #
 # **Board crate only.** The workspace root and `obc-boot` never resolve this crate — neither has USB.
+[patch.crates-io]
 embassy-usb-synopsys-otg = { path = "vendor/embassy-usb-synopsys-otg" }

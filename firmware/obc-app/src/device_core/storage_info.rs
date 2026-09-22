@@ -3,8 +3,8 @@
 //! The smallest domain in DeviceCore, and the only one with no home of its own outside it. Free
 //! space belongs to no product feature; it is a fact about the device that the System screen shows.
 //! It still gets the full treatment — an intent, a bounded effect, a token-carrying outcome —
-//! because measuring free space is a real, slow, failable scan: a FAT free-cluster walk on the
-//! board, a filesystem query on the simulator.
+//! because measuring free space is a failable platform query: the board reads the mounted flat
+//! store's free bitmap, while the simulator can query its own backing store.
 
 use crate::device_core::{OperationToken, StorageInfoTag};
 

@@ -8,11 +8,10 @@
 //!
 //! - [`command::run_command`] — the imperatives (`installFw`, `forgetBond`, `setClock`). It takes
 //!   the store and returns a typed outcome.
-//! - [`identity`] — the FICR-derived serial and name, the DIS strings, and the Config and
-//!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its
+//! - [`identity`] — the FICR-derived serial and name, the DIS strings, and the Config blob codec,
+//!   in plain bytes. BLE's GATT table wraps them into its
 //!   attribute-value types; USB writes the same bytes into a control frame.
-//! - The single [`ObjectStore`] itself ([`init_store`]). One card, one catalog, one revision
-//!   counter, so one store, built once in `main` and handed to every plane.
+//! - The single [`LinkControl`] settings and bond cache ([`init_control`]), built once in `main`.
 //!
 //! What stays transport-specific: how a control message is addressed (a GATT characteristic handle,
 //! or an EP0 vendor request) and the link lifecycle (advertising and bonding, or enumeration and
@@ -30,43 +29,36 @@ use obc_ble::StatusMessage;
 use obc_link::flat::ObjectKind;
 
 use crate::init_static;
-use crate::object_store::ObjectStore;
+use crate::link_control::LinkControl;
 
-/// The single [`ObjectStore`]: catalog, upload, download and revision semantics behind a `RefCell`
-/// that every plane borrows synchronously, never across an `await`. The SD card and RRAM settings it
-/// operates on live in [`crate::SharedStore`], locked per call and passed into each store method.
-static mut STORE: MaybeUninit<RefCell<ObjectStore>> = MaybeUninit::uninit();
+/// The link-control cache behind a `RefCell` that each plane borrows synchronously, never across an
+/// `await`. RRAM lives in [`crate::SharedSettings`] and is locked per operation.
+static mut CONTROL: MaybeUninit<RefCell<LinkControl>> = MaybeUninit::uninit();
 
-/// Size of the resident store, for the resource report. It is reported under the
-/// `ble_object_store` name, which the pinned resource baseline uses.
-pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<RefCell<ObjectStore>>();
+/// Size of the resident link-control state. The report keeps the `ble_object_store` metric key so
+/// the pinned resource baseline remains comparable.
+pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<RefCell<LinkControl>>();
 
 #[inline(never)]
-pub(crate) fn init_store(shared: &mut crate::SharedStore) -> &'static RefCell<ObjectStore> {
+pub(crate) fn init_control(shared: &mut crate::SharedSettings) -> &'static RefCell<LinkControl> {
     /// The fully-wrapped initial value as a named constant: `ptr::write` of a constant lowers to a
-    /// `.rodata`-to-slot memcpy, with no `RefCell<ObjectStore>`-sized stack value anywhere. The
+    /// `.rodata`-to-slot memcpy, with no `RefCell<LinkControl>`-sized stack value anywhere. The
     /// `declare_interior_mutable_const` lint warns that every use of such a const is a fresh copy
     /// that forgets mutations; here that copy-on-use is the mechanism, so the hazard cannot arise.
     #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: RefCell<ObjectStore> = RefCell::new(ObjectStore::EMPTY);
-    let cell = unsafe { init_static(core::ptr::addr_of_mut!(STORE), INIT) };
+    const INIT: RefCell<LinkControl> = RefCell::new(LinkControl::EMPTY);
+    let cell = unsafe { init_static(core::ptr::addr_of_mut!(CONTROL), INIT) };
     cell.borrow_mut().hydrate(shared);
     cell
 }
 
-/// The storage handles a link plane is composed with. They always travel together, so they are
-/// handed over as one value rather than as three parallel parameters threaded through each
+/// The settings state a link plane is composed with. The handles travel together through each
 /// transport's spawn trampoline.
 #[derive(Clone, Copy)]
-pub(crate) struct LinkStores {
-    /// The SD card + RRAM settings, behind the async mutex the ride loop shares. Locked per store
-    /// call and released before the next channel `await`, so the map render interleaves.
-    pub shared: &'static crate::SharedStoreMutex,
-    pub objects: &'static RefCell<ObjectStore>,
-    /// The boot mint pass's store-epoch outcome, the value the identity read serves. `None` means no
-    /// mounted store. It is never re-derived by a plane, so a card swap cannot silently change what
-    /// a plane reports.
-    pub epoch: Option<u32>,
+pub(crate) struct LinkState {
+    /// The RRAM settings behind the async mutex the ride loop shares.
+    pub shared: &'static crate::SharedSettingsMutex,
+    pub control: &'static RefCell<LinkControl>,
 }
 
 /// Whether a ride is recording, mirrored across the plane boundary: the ride loop pushes

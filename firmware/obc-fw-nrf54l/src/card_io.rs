@@ -1,5 +1,5 @@
-//! Raw sEMMC helpers shared by the flat store and the remaining FAT remnants: the one aligned DMA
-//! bounce buffer and the optional physical-read census. Neither is a filesystem concern.
+//! Raw sEMMC helpers for the flat store: the aligned DMA bounce buffer and the optional
+//! physical-read census.
 
 use crate::semmc::BLOCK_BYTES;
 

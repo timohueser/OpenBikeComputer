@@ -609,7 +609,7 @@ mod tests {
     /// Re-stamp the CRC over a doctored blob, so [`decode`] sees a valid blob whose payload is
     /// wrong.
     fn re_stamp_crc(b: &mut [u8; ENCODED_LEN]) {
-        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::crc16::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     }
 
@@ -895,7 +895,7 @@ mod tests {
         /// Stamp the CRC of a hand-written blob over its own `plen` bytes. A hand-computed CRC
         /// would test arithmetic, not framing.
         pub fn stamped<const N: usize>(mut b: [u8; N], plen: usize) -> [u8; N] {
-            let crc = crate::store_meta::crc16(&b[0..plen]);
+            let crc = crate::crc16::crc16(&b[0..plen]);
             b[plen..plen + 2].copy_from_slice(&crc.to_le_bytes());
             b
         }

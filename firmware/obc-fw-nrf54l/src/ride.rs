@@ -36,7 +36,7 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::input_plane::{CHORDS, GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
 use crate::map_plane::MapDisplay;
-use crate::{stackmeter, SharedStore, SharedStoreMutex};
+use crate::{stackmeter, SharedSettings, SharedSettingsMutex};
 
 /// Watchdog period: 24 s of 32768 Hz ticks. It lives in `obc-dfu` because the bootloader must
 /// build the byte-identical WDT config to adopt this dog across a DFU install, and to pre-start the
@@ -85,7 +85,7 @@ async fn wait_host_or_sensor_event(
         embassy_futures::select::select(
             crate::flat_store::wait_catalog_commit(),
             embassy_futures::select::select(
-                crate::object_store::wait_store_changed(),
+                crate::link_control::wait_control_event(),
                 crate::usb::wait_stage_request(),
             ),
         ),
@@ -626,7 +626,7 @@ pub(crate) async fn run_app(
     // The card and the RRAM settings behind one async mutex. The loop takes it in two short scopes
     // per pass — the store phase and the post-present tail — and never holds it across the present
     // await, so the object planes reach the card during the panel scan.
-    shared: &SharedStoreMutex,
+    shared: &SharedSettingsMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
     // The flat map source and store are mandatory: a non-flat card never reaches this loop.
@@ -906,10 +906,10 @@ pub(crate) async fn run_app(
             // only the rider installs. The atomic is consumed only when the flow actually opened: a
             // `false` is a deferral, so the request stays pending and retries next pass.
             crate::link::set_recording(app.recording());
-            if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
-                let _ = crate::object_store::take_dfu_install_ble();
+            if crate::link_control::dfu_install_pending() && app.open_remote_dfu_check() {
+                let _ = crate::link_control::take_dfu_install_ble();
             }
-            if let Some((utc, offset_min)) = crate::object_store::take_ble_clock() {
+            if let Some((utc, offset_min)) = crate::link_control::take_ble_clock() {
                 app.stamp_clock_ble(utc, offset_min);
             }
             // Push the persisted Bluetooth toggle across the plane boundary. The radio plane wakes
@@ -1058,7 +1058,7 @@ pub(crate) async fn run_app(
                     // the app. The scan touches nothing, so it needs no ride-state guard.
                     let result = {
                         let mut store_guard = shared.lock().await;
-                        let SharedStore { settings: settings_store, .. } = &mut *store_guard;
+                        let SharedSettings { settings: settings_store, .. } = &mut *store_guard;
                         crate::dfu::run_scan(flat, settings_store, &mut wdt)
                     };
                     // Park the validated ref for the confirm's install and answer the app with just
@@ -1088,7 +1088,7 @@ pub(crate) async fn run_app(
         let (rendered, dirty_map, hold_p, next_wake_ms, immediate, store_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_store = Instant::now();
-            let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+            let SharedSettings { settings: settings_store } = &mut *store_guard;
 
             // The bounded operations the previous pass decided. They run at the top of the store
             // phase because that is where the work they name lives: a catalog re-read must precede
@@ -1239,13 +1239,18 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // The System settings screen's card-free scan: one bounded free-space read. `None` is a
-            // measurement that produced no figure, and the row blanks back to `--` rather than
-            // showing a byte count from a card that may no longer be in the device.
+            // The System settings screen's free-space read comes from the mounted flat store's
+            // resident bitmap. `None` keeps the existing unavailable answer for an unreadable card
+            // or an impossible byte-count product, so the row blanks back to `--`.
             if let Some(effect) = exec.effects.storage_info.take() {
                 use obc_app::device_core::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
                 let StorageInfoEffect::MeasureFreeSpace { token } = effect;
-                let outcome = match storage.as_ref().and_then(|s| s.card_free_bytes()) {
+                let free = flat
+                    .mode()
+                    .readable()
+                    .then(|| u64::from(flat.free_extents()).checked_mul(flat.extent_size()))
+                    .flatten();
+                let outcome = match free {
                     Some(free_bytes) => StorageInfoOutcome::Measured { token, free_bytes },
                     None => StorageInfoOutcome::Failed { token, error: StorageInfoError::NotMounted },
                 };
@@ -2148,7 +2153,7 @@ pub(crate) async fn run_app(
             // learns. Reload the BLE-owned fields before the change-detection save below, so the UI
             // re-captions in the same session and the app's diff save cannot clobber the phone's
             // write with its own stale copy. Only units and name are BLE-writable.
-            if crate::object_store::take_ble_config_written() {
+            if crate::link_control::take_ble_config_written() {
                 // Merge only the BLE-owned fields. `merge_ble_settings` preserves a pending device
                 // edit, so neither the phone's write nor the rider's edit is lost.
                 app.merge_ble_settings(&settings_store.load().unwrap_or_default());
@@ -2164,7 +2169,7 @@ pub(crate) async fn run_app(
                         Ok(()) => {
                             // The RRAM blob just moved, so the BLE config-read cache is stale. Flag
                             // it, so the BLE plane refreshes before its next read.
-                            crate::object_store::mark_device_settings_changed();
+                            crate::link_control::mark_device_settings_changed();
                             // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
                             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
                             if app.settings().fix_interval_s != prev_interval {
@@ -2915,7 +2920,7 @@ pub(crate) async fn run_app(
         let tail_held_us = {
             let mut store_guard = shared.lock().await;
             let t_tail = Instant::now();
-            let SharedStore { storage: _, settings: settings_store } = &mut *store_guard;
+            let SharedSettings { settings: settings_store } = &mut *store_guard;
 
             // The DFU trial confirm, once, at the health anchor. A frame just landed on glass and the
             // card mounted at boot, so if this boot is a trial, write `Idle { installed }` — the
@@ -2958,7 +2963,7 @@ pub(crate) async fn run_app(
             };
             if arm_now {
                 exec.arm_pending = None;
-                let SharedStore { settings: settings_store, .. } = &mut *store_guard;
+                let SharedSettings { settings: settings_store, .. } = &mut *store_guard;
                 // Hand the confirm's carried scan ref to the arm; it is consumed either way. Absent
                 // means `run_install` re-scans. On success this never returns.
                 let failed = match crate::flat_store::writer() {
