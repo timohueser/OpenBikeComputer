@@ -1276,8 +1276,11 @@ pub(crate) async fn run_app(
                                 obc_storage::flat::ObjectId(checkpoint.route.object),
                                 Some(obc_storage::flat::Revision(checkpoint.route.revision)),
                                 |source| {
+                                    // An imported route attributes no map, so no map can be wrong for it.
                                     obc_route::RouteObjectInfo::read(source).is_ok_and(|info| {
-                                        info.attribution_map == Some(crate::flat_store::planner_map_key(flat))
+                                        info.attribution_map.is_none_or(|attribution| {
+                                            attribution == crate::flat_store::planner_map_key(flat)
+                                        })
                                     })
                                 },
                             )
@@ -2270,6 +2273,19 @@ pub(crate) async fn run_app(
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
+            // The selected route owes a durable checkpoint once per selection. The entry walk is
+            // why it waits for the frame that already holds the parsed route.
+            if let (Some(id), Some(reader)) = (app.requested_route_checkpoint(), route.as_ref()) {
+                let source = crate::flat_store::route_fingerprint(flat, id).map(|route| {
+                    obc_app::navigator::RouteCheckpointSource {
+                        route,
+                        distance_m: reader.total_distance_m,
+                        unresolved_avoidance: reader.has_unresolved_avoidance(),
+                    }
+                });
+                app.offer_route_checkpoint(id, source);
+            }
+
             // One tight scope that ends before the next `.await`. The polyline buffer, the gesture
             // batch and the `PassPlan` are stack temporaries here; a binding still live across an
             // await would become a permanent slot in this task's future, which on this board is

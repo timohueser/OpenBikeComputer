@@ -460,7 +460,7 @@ pub static MAP_POI_CATEGORIES: ContextMenu = ContextMenu {
 };
 
 pub(crate) static ASSISTANT_RESUME: ContextMenu =
-    ContextMenu { rows: &[ContextRow { label: Msg::AssistantResumeJourney, action: ContextAction::ResumeJourney }] };
+    ContextMenu { rows: &[ContextRow { label: Msg::AssistantResumeRoute, action: ContextAction::ResumeJourney }] };
 
 pub static ASSISTANT_VISIT: ContextMenu =
     ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };

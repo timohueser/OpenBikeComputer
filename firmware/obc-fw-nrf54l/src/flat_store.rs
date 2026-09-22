@@ -1417,7 +1417,6 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
-#[cfg(has_nav)]
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,

@@ -762,9 +762,9 @@ save_unknown = "Save state unknown"
 cancel_visit = "Cancel visit"
 arrival = "Arrived"
 guidance_continues = "Guidance continues"
-resume_journey = "Resume journey"
+resume_navigation = "Navigation"
 resume_route = "Resume route"
-saved_journey = "Saved Assistant route"
+saved_route = "Saved route"
 
 [find_context]
 hide_closed = "Hide closed\nplaces"

@@ -107,6 +107,8 @@ pub struct FindState {
     selected_review: bool,
     invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
     pub(crate) resume_offer: bool,
+    /// The catalog row the standing checkpoint names, so the Resume card can say which route.
+    pub(crate) resume_route: Option<u8>,
     pub review: ReviewStatus,
     pub review_costs: Option<Costs>,
 }
@@ -138,6 +140,7 @@ impl FindState {
             selected_review: false,
             invalid_visit: None,
             resume_offer: false,
+            resume_route: None,
             review: ReviewStatus::Idle,
             review_costs: None,
         }

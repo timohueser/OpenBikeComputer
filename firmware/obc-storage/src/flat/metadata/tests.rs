@@ -383,6 +383,7 @@ fn checkpoint(route: EntryMeta, original: Option<EntryMeta>) -> NavigatorCheckpo
         lat: 47_000_000,
         phase: obc_formats::assistant::JourneyPhase::Following,
         unresolved_avoidance: false,
+        selection: false,
         lower_m: 0,
         upper_m: 100,
     }
@@ -401,6 +402,7 @@ fn checkpoint_rows_reconcile_and_capacity_preserve_each_other() {
         lat: 0,
         phase: obc_formats::assistant::JourneyPhase::Following,
         unresolved_avoidance: false,
+        selection: false,
         lower_m: 0,
         upper_m: 1,
     };

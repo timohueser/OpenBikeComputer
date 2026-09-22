@@ -437,6 +437,24 @@ impl HostLoop {
             app.prepare_assistant_resume(reader.as_ref());
             session.sync(app, routes);
         }
+        if let Some(id) = app.requested_route_checkpoint() {
+            session.sync(app, routes);
+            let source = routes.fingerprint(id).zip(session.index().zip(routes.active_source())).and_then(
+                |(route, (index, bytes))| {
+                    // The catalog revision and the entry head can differ; only bytes of the exact
+                    // named length are the ones this length and flag were read from.
+                    (bytes.len() == route.length).then(|| {
+                        let reader = obc_route::RouteReader::new(index, bytes);
+                        obc_app::navigator::RouteCheckpointSource {
+                            route,
+                            distance_m: reader.total_distance_m,
+                            unresolved_avoidance: reader.has_unresolved_avoidance(),
+                        }
+                    })
+                },
+            );
+            app.offer_route_checkpoint(id, source);
+        }
         if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
             let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
                 && app.assistant_preview().is_none();
@@ -445,12 +463,13 @@ impl HostLoop {
             let current = scope.is_some_and(|scope| app.assistant_store_matches(scope.store))
                 && (clearing
                     || (!resume
-                        || (current_map.is_current()
-                            && routes.resume_map_matches(obc_formats::obcr::RouteSourceKey {
+                        || routes.resume_map_matches(current_map.is_current().then(|| {
+                            obc_formats::obcr::RouteSourceKey {
                                 store: current_map.store_id().0,
                                 object: current_map.id().0,
                                 revision: current_map.revision().0,
-                            })))
+                            }
+                        })))
                         && app.assistant_review_context().is_none_or(|context| {
                             self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
                                 && context.profile == app.settings().bike_profile_idx
@@ -1225,6 +1244,106 @@ mod tests {
     use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, TrackPoint};
     use obc_route::RideStats;
 
+    /// An ordinary imported route is offered for Resume after a restart, from the same durable
+    /// checkpoint the Assistant uses. The checkpoint pins the exact bytes it names, and a restored
+    /// route opens no ride of its own.
+    #[test]
+    fn an_imported_route_is_offered_for_resume_after_a_restart() {
+        use obc_app::navigator::ReviewStatus;
+        use obc_pack::nav::{Edge, NavGraph, Node};
+        let bbox = (0, 0, 1_000_000, 1_000_000);
+        let points = [(500_000, 500_000), (500_000, 520_000), (520_000, 520_000)];
+        let graph = NavGraph {
+            nodes: points.iter().enumerate().map(|(id, &coord)| Node { id: id as u32, coord }).collect(),
+            edges: points
+                .windows(2)
+                .enumerate()
+                .map(|(id, p)| Edge { a: id as u32, b: id as u32 + 1, polyline: p.to_vec(), length_m: 2222, kind: 0 })
+                .collect(),
+        };
+        let lods = [obc_pack::LodLayer {
+            max_mpp: None,
+            chunk_size: 2048,
+            root: obc_pack::Node::Leaf { bbox, features: vec![] },
+        }];
+        let profiles =
+            [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
+        let map_bytes =
+            obc_pack::serialize_lods(&lods, &[], 0, bbox, &[], &graph, &profiles, &mut obc_elevation::NullElevation).0;
+        let owner = crate::flat_store::HostStore::memory().unwrap();
+        let map = crate::flat_map::FlatMap::from_bytes_in(&owner, &map_bytes).unwrap();
+        let mut sink = crate::VecSink::default();
+        let gpx = br#"<gpx><trk><trkseg><trkpt lon="0.500" lat="0.500"/><trkpt lon="0.500" lat="0.520"/><trkpt lon="0.520" lat="0.520"/></trkseg></trk></gpx>"#;
+        obc_route::gpx_to_obcr(&obc_formats::io::SliceSource(gpx), "Imported", &mut sink).unwrap();
+        let mut routes = crate::FlatRouteStore::new(owner.clone(), &[sink.bytes()]).unwrap();
+        let imported = routes.ids()[0];
+        let mut host = HostLoop::new();
+        let mut session = ActiveRouteSession::new();
+        let mut rides = crate::MemRideStore::new(vec![]);
+        let mut tracks = RecordingTrackStore::default();
+        let mut now = 0u32;
+        let mut frame = |host: &mut HostLoop, app: &mut App, routes: &mut crate::FlatRouteStore, fix| {
+            now += 100;
+            let mut loc = OneFix(fix);
+            let mut plan = host.pass(
+                app,
+                PassClock { ride: RideClock(now), ui: InputClock(now) },
+                &[],
+                Sensors::new(&mut loc),
+                None,
+                SUPPORT,
+            );
+            host.execute(
+                app,
+                &mut plan,
+                &mut session,
+                routes,
+                &mut rides,
+                &mut tracks,
+                &mut (),
+                &map,
+                &mut obc_route::NullElevation,
+                &mut (),
+            );
+            app.advance_animations(InputClock(now));
+        };
+        // The map-first app is riding: only a route being followed owes a checkpoint.
+        let mut app = App::new(AppState::new(500_000, 500_000, 10.0));
+        feed_routes(&mut app, &routes, &mut NoTrace);
+        app.activate_route(0);
+        for _ in 0..8 {
+            frame(&mut host, &mut app, &mut routes, None);
+            if routes.read_checkpoint().unwrap().is_some() {
+                break;
+            }
+        }
+        let saved = routes.read_checkpoint().unwrap().expect("selecting a route is durable on its own");
+        assert_eq!(Some(saved.route), routes.fingerprint(imported));
+        assert_eq!((saved.original, saved.phase), (None, obc_formats::assistant::JourneyPhase::Following));
+        assert_eq!((saved.progress_m, saved.lower_m), (0, 0), "an ordinary route carries no phase window");
+        assert!(!app.recording(), "selecting a route is not starting a ride");
+        assert!(routes.replace(imported, sink.bytes()).is_err(), "the checkpoint pins the bytes it names");
+
+        let mut reboot = App::new_idle(AppState::new(500_000, 500_000, 10.0));
+        feed_routes(&mut reboot, &routes, &mut NoTrace);
+        frame(&mut host, &mut reboot, &mut routes, None);
+        assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
+        assert!(reboot.active_route_index().is_none(), "a restart never restores guidance by itself");
+        frame(&mut host, &mut reboot, &mut routes, Some(Fix::at(510_000, 500_000)));
+        assert_eq!(reboot.top_screen().name(), "Journey");
+        reboot.apply_gesture(obc_app::Gesture::Press);
+        for _ in 0..12 {
+            frame(&mut host, &mut reboot, &mut routes, None);
+            if reboot.assistant_review_status() == ReviewStatus::Accepted {
+                break;
+            }
+        }
+        assert_eq!(reboot.assistant_review_status(), ReviewStatus::Accepted);
+        assert_eq!(reboot.route_ids()[reboot.active_route_index().unwrap()], imported);
+        assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50, "guidance returns to the rider's position");
+        assert!(!reboot.recording(), "navigation recovery is not recording recovery");
+    }
+
     #[test]
     fn assistant_plans_reviews_and_accepts_exact_immutable_bytes_through_the_host_executor() {
         immutable_assistant_replay(false);
@@ -1462,7 +1581,7 @@ mod tests {
         }
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::Accepted);
         assert_eq!(reboot.route_ids()[reboot.active_route_index().unwrap()], preview.source.object);
-        assert!(reboot.recording());
+        assert!(!reboot.recording(), "recovered guidance does not open a ride of its own");
         assert!(!reboot.visit_arrival_pending());
         assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50);
         assert_eq!(routes.read_checkpoint().unwrap(), reboot.assistant_checkpoint());
