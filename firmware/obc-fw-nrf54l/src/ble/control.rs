@@ -27,8 +27,8 @@ use trouble_host::prelude::*;
 use crate::link::command::run_command;
 use crate::link::identity::apply_config_write;
 use crate::link::StatusBytes;
-use crate::object_store::ObjectStore;
-use crate::SharedStoreMutex;
+use crate::link_control::LinkControl;
+use crate::SharedSettingsMutex;
 
 use super::data_plane::notify_bounded;
 use super::gatt::{config_blob, Server};
@@ -43,8 +43,8 @@ pub(crate) async fn serve_connection(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    store: &RefCell<ObjectStore>,
-    shared: &SharedStoreMutex,
+    store: &RefCell<LinkControl>,
+    shared: &SharedSettingsMutex,
 ) -> u8 {
     let reason = loop {
         match conn.next().await {

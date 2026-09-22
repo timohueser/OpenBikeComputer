@@ -31,10 +31,10 @@ pub(crate) fn run_command(data: &[u8]) -> CommandOutcome {
             // posts `DfuAction::Install`, which stays the confirm screen's press: the command never
             // waits for the human and never arms or reboots on its own. There are no silent
             // installs.
-            let busy = super::recording() || crate::object_store::dfu_install_pending();
+            let busy = super::recording() || crate::link_control::dfu_install_pending();
             let status = obc_ble::install_fw_reply(busy);
             if matches!(status, CommandStatus::Ok) {
-                crate::object_store::request_dfu_install_ble();
+                crate::link_control::request_dfu_install_ble();
                 info!("link: [cmd] installFw accepted — install request posted (awaits on-glass confirm)");
             } else {
                 info!("link: [cmd] installFw rejected: {}", status.as_u8());
@@ -58,7 +58,7 @@ pub(crate) fn run_command(data: &[u8]) -> CommandOutcome {
             // Validate UTC and offset before publishing the clock to the ride loop.
             match SetClock::decode(data) {
                 Ok(sc) => {
-                    crate::object_store::post_ble_clock(sc.utc, sc.offset_min);
+                    crate::link_control::post_ble_clock(sc.utc, sc.offset_min);
                     info!("link: [cmd] setClock: utc {} offset {} min — posted to ride loop", sc.utc, sc.offset_min);
                     (CommandStatus::Ok, 0)
                 }

@@ -38,9 +38,7 @@
 //! That is what keeps the panel alive during a long transfer: an upload does not own storage for the
 //! transfer, it owns it for each chunk's synchronous call. Between chunks the map plane pushes a
 //! frame and flips the mode out from under the uploader, harmlessly, because the card keeps its
-//! state across a park and the uploader's next call flips it back. [`storage_session`] exists so
-//! that async users announce that intent up front and wait out a live scan by yielding instead of
-//! spinning; it is deliberately not a lock.
+//! state across a park and the uploader's next call flips it back.
 //!
 //! COM is not in this file and must never be. The panel's anti-DC-bias square wave runs on the M33
 //! and free-runs through both modes, through a wedged FLPR and through every handover, so the glass
@@ -61,7 +59,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use defmt::{error, warn};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::Instant;
 
 use obc_storage::health::{Breaker, Outcome};
 
@@ -104,11 +102,6 @@ static mut SEMMC: Semmc = Semmc::new();
 fn mode() -> Mode {
     Mode::from_u8(MODE.load(Ordering::Relaxed))
 }
-
-/// Poll interval for the async wait in [`storage_session`]. Fine enough to be invisible against a
-/// 44 ms scan, coarse enough that a full frame costs about 88 wakes rather than pegging the executor
-/// with `yield_now`.
-const SCAN_POLL: Duration = Duration::from_micros(500);
 
 /// Borrow the sEMMC driver for one synchronous operation.
 ///
@@ -178,8 +171,7 @@ pub fn quiesce_storage_if_active() {
 ///
 /// It waits out a live scan first, which is the never-park-mid-scan rule. In the map plane's own
 /// storage phase there is never a scan in flight, because that task renders and presents
-/// sequentially, so this is free. A chunk landing during a push is the case it exists for, and
-/// [`storage_session`] is the async front door that turns that spin into a yield.
+/// sequentially, so this is free. A chunk landing during a push is the case it exists for.
 ///
 /// Returns whether storage has the hart. `false` means the sEMMC firmware would not boot, and the
 /// transport then fails the operation rather than clocking a bus that is not there.
@@ -267,46 +259,6 @@ pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> Result<R, SemmcError>) -> R
     }
     r
 }
-
-/// The async front door for a batch of storage work, acquired by
-/// [`SharedStoreMutex::lock`](crate::SharedStoreMutex), so every plane that reaches the card through
-/// the shared store gets it for free.
-///
-/// It waits out a live scan by yielding, so a chunk arriving mid-frame costs the executor nothing
-/// while the FLPR finishes drawing. It does not switch the mode — that is [`with_storage`]'s job,
-/// lazily, at the point of use — and it is not a lock: holding it does not stop the map plane
-/// pushing a frame. That is deliberate, because a session that blocked the panel would turn a
-/// multi-megabyte upload into a frozen screen.
-///
-/// It deliberately does not switch eagerly. An eager switch charged every acquirer a 29 µs park and
-/// warm boot, plus 138 µs to get the panel back on the next frame, whether or not it ever touched
-/// the card — and `SharedStoreMutex::lock` has about 50 call sites, plenty of which never reach the
-/// device. On a soft peripheral that will not boot it was a 500 ms boot-deadline spin per lock.
-///
-/// The scan wait is bounded by [`FRAME_DEADLINE`](crate::ls021_flpr::FRAME_DEADLINE), because no
-/// wait in this subsystem is unbounded and this one is held inside the store mutex, so an FLPR that
-/// never finishes a frame would wedge every plane that wants the card. On expiry it proceeds with a
-/// log rather than failing: the session carries no capability, so proceeding only means it stops
-/// yielding. Each operation's [`with_storage`] then applies the same bound synchronously.
-pub async fn storage_session() -> StorageSession {
-    let deadline = Instant::now() + crate::ls021_flpr::FRAME_DEADLINE;
-    while crate::ls021_flpr::scan_in_flight() {
-        if Instant::now() >= deadline {
-            warn!(
-                "flpr_mux: storage session waited out {=u64} ms of scan and gave up yielding — the operation's own guard takes it from here",
-                crate::ls021_flpr::FRAME_DEADLINE.as_millis()
-            );
-            break;
-        }
-        Timer::after(SCAN_POLL).await;
-    }
-    StorageSession(())
-}
-
-/// The zero-sized marker [`storage_session`] hands back. It carries no capability — the mode is
-/// re-checked at each operation — so dropping it early cannot make anything unsound. It exists to
-/// make the intent visible at the call sites.
-pub struct StorageSession(());
 
 /// Bring the card up. It runs once per power-on, from `main`, before any other plane exists.
 ///

@@ -23,7 +23,8 @@ pub use blobstage::{
 pub use crc32::{crc32, Crc32};
 pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, SD_BLOCK_LEN};
 pub use image::{
-    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, MAGIC, MAX_CONTAINER_LEN, MAX_IMAGE_LEN,
+    looks_like_vector_table, matching_image, ImageHeader, FW_VERSION_LEN, HEADER_LEN, MAGIC, MAX_CONTAINER_LEN,
+    MAX_IMAGE_LEN,
 };
 pub use layout::{APP_SLOT_BASE, APP_SLOT_LEN, BOOT_STATE_BASE, RAM_END, RAM_START, SEMMC_STAGE_BASE, SETTINGS_BASE};
 pub use sig::{

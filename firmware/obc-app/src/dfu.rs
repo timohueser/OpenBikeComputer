@@ -142,7 +142,7 @@ pub fn encode_arm_marker(m: &ArmMarker) -> [u8; ARM_MARKER_LEN] {
     b[5] = vlen as u8;
     b[8..12].copy_from_slice(&m.generation.to_le_bytes());
     b[12..12 + vlen].copy_from_slice(&v[..vlen]);
-    let crc = crate::store_meta::crc16(&b[0..ARM_MARKER_PAYLOAD]);
+    let crc = crate::crc16::crc16(&b[0..ARM_MARKER_PAYLOAD]);
     b[ARM_MARKER_PAYLOAD..ARM_MARKER_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
     b
 }
@@ -159,7 +159,7 @@ pub fn decode_arm_marker(bytes: &[u8]) -> Option<ArmMarker> {
         return None;
     }
     let crc = u16::from_le_bytes([b[ARM_MARKER_PAYLOAD], b[ARM_MARKER_PAYLOAD + 1]]);
-    if crc != crate::store_meta::crc16(&b[0..ARM_MARKER_PAYLOAD]) {
+    if crc != crate::crc16::crc16(&b[0..ARM_MARKER_PAYLOAD]) {
         return None;
     }
     let vlen = b[5] as usize;
@@ -191,12 +191,12 @@ mod arm_marker_tests {
         assert_eq!(decode_arm_marker(&torn), None, "a CRC mismatch (torn write) is no marker");
         let mut old = encode_arm_marker(&m);
         old[4] = ARM_MARKER_VERSION + 1;
-        let crc = crate::store_meta::crc16(&old[0..ARM_MARKER_PAYLOAD]);
+        let crc = crate::crc16::crc16(&old[0..ARM_MARKER_PAYLOAD]);
         old[ARM_MARKER_PAYLOAD..ARM_MARKER_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode_arm_marker(&old), None, "a foreign layout version is no marker");
         let mut bad_utf8 = encode_arm_marker(&m);
         bad_utf8[12] = 0xFF; // a non-UTF-8 version byte
-        let crc = crate::store_meta::crc16(&bad_utf8[0..ARM_MARKER_PAYLOAD]);
+        let crc = crate::crc16::crc16(&bad_utf8[0..ARM_MARKER_PAYLOAD]);
         bad_utf8[ARM_MARKER_PAYLOAD..ARM_MARKER_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode_arm_marker(&bad_utf8), None, "a non-UTF-8 version string is no marker");
     }

@@ -68,7 +68,7 @@
       "boot_chain_ceiling": 24576,
       "boot_chain_headroom_min": 4096,
       "boot_chain_roots": [
-        "link::init_store",
+        "link::init_control",
         "obc_fw_nrf54l::mount_terrain",
         "mount_in_place"
       ],

@@ -557,13 +557,13 @@ mod tests {
         facts.raise_warnings(WarningFlags::NO_GPS);
 
         let mut batch = ExternalFacts::NONE;
-        batch.raise_warnings(WarningFlags::MAP_SLOW);
+        batch.raise_warnings(WarningFlags::STORAGE_ERROR);
         facts.merge(batch).unwrap();
         facts.raise_warnings(WarningFlags::REC_ERROR);
 
         let taken = facts.take_warnings();
         assert!(taken.contains(WarningFlags::NO_GPS));
-        assert!(taken.contains(WarningFlags::MAP_SLOW));
+        assert!(taken.contains(WarningFlags::STORAGE_ERROR));
         assert!(taken.contains(WarningFlags::REC_ERROR));
         assert!(facts.take_warnings().is_empty(), "taking clears the set");
     }
@@ -627,7 +627,7 @@ mod tests {
         batch.note_transfer(TransferState::Active);
         batch.note_link(connected);
 
-        batch.raise_warnings(WarningFlags::MAP_SLOW);
+        batch.raise_warnings(WarningFlags::STORAGE_ERROR);
         batch.note_route_upload(route);
         batch.note_trip_upload(trip);
         batch.note_update_result(UpdateResult::Confirmed(crate::dfu::clamp("v2"))).unwrap();
@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(facts.take_trip_upload(), Some(trip));
         assert!(facts.take_update_result().is_some());
         let warnings = facts.take_warnings();
-        assert!(warnings.contains(WarningFlags::NO_GPS) && warnings.contains(WarningFlags::MAP_SLOW));
+        assert!(warnings.contains(WarningFlags::NO_GPS) && warnings.contains(WarningFlags::STORAGE_ERROR));
 
         // A stale batch loses on the level fields and cannot clear the ones it omits.
         facts.note_store_revision(store(9));

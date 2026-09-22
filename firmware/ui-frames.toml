@@ -1520,7 +1520,7 @@ args = ["--inject", "map-transfer=failed:refused"]
 
 # Storage/sensor warnings (issue #504). The dismissable warning card is raised through the real
 # notify_warning seam: one missing sensor, and
-# the coalesced worst case (all three sensors absent + a slow/fragmented map) — the widest layout
+# the coalesced worst case (all three sensors absent + a storage error) — the widest layout
 # for the #679 glyph-slot triangle + per-sensor leading glyphs, pinning that nothing collides.
 [[frame]]
 name = "warning-gps"
@@ -1532,7 +1532,7 @@ args = ["--inject", "warning=gps"]
 name = "warning-all"
 map = "{grimsel}"
 expect = "Warning"
-args = ["--inject", "warning=gps,altimeter,compass,map"]
+args = ["--inject", "warning=gps,altimeter,compass,storage"]
 
 # The idle timeout works end-to-end: sit in the Settings list, elapse (`I`), land back on Home. (The
 # picker that configures it is shot with the rest of the Display page, up in the Settings block.)
@@ -2170,7 +2170,7 @@ name = "dark-warning"
 map = "{grimsel}"
 script = "{theme_dark}"
 expect = "Warning"
-args = ["--inject", "warning=gps,altimeter,compass,map"]
+args = ["--inject", "warning=gps,altimeter,compass,storage"]
 
 [[frame]]
 name = "dark-map-transfer-error"

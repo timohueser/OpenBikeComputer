@@ -313,18 +313,12 @@ cargo run --release --bin flat_store_bench          # measure
 cargo run --release --bin flat_store_bench --features flat-store-reset   # erase, then park
 ```
 
-The bench measures every figure `specs/FLAT_Store_Format.md` states. Its module docs own the
-detail: which phase runs, and the serial map-ingest wire it answers for ten seconds before it
-starts measuring — the host side is [`tools/bench_ingest.py`](../../tools/bench_ingest.py).
+The bench measures every figure `specs/FLAT_Store_Format.md` states. Its module docs describe the
+phases and the figures they report.
 
 > ⚠️ **DESTRUCTIVE.** The flat store owns the raw card from LBA 0, so either command destroys the
 > partition table and every object on the card, not only benchmark routes. The bench refuses a
 > card that carries a flat store under another `StoreId`; `FORCE_REINIT` overrides that.
-
-> ⚠️ **A `--baud` mismatch during ingest is silent and it wipes the card.** Check it first. At the
-> wrong rate the host sends nothing and waits, while the device concludes nobody is there and
-> starts the destructive run. The signature is that exact pair: RTT says `nobody answered` while
-> the host says it is still waiting.
 
 ## Peak View and the landmark photo demo
 

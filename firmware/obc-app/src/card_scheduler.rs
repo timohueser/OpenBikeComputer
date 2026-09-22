@@ -644,12 +644,12 @@ mod tests {
             _ => panic!("a raised warning opens the card"),
         }
 
-        app.on_warning(WarningFlags::MAP_SLOW);
+        app.on_warning(WarningFlags::STORAGE_ERROR);
         assert_eq!(app.ui.stack.len(), 2, "the new flag joins the open card, not a second one");
         match app.top_screen() {
             Screen::Warning(w) => {
                 assert!(w.flags().contains(WarningFlags::NO_GPS));
-                assert!(w.flags().contains(WarningFlags::MAP_SLOW));
+                assert!(w.flags().contains(WarningFlags::STORAGE_ERROR));
             }
             _ => panic!("still the one card"),
         }

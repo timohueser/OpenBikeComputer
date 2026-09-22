@@ -148,7 +148,6 @@ fn seeds(language: Language) -> Vec<Seed> {
             WarningFlags::NO_GPS,
             WarningFlags::NO_ALTIMETER,
             WarningFlags::NO_COMPASS,
-            WarningFlags::MAP_SLOW,
             WarningFlags::REC_ERROR,
             WarningFlags::SETTINGS_ERROR,
             WarningFlags::STORAGE_ERROR,

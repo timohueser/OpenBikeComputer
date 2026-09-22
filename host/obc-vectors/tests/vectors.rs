@@ -9,7 +9,7 @@ use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, Ro
 use obc_vectors::{
     all, crc32, dir, ride_v3, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
     TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME,
-    TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
+    TRIP_DANGLING_STAGE, TRIP_NAME, TRIP_STAGE_IDS,
 };
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -132,7 +132,7 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(names, ["Brunnen", "Pass Summit"]);
     assert_eq!(for_each_waypoint(&src_p, |_| panic!("plain route has no waypoints")).unwrap(), 0);
 
-    // The wire facts a routeList entry serves (S0 §7.4) agree with the manifest and the full index.
+    // The metadata used by current flat-store listings agrees with the full index.
     let info = RouteObjectInfo::read(&src_w).unwrap();
     assert_eq!(info.name.as_str(), "Vector Loop");
     assert_eq!(info.distance_m, idx_w.total_distance_m);
@@ -210,38 +210,6 @@ fn track_vectors_pin_the_log_and_its_export() {
     assert!(!gpx.contains("<time>"), "no fabricated timestamps");
 }
 
-/// The 12-byte upload descriptor announces the waypoint route's actual size and CRC, and the
-/// download-announce (status msg 4) carries the same 12-byte descriptor — the fixtures form one
-/// coherent transfer transcript.
-#[test]
-fn upload_transcript_is_self_consistent() {
-    let route = fixture("route-waypoints.obcr");
-    let start = fixture("transfer-upload-start.bin");
-    let announce = fixture("status-download-announce.bin");
-    let result = fixture("status-transfer-result.bin");
-
-    assert_eq!(start.len(), 12, "v2 descriptor is 12 bytes (offset dropped)");
-    assert_eq!(start[0], 1, "op = upload");
-    assert_eq!(start[1], 1, "type = route");
-    assert_eq!(u16::from_le_bytes([start[2], start[3]]), 0xFFFF, "id = new");
-    assert_eq!(u32::from_le_bytes([start[4], start[5], start[6], start[7]]) as usize, route.len());
-    assert_eq!(u32::from_le_bytes([start[8], start[9], start[10], start[11]]), crc32(&route));
-
-    // The download announce: msg 4 + the 12-byte descriptor (op = download), same size + CRC.
-    assert_eq!(announce.len(), 13, "msg byte + 12-byte descriptor");
-    assert_eq!(announce[0], 4, "status msg = downloadAnnounce");
-    assert_eq!(announce[1], 2, "op = download");
-    assert_eq!(announce[2], 1, "type = route");
-    assert_eq!(u32::from_le_bytes([announce[5], announce[6], announce[7], announce[8]]) as usize, route.len());
-    assert_eq!(u32::from_le_bytes([announce[9], announce[10], announce[11], announce[12]]), crc32(&route));
-
-    // The closing result: committed (0), every byte durable.
-    assert_eq!(result.len(), 8);
-    assert_eq!(result[0], 1, "status msg = transferResult");
-    assert_eq!(result[3], 0, "committed");
-    assert_eq!(u32::from_le_bytes([result[4], result[5], result[6], result[7]]) as usize, route.len());
-}
-
 /// A ride-v3 object's length is exactly its verbatim samples plus one fixed footer.
 #[test]
 fn ride_vector_length_is_self_describing() {
@@ -280,10 +248,7 @@ fn ride_vector_reads_through_the_production_codec() {
     assert_eq!(preview.as_slice(), &[(7_800_000, 48_000_000), (7_801_200, 48_001_000), (7_803_000, 48_002_000)]);
 }
 
-/// The trip vectors pin §7.7 (the trip object) and the §7.4 `tripList` addition, and tie together:
-/// the trip references two route ids that `route-list.bin` actually holds (7, 8) plus one
-/// deliberately dangling full-width id, and the `tripList` totals sum only the resolvable stages while its
-/// `stage_count` counts every stored stage (dangling included).
+/// The trip vector pins §7.7, including full-width route ids and its self-describing length.
 #[test]
 fn trip_vectors_are_self_consistent() {
     let trip = fixture("trip-v2.bin");
@@ -300,48 +265,6 @@ fn trip_vectors_are_self_consistent() {
         .map(|k| u64::from_le_bytes(trip[56 + 8 * k..64 + 8 * k].try_into().unwrap()))
         .collect();
     assert_eq!(stages, vec![TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
-
-    // The two resolvable stages are exactly the ids route-list.bin enumerates; the third dangles.
-    // Decode (object_id, distance_m, ascent_m) from each route-list entry so the expected tripList
-    // totals below are DERIVED by the spec's summation rule (a stage resolves iff a stored route
-    // holds its id; a dangling ref contributes nothing) — not restated as literals.
-    let rl = fixture("route-list.bin");
-    let (rl_count, rl_entry_len) = (u16::from_le_bytes([rl[2], rl[3]]) as usize, rl[1] as usize);
-    let routes: Vec<(u16, u32, u32)> = (0..rl_count)
-        .map(|k| {
-            let b = 6 + rl_entry_len * k;
-            (
-                u16::from_le_bytes([rl[b], rl[b + 1]]),
-                u32::from_le_bytes(rl[b + 8..b + 12].try_into().unwrap()), // distance_m
-                u32::from_le_bytes(rl[b + 12..b + 16].try_into().unwrap()), // ascent_m
-            )
-        })
-        .collect();
-    let held: Vec<u64> = routes.iter().map(|&(id, ..)| u64::from(id)).collect();
-    assert!(TRIP_STAGE_IDS.iter().all(|id| held.contains(id)), "both resolvable stages are stored routes");
-    assert!(!held.contains(&TRIP_DANGLING_STAGE), "the third stage is deliberately dangling");
-    let resolved = || stages.iter().filter_map(|s| routes.iter().find(|&&(id, ..)| u64::from(id) == *s));
-    let want_distance: u32 = resolved().map(|&(_, d, _)| d).sum();
-    let want_ascent: u32 = resolved().map(|&(_, _, a)| a).sum();
-    assert_eq!(resolved().count(), 2, "exactly the two resolvable stages contribute to the totals");
-
-    // tripList: 6-byte v2 header, one 76-byte entry, total == count == 1.
-    let tl = fixture("trip-list.bin");
-    assert_eq!(tl[0], 2, "list version");
-    assert_eq!(tl[1], 76, "tripList entry_len (mirrors routeList)");
-    assert_eq!(u16::from_le_bytes([tl[2], tl[3]]), 1, "count");
-    assert_eq!(u16::from_le_bytes([tl[4], tl[5]]), 1, "total == count (nothing dropped)");
-    let e = &tl[6..];
-    assert_eq!(e.len(), 76, "one 76-byte entry");
-    assert_eq!(u16::from_le_bytes([e[0], e[1]]), TRIP_ID, "trip id (its own counter)");
-    assert_eq!(u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as usize, trip.len(), "byte_len = stored trip file");
-    assert_eq!(u32::from_le_bytes([e[8], e[9], e[10], e[11]]), want_distance, "distance summed over resolvable stages");
-    assert_eq!(u32::from_le_bytes([e[12], e[13], e[14], e[15]]), want_ascent, "ascent summed over resolvable stages");
-    assert_eq!(u16::from_le_bytes([e[16], e[17]]), stage_count, "stage_count as stored (incl. dangling)");
-    let name_len = e[20] as usize;
-    assert_eq!(&e[21..21 + name_len], TRIP_NAME.as_bytes());
-    // Trailing whole-object crc32 = the trip file's CRC-32 (the content fingerprint routes use).
-    assert_eq!(u32::from_le_bytes([e[72], e[73], e[74], e[75]]), crc32(&trip), "entry crc32 fingerprints the trip");
 }
 
 /// The OBCT terrain shard (`OBCT_Spec.md`): the checked-in bytes parse through the production

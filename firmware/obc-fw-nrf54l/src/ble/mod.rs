@@ -45,8 +45,8 @@ use trouble_host::prelude::*;
 
 use crate::init_static;
 use crate::link::identity;
-use crate::object_store::ObjectStore;
-use crate::SharedStoreMutex;
+use crate::link_control::LinkControl;
+use crate::SharedSettingsMutex;
 
 use control::serve_connection;
 use data_plane::battery_task;
@@ -98,8 +98,9 @@ pub(crate) const MPSL_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLa
 pub(crate) const HOST_RESOURCES_BYTES: usize = core::mem::size_of::<Resources>();
 pub(crate) const PACKET_POOL_BYTES: usize = core::mem::size_of::<DefaultPacketPool>();
 pub(crate) const CRACEN_BYTES: usize = core::mem::size_of::<cracen::Cracen<'static, Blocking>>();
-/// The shared [`ObjectStore`] lives in [`crate::link`], because every transport drives the same
-/// card. It is reported here under the `ble_object_store` name the resource baseline pins.
+/// The shared [`LinkControl`] lives in [`crate::link`], because every transport uses the same
+/// settings and hand-offs. The report keeps the `ble_object_store` metric key for baseline
+/// compatibility.
 pub(crate) const OBJECT_STORE_BYTES: usize = crate::link::OBJECT_STORE_BYTES;
 pub(crate) const SERVER_BYTES: usize = core::mem::size_of::<Server<'static>>();
 pub(crate) const GAP_NAME_BYTES: usize = core::mem::size_of::<heapless::String<48>>();
@@ -149,7 +150,7 @@ fn init_resources() -> &'static mut Resources {
 /// advertised name is re-read each advertise cycle, so a rename lands without a reboot.
 /// SAFETY: sole writer of `GAP_NAME`/`SERVER`, called once from [`run`].
 #[inline(never)]
-fn init_server(store: &core::cell::RefCell<ObjectStore>) -> &'static Server<'static> {
+fn init_server(store: &core::cell::RefCell<LinkControl>) -> &'static Server<'static> {
     let name: &'static str =
         unsafe { init_static(core::ptr::addr_of_mut!(GAP_NAME), advertised_name(&store.borrow())) }.as_str();
     unsafe {
@@ -216,14 +217,14 @@ pub async fn run(
     mpsl_p: mpsl::Peripherals<'static>,
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
-    // The SD/settings mutex, the one shared object store, and the boot store-epoch. `main` builds
-    // the store once, so every transport drives the same card with one catalog and upload temp.
-    stores: crate::link::LinkStores,
+    // The settings mutex and one shared link-control state. `main` builds the state once, so every
+    // transport reads and writes one settings cache.
+    state: crate::link::LinkState,
     // The sensor hub's HR/power/cadence injector: the central manager decodes notifications and
     // publishes through it into the same mailboxes the debug-uart path feeds (last writer wins).
     sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) -> ! {
-    let crate::link::LinkStores { shared, objects: store, epoch: _store_epoch } = stores;
+    let crate::link::LinkState { shared, control: store } = state;
     // LFCLK = the internal RC at Nordic's recommended calibration cadence, which holds the ±500 ppm
     // class the accuracy field claims. Not the 32 k crystal — see the module doc.
     let lfclk_cfg = mpsl::raw::mpsl_clock_lfclk_cfg_t {
@@ -469,8 +470,8 @@ impl Drop for ForgetWakeGuard {
 /// Remove durable keys before host keys. Controller updates have no receipt in trouble-host.
 async fn forget_bond(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
-    store: &core::cell::RefCell<ObjectStore>,
-    shared: &SharedStoreMutex,
+    store: &core::cell::RefCell<LinkControl>,
+    shared: &SharedSettingsMutex,
 ) {
     let mut wake = ForgetWakeGuard(true);
     let mut guard = shared.lock().await;
@@ -504,8 +505,8 @@ async fn link_control(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
 
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    store: &core::cell::RefCell<ObjectStore>,
-    shared: &SharedStoreMutex,
+    store: &core::cell::RefCell<LinkControl>,
+    shared: &SharedSettingsMutex,
 ) {
     match select(state::radio_disabled(), FORGET_BOND.wait()).await {
         Either::First(()) => info!("ble: radio switched off — dropping the live connection"),
