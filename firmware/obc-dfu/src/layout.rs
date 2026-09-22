@@ -11,6 +11,9 @@
 //!   0x001F_B000  BOOT_STATE     4 KB
 //!   0x001F_C000  SETTINGS       4 KB   the app's, never the update path's
 //! ```
+//!
+//! RAM is here for the same reason: the initial-SP plausibility check
+//! ([`crate::image::looks_like_vector_table`]) needs the part's bounds, not an image's.
 
 use crate::blobstage::STAGE_LEN;
 use crate::state::PAGE_LEN;
@@ -31,3 +34,10 @@ pub const APP_SLOT_LEN: u32 = SEMMC_STAGE_BASE - APP_SLOT_BASE;
 /// Base of the app's settings page, one page above the boot-state page. The update path never
 /// touches it; it is here because it is what a moved boot-state page collides with.
 pub const SETTINGS_BASE: u32 = BOOT_STATE_BASE + PAGE_LEN as u32;
+
+/// Base of the SRAM the M33 sees.
+pub const RAM_START: u32 = 0x2000_0000;
+
+/// One past the end of the nRF54LM20's 512 KB SRAM. An image links less than all of it — the top
+/// pages are the coprocessor carve — so this is the part's bound, not any image's.
+pub const RAM_END: u32 = RAM_START + 512 * 1024;

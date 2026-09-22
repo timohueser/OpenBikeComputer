@@ -80,6 +80,33 @@ cd ../obc-fw-nrf54l       && cargo run --release   # app @ 0x8000
 No LED blink and no boot means there is no bootloader at `0x0`. One blink and then nothing means
 there is no app at `0x8000`.
 
+## Bring-up: the install path runs only on glass
+
+The `Idle` fast path is the only path an ordinary boot takes, and no host test can run this crate
+at all. The card, the FLPR, the RRAM writes, the trial boot and the rollback therefore have one
+verification: a board. Run it after any change to `src/semmc.rs`, `src/install.rs` or the engine
+wiring.
+
+1. Build the app twice, with version strings that differ. Wrap and sign both with `obc-mkimage`.
+2. Write the second container to the card as a kind-7 update object with the WebUSB client.
+3. Flash the `rtt` bootloader build, then attach to it before you arm. The vector catch must be
+   off: probe-rs halts the core on the armer's warm reset, and the session then dies with a
+   misleading exception before the bootloader prints a line.
+
+   ```sh
+   probe-rs attach --chip nRF54LM20A --non-interactive --no-catch-reset --no-catch-hardfault \
+       target/thumbv8m.main-none-eabihf/release/obc-boot
+   ```
+
+4. On the device, open Settings ▸ System ▸ Update and install it. The verify, flash and readback
+   lines must all appear, and the app must confirm the trial on the next boot.
+5. For the rollback, wrap an image with an invalid reset vector. The bootloader installs it, the
+   trial boot faults, the trial watchdog resets the board, and the next entry restores the
+   reserve.
+
+A fault on this path leaves the `Armed` page behind, so every later boot repeats it. Reflash both
+images to recover.
+
 ## Constraints
 
 - The image must fit **32 KB** of flash. `firmware/tools/resource_guard.py boot` gates it in CI,
