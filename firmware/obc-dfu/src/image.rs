@@ -41,6 +41,19 @@ pub const MAX_IMAGE_LEN: u32 = crate::layout::APP_SLOT_LEN;
 /// image exactly at [`MAX_IMAGE_LEN`] is never refused for its own framing.
 pub const MAX_CONTAINER_LEN: u32 = MAX_IMAGE_LEN + HEADER_LEN as u32 + SIG_LEN as u32;
 
+/// The recorded image bytes when `installed` describes the start of `slot` exactly.
+///
+/// The length gate runs before the slice is formed, so a corrupt record cannot read beyond the app
+/// slot. CRC-32 then distinguishes the installed DFU image from a later probe flash.
+pub fn matching_image<'a>(installed: Option<&ImageHeader>, slot: &'a [u8]) -> Option<&'a [u8]> {
+    let installed = installed?;
+    if installed.image_len == 0 || installed.image_len > MAX_IMAGE_LEN {
+        return None;
+    }
+    let image = slot.get(..installed.image_len as usize)?;
+    (crc32(image) == installed.image_crc32).then_some(image)
+}
+
 /// Does `image` begin with a plausible Cortex-M vector table? The first word of a bare-metal image
 /// is the initial stack pointer, which must point into RAM. The wrapper uses it as a warn-only
 /// guard, because an unusual stack pointer must not block wrapping.
@@ -257,6 +270,25 @@ mod tests {
         // the field.
         assert_eq!(HEADER_VERSION, 1);
         assert_eq!(&sample().signed().encode()[4..6], &1u16.to_le_bytes());
+    }
+
+    #[test]
+    fn installed_image_must_match_the_bounded_slot() {
+        let image = b"running application";
+        let header = ImageHeader::new(image, "v1.2.3");
+        assert_eq!(matching_image(Some(&header), image), Some(image.as_slice()));
+
+        let mut changed = *image;
+        changed[0] ^= 1;
+        assert_eq!(matching_image(Some(&header), &changed), None);
+        assert_eq!(matching_image(None, image), None);
+
+        let zero = ImageHeader { image_len: 0, ..header };
+        let outside = ImageHeader { image_len: MAX_IMAGE_LEN + 1, ..header };
+        let past_input = ImageHeader { image_len: image.len() as u32 + 1, ..header };
+        assert_eq!(matching_image(Some(&zero), image), None);
+        assert_eq!(matching_image(Some(&outside), image), None);
+        assert_eq!(matching_image(Some(&past_input), image), None);
     }
 
     #[test]
