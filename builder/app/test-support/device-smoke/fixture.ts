@@ -4,10 +4,19 @@
  * The map is `apps/obc-sim/assets/grimsel-demo.obcm`, already in the tree: an OBCM v18 file with an
  * embedded OBCT v3 surface terrain region, whose source packages, producer commit, output digest and
  * terrain digest are pinned in `fixtures/sources/ride-assistant/grimsel-demo-v18.json`. Nothing is
- * assembled here and no byte is appended: a surface terrain region starts on a 512-byte boundary and
- * is a whole number of 512-byte blocks long, so this map's own length is exactly 512 × 19,713. That
- * is what puts the transfer on the packet boundary — the case where a host that forgets the
- * zero-length terminating packet hangs and a device that miscounts commits a short object.
+ * assembled here and no byte is appended.
+ *
+ * Its length is exactly 19,713 whole card blocks. The flat store lays an object out over 512-byte
+ * blocks inside its extents, so a payload that is not a multiple of 512 ends inside a block and the
+ * device's last write carries a partial tail; this one ends on a block boundary and it does not.
+ * That is the case the fixture is here for, and it costs no padding: a surface terrain region begins
+ * on a 512-byte boundary and is a whole number of 512-byte blocks long, so a map that carries one
+ * ends on a block boundary by construction.
+ *
+ * This is not the USB packet boundary. A stream record on the wire is four bytes of record prefix,
+ * a sixteen-byte frame header and its payload, batched into writes of tens of kilobytes, so no host
+ * write in this path is a multiple of the 512-byte bulk packet size at any file length, and no
+ * zero-length terminating packet ever arises.
  *
  * The expectations the device is measured against come from the file's own header rather than from
  * the provenance record's `bounds_lon_lat`: the record pins the box the map was *cut* on, and the
@@ -23,8 +32,8 @@ import { join } from "node:path";
 export const FIXTURE_MAP = "apps/obc-sim/assets/grimsel-demo.obcm";
 export const FIXTURE_RECORD = "fixtures/sources/ride-assistant/grimsel-demo-v18.json";
 
-/** The USB bulk packet size the transfer has to land on. */
-export const PACKET_BYTES = 512;
+/** The flat store's block. A payload that is a whole number of these has no partial tail block. */
+export const CARD_BLOCK_BYTES = 512;
 
 /** A bounding box in microdegrees, in the order the OBCM header stores it. */
 export interface BoundingBox {
@@ -102,10 +111,10 @@ export function loadSmokeFixture(repoRoot: string): SmokeFixture {
                 `${record.map.bytes} B / ${record.map.sha256}. Rebuild the map or update its record.`,
         );
     }
-    if (bytes.length % PACKET_BYTES !== 0) {
+    if (bytes.length % CARD_BLOCK_BYTES !== 0) {
         throw new Error(
-            `${FIXTURE_MAP} is ${bytes.length} B, which is not a whole number of ${PACKET_BYTES}-byte ` +
-                "packets, so it no longer exercises the transfer boundary.",
+            `${FIXTURE_MAP} is ${bytes.length} B, which is not a whole number of ${CARD_BLOCK_BYTES}-byte ` +
+                "card blocks, so it no longer exercises the block boundary.",
         );
     }
     const header = readHeader(bytes);

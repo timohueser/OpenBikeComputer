@@ -410,12 +410,14 @@ export function parseBootLog(text: string): BootObservation | null {
 
 /**
  * The firmware's own word for a map it will not use: the catalog names an object that will not open,
- * or the object is not an OBCM file. Both print `MAP UNREADABLE`, and recognising it is what makes a
- * refused map fail on its reason instead of on the reboot deadline.
+ * or the object is not an OBCM file. Both print `MAP UNREADABLE`.
+ *
+ * It is a `refused`, not a `board`: the probe session and the boot both worked, and the device said
+ * no. Recognising it is also what makes such a boot fail on its reason instead of on the deadline.
  */
-export function bootFault(text: string): string | null {
+export function bootRefusal(text: string): SmokeFailure | null {
     const fault = /^.*MAP UNREADABLE.*$/m.exec(text);
-    return fault ? fault[0].trim() : null;
+    return fault ? new SmokeFailure("reboot", "refused", `The firmware refused the map: ${fault[0].trim()}`) : null;
 }
 
 /**

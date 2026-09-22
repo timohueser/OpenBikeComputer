@@ -41,7 +41,7 @@ noise.
 | --- | --- |
 | `connect` | The device answers `LIST`; its identity strings come over EP0. The catalog is recorded. |
 | `upload` | `PUT` through the shipping `sendMapBytes`, the same call the builder's Send makes. |
-| `verify` | `STATUS`, the catalog entry and a whole `GET` all agree with the bytes sent; every other object on the card is unchanged. |
+| `verify` | `STATUS`, the catalog entry and a whole `GET` all agree with the bytes sent; every other object on the card is still at its revision, length and CRC. |
 | `reboot` | `board.py run --preverify` resets the board and streams RTT. The firmware names the object and revision it opened, the box it parsed out of the map header, and the embedded terrain region it mounted. |
 | `reverify` | The device comes back on the same store with the same object at the same revision, length and CRC. |
 
@@ -55,11 +55,15 @@ name rather than on a timeout.
 `fixtures/sources/ride-assistant/grimsel-demo-v18.json`. Nothing is assembled at run time and the
 digest is checked before the first byte moves.
 
-Its length is exactly 512 × 19,713 bytes, with no padding: a map carrying an OBCT v3 **surface**
-terrain region starts that region on a 512-byte boundary and the region is a whole number of blocks,
-so the file ends on one. That is the transfer boundary the run exists to exercise — the case where a
-host that forgets the terminating zero-length packet hangs and a device that miscounts commits a
-short object.
+Its length is exactly 19,713 whole **card blocks**. The flat store lays an object out over 512-byte
+blocks inside its extents, so a payload that is not a multiple of 512 ends inside a block and the
+device's last write carries a partial tail; this one does not. It costs no padding: a map carrying
+an OBCT v3 **surface** terrain region starts that region on a 512-byte boundary and the region is a
+whole number of blocks, so the file ends on one by construction.
+
+This is not the USB packet boundary. A stream record on the wire is four bytes of record prefix, a
+sixteen-byte frame header and its payload, batched into writes of tens of kilobytes, so no host
+write in this path is a multiple of the 512-byte bulk packet size at any file length.
 
 ## The result
 

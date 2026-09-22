@@ -6,7 +6,8 @@
  * a real refusal and a commit is a real commit; what is scripted is the board, because a reboot and
  * an RTT log are the two things a host cannot produce.
  *
- * The payload is a whole number of 512-byte packets, which is the boundary case the run exists for.
+ * The payload is a whole number of 512-byte card blocks, which is the boundary case the run exists
+ * for: the object ends on a block boundary, so the device's last write has no partial tail block.
  */
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -14,15 +15,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { flatDevice, type FlatDevice } from "../../src/lib/usb/flat-device";
+import type { FlatStoreClient } from "../../src/lib/usb/client";
 import { ObjectKind } from "../../src/lib/usb/protocol";
 import { loadFlatDevice } from "../flat-device/load";
-import { PACKET_BYTES, loadSmokeFixture, type SmokeFixture } from "./fixture";
-import { SmokeFailure, bootFault, parseBootLog, runSmoke, type BootObservation, type DeviceSession } from "./smoke";
+import { CARD_BLOCK_BYTES, loadSmokeFixture, type SmokeFixture } from "./fixture";
+import { SmokeFailure, bootRefusal, parseBootLog, runSmoke, type BootObservation, type DeviceSession } from "./smoke";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
-/** Nine whole packets of content-shaped bytes: long enough to span records, exact on the boundary. */
-const PAYLOAD = Uint8Array.from({ length: PACKET_BYTES * 9 }, (_, at) => (at * 31 + 7) & 0xff);
+/** Nine whole card blocks of content-shaped bytes: long enough to span records, exact on the end. */
+const PAYLOAD = Uint8Array.from({ length: CARD_BLOCK_BYTES * 9 }, (_, at) => (at * 31 + 7) & 0xff);
 
 const FIXTURE: SmokeFixture = {
     name: "smoke.obcm",
@@ -51,13 +53,18 @@ const open: Array<() => Promise<void>> = [];
 /** A device that lives until the test ends, and the `connect` that opens sessions on it. */
 function device(options: Parameters<typeof flatDevice>[0] = {}): {
     device: FlatDevice;
+    client: FlatStoreClient;
     connect: () => Promise<DeviceSession>;
 } {
     const started = flatDevice(options);
     open.push(started.close);
     // One simulated card serves both sessions, so releasing a session leaves the link up. On the
     // cable it is the opposite: the board takes the link down with it.
-    return { device: started.device, connect: async () => ({ client: started.client, release: async () => {} }) };
+    return {
+        device: started.device,
+        client: started.client,
+        connect: async () => ({ client: started.client, release: async () => {} }),
+    };
 }
 
 afterEach(async () => {
@@ -71,12 +78,17 @@ beforeAll(async () => {
 describe("device upload smoke", () => {
     it("commits the boundary payload and proves it again after the reboot", async () => {
         const card = device();
+        // A route beside the map: the run has to leave it exactly as it found it.
+        const route = card.device.seed({ kind: ObjectKind.Route, displayName: "route", bytes: new Uint8Array(96) });
         const report = await runSmoke({
             fixture: FIXTURE,
             connect: card.connect,
             reboot: async () => observationOf(card.device),
         });
 
+        expect(report.preservedObjects).toBe(1);
+        const kept = card.device.entries.find((entry) => entry.objectId === route.objectId);
+        expect(kept).toMatchObject({ revision: route.revision, payloadCrc32: route.payloadCrc32 });
         expect(report.committed.kind).toBe(ObjectKind.MapShard);
         expect(report.committed.payloadLength).toBe(BigInt(PAYLOAD.length));
         expect(report.committed.displayName).toBe("smoke");
@@ -146,6 +158,30 @@ describe("device upload smoke", () => {
         expect(failure.reason).toBe("integrity");
     });
 
+    it("fails when another object stops being itself while the map is sent", async () => {
+        const card = device();
+        const route = card.device.seed({ kind: ObjectKind.Route, displayName: "route", bytes: new Uint8Array(96) });
+        // A real `REMOVE`, submitted on the control channel before the upload's first request. The
+        // device serves control records in arrival order, so the route is gone from the card well
+        // before the catalog the run compares against is listed.
+        let removal: Promise<bigint> | null = null;
+        const failure = await rejection(
+            runSmoke({
+                fixture: FIXTURE,
+                connect: card.connect,
+                reboot: async () => observationOf(card.device),
+                onPhase: (phase) => {
+                    if (phase === "upload" && !removal) removal = card.client.remove(route);
+                },
+            }),
+        );
+        await removal;
+        expect(card.device.entries.some((entry) => entry.objectId === route.objectId)).toBe(false);
+        expect(failure.phase).toBe("verify");
+        expect(failure.reason).toBe("data-loss");
+        expect(failure.message).toContain(`Object ${route.objectId}`);
+    });
+
     it("fails when the object is gone from the catalog after the reboot", async () => {
         const card = device();
         const fresh = device();
@@ -179,18 +215,20 @@ describe("boot log", () => {
         expect(parseBootLog(lines.slice(0, 3).join("\n"))).toBeNull();
     });
 
-    it("names the firmware's own refusal to use the map", () => {
-        const refusal = "0.4 ERROR map: not valid OBCM: Magic — showing MAP UNREADABLE with USB recovery";
-        expect(bootFault(`0.1 INFO  flat: mounted\n${refusal}\n`)).toBe(refusal);
-        expect(bootFault(bootLog({ objectId: 1n, revision: 1n, length: 4608n }))).toBeNull();
+    it("reads the firmware's own refusal to use the map as a refusal", () => {
+        const line = "0.4 ERROR map: not valid OBCM: Magic — showing MAP UNREADABLE with USB recovery";
+        const refusal = bootRefusal(`0.1 INFO  flat: mounted\n${line}\n`);
+        expect(refusal).toMatchObject({ phase: "reboot", reason: "refused" });
+        expect(refusal?.message).toContain(line);
+        expect(bootRefusal(bootLog({ objectId: 1n, revision: 1n, length: 4608n }))).toBeNull();
     });
 });
 
 describe("the shipped map", () => {
-    it("is the file its provenance record pins and lands on the packet boundary", () => {
+    it("is the file its provenance record pins and ends on a card block", () => {
         const fixture = loadSmokeFixture(REPO_ROOT);
-        expect(fixture.bytes.length % PACKET_BYTES).toBe(0);
-        expect(fixture.terrainBytes % PACKET_BYTES).toBe(0);
+        expect(fixture.bytes.length % CARD_BLOCK_BYTES).toBe(0);
+        expect(fixture.terrainBytes % CARD_BLOCK_BYTES).toBe(0);
         expect(fixture.bbox.maxLat).toBeGreaterThan(fixture.bbox.minLat);
     });
 });
