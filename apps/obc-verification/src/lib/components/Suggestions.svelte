@@ -8,22 +8,42 @@
   export let busy = false;
   export let onselect: (requirementId: string) => void;
   export let onclose: () => void;
-  /** Resolves true once the console has recorded the decision. */
-  export let ondecide: (id: string, accept: boolean, feedback?: string) => Promise<boolean>;
+  /** Resolves true once the console has recorded the answer. 'reopen' takes a decision back. */
+  export let ondecide: (id: string, answer: boolean | 'reopen', feedback?: string) => Promise<boolean>;
   /** The item whose body is open. Bound by the parent so a requirement can point at its own suggestion. */
   export let expanded = '';
-  /** Ticked in this session. The item stays in place, struck through, until the page is loaded again. */
+  /** Ticked in this session. The item sinks to the end of its list, struck through, to stay readable. */
   let done: Record<string, boolean> = {};
+  /** A saved revision ends the pass: what was ticked for it belongs under Decided, not in the list. */
+  let pass = revisionId;
+  $: if (revisionId !== pass) { pass = revisionId; done = {}; }
   let dismissing = '';
   let feedback = '';
+  /** The category the list is held to. Empty is every category. */
+  let chosen = '';
   $: standing = suggestions.filter(s => s.status === 'open' || done[s.id]);
+  $: categories = [...new Set(standing.map(category))].sort()
+    .map(name => ({ name, count: standing.filter(s => category(s) === name).length }));
+  /** A chosen category can go away once its items are decided, and then the list holds nothing. */
+  $: picked = categories.some(c => c.name === chosen) ? chosen : '';
+  $: shown = (picked ? standing.filter(s => category(s) === picked) : standing)
+    .sort((a, b) => Number(!!done[a.id]) - Number(!!done[b.id]) || category(a).localeCompare(category(b)));
   $: groups = [
-    { name: 'New requirements', items: standing.filter(s => !s.requirementId) },
-    { name: 'Changes to requirements', items: standing.filter(s => s.requirementId) }
+    { name: 'New requirements', items: shown.filter(s => !s.requirementId) },
+    { name: 'Changes to requirements', items: shown.filter(s => s.requirementId) }
   ];
   $: decided = suggestions.filter(s => (s.status === 'accepted' || s.status === 'dismissed') && !done[s.id]);
   function subject(suggestion: RequirementSuggestionReview) { return requirements.find(r => r.id === suggestion.requirementId); }
+  /** What the item is about: its own category, or the category of the requirement it changes. */
+  function category(suggestion: RequirementSuggestionReview) {
+    return (suggestion.requirementId ? subject(suggestion)?.group : suggestion.group)?.trim() || 'No category';
+  }
   function toggle(id: string) { expanded = expanded === id ? '' : id; }
+  /** A reason often names a neighbouring requirement. Split it so each name the revision holds opens it. */
+  function named(reason: string) {
+    return reason.split(/\b([A-Za-z][A-Za-z0-9]*-\d+)\b/)
+      .map(part => ({ text: part, id: requirements.some(r => r.id === part) ? part : '' }));
+  }
   /** Who wrote it, when, and what it was read against. Svelte trims separators written as markup, so this is one string. */
   function meta(suggestion: RequirementSuggestionReview) {
     const parts = [suggestion.author, day(suggestion.createdAt)];
@@ -31,9 +51,11 @@
     if (suggestion.requirementId) parts.push(`against r${suggestion.baseRevision}`);
     return (suggestion.requirementId ? ' · ' : '') + parts.join(' · ');
   }
-  async function accept(suggestion: RequirementSuggestionReview) {
-    if (busy || done[suggestion.id]) return;
-    if (await ondecide(suggestion.id, true)) done = { ...done, [suggestion.id]: true };
+  /** Ticking acknowledges the item. Unticking puts it back, so a wrong tick costs nothing. */
+  async function tick(suggestion: RequirementSuggestionReview, box: HTMLInputElement) {
+    const undo = !!done[suggestion.id];
+    if (busy || !await ondecide(suggestion.id, undo ? 'reopen' : true)) { box.checked = undo; return; }
+    done = { ...done, [suggestion.id]: !undo };
   }
   /** Escape closes the feedback box of this panel, and nothing else on the page. */
   function panelKeys(event: KeyboardEvent) {
@@ -51,6 +73,12 @@
   <div class="panel-head">
     <div class="row"><h2>Suggestions</h2><button class="text-button small" on:click={onclose}>Close</button></div>
     <p>Tick an item once you have written it yourself. Nothing here changes the draft.</p>
+    {#if categories.length > 1}
+      <select class="filter" aria-label="Show one category" bind:value={chosen}>
+        <option value="">All categories · {standing.length}</option>
+        {#each categories as c (c.name)}<option value={c.name}>{c.name} · {c.count}</option>{/each}
+      </select>
+    {/if}
   </div>
   <div class="panel-scroll">
     {#each groups as group (group.name)}
@@ -59,7 +87,7 @@
         {#each group.items as s (s.id)}
           {@const current = subject(s)}
           <div class="item" class:open={expanded === s.id} class:done={done[s.id]}>
-            <input type="checkbox" checked={!!done[s.id]} disabled={busy || done[s.id] || s.missing} aria-label={`Done: ${s.title}`} on:change={() => accept(s)} />
+            <input type="checkbox" checked={!!done[s.id]} disabled={busy || s.missing} aria-label={done[s.id] ? `Put back: ${s.title}` : `Done: ${s.title}`} on:change={(event) => tick(s, event.currentTarget)} />
             <div>
               <button class="title" on:click={() => toggle(s.id)} aria-expanded={expanded === s.id}>{s.title}</button>
               <div class="sub">{#if s.missing}{s.requirementId}{:else if s.requirementId}<a href="#requirement" on:click|preventDefault={() => onselect(s.requirementId ?? '')}>{s.requirementId}{current ? ` · ${current.title}` : ''}</a>{/if}{meta(s)}{#if s.sourceSha}{' · commit '}<code>{s.sourceSha.slice(0, 10)}</code>{/if}</div>
@@ -69,7 +97,7 @@
                   {#if current}<span class="eyebrow">Current</span><Markdown text={current.statement} />{/if}
                   <span class="eyebrow">{current ? 'Suggested' : 'Suggested statement'}</span>
                   <div class="statement"><Markdown text={s.statement} /></div>
-                  <span class="eyebrow">Why</span>{s.reason}
+                  <span class="eyebrow">Why</span>{#each named(s.reason) as part}{#if part.id}<a href="#requirement" on:click|preventDefault={() => onselect(part.id)}>{part.text}</a>{:else}{part.text}{/if}{/each}
                   {#if s.stale}<p class="stale">{s.stale}</p>{/if}
                 </div>
               {/if}
@@ -98,6 +126,7 @@
   .panel-head { padding: 18px 18px 12px; border-bottom: 1px solid var(--slate-line); }
   .panel-head h2 { font-size: 15px; color: var(--slate-strong); }
   .panel-head p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .filter { margin-top: 9px; padding: 6px 9px; font-size: 12px; border-color: var(--slate-line); }
   .panel-scroll { flex: 1; overflow: auto; padding: 8px 12px 18px; scrollbar-width: thin; }
   .eyebrow { display: block; margin: 14px 6px 6px; color: var(--slate); }
   .empty { margin: 14px 6px; }
@@ -112,6 +141,7 @@
   .sub a { color: var(--slate); font-weight: 600; text-decoration: underline; }
   .body { margin-top: 6px; font-size: 13px; line-height: 1.5; }
   .body .eyebrow { margin: 10px 0 3px; color: var(--muted); }
+  .body a { color: var(--slate); font-weight: 600; }
   .body .statement { padding: 8px 10px; background: var(--slate-bg); border-left: 3px solid var(--slate); border-radius: 0 6px 6px 0; }
   .stale { margin: 8px 0 0; padding: 6px 9px; font-size: 12px; color: var(--amber); background: #fff6e2; border: 1px solid #ead9b3; border-radius: 6px; }
   .x { padding: 2px 4px; font-size: 16px; line-height: 1; color: var(--muted); background: transparent; border-color: transparent; }

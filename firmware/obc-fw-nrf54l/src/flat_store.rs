@@ -17,7 +17,6 @@ use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use heapless::Deque;
 
 use obc_link::flat::{
     Ceilings, Engine, Link, Policy, Reaction, RequestId, Stall, StreamBuffers, UsbMapBatch, STALL_TIMEOUT_MS,
@@ -59,7 +58,7 @@ impl BlockDevice for FlatCard {
     type Error = SemmcError;
 
     fn block_count(&self) -> Result<u64, SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.num_blocks())?.map(u64::from)
+        crate::flpr_mux::with_storage(|sd| sd.num_blocks()).map(u64::from)
     }
 
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
@@ -90,8 +89,7 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })
-        .and_then(core::convert::identity);
+        });
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
         if let Err(error) = result {
@@ -130,7 +128,7 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })?
+        })
     }
 
     /// Synchronous callers have nothing to flush. The staged USB path uses this as the explicit
@@ -141,7 +139,7 @@ impl BlockDevice for FlatCard {
     /// completion signal and every write is already durable when the store's next statement runs. A
     /// transport with a write-back cache would move that cost back here.
     fn sync(&self) -> Result<(), SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())?
+        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
     }
 }
 
@@ -314,6 +312,14 @@ pub(crate) enum Request {
         allocation: Allocation,
         bytes: &'static [u8],
         header: &'static [u8],
+    },
+    /// Append the rollback container to a fresh allocation: the unsigned OBCU header, then the
+    /// running image straight out of the memory-mapped app slot. Replies with the advanced
+    /// allocation, which the arm's commit publishes as the rollback reserve.
+    WriteRollback {
+        allocation: Allocation,
+        header: [u8; obc_dfu::HEADER_LEN],
+        image: &'static [u8],
     },
     Seal {
         allocation: Allocation,
@@ -708,106 +714,30 @@ pub(crate) fn transfer_active() -> bool {
     LIVE_TRANSFER.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// One successful protocol-v4 route/trip upload waiting for the app's post-rescan event seam.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CatalogUpload {
-    id: [u8; 8],
-    flags: u8,
-}
+/// The ordered handoff of committed route/trip uploads, plus the one-bit conservative loss signal
+/// an over-capacity drop raises. The container is here because it must be interrupt-safe; what it
+/// keeps and what it drops is [`obc_app::UploadFacts`].
+static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<obc_app::UploadFacts>> =
+    Mutex::new(RefCell::new(obc_app::UploadFacts::new()));
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CatalogUploadKind {
-    Route,
-    Trip,
-}
+/// What that handoff costs the resident budget.
+pub(crate) const CATALOG_UPLOAD_BYTES: usize =
+    core::mem::size_of::<Mutex<CriticalSectionRawMutex, RefCell<obc_app::UploadFacts>>>();
 
-impl CatalogUpload {
-    fn new(kind: CatalogUploadKind, id: u64, replaced: bool) -> Self {
-        let flags = (kind == CatalogUploadKind::Trip) as u8 | ((replaced as u8) << 1);
-        Self { id: id.to_le_bytes(), flags }
-    }
-
-    pub(crate) const fn kind(self) -> CatalogUploadKind {
-        if self.flags & 1 == 0 {
-            CatalogUploadKind::Route
-        } else {
-            CatalogUploadKind::Trip
-        }
-    }
-
-    pub(crate) const fn id(self) -> u64 {
-        u64::from_le_bytes(self.id)
-    }
-
-    pub(crate) const fn replaced(self) -> bool {
-        self.flags & 2 != 0
-    }
-
-    fn same_object(self, other: Self) -> bool {
-        (self.flags & 1) == (other.flags & 1) && self.id == other.id
-    }
-}
-
-const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
-
-/// A complete UI catalog's worth of upload facts. The engine serializes transfers, and the ride
-/// task drains these after the catalog rescan the same commits caused. Bounding this to the menus'
-/// combined identity capacity keeps the resident cost explicit. Same-object commits coalesce, and
-/// churn beyond one full snapshot retains the newest facts and raises the conservative
-/// active-route refresh below.
-const UPLOAD_EVENTS_CAP: usize = obc_app::MAX_ROUTES + obc_app::MAX_TRIPS;
-static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>> =
-    Mutex::new(RefCell::new(Deque::new()));
-static UPLOAD_EVENTS_LOSS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-/// The bounded route/trip commit handoff plus its one-bit conservative loss signal.
-pub(crate) const CATALOG_UPLOAD_BYTES: usize = core::mem::size_of::<
-    Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>>,
->() + core::mem::size_of::<core::sync::atomic::AtomicBool>();
-
-/// Insert the latest fact for one object at the back of the queue. Repeated replaces must not spend
-/// another slot: remove the older fact, preserve every other fact's order, then append the final
-/// `replaced` value at its true commit position. Returns whether a distinct oldest fact had to be
-/// evicted because catalog churn left more queued identities than the UI can simultaneously hold.
-fn queue_catalog_upload(events: &mut Deque<CatalogUpload, UPLOAD_EVENTS_CAP>, upload: CatalogUpload) -> bool {
-    let queued = events.len();
-    let mut coalesced = false;
-    for _ in 0..queued {
-        if let Some(prior) = events.pop_front() {
-            if prior.same_object(upload) {
-                coalesced = true;
-            } else {
-                let _ = events.push_back(prior);
-            }
-        }
-    }
-    if coalesced {
-        let _ = events.push_back(upload);
-        return false;
-    }
-    if let Err(upload) = events.push_back(upload) {
-        let _ = events.pop_front();
-        let _ = events.push_back(upload);
-        return true;
-    }
-    false
-}
-
-fn note_catalog_upload(upload: CatalogUpload) {
+fn note_catalog_upload(upload: obc_app::CatalogUpload) {
     UPLOAD_EVENTS.lock(|events| {
-        if queue_catalog_upload(&mut events.borrow_mut(), upload) {
-            UPLOAD_EVENTS_LOSS.store(true, core::sync::atomic::Ordering::Relaxed);
+        if events.borrow_mut().note(upload) {
             defmt::warn!("flat: upload-event queue saturated — oldest fact replaced; forcing active-route refresh");
         }
     });
 }
 
-pub(crate) fn take_catalog_upload() -> Option<CatalogUpload> {
-    UPLOAD_EVENTS.lock(|events| events.borrow_mut().pop_front())
+pub(crate) fn take_catalog_upload() -> Option<obc_app::CatalogUpload> {
+    UPLOAD_EVENTS.lock(|events| events.borrow_mut().take())
 }
 
 pub(crate) fn take_catalog_upload_loss() -> bool {
-    UPLOAD_EVENTS_LOSS.swap(false, core::sync::atomic::Ordering::Relaxed)
+    UPLOAD_EVENTS.lock(|events| events.borrow_mut().take_loss())
 }
 
 fn note_catalog_commit() {
@@ -979,6 +909,11 @@ fn serve(
             store.write(&mut allocation, bytes)?;
             Ok(Outcome::Wrote(allocation))
         }
+        Request::WriteRollback { mut allocation, header, image } => {
+            store.write(&mut allocation, &header)?;
+            store.write(&mut allocation, image)?;
+            Ok(Outcome::Wrote(allocation))
+        }
         Request::Seal { allocation, out } => {
             *out = Some(store.seal(allocation)?);
             Ok(Outcome::Done)
@@ -1099,9 +1034,7 @@ fn serve(
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::FinishUsbStage => {
-            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
-                .map_err(|_| StoreError::Media)?
-                .map_err(|_| StoreError::Media)?;
+            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks()).map_err(|_| StoreError::Media)?;
             Ok(Outcome::Done)
         }
         Request::Pump { link, out } => {
@@ -1207,10 +1140,10 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
     if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
         match kind {
             obc_link::flat::ObjectKind::Route => {
-                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Route, id.0, replaced))
+                note_catalog_upload(obc_app::CatalogUpload::new(obc_app::CatalogUploadKind::Route, id.0, replaced))
             }
             obc_link::flat::ObjectKind::Trip => {
-                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))
+                note_catalog_upload(obc_app::CatalogUpload::new(obc_app::CatalogUploadKind::Trip, id.0, replaced))
             }
             // The link and the store each name objects with their own newtype over the same u64;
             // the seam between them is this crate's job, as everywhere else here.
@@ -1332,9 +1265,10 @@ pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<
 }
 
 /// `debug-uart` only: print the whole catalog, one line per entry, plus the entry count, whether
-/// the listing ran to the end, and the free extents. Comparing two of these proves a repair removed
-/// exactly one object and left every other one byte-identical, because `EntryMeta` carries the
-/// per-object CRC.
+/// the listing ran to the end, the free extents, the commit sequence and every durable archive
+/// proof. Comparing two of these proves a repair removed exactly one object and left every other
+/// one byte-identical, because `EntryMeta` carries the per-object CRC; comparing the proof lines
+/// against the receipt a client got proves the same identity and stamp survived a remount.
 #[cfg(feature = "debug-uart")]
 pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
     for entry in store.entries() {
@@ -1350,11 +1284,27 @@ pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
         );
     }
     defmt::info!(
-        "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32}",
+        "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32} sequence={=u64}",
         store.entry_count(),
         store.entries_ok(),
-        store.free_extents()
+        store.free_extents(),
+        store.sequence()
     );
+    // The archive proof the card holds, not the resident overlay: a session compares this line
+    // with the receipt the client got, before and after a remount.
+    match obc_storage::flat::metadata::census(store, |row| {
+        defmt::info!(
+            "proof census: id={=u64} rev={=u64} len={=u64} crc={=u32} stamp={=u32}",
+            row.id.0,
+            row.revision.0,
+            row.payload_len,
+            row.payload_crc,
+            row.timestamp
+        );
+    }) {
+        Ok(identity) => defmt::info!("proof census: store={=[u8; 16]:x}", identity.0),
+        Err(_) => defmt::warn!("proof census: card metadata unreadable"),
+    }
 }
 
 /// The session-long source over the mounted card's map object.
@@ -1390,7 +1340,6 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
-#[cfg(has_nav)]
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,

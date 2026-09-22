@@ -268,6 +268,7 @@ is garbage. `cargo rtt` can rebuild before attaching but never programs the devi
 | VCOM stays unresponsive after those checks | Power-cycle the DK. A target reset does not reset the J-Link bridge. With both cables connected, unplugging one may leave the board powered. |
 | J3 absent from host USB enumeration | J3 is the separate native device cable, VID:PID `1209:0001`. Check the RTT VBUS lines, then reconnect J3. J4 serial ports do not prove J3 is working. |
 | J3 enumerates but the application cannot connect | Close the desktop or browser session that owns the interface, then reconnect J3. |
+| You need to restart a board and read its boot log | `obc board run ELF --preverify` reads the image back, programs nothing when the board already holds it, then resets and streams RTT. One session does both. An ELF that differs is programmed as usual. `--preverify` is for `run` and `download` only. |
 
 ## Driving it from a host (`debug-uart`)
 
@@ -288,8 +289,9 @@ coming back. `--list` enumerates serial ports. Unplug J3 when the test also need
 `stty` with `printf`/`cat` does not work, because macOS resets the termios on every open and
 close — use pyserial.
 
-**Firmware update over the VCOM.** With a **signed** `UPDATE.BIN` in the card root (see [`../README.md`](../README.md); an unsigned
-container is refused), the same link carries the armer's trigger. Send `dfu-install\n` over the
+**Firmware update over the VCOM.** With a **signed** update package in the store (see
+[`../README.md`](../README.md); an unsigned container is refused), the same link carries the armer's
+trigger. Send `dfu-install\n` over the
 live CDC port with pyserial and read the `D` status lines back:
 
 ```sh

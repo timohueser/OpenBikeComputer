@@ -16,7 +16,7 @@ use obc_map_scene::BBox;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
 use obc_reader::{MapTables, SliceSource};
 
-use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ReplayFix};
+use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ride_summary, ReplayFix};
 
 fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
     (0..n as crate::CatalogObjectId).collect()
@@ -168,7 +168,7 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     assert!(!declared(&Screen::Home(HomeScreen::new())));
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
     assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
-    assert!(!declared(&Screen::Settings(crate::screen::SettingsScreen::new())));
+    assert!(!declared(&Screen::Settings(crate::screen::SettingsPage::hub())));
     assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&crate::navigator::RouteState::new(),))));
 }
 
@@ -1151,8 +1151,13 @@ fn the_global_escape_reaches_the_menu_from_every_family() {
         ("a riding view", |app| apply(&mut app.ui.stack, Transition::Root(Screen::Map(MapScreen::new())))),
         ("the paused page", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RideControl(RideControl::new())))),
         ("a settings page", |app| {
-            apply(&mut app.ui.stack, Transition::Push(Screen::Settings(crate::screen::SettingsScreen::new())));
-            apply(&mut app.ui.stack, Transition::Push(Screen::Display(crate::screen::DisplayScreen::new())));
+            apply(&mut app.ui.stack, Transition::Push(Screen::Settings(crate::screen::SettingsPage::hub())));
+            apply(
+                &mut app.ui.stack,
+                Transition::Push(Screen::Display(crate::screen::SettingsPage::new(
+                    &crate::screen::settings::page::DISPLAY,
+                ))),
+            );
         }),
         ("a nav list", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())))),
         ("the quick drawer", |app| {
@@ -1259,6 +1264,270 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
 
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
+}
+
+/// The quick drawer's Settings row starts central settings from the root pair and drops the
+/// descent the squeeze came from, so laps of squeeze and press stay at one depth and Back leaves
+/// settings for the view the rider rides on.
+#[test]
+fn laps_of_the_drawer_settings_row_stay_on_the_root() {
+    /// One lap: the squeeze, the steps to the settings control, and the press.
+    fn lap(app: &mut App, ms: &mut u32) {
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the squeeze opens the sheet");
+        *ms += 1_000;
+        app.advance_animations(InputClock(*ms)); // settle the open slide
+        for _ in 0..2 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → bluetooth → settings
+        }
+        app.apply_gesture(Gesture::Press);
+    }
+
+    fn shape(app: &App) -> Vec<&'static str> {
+        app.ui.stack.iter().map(Screen::name).collect()
+    }
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.set_backlight_available(true);
+    let mut ms = 1_000;
+    for lap_no in 0..8 {
+        lap(&mut app, &mut ms);
+        assert_eq!(shape(&app), ["Home", "Map", "Settings"], "lap {lap_no} left the root pair");
+        // Two pages down the settings tree, which the next lap has to drop.
+        app.apply_gesture(Gesture::Step(4)); // → System
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1)); // → Date & time, a page rather than an editor sheet
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(shape(&app), ["Home", "Map", "Settings", "System", "DateTime"], "lap {lap_no} did not descend");
+    }
+
+    lap(&mut app, &mut ms);
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "Back out of settings leaves for the riding view");
+
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host card still has room after the laps");
+
+    // On the idle screensaver there is no view under the root, so settings is itself what the
+    // pair keeps: the lap lands on the settings the rider left, and Back reaches Home.
+    let mut idle = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+    idle.set_backlight_available(true);
+    let mut ms = 1_000;
+    for lap_no in 0..4 {
+        lap(&mut idle, &mut ms);
+        assert_eq!(shape(&idle), ["Home", "Settings"], "idle lap {lap_no} stacked a second settings");
+        if lap_no == 0 {
+            idle.apply_gesture(Gesture::Step(4)); // → System
+        }
+        // From lap 1 the row is still where the rider left it, because the lap lands on the
+        // settings screen they had rather than on a fresh one.
+        idle.apply_gesture(Gesture::Press);
+        assert_eq!(shape(&idle), ["Home", "Settings", "System"], "idle lap {lap_no} did not descend");
+    }
+    lap(&mut idle, &mut ms);
+    idle.apply_gesture(Gesture::Back);
+    assert!(matches!(idle.top_screen(), Screen::Home(_)), "Back out of settings reaches the screensaver");
+}
+
+/// The Assistant chord answers from the root pair too, so the rider reaches the same place from
+/// any depth and Back leaves it for the view they ride on. The deepest page is the hard case: the
+/// chord used to spend a slot on it, and at the ceiling it had to fall back to the bare Home root.
+#[test]
+fn the_assistant_chord_lands_on_the_root_pair_from_a_deep_page() {
+    use crate::screen::MAX_DEPTH;
+
+    fn shape(app: &App) -> Vec<&'static str> {
+        app.ui.stack.iter().map(Screen::name).collect()
+    }
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    while app.ui.stack.len() < MAX_DEPTH {
+        let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+    }
+
+    assert!(app.apply_chord(crate::input::Chord::Assistant), "the hold opens the Assistant");
+    assert_eq!(shape(&app), ["Home", "Map", "Assistant"], "the descent the chord came from went with it");
+
+    // A question is a door, so the room for what it opens is part of the landing.
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::FindPlace(_)), "the first question still opens");
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "Back leaves the Assistant for the riding view");
+
+    // On the idle Home the Assistant is itself the screen the root pair keeps, so a repeat lands
+    // on the one the rider left rather than stacking a second copy over it.
+    let mut idle = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+    assert!(idle.apply_chord(crate::input::Chord::Quick), "the squeeze opens a sheet over the screensaver");
+    assert!(idle.apply_chord(crate::input::Chord::Assistant));
+    assert_eq!(shape(&idle), ["Home", "Assistant"], "the sheet went with the descent");
+    idle.apply_gesture(Gesture::Step(1)); // move the question cursor off the first row
+    assert!(idle.apply_chord(crate::input::Chord::Assistant));
+    assert_eq!(shape(&idle), ["Home", "Assistant"], "the repeat stayed put");
+    assert!(
+        matches!(idle.top_screen(), Screen::Assistant(s) if s.selected == 1),
+        "…on the question the rider was reading, not on a fresh page"
+    );
+}
+
+/// A sheet needs a slot of its own, so at the ceiling the squeeze is refused and reports that
+/// nothing moved. The alternative is `apply` dropping the push behind a `debug_assert`: a rider
+/// squeezing at a full stack and getting silence.
+#[test]
+fn a_squeeze_at_the_ceiling_is_refused() {
+    use crate::screen::MAX_DEPTH;
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.set_backlight_available(true);
+    while app.ui.stack.len() < MAX_DEPTH - 1 {
+        let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+    }
+    assert!(app.apply_chord(crate::input::Chord::Quick), "with the last slot free the sheet opens");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+    assert!(app.apply_chord(crate::input::Chord::Quick), "and the same chord closes it again");
+
+    let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+    assert_eq!(app.ui.stack.len(), MAX_DEPTH, "the stack is at the ceiling");
+    assert!(!app.apply_chord(crate::input::Chord::Quick), "a full stack refuses the squeeze");
+    assert_eq!(app.ui.stack.len(), MAX_DEPTH, "and nothing moved");
+}
+
+/// The deepest screen stack a rider reaches, walked instead of asserted from one hand-written
+/// path. The alphabet is the three navigating gestures — a step, a press and a guarded hold — and
+/// the three device-wide chords, so this bounds every way down, including the ways a sheet opens.
+///
+/// `MAX_DEPTH` is not a wall: `apply` drops an overflowing push behind a `debug_assert`, and a
+/// release build then loses the screen without a sound. So the reserve the ceiling leaves is
+/// pinned rather than assumed. Both doors that open over a descent — the drawer's settings row
+/// and the Assistant chord — land on the root pair, so no way down composes onto another one, and
+/// the walk stops short of the ceiling. A card is measured against the deepest stack with no
+/// sheet on it, because `card_scheduler::land` takes any open drawer off before the card goes on.
+#[test]
+fn the_deepest_descent_stops_short_of_max_depth() {
+    use crate::input::Chord;
+
+    /// Steps taken on a page before its gesture. The probe below proves one more step reaches no
+    /// page the walk misses, so a list that outgrows this cannot go under-walked in silence.
+    const ROWS: i32 = 16;
+    /// A tree that outgrows this is no longer the one these numbers describe.
+    const VISITS: usize = 500;
+    /// The deepest stack the walk reaches: seven pages with one sheet over them.
+    const DEEPEST: usize = 8;
+    /// The deepest stack a host card lands on — that descent with the sheet taken off.
+    const DEEPEST_FOR_A_CARD: usize = 7;
+
+    /// One move: `k` steps then that gesture, or one device-wide chord.
+    #[derive(Clone, Copy, Debug)]
+    enum Move {
+        Press(i32),
+        Hold(i32),
+        Chord(Chord),
+    }
+
+    fn seeded() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+        app.test_mount_store();
+        app.set_backlight_available(true);
+        app.set_routes_with_ids(&test_routes(), &IDS3);
+        app.set_rides(&[
+            crate::RideEntry { id: 7, summary: ride_summary("Ride A") },
+            crate::RideEntry { id: 9, summary: ride_summary("Ride B") },
+        ]);
+        // The escape is the way in from a riding view, and [Home, Map, Menu] is the deepest root a
+        // descent starts from. On the Map itself a step zooms and a press pauses.
+        app.apply_gesture(Gesture::BackHold);
+        app
+    }
+
+    /// One path replayed from a fresh device, a frame of animation after each move so a page that
+    /// slides has settled before its rows answer.
+    fn walk(path: &[Move]) -> App {
+        let mut app = seeded();
+        let mut ms = 1_000;
+        for mv in path {
+            let (steps, gesture) = match *mv {
+                Move::Press(k) => (k, Gesture::Press),
+                Move::Hold(k) => (k, Gesture::Hold),
+                Move::Chord(chord) => {
+                    app.apply_chord(chord);
+                    ms += 1_000;
+                    app.advance_animations(InputClock(ms));
+                    continue;
+                }
+            };
+            for _ in 0..steps {
+                app.apply_gesture(Gesture::Step(1));
+            }
+            app.apply_gesture(gesture);
+            ms += 1_000;
+            app.advance_animations(InputClock(ms));
+        }
+        app
+    }
+
+    fn shape(app: &App) -> Vec<&'static str> {
+        app.ui.stack.iter().map(Screen::name).collect()
+    }
+
+    /// The slots a host card would find: the stack under any open sheet.
+    fn under_the_sheet(app: &App) -> usize {
+        crate::screen::base_index(&app.ui.stack) + 1
+    }
+
+    // Each stack shape is expanded once, from the first path that reaches it: every row of that one
+    // representative is then pressed and held.
+    let mut seen: std::collections::BTreeSet<Vec<&'static str>> = std::collections::BTreeSet::new();
+    let mut pending: Vec<(Vec<Move>, Vec<&'static str>, usize)> =
+        vec![(Vec::new(), shape(&seeded()), under_the_sheet(&seeded()))];
+    let mut deepest: Vec<&'static str> = Vec::new();
+    let mut deepest_for_a_card = 0usize;
+    let mut visits = 0usize;
+    while let Some((path, here, base)) = pending.pop() {
+        if !seen.insert(here.clone()) {
+            continue;
+        }
+        visits += 1;
+        assert!(visits < VISITS, "the walk outgrew its budget on {path:?}");
+        deepest_for_a_card = deepest_for_a_card.max(base);
+        if here.len() > deepest.len() {
+            deepest = here;
+        }
+        for row in [Move::Press as fn(i32) -> Move, Move::Hold as fn(i32) -> Move] {
+            let mut reached: std::collections::BTreeSet<Vec<&'static str>> = std::collections::BTreeSet::new();
+            for k in 0..=ROWS {
+                let mut next = path.clone();
+                next.push(row(k));
+                let reached_app = walk(&next);
+                let child = shape(&reached_app);
+                if k == ROWS {
+                    assert!(reached.contains(&child), "ROWS is too small: {k} steps reach {child:?}");
+                } else if reached.insert(child.clone()) {
+                    pending.push((next, child, under_the_sheet(&reached_app)));
+                }
+            }
+        }
+        for chord in [Chord::Quick, Chord::Context, Chord::Assistant] {
+            let mut next = path.clone();
+            next.push(Move::Chord(chord));
+            let reached_app = walk(&next);
+            let child = shape(&reached_app);
+            pending.push((next, child, under_the_sheet(&reached_app)));
+        }
+    }
+
+    assert!(seen.len() >= 300, "the walk reached only {} stacks — it stopped early", seen.len());
+    assert!(
+        seen.contains(&vec!["Home", "Map", "Menu", "Settings", "Ride", "StatFields", "AddField"]),
+        "the walk missed the documented deepest rider path"
+    );
+    assert_eq!(deepest.len(), DEEPEST, "the deepest stack is now {deepest:?}");
+    assert_eq!(deepest_for_a_card, DEEPEST_FOR_A_CARD, "the deepest stack with no sheet on it moved");
+    // The reserve, stated as the property it protects: every reachable stack has a free slot, so
+    // no arrival is dropped behind the `debug_assert` and lost in a release build.
+    assert!(
+        deepest.len() < crate::screen::MAX_DEPTH,
+        "a descent reaches the ceiling, where the next arrival is dropped without a sound"
+    );
 }
 
 /// A shutdown in progress is not cancellable by either device-wide input. It cannot be expressed

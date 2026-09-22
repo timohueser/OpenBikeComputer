@@ -117,13 +117,13 @@ the staged image, show a confirm card, and install only on a physical **Select p
 | Outcome | `commandResult.status` | Meaning |
 |---|---|---|
 | accepted | `ok` (0) | the device opens its on-glass check and confirm flow |
-| no staged package | `notFound` (2) | there is nothing staged to install |
 | busy | `busy` (3) | a ride is recording, or an install request is already pending |
-| invalid | `error` (4) | the staged image is already known-unusable |
 
-Precedence when several apply: **`busy` > `notFound` > `error` > `ok`**. The multi-second image scan
-MUST NOT run inside the command handler, so a device that cannot cheaply reject a stage accepts and
-lets the on-device scan surface a bad image on the confirm card.
+Precedence: **`busy` > `ok`**. The two answers are the whole set, because "can the device act now"
+is the only question the command handler can answer cheaply. Whether a package is staged, and
+whether it is a valid one, are the on-device scan's own answers a moment later, and the multi-second
+image scan MUST NOT run inside the command handler. A second answer given here would be a second
+truth about the same fact, so the device accepts and the confirm card reports what the scan found.
 
 **Security posture — no silent installs.** Staging a package is authenticated only by the bonded,
 encrypted link (§8). **Installing** is gated on physical confirmation at the device. `installFw`

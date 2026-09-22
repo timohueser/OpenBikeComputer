@@ -1,5 +1,5 @@
 //! The DFU wire surface: the `fwImage` object type through the unchanged whole-object transfer
-//! machinery, the announce-time size reject, and the `installFw` reply matrix. This crate has no
+//! machinery, and the `installFw` reply matrix. This crate has no
 //! storage, so these tests pin the protocol precondition the board's promote hangs off: a
 //! CRC-mismatching stream reports `crcMismatch`, a matching one reports `committed`.
 
@@ -42,7 +42,8 @@ fn fwimage_upload_happy_path_commits() {
     }
     assert!(rx.is_complete());
     let result = rx.outcome().expect("complete");
-    // Committed means the board promotes the temp to /UPDATE.BIN exactly once.
+    // Committed is the descriptor layer's own verdict: the whole announced object arrived and
+    // its CRC matched. What the board does with those bytes is not this layer's business.
     assert_eq!(result.status, TransferStatus::Committed);
     assert_eq!(result.committed_offset, object.len() as u32);
     assert_eq!(result.object_id, 0);
@@ -50,7 +51,7 @@ fn fwimage_upload_happy_path_commits() {
 
 #[test]
 fn fwimage_crc_mismatch_leaves_nothing_to_commit() {
-    // On crcMismatch the board discards the temp and never touches /UPDATE.BIN.
+    // On crcMismatch the receiver commits nothing, so no caller is ever handed the bytes.
     let mut object = payload(4096);
     let desc = fwimage_desc(&object);
     object[123] ^= 0x01; // corrupt after the CRC is announced
@@ -58,52 +59,16 @@ fn fwimage_crc_mismatch_leaves_nothing_to_commit() {
     rx.push(&object);
     let result = rx.outcome().expect("complete");
     assert_eq!(result.status, TransferStatus::CrcMismatch);
-    assert_eq!(result.committed_offset, 0, "nothing durable — no UPDATE.BIN is written");
+    assert_eq!(result.committed_offset, 0, "nothing is handed on");
 }
 
-#[test]
-fn oversize_fwimage_rejected_at_announce() {
-    const MAX: u32 = 1_480_000; // stands in for obc_dfu::MAX_IMAGE_LEN
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX, MAX), None);
-    assert_eq!(TransferStatus::fwimage_announce_reject(1, MAX), None);
-    assert_eq!(TransferStatus::fwimage_announce_reject(0, MAX), None);
-    // Over the ceiling: rejected at the descriptor write, before any byte streams.
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX + 1, MAX), Some(TransferStatus::Error));
-    assert_eq!(TransferStatus::fwimage_announce_reject(u32::MAX, MAX), Some(TransferStatus::Error));
-}
-
-#[test]
-fn fwimage_announce_ceiling_is_container_sized_not_raw() {
-    // `total_len` is the whole OBCU container, so the ceiling must be container-sized. A raw-image
-    // ceiling would reject an image in the top 64 bytes of the range that the armer flashes fine.
-    const MAX_IMAGE_LEN: u32 = 1_480_000; // obc_dfu::MAX_IMAGE_LEN
-    const HEADER_LEN: u32 = 64; // obc_dfu::HEADER_LEN
-    const MAX_CONTAINER: u32 = MAX_IMAGE_LEN + HEADER_LEN;
-    // A raw image at the cap: the container is 64 bytes larger.
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 64, MAX_CONTAINER), None);
-    // One raw byte over.
-    assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 65, MAX_CONTAINER), Some(TransferStatus::Error));
-}
-
+/// The command answers from edge state only: it can act, or it is busy. Whether a package is
+/// staged, and whether it is valid, are the on-device flow's own answers a second later.
 #[test]
 fn install_fw_reply_matrix() {
-    // staged, not busy, valid
-    assert_eq!(obc_ble::install_fw_reply(true, false, false), CommandStatus::Ok);
-    // nothing on the card
-    assert_eq!(obc_ble::install_fw_reply(false, false, false), CommandStatus::NotFound);
-    // recording, or an install already pending
-    assert_eq!(obc_ble::install_fw_reply(true, true, false), CommandStatus::Busy);
-    // a cheaply-known-bad stage
-    assert_eq!(obc_ble::install_fw_reply(true, false, true), CommandStatus::Error);
-}
-
-#[test]
-fn install_fw_reply_precedence_is_busy_then_no_staged_then_invalid() {
-    // Busy wins over everything: the device cannot act now, whatever the stage holds.
-    assert_eq!(obc_ble::install_fw_reply(false, true, true), CommandStatus::Busy);
-    assert_eq!(obc_ble::install_fw_reply(true, true, true), CommandStatus::Busy);
-    // Not busy and nothing staged: no stage wins over a moot invalid flag.
-    assert_eq!(obc_ble::install_fw_reply(false, false, true), CommandStatus::NotFound);
+    assert_eq!(obc_ble::install_fw_reply(false), CommandStatus::Ok);
+    // Recording, or an install already pending.
+    assert_eq!(obc_ble::install_fw_reply(true), CommandStatus::Busy);
 }
 
 #[test]

@@ -66,18 +66,17 @@ fn a_link_change_repaints_the_menu_title_bar() {
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "an unchanged status doesn't re-dirty the Menu");
 }
 
-/// The Bluetooth screen draws the status line and Paired row, so every seam change repaints it,
+/// The Connections page draws the phone's status line, so every seam change repaints it,
 /// including transitions the indicator ignores (Advertising ↔ Off, a paired flip).
 #[test]
-fn a_link_change_repaints_the_bluetooth_screen() {
+fn a_link_change_repaints_the_connections_page() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
     app.apply_gesture(obc_app::Gesture::Step(-1)); // compass: one ccw step to Settings
     app.apply_gesture(obc_app::Gesture::Press); // → Settings list
     app.apply_gesture(obc_app::Gesture::Step(2)); // → Connections row (Ride, Display, Connections)
-    app.apply_gesture(obc_app::Gesture::Press); // → Connections menu (Phone is the first row)
-    app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen (opened via the Phone row)
-    assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");
+    app.apply_gesture(obc_app::Gesture::Press); // → Connections page (the phone's status is a row of it)
+    assert!(matches!(app.top_screen(), obc_app::Screen::Connections(_)), "navigated to the Connections page");
     let _ = app.take_dirty();
 
     app.set_ble_status(connected());
@@ -160,25 +159,34 @@ fn the_card_is_not_dismissible_by_input() {
 #[test]
 fn a_hold_charging_defers_the_card_until_the_hold_settles() {
     // A host-pushed screen must never land mid-hold — it would yank the hold target out from under
-    // the rider. The board feeds the live Select hold-progress via `set_hold_progress`.
+    // the rider. The board feeds the live hold progress of both hold buttons via
+    // `set_hold_progress`, because `App`'s own recogniser sees nothing there.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
 
-    app.set_hold_progress(0.5); // a hold is charging
+    app.set_hold_progress(0.5, 0.0); // a hold is charging
     app.set_ble_status(pairing(1));
     assert!(!app.passkey_card_up(), "the card is deferred while a hold charges");
 
     // The desired state is re-fed every pass; once the hold settles the reconcile lands.
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.set_ble_status(pairing(1));
     assert!(app.passkey_card_up(), "the card opens once the hold settles");
 
     // Closing is deferred too: don't pop mid-hold.
-    app.set_hold_progress(0.5);
+    app.set_hold_progress(0.5, 0.0);
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert!(app.passkey_card_up(), "the card is held up while a hold charges");
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert!(!app.passkey_card_up(), "the card closes once the hold settles");
+
+    // Back charges on the same plane and defers the same way.
+    app.set_hold_progress(0.0, 0.5);
+    app.set_ble_status(pairing(1));
+    assert!(!app.passkey_card_up(), "a charging Back hold defers the card too");
+    app.set_hold_progress(0.0, 0.0);
+    app.set_ble_status(pairing(1));
+    assert!(app.passkey_card_up(), "…and the card lands once the Back hold settles");
 }
 
 #[test]

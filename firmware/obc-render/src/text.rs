@@ -9,6 +9,7 @@ use embedded_graphics::{
     mono_font::{MonoFont, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::*,
+    primitives::Rectangle,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
@@ -203,4 +204,25 @@ where
         })
     });
     let _ = target.draw_iter(pixels);
+}
+
+/// The glyph-cell box `s` occupies when drawn at `anchor` with `align`. Exact for the monospace
+/// face; a `\n` starts a new cell row, aligned about the same anchor.
+pub fn text_box(s: &str, anchor: Point, font: Font, align: TextAlign) -> Rectangle {
+    let (mut x0, mut x1) = (i32::MAX, i32::MIN);
+    for line in s.lines() {
+        let w = text_width(line, font) as i32;
+        let left = match align {
+            TextAlign::Left => anchor.x,
+            TextAlign::Center => anchor.x - w / 2,
+            TextAlign::Right => anchor.x - w,
+        };
+        x0 = x0.min(left);
+        x1 = x1.max(left + w);
+    }
+    let rows = s.lines().count() as i32;
+    if rows == 0 {
+        return crate::canvas::rect(anchor.x, anchor.y, 0, 0);
+    }
+    crate::canvas::rect(x0, anchor.y, x1 - x0, rows * font.line_height() as i32)
 }

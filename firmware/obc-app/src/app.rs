@@ -26,7 +26,6 @@ use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
 use crate::{DeviceStatus, Msg};
-use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -662,7 +661,8 @@ impl App {
             // Stamp fix freshness against the map-plane clock, the one the banner's staleness
             // check reads. It is off `AppState`, so a stationary fix forces no redraw.
             self.tick_state.last_fix_ms = Some(self.ui.now_ms);
-            if let Some(Screen::PeakView(screen)) = self.ui.stack.iter_mut().rev().find(|screen| !screen.is_overlay()) {
+            let base = screen::base_index(&self.ui.stack);
+            if let Some(Screen::PeakView(screen)) = self.ui.stack.get_mut(base) {
                 if screen.needs_position() {
                     screen.set_status(crate::peak_view::runtime::Status::Building(0));
                     self.ui.map_dirty = true;
@@ -777,7 +777,7 @@ impl App {
 
     /// Whether the base (lowest opaque) screen draws the map. A render-on-demand host polls this
     /// to skip the whole map pipeline on a non-map frame: no `Reader` build, `None` to
-    /// [`render_map_timed`](App::render_map_timed), and a menu redraw with zero map I/O.
+    /// [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed), and a menu redraw with zero map I/O.
     pub fn base_draws_map(&self) -> bool {
         self.ui.base_draws_map()
     }
@@ -854,7 +854,7 @@ impl App {
     }
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
-    /// [`render_map_timed`](App::render_map_timed): a superset of
+    /// [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed): a superset of
     /// [`base_draws_map`](App::base_draws_map). Map-base screens always do, and the POI list and
     /// POI detail screens do until their one-shot reads resolve in the pre-draw prepare pass.
     /// After that they draw from frozen state, so the host skips the build again.
@@ -1202,6 +1202,39 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Cancel a plan the rider can no longer answer. A plan is a question, and the screens it is
+    /// asked from are the only place to drop it: the chooser and its preview for a detour, the
+    /// planning spinner for a route search. A question that outlives them holds the planner arena,
+    /// and its release keeps a result nobody accepted — a line drawn over the active route, or a
+    /// computed route left in the store.
+    ///
+    /// It reads the stack shape, because the transitions that drop a descent whole — `OverRoot`
+    /// under the Assistant chord and under the drawer's settings row — never reach the screens in
+    /// it, so none of them can cancel on its own way out. An adopted result is not a question:
+    /// the splice truncates its own screens off once the rider has the spliced route.
+    ///
+    /// The route family's preview and failure phases are not read here. They belong to the
+    /// Assistant's review, whose own release is reconciled from the stack by
+    /// [`prepare_find`](App::prepare_find); cancelling the plan under it would leave the review
+    /// machine holding a checkpoint for a plan that no longer exists.
+    fn release_unreachable_plans(&mut self) {
+        use crate::navigator::PlanFamily;
+        if self.navigator.plan_awaits_rider(PlanFamily::Detour)
+            && !self.ui.stack.iter().any(|s| matches!(s, Screen::Detour(_) | Screen::DetourPreview(_)))
+        {
+            self.admit_navigator_intent(NavigatorIntent::CancelDetour);
+        }
+        if self.navigator.route_search_running()
+            && !self
+                .ui
+                .stack
+                .iter()
+                .any(|s| matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Nav))
+        {
+            self.admit_navigator_intent(NavigatorIntent::CancelPlan);
+        }
+    }
+
     /// Drop the detour preview polyline when Navigator drops the plan it previews.
     ///
     /// The shape is derived from the plan and is drawn over the still-active route, so a preview
@@ -1481,6 +1514,10 @@ impl App {
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
+            self.ui.find.resume_route = self
+                .assistant_checkpoint()
+                .and_then(|saved| self.route_ids().iter().position(|&id| id == saved.route.object))
+                .and_then(|index| u8::try_from(index).ok());
         }
         let arrival = self.visit_arrival_pending();
         let accepted = self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted;
@@ -1515,7 +1552,7 @@ impl App {
             &mut self.ui.stack,
             screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
         );
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         self.ui.map_dirty = true;
     }
 
@@ -1656,8 +1693,7 @@ impl App {
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new(mode))),
         );
         self.ui.map_dirty = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         true
     }
 
@@ -1719,7 +1755,7 @@ impl App {
     }
 
     fn peak_view_base(&self) -> Option<&screen::PeakViewScreen> {
-        match self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) {
+        match screen::base_screen(&self.ui.stack) {
             Some(Screen::PeakView(screen)) => Some(screen),
             _ => None,
         }
@@ -1748,30 +1784,30 @@ impl App {
         }
         match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
+            // The Assistant is a place of its own, not a page over the descent the squeeze came
+            // from: it lands on the root pair, like the drawer's settings row, so the depth it
+            // opens at does not depend on where the rider was and Back leaves it for the riding
+            // view. A dropped screen releases nothing itself, so what it held is reconciled from
+            // the stack shape: the corridor here, a detour below, and the find and visit state on
+            // the next frame's `prepare_find`.
             Chord::Assistant => {
-                if let Some(index) = self.ui.stack.iter().rposition(|s| matches!(s, Screen::Assistant(_))) {
-                    self.ui.stack.truncate(index + 1);
-                } else {
-                    let assistant = Screen::Assistant(screen::AssistantScreen::new());
-                    let transition = if self.ui.stack.len() < self.ui.stack.capacity() {
-                        screen::Transition::Push(assistant)
-                    } else {
-                        screen::Transition::Root(assistant)
-                    };
-                    screen::apply(&mut self.ui.stack, transition);
-                }
+                let assistant = Screen::Assistant(screen::AssistantScreen::new());
+                screen::apply(&mut self.ui.stack, screen::Transition::OverRoot(assistant));
                 self.ui.map_dirty = true;
                 self.ui.last_input_ms = self.ui.now_ms;
                 self.ui.idle_return_timing = true;
-                self.ui.input.cancel_holds();
-                self.ui.hold_cancel_pending = true;
+                self.ui.cancel_holds();
                 self.ui.reconcile_corridor(self.up_ahead_scope());
+                self.release_unreachable_plans();
                 true
             }
             // A base screen that declares no `ContextMenu` gets nothing, not an empty drawer.
             // The squeeze is still swallowed by the recogniser, so it leaks no step or Back.
             Chord::Context => match self.base_context() {
-                Some(menu) => self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::opening(menu))),
+                Some(menu) => {
+                    let lang = self.settings().language;
+                    self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::opening(menu, lang)))
+                }
                 None => false,
             },
         }
@@ -1787,7 +1823,7 @@ impl App {
     /// lowest non-overlay row, so a sheet already up does not hide the content the chord asks
     /// about; that is what makes the same chord close the context drawer again.
     fn base_context(&self) -> Option<&'static crate::screen::ContextMenu> {
-        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| {
+        screen::base_screen(&self.ui.stack).and_then(|s| {
             if matches!(s, Screen::Assistant(_)) && self.current_visit_index().is_some() {
                 Some(&crate::screen::context_drawer::ASSISTANT_VISIT)
             } else if matches!(s, Screen::Assistant(_))
@@ -1804,8 +1840,17 @@ impl App {
 
     /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
     /// same drawer therefore toggles it shut, and the other one swaps in rather than stacking.
+    ///
+    /// A sheet needs a slot of its own. At the ceiling the squeeze is refused, rather than pushed
+    /// into a full stack where the arrival would be dropped without a sound. The Assistant chord
+    /// beside it needs no such guard: it drops to the root pair, which always has room.
     fn toggle_drawer(&mut self, drawer: Screen) -> bool {
         let opening = drawer.row();
+        // With a sheet already up its slot is reused, so only a full stack under no sheet refuses.
+        if self.ui.stack.len() == self.ui.stack.capacity() && !self.ui.stack.last().is_some_and(|top| top.is_overlay())
+        {
+            return false;
+        }
         let closed = match self.ui.stack.last() {
             Some(top) if top.is_overlay() => {
                 let row = top.row();
@@ -1829,8 +1874,7 @@ impl App {
         self.ui.map_dirty = true;
         self.ui.last_input_ms = self.ui.now_ms;
         self.ui.idle_return_timing = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         true
     }
 
@@ -1845,6 +1889,7 @@ impl App {
     pub fn backlight_level(&self) -> u8 {
         match self.ui.stack.last() {
             Some(Screen::QuickDrawer(d)) => d.staged_brightness(),
+            Some(Screen::ContextDrawer(d)) => d.staged_brightness(),
             _ => None,
         }
         .unwrap_or(self.settings.brightness)
@@ -2172,7 +2217,7 @@ impl App {
     fn escape_to_menu(&mut self) -> bool {
         // Asked of the base, not of `stack.last()`: a sheet opened over a card the rider must
         // answer is not consent to walk away from the card.
-        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        let base = screen::base_screen(&self.ui.stack);
         if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
             return false;
         }
@@ -2203,8 +2248,7 @@ impl App {
         // query exactly as a Back would.
         self.ui.reconcile_corridor(self.up_ahead_scope());
         if changed {
-            self.ui.input.cancel_holds();
-            self.ui.hold_cancel_pending = true;
+            self.ui.cancel_holds();
         }
         changed
     }
@@ -2290,7 +2334,10 @@ impl App {
         let stack_changed = match &t {
             screen::Transition::None => false,
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
-            screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
+            screen::Transition::Push(_)
+            | screen::Transition::Replace(_)
+            | screen::Transition::OverRoot(_)
+            | screen::Transition::Root(_) => true,
         };
         if let screen::Transition::Push(Screen::PeakView(screen)) = &mut t {
             *screen = screen::PeakViewScreen::new(self.fresh_position());
@@ -2302,6 +2349,7 @@ impl App {
         self.sync_find_preferences();
         self.handle_find_action();
         self.sync_detour_preview(detour_planned_before);
+        self.release_unreachable_plans();
         // Opening a POI list drops the previous snapshot so its first draw re-queries. Gated on
         // a fresh open, so a step within the list does not wipe the frozen snapshot.
         if self.ui.stack.len() > depth_before && matches!(self.ui.stack.last(), Some(Screen::PoiList(_))) {
@@ -2322,8 +2370,7 @@ impl App {
         // The top screen changed under the rider's finger, so cancel any hold charging now: a
         // long-press aimed at the old top must not complete onto the new one.
         if stack_changed {
-            self.ui.input.cancel_holds();
-            self.ui.hold_cancel_pending = true;
+            self.ui.cancel_holds();
         }
         if self.settings != settings_before {
             // A rider edit: bump the revision and re-arm the save, superseding an older one.
@@ -2503,51 +2550,18 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0.
-        self.render_scene_map_timed(
-            scratch,
-            target,
-            Some(reader),
-            Some(reader),
-            route,
-            None,
-            w,
-            h,
-            color_fn,
-            &NoopClock,
-        )
+        self.render_scene_map_timed(scratch, target, Some(reader), route, None, w, h, color_fn, &NoopClock)
     }
 
-    /// Like [`render_map`](App::render_map), but threads `clock` to the Map screen so the
-    /// returned [`RenderStats`] carries per-stage timings. The device's render benchmark uses it.
+    /// Timed map-plane render. `reader` is the frame's whole map source: the streamed geometry and
+    /// the core-only POI and hours preparation both come from it. `None` on a chrome-only frame,
+    /// which skips every map source.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_map_timed<D, F>(
+    pub fn render_scene_map_timed<D, F>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: Option<&Reader>,
-        route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-        clock: &dyn Clock,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        self.render_scene_map_timed(scratch, target, reader, reader, route, None, w, h, color_fn, clock)
-    }
-
-    /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
-    /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
-    /// so chrome-only frames can skip every map source.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_timed<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: Option<&S>,
-        core_reader: Option<&Reader>,
         route: Option<&RouteReader>,
         peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
@@ -2558,31 +2572,17 @@ impl App {
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: MapScene,
     {
-        self.render_scene_map_photo_timed(
-            scratch,
-            target,
-            scene,
-            core_reader,
-            route,
-            peak_view,
-            w,
-            h,
-            color_fn,
-            clock,
-            None,
-        )
+        self.render_scene_map_photo_timed(scratch, target, reader, route, peak_view, w, h, color_fn, clock, None)
     }
 
     /// Render the base, prepare bounded photo work, then compose covering screens.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_photo_timed<D, F, S>(
+    pub fn render_scene_map_photo_timed<D, F>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
-        scene: Option<&S>,
-        core_reader: Option<&Reader>,
+        reader: Option<&Reader>,
         route: Option<&RouteReader>,
         peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
@@ -2594,22 +2594,21 @@ impl App {
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: MapScene,
     {
         // The one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
-        self.prepare_find(core_reader, route);
-        self.prepare_peak_article(core_reader);
-        self.prepare_landmarks(core_reader);
+        self.prepare_find(reader, route);
+        self.prepare_peak_article(reader);
+        self.prepare_landmarks(reader);
         // Gesture handling records a route-relative pan as a distance cursor, because `Ctx` owns
         // no streamed reader. Resolve it here, before `Render` borrows state read-only.
         if let Some(route) = route {
             self.state.sync_pan_route(route);
         }
         if scratch.is_some() && self.ui.base_draws_map() && self.ui.render_clip.is_none() {
-            self.ui.map_icons.prepare(core_reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
+            self.ui.map_icons.prepare(reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
             // The overlay has no rider switch yet; `true` is the input a switch would drive.
-            self.ui.settlements.prepare(core_reader, &self.state.viewport(w, h), true);
+            self.ui.settlements.prepare(reader, &self.state.viewport(w, h), true);
         }
         // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
         let render_clip = self.ui.render_clip.take();
@@ -2620,14 +2619,7 @@ impl App {
         if self.ui.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
             let scope = self.up_ahead_scope();
             let local = self.place_local_time();
-            self.ui.ahead.prepare(
-                core_reader,
-                route,
-                self.navigator.climbs(),
-                scope,
-                &mut self.ui.corridor_scratch,
-                local,
-            );
+            self.ui.ahead.prepare(reader, route, self.navigator.climbs(), scope, &mut self.ui.corridor_scratch, local);
             if self.ui.ahead.pending() {
                 self.ui.map_dirty = true;
                 self.ui.next_wake_ms = Some(1);
@@ -2642,7 +2634,7 @@ impl App {
         // draw loop, so every screen's `draw` is side-effect-free.
         let navigation = self.navigator.route_state();
         self.ui.prepare_base(
-            core_reader,
+            reader,
             route,
             self.state.user_fix,
             navigation.active_route,
@@ -2656,11 +2648,12 @@ impl App {
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
         let place_local = self.place_local_time();
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.ui.stack);
 
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
-        let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
+        let hold_progress =
+            self.ui.hold_progress_override.map_or_else(|| self.ui.input.select_hold_progress(), |p| p.select);
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
         let visit_target = self.assistant_visit_target();
@@ -2717,7 +2710,6 @@ impl App {
             scratch,
 
             state,
-            activity,
             navigation,
             recorder,
             settings,
@@ -2761,7 +2753,7 @@ impl App {
 
             backlight: backlight_available,
         };
-        let mut rx = RenderFrame { scene, render: rx };
+        let mut rx = RenderFrame { scene: reader, render: rx };
         // A drawer recesses the base rather than replacing it: the base draws through the dim
         // LUT composed with the host's colour policy, the sheet through the untouched one. No
         // capture buffer, and no alpha for a 64-colour panel to approximate. Whether it recesses
@@ -2801,7 +2793,7 @@ impl App {
                     if !covered || page.covered_rebuild {
                         let (target, color) = cv.split();
                         for _ in 0..work.steps {
-                            work.runtime.step(page, core_reader, target, color, rx.settings.language);
+                            work.runtime.step(page, reader, target, color, rx.settings.language);
                             if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
                                 page.covered_rebuild = false;
                                 break;
@@ -2907,15 +2899,15 @@ impl App {
         self.ui.input.last_gesture()
     }
 
-    /// Feed the live Select hold-progress (0.0 to 1.0) for the in-screen confirm fills. The
-    /// two-plane firmware calls this each frame from its high-priority [`InputPlane`], whose hold
-    /// state `App`'s own plane does not see; without it the Reset bar never fills. The
+    /// Feed the live hold progress (0.0 to 1.0) of both hold buttons. The two-plane firmware calls
+    /// this each frame from its high-priority [`InputPlane`], whose hold state `App`'s own plane
+    /// does not see; without it the Reset bar never fills and no hold ever defers a card. The
     /// single-loop hosts never call it.
-    pub fn set_hold_progress(&mut self, progress: f32) {
-        self.ui.hold_progress_override = Some(progress);
+    pub fn set_hold_progress(&mut self, select: f32, back: f32) {
+        self.ui.hold_progress_override = Some(crate::ui_runtime::HoldSample { select, back });
     }
 
-    /// Arm the one-shot region clip for the next [`render_map_timed`](App::render_map_timed).
+    /// Arm the one-shot region clip for the next [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed).
     /// The host that drained a [`Dirty`](crate::Dirty) whose [`region`](crate::Dirty::region)
     /// survived calls this right before rendering, and the frame's `Canvas` then skips whole
     /// primitives whose bounds miss it. Pair it with a matching pixel clip on the framebuffer:
@@ -2966,10 +2958,8 @@ impl App {
             .ride_track_key(self.activity.viewed_ride)
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level is the UI's; the data half is the key's.
-        let assistant =
-            self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
-                |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
-            );
+        let assistant = screen::base_screen(&self.ui.stack)
+            .is_some_and(|s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()));
         let overview_open = assistant || self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
             .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))
@@ -3031,6 +3021,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
+    use crate::harness::support::ride_summary;
     use crate::settings::SETTINGS_RETRY_BACKOFF_MS;
     use obc_ports::{CompassSource, LocationSource};
 
@@ -3040,6 +3031,29 @@ mod tests {
         fn poll(&mut self) -> Option<Fix> {
             self.0.take()
         }
+    }
+
+    /// A card pushed outside the input path moves the stack under whatever is charging, so it must
+    /// ring the recogniser exactly as a gesture-driven move does. Setting the host's edge alone
+    /// leaves the App's own hold to complete onto the card.
+    #[test]
+    fn the_route_cleanup_card_cancels_a_hold_charging_under_it() {
+        use crate::harness::support::{down, keys};
+        use obc_ports::Button;
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
+        app.handle_input(InputClock(300), &mut keys(&[]));
+        assert!(app.ui.input.select_hold_progress() > 0.0, "a Select hold is charging");
+
+        app.offer_route_cleanup(crate::device_core::StoreIdentity::new(1));
+        assert!(matches!(app.top_screen(), Screen::RouteCleanup(_)), "the card is up");
+        assert!(app.take_hold_cancel(), "the host's own plane is told to cancel");
+
+        // Past the 500 ms threshold: the hold was aimed at the screen the card replaced, so it must
+        // never fire at all.
+        app.handle_input(InputClock(700), &mut keys(&[]));
+        assert!(app.ui.input.last_gesture().is_none(), "the cancelled hold does not complete onto the card");
     }
 
     /// The ride whose track the open detail still needs, read as the durable id.
@@ -3378,22 +3392,6 @@ mod tests {
 
     fn pass_idle(app: &mut App, now_ms: u32) -> Dirty {
         pass_ports(app, now_ms, None, None)
-    }
-
-    #[test]
-    fn assistant_shortcut_at_full_stack_leaves_room_for_its_actions() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        while app.ui.stack.len() < app.ui.stack.capacity() {
-            screen::apply(&mut app.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
-        }
-        assert!(app.apply_chord(Chord::Assistant));
-        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-        app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::Home(_)));
     }
 
     #[test]
@@ -3940,26 +3938,37 @@ mod tests {
     fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
         use crate::settings::Units;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // Walk to the Units screen: Settings list → System (the last group) → Units (its first row).
+        // Walk to the Units row: Settings list → System (the last group) → Units (its first row).
         app.apply_gesture(Gesture::BackHold); // Home → Menu
         app.apply_gesture(Gesture::Step(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list
         app.apply_gesture(Gesture::Step(-1)); // → System row (last, wraps up from Ride)
-        app.apply_gesture(Gesture::Press); // → System menu (Units is the first row)
-        app.apply_gesture(Gesture::Press); // → Units screen
+        app.apply_gesture(Gesture::Press); // → System page (Units is the first row)
+        app.apply_gesture(Gesture::Press); // → the Units editor sheet, over the page
         assert!(!settings_dirty(&mut app), "navigation changed no setting, so nothing to save");
 
         let before = app.settings().units;
-        app.apply_gesture(Gesture::Press); // flip units (live immediately, but persistence is debounced)
-        assert_ne!(app.settings().units, before, "the Units screen flipped the system");
+        app.apply_gesture(Gesture::Step(1)); // stage Imperial
+        assert_eq!(app.settings().units, before, "staging commits nothing");
+        app.apply_gesture(Gesture::Press); // commit: the sheet closes onto the System page
+        assert_ne!(app.settings().units, before, "the editor flipped the system");
         assert_eq!(app.settings().units, Units::Imperial, "default Metric → Imperial");
         assert!(!settings_dirty(&mut app), "still on a settings screen → the save is held, not fired per step");
 
-        app.apply_gesture(Gesture::Back); // Units → System menu (still inside the settings subtree)
-        assert!(!settings_dirty(&mut app), "the System menu is itself a settings screen — save stays held");
-
-        app.apply_gesture(Gesture::Back); // System menu → Settings list (still inside the settings subtree)
+        app.apply_gesture(Gesture::Back); // System page → Settings list (still inside the settings subtree)
         assert!(!settings_dirty(&mut app), "the Settings list is itself a settings screen — save stays held");
+
+        // A sheet over a settings page is still inside the subtree: the pending edit stays held
+        // while the editor is up, and while the quick drawer is.
+        app.apply_gesture(Gesture::Step(-1)); // → System row
+        app.apply_gesture(Gesture::Press); // → System page
+        app.apply_gesture(Gesture::Press); // → the Units editor sheet
+        assert!(!settings_dirty(&mut app), "the editor sheet over a settings page holds the save");
+        app.apply_gesture(Gesture::Back); // close the sheet
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        assert!(!settings_dirty(&mut app), "the quick drawer over a settings page holds the save too");
+        app.apply_gesture(Gesture::Back); // close the drawer
+        app.apply_gesture(Gesture::Back); // System page → Settings list
 
         app.apply_gesture(Gesture::Back); // Settings list → Menu (left the settings subtree)
         assert!(settings_dirty(&mut app), "leaving settings flushes the pending edit — one coalesced save");
@@ -3971,10 +3980,8 @@ mod tests {
     /// mid-edit and fail its case here.
     #[test]
     fn every_settings_screen_holds_a_pending_save_until_exit() {
-        use crate::screen::{
-            apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
-            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
-        };
+        use crate::screen::settings::page;
+        use crate::screen::{apply, AddFieldScreen, ResetScreen, SettingsPage, StatFieldsScreen, Transition};
         use crate::settings::Units;
 
         /// The screens to stack on the Home root (bottom first — parents under children, as the
@@ -3985,17 +3992,28 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 11] = [
+        let cases: [Case; 10] = [
             // Pure navigation — no edit gesture of its own.
-            ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
-            // Open the UTC-offset stepper, the one editable row, then step it, leaving the field
-            // open so Back must close it then exit.
-            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Step(1)]),
-            // Press flips metric ↔ imperial.
-            ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
-            // → the Page-cycle row (index 1), open its stepper, +1 s (and leave it open — Back must
-            // still close it then exit).
-            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(1), Gesture::Press, Gesture::Step(1)]),
+            ("Settings list", || one(Screen::Settings(SettingsPage::hub())), &[]),
+            // Open the UTC-offset editor sheet over the page, step it and commit; the sheet pops
+            // and the page is on top again.
+            (
+                "Date & Time",
+                || one(Screen::DateTime(SettingsPage::new(&page::DATETIME))),
+                &[Gesture::Press, Gesture::Step(1), Gesture::Press],
+            ),
+            // The Units row: open its editor, step to imperial, commit.
+            (
+                "System",
+                || one(Screen::System(SettingsPage::new(&page::SYSTEM))),
+                &[Gesture::Press, Gesture::Step(1), Gesture::Press],
+            ),
+            // → the Auto-flip row (index 1), open its editor, +1 s, commit.
+            (
+                "Ride",
+                || one(Screen::Ride(SettingsPage::new(&page::RIDE))),
+                &[Gesture::Step(1), Gesture::Press, Gesture::Step(1), Gesture::Press],
+            ),
             // A completed hold deletes the highlighted field.
             ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
             // Press adds the highlighted field and pops back onto its Fields parent — still settings.
@@ -4008,14 +4026,12 @@ mod tests {
                 },
                 &[Gesture::Press],
             ),
-            // Pure navigation — the Connections menu only opens its pages.
-            ("Connections", || one(Screen::Connections(ConnectionsScreen::new())), &[]),
+            // The Bluetooth switch, flipped.
+            ("Connections", || one(Screen::Connections(SettingsPage::new(&page::CONNECTIONS))), &[Gesture::Press]),
             // → the Power Saver row, flip it.
-            ("Power", || one(Screen::Power(PowerScreen::new())), &[Gesture::Step(1), Gesture::Press]),
-            // Pure navigation — the System menu only opens its pages.
-            ("System", || one(Screen::System(SystemScreen::new())), &[]),
+            ("Power", || one(Screen::Power(SettingsPage::new(&page::POWER))), &[Gesture::Step(1), Gesture::Press]),
             // Pure navigation — the Firmware page's install action leaves the settings subtree.
-            ("Firmware", || one(Screen::Firmware(FirmwareScreen::new())), &[]),
+            ("Firmware", || one(Screen::Firmware(SettingsPage::new(&page::FIRMWARE))), &[]),
             // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
             ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
         ];
@@ -4058,11 +4074,9 @@ mod tests {
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
-    /// The deepest ordinary mid-ride settings path leaves room for the host's cards. It walks the
-    /// real navigation with gestures, then proves a host-pushed warning can still land. This is
-    /// the deepest modelled path, so read it with
-    /// `laps_of_escape_and_re_descent_leave_room_for_a_host_card`, which bounds the deepest
-    /// reachable one.
+    /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
+    /// walks that one path with gestures; how deep a rider can get at all, and what that leaves,
+    /// belong to `the_deepest_descent_stops_short_of_max_depth`.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4085,7 +4099,6 @@ mod tests {
 
         assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
         assert_eq!(app.ui.stack.len(), 7, "the full mid-ride settings path occupies seven slots");
-        assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 3, "three host-card slots stay reserved");
 
         app.on_warning(WarningFlags::REC_ERROR);
         assert_eq!(app.ui.stack.len(), 8, "the host warning pushes over the deepest normal path");
@@ -4135,8 +4148,9 @@ mod tests {
         app.apply_gesture(Gesture::Press); // → System menu (Units is row 0)
         app.apply_gesture(Gesture::Step(1)); // → Date & Time row (1)
         app.apply_gesture(Gesture::Press); // → Date & Time (cursor parked on the offset row)
-        app.apply_gesture(Gesture::Press); // open the offset field
-        app.apply_gesture(Gesture::Step(1)); // +one step (+15 min)
+        app.apply_gesture(Gesture::Press); // open the offset editor sheet
+        app.apply_gesture(Gesture::Step(1)); // +one step (+15 min), staged
+        app.apply_gesture(Gesture::Press); // commit
         assert_eq!(app.settings().utc_offset_min, crate::settings::UTC_OFFSET_STEP, "the offset stepped one step");
         let now = app.wall_clock_now();
         assert_eq!((now.hour, now.minute), (12, 15), "the offset re-stamped the wall clock to local = UTC + offset");
@@ -4247,25 +4261,13 @@ mod tests {
     fn the_next_category_cache_fills_from_a_real_frame_and_then_goes_quiet() {
         use crate::stat_fields::{StatField, StatFieldList};
         use embedded_graphics::pixelcolor::Rgb888;
-        use obc_formats::io::{ByteSink, SliceSource};
+        use obc_formats::io::SliceSource;
         use obc_reader::{MapCache, MapTables, PoiCategory, Reader};
         use obc_route::{RouteIndex, RouteReader};
         use obcm_testkit::{build_poi_map, PoiSpec};
 
-        /// A `ByteSink` over a growable `Vec`.
-        #[derive(Default)]
-        struct VecSink(std::vec::Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-                self.0.extend_from_slice(b);
-                Ok(())
-            }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-                let o = off as usize;
-                self.0[o..o + b.len()].copy_from_slice(b);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
+
         /// A `DrawTarget` that keeps nothing — these frames are run for their `prepare` pass.
         struct Sink;
         impl embedded_graphics::prelude::Dimensions for Sink {
@@ -4584,22 +4586,7 @@ mod tests {
     /// elevation for one climb, named waypoints, an off-route excursion, and a fix at the end.
     #[test]
     fn composed_guidance_trace_is_stable() {
-        use obc_formats::io::{ByteSink, Error};
-
-        #[derive(Default)]
-        struct VecSink(std::vec::Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
-                self.0.extend_from_slice(bytes);
-                Ok(())
-            }
-
-            fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
-                let offset = offset as usize;
-                self.0[offset..offset + bytes.len()].copy_from_slice(bytes);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
 
         const LAT: f64 = 48.0;
         const LON: f64 = 7.8;
@@ -4926,12 +4913,14 @@ mod tests {
 
     #[test]
     fn auto_never_switches_away_from_a_menu() {
-        use crate::screen::{MenuScreen, ScreenKind};
+        use crate::screen::MenuScreen;
         use crate::settings::ClimbMode;
         let (mut app, idx) = climb_app(ClimbMode::Auto);
-        // Open the Menu over the Map (a Nav-kind screen on top).
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
-        assert_ne!(app.top_screen().kind(), ScreenKind::Riding, "top is now a menu, not a riding view");
+        assert!(
+            !matches!(app.top_screen(), Screen::Map(_) | Screen::Statistics(_)),
+            "the top is a menu, not one of the two views the entry edge replaces"
+        );
         enter_first_climb(&mut app, &idx);
         assert!(matches!(app.top_screen(), Screen::Menu(_)), "the menu is left untouched by the entry edge");
         assert!(
@@ -4952,40 +4941,65 @@ mod tests {
         assert_eq!(app.storage.free_bytes(), None, "and a scan with no figure leaves the rider a `--`");
     }
 
-    /// The preview polyline is derived from the detour plan, so Back on the preview takes it
-    /// with the plan.
+    /// The preview polyline is derived from the detour plan, so the plan takes it along whichever
+    /// way the rider leaves the preview: Back on it, or the Assistant chord, which drops the whole
+    /// detour flow off the stack and leaves no screen that could answer for the plan.
     #[test]
-    fn cancelling_a_detour_drops_its_preview_polyline() {
+    fn leaving_a_detour_drops_its_preview_polyline() {
         use crate::screen::{DetourPreviewScreen, DetourScreen};
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.set_routes_with_ids(&[summary("Road")], &[7]);
-        app.state.has_nav_graph = true;
-        app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
-        app.navigator.route_state_mut().active_route = Some(0);
-        app.navigator.route_state_mut().progress_m = 1_000;
-        app.navigator.route_state_mut().route_total_m = 20_000;
-        app.test_start_ride();
+        /// A ride on a route, with a detour planned and its preview landed, as the flow does it.
+        fn previewing() -> App {
+            let mut app = App::new(AppState::new(0, 0, 1.0));
+            app.set_routes_with_ids(&[summary("Road")], &[7]);
+            app.state.has_nav_graph = true;
+            app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
+            app.navigator.route_state_mut().active_route = Some(0);
+            app.navigator.route_state_mut().progress_m = 1_000;
+            app.navigator.route_state_mut().route_total_m = 20_000;
+            app.test_start_ride();
 
-        // Plan a detour and land its preview, exactly as the flow does.
-        let chooser = DetourScreen::new(app.navigator.route_state());
-        let preview =
-            crate::host::DetourPreview { cost_delta_m: 420, total_distance_m: 1_220, rejoin_m: 2_000, ascent_m: None };
-        app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
-            route: 0,
-            from: (7_800_000, 48_000_000),
-            progress_m: 1_000,
-            target_m: 1_800,
-        }));
-        let _ = app.ui.stack.push(Screen::Detour(chooser));
-        let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));
-        app.set_detour_preview(&[(7_812_000, 48_001_000), (7_816_000, 48_001_000)]);
-        assert!(!app.catalogs.detour_preview_for(Some(0)).is_empty(), "the host's shape is cached");
+            let chooser = DetourScreen::new(app.navigator.route_state());
+            let preview = crate::host::DetourPreview {
+                cost_delta_m: 420,
+                total_distance_m: 1_220,
+                rejoin_m: 2_000,
+                ascent_m: None,
+            };
+            app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
+                route: 0,
+                from: (7_800_000, 48_000_000),
+                progress_m: 1_000,
+                target_m: 1_800,
+            }));
+            let _ = app.ui.stack.push(Screen::Detour(chooser));
+            let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));
+            app.set_detour_preview(&[(7_812_000, 48_001_000), (7_816_000, 48_001_000)]);
+            assert!(!app.catalogs.detour_preview_for(Some(0)).is_empty(), "the host's shape is cached");
+            app
+        }
 
+        let mut app = previewing();
         app.apply_gesture(Gesture::Back); // the rider drops the detour
         assert!(
             app.catalogs.detour_preview_for(Some(0)).is_empty(),
             "and the shape goes with the plan, not one frame later"
         );
+
+        let mut app = previewing();
+        assert!(app.apply_chord(Chord::Assistant));
+        assert!(!app.navigator.detour_planned(), "the chord took the plan with the screens that answer for it");
+        assert!(app.catalogs.detour_preview_for(Some(0)).is_empty(), "…and its shape off the map");
+
+        let mut app = previewing();
+        app.set_backlight_available(true);
+        assert!(app.apply_chord(Chord::Quick));
+        app.advance_animations(InputClock(2_000)); // settle the sheet's open slide
+        for _ in 0..2 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → bluetooth → settings
+        }
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Settings(_)), "the drawer's row drops the detour flow too");
+        assert!(!app.navigator.detour_planned(), "…and takes the plan with it");
     }
 
     /// The Detour chooser is an interaction in progress, not an auto-switch sibling, so a climb
@@ -5147,7 +5161,7 @@ mod tests {
     // screen, then advance the clock past the deadline and inspect the top screen.
 
     use crate::screen::{
-        MenuScreen, NavPlanningScreen, PasskeyScreen, RouteReceivedScreen, SettingsScreen, StatisticsScreen,
+        MenuScreen, NavPlanningScreen, PasskeyScreen, RouteReceivedScreen, SettingsPage, StatisticsScreen,
         WarningFlags, WarningScreen,
     };
     use crate::settings::IdleReturn;
@@ -5162,7 +5176,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home], Idle
         app.settings.idle_return = IdleReturn::S30;
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
-        let _ = app.ui.stack.push(Screen::Settings(SettingsScreen::new()));
+        let _ = app.ui.stack.push(Screen::Settings(SettingsPage::hub()));
         app.ui.last_input_ms = 0;
 
         idle_tick(&mut app, 29_000); // still inside the window
@@ -5398,18 +5412,9 @@ mod tests {
     #[test]
     fn ride_track_request_hands_out_the_id_until_answered() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let ride = |name: &str| crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced: false,
-            synced_at_utc: 0,
-        };
         app.set_rides(&[
-            crate::RideEntry { id: 7, summary: ride("A") },
-            crate::RideEntry { id: 9, summary: ride("B") },
+            crate::RideEntry { id: 7, summary: ride_summary("A") },
+            crate::RideEntry { id: 9, summary: ride_summary("B") },
         ]);
 
         assert_eq!(ride_track_request(&app), None, "no detail open — no request");
@@ -5425,12 +5430,12 @@ mod tests {
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
-        app.set_rides(&[crate::RideEntry { id: 9, summary: ride("B") }]);
+        app.set_rides(&[crate::RideEntry { id: 9, summary: ride_summary("B") }]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
         assert_eq!(ride_track_request(&app), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride("A") }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("A") }]);
         assert_eq!(app.activity.viewed_ride, None);
         assert_eq!(ride_track_request(&app), None);
     }
@@ -5445,18 +5450,6 @@ mod tests {
             bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
             start_lon: 100,
             start_lat: 100,
-        }
-    }
-
-    fn ride_summary(name: &str) -> crate::ride::RideSummary {
-        crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced: false,
-            synced_at_utc: 0,
         }
     }
 
@@ -5475,7 +5468,7 @@ mod tests {
     #[test]
     fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsPage::hub()));
         app.arm_settings_save(); // rev → 1
         assert!(!settings_dirty(&mut app), "still editing — nothing owed yet");
 
@@ -5490,7 +5483,7 @@ mod tests {
     #[test]
     fn no_persist_during_a_stepper_sweep_inside_the_subtree() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsPage::hub()));
         // A sweep of edits while inside the subtree: several revisions, but never an emit.
         for _ in 0..5 {
             app.arm_settings_save();

@@ -24,6 +24,8 @@ mod overlay;
 mod stroke;
 pub mod surface;
 pub mod text;
+#[cfg(feature = "text-tap")]
+pub mod text_tap;
 mod viewport;
 pub use canvas::{rect, Canvas};
 pub use overlay::{OverlayChunk, RouteOverlaySource};

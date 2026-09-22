@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn question_and_photo_labels_fit_all_supported_languages() {
         for language in Language::ALL {
-            for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeJourney]) {
+            for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeNavigation]) {
                 let text = crate::i18n::t(message, language);
                 let width = obc_render::text::text_width(text, Font::Body);
                 assert!(width <= 212, "{language:?}: {text}");

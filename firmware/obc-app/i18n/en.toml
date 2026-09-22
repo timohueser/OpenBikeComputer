@@ -73,14 +73,10 @@ both = "Both"
 waypoints = "Waypoints"
 map_pois = "Map POIs"
 
-# --- Units: the `Units` enum name + the Units settings screen ---
+# --- Units: the `Units` enum names ---
 [units]
 metric = "Metric"
 imperial = "Imperial"
-title = "UNITS"
-distance = "Distance"
-speed = "Speed"
-elevation = "Elevation"
 
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
@@ -223,31 +219,24 @@ system = "System"
 [datetime]
 title = "DATE & TIME"
 gps_fix = "GPS fix"
-searching = "Searching for fix"
+searching = "Looking for fix"
 local_time = "Local time"
-offset = "Offset"
+offset = "UTC offset"
 utc = "UTC "
 
 # --- Ride settings ---
 [ride]
 title = "RIDE"
 fields = "Data fields"
-fields_sub = "panels & order"
-pages = "Pages"
-pages_sub = "auto-flip"
-climb = "Climb"
-# "panel", not "climb panel": the mode value + its ◄ cue share this sub-caption line (owner
-# review round 1), and the longer caption can't clear the 7-char "Manuell"/"Desact." values
-# at 240 px - de/fr/es already say just "panel".
-climb_sub = "panel"
+pages = "Auto-flip"
+climb = "Climb panel"
 waypoints = "Waypoints"
-waypoints_sub = "chip"
 
 # --- Display settings screen ---
 [display]
 title = "DISPLAY"
-idle = "Idle"
-idle_sub = "timeout"
+idle = "Idle timeout"
+brightness = "Brightness"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
@@ -268,29 +257,23 @@ contours = "Contours"
 # --- Power settings screen ---
 [power]
 title = "POWER"
-gps_fix = "GPS Fix"
-gps_fix_sub = "interval"
+gps_fix = "GPS interval"
 power_save = "Power save"
-power_save_sub = "low power"
 
-# --- Connections settings menu (Phone / Sensors) ---
+# --- Connections page: the Bluetooth switch, the phone status and the sensors door ---
 [connections]
 title = "CONNECTIONS"
 phone = "Phone"
 sensors = "Sensors"
+not_paired = "Not paired"
+connected = "connected"
 
-# --- Bluetooth settings screen ---
+# --- The phone link: its status words and the Forget action ---
 [bluetooth]
 removing = "Removing..."
 remove_failed = "Could not remove"
 restart = "Restart to finish"
-title = "BLUETOOTH"
 radio = "Bluetooth"
-radio_sub = "radio"
-status = "Status"
-paired = "Paired"
-yes = "yes"
-no = "no"
 forget = "Forget phone"
 off = "Off"
 connected = "Connected"
@@ -382,7 +365,7 @@ on_phone = "on your phone"
 [rides]
 title = "RIDES"
 no_rides = "No rides yet"
-no_rides_sub = "Record a ride to see it here"
+no_rides_sub = "Record a ride"
 not_synced = "not synced"
 
 # --- Ride detail screen ---
@@ -512,7 +495,6 @@ datetime = "Date & Time"
 language = "Language"
 update = "Firmware"
 about = "About"
-reset = "Reset"
 
 # --- About page (issue #1149): the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
@@ -522,18 +504,18 @@ map_data = "Map data"
 elevation = "Elevation"
 firmware = "Firmware"
 
-# --- Firmware page (device info ledger + the SD-sideload install action) ---
+# --- Firmware page (device info ledger + the install action) ---
 [firmware]
 title = "FIRMWARE"
-install_update = "Install update from card"
+install_update = "Install update"
 recording = "Recording"
 version = "Firmware"
 map = "Map"
 card_free = "Card free"
 
-# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+# --- Firmware update flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Checking card..."
+checking = "Checking update..."
 installed = "Installed"
 staged = "Update"
 confirm_title = "INSTALL UPDATE"
@@ -551,15 +533,14 @@ failed_title = "UPDATE FAILED"
 failed_not_started = "The update was never started."
 failed_reverted = "The previous firmware is still installed."
 title = "UPDATE"
-not_found = "No UPDATE.BIN on the card."
+not_found = "No update has been sent yet."
 unreadable = "Could not read the update file."
 damaged = "The update file is damaged."
 too_large = "The update file is too large for this device."
-fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."
+fragmented = "The update is too fragmented. Send it again."
 untrusted = "This update file is not signed for this device."
 install_recording = "Finish and save your ride before installing an update."
-install_pending_save = "A ride is still being saved. Try again in a moment."
-install_no_card = "No card found. Insert the card and try again."
+install_no_card = "The card is not ready. Try again."
 install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
 install_state_write = "Could not prepare the update. Nothing was changed."
 
@@ -762,9 +743,9 @@ save_unknown = "Save state unknown"
 cancel_visit = "Cancel visit"
 arrival = "Arrived"
 guidance_continues = "Guidance continues"
-resume_journey = "Resume journey"
+resume_navigation = "Navigation"
 resume_route = "Resume route"
-saved_journey = "Saved Assistant route"
+saved_route = "Saved route"
 
 [find_context]
 hide_closed = "Hide closed\nplaces"

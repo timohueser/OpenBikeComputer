@@ -506,15 +506,6 @@ pub fn status_command_result(cmd: u8, status: u8, detail: u8) -> Vec<u8> {
     vec![3u8, cmd, status, detail]
 }
 
-/// The `ackRides` command write (spec §4.4, cmd 2): `cmd u8 · count u8 · count × object_id u16 LE`.
-pub fn command_ack_rides(ids: &[u16]) -> Vec<u8> {
-    let mut v = vec![2u8, ids.len() as u8];
-    for id in ids {
-        v.extend_from_slice(&le16(*id));
-    }
-    v
-}
-
 /// The `setClock` command write (spec §4.4, cmd 5): `cmd u8 = 5 · utc u32 LE ·
 /// offset_min i16 LE`. 7 bytes.
 pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
@@ -744,10 +735,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // because the catalog is full. status=6 storageFull, nothing committed.
         ("status-transfer-storage-full.bin", status_transfer_result(0xFFFF, 6, 0)),
         ("status-store-changed.bin", status_store_changed(1, 42)),
-        // The phone's ride-possession ack (cmd 2): three stored rides.
-        ("command-ack-rides.bin", command_ack_rides(&[3, 5, 9])),
-        // Its answer: ok, detail = 3 newly-flagged rides.
-        ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
+        // The answer to an accepted installFw: ok, no detail. Pins the four-byte layout.
+        ("status-command-result.bin", status_command_result(3, 0, 0)),
         // The phone's clock stamp (cmd 5): 2026-07-09T12:00:00Z (unix 1783598400),
         // +02:00 (offset 120 min). 7 bytes.
         ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
@@ -755,7 +744,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The signed OBCU v2 container (spec §1): the same header table and the
         // same 128-byte image, plus the scheme marker in v1's reserved bytes and a 64-byte Ed25519
         // trailer under the committed test key. Kept alongside v1 rather than replacing it: v1 is
-        // still what a fielded bootloader and the device's own ROLLBACK.BIN look like, and the pair
+        // still what a fielded bootloader and the device's own rollback snapshot look like, and the pair
         // is what pins the offset-compatibility guarantee across implementations.
         ("update-container-v2.bin", update_container_v2()),
         (

@@ -4,7 +4,7 @@
 //! real SPI block reads and RRAMC line writes into it and maps the returned [`Outcome`] to an LED
 //! pattern and a jump, reset or halt.
 //!
-//! The armer resolves the whole `UPDATE.BIN` file, so the extent chain reads as `64-byte OBCU
+//! The armer resolves the whole staged object, so the extent chain reads as `64-byte OBCU
 //! header ‖ raw image` (`OBCU_Spec.md`). Both passes skip the first [`HEADER_LEN`] bytes: the
 //! verify CRC covers the raw image only, and the flash pass writes the raw image to the app slot.
 //!
@@ -294,6 +294,9 @@ fn flash_verified(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf:
 fn padded_len(len: u32) -> u32 {
     len.div_ceil(RRAM_LINE_LEN as u32) * RRAM_LINE_LEN as u32
 }
+
+// An image at `MAX_IMAGE_LEN` fills the slot, so its padded length must not spill past the end.
+const _: () = assert!(crate::layout::APP_SLOT_LEN.is_multiple_of(RRAM_LINE_LEN as u32));
 
 /// The shared pipeline behind an `Install` and a `Rollback`, so the two safety paths cannot
 /// diverge. `mismatch_state` is written when `verify` rejects the stage, `success_state` after a

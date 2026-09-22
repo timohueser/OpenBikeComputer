@@ -292,7 +292,7 @@ fn duration(value: std::time::Duration) -> String {
 /// Every object of a generated cell catalog, root last.
 ///
 /// Deliberately a whole-tree walk: a cell tree's publishable set is `cells/`, `regions/`, `skins/`,
-/// `previews/` and `schema.json` — the last of which is not optional, because it is the document
+/// `previews/`, `landmarks/` and `schema.json` — the last of which is not optional, because it is the document
 /// the generator reads the style-id assignment out of and the one a re-generation on another
 /// machine needs. Walking the tree means a future producer document cannot be forgotten here.
 /// Root-referenced cells, previews and satellites are replaced in that walk by the digest-addressed
@@ -305,7 +305,9 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
         .map(|artifact| artifact.rel_path.clone())
         .chain(generated.satellites.iter().map(|satellite| satellite.rel_path.clone()))
         .collect();
-    for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR] {
+    // `landmarks/` rides with the rest: its objects are producer records on stable keys, because
+    // no root pins them and no consumer fetches one — a cell already carries its landmark sections.
+    for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR, obc_pack::catalog::LANDMARKS_DIR] {
         collect(tree, &tree.join(dir), ObjectKind::Mutable, &skipped, &mut objects)?;
     }
     for artifact in &generated.pinned_artifacts {

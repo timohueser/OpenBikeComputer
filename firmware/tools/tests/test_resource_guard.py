@@ -153,7 +153,9 @@ other:
     def _board_baseline(self, **overrides):
         profile = {
             "framebuffer_bytes": 76_800,
+            "measured_resident": 112,
             "resident_ram_max": 120,
+            "resident_ram_slack": 8,
             "uninit_max": UNINIT_BYTES,
             "framebuffer_count": 0,
             "compile_time_allocations": {"arena_total": ARENA_BYTES},
@@ -182,6 +184,20 @@ other:
     def test_board_guard_explains_resident_ram_growth(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "resident RAM grew.*itemize/approve"):
             self._check_board(self._board_measured(bss=101), self._board_baseline())
+
+    def test_board_guard_fails_when_the_link_shrinks_past_the_slack(self):
+        """The half a `<=` ceiling cannot have: a link that saves more than the slack re-pins.
+
+        Without it the recorded ceiling drifts above the real link one saving at a time, and the
+        headroom the next slice reads off the baseline is fiction. The floor is a slack below the
+        PINNED link, so an ordinary deletion rides until the next re-pin.
+        """
+        self._check_board(self._board_measured(bss=84), self._board_baseline())  # saves the slack
+        with self.assertRaisesRegex(
+            resource_guard.GuardError,
+            "103 B .*, 9 B below the 112 B pinned link.*8 B slack.*`embedded` CI job",
+        ):
+            self._check_board(self._board_measured(bss=83), self._board_baseline())
 
     def test_board_guard_explains_missing_framebuffer_symbol(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "framebuffer symbol count is 0"):
@@ -235,6 +251,27 @@ other:
         self.assertFalse(resource_guard.is_arena_symbol("obc_fw_nrf54l::arena::GATE::ha95"))
         self.assertFalse(resource_guard.is_arena_symbol("nrf_sdc::mem::ARENA::hbe"))
         self.assertFalse(resource_guard.is_arena_symbol("embassy_executor::TASK_ARENA::hbe"))
+
+    def test_app_slot_parser_reads_the_bootloader_linker_script(self):
+        memory_x = (
+            "MEMORY\n{\n"
+            "    FLASH       : ORIGIN = 0x00000000, LENGTH = 32K\n"
+            "    SEMMC_STAGE : ORIGIN = 0x001F6000, LENGTH = 20K  /* staged blob */\n"
+            "    RAM         : ORIGIN = 0x20000000, LENGTH = 480K\n}\n"
+        )
+        self.assertEqual(resource_guard.parse_app_slot_len(memory_x), 0x1F6000 - 32 * 1024)
+
+    def test_app_slot_parser_fails_on_a_map_it_cannot_read(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "SEMMC_STAGE.*stale"):
+            resource_guard.parse_app_slot_len("MEMORY\n{\n    FLASH : ORIGIN = 0x0, LENGTH = 32K\n}\n")
+
+    def test_app_slot_gate_refuses_an_image_the_device_cannot_install(self):
+        """Measured against the shipping map, so the gate moves with `obc-boot/memory.x`."""
+        slot = resource_guard.parse_app_slot_len(resource_guard.APP_SLOT_MEMORY_X.read_text())
+        limit = slot - resource_guard.APP_SLOT_HEADROOM
+        self._check_board(self._board_measured(flash=limit), self._board_baseline())
+        with self.assertRaisesRegex(resource_guard.GuardError, "cannot be wrapped, staged or installed"):
+            self._check_board(self._board_measured(flash=limit + 1), self._board_baseline())
 
     def test_the_shipping_board_measurement_passes(self):
         self._check_board(self._board_measured(), self._board_baseline())
@@ -506,7 +543,9 @@ class BootChainTests(unittest.TestCase):
     def _boot_baseline(self, **overrides):
         profile = {
             "framebuffer_bytes": 76_800,
+            "measured_resident": 112,
             "resident_ram_max": 120,
+            "resident_ram_slack": 8,
             "uninit_max": UNINIT_BYTES,
             "framebuffer_count": 0,
             "compile_time_allocations": {"arena_total": ARENA_BYTES},

@@ -2,11 +2,19 @@
 //! by the map serializer; this module emits bounded text, attribution and RGB222 assets.
 
 mod assets;
+pub mod discover;
 mod locale;
 pub mod peaks;
 mod photo;
 mod policy;
 pub mod text;
+
+/// The shared UI language set, verbatim. It decides which articles are fetched and which places
+/// are eligible at all, so a stage that caches captures has to key on it.
+pub use locale::LANGUAGE_BYTES;
+/// The curated category policy, verbatim. Capture discovers from the same bytes the compiler
+/// selects with, so the two cannot drift apart.
+pub use policy::BYTES as POLICY_BYTES;
 
 use assets::{article, Article};
 use geos::{Geom as _, Geometry};
@@ -19,7 +27,69 @@ use std::{
     path::{Component, Path},
 };
 
+/// The compiled artifact the packer and the device content come from.
+pub const CONTENT_DOC: &str = "content.json";
+/// The artifact's own declaration, written beside the content by the stage that compiled it. It
+/// carries the digest of everything else in the directory, so it is never part of that digest.
+pub const DECLARATION_DOC: &str = "landmarks.json";
+
+/// The credit the artifact class owes as a whole: the three projects every record is made of.
+/// Each record keeps its own licence and notices, because those differ per article and per photo.
+///
+/// It lives here, beside the compiler that writes those records, so the catalog publishes a credit
+/// it never retypes.
+pub const ATTRIBUTION: &str = "landmark text from Wikipedia and structured data from Wikidata, \u{00a9} the \
+contributors; photos from Wikimedia Commons, \u{00a9} the photographers. Each record states the licence and the \
+notices of its own text and photo.";
+
+/// One digest over every file of an artifact but its own declaration, and their total size.
+///
+/// Name and digest per file, so a photo that is lost, renamed or swapped moves the result. Both
+/// the stage that compiles an artifact and the catalog that publishes it state this digest, so the
+/// rule is here rather than in either of them.
+pub fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
+    let mut files = BTreeMap::new();
+    let mut bytes = 0;
+    for entry in fs::read_dir(artifact).map_err(|e| format!("{}: {e}", artifact.display()))? {
+        let path = entry.map_err(|e| format!("{}: {e}", artifact.display()))?.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if name == DECLARATION_DOC || !path.is_file() {
+            continue;
+        }
+        let file = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        bytes += file.len() as u64;
+        files.insert(name, hash(&file));
+    }
+    let listing: String = files.iter().map(|(name, sha256)| format!("{name}={sha256}\n")).collect();
+    Ok((hash(listing.as_bytes()), bytes))
+}
+
 const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credits-8192;decode-32MiB-16384-128MiB";
+
+/// The photo candidate pools, best first, shared verbatim with the capture tool. A pool also names
+/// the captured bytes that have to prove a candidate's origin, so a capture cannot hand the
+/// compiler an unrelated file, and a pool one side offers and the other refuses would be a photo
+/// that can never be selected.
+pub const PHOTO_POOL_BYTES: &[u8] = include_bytes!("../../../../specs/photo-pools.json");
+
+fn photo_pools() -> Vec<String> {
+    serde_json::from_slice(PHOTO_POOL_BYTES).expect("checked photo pool order")
+}
+
+/// A camera this close to a summit looks out from it rather than at it. The radius is the owner's,
+/// taken from a sample of the photos the catalogue selects today.
+const CAMERA_METRES: f64 = 500.0;
+/// Originals the compiler asks a capture for per record: the winner, and one runner-up for the
+/// rejections that only the bytes can prove. Ranking reads metadata, which is kilobytes; an
+/// original is megabytes, so nothing else is downloaded.
+const PHOTO_REQUESTS: usize = 2;
+
+/// Equirectangular, which is exact enough well below a kilometre.
+fn metres(from: (f64, f64), to: (f64, f64)) -> f64 {
+    let east = (from.1 - to.1).to_radians() * ((from.0 + to.0) / 2.0).to_radians().cos();
+    let north = (from.0 - to.0).to_radians();
+    6_371_000.0 * east.hypot(north)
+}
 
 #[derive(Deserialize)]
 struct Source {
@@ -51,6 +121,17 @@ pub struct Content {
     pub candidate_qids: Vec<String>,
     pub records: Vec<Record>,
     pub omissions: Vec<Omission>,
+    /// Absent from a compiled catalogue: a production compile has every original it ranked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub photo_requests: Vec<PhotoRequest>,
+}
+/// One original the compiler wants bytes for, in the order it would use them. A capture acquires
+/// exactly these and never ranks anything itself.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PhotoRequest {
+    pub qid: String,
+    pub filename: String,
+    pub metadata_path: String,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Counts {
@@ -104,6 +185,34 @@ pub struct Omission {
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
+/// `Q` and a decimal with no leading zero and no sign — the rule the capture tool applies to a
+/// candidate list. The two must agree: a QID one side accepts and the other refuses is a region
+/// that cannot be captured.
+fn is_qid(id: &str) -> bool {
+    match id.strip_prefix('Q').map(str::as_bytes) {
+        Some([b'1'..=b'9', rest @ ..]) => rest.iter().all(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
+/// Numeric by QID, which is the order the capture asks for entities in.
+fn qid_order(qid: &str) -> (usize, &str) {
+    let digits = qid.strip_prefix('Q').unwrap_or(qid);
+    (digits.len(), digits)
+}
+fn file_digest(path: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if count == 0 {
+            return Ok(digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        digest.update(&buffer[..count]);
+    }
+}
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing {key}"))
 }
@@ -134,8 +243,13 @@ fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Resul
     }
     Ok(bytes)
 }
+/// The largest pinned JSON response the compiler reads. The capture tool asks for a
+/// `wbgetentities` batch again in halves when its response passes this, so every response a
+/// capture keeps is one the compiler can read.
+const MAX_JSON_SOURCE: u64 = 16 * 1024 * 1024;
+
 fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, String> {
-    serde_json::from_slice(&read_pinned(root, sources, path, 16 * 1024 * 1024)?)
+    serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
         .map_err(|e| format!("invalid source {path}: {e}"))
 }
 fn claims<'a>(entity: &'a Value, property: &str) -> impl Iterator<Item = &'a Value> {
@@ -151,11 +265,7 @@ fn entity_ids(entity: &Value, property: &str) -> Vec<String> {
 fn class_ancestors(id: &str, entity: &Value) -> Result<Vec<String>, String> {
     if let Some(redirect) = entity.get("redirects") {
         let target = string(redirect, "to")?;
-        if redirect["from"] != id
-            || entity["id"] != target
-            || !target.starts_with('Q')
-            || target[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none()
-        {
+        if redirect["from"] != id || entity["id"] != target || !is_qid(target) {
             return Err(format!("invalid captured class redirect: {id}"));
         }
         return Ok(vec![target.to_owned()]);
@@ -179,7 +289,7 @@ fn coordinate(entity: &Value) -> Option<(f64, f64)> {
 }
 
 /// `boundary` is a GeoJSON Polygon/MultiPolygon, not a country-claim filter. All inputs are local.
-pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<Content, String> {
+pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_photos: bool) -> Result<Content, String> {
     let (snapshot, raw) = load_snapshot(snapshot_path)?;
     if snapshot.peaks.is_some() {
         return Err("peak capture requires the peak compiler".into());
@@ -222,6 +332,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         policy_input.extend_from_slice(source);
     }
     policy_input.extend_from_slice(locale::LANGUAGE_BYTES);
+    policy_input.extend_from_slice(PHOTO_POOL_BYTES);
     policy_input.extend_from_slice(include_bytes!("locale.rs"));
     let locales = load_locales(root, &snapshot.sources)?;
     let mut input = raw;
@@ -237,17 +348,25 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         candidate_qids: Vec::new(),
         records: Vec::new(),
         omissions: Vec::new(),
+        photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
         return Err("landmark output directory must be empty".into());
     }
+    // The capture batches entities in numeric QID order and a response holds fifty of them, so
+    // the compiler reads places in that same order. One loaded response then serves fifty places
+    // and is never returned to: the batch index of the places it visits never decreases.
     let mut places = snapshot.places;
-    places.sort_by_key(|place| place["qid"].as_str().unwrap_or("").to_owned());
+    places.sort_by_key(|place| {
+        let (length, digits) = qid_order(place["qid"].as_str().unwrap_or(""));
+        (length, digits.to_owned())
+    });
     let mut seen = BTreeSet::new();
+    let mut loaded: Option<(String, Value)> = None;
     for place in places {
         let qid = string(&place, "qid")?.to_owned();
-        if !qid.starts_with('Q') || qid[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none() {
+        if !is_qid(&qid) {
             return Err("invalid QID".into());
         }
         if !seen.insert(qid.clone()) {
@@ -256,8 +375,17 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         let mut omit = |asset: &str, reason: String| {
             content.omissions.push(Omission { qid: qid.clone(), asset: asset.into(), reason })
         };
-        let raw_entity = json_pinned(root, &snapshot.sources, &format!("entities/{qid}.json"))?;
-        let entity = &raw_entity["entities"][&qid];
+        // A place names the response its entity arrived in; a capture that asked for the entity
+        // alone names none, and it is at the one-entity path.
+        let path = match place.get("entity_path").and_then(Value::as_str) {
+            Some(path) => path.to_owned(),
+            None => format!("entities/{qid}.json"),
+        };
+        if !matches!(&loaded, Some((held, _)) if *held == path) {
+            let raw = json_pinned(root, &snapshot.sources, &path)?;
+            loaded = Some((path, raw));
+        }
+        let entity = &loaded.as_ref().expect("the response just loaded").1["entities"][&qid];
         if entity["id"] != qid {
             omit("site", "entity_identity_mismatch".into());
             continue;
@@ -283,8 +411,14 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         };
         content.counts.candidates += 1;
         content.candidate_qids.push(qid.clone());
-        let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) =
-            prepare_article(root, &snapshot.sources, &place, entity, &locales, output, &mut content.omissions)?
+        // A landmark photo is taken at the landmark, so it has no camera-distance reference.
+        let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos, text_required: true },
+            &place,
+            entity,
+            &mut Found { omissions: &mut content.omissions, requests: &mut content.photo_requests },
+            None,
+        )?
         else {
             continue;
         };
@@ -386,15 +520,59 @@ pub struct PreparedArticle {
     pub photo: Option<Photo>,
 }
 
-fn prepare_article(
+/// The pinned capture one article preparation reads, and the directory it writes a photo to.
+struct Inputs<'a> {
+    root: &'a Path,
+    sources: &'a [Source],
+    locales: &'a BTreeMap<String, Value>,
+    output: &'a Path,
+    /// Only a compile a capture drives asks for originals. A production compile holds every
+    /// original it ranked, so a candidate with no bytes is one it cannot use, not one it waits for.
+    select_photos: bool,
+    /// A landmark answers "what is this place", which needs text. A peak is identified by sight,
+    /// so a photo alone is a record there.
+    text_required: bool,
+}
+
+/// The captured file members of the place's own Commons categories. The listing is a pinned source
+/// and its title has to be one of the entity's own P373 claims, so a capture cannot widen the pool.
+fn category_members(
     root: &Path,
     sources: &[Source],
     place: &Value,
+    categories: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let mut members = BTreeSet::new();
+    for listing in place["commons_categories"].as_array().into_iter().flatten() {
+        let title = string(listing, "title")?;
+        if !categories.iter().any(|name| name == title) {
+            return Err(format!("unclaimed commons category: {title}"));
+        }
+        let raw = json_pinned(root, sources, string(listing, "path")?)?;
+        for member in raw["query"]["categorymembers"].as_array().into_iter().flatten() {
+            if let Some(file) = string(member, "title")?.strip_prefix("File:") {
+                members.insert(file.replace('_', " "));
+            }
+        }
+    }
+    Ok(members)
+}
+
+/// What a preparation adds to the compiled document beside the record itself.
+struct Found<'a> {
+    omissions: &'a mut Vec<Omission>,
+    requests: &'a mut Vec<PhotoRequest>,
+}
+
+fn prepare_article(
+    inputs: &Inputs,
+    place: &Value,
     entity: &Value,
-    locales: &BTreeMap<String, Value>,
-    output: &Path,
-    omissions: &mut Vec<Omission>,
+    found: &mut Found,
+    summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
+    let Inputs { root, sources, locales, output, select_photos, text_required } = *inputs;
+    let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
         omissions.push(Omission { qid: qid.into(), asset: asset.into(), reason });
@@ -413,37 +591,91 @@ fn prepare_article(
             }
         }
     }
+    // A record with no usable text always states that omission. Only a collection that accepts a
+    // photo alone goes on to look for one.
     if variants.is_empty() {
         omit("article", "no_usable_captured_language".into());
-        return Ok(None);
+        if text_required {
+            return Ok(None);
+        }
     }
-    let (default_language, fallback_sources) = locale::default_language(entity, locales, &variants);
+    let (default_language, fallback_sources) = match variants.is_empty() {
+        true => (String::new(), Vec::new()),
+        false => locale::default_language(entity, locales, &variants),
+    };
+    // A record with no text has no default language, so it takes the first label in UI order. A
+    // record that has text keeps the name rule it always had.
+    let ui_label = || locale::languages().into_iter().find_map(|(code, _)| entity["labels"][&code]["value"].as_str());
     let name = entity["labels"][&default_language]["value"]
         .as_str()
         .or_else(|| entity["labels"]["en"]["value"].as_str())
+        .or_else(|| variants.is_empty().then(ui_label).flatten())
         .or_else(|| place["name"].as_str())
         .ok_or("site name missing")?;
-    let name = text::normalize(name);
+    let name = crate::name::to_repertoire(&text::normalize(name));
     if !text::supported(&name) {
         omit("site", "name_glyph".into());
         return Ok(None);
     }
-    let mut images: Vec<_> = place["images"].as_array().into_iter().flatten().collect();
-    images.sort_by_key(|image| (image["source"] != "P18", image["filename"].as_str().unwrap_or("").replace('_', " ")));
-    let mut photo = None;
-    let p18: BTreeSet<_> = claims(entity, "P18")
-        .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
-        .map(|file| file.replace('_', " "))
-        .collect();
-    for image in images {
-        let allowed = match image["source"].as_str() {
-            Some("P18") => &p18,
-            Some("wikipedia-lead") => &lead,
-            _ => {
-                omit("photo", "photo_source_kind".into());
+    let claim_files = |property: &str| -> BTreeSet<String> {
+        claims(entity, property)
+            .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
+            .map(|file| file.replace('_', " "))
+            .collect()
+    };
+    // Every P373 claim, so the compiler and the capture cannot name different categories.
+    let categories: Vec<String> = claim_files("P373").into_iter().map(|name| format!("Category:{name}")).collect();
+    let members = category_members(root, sources, place, &categories)?;
+    let pools = photo_pools();
+    let mut ranked = Vec::new();
+    for image in place["images"].as_array().into_iter().flatten() {
+        let Some(tier) = image["source"].as_str().and_then(|source| pools.iter().position(|pool| pool == source))
+        else {
+            omit("photo", "photo_source_kind".into());
+            continue;
+        };
+        let signals = match assets::signals(root, sources, image) {
+            Ok(signals) => signals,
+            Err(reason) => {
+                omit("photo", reason);
                 continue;
             }
         };
+        if signals.views(&categories, "Views from ") {
+            omit("photo", "views_from_the_site".into());
+            continue;
+        }
+        // A candidate from the Commons category has to be in the captured listing of that category
+        // and to carry the category itself, so neither a swapped listing nor a swapped file passes.
+        let allowed = match pools[tier].as_str() {
+            "wikipedia-lead" => lead.clone(),
+            "commons-category" => match categories.iter().any(|name| signals.categories.contains(name)) {
+                true => members.clone(),
+                false => BTreeSet::new(),
+            },
+            property => claim_files(property),
+        };
+        let near = summit.zip(signals.camera).is_some_and(|(summit, camera)| metres(summit, camera) <= CAMERA_METRES);
+        let of = signals.views(&categories, "Views of ");
+        let depicts = signals.depicts.contains(qid);
+        ranked.push((((near, !of, !depicts, tier), signals.filename), image, allowed));
+    }
+    ranked.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut photo = None;
+    let mut asked = 0;
+    for ((_, filename), image, allowed) in &ranked {
+        // Metadata alone ranks a candidate. Bytes arrive only after the compiler has asked for them.
+        if image.get("path").is_none() {
+            if select_photos && asked < PHOTO_REQUESTS && allowed.contains(filename) {
+                asked += 1;
+                requests.push(PhotoRequest {
+                    qid: qid.into(),
+                    filename: filename.clone(),
+                    metadata_path: string(image, "metadata_path")?.to_owned(),
+                });
+            }
+            continue;
+        }
         match assets::photo(root, sources, image, allowed, qid) {
             Ok((candidate, pixels))
                 if variants.iter().all(|v| {
@@ -459,7 +691,7 @@ fn prepare_article(
             Err(reason) => omit("photo", reason),
         }
     }
-    if photo.is_none() {
+    if photo.is_none() && asked == 0 {
         omit("photo", "no_usable_captured_image".into());
     }
     Ok(Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }))

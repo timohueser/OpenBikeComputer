@@ -107,6 +107,8 @@ pub struct FindState {
     selected_review: bool,
     invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
     pub(crate) resume_offer: bool,
+    /// The catalog row the standing checkpoint names, so the Resume card can say which route.
+    pub(crate) resume_route: Option<u8>,
     pub review: ReviewStatus,
     pub review_costs: Option<Costs>,
 }
@@ -138,6 +140,7 @@ impl FindState {
             selected_review: false,
             invalid_visit: None,
             resume_offer: false,
+            resume_route: None,
             review: ReviewStatus::Idle,
             review_costs: None,
         }
@@ -596,7 +599,7 @@ impl crate::App {
     pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         self.sync_find_preferences();
         if self.ui.find.state == State::Idle
-            && matches!(self.ui.stack.iter().rev().find(|s| !s.is_overlay()), Some(Screen::FindPlace(s)) if s.choices())
+            && matches!(crate::screen::base_screen(&self.ui.stack), Some(Screen::FindPlace(s)) if s.choices())
         {
             self.ui.find.action = Action::Refresh;
             self.handle_find_action();
@@ -665,7 +668,7 @@ impl crate::App {
                 }
             }
         }
-        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        let base = crate::screen::base_screen(&self.ui.stack);
         if let Some(Screen::VisitReview(screen)) = base {
             if screen.accepted {
                 let current = self.current_visit_index().and_then(|_| self.assistant_checkpoint());

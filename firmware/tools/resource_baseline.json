@@ -1,20 +1,22 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "measurement": {
-    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20)",
+    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the `embedded` CI job's shipping link on 1d33e67b.",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
     "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
-    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident` and `resident_ram_max`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident, which is not gated.",
+    "build_host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest). The `embedded` CI job is the gate and the authority for `measured_resident` and `resident_ram_max`. The pinned host below is what per-symbol itemization is diffed on; it links 8 B less resident, which the resident band absorbs; re-pin the resident figures from CI.",
     "target": "thumbv8m.main-none-eabihf",
     "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 480 KiB M33 carve \u2014 the 20 KiB below the display FLPR's carve holds the sEMMC soft-peripheral image, the live storage transport; default = all-features/ble + the unconditional USB device plane; SDC size measured on glass 2026-07-24)"
   },
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "measured_resident": 305192,
-      "resident_ram_max": 320688,
+      "measured_resident": 313264,
+      "resident_ram_max": 317360,
+      "resident_ram_slack": 4096,
+      "_resident_ram_slack_note": "The guard holds the link within one slack of `measured_resident` in each direction: `resident_ram_max` is `measured_resident` plus the slack, and a link more than the slack BELOW `measured_resident` fails too. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request, and the same figure is what a deletion can save before it must re-pin. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. Dead ceiling is therefore bounded by two slacks, instead of growing without limit as it did when only the upper end was gated. Re-pin both figures from the `embedded` CI job; a host toolchain links a little less, which the band absorbs.",
       "uninit_max": 132096,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
@@ -23,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 57376,
+        "app": 57384,
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -51,12 +53,13 @@
         "flat_store": 10152,
         "flat_requests": 3064,
         "flat_ride_delta": 500,
-        "flat_catalog_uploads": 737,
+        "flat_catalog_uploads": 740,
         "flat_map_read": 76,
         "flat_route_read": 48,
         "flat_engine": 768,
         "ble_v4_adapter": 763
       },
+      "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,
       "task_frame_limit": 8192,
@@ -71,17 +74,23 @@
       ],
       "boot_chain_measured_ci": 4812,
       "boot_chain_measured_pinned_host": 13708,
-      "deep_ride_high_water": 37016,
-      "deep_ride_high_water_measured": "2026-08-20 (FS8 recovery -> finish -> fresh-start lifecycle; 37,016 / 37,568 B; delta rerun pending)",
+      "deep_ride_high_water": 31340,
+      "deep_ride_high_water_measured": "2026-09-22 (nRF54LM20-DK, debug-uart image 17cb922ac2f45eb358303a7117a1cb34f0f4e6725aaa66b40103bf7bcb47e1bc of 0ff49e0c; 31,340 / 45,080 B; reproduced on two boots)",
       "deep_ride_margin_min": 8704,
-      "_deep_ride_margin_note": "A durable raw 8,704 B floor leaves 8,192 B effective after the 512 B below MSPLIM reserved for fault handling; it is deliberately not pinned to today's exact margin. The append-delta + exact-retry ELF has 55,048 B residual, so it provisionally clears the observed 37,016 B peak by 18,032 B raw / 17,520 B effective, pending the same-flow rerun.",
-      "_deep_ride_high_water_note": "Exact 2026-08-20 recovery -> finish -> fresh-start lifecycle capture on the FS8 production-equivalent BLE feature set. The board reported a maximum 37,016 B used out of 37,568 B available before the subsequent crash. This replaces the incomplete 34,732 B run and is carried conservatively into both identical shipping profiles until the append-delta image repeats the same flow.",
+      "_deep_ride_margin_note": "A durable raw 8,704 B floor leaves 8,192 B effective after the 512 B below MSPLIM reserved for fault handling; it is deliberately not pinned to today's exact margin. The shipping image measured beside the run above has 46,328 B residual, so it clears the 31,340 B peak by 14,988 B raw / 14,476 B effective.",
+      "_deep_ride_high_water_note": "Read off the board's own stackmeter on the nRF54LM20-DK over the VCOM harness, with the grimsel-demo map on the card. One walk reached the peak and a second boot reproduced it exactly. What the walk covered: a route opened from the Route menu and a ride started from it; map redraws under an injected 1 Hz fix; a Find a place search and its return; three planner runs through the debug N line, each released; Peak View generation, a peak article and its photo page, and the return to Peak View; the ride finished and saved; and, across a warm reset taken while recording, the section 7.3 ride recovery, its Continue and a second finish. The peak lands on ride entry; nothing after it goes deeper. The image is the debug-uart one, because the host has to inject the buttons and the fixes, and that image compiles the ride loop differently: it binds the debug sensor sources where the shipping image builds the hub drains as call temporaries, and it never spawns sensor_task. The gated image is therefore not the measured one, so the static frames were compared before this row moved down. On the same two ELFs, resource_guard.py frames --match run_app gives 4,640 B shipping against 4,656 B debug-uart, --match ride gives the same 16,184 B largest frame in both, the largest guarded poll frame is 9,776 B in both, and the largest task body is 4,816 B shipping against 4,808 B. The measured compilation of the ride loop is therefore 16 B DEEPER than the shipping one, and the whole shipping-only sensor path fits in frames of at most 200 B inside its own task. Not covered, and therefore not claimed: the real-sensor paths, because the measured image runs none of them - the GPS, altimeter and compass drains and sensor_task itself; a plan that finds a path (this map answers no-path); an off-route rejoin; an archive receipt; and BLE or USB traffic during the ride.",
       "_boot_chain_roots_note": "The mount_in_place root is unscoped because toolchains demangle FlatStore<D> differently. The symbol resolver rejects missing or ambiguous roots; a second matching constructor must be resolved with an explicit, portable needle.",
       "_map_icons_allocation_measurement": {
         "source_commit": "c4bf8201d",
         "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
         "changes": "App +2272 B for bounded icon candidates, incremental query cursors and cache identity. BLE settings cache +4 B, also counted in ble_total. All other named allocations and ceilings are unchanged.",
         "verification": "Final diagnostic head compared with the recorded baseline; no base rebuild. Board and init_idle frame guards pass. Resident 312488 B; residual stack 46936 B; margin above recorded deep-ride high-water 9920 B versus 8704 B floor (1216 B spare). Shipping ELF verification remains in CI. One earlier diagnostic build preceded the review fixes."
+      },
+      "_navigation_resume_allocation_measurement": {
+        "source_commit": "5db59821 on claude/closeout-nav-resume, rebased on 425dbcf7",
+        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
+        "changes": "App +8 B: the Resume offer keeps the catalog row the standing checkpoint names, so the card can say which route it would resume, and Navigator keeps two flags for what the selection still owes the card. All other named allocations and resource ceilings are unchanged.",
+        "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF: 313,096 B linked resident inside the band, residual main stack 46,328 B, poll frame 9,776 B, init_idle frame 1,720 B. Shipping ELF verification remains in CI. No base rebuild and no device flash."
       },
       "_find_place_allocation_measurement": {
         "source_commit": "45e463b67b2ac69626b1f65ef29b7f74e0e604c7",

@@ -220,17 +220,14 @@ impl crate::App {
     }
 
     pub fn photo_base_active(&self) -> bool {
-        matches!(
-            self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()),
-            Some(crate::screen::Screen::LandmarkPhoto(_))
-        )
+        matches!(crate::screen::base_screen(&self.ui.stack), Some(crate::screen::Screen::LandmarkPhoto(_)))
     }
 
     pub fn photo_pending(&self) -> bool {
         if self.overlay_active() {
             return false;
         }
-        let base = self.ui.stack.iter().rev().find(|screen| !screen.is_overlay());
+        let base = crate::screen::base_screen(&self.ui.stack);
         matches!(base, Some(crate::screen::Screen::LandmarkPhoto(page))
             if (self.photo_status().is_some() || page.covered_rebuild)
             && matches!(page.status, Status::Fresh | Status::Pending))

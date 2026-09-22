@@ -73,9 +73,8 @@ impl TripDeleteScreen {
 
         title_frame(cv, w, h, rx.t(Msg::TripDeleteTitle), "");
 
-        let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
         let name_row = rect(12, TITLE_BAR_H + 12, w - 24, Font::Body.line_height() as i32);
-        let name = rx.marquee.fit(&self.name, max, Some(name_row));
+        let name = rx.marquee.fit(&self.name, w - 24, Font::Body, Some(name_row));
         cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 12), Font::Body, TextAlign::Center, INK);
 
         // The warning line wraps, so the longer translations do not clip. It returns the y below

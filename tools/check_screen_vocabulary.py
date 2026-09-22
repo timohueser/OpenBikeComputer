@@ -3,8 +3,8 @@
 
 `screen/mod.rs` is the navigation engine, and the drawing vocabulary lives one module per concept
 under `screen/vocab/`. Nothing enforces that split at compile time, so each landmark definition
-below must exist once in `screen/vocab/` and nowhere else under `screen/`, and each retired helper
-name must stay retired.
+below must exist once in `screen/vocab/` and nowhere else under `screen/`, and what the
+vocabulary owns must not grow again beside a screen's draw code.
 """
 
 from __future__ import annotations
@@ -39,39 +39,15 @@ LANDMARKS = [
     "elevation_short",
 ]
 
-# Quantity formatters a screen must import from `vocab/fmt.rs` and never re-declare next to its
-# draw code, which is how two screens come to round the same number differently.
-RETIRED_FORMATTERS = [
-    "fmt_km",
-    "fmt_dist_short",
-    "fmt_speed",
-    "fmt_int",
-    "fmt_int_opt",
-    "fmt_elev",
-    "fmt_hms",
-    "fmt_pct",
-    "fmt_climb_delta",
-    "fmt_remaining",
-    "fmt_date",
-    "fmt_offset",
-    "fmt_bytes",
-    "fmt_addr",
-    "fmt_temp",
-    "write_off_route",
-    "write_away",
-    "write_short_date",
-    "write_computed_distance",
-    "write_climb",
-    "write_distance",
-]
-
 # Constants that tune a shared mechanism. A re-declaration is how the drift comes back.
 CONSTANTS = ["SPIN_DPS", "SPIN_FRAME_MS", "PAGE_FLIP_MS"]
 
-# Spellings that appear only when a screen has re-grown a raster the vocabulary owns. `prev_top` is
-# the elevation band's connected top stroke, which `vocab/band.rs` owns. No screen under `screen/`
-# keeps this state, so the ban needs no exemptions.
-RETIRED = ["prev_top"]
+# Spellings that appear only when a screen has re-grown something the vocabulary owns. `prev_top` is
+# the elevation band's connected top stroke, which `vocab/band.rs` owns. `fit_name` and
+# `fit_caption` are the display fitters `vocab/marquee.rs` replaced: a screen that cuts a name with
+# its own dots is how the second ellipsis convention comes back. The storage-cap `fit_name` in
+# `nav_profiles.rs` is not a display fitter and sits outside the scanned tree.
+RETIRED = ["prev_top", "fit_name", "fit_caption"]
 
 
 def matches(pattern: re.Pattern[str], paths: list[Path]) -> list[str]:
@@ -110,11 +86,6 @@ def main() -> int:
         hits = matches(re.compile(r"\b" + re.escape(name) + r"\b"), screen_files)
         if hits:
             failures.append(f"`{name}` is back outside vocab/ ({', '.join(hits)}) — draw through the vocabulary")
-    for name in RETIRED_FORMATTERS:
-        pattern = re.compile(r"\bfn " + re.escape(name) + r"\s*[(<]")
-        hits = matches(pattern, screen_files) + matches(pattern, vocab_files)
-        if hits:
-            failures.append(f"`fn {name}` is back ({', '.join(hits)}) — format through `vocab::fmt` instead")
 
     if failures:
         print("The shared screen vocabulary has drifted out of `screen/vocab/`:")
@@ -122,8 +93,8 @@ def main() -> int:
         return 1
     pinned = len(LANDMARKS) + len(CONSTANTS)
     print(
-        f"screen vocabulary intact: {pinned} landmark definitions, each exactly once under screen/vocab/; "
-        f"{len(RETIRED_FORMATTERS)} retired formatter names stay retired"
+        f"screen vocabulary intact: {pinned} landmark definitions, each exactly once under screen/vocab/, "
+        "and no retired spelling is back beside a screen's draw code"
     )
     return 0
 

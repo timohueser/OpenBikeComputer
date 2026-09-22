@@ -247,8 +247,7 @@ impl RouteMenuScreen {
             RouteMenuScope::Trip { trip_id } => match trips.iter().find(|t| t.id == trip_id) {
                 Some(t) => {
                     // Leave room for the scroll counter the title bar's right slot may show.
-                    let max = (((w - 72) / Font::Body.char_width() as i32).max(6)) as usize;
-                    title_buf = fit(&t.name, max);
+                    title_buf = fit(&t.name, w - 72, Font::Body);
                     &title_buf
                 }
                 None => rx.t(Msg::RouteMenuTitle),
@@ -310,8 +309,7 @@ fn draw_route_row(
     let area = &row.area;
     let y = area.top_left.y;
     let name_x = area.top_left.x + NAME_INSET;
-    let name_max = (((w - 20) - name_x) / Font::Body.char_width() as i32).max(6) as usize;
-    let name = marquee.fit(&route.name, name_max, row.scroll());
+    let name = marquee.fit(&route.name, (w - 20) - name_x, Font::Body, row.scroll());
     cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
 
     let sy = y + 35;
@@ -362,8 +360,7 @@ fn draw_folder_row(
     cv.round(rect(badge_x, badge_y, badge_w, BADGE_H), 6, WOOD);
     cv.text(&nbuf, Point::new(badge_x + badge_w / 2, badge_y + 3), Font::Label, TextAlign::Center, PARCHMENT);
 
-    let name_max = (((badge_x - 8) - name_x) / Font::Body.char_width() as i32).max(4) as usize;
-    let name = marquee.fit(&t.name, name_max, row.scroll());
+    let name = marquee.fit(&t.name, (badge_x - 8) - name_x, Font::Body, row.scroll());
     cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
 
     let sy = y + 35;

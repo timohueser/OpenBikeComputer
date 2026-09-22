@@ -112,10 +112,10 @@ fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFac
     }
     while let Some(upload) = crate::flat_store::take_catalog_upload() {
         match upload.kind() {
-            crate::flat_store::CatalogUploadKind::Route => {
+            obc_app::CatalogUploadKind::Route => {
                 facts.note_route_upload(RouteUpload { id: upload.id(), replaced: upload.replaced(), elevation: None })
             }
-            crate::flat_store::CatalogUploadKind::Trip => {
+            obc_app::CatalogUploadKind::Trip => {
                 facts.note_trip_upload(TripUpload { id: upload.id(), replaced: upload.replaced() })
             }
         }
@@ -856,7 +856,8 @@ pub(crate) async fn run_app(
         // Feed the live hold progress before anything below consults it: every hold-deferral rule
         // this pass runs must read this pass's charge state. A loop woken from warm sleep otherwise
         // saw a seconds-stale 0.0 and could land or close a pushed screen mid-charge.
-        app.set_hold_progress(display.hold_progress());
+        let (select_p, back_p) = display.hold_progress();
+        app.set_hold_progress(select_p, back_p);
 
         let transferring = crate::flat_store::transfer_active();
         exec.facts.note_transfer(if transferring {
@@ -868,6 +869,12 @@ pub(crate) async fn run_app(
         if transferring != prev_transferring {
             prev_transferring = transferring;
             defmt::info!("xfer: transfer level {=str} (flat engine)", if transferring { "active" } else { "idle" });
+        }
+
+        // The card transport gave up for this session. Raised every pass and deduplicated
+        // downstream, so the card opens once and a dismissal is not re-nagged.
+        if crate::flpr_mux::storage_latched() {
+            exec.facts.raise_warnings(obc_app::WarningFlags::STORAGE_ERROR);
         }
 
         // The sensor task publishes once GPS responds or its startup deadline passes. Map chips that
@@ -1021,18 +1028,15 @@ pub(crate) async fn run_app(
                     // out: never mid-recording, and never while the flat recorder still owns an
                     // active object. A refusal is a typed reason and lands the error card, so the
                     // spinner cannot strand the rider.
-                    let refusal = {
-                        // One short store guard: just the go/no-go checks.
-                        let store_guard = shared.lock().await;
-                        if app.recording() || ride_recorder.is_recording() {
-                            crate::dfu::status("refused (is_tracking): a ride is recording -- finish it first");
-                            Some(obc_app::DfuInstallError::Recording)
-                        } else if store_guard.storage.is_none() {
-                            crate::dfu::status("refused (no_card): no SD card");
-                            Some(obc_app::DfuInstallError::NoCard)
-                        } else {
-                            None
-                        }
+                    let refusal = if app.recording() || ride_recorder.is_recording() {
+                        crate::dfu::status("refused (is_tracking): a ride is recording -- finish it first");
+                        Some(obc_app::DfuInstallError::Recording)
+                    } else if !flat.mode().writable() {
+                        // The arm commits the rollback reserve, so a read-only store cannot arm.
+                        crate::dfu::status("refused (no_card): the store is not writable");
+                        Some(obc_app::DfuInstallError::NoCard)
+                    } else {
+                        None
                     };
                     match refusal {
                         Some(error) => {
@@ -1050,18 +1054,15 @@ pub(crate) async fn run_app(
                     }
                 }
                 DfuEffect::Scan { token } => {
-                    // The read-only "Checking card..." step: validate the staged image and answer the
-                    // app. The scan touches nothing, so it needs no ride-state guard.
+                    // The read-only "Checking card..." step: validate the staged package and answer
+                    // the app. The scan touches nothing, so it needs no ride-state guard.
                     let result = {
                         let mut store_guard = shared.lock().await;
-                        let SharedStore { storage, settings: settings_store } = &mut *store_guard;
-                        match storage.as_mut() {
-                            Some(s) => crate::dfu::run_scan(s, settings_store, &mut wdt),
-                            None => Err(obc_app::DfuScanError::NotFound),
-                        }
+                        let SharedStore { settings: settings_store, .. } = &mut *store_guard;
+                        crate::dfu::run_scan(flat, settings_store, &mut wdt)
                     };
                     // Park the validated ref for the confirm's install and answer the app with just
-                    // the report. A failed scan clears any prior ref, because the card may have
+                    // the report. A failed scan clears any prior ref, because the catalog may have
                     // changed.
                     let outcome = match result {
                         Ok((report, staged)) => {
@@ -1276,8 +1277,11 @@ pub(crate) async fn run_app(
                                 obc_storage::flat::ObjectId(checkpoint.route.object),
                                 Some(obc_storage::flat::Revision(checkpoint.route.revision)),
                                 |source| {
+                                    // An imported route attributes no map, so no map can be wrong for it.
                                     obc_route::RouteObjectInfo::read(source).is_ok_and(|info| {
-                                        info.attribution_map == Some(crate::flat_store::planner_map_key(flat))
+                                        info.attribution_map.is_none_or(|attribution| {
+                                            attribution == crate::flat_store::planner_map_key(flat)
+                                        })
                                     })
                                 },
                             )
@@ -2270,6 +2274,19 @@ pub(crate) async fn run_app(
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
+            // The selected route owes a durable checkpoint once per selection. The entry walk is
+            // why it waits for the frame that already holds the parsed route.
+            if let (Some(id), Some(reader)) = (app.requested_route_checkpoint(), route.as_ref()) {
+                let source = crate::flat_store::route_fingerprint(flat, id).map(|route| {
+                    obc_app::navigator::RouteCheckpointSource {
+                        route,
+                        distance_m: reader.total_distance_m,
+                        unresolved_avoidance: reader.has_unresolved_avoidance(),
+                    }
+                });
+                app.offer_route_checkpoint(id, source);
+            }
+
             // One tight scope that ends before the next `.await`. The polyline buffer, the gesture
             // batch and the `PassPlan` are stack temporaries here; a binding still live across an
             // await would become a permanent slot in this task's future, which on this board is
@@ -2533,10 +2550,11 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // Feed the Select hold progress to the map render so the in-screen confirm bars track the
-            // hold. `App`'s own input plane is not driven here, so the render would otherwise read 0.
-            let hold_p = display.hold_progress();
-            app.set_hold_progress(hold_p);
+            // Feed both hold charges: Select so the in-screen confirm bars track the hold, Back so a
+            // card defers while it charges. `App`'s own input plane is not driven here, so without
+            // this the render reads 0 and no hold is seen at all.
+            let (hold_p, back_hold_p) = display.hold_progress();
+            app.set_hold_progress(hold_p, back_hold_p);
 
             // The pass's own render decision is this frame's dirty signal. What it replaces is the
             // input to the board redraw folds below, not the folds: each demand here is physical and
@@ -2726,7 +2744,6 @@ pub(crate) async fn run_app(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
-                                    reader.as_ref(),
                                     route.as_ref(),
                                     panorama,
                                     FRAME_W as f32,
@@ -2770,7 +2787,6 @@ pub(crate) async fn run_app(
                         app.render_scene_map_photo_timed(
                             None,
                             &mut target,
-                            Some(&reader),
                             Some(&reader),
                             route.as_ref(),
                             None,
@@ -2942,13 +2958,15 @@ pub(crate) async fn run_app(
             };
             if arm_now {
                 exec.arm_pending = None;
-                let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+                let SharedStore { settings: settings_store, .. } = &mut *store_guard;
                 // Hand the confirm's carried scan ref to the arm; it is consumed either way. Absent
                 // means `run_install` re-scans. On success this never returns.
-                let failed = match storage.as_mut() {
-                    Some(s) => crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await,
+                let failed = match crate::flat_store::writer() {
+                    Some(writer) => {
+                        crate::dfu::run_install(flat, &writer, settings_store, &mut wdt, cached_staged.take()).await
+                    }
                     None => {
-                        crate::dfu::status("refused (no_card): no SD card");
+                        crate::dfu::status("refused (no_card): the store's write half is not up");
                         Some(obc_app::DfuInstallError::NoCard)
                     }
                 };

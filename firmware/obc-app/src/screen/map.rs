@@ -199,11 +199,10 @@ impl MapScreen {
         }
     }
 
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
         let panning = rx.state.pan.is_some();
@@ -319,9 +318,9 @@ pub(crate) struct DetourMapOverlay<'a> {
 /// `chrome` is what this screen will ink over the map — its header, its bottom panel or pill, and
 /// the scale bar ([`ScaleBar::ink`]) — so a settlement name keeps off it. A screen that draws no
 /// chrome passes an empty slice and the names get the whole panel.
-pub(crate) fn draw_map_scene<D, F, S>(
+pub(crate) fn draw_map_scene<D, F>(
     cv: &mut Canvas<D, F>,
-    rx: &mut RenderFrame<'_, S>,
+    rx: &mut RenderFrame<'_, '_>,
     vp: &Viewport,
     skip: Option<DetourMapOverlay<'_>>,
     chrome: &[Rectangle],
@@ -329,7 +328,6 @@ pub(crate) fn draw_map_scene<D, F, S>(
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
-    S: obc_map_scene::MapScene,
 {
     let scene = rx.scene?;
     let rx = &mut rx.render;
@@ -348,7 +346,11 @@ where
     // Suppression drops the terrain layer in the collect pass, so nothing is decoded.
     let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
     let mut stats = scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
-    rx.map_icons.draw(cv, vp, rx.state.user_fix.map(|fix| (fix.lon, fix.lat)), rx.waypoints.as_slice());
+    // One occupancy list for the frame. The icons take their space here and the settlement names
+    // take what is left, which is the whole priority rule between the two overlays.
+    let reserved = label_reserved(vp, rx.state.user_fix, rx.waypoints.as_slice(), chrome);
+    let mut place = PointPlacement::new(&reserved);
+    rx.map_icons.draw(cv, vp, &mut place);
     let (target, color_fn) = cv.split();
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.navigation.progress_m);
 
@@ -391,12 +393,10 @@ where
     rx.stats = stats;
 
     // Settlement names: over the terrain and the route ink, under the waypoints and the rider.
-    let reserved = label_reserved(vp, rx.state.user_fix, chrome);
-    let mut place = PointPlacement::new(&reserved);
     crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
 
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
-    let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color() };
+    let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
         scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
@@ -423,17 +423,23 @@ pub(crate) const MAX_CHROME: usize = 5;
 /// A screen's own chrome boxes, as [`label_reserved`] takes them.
 pub(crate) type Chrome = heapless::Vec<Rectangle, MAX_CHROME>;
 
-/// The boxes the map chrome owns, so a settlement name never covers one. A name may sit flush
+/// The boxes [`label_reserved`] can return: a screen's chrome, the rider mark, and one diamond for
+/// each resident waypoint.
+pub(crate) const RESERVED: usize = MAX_CHROME + 1 + obc_route::MAX_WAYPOINTS;
+
+/// The boxes the map draws over its own point marks, so no mark covers one. A mark may sit flush
 /// against a box, so each one has to hold the ink it protects.
 ///
 /// Every box a screen inks over the map comes in through `chrome`, measured for this frame: a
 /// piece of chrome the frame does not draw reserves nothing, top edge and bottom alike. The rider
-/// mark is the one box this function measures itself.
+/// mark and the waypoint diamonds are the boxes this function measures itself, because both draw
+/// after the marks and would else overprint them.
 pub(crate) fn label_reserved(
     vp: &Viewport,
     fix: Option<Fix>,
+    wpts: &[WptEntry],
     chrome: &[Rectangle],
-) -> heapless::Vec<Rectangle, { MAX_CHROME + 1 }> {
+) -> heapless::Vec<Rectangle, RESERVED> {
     // Past the capacity a push is dropped, and a dropped rider box is a name over the rider.
     debug_assert!(chrome.len() <= MAX_CHROME, "a screen handed more chrome than MAX_CHROME");
     let mut boxes = heapless::Vec::new();
@@ -445,6 +451,14 @@ pub(crate) fn label_reserved(
         let r = RIDER_BOX_PX / 2;
         if boxes.push(rect(x - r, y - r, RIDER_BOX_PX, RIDER_BOX_PX)).is_err() {
             debug_assert!(false, "the rider box was dropped, so a name may cover the rider");
+        }
+    }
+    for wp in wpts {
+        let (x, y) = vp.to_screen(wp.lon, wp.lat);
+        if waypoint_diamond(x, y, vp.w as i32, vp.h as i32).is_some() {
+            let r = WAYPOINT_DIAMOND_R;
+            // The vertices are at `-r` and `+r`, both ends, so the ink is `2r + 1` wide.
+            let _ = boxes.push(rect(x - r, y - r, 2 * r + 1, 2 * r + 1));
         }
     }
     boxes
@@ -730,7 +744,7 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     // Everything but the name is fixed; the name gets whatever remains inside the max pill width.
     let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
     let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
-    let name = fit(name, (name_budget / font.char_width() as i32).max(0) as usize);
+    let name = fit(name, name_budget, font);
     let name_w = text_width(&name, font) as i32;
 
     let pw = fixed_w + name_w;
@@ -1471,7 +1485,7 @@ mod tests {
         let clear = rect(72, 150, 96, 24);
         let placer = |pan| {
             let hud = pan_hud_boxes(240, 320, pan, &vp, None);
-            PointPlacement::new(&label_reserved(&vp, None, &map_chrome(240, 320, 0, None, &hud, false, false)))
+            PointPlacement::new(&label_reserved(&vp, None, &[], &map_chrome(240, 320, 0, None, &hud, false, false)))
         };
 
         for (name, pan) in [("free vertical", vertical), ("zoom", zoom)] {
@@ -1519,7 +1533,12 @@ mod tests {
         let placer = |map_clock: bool, low_battery: bool, pan: Option<Pan>| {
             let clock = clock_cue(map_clock, pan.is_some());
             let hud = pan_hud_boxes(240, 320, pan, &vp, None);
-            PointPlacement::new(&label_reserved(&vp, None, &map_chrome(240, 320, 0, None, &hud, clock, low_battery)))
+            PointPlacement::new(&label_reserved(
+                &vp,
+                None,
+                &[],
+                &map_chrome(240, 320, 0, None, &hud, clock, low_battery),
+            ))
         };
         // One name under each piece of top chrome, each clear of the other two.
         let under_clock = rect(90, 8, 60, 24);
@@ -1589,6 +1608,29 @@ mod tests {
         }
     }
 
+    /// The waypoint diamonds ink over the point marks, so each one the frame draws holds a box.
+    #[test]
+    fn a_waypoint_diamond_holds_the_pixels_it_draws_against_the_point_marks() {
+        use obc_render::Canvas;
+        let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
+        let at = |x: f32, y: f32| {
+            let (lon, lat) = vp.to_map(x, y);
+            WptEntry { lon, lat, ..wp(0, "Brunnen") }
+        };
+        let (on, off) = (at(120.0, 200.0), at(120.0, -400.0));
+
+        let reserved = label_reserved(&vp, None, &[on.clone(), off], &[]);
+        assert_eq!(reserved.len(), 1, "only a diamond the frame draws reserves a box");
+        let mut buf = Buf::new(240, 320);
+        draw_waypoint_diamonds(&mut Canvas::new(&mut buf, &shade), &vp, &[on], 240, 320);
+        assert_inside(drawn_box(&buf), reserved[0], "the waypoint diamond");
+
+        // A mark may sit flush against reserved chrome, so the box alone decides.
+        let mut place = PointPlacement::new(&reserved);
+        assert!(!place.try_place(rect(90, 192, 60, 16), 0), "a name over the diamond is refused");
+        assert!(place.try_place(rect(90, 100, 60, 16), 0), "one clear of it is placed");
+    }
+
     /// A [`Fix`] that lands on the given screen point of `vp`.
     fn fix_at_screen(vp: &Viewport, x: f32, y: f32) -> Fix {
         let (lon, lat) = vp.to_map(x, y);
@@ -1612,7 +1654,7 @@ mod tests {
         for (name, pan) in pan_states() {
             let hud = pan_hud_boxes(240, 320, Some(pan), &vp, Some(away));
             let chrome = map_chrome(240, 320, 0, None, &hud, false, false);
-            let mut place = PointPlacement::new(&label_reserved(&vp, Some(away), &chrome));
+            let mut place = PointPlacement::new(&label_reserved(&vp, Some(away), &[], &chrome));
             assert!(!place.try_place(under_marker, 0), "{name}: a name under the marker is refused");
             assert!(place.try_place(clear, 0), "{name}: one clear of it is placed");
         }
@@ -1788,8 +1830,7 @@ mod tests {
         let dist_w = text_width("299m", font) as i32;
         let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
         let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
-        let chars = (name_budget / font.char_width() as i32) as usize;
-        assert_eq!(fit("Pass Summit", chars).as_str(), "Pass Summit", "the full name fits, no ellipsis");
+        assert_eq!(fit("Pass Summit", name_budget, font).as_str(), "Pass Summit", "the full name fits, no ellipsis");
     }
 
     /// The ink glyph is the last writer at the anchor, and every pixel one step off it holds halo

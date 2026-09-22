@@ -123,4 +123,12 @@ The exit status and the CI log stay authoritative; an artifact does not prove a 
 assembles a map through the real WebAssembly bridge and requires the bytes to equal
 `expected/map.obcm`. `web.demo-browser` drives the landing page's save, view, reset and reload
 controls. For simultaneous runs in separate worktrees, set `OBC_BROWSER_PORT` to a free port;
-the defaults are 4180 and 4178.
+the defaults are 4180, 4178 and 4182.
+
+`live.builder-memory` is the same builder against the **published** catalogue, and it is the one
+`live` suite with a browser in it. It assembles the largest published region and holds the wasm
+linear memory the worker reports at the end of the run against the peak the estimate that admitted
+the run projected. It is the measurement the projection cannot make: an assembler that buffers a
+whole map passes every arithmetic test of the estimator. It downloads about 890 MB, needs about
+3 GB of free disk and takes minutes, so run it by hand before a release and after a change to the
+assembler or the estimator.

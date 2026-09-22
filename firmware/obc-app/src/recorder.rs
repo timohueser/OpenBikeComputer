@@ -152,8 +152,6 @@ impl RecorderEffect {
 pub enum RecorderError {
     /// The medium refused or failed the write. Recorder keeps the samples staged and retries.
     Write,
-    /// No writable store is mounted, so recording cannot proceed at all.
-    NoStore,
     /// The store will take no further mutation this boot — an exhausted revision or sequence space,
     /// not a write that went wrong. Retrying cannot help, which is why it is not a
     /// [`Write`](RecorderError::Write).
@@ -731,7 +729,7 @@ impl RecorderMachine {
                 if let RideRecoveryState::Attempting(damage) = self.recovery {
                     self.recovery = match error {
                         RecorderError::ReadOnly => RideRecoveryState::Unrepairable,
-                        RecorderError::Write | RecorderError::NoStore => RideRecoveryState::Latched(damage),
+                        RecorderError::Write => RideRecoveryState::Latched(damage),
                     };
                     self.pending = None;
                     return RecorderVerdict::RecoveryLatched;

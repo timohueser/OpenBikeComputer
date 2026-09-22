@@ -54,7 +54,6 @@ where
         Some(scratch),
         target,
         Some(reader),
-        Some(reader),
         route,
         panorama,
         w,

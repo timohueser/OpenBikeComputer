@@ -1761,6 +1761,60 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
     assert!(d.find(&section, SourceId::osm(1, 102)).unwrap().is_some());
 }
 
+/// A peak record identified by sight alone. The cutter and the assembler carry a record whose
+/// article bundle is absent, and the reader still reports it as content.
+#[test]
+fn a_peak_record_with_a_photo_and_no_text_survives_the_cut_and_the_assembler() {
+    use obc_formats::obcm::{landmarks::PHOTO_PIXELS, SourceId, SUMMIT_SUBTYPE_ID};
+    use serde_json::json;
+    let cfg = config();
+    let (mut ing, ways) = fixture(&cfg);
+    let dir = scratch("peak-photo-only");
+    let pixels = vec![11u8; PHOTO_PIXELS];
+    std::fs::write(dir.join("photo.rgb222"), &pixels).unwrap();
+    let digest: String = sha256(&pixels).iter().map(|b| format!("{b:02x}")).collect();
+    let credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Peak.png","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":"Example","display_pages":["Example"]});
+    let catalogue = dir.join("peaks.json");
+    std::fs::write(
+        &catalogue,
+        serde_json::to_vec(&json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},
+            "counts":serde_json::to_value(obc_pack::landmarks::Counts::default()).unwrap(),"omissions":[],
+            "records":[{"id":"Q9","name":"Schafberg","default_language":"","fallback_sources":[],"variants":[],
+                "photo":{"path":"photo.rgb222","bytes":PHOTO_PIXELS,"sha256":digest,"attribution":credit}}],
+            "associations":[{"node_id":101,"article_id":"Q9","latitude":0,"longitude":0}]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut summit = poi(SUMMIT_SUBTYPE_ID, LAT, SEAM + 100_000, "Schafberg");
+    summit.metadata.source = SourceId::osm(1, 101);
+    summit.elevation_m = Some(2000);
+    ing.pois.push(summit);
+    let opts = CutOptions {
+        bands: BandTable::parse(BANDS).unwrap(),
+        peaks: vec![catalogue],
+        no_land: true,
+        ..Default::default()
+    };
+    let summary = cut_ingested(&ing, &ways, &cfg, &dir.join("cells"), &opts, &Progress::silent()).unwrap();
+    let (bytes, _) = assembled(&dir.join("cells"), &cfg, &summary);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    let section = obc_reader::peaks::map_section(&src).unwrap().unwrap();
+    let d = obc_reader::peaks::Directory::read(&section).unwrap();
+    assert_eq!((d.records, d.associations), (1, 1));
+    let record = d.record(&section, 0).unwrap();
+    assert!(record.content[1].is_absent(), "no text means no article bundle");
+    let selection = reader.peak_article(SourceId::osm(1, 101)).unwrap().expect("a photo is content");
+    reader
+        .with_peak_article(selection, |section, d, r| {
+            assert!(d.content(section, &r, 1, obc_formats::articles::MAX_BYTES).is_err());
+            d.content(section, &r, 2, obc_formats::obcm::landmarks::PHOTO_MAX_COMPRESSED as u32).map(|_| ())
+        })
+        .unwrap();
+}
+
 /// Settlements travel the cell path unchanged: the cutter puts them in the cells their coordinates
 /// select, the merge collects them into one category-9 block, and the payload the packer wrote — the
 /// population in hundreds of people — comes back as the population the reader reports. A repeated

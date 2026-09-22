@@ -2,7 +2,10 @@
 
 use super::surface::{SurfaceLevel, SurfaceTerrain};
 use obc_elevation::surface::{Patch, SurfaceCache, SurfaceReader};
-use obc_formats::io::{ByteSource, Error};
+use obc_formats::{
+    io::{ByteSource, Error},
+    obct::NODATA,
+};
 
 pub struct Terrain<'a> {
     reader: SurfaceReader<'a>,
@@ -42,12 +45,12 @@ impl<'a> Terrain<'a> {
     /// decide — unless `measured`, the host's settled map-referenced altitude, is the better
     /// answer. [`super::eye_ground`] holds that rule.
     pub fn eye_ground(&mut self, lat: i32, lon: i32, measured: Option<f32>) -> Option<f32> {
-        let (p, fy, fx) = self.patch_at(lat, lon)?;
-        Some(super::eye_ground(bilinear(p, fy, fx), cell_top(p), measured))
+        let (corners, fy, fx) = self.corners_at(lat, lon)?;
+        eye_ground_in(corners, fy, fx, measured)
     }
 
-    /// The level 0 patch containing this position, with the position's place inside it.
-    fn patch_at(&mut self, lat: i32, lon: i32) -> Option<(Patch, f32, f32)> {
+    /// The level 0 patch corners containing this position, with the position's place inside them.
+    fn corners_at(&mut self, lat: i32, lon: i32) -> Option<([i16; 4], f32, f32)> {
         let g = self.reader.geometry(0)?;
         let y = i64::from(lat) + (1 << 28);
         let x = i64::from(lon) + (1 << 28);
@@ -57,8 +60,9 @@ impl<'a> Terrain<'a> {
         let mask = (1u32 << g.posting_log2) - 1;
         let fy = (y as u32 & mask) as f32 / (mask + 1) as f32;
         let fx = (x as u32 & mask) as f32 / (mask + 1) as f32;
-        let p = self.reader.patch(&mut self.cache, 0, y as u32 >> g.posting_log2, x as u32 >> g.posting_log2)?;
-        Some((p, fy, fx))
+        let corners =
+            self.reader.corners(&mut self.cache, 0, y as u32 >> g.posting_log2, x as u32 >> g.posting_log2)?;
+        Some((corners, fy, fx))
     }
 }
 
@@ -101,6 +105,19 @@ impl SurfaceTerrain for Terrain<'_> {
     }
 }
 
+/// The ground the eye stands on inside one level 0 cell, holes allowed.
+///
+/// A hole leaves no surface to interpolate, but the rider is still somewhere. The measurement needs
+/// no surface, so it stands on its own, and without one the highest corner that is there carries
+/// the eye. A cell with no known corner at all has no answer, and the view stays unavailable.
+fn eye_ground_in(corners: [i16; 4], fy: f32, fx: f32, measured: Option<f32>) -> Option<f32> {
+    if let Some(p) = Patch::from_corners(corners) {
+        return Some(super::eye_ground(bilinear(p, fy, fx), cell_top(p), measured));
+    }
+    let top = corners.iter().copied().filter(|&h| h != NODATA).max()?;
+    Some(measured.unwrap_or_else(|| f32::from(top)))
+}
+
 /// The surface height inside a patch, `fy` north and `fx` east of its low corner.
 fn bilinear(p: Patch, fy: f32, fx: f32) -> f32 {
     p.height + p.east * fx + p.north * fy + p.cross * fx * fy
@@ -129,5 +146,15 @@ mod tests {
         assert_eq!(cell_top(Patch { height: 800.0, east: 0.0, north: 0.0, cross: 0.0 }), 800.0);
         // Half a posting into the cell the surface interpolates below every corner of it.
         assert_eq!(bilinear(summit, 0.5, 0.5), 2577.5);
+    }
+
+    #[test]
+    fn a_hole_under_the_observer_still_carries_an_eye() {
+        // A coastal cliff, a water edge and the border of the reference coverage all leave a hole
+        // in a cell, and the cell has no surface. The rider stands on it all the same.
+        let hole = [2570, NODATA, 2556, 2564];
+        assert_eq!(eye_ground_in(hole, 0.5, 0.5, Some(2561.0)), Some(2561.0));
+        assert_eq!(eye_ground_in(hole, 0.5, 0.5, None), Some(2570.0), "the highest known corner");
+        assert_eq!(eye_ground_in([NODATA; 4], 0.5, 0.5, Some(2561.0)), None, "no coverage, no view");
     }
 }

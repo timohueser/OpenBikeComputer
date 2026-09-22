@@ -14,7 +14,7 @@ use obc_ports::{Fix, LocationSource, RideClock, Sensors};
 use obc_reader::rgb565_to_rgb888;
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
 
-use crate::common::Planner;
+use crate::common::{Planner, VecSink};
 
 /// The straight test road: lat 43.5°, lon 7.50° → 7.54° (~3 230 m ground). One `<trkpt>` per
 /// 0.004° so the converter keeps real vertices along the way.
@@ -41,19 +41,6 @@ fn road_obcr_segs(segs: usize, wobble: f64) -> Vec<u8> {
 
 fn road_obcr() -> Vec<u8> {
     road_obcr_segs(10, 0.0)
-}
-
-#[derive(Default)]
-struct VecSink(Vec<u8>);
-impl obc_formats::io::ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-        self.0.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-        self.0[off as usize..off as usize + b.len()].copy_from_slice(b);
-        Ok(())
-    }
 }
 
 struct OneFix(Option<Fix>);
@@ -602,4 +589,38 @@ fn request_shape_is_stable() {
     let req = DetourRequest { route: 1, from: (2, 3), progress_m: 4, target_m: 5 };
     let copy = req;
     assert_eq!((copy.route, copy.from, copy.progress_m, copy.target_m), (1, (2, 3), 4, 5));
+}
+
+/// The flow truncates its own screens off as it adopts the splice, so an adopted detour looks
+/// exactly like an unreachable one: planned, not committing, no screen left to answer for it. A
+/// rider input on the pass that lands the splice must not read it that way. Cancelling there
+/// would make the release drop the publication, and the board then retracts the route the rider
+/// has just taken.
+#[test]
+fn input_on_the_committing_pass_keeps_the_spliced_route() {
+    riding!(app, _route, host);
+    let session = app.ride_session();
+    open_chooser(&mut app);
+    app.apply_gesture(Gesture::Press);
+    answer_plan(
+        &mut app,
+        &mut host,
+        Ok(DetourPreview { cost_delta_m: 420, total_distance_m: 1_220, rejoin_m: 2_000, ascent_m: None }),
+    );
+    app.apply_gesture(Gesture::Press); // commit
+    assert!(host.took_commit(&mut app), "Press asks the executor to splice");
+    app.set_routes_with_ids(&[summary("Road"), summary("Detour \u{b7} Road")], &[7, 9]);
+
+    // The rider steps on the very pass that reads the splice, before the release is computed.
+    host.press_on_the_next_pass(&[Gesture::Step(1)]);
+    answer_commit(&mut app, &mut host, Ok(9));
+
+    assert_eq!(app.active_route_index(), Some(1), "the spliced route stays adopted");
+    assert_eq!(app.ride_session(), session, "and the recording session is untouched");
+    assert_eq!(host.retained_result(&mut app), Some(true), "the release keeps the publication the rider rides");
+
+    // The chord is the same input on a later pass, and reads the adopted splice the same way.
+    assert!(app.apply_chord(obc_app::Chord::Assistant));
+    assert_eq!(app.active_route_index(), Some(1), "the chord leaves the adopted route alone");
+    assert_eq!(host.retained_result(&mut app), Some(true));
 }

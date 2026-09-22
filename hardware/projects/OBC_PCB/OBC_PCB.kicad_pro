@@ -648,7 +648,7 @@
         "uuid": "57e91c39-b072-457b-b097-52c5b44e61c8"
       }
     ],
-    "used_designators": "U1-6,J1-3,ANT1,L1,L5,#PWR1-7,#PWR2010,#PWR2026-2027,C1,C6",
+    "used_designators": "U1-6,R1-3,R6,J1-3,ANT1,#PWR1-24,#PWR1010,#PWR2010,#PWR2026-2027,#PWR2045,#PWR2051,L1-6,C1-13,NT1-2,Y1,Y3",
     "variants": []
   },
   "sheets": [

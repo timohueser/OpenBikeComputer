@@ -10,10 +10,11 @@ use obc_reader::{
 };
 use obc_render::{rect, Surface, Viewport};
 
+use crate::screen::map::placement::PointPlacement;
 use crate::Settings;
 
 const CAPACITY: usize = 64;
-const DRAW_LIMIT: usize = 24;
+pub(crate) const DRAW_LIMIT: usize = 24;
 const GLYPH_SCALE: i32 = 2;
 const HALO_RADIUS: i32 = 14;
 // The shipped map schema adds non-index contours at LOD 10 (10 metres per pixel).
@@ -346,24 +347,17 @@ impl MapIcons {
         }
     }
 
-    pub fn draw(
-        &self,
-        cv: &mut impl Surface,
-        vp: &Viewport,
-        rider: Option<(i32, i32)>,
-        waypoints: &[obc_route::WptEntry],
-    ) {
-        for (point, kind) in self.placements(vp, rider, waypoints) {
+    pub fn draw(&self, cv: &mut impl Surface, vp: &Viewport, place: &mut PointPlacement) {
+        for (point, kind) in self.placements(vp, place) {
             draw_glyph(cv, point, kind);
         }
     }
 
-    fn placements(
-        &self,
-        vp: &Viewport,
-        rider: Option<(i32, i32)>,
-        waypoints: &[obc_route::WptEntry],
-    ) -> Vec<(Point, Kind), DRAW_LIMIT> {
+    /// The marks this frame draws, nearest first inside each fairness round. A mark offers the
+    /// square its glyph owns to `place`, so the chrome, the rider, the waypoints and the other
+    /// marks are one occupancy test. Icons go in before the settlement names, which is the whole
+    /// priority rule between the two overlays.
+    fn placements(&self, vp: &Viewport, place: &mut PointPlacement) -> Vec<(Point, Kind), DRAW_LIMIT> {
         let mpp = vp.meters_per_pixel();
         let limit = if mpp > 20.0 {
             8
@@ -372,6 +366,9 @@ impl MapIcons {
         } else {
             DRAW_LIMIT
         };
+        // Clear space between two glyphs. Wider at a coarse scale, where each mark stands for far
+        // more ground than the glyph covers.
+        let margin = if mpp > 20.0 { 12 } else { 2 };
         // Sort only small indices, leaving the persistent geographic cache untouched.
         let mut order: Vec<u8, CAPACITY> = (0..self.marks.len() as u8).collect();
         order.sort_unstable_by_key(|&i| {
@@ -384,7 +381,6 @@ impl MapIcons {
         let mut placed = Vec::<(Point, Kind), DRAW_LIMIT>::new();
         let mut counts = [0u8; 9];
         let mut rejected = 0u64;
-        let rider = rider.map(|(lon, lat)| vp.to_screen(lon, lat));
         for round in 0..limit as u8 {
             let before = placed.len();
             for &i in &order {
@@ -398,23 +394,13 @@ impl MapIcons {
                 rejected |= 1u64 << i;
                 let (x, y) = vp.to_screen(mark.position.0, mark.position.1);
                 let radius = mark.kind.radius();
-                // Keep the clock, battery, scale, warning chip and pan controls free.
-                if x < radius + 2 || x > vp.w as i32 - radius - 2 || y < radius + 31 || y > vp.h as i32 - radius - 51 {
+                // A glyph draws whole or not at all: a clipped one reads as a different symbol.
+                if x - radius < 0 || x + radius >= vp.w as i32 || y - radius < 0 || y + radius >= vp.h as i32 {
                     continue;
                 }
-                if rider.is_some_and(|(rx, ry)| near(x, y, rx, ry, radius + 17)) {
-                    continue;
-                }
-                if waypoints.iter().any(|wp| {
-                    let (wx, wy) = vp.to_screen(wp.lon, wp.lat);
-                    near(x, y, wx, wy, radius + 9)
-                }) {
-                    continue;
-                }
-                if placed
-                    .iter()
-                    .any(|(p, kind)| near(x, y, p.x, p.y, radius + kind.radius() + if mpp > 20.0 { 12 } else { 2 }))
-                {
+                // The glyph inks the whole square from `-radius` to `+radius`, both ends.
+                let side = 2 * radius + 1;
+                if !place.try_place(rect(x - radius, y - radius, side, side), margin) {
                     continue;
                 }
                 let _ = placed.push((Point::new(x, y), mark.kind));
@@ -430,9 +416,6 @@ impl MapIcons {
 
 fn in_bounds(b: BBox, p: (i32, i32)) -> bool {
     p.0 >= b.min_lon && p.0 <= b.max_lon && p.1 >= b.min_lat && p.1 <= b.max_lat
-}
-fn near(x: i32, y: i32, a: i32, b: i32, r: i32) -> bool {
-    (x - a).abs() < r && (y - b).abs() < r
 }
 
 // Scale the compact bitmaps to legible device pixels without a larger asset or cache.
@@ -566,6 +549,7 @@ fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
 mod tests {
     use super::*;
     use core::cell::Cell;
+    use embedded_graphics::primitives::Rectangle;
     use obc_formats::io::{ByteSource, Error, SliceSource};
     use obc_reader::{MapCache, MapTables};
     use obcm_testkit::{build_poi_map, PoiSpec};
@@ -621,6 +605,22 @@ mod tests {
     }
     fn view() -> Viewport {
         Viewport::new(240.0, 320.0, 8_000_000, 46_000_000, obc_render::zoom_for_mpp(3.0))
+    }
+
+    /// The box a glyph of half-width `r` inks, centred at `p`, as `placements` offers it.
+    fn glyph_box(p: Point, r: i32) -> Rectangle {
+        rect(p.x - r, p.y - r, 2 * r + 1, 2 * r + 1)
+    }
+
+    /// `a`, grown by `margin` on each side, shares a pixel with `b`.
+    fn touches(a: Rectangle, margin: i32, b: Rectangle) -> bool {
+        let edges = |r: Rectangle, m: i32| {
+            let (l, t) = (r.top_left.x - m, r.top_left.y - m);
+            (l, t, l + r.size.width as i32 + 2 * m, t + r.size.height as i32 + 2 * m)
+        };
+        let (al, at, ar, ab) = edges(a, margin);
+        let (bl, bt, br, bb) = edges(b, 0);
+        al < br && bl < ar && at < bb && bt < ab
     }
 
     #[test]
@@ -690,15 +690,27 @@ mod tests {
             }
         }
         assert_eq!(icons.marks.len(), CAPACITY);
-        let rider = (vp.cam_lon, vp.cam_lat);
-        let placed = icons.placements(&vp, Some(rider), &[]);
+        // The frame's reserved chrome: a rider at the panel centre, a header and a bottom panel.
+        let rider = rect(108, 148, 24, 24);
+        let (header, panel) = (rect(0, 0, 240, 31), rect(0, 269, 240, 51));
+        let frame = [rider, header, panel];
+        let placed = icons.placements(&vp, &mut PointPlacement::new(&frame));
         assert!(!placed.is_empty() && placed.len() <= DRAW_LIMIT);
-        assert_eq!(placed, icons.placements(&vp, Some(rider), &[]));
+        assert_eq!(placed, icons.placements(&vp, &mut PointPlacement::new(&frame)));
         for (i, (p, kind)) in placed.iter().enumerate() {
-            let radius = kind.radius();
-            assert!(p.y >= radius + 31 && p.y <= 320 - radius - 51);
-            assert!(!near(p.x, p.y, 120, 160, radius + 17));
-            assert!(!placed[..i].iter().any(|(q, other)| near(p.x, p.y, q.x, q.y, radius + other.radius() + 2)));
+            let b = glyph_box(*p, kind.radius());
+            assert!(b.top_left.x >= 0 && b.top_left.y >= 0, "the glyph draws whole");
+            assert!(
+                b.top_left.x + b.size.width as i32 <= 240 && b.top_left.y + b.size.height as i32 <= 320,
+                "the glyph draws whole"
+            );
+            for r in frame {
+                assert!(!touches(b, 0, r), "the glyph clears the reserved chrome");
+            }
+            assert!(
+                placed[..i].iter().all(|(q, other)| !touches(b, 2, glyph_box(*q, other.radius()))),
+                "the glyphs hold the margin apart"
+            );
         }
         let mut settings = Settings::default();
         assert!(Selection::for_view(&settings, 10.01).categories.is_empty());
@@ -733,7 +745,7 @@ mod tests {
                 kind: kinds[i % kinds.len()],
             });
         }
-        let placed = icons.placements(&vp, None, &[]);
+        let placed = icons.placements(&vp, &mut PointPlacement::new(&[]));
         assert_eq!(placed.len(), DRAW_LIMIT);
         for round in placed[..18].as_chunks::<9>().0 {
             for kind in kinds {
@@ -755,11 +767,44 @@ mod tests {
             assert_eq!(placed.iter().find(|(_, k)| *k == kind).unwrap().0, nearest);
         }
         icons.marks.reverse();
-        assert_eq!(placed, icons.placements(&vp, None, &[]), "source order does not change selection");
+        assert_eq!(
+            placed,
+            icons.placements(&vp, &mut PointPlacement::new(&[])),
+            "source order does not change selection"
+        );
         for mark in &mut icons.marks {
             mark.kind = Kind::Water;
         }
-        assert_eq!(icons.placements(&vp, None, &[]).len(), DRAW_LIMIT, "one category may fill all free slots");
+        assert_eq!(
+            icons.placements(&vp, &mut PointPlacement::new(&[])).len(),
+            DRAW_LIMIT,
+            "one category may fill all free slots"
+        );
+    }
+
+    /// A waypoint diamond comes in as reserved chrome, because it inks over the glyphs. The mark it
+    /// covers is dropped, not moved, and the marks beside it are untouched.
+    #[test]
+    fn a_reserved_waypoint_diamond_drops_the_glyph_over_it() {
+        let vp = view();
+        let mut icons = MapIcons::new();
+        for i in 0..6 {
+            icons.retain(Mark {
+                id: i as u64 + 1,
+                position: vp.to_map(40.0 + i as f32 * 32.0, 160.0),
+                elevation: 1000,
+                kind: Kind::Water,
+            });
+        }
+        let free = icons.placements(&vp, &mut PointPlacement::new(&[]));
+        assert!(free.len() > 1, "the marks are placed with nothing reserved");
+        let covered = free[0].0;
+        // The box `label_reserved` gives a diamond, centred on the mark it covers.
+        let r = 4;
+        let diamond = rect(covered.x - r, covered.y - r, 2 * r + 1, 2 * r + 1);
+        let held = icons.placements(&vp, &mut PointPlacement::new(&[diamond]));
+        assert!(!held.iter().any(|(p, _)| *p == covered), "the glyph over the diamond is dropped");
+        assert_eq!(held.len(), free.len() - 1, "and only that one");
     }
 
     #[test]
@@ -802,7 +847,10 @@ mod tests {
         let panned = Viewport::new(240.0, 320.0, lon, lat, vp.zoom);
         assert!(icons.coverage.unwrap().contains(&panned.visible_bbox()));
         assert!(icons.marks.iter().any(|m| in_bounds(panned.visible_bbox(), m.position)));
-        assert!(icons.placements(&panned, None, &[]).is_empty(), "remaining cached points are clipped at the edge");
+        assert!(
+            icons.placements(&panned, &mut PointPlacement::new(&[])).is_empty(),
+            "remaining cached points are clipped at the edge"
+        );
         icons.prepare(Some(&reader), &panned, &settings, 1001);
         assert_eq!(icons.marks.len(), CAPACITY, "refill does not blank the existing icons");
         assert!(icons.query.is_some());
@@ -822,7 +870,10 @@ mod tests {
         }
         assert_eq!(icons.visible, Some(moving.visible_bbox()));
         assert!(icons.wake_in(now).is_none());
-        assert!(!icons.placements(&moving, None, &[]).is_empty(), "newly visible padded points are discovered");
+        assert!(
+            !icons.placements(&moving, &mut PointPlacement::new(&[])).is_empty(),
+            "newly visible padded points are discovered"
+        );
         let reads = source.reads.get();
         icons.prepare(Some(&reader), &moving, &settings, 10000);
         assert_eq!(source.reads.get(), reads, "a settled dense view does not keep reading");

@@ -23,8 +23,10 @@ pub fn normalize(text: &str) -> String {
         .join(" ")
 }
 
+/// Every character has a glyph in the device font. `glyph_supported` reads the real strip, and
+/// it answers true for DEL, which the strip maps but does not draw, so controls are excluded here.
 pub fn supported(text: &str) -> bool {
-    text.chars().all(|c| matches!(c, '\n' | '\t' | ' '..='~' | '\u{a0}'..='\u{17f}'))
+    text.chars().all(|c| matches!(c, '\n' | '\t') || (!c.is_control() && obc_render::glyph_supported(c)))
 }
 
 fn excluded(element: ElementRef<'_>) -> bool {

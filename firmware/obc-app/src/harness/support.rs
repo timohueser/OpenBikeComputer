@@ -13,10 +13,10 @@ use obc_app::device_core::{
     PassPlan, PlatformSupport, Revision, StoreIdentity, StoreRevision,
 };
 use obc_app::navigator::{NavigatorEffect, NavigatorOutcome, PlannerWork};
-use obc_app::{App, Dirty};
+use obc_app::{App, Dirty, Gesture};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
-use obc_route::{RouteReader, Waypoints, WptEntry};
+use obc_route::{RouteIndex, RouteReader, Waypoints, WptEntry};
 
 /// A `w`×`h` `Rgb888` buffer implementing `DrawTarget`, with clipped writes.
 pub struct Buf {
@@ -297,6 +297,50 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
     buf
 }
 
+/// A `ByteSink` over a growable `Vec`: the host's write-the-whole-file-to-RAM backing, and what a
+/// converter in a test writes into.
+#[derive(Default)]
+pub struct VecSink(pub Vec<u8>);
+
+impl obc_formats::io::ByteSink for VecSink {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+        self.0.extend_from_slice(bytes);
+        Ok(())
+    }
+    fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+        let at = offset as usize;
+        self.0[at..at + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
+/// The resident waypoint table of an `.obcr`, through the production window loader — the table a
+/// real import hands the app, as opposed to the synthetic [`wpts`] one.
+///
+/// The loader returns one window, so an over-cap file would hand back a prefix. A caller here
+/// means "every waypoint the file holds", and gets told when that is not what it has.
+pub fn wpts_from_obcr(bytes: &[u8]) -> Waypoints {
+    let src = SliceSource(bytes);
+    let index = RouteIndex::read(&src).expect("a converted .obcr parses");
+    let wpts = RouteReader::new(&index, &src).load_waypoints(0);
+    assert!(!wpts.truncated, "the file holds more waypoints than one window: load a window yourself");
+    wpts
+}
+
+/// A stored ride's header facts, named and otherwise nominal: enough for a list row and its detail
+/// page. The one builder every ride-list test seeds from.
+pub fn ride_summary(name: &str) -> obc_app::RideSummary {
+    obc_app::RideSummary {
+        name: heapless::String::try_from(name).unwrap(),
+        start_time: 1_720_000_000,
+        distance_m: 1_000,
+        moving_time_s: 600,
+        climb_m: 10,
+        synced: false,
+        synced_at_utc: 0,
+    }
+}
+
 /// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised.
 pub fn wpts(items: &[(u32, &str)]) -> Waypoints {
     let full: Vec<_> = items.iter().map(|&(d, n)| (d, n, None, 0)).collect();
@@ -328,10 +372,23 @@ pub fn pass(
     facts: &mut ExternalFacts,
     route: Option<&RouteReader<'_>>,
 ) -> PassPlan {
+    pass_with_gestures(app, ms, outcomes, facts, route, &[])
+}
+
+/// [`pass`], with rider input arriving on it. The pass runs outcomes, then input, then Navigator,
+/// so this is the only way to put a gesture between an answer and the release that follows it.
+pub fn pass_with_gestures(
+    app: &mut App,
+    ms: u32,
+    outcomes: &mut OutcomeSlots,
+    facts: &mut ExternalFacts,
+    route: Option<&RouteReader<'_>>,
+    gestures: &[Gesture],
+) -> PassPlan {
     let mut loc = NoFix;
     app.run_pass(PassInputs {
         now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
-        gestures: &[],
+        gestures,
         sensors: Sensors::new(&mut loc),
         route,
 
@@ -453,8 +510,13 @@ pub struct Planner<'r> {
     /// The last operation the app abandoned — what a late answer carries.
     abandoned: Option<OperationToken<NavigatorTag>>,
     work: Option<PlannerWork>,
+    /// Gestures the next pass carries, so a rider input can land on the pass that reads an
+    /// answer. One-shot: the pass that takes them leaves the queue empty.
+    next_gestures: heapless::Vec<Gesture, 4>,
     /// Whether the app asked for the workspace back since the last read.
     released: bool,
+    /// Whether the last release asked the host to keep the operation's publication.
+    retained: Option<bool>,
     /// Whether the app asked for the planned detour to be spliced since the last read.
     commit_asked: bool,
     /// What its passes asked to repaint since the last read.
@@ -477,7 +539,9 @@ impl<'r> Planner<'r> {
             token: None,
             abandoned: None,
             work: None,
+            next_gestures: heapless::Vec::new(),
             released: false,
+            retained: None,
             commit_asked: false,
             render: Dirty::CLEAN,
         }
@@ -493,7 +557,14 @@ impl<'r> Planner<'r> {
     pub fn one_pass(&mut self, app: &mut App) -> PassPlan {
         let ms = self.ms;
         let mut facts = ExternalFacts::NONE;
-        let mut plan = pass(app, ms, &mut self.outcomes, &mut facts, self.route);
+        // Queued input rides the pass that reads an answer: the board runs outcomes, then input,
+        // then Navigator, and only there is that order observable.
+        let gestures = if self.outcomes.navigator.is_empty() {
+            heapless::Vec::new()
+        } else {
+            core::mem::take(&mut self.next_gestures)
+        };
+        let mut plan = pass_with_gestures(app, ms, &mut self.outcomes, &mut facts, self.route, &gestures);
         self.render.map |= plan.render.map;
         self.render.overlay |= plan.render.overlay;
         match plan.effects.navigator.take() {
@@ -509,8 +580,9 @@ impl<'r> Planner<'r> {
                 self.token = Some(token);
                 self.commit_asked = true;
             }
-            Some(NavigatorEffect::Release { token, .. }) => {
+            Some(NavigatorEffect::Release { token, retain_result, .. }) => {
                 self.released = true;
+                self.retained = Some(retain_result);
                 self.abandoned = self.token.take();
                 let _ = self.outcomes.navigator.try_put(NavigatorOutcome::Released { token });
             }
@@ -555,6 +627,13 @@ impl<'r> Planner<'r> {
         self.settle(app, Some(answer));
     }
 
+    /// Queue `gestures` onto the pass that reads the next answer, which is the board's own order:
+    /// outcomes, then input, then Navigator. It is how a rider pressing a button at the moment an
+    /// answer lands is reproduced.
+    pub fn press_on_the_next_pass(&mut self, gestures: &[Gesture]) {
+        self.next_gestures = heapless::Vec::from_slice(gestures).expect("at most four gestures on one pass");
+    }
+
     /// Answer an operation the app already abandoned — the slow executor that finished its search
     /// after the rider walked away.
     pub fn answer_late(
@@ -580,6 +659,14 @@ impl<'r> Planner<'r> {
     pub fn took_release(&mut self, app: &mut App) -> bool {
         self.settle(app, None);
         core::mem::take(&mut self.released)
+    }
+
+    /// Whether the last release told the host to keep this operation's publication. `None` until
+    /// one has been asked for. A `false` here is what turns into a publish compensation on the
+    /// board, which retracts the route the app may already be riding.
+    pub fn retained_result(&mut self, app: &mut App) -> Option<bool> {
+        self.settle(app, None);
+        self.retained
     }
 
     /// Whether DeviceCore asked for the planned detour to be spliced since the last read — one-shot.

@@ -7,7 +7,7 @@ use crate::{
 };
 use core::fmt::Write;
 use embedded_graphics::prelude::*;
-use obc_map_scene::{BBox, MapScene};
+use obc_map_scene::BBox;
 use obc_render::{
     rect,
     text::{Font, TextAlign},
@@ -73,11 +73,10 @@ impl EasierScreen {
     pub fn handle(&mut self, _: Gesture, _: &mut Ctx) -> Transition {
         Transition::None
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: MapScene,
     {
         if let Some(next) = self.next.filter(|_| self.review) {
             cv.clear(PARCHMENT);

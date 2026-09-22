@@ -307,15 +307,16 @@ forest, grass, and the land base, and stays out of the warm group that tracks an
 <figcaption>The packer classifies, normalizes, and deduplicates POIs before it builds the POI index.</figcaption>
 </figure>
 
-A fixed table maps tags to the service categories the device browses, and the first matching row
-wins. The packer keeps the source identity of each place, removes repeated copies of the same
-object, and builds one index per category.
+A fixed table maps tags to the categories the device browses, and the first matching row wins.
 
 A place gets a route approach only when one of its source nodes belongs to a routable way, or, for
-an area, one of its own boundary nodes. A road that merely passes nearby does not establish access:
-the device must not plan a route to a gate that does not exist.
+an area, one of its own boundary nodes. A road that merely passes nearby is not access: the device
+must not route to a gate that does not exist.
 
-Named summits go into their own category for Peak View, with elevation in place of opening hours.
+Named summits get their own category for Peak View, with elevation in place of opening hours.
+
+The device font holds only ASCII, Latin-1 and Latin Extended-A, so the packer spells every other
+character in Latin, or takes `name:en`, rather than store question marks.
 
 ### Parsing opening hours
 
@@ -726,9 +727,15 @@ stays live and the route progress stays where it was.
 ## Landmark and peak content
 
 The host compiles landmark text and photos from captured Wikidata, Wikipedia, and Commons
-responses into the map. Selection is deterministic: a fixed list of permitted types, matched
-through subclass steps, with excluded types winning. There is no popularity score and no per-place
-judgement, so the same snapshot always gives the same landmarks. Lakes, mountains, and glaciers are
+responses into the map. The candidates are the places the region's own OpenStreetMap extract tags
+with a Wikidata item: an explicit tag, never a name or a position match. So the search for them
+needs no network, it is bounded by the region instead of a box around it, and every landmark has a
+map object the rider can ride to. A class query over Wikidata stays available for natural
+curiosities, whose places are often unmapped, and it is off unless the operator asks for it.
+
+Selection is deterministic: a fixed list of permitted types, matched through subclass steps, with
+excluded types winning. There is no popularity score and no per-place judgement, so the same
+snapshot always gives the same landmarks. Lakes, mountains, and glaciers are
 excluded even where a permitted type also matches: lake names belong on the map and mountains
 belong in Peak View. Mountain passes are kept.
 
@@ -742,6 +749,26 @@ Peak articles are a separate collection, linked only by an explicit tag on the O
 name and a coordinate cannot prove an article is about that summit. One article can serve several
 summits. See the [compiler](src:host/obc-pack/src/landmarks/mod.rs).
 
+Landmarks are an artifact class of the bake, beside the map cells and the terrain. The bakery runs
+them per curated region: the region's own boundary polygon selects the sources, a cache holds the
+raw capture, and the tree holds one compiled artifact for each region. The capture reads live
+sources, so it is the only step of a bake that two runs can disagree on. It is resumable, the run
+says when it starts one, and everything after it is a pure function of the bytes it wrote. Three
+documents decide what a region asks for: its candidate list, its boundary, the category policy, and
+the shared language set. A change in any of them is captured again, into its own directory, and a
+region is compiled again when its captured sources move.
+
+The cell bake reads those artifacts from the tree; there is no landmark flag. Each cell is cut
+with the compiled content of every region in the run whose coverage selects it, and the packer
+merges the artifacts by QID: one record for each place, and the same record whatever order the artifacts
+arrive in. A cell on a border is ground in two regions, so it carries both sides. A cell's cache
+key holds the artifacts it was cut from and no others, so a re-captured region re-cuts the cells
+that region reaches and leaves the rest of the tree alone.
+
+Verify re-computes each artifact's digest, so one that moved after the cut fails the tree.
+Publish uploads the artifacts and records them in the catalogue. Nobody downloads one: the cells
+already carry the content, so the published copies are provenance.
+
 ## Attribution and share-alike
 
 OpenStreetMap data is under the Open Database License 1.0. A rendered map is a Produced Work, and
@@ -750,6 +777,9 @@ Derivative Database: the catalog declares `ODbL-1.0` and publishes the license t
 distributes that map data is bound by the same terms. A map with terrain-derived contours also
 carries the [Copernicus attribution](../terrain/#attribution).
 
+Landmark content is not OpenStreetMap: the catalogue states the class credit and the licences a
+region's texts and photos are under. Each place keeps its own notices.
+
 ## Implementation
 
 - Packer pipeline: [`pipeline.rs`](src:host/obc-pack/src/pipeline.rs)
@@ -757,6 +787,8 @@ carries the [Copernicus attribution](../terrain/#attribution).
 - OSM ingest: [`ingest.rs`](src:host/obc-pack/src/ingest.rs)
 - POIs and opening hours: [`poi.rs`](src:host/obc-pack/src/poi.rs), [`hours.rs`](src:host/obc-pack/src/hours.rs)
 - Landmark preparation: [`landmarks`](src:host/obc-pack/src/landmarks/mod.rs)
+- Landmark discovery: [`discover.rs`](src:host/obc-pack/src/landmarks/discover.rs)
+- Landmark bake stage: [`landmarks.rs`](src:host/obc-bake/src/landmarks.rs)
 - Navigation graph: [`nav.rs`](src:host/obc-pack/src/nav.rs)
 - Quadtree: [`quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
 - Builder: [`builder/`](src:builder)

@@ -1,4 +1,4 @@
-//! A synthetic staged `UPDATE.BIN` for the sim's DFU snapshots.
+//! A synthetic staged update package for the sim's DFU snapshots.
 //!
 //! The scan and the arm run board-side on the device, and the app sees only the result. To drive
 //! the confirm and error screens headlessly the sim builds a valid in-memory OBCU container with
@@ -49,7 +49,8 @@ impl DfuScanKind {
     }
 }
 
-/// An in-memory OBCU container (64-byte header + a small body) backing a real `obc-dfu` scan.
+/// An in-memory OBCU container (64-byte header + a small body) backing a real `obc-dfu` scan: the
+/// shape a client's update-package upload leaves in the flat store.
 struct SliceStage {
     bytes: Vec<u8>,
 }
@@ -81,7 +82,8 @@ impl StageIo for SliceStage {
     }
 
     fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError> {
-        // One contiguous run over the whole synthetic file, which is a fresh copy's FAT shape.
+        // One contiguous run: a package this small fits one extent of the store's card-scaled
+        // geometry, which is what the board resolves it to.
         out[0] = Extent { start_block: 0, blocks: (self.bytes.len() as u32).div_ceil(512) };
         Ok(1)
     }

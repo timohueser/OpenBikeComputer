@@ -6,8 +6,8 @@
 //! transports share the semantics instead of each growing its own copy, so this module owns what
 //! would otherwise be duplicated:
 //!
-//! - [`command::run_command`] — the imperatives (`deleteObject`, `ackRides`, `installFw`,
-//!   `forgetBond`, `setClock`). It takes the store and returns a typed outcome.
+//! - [`command::run_command`] — the imperatives (`installFw`, `forgetBond`, `setClock`). It takes
+//!   the store and returns a typed outcome.
 //! - [`identity`] — the FICR-derived serial and name, the DIS strings, and the Config and
 //!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its
 //!   attribute-value types; USB writes the same bytes into a control frame.

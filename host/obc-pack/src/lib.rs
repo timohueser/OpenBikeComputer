@@ -35,6 +35,7 @@ pub mod land;
 pub mod landmark_map;
 pub mod landmarks;
 pub mod merge;
+pub mod name;
 pub mod nav;
 pub mod net;
 pub mod peak_map;

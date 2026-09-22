@@ -128,15 +128,19 @@ def run(args):
             identities.update(found)
     places = []
     for index, (identity, direct) in enumerate(sorted(identities.items())):
-        place = shared.capture_place(capture, identity) if direct is None else shared.capture_assets(capture, identity, direct)
+        place = shared.capture_place(capture, identity, True) if direct is None else shared.capture_assets(capture, identity, direct, True)
         places.append(place)
         print(f"peak article {index + 1}/{len(identities)}: {identity} articles={len(place['articles'])} images={len(place['images'])}", flush=True)
-    outcomes = capture.outcomes()
-    sources = shared.semantic_sources(outcomes)
-    sources.append(dict(path="summits.json", url="urn:openbikecomputer:osm-summits:" + json.loads(candidate_bytes)["osm_sha256"], bytes=len(candidate_bytes), sha256=shared.digest(candidate_bytes)))
-    sources.sort(key=lambda source: source["path"])
-    failures = [item for item in outcomes if item["status"] != "ok"]
-    coverage = dict(kind="osm-named-summits", country_complete=False, asset_phase_complete=True, named_summits=len(summits), linked_summits=sum(bool(s["tags"].get("wikidata") or s["tags"].get("wikipedia")) for s in summits), canonical_articles=len(identities), request_failures=len(failures), selection="Explicit OSM wikidata/wikipedia links from the map summit classifier; no inferred matches.")
-    shared.write_json(args.out / "manifest.json", dict(schema=1, sources=sources, places=places, peaks=dict(summits_path="summits.json", resolutions=resolutions), coverage=coverage, outcomes=outcomes))
+    def manifest():
+        outcomes = capture.outcomes()
+        sources = shared.semantic_sources(outcomes)
+        sources.append(dict(path="summits.json", url="urn:openbikecomputer:osm-summits:" + json.loads(candidate_bytes)["osm_sha256"], bytes=len(candidate_bytes), sha256=shared.digest(candidate_bytes)))
+        sources.sort(key=lambda source: source["path"])
+        failures = [item for item in outcomes if item["status"] != "ok"]
+        coverage = dict(kind="osm-named-summits", country_complete=False, asset_phase_complete=True, named_summits=len(summits), linked_summits=sum(bool(s["tags"].get("wikidata") or s["tags"].get("wikipedia")) for s in summits), canonical_articles=len(identities), request_failures=len(failures), selection="Explicit OSM wikidata/wikipedia links from the map summit classifier; no inferred matches.")
+        shared.write_json(args.out / "manifest.json", dict(schema=1, sources=sources, places=places, peaks=dict(summits_path="summits.json", resolutions=resolutions), coverage=coverage, outcomes=outcomes))
+        return coverage, failures
+    shared.acquire_requested_photos(capture, args.select_with, "peaks", "peaks.json", args.out / "manifest.json", args.boundary, places, manifest)
+    coverage, failures = manifest()
     print(json.dumps(coverage, indent=2), flush=True)
     return 2 if failures else 0

@@ -28,8 +28,14 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("UploadEnd::Committed { id, replaced }", publish)
         # One expression per kind, so the kind, the committed id and the replaced flag are pinned
         # together rather than through a separate `kind` binding.
-        self.assertIn("note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Route, id.0, replaced))", publish)
-        self.assertIn("note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))", publish)
+        self.assertIn(
+            "note_catalog_upload(obc_app::CatalogUpload::new(obc_app::CatalogUploadKind::Route, id.0, replaced))",
+            publish,
+        )
+        self.assertIn(
+            "note_catalog_upload(obc_app::CatalogUpload::new(obc_app::CatalogUploadKind::Trip, id.0, replaced))",
+            publish,
+        )
         # A committed map is checked before its card, and never produces a catalog upload fact.
         self.assertIn("ObjectKind::MapShard => fault = check_committed_map(store, ObjectId(id.0))", publish)
 
@@ -45,22 +51,8 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertLess(routes, trips)
         self.assertLess(trips, events, "typed upload ids must resolve against the newly-fed snapshots")
 
-    def test_upload_queue_coalesces_replacements_and_has_a_loss_fallback(self) -> None:
-        queue = body(FLAT_STORE, "fn queue_catalog_upload", "fn note_catalog_upload")
-        self.assertIn("for _ in 0..queued", queue)
-        self.assertIn("prior.same_object(upload)", queue)
-        self.assertIn("events.push_back(upload)", queue)
-        self.assertLess(
-            queue.index("prior.same_object(upload)"),
-            queue.index("if let Err(upload) = events.push_back(upload)"),
-            "same-object replacements must coalesce before the capacity fallback",
-        )
-        self.assertIn("events.pop_front()", queue, "saturation keeps the newest fact, not a stale oldest one")
-
-        note = body(FLAT_STORE, "fn note_catalog_upload", "pub(crate) fn take_catalog_upload")
-        self.assertIn("UPLOAD_EVENTS_LOSS.store(true", note)
-        self.assertNotIn("advisory deferred", note, "a dropped fact is loss, not deferred work")
-
+    def test_a_lost_fact_refreshes_the_active_route_before_the_retained_facts(self) -> None:
+        """What the queue keeps is `obc_app::upload_facts`; what the board does with a loss is here."""
         delivery = body(RIDE, "fn note_catalog_uploads", "async fn read_catalogs")
         loss = delivery.index("take_catalog_upload_loss()")
         drain = delivery.index("while let Some(upload)")

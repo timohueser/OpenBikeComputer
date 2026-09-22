@@ -15,6 +15,7 @@
 //! signed/unsigned discriminator.
 
 use crate::crc32::crc32;
+use crate::layout::{RAM_END, RAM_START};
 use crate::sig::{SIG_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE};
 
 pub const HEADER_LEN: usize = 64;
@@ -31,18 +32,14 @@ const HEADER_CRC_LEN: usize = 60;
 /// Byte cap of the NUL-padded `fw_version` field.
 pub const FW_VERSION_LEN: usize = 32;
 
-/// The largest raw image the wrapper accepts and the armer stages: the app slot, less a small
-/// margin. It lives here so the host tool, the armer and the bootloader agree on one ceiling.
-pub const MAX_IMAGE_LEN: u32 = 1_480_000;
+/// The largest raw image the wrapper accepts and the armer stages: the app slot, and nothing
+/// less. The bootloader's install engine checks the same bound against the slot its linker gives
+/// it ([`crate::layout`]), so an image the host tool wraps is one the device can flash.
+pub const MAX_IMAGE_LEN: u32 = crate::layout::APP_SLOT_LEN;
 
 /// The largest container a max-size image produces. The BLE and USB announce gate at this, so an
 /// image exactly at [`MAX_IMAGE_LEN`] is never refused for its own framing.
 pub const MAX_CONTAINER_LEN: u32 = MAX_IMAGE_LEN + HEADER_LEN as u32 + SIG_LEN as u32;
-
-/// Start of the nRF54L15's RAM; the low bound for the initial-SP check.
-pub const RAM_START: u32 = 0x2000_0000;
-/// One past the end of the nRF54L15 DK's 256 KB RAM; the high bound for the initial SP.
-pub const RAM_END: u32 = 0x2004_0000;
 
 /// Does `image` begin with a plausible Cortex-M vector table? The first word of a bare-metal image
 /// is the initial stack pointer, which must point into RAM. The wrapper uses it as a warn-only
@@ -96,8 +93,8 @@ impl ImageHeader {
         ImageHeader { sig_scheme: SIG_SCHEME_ED25519, sig_len: SIG_LEN as u16, ..self }
     }
 
-    /// The same header with the signature marker cleared. The device-local `ROLLBACK.BIN` snapshot
-    /// uses it: the bootloader verifies that file by CRC, and nothing signs it.
+    /// The same header with the signature marker cleared. The device-local rollback snapshot uses
+    /// it: the bootloader verifies those bytes by CRC, and nothing signs them.
     pub fn unsigned(self) -> ImageHeader {
         ImageHeader { sig_scheme: SIG_SCHEME_NONE, sig_len: 0, ..self }
     }
@@ -264,12 +261,21 @@ mod tests {
 
     #[test]
     fn vector_table_sp_range() {
-        let mut good = [0u8; 8];
-        good[..4].copy_from_slice(&0x2002_0000u32.to_le_bytes());
-        assert!(looks_like_vector_table(&good));
-        let mut flash = [0u8; 8];
-        flash[..4].copy_from_slice(&0x0000_8000u32.to_le_bytes()); // an app-slot LMA, not an SP
-        assert!(!looks_like_vector_table(&flash));
+        fn sp(word: u32) -> bool {
+            let mut image = [0u8; 8];
+            image[..4].copy_from_slice(&word.to_le_bytes());
+            looks_like_vector_table(&image)
+        }
+        assert!(sp(0x2002_0000));
+        assert!(!sp(0x0000_8000)); // an app-slot LMA, not an SP
         assert!(!looks_like_vector_table(&[0u8; 3]));
+
+        // The board image's own initial SP — the top of the M33's linked RAM, below the
+        // coprocessor carve — is inside the range, and the part's RAM end is not.
+        assert!(sp(0x2007_8000));
+        assert!(sp(RAM_END - 4));
+        assert!(!sp(RAM_END));
+        assert!(sp(RAM_START));
+        assert!(!sp(RAM_START - 4));
     }
 }

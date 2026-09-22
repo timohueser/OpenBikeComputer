@@ -185,7 +185,10 @@ hatch shows what is not drawn yet. Turning toward an unfinished view gives it pr
 
 **Live** follows the compass. **Select** enters **Browse** on the most prominent visible peak, and
 further steps walk the visible peaks, turning the view only when there is no next peak. Where the
-map carries an article for a summit, a mark appears and Select opens its text pages and its photo.
+map carries content for a summit, a mark appears. Content is text, a photo, or both: Select opens
+the text pages and the photo, and a summit with a photo and no text opens on the photo. The photo
+has to help the rider recognise the mountain, so the bakery prefers a picture taken at a distance
+and puts a picture taken on the summit last.
 **Down + Back** opens the sources, because credits must travel with the content. An article is
 linked by the summit's OSM identity alone: a name and a coordinate cannot prove that an article
 describes that summit.
