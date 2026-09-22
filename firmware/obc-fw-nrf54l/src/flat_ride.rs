@@ -322,8 +322,7 @@ impl Recorder {
         now: u32,
     ) -> Option<RecorderOutcome> {
         if let Some(id) = app.recorder.object_owed(*opened_session) {
-            let name =
-                app.active_route_index().and_then(|i| app.routes().get(i)).map_or("", |route| route.name.as_str());
+            let name = app.ride_name().unwrap_or("");
             self.open(store, id, name, now).await;
             // A refused start stays owed and is retried on the next iteration.
             if self.open_session() == Some(id) {

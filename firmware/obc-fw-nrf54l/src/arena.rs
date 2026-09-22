@@ -563,21 +563,29 @@ impl NavGuard {
     }
 
     #[inline(never)]
-    pub(crate) fn begin_trim(&mut self, target_m: u32, has_elevation: bool) {
+    pub(crate) fn begin_trim(&mut self, leg: obc_route::Leg, target_m: u32, has_elevation: bool) {
         assert!(self.phase != NavPhase::Plan);
         unsafe {
             core::ptr::addr_of_mut!((*(arena_ptr() as *mut DetourArm)).work.trim)
-                .write(ManuallyDrop::new(obc_route::Trimmer::new(target_m, has_elevation)));
+                .write(ManuallyDrop::new(obc_route::Trimmer::new(leg, target_m, has_elevation)));
         }
         self.phase = NavPhase::Trim;
     }
 
     #[inline(never)]
-    pub(crate) fn begin_splice(&mut self, split_m: u32, rejoin_m: u32, len_m: u32, has_elevation: bool) {
+    pub(crate) fn begin_splice(
+        &mut self,
+        leg: obc_route::Leg,
+        split_m: u32,
+        rejoin_m: u32,
+        len_m: u32,
+        has_elevation: bool,
+    ) {
         assert!(self.phase != NavPhase::Plan);
         unsafe {
             let arm = &mut *(arena_ptr() as *mut DetourArm);
             core::ptr::addr_of_mut!(arm.work.splice).write(ManuallyDrop::new(obc_route::Splicer::new(
+                leg,
                 split_m,
                 rejoin_m,
                 len_m,

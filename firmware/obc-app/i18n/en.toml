@@ -453,6 +453,20 @@ too_far_hint = "Try a closer destination."
 not_found = "Couldn't find a route."
 not_found_hint = "No rideable way nearby - try from a road."
 
+# --- Start away from the route start: Ride to start or Join nearest. The sentence and the
+# hint are fragments around a distance: `you_are` + "3.2 km" + `from_start`, and
+# "400 m" + `away_at` + "km 12". ---
+[start_away]
+title = "RIDE TO START"
+you_are = "You are "
+from_start = " from the start."
+no_route = "No route to the start from here."
+ride_to_start = "Ride to start"
+then_route = ", then route"
+join_nearest = "Join nearest"
+away_at = " away, at "
+cancel = "Cancel"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSED"

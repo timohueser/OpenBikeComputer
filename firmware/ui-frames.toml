@@ -268,7 +268,7 @@ expect = "RideDetail"
 name = "ride-detail-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "p*4 B d w p p H"
+script = "p*4 f d p B d w p p H"
 expect = "RideDetail"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -424,7 +424,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C"
 expect = "ContextDrawer"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 [[frame]]
 name = "detour-chooser"
@@ -432,7 +432,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C d p w"
 expect = "Detour"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 [[frame]]
 name = "detour-planning"
@@ -440,7 +440,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C d p w p"
 expect = "NavPlanning"
-args = ["--gpx", "{upgpx}", "--at", "60", "--hold", "detour"]
+args = ["--gpx", "{upgpx}", "--at", "25", "--hold", "detour"]
 
 [[frame]]
 name = "detour-preview"
@@ -448,7 +448,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C d p d d p f"
 expect = "DetourPreview"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 [[frame]]
 name = "detour-fail"
@@ -456,7 +456,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C d p w p"
 expect = "NavFail"
-args = ["--gpx", "{upgpx}", "--at", "60", "--inject", "detour-fail=exhausted"]
+args = ["--gpx", "{upgpx}", "--at", "25", "--inject", "detour-fail=exhausted"]
 
 [[frame]]
 name = "detour-committed"
@@ -464,7 +464,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C d p d d p f p f T"
 expect = "Climb"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # --- Settings ------------------------------------------------------------------------------------
 # System — so every settings screen sits two levels down. The shape of every script below is:
@@ -707,7 +707,7 @@ expect = "Firmware"
 name = "firmware-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "p*4 B u p d*4 p d d d p"
+script = "p*4 f d p B u p d*4 p d d d p"
 expect = "Firmware"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -871,6 +871,35 @@ env = "routes"
 script = "p p p d H"
 expect = "RouteOverview"
 
+# START RIDE more than 200 m from the route's first point asks first: Ride to start (the cursor),
+# Join nearest and Cancel. The fix stands 3.2 km from the start of the Grimsel climb, under a
+# trip-day name. `f` draws the frame whose preparation projects the fix onto the route.
+[[frame]]
+name = "start-away"
+map = "{grimsel}"
+env = "day-route"
+script = "p p p p f"
+expect = "StartAway"
+args = ["--center", "8298495,46625396", "--heading", "0"]
+
+# Ride to start on its way: the shared planning spinner, held.
+[[frame]]
+name = "start-away-planning"
+map = "{grimsel}"
+env = "day-route"
+script = "p p p p f p"
+expect = "NavPlanning"
+args = ["--center", "8298495,46625396", "--heading", "0", "--hold", "detour"]
+
+# No way to the start: Join nearest (the cursor) and Cancel. This fix is 4.1 km east of km 12.
+[[frame]]
+name = "start-away-noroute"
+map = "{grimsel}"
+env = "day-route"
+script = "p p p p f p w"
+expect = "StartAway"
+args = ["--center", "8377267,46608103", "--heading", "0", "--inject", "detour-fail=exhausted"]
+
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
@@ -879,7 +908,7 @@ expect = "RouteOverview"
 name = "map"
 map = "{grimsel}"
 env = "routes"
-script = "p*4"
+script = "p*4 f d p"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -955,7 +984,7 @@ boot = false
 name = "statistics"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 b"
+script = "p*4 f d p b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -965,7 +994,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-pan"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 b h w"
+script = "p*4 f d p b h w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -973,7 +1002,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-zoom"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 b h p d d d w"
+script = "p*4 f d p b h p d d d w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -981,7 +1010,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-pan-zoomed"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 b h p d d d p d d w"
+script = "p*4 f d p b h p d d d p d d w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -994,7 +1023,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-sensors"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 b"
+script = "p*4 f d p b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 
@@ -1044,7 +1073,7 @@ expect = "RouteOverview"
 name = "map-lowbatt"
 map = "{grimsel}"
 env = "routes"
-script = "p*4"
+script = "p*4 f d p"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--battery", "5", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1071,7 +1100,7 @@ args = ["--clock", "2025-06-29T14:00", "--gpx", "{wptgpx}", "--at", "5"]
 name = "map-wpt-chip"
 map = "{grimsel}"
 env = "routes"
-script = "p p d p p"
+script = "p p d p p f d p"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:03", "--gpx", "{wptgpx}", "--at", "233"]
 
@@ -1081,7 +1110,7 @@ args = ["--clock", "2025-06-29T14:03", "--gpx", "{wptgpx}", "--at", "233"]
 name = "stats-wpt"
 map = "{grimsel}"
 env = "routes"
-script = "p p d p p b"
+script = "p p d p p f d p b"
 expect = "Statistics"
 args = ["--gpx", "{wptgpx}", "--at", "233"]
 
@@ -1097,7 +1126,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "ridecontrol"
 map = "{grimsel}"
 env = "routes"
-script = "p*5"
+script = "p*4 f d p p"
 expect = "RideControl"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1116,7 +1145,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "map-context"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 C"
+script = "p*4 f d p C"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1128,7 +1157,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "map-display-sheet"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 C u p"
+script = "p*4 f d p C u p"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1141,7 +1170,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "map-display-clock-off"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 C u p p"
+script = "p*4 f d p C u p p"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1166,7 +1195,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "climb"
 map = "{grimsel}"
 env = "eta-route"
-script = "p*4"
+script = "p*4 f d p"
 expect = "Climb"
 args = ["--gpx", "{gpx}", "--at", "1500"]
 
@@ -1178,7 +1207,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base}"
 expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # The timeline's own **context sheet** (#1515 D4a) and the two controls it is the only home for.
 # (b) Water from authored and mapped sources. Finish the page load after advancing the list.
@@ -1188,7 +1217,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_filter_water} d*9 f*8"
 expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (c1) The context sheet itself: two value rows, Filter and Sources, each a door into its editor.
 # This frame replaces the Hold picker's — the filter is a sheet row now, not a mode on the list.
@@ -1198,7 +1227,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} C"
 expect = "ContextDrawer"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (c2) The nested value editor, on the row the rider is browsing (Campsite) with the committed
 # choice (Everything) still ticked under the first notch — the mark the grammar promises.
@@ -1208,7 +1237,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} C p w d d"
 expect = "ContextDrawer"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (c3) The Sources editor, where the choices carry no icon of their own — the other shape the one
 # generic editor draws.
@@ -1218,7 +1247,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} C d p w d"
 expect = "ContextDrawer"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 [[frame]]
@@ -1227,7 +1256,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_scope_pois} p f"
 expect = "PoiDetail"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
 # the coverage guard takes precedence over map-place filters.
@@ -1255,7 +1284,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_scope_waypoints}"
 expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 [[frame]]
 name = "up-ahead-pois-only"
@@ -1263,7 +1292,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_scope_pois}"
 expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # The two controls composing: waypoints-only + the Water filter = just the rider's own water stops.
 [[frame]]
@@ -1272,7 +1301,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_scope_waypoints} {up_filter_water}"
 expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "60"]
+args = ["--gpx", "{upgpx}", "--at", "25"]
 
 [[frame]]
 name = "up-ahead-nothing-waypoints"
@@ -1287,7 +1316,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{u5_climb_off} p*4 b f*6"
 expect = "Statistics"
-args = ["--gpx", "{upgpx}", "--at", "60", "--stat-fields", "next-water,next-resupply,next-pharmacy,speed,dist-to-go"]
+args = ["--gpx", "{upgpx}", "--at", "25", "--stat-fields", "next-water,next-resupply,next-pharmacy,speed,dist-to-go"]
 
 # The empty state: a route-less ride, where nothing can be "ahead" — icon + the category's own word
 # + `--`, at the taller tile height the chart-less grid gives.
@@ -1548,7 +1577,7 @@ expect = "Home"
 name = "quick-root"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q"
+script = "p*4 f d p Q"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1556,7 +1585,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-assistant"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 A w"
+script = "p*4 f d p A w"
 expect = "Assistant"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1564,7 +1593,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-bluetooth-off"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q d p w"
+script = "p*4 f d p Q d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1572,7 +1601,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-brightness"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q p w"
+script = "p*4 f d p Q p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1580,7 +1609,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-power-confirm"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q d d d p w"
+script = "p*4 f d p Q d d d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1588,7 +1617,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-power-hold"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q d d d p w H"
+script = "p*4 f d p Q d d d p w H"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1601,7 +1630,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-root-no-backlight"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q"
+script = "p*4 f d p Q"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30", "--no-backlight"]
 
@@ -1666,7 +1695,7 @@ langs = ["de", "fr", "es"]
 name = "statistics"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 b"
+script = "p*4 f d p b"
 expect = "Statistics"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1675,7 +1704,7 @@ langs = ["de", "fr", "es"]
 name = "map"
 map = "{grimsel}"
 env = "routes"
-script = "p*4"
+script = "p*4 f d p"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1746,7 +1775,7 @@ map = "{monaco}"
 env = "monaco-route"
 script = "{detour_pre} C d p w p"
 expect = "NavPlanning"
-args = ["--gpx", "{upgpx}", "--at", "60", "--hold", "detour"]
+args = ["--gpx", "{upgpx}", "--at", "25", "--hold", "detour"]
 langs = ["de", "fr", "es"]
 
 # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
@@ -1877,7 +1906,7 @@ langs = ["de", "fr", "es"]
 name = "map-context"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 C"
+script = "p*4 f d p C"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1886,7 +1915,7 @@ langs = ["de", "fr", "es"]
 name = "map-display-sheet"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 C u p"
+script = "p*4 f d p C u p"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1897,7 +1926,7 @@ langs = ["de", "fr", "es"]
 name = "up-ahead-context"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 A d p f p f C"
+script = "p*4 f d p A d p f p f C"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1906,7 +1935,7 @@ langs = ["de", "fr", "es"]
 name = "up-ahead-filter-editor"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 A d p f p f C p w d d"
+script = "p*4 f d p A d p f p f C p w d d"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1915,7 +1944,7 @@ langs = ["de", "fr", "es"]
 name = "quick-root"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q"
+script = "p*4 f d p Q"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1924,7 +1953,7 @@ langs = ["de", "fr", "es"]
 name = "quick-assistant"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 A w"
+script = "p*4 f d p A w"
 expect = "Assistant"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1933,7 +1962,7 @@ langs = ["de", "fr", "es"]
 name = "quick-bluetooth-off"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q d p w"
+script = "p*4 f d p Q d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1942,7 +1971,7 @@ langs = ["de", "fr", "es"]
 name = "quick-brightness"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q p w"
+script = "p*4 f d p Q p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1951,7 +1980,7 @@ langs = ["de", "fr", "es"]
 name = "quick-power-confirm"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q d d d p w"
+script = "p*4 f d p Q d d d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1960,7 +1989,7 @@ langs = ["de", "fr", "es"]
 name = "quick-power-hold"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 Q d d d p w H"
+script = "p*4 f d p Q d d d p w H"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]

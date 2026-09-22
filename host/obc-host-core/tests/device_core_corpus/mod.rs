@@ -902,8 +902,9 @@ pub fn route(name: &str) -> RouteSummary {
         distance_km: 10,
         climb_m: 100,
         bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 1_000, max_lat: 1_000 },
-        start_lon: 0,
-        start_lat: 0,
+        // The road's first point, so START RIDE from `road_fix(0.0)` starts without the Start-away prompt.
+        start_lon: 7_500_000,
+        start_lat: 43_500_000,
     };
     summary.name.push_str(name).unwrap();
     summary
