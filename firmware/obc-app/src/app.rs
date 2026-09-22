@@ -1773,7 +1773,10 @@ impl App {
             // A base screen that declares no `ContextMenu` gets nothing, not an empty drawer.
             // The squeeze is still swallowed by the recogniser, so it leaks no step or Back.
             Chord::Context => match self.base_context() {
-                Some(menu) => self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::opening(menu))),
+                Some(menu) => {
+                    let lang = self.settings().language;
+                    self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::opening(menu, lang)))
+                }
                 None => false,
             },
         }
@@ -1846,6 +1849,7 @@ impl App {
     pub fn backlight_level(&self) -> u8 {
         match self.ui.stack.last() {
             Some(Screen::QuickDrawer(d)) => d.staged_brightness(),
+            Some(Screen::ContextDrawer(d)) => d.staged_brightness(),
             _ => None,
         }
         .unwrap_or(self.settings.brightness)
@@ -3906,25 +3910,24 @@ mod tests {
     fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
         use crate::settings::Units;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // Walk to the Units screen: Settings list → System (the last group) → Units (its first row).
+        // Walk to the Units row: Settings list → System (the last group) → Units (its first row).
         app.apply_gesture(Gesture::BackHold); // Home → Menu
         app.apply_gesture(Gesture::Step(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list
         app.apply_gesture(Gesture::Step(-1)); // → System row (last, wraps up from Ride)
-        app.apply_gesture(Gesture::Press); // → System menu (Units is the first row)
-        app.apply_gesture(Gesture::Press); // → Units screen
+        app.apply_gesture(Gesture::Press); // → System page (Units is the first row)
+        app.apply_gesture(Gesture::Press); // → the Units editor sheet, over the page
         assert!(!settings_dirty(&mut app), "navigation changed no setting, so nothing to save");
 
         let before = app.settings().units;
-        app.apply_gesture(Gesture::Press); // flip units (live immediately, but persistence is debounced)
-        assert_ne!(app.settings().units, before, "the Units screen flipped the system");
+        app.apply_gesture(Gesture::Step(1)); // stage Imperial
+        assert_eq!(app.settings().units, before, "staging commits nothing");
+        app.apply_gesture(Gesture::Press); // commit: the sheet closes onto the System page
+        assert_ne!(app.settings().units, before, "the editor flipped the system");
         assert_eq!(app.settings().units, Units::Imperial, "default Metric → Imperial");
         assert!(!settings_dirty(&mut app), "still on a settings screen → the save is held, not fired per step");
 
-        app.apply_gesture(Gesture::Back); // Units → System menu (still inside the settings subtree)
-        assert!(!settings_dirty(&mut app), "the System menu is itself a settings screen — save stays held");
-
-        app.apply_gesture(Gesture::Back); // System menu → Settings list (still inside the settings subtree)
+        app.apply_gesture(Gesture::Back); // System page → Settings list (still inside the settings subtree)
         assert!(!settings_dirty(&mut app), "the Settings list is itself a settings screen — save stays held");
 
         app.apply_gesture(Gesture::Back); // Settings list → Menu (left the settings subtree)
@@ -3937,10 +3940,8 @@ mod tests {
     /// mid-edit and fail its case here.
     #[test]
     fn every_settings_screen_holds_a_pending_save_until_exit() {
-        use crate::screen::{
-            apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
-            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
-        };
+        use crate::screen::settings::page;
+        use crate::screen::{apply, AddFieldScreen, ResetScreen, SettingsPage, StatFieldsScreen, Transition};
         use crate::settings::Units;
 
         /// The screens to stack on the Home root (bottom first — parents under children, as the
@@ -3951,17 +3952,28 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 11] = [
+        let cases: [Case; 10] = [
             // Pure navigation — no edit gesture of its own.
-            ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
-            // Open the UTC-offset stepper, the one editable row, then step it, leaving the field
-            // open so Back must close it then exit.
-            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Step(1)]),
-            // Press flips metric ↔ imperial.
-            ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
-            // → the Page-cycle row (index 1), open its stepper, +1 s (and leave it open — Back must
-            // still close it then exit).
-            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(1), Gesture::Press, Gesture::Step(1)]),
+            ("Settings list", || one(Screen::Settings(SettingsPage::hub())), &[]),
+            // Open the UTC-offset editor sheet over the page, step it and commit; the sheet pops
+            // and the page is on top again.
+            (
+                "Date & Time",
+                || one(Screen::DateTime(SettingsPage::new(&page::DATETIME))),
+                &[Gesture::Press, Gesture::Step(1), Gesture::Press],
+            ),
+            // The Units row: open its editor, step to imperial, commit.
+            (
+                "System",
+                || one(Screen::System(SettingsPage::new(&page::SYSTEM))),
+                &[Gesture::Press, Gesture::Step(1), Gesture::Press],
+            ),
+            // → the Auto-flip row (index 1), open its editor, +1 s, commit.
+            (
+                "Ride",
+                || one(Screen::Ride(SettingsPage::new(&page::RIDE))),
+                &[Gesture::Step(1), Gesture::Press, Gesture::Step(1), Gesture::Press],
+            ),
             // A completed hold deletes the highlighted field.
             ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
             // Press adds the highlighted field and pops back onto its Fields parent — still settings.
@@ -3974,14 +3986,12 @@ mod tests {
                 },
                 &[Gesture::Press],
             ),
-            // Pure navigation — the Connections menu only opens its pages.
-            ("Connections", || one(Screen::Connections(ConnectionsScreen::new())), &[]),
+            // The Bluetooth switch, flipped.
+            ("Connections", || one(Screen::Connections(SettingsPage::new(&page::CONNECTIONS))), &[Gesture::Press]),
             // → the Power Saver row, flip it.
-            ("Power", || one(Screen::Power(PowerScreen::new())), &[Gesture::Step(1), Gesture::Press]),
-            // Pure navigation — the System menu only opens its pages.
-            ("System", || one(Screen::System(SystemScreen::new())), &[]),
+            ("Power", || one(Screen::Power(SettingsPage::new(&page::POWER))), &[Gesture::Step(1), Gesture::Press]),
             // Pure navigation — the Firmware page's install action leaves the settings subtree.
-            ("Firmware", || one(Screen::Firmware(FirmwareScreen::new())), &[]),
+            ("Firmware", || one(Screen::Firmware(SettingsPage::new(&page::FIRMWARE))), &[]),
             // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
             ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
         ];
@@ -4098,8 +4108,9 @@ mod tests {
         app.apply_gesture(Gesture::Press); // → System menu (Units is row 0)
         app.apply_gesture(Gesture::Step(1)); // → Date & Time row (1)
         app.apply_gesture(Gesture::Press); // → Date & Time (cursor parked on the offset row)
-        app.apply_gesture(Gesture::Press); // open the offset field
-        app.apply_gesture(Gesture::Step(1)); // +one step (+15 min)
+        app.apply_gesture(Gesture::Press); // open the offset editor sheet
+        app.apply_gesture(Gesture::Step(1)); // +one step (+15 min), staged
+        app.apply_gesture(Gesture::Press); // commit
         assert_eq!(app.settings().utc_offset_min, crate::settings::UTC_OFFSET_STEP, "the offset stepped one step");
         let now = app.wall_clock_now();
         assert_eq!((now.hour, now.minute), (12, 15), "the offset re-stamped the wall clock to local = UTC + offset");
@@ -5085,7 +5096,7 @@ mod tests {
     // screen, then advance the clock past the deadline and inspect the top screen.
 
     use crate::screen::{
-        MenuScreen, NavPlanningScreen, PasskeyScreen, RouteReceivedScreen, SettingsScreen, StatisticsScreen,
+        MenuScreen, NavPlanningScreen, PasskeyScreen, RouteReceivedScreen, SettingsPage, StatisticsScreen,
         WarningFlags, WarningScreen,
     };
     use crate::settings::IdleReturn;
@@ -5100,7 +5111,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home], Idle
         app.settings.idle_return = IdleReturn::S30;
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
-        let _ = app.ui.stack.push(Screen::Settings(SettingsScreen::new()));
+        let _ = app.ui.stack.push(Screen::Settings(SettingsPage::hub()));
         app.ui.last_input_ms = 0;
 
         idle_tick(&mut app, 29_000); // still inside the window
@@ -5392,7 +5403,7 @@ mod tests {
     #[test]
     fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsPage::hub()));
         app.arm_settings_save(); // rev → 1
         assert!(!settings_dirty(&mut app), "still editing — nothing owed yet");
 
@@ -5407,7 +5418,7 @@ mod tests {
     #[test]
     fn no_persist_during_a_stepper_sweep_inside_the_subtree() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsPage::hub()));
         // A sweep of edits while inside the subtree: several revisions, but never an emit.
         for _ in 0..5 {
             app.arm_settings_save();

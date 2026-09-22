@@ -1,33 +1,40 @@
-//! The Language screen: one value row that cycles the four languages. It shows each language by its
-//! own name, so it reads to a speaker who cannot read the current UI language.
+//! The Language screen: a pick list of the four languages, each by its own name and flag, so it
+//! reads to a speaker who cannot read the current UI language. A press commits and returns.
 
-use obc_render::Surface;
+use obc_render::{
+    text::{Font, TextAlign},
+    Surface,
+};
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
-use crate::screen::vocab::rows::value_row_with_arrows;
-use crate::screen::{Ctx, Render, Transition};
+use crate::screen::vocab::flags::{draw_flag, FLAG_H};
+use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_GAP, ROW_ONE};
+use crate::screen::vocab::sheet::committed_tick;
+use crate::screen::{palette, Ctx, Render, Transition};
+use crate::settings::Language;
 use crate::Msg;
 
-/// Stateless. The value lives in [`Settings`](crate::Settings), and the one row is always the cursor.
-#[derive(Debug, Default)]
-pub struct LanguageScreen;
+/// The cursor opens on the committed language.
+#[derive(Debug)]
+pub struct LanguageScreen {
+    selected: usize,
+}
 
 impl LanguageScreen {
-    pub fn new() -> Self {
-        LanguageScreen
+    pub fn new(current: Language) -> Self {
+        LanguageScreen { selected: current as usize }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // The ring is short, so there is no separate edit mode.
-            Gesture::Press => {
-                cx.settings.language = cx.settings.language.cycled();
+            Gesture::Step(n) => {
+                self.selected = crate::screen::vocab::list::step_selection(self.selected, n, Language::COUNT);
                 Transition::None
             }
-            Gesture::Step(n) => {
-                cx.settings.language = cx.settings.language.stepped(n);
-                Transition::None
+            Gesture::Press => {
+                cx.settings.language = Language::ALL[self.selected];
+                Transition::Pop
             }
             Gesture::Back => Transition::Pop,
             Gesture::Hold | Gesture::BackHold => Transition::None,
@@ -36,10 +43,24 @@ impl LanguageScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
-        let language = rx.settings.language;
         title_frame(cv, w, h, rx.t(Msg::LanguageTitle), "");
-
-        value_row_with_arrows(cv, LIST_TOP + 8, w, language.name());
+        let committed = rx.settings.language;
+        for (i, lang) in Language::ALL.iter().enumerate() {
+            let y = LIST_TOP + i as i32 * (ROW_ONE + ROW_GAP);
+            let area = row_rect(y, w, ROW_ONE);
+            row_cursor(cv, area, i == self.selected, false);
+            let x = area.top_left.x + 10;
+            let cy = y + ROW_ONE / 2;
+            draw_flag(cv, x + 1, cy - FLAG_H / 2, *lang);
+            cv.text_vcentered(lang.name(), x + 30, (y, ROW_ONE), Font::Body, TextAlign::Left, palette::INK);
+            if *lang == committed {
+                let tx = area.top_left.x + area.size.width as i32 - 22;
+                // The committed tick of the drawer editor, at row scale.
+                for k in 0..2 {
+                    committed_tick(cv, tx + k, cy - k, palette::WOOD);
+                }
+            }
+        }
     }
 }
 
@@ -48,7 +69,6 @@ mod tests {
     use super::*;
     use crate::activity::Activity;
     use crate::screen::test_ctx;
-    use crate::settings::Language;
     use crate::{AppState, Mode, Settings};
 
     fn run(scr: &mut LanguageScreen, s: &mut Settings, g: Gesture) -> Transition {
@@ -59,15 +79,17 @@ mod tests {
     }
 
     #[test]
-    fn press_cycles_and_turn_walks() {
-        let mut s = Settings { language: Language::En, ..Settings::default() };
-        let mut scr = LanguageScreen::new();
-        run(&mut scr, &mut s, Gesture::Press);
-        assert_eq!(s.language, Language::De, "press cycles English → Deutsch");
+    fn opens_on_the_committed_language_and_a_press_commits_and_returns() {
+        let mut s = Settings { language: Language::De, ..Settings::default() };
+        let mut scr = LanguageScreen::new(s.language);
+        assert_eq!(scr.selected, 1, "the cursor starts on Deutsch");
         run(&mut scr, &mut s, Gesture::Step(1));
-        assert_eq!(s.language, Language::Fr, "a step walks Deutsch → Français");
-        run(&mut scr, &mut s, Gesture::Step(-1));
-        assert_eq!(s.language, Language::De, "and back");
+        assert_eq!(s.language, Language::De, "a step commits nothing");
+        assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Pop));
+        assert_eq!(s.language, Language::Fr, "press commits Français and returns");
+        run(&mut scr, &mut s, Gesture::Step(-3));
+        assert_eq!(scr.selected, 3, "the list wraps");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
+        assert_eq!(s.language, Language::Fr, "Back leaves the committed language alone");
     }
 }

@@ -13,7 +13,7 @@ use crate::Msg;
 use super::vocab::chrome::title_frame_ble;
 use super::vocab::list;
 use super::{
-    palette, Ctx, MapScreen, PeakViewScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
+    palette, Ctx, MapScreen, PeakViewScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick, SettingsPage,
     Transition,
 };
 
@@ -143,7 +143,7 @@ impl MenuScreen {
                 MenuItem::Map => open_map(cx),
                 MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::default())),
 
-                MenuItem::Settings => Transition::Push(Screen::Settings(SettingsScreen::new())),
+                MenuItem::Settings => Transition::Push(Screen::Settings(SettingsPage::hub())),
             },
             Gesture::Back => Transition::Pop,
             Gesture::Hold => Transition::None,

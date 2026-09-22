@@ -168,7 +168,7 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     assert!(!declared(&Screen::Home(HomeScreen::new())));
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
     assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
-    assert!(!declared(&Screen::Settings(crate::screen::SettingsScreen::new())));
+    assert!(!declared(&Screen::Settings(crate::screen::SettingsPage::hub())));
     assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&crate::navigator::RouteState::new(),))));
 }
 
@@ -1151,8 +1151,13 @@ fn the_global_escape_reaches_the_menu_from_every_family() {
         ("a riding view", |app| apply(&mut app.ui.stack, Transition::Root(Screen::Map(MapScreen::new())))),
         ("the paused page", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RideControl(RideControl::new())))),
         ("a settings page", |app| {
-            apply(&mut app.ui.stack, Transition::Push(Screen::Settings(crate::screen::SettingsScreen::new())));
-            apply(&mut app.ui.stack, Transition::Push(Screen::Display(crate::screen::DisplayScreen::new())));
+            apply(&mut app.ui.stack, Transition::Push(Screen::Settings(crate::screen::SettingsPage::hub())));
+            apply(
+                &mut app.ui.stack,
+                Transition::Push(Screen::Display(crate::screen::SettingsPage::new(
+                    &crate::screen::settings::page::DISPLAY,
+                ))),
+            );
         }),
         ("a nav list", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())))),
         ("the quick drawer", |app| {
