@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 interface TestCellStore {
     revision: string;
     alive: boolean;
-    has: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
+    has: ReturnType<typeof vi.fn<(key: string, bytes: number) => Promise<boolean>>>;
     put: ReturnType<typeof vi.fn<(key: string, bytes: Uint8Array) => Promise<undefined>>>;
 }
 
@@ -19,7 +19,8 @@ const seams = vi.hoisted(() => ({
     clearAssemblyStorage: vi.fn(async () => undefined),
     clearCellStores: vi.fn(async () => undefined),
     clearMapWorkStorage: vi.fn(async () => undefined),
-    hasRoomFor: vi.fn(async () => false),
+    hasRoomFor: vi.fn(async (_bytes: number, _reclaimable = 0) => false),
+    openCellInventory: vi.fn<() => Promise<TestCellStore | null>>(async () => null),
     openCellStore: vi.fn<() => Promise<TestCellStore | null>>(async () => null),
     downloadCells: vi.fn(),
     discardCellStore: vi.fn(async () => undefined),
@@ -32,6 +33,7 @@ const seams = vi.hoisted(() => ({
     workerError: null as string | null,
     workerAssemble: 0,
     requireDisk: false,
+    memoryRequiresDisk: false,
     holdEstimates: false,
     estimateReplies: [] as Array<(error?: boolean) => void>,
     workerTerminate: 0,
@@ -51,6 +53,7 @@ vi.mock("../../lib/cells/store", () => ({
     discardCellStore: seams.discardCellStore,
     discardMapOutput: seams.discardMapOutput,
     hasRoomFor: seams.hasRoomFor,
+    openCellInventory: seams.openCellInventory,
     openCellStore: seams.openCellStore,
     readMapOutput: seams.readMapOutput,
     reclaimableAssemblyBytes: seams.reclaimableAssemblyBytes,
@@ -95,7 +98,7 @@ class AssembleWorker {
                                 budgetBytes: 100,
                                 ceilingBytes: 100,
                                 headroomBytes: 97,
-                                fits: true,
+                                fits: !seams.memoryRequiresDisk || request.onDisk === true,
                             },
                         },
                     }),
@@ -155,6 +158,7 @@ describe("direct assembler delivery", () => {
         seams.clearCellStores.mockReset().mockResolvedValue(undefined);
         seams.clearMapWorkStorage.mockReset().mockResolvedValue(undefined);
         seams.hasRoomFor.mockReset().mockResolvedValue(false);
+        seams.openCellInventory.mockReset().mockResolvedValue(null);
         seams.openCellStore.mockReset().mockResolvedValue(null);
         seams.downloadCells.mockReset().mockImplementation(
             async (
@@ -178,6 +182,7 @@ describe("direct assembler delivery", () => {
         seams.workerError = null;
         seams.workerAssemble = 0;
         seams.requireDisk = false;
+        seams.memoryRequiresDisk = false;
         seams.holdEstimates = false;
         seams.estimateReplies = [];
         seams.workerTerminate = 0;
@@ -214,6 +219,49 @@ describe("direct assembler delivery", () => {
         expect(seams.requireDisk).toBe(true);
         expect(seams.workerAssemble).toBe(1);
         expect(seams.clearAssemblyStorage).toHaveBeenCalledOnce();
+        await unmount(component);
+    });
+
+    it("admits a disk-only rebuild when cached cells make the quota projection fit", async () => {
+        seams.memoryRequiresDisk = true;
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockImplementation(async (bytes: number) => bytes <= 2_200_000_000);
+        const cells = testCellStore();
+        cells.has.mockImplementation(async (key) => key === "cached");
+        seams.openCellInventory.mockResolvedValue(cells);
+        seams.openCellStore.mockResolvedValue(cells);
+        seams.plan = {
+            items: [
+                { band: "fine", cell: { id: "cell-1", sha256: "cached", bytes: 800_000_000 } },
+                { band: "fine", cell: { id: "cell-2", sha256: "missing", bytes: 200_000_000 } },
+            ],
+            totalBytes: 1_000_000_000,
+            knownEmpty: [],
+        };
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const large = {
+            ...store,
+            ledger: {
+                totalBytes: 1_000_000_000,
+                cellCount: 2,
+                core: { bytes: 400_000_000 },
+                terrain: null,
+                isFinal: true,
+            },
+        };
+
+        const { component, target } = await mountReadyStep({ store: large });
+        (target.querySelector('.cell-storage input[type="checkbox"]') as HTMLInputElement).click();
+        await tick();
+        await waitForReady(target);
+        expect(seams.hasRoomFor).toHaveBeenCalledWith(2_200_000_000, 0);
+
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(seams.requireDisk).toBe(true);
+        expect(seams.workerAssemble).toBe(1);
+        expect(cells.has).toHaveBeenCalledWith("cached", 800_000_000);
+        expect(cells.has).toHaveBeenCalledWith("missing", 200_000_000);
         await unmount(component);
     });
 
@@ -342,21 +390,7 @@ describe("direct assembler delivery", () => {
             rootBody: "{}",
             holeCells: () => [],
         };
-        const target = document.createElement("div");
-        document.body.append(target);
-        const component = mount(DownloadStep, {
-            target,
-            props: { store: store as never },
-        });
-
-        // The mandatory memory preflight is deliberately debounced by 500 ms.
-        await tick();
-        vi.advanceTimersByTime(500);
-        await Promise.resolve();
-        await tick();
-        // Only the preflight debounce needs a clock. Restore the real event
-        // model before exercising AbortSignal and the component click.
-        vi.useRealTimers();
+        const { component, target } = await mountReadyStep({ store });
         const job = new DeviceJob("map");
         const running = job.run(
             (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
@@ -962,9 +996,15 @@ async function mountReadyStep(
     document.body.append(target);
     const component = mount(DownloadStep, { target, props: { ...props, store: (props.store ?? store) as never } });
     await tick();
+    for (let attempt = 0; attempt < 10 && target.textContent?.includes("Deleting…"); attempt++) {
+        await Promise.resolve();
+        await tick();
+    }
     vi.advanceTimersByTime(500);
-    await Promise.resolve();
-    await tick();
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await Promise.resolve();
+        await tick();
+    }
     vi.useRealTimers();
     return { component, target };
 }
@@ -973,7 +1013,7 @@ function testCellStore(): TestCellStore {
     return {
         revision: "test-revision",
         alive: true,
-        has: vi.fn(async () => false),
+        has: vi.fn(async (_key: string, _bytes: number) => false),
         put: vi.fn(async (_key: string, _bytes: Uint8Array) => undefined),
     };
 }

@@ -28,11 +28,12 @@
         discardMapOutput,
         hasRoomFor,
         isStorageQuotaError,
+        openCellInventory,
         openCellStore,
         readMapOutput,
         reclaimableAssemblyBytes,
         STORAGE_QUOTA_MESSAGE,
-        type CellStore,
+        type CellInventory,
     } from "../../lib/cells/store";
     import { projectedRunDiskBytes } from "../../lib/cells/quota";
     import { acquireMapWorkStorage } from "../../lib/cells/workBarrier";
@@ -606,11 +607,17 @@
      *
      * Terrain is never skipped: it is not in the store.
      */
-    async function skipCached(
+    interface CachedPlan {
+        plan: CellDownloadPlan;
+        cells: number;
+        bytes: number;
+    }
+
+    async function scanCached(
         plan: CellDownloadPlan,
-        cells: CellStore,
-        runOp: <T>(operation: () => Promise<T>) => Promise<T>,
-    ): Promise<CellDownloadPlan> {
+        cells: CellInventory,
+        runOp: <T>(operation: () => Promise<T>) => Promise<T> = (operation) => operation(),
+    ): Promise<CachedPlan> {
         const wanted: typeof plan.items = [];
         let bytes = 0;
         let have = 0;
@@ -625,9 +632,11 @@
             wanted.push(item);
             bytes += item.cell.bytes;
         }
-        cachedCells = have;
-        cachedBytes = haveBytes;
-        return { ...plan, items: wanted, totalBytes: bytes };
+        return {
+            plan: { ...plan, items: wanted, totalBytes: bytes },
+            cells: have,
+            bytes: haveBytes,
+        };
     }
 
     /** What the selection is called in the file and on the device. */
@@ -744,7 +753,10 @@
         if (!cellStore) out.transientCellRevision = null;
         let fetchPlan = plan;
         if (cellStore) {
-            fetchPlan = await skipCached(plan, cellStore, runOp);
+            const cached = await scanCached(plan, cellStore, runOp);
+            fetchPlan = cached.plan;
+            cachedCells = cached.cells;
+            cachedBytes = cached.bytes;
             // Asked once, before a byte is fetched, and about the WHOLE run — cells, the
             // map the sink writes, the merge's spill — because all three live in OPFS: a
             // store with room for the cells but not the output would fail at the first
@@ -960,7 +972,7 @@
         estimate = null;
         estimateLedger = null;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
-        if (!l || !l.isFinal || l.cellCount === 0 || !idle) {
+        if (!l || !l.isFinal || l.cellCount === 0 || !idle || clearingCells) {
                 // Every exit clears the pending flag: a selection that empties or a run
                 // that starts must not leave "waiting for an estimate" latched with
                 // nothing left to answer it.
@@ -971,7 +983,14 @@
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
         const terrainBytes = l.terrain?.bytes ?? 0;
-        const diskNeed = projectedRunDiskBytes(l);
+        const reuseCells = keepCells;
+        const resolution = store.resolution;
+        const indices = store.indices;
+        const catalog = store.catalog;
+        const plan = reuseCells && resolution && indices
+            ? planCells(resolution, catalog, indices, store.terrain)
+            : null;
+        const revision = cellStoreRevision(catalog);
         estimatePending = true;
         estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
@@ -983,7 +1002,13 @@
                 // sync-handle probe.
             void (async () => {
                 const writable = await cellStoreWritable();
+                let storedCellBytes = 0;
+                if (writable && plan) {
+                    const cells = await openCellInventory(revision);
+                    if (cells) storedCellBytes = (await scanCached(plan, cells)).bytes;
+                }
                 const reclaimable = writable ? await reclaimableAssemblyBytes() : 0;
+                const diskNeed = projectedRunDiskBytes(l, storedCellBytes);
                 const onDisk = writable && (await hasRoomFor(diskNeed, reclaimable));
                 if (destroyed || estimateId !== estimateGeneration || l !== ledger) return;
                 estimateLedger = l;

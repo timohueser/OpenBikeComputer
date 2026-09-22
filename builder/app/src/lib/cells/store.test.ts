@@ -182,6 +182,19 @@ describe("cellStoreRevision", () => {
 });
 
 describe("the write side", () => {
+    it("inspects an existing cell revision without creating a missing one", async () => {
+        const root = opfs();
+        const { openCellInventory, openCellStore } = await withOpfs(root);
+        expect(await openCellInventory("missing")).toBeNull();
+        expect(root.dirs.has("obc-cells")).toBe(false);
+
+        const store = (await openCellStore("kept"))!;
+        await store.put(KEY_A, new Uint8Array([1, 2, 3, 4]));
+        const inventory = (await openCellInventory("kept"))!;
+        expect(await inventory.has(KEY_A, 4)).toBe(true);
+        expect(await inventory.has(KEY_A, 3)).toBe(false);
+    });
+
     it("keeps a cell under its digest and recognises it again", async () => {
         const root = opfs();
         const { openCellStore } = await withOpfs(root);
