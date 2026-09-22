@@ -99,6 +99,15 @@ oct = "oct"
 nov = "nov"
 dec = "déc"
 
+[weekday]
+mon = "lun"
+tue = "mar"
+wed = "mer"
+thu = "jeu"
+fri = "ven"
+sat = "sam"
+sun = "dim"
+
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
 # line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
 # weekday abbreviations (Monday-first) were added for the Home line ---
@@ -361,6 +370,11 @@ title = "PARCOURS"
 no_routes = "Aucun parcours"
 no_routes_sub = "Importez un GPX"
 folder_empty_sub = "Ce voyage n'a aucun parcours"
+day = "Jour"
+day_next = "à suivre"
+trip_done = "Terminé"
+day_one = "jour"
+days = "jours"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]

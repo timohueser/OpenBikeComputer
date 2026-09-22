@@ -93,6 +93,24 @@ pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
     seg(cv, (cx - k / 3, cy + k * 2 / 3), (cx + k, cy - k * 2 / 3));
 }
 
+/// The half-width of [`row_check`].
+pub(crate) const ROW_CHECK_HALF: i32 = 5;
+
+/// The two-stroke check at list-row scale, centred at `c` on the cap of a row's name line.
+pub(crate) fn row_check(cv: &mut impl Surface, c: Point, color: u16) {
+    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32), color: u16) {
+        const N: i32 = 8;
+        for s in 0..=N {
+            let x = a.0 + (b.0 - a.0) * s / N;
+            let y = a.1 + (b.1 - a.1) * s / N;
+            cv.disc(Point::new(x, y), 1, color);
+        }
+    }
+    let k = ROW_CHECK_HALF;
+    seg(cv, (c.x - k, c.y), (c.x - k / 3, c.y + k * 2 / 3), color);
+    seg(cv, (c.x - k / 3, c.y + k * 2 / 3), (c.x + k, c.y - k * 2 / 3), color);
+}
+
 pub(crate) fn wrapped_line_pitch(font: Font) -> i32 {
     font.line_height() as i32 - 5
 }

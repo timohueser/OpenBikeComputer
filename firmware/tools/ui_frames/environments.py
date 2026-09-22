@@ -80,16 +80,28 @@ def tracks(stage: Stage) -> Staging:
     return Staging(("--tracks-dir", str(where)))
 
 
+def _rename_route(route: bytearray, name: str) -> None:
+    """Rewrite an OBCR header's name (`specs/OBCR_Spec.md` §1: Name Len at 6, Name at 64)."""
+    raw = name.encode()
+    route[6] = len(raw)
+    route[64:112] = raw.ljust(48, b"\0")
+
+
 def trips(stage: Stage) -> Staging:
     """A routes store with a trip folder: the two vector routes and grimsel-climb, named so their
     sorted-scan ids are 0/1/2, plus `TP1.OBT` ("Alpen Traverse", day routes [0, 1, 99], starting
     Monday 2025-09-29). The top level then shows one folder grouping ids 0+1 above the loose grimsel
-    route.
+    route. The two vector routes carry day names, so the day list's rows differ.
     """
     where = stage.dir("trips")
     grimsel = stage.fixtures / "sim-grimsel" / "routes"
-    shutil.copy(stage.vectors / "route-plain.obcr", where / "1-plain.obcr")
-    shutil.copy(stage.vectors / "route-waypoints.obcr", where / "2-waypoints.obcr")
+    for source, target, name in [
+        ("route-plain.obcr", "1-plain.obcr", "Day 1 Andermatt"),
+        ("route-waypoints.obcr", "2-waypoints.obcr", "Day 2 Ulrichen"),
+    ]:
+        route = bytearray((stage.vectors / source).read_bytes())
+        _rename_route(route, name)
+        (where / target).write_bytes(route)
     shutil.copy(grimsel / "grimsel-climb.obcr", where / "3-grimsel.obcr")
     shutil.copy(grimsel / "TP1.OBT", where / "TP1.OBT")
     return Staging(("--routes-dir", str(where)))
