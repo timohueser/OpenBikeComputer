@@ -199,6 +199,7 @@ impl MapPreview {
             RestampError::ShorterThanHeader => {
                 PreviewFailure::input("The Teningen preview is shorter than the OBCM header.")
             }
+            RestampError::WrongFormat => PreviewFailure::input("The Teningen preview is not the current OBCM format."),
             RestampError::BadStyleOffset => PreviewFailure::input("The Teningen preview has a bad style offset."),
             RestampError::TableOverflows => PreviewFailure::input("The Teningen preview style table overflows."),
             RestampError::TableTruncated => PreviewFailure::input("The Teningen preview style table is truncated."),
