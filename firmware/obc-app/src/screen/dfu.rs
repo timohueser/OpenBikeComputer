@@ -24,7 +24,7 @@ fn wait_card(cv: &mut impl Surface, rx: &Render, spin: &Spinner, title: &str, ca
     let (w, h) = (rx.w, rx.h);
     title_frame(cv, w, h, title, "");
     spin.draw_needle(cv, w, h);
-    cv.text(caption, Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, palette::INK);
+    wrapped(cv, caption, w / 2, h * 72 / 100, chrome::copy_w(w), palette::INK);
 }
 
 /// Centred body copy at `Font::Label`. Each catalog string is authored on one line and wrapped
@@ -325,7 +325,7 @@ impl DfuUpdatedScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuUpdatedTitle), "");
         card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
-        cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
+        chrome::wrapped(cv, rx.t(Msg::DfuUpdated), w / 2, TITLE_BAR_H + 104, chrome::copy_w(w), Font::Body, INK);
         version_lines(cv, &self.version, w / 2, TITLE_BAR_H + 134, w - 2 * INSET, Font::Body, TextAlign::Center, AMBER);
     }
 }

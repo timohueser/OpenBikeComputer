@@ -305,7 +305,7 @@ erases = "Löscht alle Werte"
 saved_time = "& die Uhrzeit."
 confirm = "Bestätigen"
 keep_holding = "Weiter halten"
-hold_to_erase = "Zum Löschen halten"
+hold_to_erase = "Halten: löschen"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -425,7 +425,7 @@ recording = "Fahrt läuft"
 # --- The Detour flow (#882): planning copy, preview title, failure hints ---
 [detour]
 title = "UMLEITUNG"
-planning = "Umleitung wird geplant..."
+planning = "Plane Umleitung..."
 commit_failed = "Umleitung fehlgeschlagen."
 rejoin_hint = "Späteren Wiedereinstieg wählen."
 
@@ -516,7 +516,7 @@ installing_body = "Die LED blinkt während der Installation. Danach startet das 
 installing_power = "Nicht ausschalten."
 updated_title = "AKTUALISIERT"
 updated = "Aktualisiert auf"
-failed_title = "UPDATE FEHLGESCHLAGEN"
+failed_title = "UPDATE FEHLER"
 failed_not_started = "Das Update wurde nicht gestartet."
 failed_reverted = "Die vorherige Firmware ist weiterhin installiert."
 title = "UPDATE"
@@ -527,7 +527,6 @@ too_large = "Die Update-Datei ist zu groß für dieses Gerät."
 fragmented = "Das Update ist zu fragmentiert. Sende es erneut."
 untrusted = "Diese Update-Datei ist nicht für dieses Gerät signiert."
 install_recording = "Beende und speichere deine Fahrt, bevor du ein Update installierst."
-install_pending_save = "Eine Fahrt wird noch gespeichert. Versuche es gleich erneut."
 install_no_card = "Die Karte ist nicht bereit. Versuche es erneut."
 install_snapshot_failed = "Sicherungskopie konnte nicht auf die Karte geschrieben werden. Update nicht installiert."
 install_state_write = "Update konnte nicht vorbereitet werden. Es wurde nichts geändert."
