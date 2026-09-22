@@ -974,8 +974,10 @@ impl PlanetBake<'_> {
             let cells = leaf_cells(leaf.id, &self.opts.bands);
             // The regions this leaf's ground lies in — a leaf that spans a border gets both.
             let ids: BTreeSet<String> = cells.values().flatten().map(CellId::to_string).collect();
+            // Walk the leaf's cells, never the region's: a leaf is a bounded ~1300 cells and a
+            // region's set is a country's, and most pairs of the two do not meet at all.
             let reaching: Vec<_> =
-                artifacts.iter().filter(|(selected, _, _)| selected.iter().any(|c| ids.contains(*c))).collect();
+                artifacts.iter().filter(|(selected, _, _)| ids.iter().any(|c| selected.contains(c))).collect();
             let mut landmarks: Vec<PathBuf> = reaching.iter().map(|(_, path, _)| path.clone()).collect();
             landmarks.sort();
             let mut landmark_keys: Vec<&str> = reaching.iter().map(|(_, _, key)| key.as_str()).collect();
