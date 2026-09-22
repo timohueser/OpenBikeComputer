@@ -96,7 +96,7 @@ enforcement = "report"
 
 [[component]]
 id = "ios"
-include = ["apps/obc-ios-host/src/**", "companion-ios/Packages/OBCKit/Sources/**", "companion-ios/OBCCompanion/**"]
+include = ["apps/obc-ios-host/src/**", "apps/obc-companion-core/src/**", "companion-ios/Packages/OBCKit/Sources/**", "companion-ios/OBCCompanion/**"]
 exclude = []
 enforcement = "report"
 
