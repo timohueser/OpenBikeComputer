@@ -6,6 +6,7 @@ The gates themselves are never executed here, and nothing in this file needs `ju
 from __future__ import annotations
 
 import io
+import re
 import sys
 import tempfile
 import unittest
@@ -106,6 +107,20 @@ class ReadyPlanTests(unittest.TestCase):
 
     def test_every_standalone_root_has_a_ci_clippy_command(self):
         self.assertEqual(set(ready.STANDALONE_CLIPPY), set(ready.STANDALONE_ROOTS))
+
+    def test_the_table_holds_exactly_the_clippy_commands_the_workflow_runs(self):
+        """The table claims to be CI's commands, so the workflow is what it is compared against.
+
+        Only the root workspace lints with `--workspace`; every other clippy line in the
+        workflow belongs to a standalone root and must appear in the table verbatim.
+        """
+
+        workflow = test_plan.repository_root() / ".github" / "workflows" / "ci.yml"
+        found = set(re.findall(r"cargo clippy [^\"\n]*-D warnings", workflow.read_text()))
+        self.assertEqual(
+            {command for command in found if "--workspace" not in command},
+            {command for commands in ready.STANDALONE_CLIPPY.values() for command in commands},
+        )
 
     def test_test_policy_and_test_sources_select_the_suites_check(self):
         for path in ("testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
