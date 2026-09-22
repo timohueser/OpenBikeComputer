@@ -49,8 +49,9 @@ pub struct PackOptions {
     /// per-direction `Ascent M` from. Absent means every adjacency entry gets `0`, a decode-valid
     /// map that routes climb-blind.
     pub terrain: Option<PathBuf>,
-    /// Offline compiler output embedded in the ordinary map.
-    pub landmarks: Option<PathBuf>,
+    /// Offline compiler output embedded in the ordinary map: one compiled artifact per region the
+    /// output covers, merged by QID.
+    pub landmarks: Vec<PathBuf>,
     pub peaks: Vec<PathBuf>,
 }
 
@@ -124,12 +125,7 @@ fn run(
     progress.stage(Phase::Bbox, "Calculating BBox...");
     let mut global_bbox = compute_bbox(&ingested);
     let landmark_bbox = opts.bbox.map_or(global_bbox, Bbox::microdegree_bounds);
-    let landmarks = opts
-        .landmarks
-        .as_ref()
-        .map(|path| crate::landmark_map::load(path, &ingested.landmark_links, landmark_bbox))
-        .transpose()?
-        .unwrap_or_default();
+    let landmarks = crate::landmark_map::load(&opts.landmarks, &ingested.landmark_links, landmark_bbox)?;
     let peaks = crate::peak_map::load(&opts.peaks)?.select(&ingested.pois);
     for landmark in &landmarks {
         global_bbox.0 = global_bbox.0.min(i64::from(landmark.record.lon));

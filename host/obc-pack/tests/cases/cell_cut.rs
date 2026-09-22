@@ -827,7 +827,7 @@ fn landmark_only_cell_survives_beyond_osm_feature_bounds() {
         let mut opts = options();
         opts.only_bands = vec!["network".into()];
         opts.select = vec![west, east];
-        opts.landmarks = Some(path.clone());
+        opts.landmarks = vec![path.clone()];
         if with_bbox {
             opts.bbox = Some(
                 obc_pack::ingest::Bbox::parse(&format!(

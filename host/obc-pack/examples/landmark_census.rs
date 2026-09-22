@@ -3,7 +3,11 @@ use obc_formats::obcm::{landmarks, POI_HOURS_REF_NONE};
 use obc_pack::{config::Config, ingest::ingest_osm_ways, landmark_map, progress::Progress};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{fs, io::Read, path::Path};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -33,8 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (ingested, _) = ingest_osm_ways(&[args[0].clone()], &config, None, &Progress::stdout())?;
         ingested.landmark_links
     };
-    let records =
-        landmark_map::load(Path::new(&args[2]), &links, (-180_000_000, -90_000_000, 180_000_000, 90_000_000))?;
+    let content = [PathBuf::from(&args[2])];
+    let records = landmark_map::load(&content, &links, (-180_000_000, -90_000_000, 180_000_000, 90_000_000))?;
     let hours = vec![POI_HOURS_REF_NONE; records.len()];
     let section = landmark_map::serialize(&records, &hours)?;
     let mut photos: Vec<_> = records.iter().map(|r| r.content[2].len()).filter(|n| *n != 0).collect();

@@ -385,12 +385,31 @@ impl LandmarkBakery<'_> {
 
     /// `<tree>/landmarks/<id segments>/`, the same nesting the tree gives a region document.
     fn artifact_dir(&self, region: &Region) -> PathBuf {
-        let mut path = self.opts.out.join(LANDMARKS_DIR);
-        for segment in region.segments() {
-            path = path.join(segment);
-        }
-        path
+        artifact_dir(&self.opts.out, region)
     }
+}
+
+/// `<tree>/landmarks/<id segments>/`, the same nesting the tree gives a region document.
+pub fn artifact_dir(tree: &Path, region: &Region) -> PathBuf {
+    let mut path = tree.join(LANDMARKS_DIR);
+    for segment in region.segments() {
+        path = path.join(segment);
+    }
+    path
+}
+
+/// The region's compiled content in this tree, when this stage has put one there.
+///
+/// Discovered rather than flagged, for the reason the terrain a cell samples is discovered: the
+/// landmarks a cell carries must be the landmarks the same catalog publishes, and a flag would be
+/// a second place for the two to disagree.
+///
+/// [`CONTENT_DOC`] alone is the contract, deliberately: the packer reads that document and the
+/// photos beside it, and nothing else. A directory a recipe fills by hand, with no [`LANDMARK_DOC`]
+/// declaration, is a complete input.
+pub fn in_tree(tree: &Path, region: &Region) -> Option<PathBuf> {
+    let content = artifact_dir(tree, region).join(CONTENT_DOC);
+    content.is_file().then_some(content)
 }
 
 /// The capture cache's directory name: the id flattened, like every other per-region cache entry.

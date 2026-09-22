@@ -132,7 +132,7 @@ pub struct CutOptions {
     /// ascent is integrated from the global OBCT lattice, never from anything cell-local, so
     /// re-cutting one cell alone reproduces the identical bytes.
     pub terrain: Option<PathBuf>,
-    pub landmarks: Option<PathBuf>,
+    pub landmarks: Vec<PathBuf>,
     pub peaks: Vec<PathBuf>,
     /// Logical source extent used for land generation and the cut manifest.
     ///
@@ -153,7 +153,7 @@ impl Default for CutOptions {
             no_land: false,
             bbox: None,
             terrain: None,
-            landmarks: None,
+            landmarks: Vec::new(),
             peaks: Vec::new(),
             source_extent: None,
         }
@@ -286,12 +286,7 @@ pub fn cut_ingested(
         },
         Bbox::microdegree_bounds,
     );
-    let landmarks = opts
-        .landmarks
-        .as_ref()
-        .map(|path| crate::landmark_map::load(path, &ing.landmark_links, landmark_bounds))
-        .transpose()?
-        .unwrap_or_default();
+    let landmarks = crate::landmark_map::load(&opts.landmarks, &ing.landmark_links, landmark_bounds)?;
     let peaks = crate::peak_map::load(&opts.peaks)?;
     // Opened once for the whole run and shared by every cell: validating a hundred containers per
     // cell would dominate a cut. `sampler_for` is the per-cell part.

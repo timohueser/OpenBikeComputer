@@ -124,15 +124,28 @@ struct FixtureCutter {
     plans: Mutex<Vec<(Vec<String>, Vec<String>)>>,
     /// Whether each run was handed a crop box.
     cropped: Mutex<Vec<bool>>,
+    /// Every `(sorted cell ids, sorted landmark region names)` this cutter was handed.
+    landmarks: Mutex<Vec<(Vec<String>, Vec<String>)>>,
 }
 
 impl FixtureCutter {
     fn new() -> Self {
-        Self { calls: AtomicUsize::new(0), plans: Mutex::new(Vec::new()), cropped: Mutex::new(Vec::new()) }
+        Self {
+            calls: AtomicUsize::new(0),
+            plans: Mutex::new(Vec::new()),
+            cropped: Mutex::new(Vec::new()),
+            landmarks: Mutex::new(Vec::new()),
+        }
     }
 
     fn plans(&self) -> Vec<(Vec<String>, Vec<String>)> {
         self.plans.lock().expect("plans").clone()
+    }
+
+    /// The landmark artifacts handed to the cut that produced `cell`, by region name.
+    fn landmarks_for(&self, cell: &str) -> Option<Vec<String>> {
+        let handed = self.landmarks.lock().expect("landmarks");
+        handed.iter().find(|(cells, _)| cells.iter().any(|c| c == cell)).map(|(_, regions)| regions.clone())
     }
 }
 
@@ -154,8 +167,18 @@ impl CellCutter for FixtureCutter {
         sources.sort();
         let mut cells: Vec<String> = opts.select.iter().map(ToString::to_string).collect();
         cells.sort();
-        self.plans.lock().expect("plans").push((sources, cells));
+        self.plans.lock().expect("plans").push((sources, cells.clone()));
         self.cropped.lock().expect("cropped").push(opts.bbox.is_some());
+        let mut regions: Vec<String> = opts
+            .landmarks
+            .iter()
+            .map(|path| {
+                path.parent().and_then(|dir| dir.file_name()).expect("an artifact lives in its region's directory")
+            })
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        regions.sort();
+        self.landmarks.lock().expect("landmarks").push((cells.clone(), regions));
         let (ing, ways) = fixture(config);
         obc_pack::cut::cut_ingested(&ing, &ways, config, out_dir, opts, progress)
     }
@@ -229,7 +252,6 @@ struct Fixture {
     skins: Vec<StyleDoc>,
     tree: PathBuf,
     extracts: PathBuf,
-    landmarks: Option<PathBuf>,
 }
 
 fn fixture_dirs(name: &str) -> Fixture {
@@ -248,7 +270,7 @@ fn fixture_dirs(name: &str) -> Fixture {
     let schema = obc_bake::presets::load_schema(&presets_dir).expect("the test schema loads");
     let skins = obc_bake::presets::load_skins(&presets_dir, None).expect("the test skin loads");
     let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
-    Fixture { tree: dir.join("tree"), dir, regions, schema, skins, extracts, landmarks: None }
+    Fixture { tree: dir.join("tree"), dir, regions, schema, skins, extracts }
 }
 
 impl Fixture {
@@ -272,7 +294,6 @@ impl Fixture {
                 // Whatever `terrain_bake` has already put in this tree — the same discovery the CLI
                 // does, so the recorded coupling is exercised rather than hand-wired.
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
-                landmarks: self.landmarks.clone(),
                 peaks: None,
             },
         }
@@ -296,12 +317,30 @@ impl Fixture {
                 schema_id: "testschema".into(),
                 schema_revision: revision,
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
-                landmarks: self.landmarks.clone(),
                 peaks: None,
             },
         }
         .run(&Progress::silent())
         .expect("the run completes")
+    }
+
+    /// Put a region's compiled landmark content into the tree, where `obc-bake landmarks` puts it.
+    fn write_landmarks(&self, region_id: &str, sources: &str) {
+        let dir = self.tree.join("landmarks").join(region_id);
+        std::fs::create_dir_all(&dir).expect("landmark artifact directory");
+        let content = obc_pack::landmarks::Content {
+            schema: 2,
+            input_sha256: sources.into(),
+            policy_sha256: "policy".into(),
+            category_policy_sha256: "categories".into(),
+            languages: vec!["en".into(), "de".into(), "fr".into(), "es".into()],
+            source_coverage: serde_json::json!({}),
+            counts: Default::default(),
+            candidate_qids: vec![],
+            records: vec![],
+            omissions: vec![],
+        };
+        std::fs::write(dir.join("content.json"), serde_json::to_vec(&content).unwrap()).expect("landmark content");
     }
 
     /// Bake the terrain artifact class into the same tree, at `revision`.
@@ -378,38 +417,36 @@ fn statuses(summary: &CellRunSummary) -> BTreeMap<String, CellStatus> {
     summary.plans.iter().flat_map(|p| p.cells.iter().map(|c| (format!("{} [{}]", c.id, c.band), c.status))).collect()
 }
 
+/// Every region whose ground the cell holds reaches the cut, and a landmark change re-cuts the
+/// cells that region reaches — and no others.
+///
+/// The seam cell is ground in both regions, so both artifacts must reach its cut. That is the
+/// whole point of the artifact class: a rider crossing a border does not stop getting landmarks.
 #[test]
-fn landmark_input_changes_invalidate_cell_cache() {
-    let mut f = fixture_dirs("landmark-cache");
-    let path = f.dir.join("content.json");
-    let mut content = obc_pack::landmarks::Content {
-        schema: 2,
-        input_sha256: "first source".into(),
-        policy_sha256: "policy".into(),
-        category_policy_sha256: "categories".into(),
-        languages: vec!["en".into(), "de".into(), "fr".into(), "es".into()],
-        source_coverage: serde_json::json!({}),
-        counts: Default::default(),
-        candidate_qids: vec![],
-        records: vec![],
-        omissions: vec![],
-    };
-    std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();
-    f.landmarks = Some(path.clone());
+fn intersecting_landmark_artifacts_reach_the_cut_and_key_their_own_cells() {
+    let f = fixture_dirs("landmark-handoff");
+    f.write_landmarks("europe/west", "west sources");
+    f.write_landmarks("europe/east", "east sources");
     let cutter = FixtureCutter::new();
     let first = f.bake(&cutter, &[], SNAPSHOT, false);
     assert!(first.ok(), "{}", first.render());
+    assert_eq!(cutter.landmarks_for(SEAM_CELL), Some(vec!["east".into(), "west".into()]));
+    assert_eq!(cutter.landmarks_for(WEST_CORE), Some(vec!["west".into()]));
+    assert_eq!(cutter.landmarks_for(EAST_CORE), Some(vec!["east".into()]));
+
     let calls = cutter.calls.load(Ordering::SeqCst);
     let second = f.bake(&cutter, &[], SNAPSHOT, false);
     assert!(second.ok(), "{}", second.render());
-    assert_eq!(cutter.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), calls, "an unchanged tree ingests nothing");
     assert!(statuses(&second).values().all(|s| *s == CellStatus::Unchanged));
-    content.input_sha256 = "changed source".into();
-    std::fs::write(path, serde_json::to_vec(&content).unwrap()).unwrap();
+
+    f.write_landmarks("europe/west", "west sources, re-captured");
     let third = f.bake(&cutter, &[], SNAPSHOT, false);
     assert!(third.ok(), "{}", third.render());
-    assert_eq!(cutter.calls.load(Ordering::SeqCst), calls * 2);
-    assert!(statuses(&third).values().all(|s| *s == CellStatus::Cut));
+    let status = statuses(&third);
+    assert_eq!(status[&format!("{WEST_CORE} [coarse]")], CellStatus::Cut);
+    assert_eq!(status[&format!("{SEAM_CELL} [coarse]")], CellStatus::Cut);
+    assert_eq!(status[&format!("{EAST_CORE} [coarse]")], CellStatus::Unchanged, "east is out of that region's reach");
 }
 
 /// The fixture's terrain pairing. `2^19 / 2^15` makes a cell exactly one tile — a 512-byte block
@@ -1087,7 +1124,6 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
             schema_id: "testschema".into(),
             schema_revision: 1,
             terrain: None,
-            landmarks: None,
             peaks: None,
         },
     }
@@ -1136,7 +1172,6 @@ fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
             schema_id: "testschema".into(),
             schema_revision: 1,
             terrain: None,
-            landmarks: None,
             peaks: None,
         },
     }
@@ -1172,7 +1207,6 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
             schema_id: "typoschema".into(),
             schema_revision: 1,
             terrain: None,
-            landmarks: None,
             peaks: None,
         },
     }
@@ -1217,7 +1251,6 @@ fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
                 schema_id: "testschema".into(),
                 schema_revision: 1,
                 terrain: None,
-                landmarks: None,
                 peaks: None,
             },
         }
