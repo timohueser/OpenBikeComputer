@@ -719,7 +719,7 @@ profile_blocked = "Profil bloqué"
 blocked_route = "Trajet bloqué"
 unmatched = "Hors du trajet"
 review_visit = "Voir le trajet"
-current_visit = "Visite en cours"
+current_visit = "Visite\nen cours"
 current_leg = "Étape actuelle"
 save_unknown = "État inconnu"
 
