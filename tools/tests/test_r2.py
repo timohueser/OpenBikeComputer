@@ -146,9 +146,6 @@ class Rm(unittest.TestCase):
         with redirect_stdout(self.printed):
             return r2.main(["rm", *args])
 
-    def verbs(self):
-        return [argv[0] for argv, _ in self.calls]
-
     def read_keys(self):
         return [argv[1].removeprefix("OBCR2:maps/") for argv, _ in self.calls
                 if argv[0] == "copyto" and argv[1].startswith("OBCR2:")]
