@@ -118,15 +118,44 @@ export function cellStoreRevision(catalog: Catalog): string {
     return `r${hi.toString(16).padStart(8, "0")}${lo.toString(16).padStart(8, "0")}`;
 }
 
-/** Where a run's downloaded cells are kept, and what is already there. */
-export interface CellStore {
-    /** The revision directory these cells live in — the worker opens the same one. */
-    readonly revision: string;
+/** Read-only knowledge of cells already stored for one catalog revision. */
+export interface CellInventory {
     /** Whether `key` is present at exactly `bytes` bytes. A short file is a torn
      *  write and answers `false`, so the cell is fetched again over it. */
     has(key: string, bytes: number): Promise<boolean>;
+}
+
+/** Where a run's downloaded cells are kept, and what is already there. */
+export interface CellStore extends CellInventory {
+    /** The revision directory these cells live in — the worker opens the same one. */
+    readonly revision: string;
     /** Write one verified cell. Overwrites, so a re-fetch heals a torn file. */
     put(key: string, bytes: Uint8Array): Promise<void>;
+}
+
+function cellInventory(dir: Directory): CellInventory {
+    return {
+        async has(key, bytes) {
+            try {
+                const file = await (await dir.getFileHandle(key)).getFile();
+                return file.size === bytes;
+            } catch {
+                return false;
+            }
+        },
+    };
+}
+
+/** Inspect one existing revision without creating or sweeping cache directories. */
+export async function openCellInventory(revision: string): Promise<CellInventory | null> {
+    const root = await opfsRoot();
+    if (!root) return null;
+    try {
+        const home = await root.getDirectoryHandle(ROOT);
+        return cellInventory(await home.getDirectoryHandle(revision));
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -148,15 +177,8 @@ export async function openCellStore(revision: string): Promise<CellStore | null>
         return null;
     }
     return {
+        ...cellInventory(dir),
         revision,
-        async has(key, bytes) {
-            try {
-                const file = await (await dir.getFileHandle(key)).getFile();
-                return file.size === bytes;
-            } catch {
-                return false;
-            }
-        },
         async put(key, bytes) {
             const handle = await dir.getFileHandle(key, { create: true });
             const writable = await handle.createWritable();
