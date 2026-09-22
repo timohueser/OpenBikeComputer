@@ -6,6 +6,11 @@
  * behind. The run itself is `test-support/device-smoke/smoke.ts`, which is also what the Vitest
  * suite drives, so nothing about the sequence is written twice.
  *
+ * The plan and the upload share one connection. `usb` refuses to release an interface that still
+ * has a transfer outstanding, and the link's read loops always do, so a second claim on a device
+ * the host has not re-enumerated fails for exclusive access. The reset between upload and reverify
+ * is what makes those two claims legal.
+ *
  * The card is never formatted and nothing is removed. The only write is a `PUT` that replaces the
  * map object the firmware would select — the same replacement the builder performs when a rider
  * presses Send — and the run refuses to start until the operator has seen which object that is.
@@ -18,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import { ObjectKind } from "../../src/lib/usb/protocol";
 import { loadSmokeFixture } from "../../test-support/device-smoke/fixture";
-import { SmokeFailure, runSmoke } from "../../test-support/device-smoke/smoke";
+import { SmokeFailure, runSmoke, type DeviceSession } from "../../test-support/device-smoke/smoke";
 import { connect } from "./link";
 import { reboot } from "./board";
 
@@ -82,8 +87,13 @@ function parseArgs(argv: readonly string[]): Args {
     return args;
 }
 
-/** Show the operator exactly which object the run will replace, and stop unless they agreed. */
-async function statePlan(args: Args, fixtureName: string): Promise<void> {
+/**
+ * Show the operator exactly which object the run will replace, and stop unless they agreed.
+ *
+ * The session it opened is returned, so the upload runs on it rather than claiming the interface
+ * a second time.
+ */
+async function statePlan(args: Args, fixtureName: string): Promise<DeviceSession> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("no device answered in 20 s")), 20_000);
     const session = await connect(controller.signal, args.serial);
@@ -103,10 +113,12 @@ async function statePlan(args: Args, fixtureName: string): Promise<void> {
         if (!args.replaceMap) {
             throw new Error("Pass --replace-map to agree to that replacement.");
         }
+        return session;
+    } catch (cause) {
+        await session.release();
+        throw cause;
     } finally {
         clearTimeout(timer);
-        controller.abort();
-        await session.release();
     }
 }
 
@@ -125,14 +137,18 @@ async function main(): Promise<number> {
     const args = parseArgs(process.argv.slice(2));
     const fixture = loadSmokeFixture(REPO_ROOT);
     say(`map ${fixture.name}, ${fixture.bytes.length} B, sha256 ${fixture.sha256}`);
-    await statePlan(args, fixture.name);
+    let planned: DeviceSession | null = await statePlan(args, fixture.name);
 
     const started = new Date();
     let firmware = { elf: args.elf, sha256: "" };
     let probeLog = "";
     const report = await runSmoke({
         fixture,
-        connect: (signal) => connect(signal, args.serial),
+        connect: (signal) => {
+            const opened = planned;
+            planned = null;
+            return opened ? Promise.resolve(opened) : connect(signal, args.serial);
+        },
         reboot: async (signal) => {
             const restarted = await reboot({ repoRoot: REPO_ROOT, elf: args.elf, probe: args.probe }, signal);
             firmware = restarted.firmware;
