@@ -128,11 +128,12 @@ def _clippy_gates(changed: Sequence[str], packages: Mapping[str, test_plan.Packa
         if not hit:
             continue
         root = package.product_root
-        commands = (
-            [f"cargo clippy -p {name} --all-targets -- -D warnings"]
-            if root == test_plan.ROOT_WORKSPACE
-            else [f"cd {root} && {command}" for command in STANDALONE_CLIPPY[root]]
-        )
+        if root == test_plan.ROOT_WORKSPACE:
+            commands = [f"cargo clippy -p {name} --all-targets -- -D warnings"]
+        elif root not in STANDALONE_CLIPPY:
+            raise test_plan.PlanError(f"no CI clippy command for the Cargo root {root}")
+        else:
+            commands = [f"cd {root} && {command}" for command in STANDALONE_CLIPPY[root]]
         gates.extend(
             Gate(command, f"package {name} changed: {hit}", True, covered_by="ci.rust-clippy")
             for command in commands
@@ -387,24 +388,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         committed, deleted = test_plan.git_changed_paths(root, args.base, "HEAD")
         changed = sorted(set(committed) | set(test_plan.working_tree_paths(root)))
         selection = test_plan.select(units, graph, changed, deleted=deleted, base=args.base)
+        # An unowned path selects nothing, so the plan would otherwise report a quiet all-clear.
+        for error in selection.errors:
+            print(f"selection error: {error}", file=sys.stderr)
+        if selection.errors:
+            return 1
+        sweep = next((unit for unit in units if unit.id == SWEEP), None)
+        gates = plan(
+            changed,
+            base=args.base,
+            packages=graph.packages,
+            selected=selection.selected,
+            rendering=sweep.triggers if sweep else (),
+        )
     except test_plan.PlanError as exc:
         print(f"obc ready failed:\n{exc}", file=sys.stderr)
         return 1
-
-    # An unowned path selects nothing, so the plan would otherwise report a quiet all-clear.
-    for error in selection.errors:
-        print(f"selection error: {error}", file=sys.stderr)
-    if selection.errors:
-        return 1
-
-    sweep = next((unit for unit in units if unit.id == SWEEP), None)
-    gates = plan(
-        changed,
-        base=args.base,
-        packages=graph.packages,
-        selected=selection.selected,
-        rendering=sweep.triggers if sweep else (),
-    )
     print(render(gates, changed, args.base))
     if args.dry_run:
         print("\ndry run: nothing was executed")
