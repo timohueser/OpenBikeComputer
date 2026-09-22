@@ -376,6 +376,7 @@ day_next = "folgt"
 trip_done = "Fertig"
 day_one = "Tag"
 days = "Tage"
+no_days = "Keine Tage"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]

@@ -399,12 +399,14 @@ no_routes = "No routes yet"
 no_routes_sub = "Import a GPX file"
 # Shown inside a folder whose every route reference dangled (an empty trip).
 folder_empty_sub = "This trip has no routes"
-# The trip row's line 2: "Day 2 next · 3 days", or "Done · 3 days" after the last day.
+# The trip row's line 2: "Day 2 next · 3 days", "Done · 3 days" after the last day, or "No days"
+# when no day route is left. It fits 20 Caption cells.
 day = "Day"
 day_next = "next"
 trip_done = "Done"
 day_one = "day"
 days = "days"
+no_days = "No days"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]

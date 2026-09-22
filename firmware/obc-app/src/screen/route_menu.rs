@@ -16,7 +16,7 @@ use crate::settings::Language;
 use crate::trip::{TripProgress, TripSummary};
 use crate::{t as tr, Msg};
 
-use super::vocab::chrome::{empty_state, row_check, ROW_CHECK_HALF};
+use super::vocab::chrome::{empty_state, row_check, title_frame, ROW_CHECK_HALF};
 use super::vocab::list::{self, ListGeometry, Separators};
 use super::vocab::marquee::{fit, MarqueeFrame};
 use super::{
@@ -272,18 +272,18 @@ impl RouteMenuScreen {
             RouteMenuScope::TopLevel => None,
             RouteMenuScope::Trip { trip_id } => trips.iter().find(|t| t.id == trip_id),
         };
+        let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
+        let counter = list::counter(pos, total, geo.visible);
         let title = match trip {
             Some(t) => {
-                // Leave room for the scroll counter only when the title bar shows one.
-                let budget = if total > geo.visible { w - 72 } else { w - 28 };
-                title_buf = fit(&t.name, budget, Font::Body);
+                // The title and the counter both keep 14 px from the bar's ends, and 8 px apart.
+                let counter_w = if counter.is_empty() { 0 } else { text_width(&counter, Font::Label) as i32 + 8 };
+                title_buf = fit(&t.name, w - 28 - counter_w, Font::Body);
                 &title_buf
             }
             None => rx.t(Msg::RouteMenuTitle),
         };
-
-        let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list::list_frame(cv, w, h, title, pos, total, geo.visible);
+        title_frame(cv, w, h, title, &counter);
 
         if total == 0 {
             let sub = match self.scope {
@@ -428,9 +428,14 @@ fn weekday(date: u16) -> Msg {
     WEEKDAYS[(usize::from(date) + 3) % 7]
 }
 
-/// Line 2 of a trip row: the next day, or done, then the day count when it fits `budget_px`.
+/// Line 2 of a trip row: the next day, or done, then the day count when it fits `budget_px`. A
+/// trip without a day to pick has neither.
 fn trip_meta(t: &TripSummary, progress: Option<&TripProgress>, lang: Language, budget_px: i32) -> heapless::String<48> {
     let mut s = heapless::String::new();
+    if t.is_empty_folder() {
+        let _ = s.push_str(tr(Msg::RouteMenuNoDays, lang));
+        return s;
+    }
     match t.next_day(progress) {
         Some(k) => {
             let _ = write!(s, "{} {} {}", tr(Msg::RouteMenuDay, lang), k + 1, tr(Msg::RouteMenuDayNext, lang));
@@ -644,6 +649,32 @@ mod tests {
         assert_eq!(meta(Some(&finished(0))), "Day 2 next · 3 days");
         assert_eq!(meta(Some(&finished(2))), "Done · 3 days");
         assert_eq!(trip_meta(&t, None, Language::En, 180), "Day 1 next", "the count drops whole");
+    }
+
+    #[test]
+    fn every_language_keeps_the_day_count_on_a_panel_wide_row() {
+        let budget = 240 - 2 * SIDE_INSET - 4 - NAME_INSET;
+        let t = three_days(&[]);
+        for lang in Language::ALL {
+            for p in [None, Some(&finished(2))] {
+                let meta = trip_meta(&t, p, lang, budget);
+                assert!(meta.ends_with(tr(Msg::RouteMenuDays, lang)), "{lang:?}: {meta}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_trip_without_a_day_route_has_no_days() {
+        let trip = |stage_ids| {
+            TripSummary::resolve(&TripInput { id: 9, key: 1, name: "Alps", start_date: 0, stage_ids }, &[], &[])
+        };
+        assert_eq!(trip_meta(&trip(&[]), None, Language::En, 200), "No days", "not \"Done · 0 days\"");
+        // No day route is in the catalog.
+        let dangling = trip(&[0, 1, 2]);
+        assert_eq!(trip_meta(&dangling, None, Language::En, 200), "No days");
+        let mut rows = heapless::Vec::new();
+        RouteMenuScreen::trip(&dangling, None).build_rows(std::slice::from_ref(&dangling), 0, 0, &mut rows);
+        assert!(rows.is_empty(), "the day list has nothing to pick");
     }
 
     #[test]
