@@ -86,7 +86,7 @@ public final class MainScreenModel {
     @ObservationIgnored private var trashedRideIDs: [RideID: Date] = [:]
     @ObservationIgnored private var plannedRecords: [RouteID: PlannedRouteRecord] = [:]
     /// Ride summaries only. Tracklogs stay on disk and load one ride at a time through
-    /// `rideGeometry(for:)`.
+    /// `ride(_:)`.
     @ObservationIgnored private var rideSummaries: [RideID: RideSummary] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
@@ -1015,12 +1015,14 @@ public final class MainScreenModel {
         plannedRecords[id]?.bikeType ?? .road
     }
 
-    /// A synced ride's full tracklog, read from the store on demand: the interactive map draws
-    /// this, never the downsampled `trackPreview`. Nil when the ride carries no points, and the
-    /// detail then degrades to the preview's coordinates.
-    public func rideGeometry(for id: RideID) -> [Coordinate]? {
-        let points = library.ridePoints(id)?.map(\.coordinate)
-        return (points?.isEmpty ?? true) ? nil : points
+    /// A synced ride with its full tracklog, read from the store on demand: the interactive map,
+    /// share and save as route use this, never the downsampled `trackPreview`. Nil when the ride
+    /// carries no points, and the detail then degrades to the preview's coordinates.
+    public func ride(_ id: RideID) -> Ride? {
+        guard let summary = rides.first(where: { $0.id == id }),
+            let points = library.ridePoints(id), !points.isEmpty
+        else { return nil }
+        return Ride(summary: summary, points: points)
     }
 
     /// The object id this planned route is stored under on the connected device, threaded into
