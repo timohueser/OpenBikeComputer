@@ -115,7 +115,7 @@ Three rules keep it there, and each one is a test:
 written.
 
 Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 429 and a
-5xx are retried three times; every other 4xx is refused at once with its body. A 404 is absence
+5xx are retried for up to twelve minutes; every other 4xx is refused at once with its body. A 404 is absence
 only where the registry says a name is arithmetic, such as a grid square outside its state. A WCS
 2.0.1 request is clipped to the envelope `DescribeCoverage` states, because a subset outside it is
 refused, not answered void.

@@ -565,8 +565,9 @@ class RemoteWindows(TempCase):
         self.addCleanup(broken.shutdown)
         self.source.base = f"http://127.0.0.1:{broken.server_address[1]}/"
 
+        real = ingest.sources.base.RETRY_DELAYS
         ingest.sources.base.RETRY_DELAYS = ()
-        self.addCleanup(lambda: setattr(ingest.sources.base, "RETRY_DELAYS", (2, 4, 8)))
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
         with self.assertRaises(ingest.Refuse) as refusal:
             self.source.fetch(self.BOX, self.root / "work")
         self.assertIn("500", str(refusal.exception))
