@@ -169,6 +169,18 @@ private func makeRouter(_ server: Server, _ cache: CellCache) -> CellRouter {
         }
     }
 
+    @Test func routesInTheSameAreaShareTheirDownloads() async throws {
+        let vector = try Vector.load()
+        let server = try Server()
+        let router = makeRouter(server, scratch())
+
+        async let out = router.route(from: vector.start, to: vector.end, profile: 0)
+        async let back = router.route(from: vector.end, to: vector.start, profile: 0)
+        _ = try await (out, back)
+
+        #expect(await server.requests.count == 6)
+    }
+
     @Test func aTornBodyIsFetchedAgainAndAWrongOneIsRefused() async throws {
         let vector = try Vector.load()
         let server = try Server()
@@ -188,16 +200,18 @@ private func makeRouter(_ server: Server, _ cache: CellCache) -> CellRouter {
         }
     }
 
-    @Test func theCacheEvictsTheLeastRecentlyUsed() throws {
+    @Test func theCacheEvictsTheLeastRecentlyUsedObjectThatIsNotHeld() throws {
         let cache = CellCache(directory: scratch().directory, capacity: 25)
         let bytes = Data(repeating: 1, count: 10)
-        _ = try cache.store(bytes, sha256: "a")
-        _ = try cache.store(bytes, sha256: "b")
+        for name in ["a", "b", "c"] {
+            _ = try cache.store(bytes, sha256: name)
+        }
         #expect(cache.cached("a") != nil)
-        _ = try cache.store(bytes, sha256: "c")
 
-        #expect(cache.cached("b") == nil)
+        try cache.evict(keeping: ["b"])
+
+        #expect(cache.cached("c") == nil)
         #expect(cache.cached("a") != nil)
-        #expect(cache.cached("c") != nil)
+        #expect(cache.cached("b") != nil)
     }
 }

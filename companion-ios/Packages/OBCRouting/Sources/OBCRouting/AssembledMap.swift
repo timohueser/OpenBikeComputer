@@ -25,6 +25,7 @@ final class AssembledMap {
         case OBC_CORE_ROUTED: break
         case OBC_CORE_NO_ROAD: throw .noRoad
         case OBC_CORE_EXHAUSTED: throw .exhausted
+        case OBC_CORE_FAILED: throw .mapUnreadable(String(cString: obc_core_last_error()))
         default: throw .noPath
         }
         guard let route = out else { throw .noPath }

@@ -39,22 +39,28 @@ public struct HTTPStatusError: Error {
 }
 
 /// Routes on the phone exactly as the device does. For each request it takes the network cells
-/// and terrain cells within the router's reach of both endpoints from the published catalog,
-/// downloads and verifies the ones not yet cached, assembles them in memory and routes.
+/// and terrain cells around both endpoints from the published catalog, downloads and verifies the
+/// ones not yet cached, assembles them in memory and routes.
 ///
 /// The catalog root is read once per router. A request whose cells are all cached makes no
-/// network call after that.
+/// network call after that, and requests running together download each object once.
 public actor CellRouter {
     public static let catalogURL = URL(string: "https://maps.openbikecomputer.com/cell-catalog/catalog.json")!
 
-    /// `NAV_MAX_NODES` bounds one search to roughly this far from an endpoint.
-    static let reachMeters = 10_000.0
+    /// `NAV_MAX_NODES` bounds one route to about R = 10 km of road. Every point P of a route from
+    /// A to B of length at most R has |PA| + |PB| ≤ R: an ellipse that lies within R / 2 of the
+    /// box spanning A and B. So the cells within R / 2 of that box hold every route the device
+    /// could find.
+    static let marginMeters = 5_000.0
 
     private let catalogURL: URL
     private let cache: CellCache
     private let fetch: Fetch
-    private var catalog: (text: Data, root: CatalogRoot)?
+    private var catalog: Task<(text: Data, root: CatalogRoot), Error>?
     private var indexes: [String: CellIndex] = [:]
+    private var downloads: [String: Task<URL, Error>] = [:]
+    /// How many running requests hold each object; eviction spares them.
+    private var held: [String: Int] = [:]
 
     public init(catalogURL: URL = CellRouter.catalogURL, cache: CellCache = .standard, fetch: @escaping Fetch = CellRouter.download) {
         self.catalogURL = catalogURL
@@ -65,16 +71,18 @@ public actor CellRouter {
     /// Plan from `from` to `to` under the map's nav profile `profile`, the device's bike-type
     /// index. Throws a `RouteFailure`, or `CancellationError` when the task is cancelled.
     public func route(from: Coordinate, to: Coordinate, profile: UInt8) async throws -> RoutedLeg {
+        var mine: [String] = []
+        defer { release(mine) }
         let (text, root) = try await loadCatalog()
         guard let core = root.core else { throw RouteFailure.mapUnreadable("the catalog has no core band") }
         var job = Job()
 
-        let cells = Set([from, to].flatMap { CellID.around($0, radiusMeters: Self.reachMeters, log2: core.band.cellLog2) })
-        let index = try await pinnedIndex(core.index)
-        for cell in cells.sorted() {
+        let cells = CellID.covering(from, to, marginMeters: Self.marginMeters, log2: core.band.cellLog2)
+        let index = try await pinnedIndex(core.index, holding: &mine)
+        for cell in cells {
             switch index.lookup(cell) {
             case .artifact(let entry):
-                let path = try await object(entry.pin).path
+                let path = try await object(entry.pin, holding: &mine).path
                 job.cells.append(.init(id: entry.id, band: core.band.id, partial: entry.partial ?? false, path: path))
             case .knownEmpty:
                 job.knownEmpty.append(.init(id: cell.id, band: core.band.id))
@@ -86,12 +94,12 @@ public actor CellRouter {
         guard !job.cells.isEmpty else { throw RouteFailure.noMap }
 
         if let terrain = root.terrain {
-            let squares = Set([from, to].flatMap { CellID.around($0, radiusMeters: Self.reachMeters, log2: terrain.cellLog2) })
-            let index = try await pinnedIndex(terrain.cellIndex)
-            for square in squares.sorted() {
+            let squares = CellID.covering(from, to, marginMeters: Self.marginMeters, log2: terrain.cellLog2)
+            let index = try await pinnedIndex(terrain.cellIndex, holding: &mine)
+            for square in squares {
                 // A void square has no object and reads as no elevation, so it needs no entry.
                 guard case .artifact(let entry) = index.lookup(square) else { continue }
-                let path = try await object(entry.pin).path
+                let path = try await object(entry.pin, holding: &mine).path
                 job.terrain.append(.init(id: entry.id, sha256: entry.sha256, path: path))
             }
         }
@@ -102,8 +110,28 @@ public actor CellRouter {
         return try map.route(from: from, to: to, profile: profile)
     }
 
+    private func release(_ objects: [String]) {
+        for sha256 in objects {
+            held[sha256]! -= 1
+            if held[sha256] == 0 { held[sha256] = nil }
+        }
+        // A failed eviction leaves the cache over its capacity until the next request.
+        try? cache.evict(keeping: Set(held.keys))
+    }
+
+    /// The catalog root, fetched once; a failed fetch is tried again by the next request.
     private func loadCatalog() async throws -> (text: Data, root: CatalogRoot) {
-        if let catalog { return catalog }
+        let task = catalog ?? Task { try await fetchCatalog() }
+        catalog = task
+        do {
+            return try await task.value
+        } catch {
+            catalog = nil
+            throw error
+        }
+    }
+
+    private func fetchCatalog() async throws -> (text: Data, root: CatalogRoot) {
         let text: Data
         do {
             text = try await withRetry { try await fetch(catalogURL) }
@@ -124,13 +152,12 @@ public actor CellRouter {
         guard root.schemaVersion == 3 else {
             throw RouteFailure.mapUnreadable("catalog schema version \(root.schemaVersion) is not 3")
         }
-        catalog = (text, root)
         return (text, root)
     }
 
-    private func pinnedIndex(_ pin: Pin) async throws -> CellIndex {
+    private func pinnedIndex(_ pin: Pin, holding mine: inout [String]) async throws -> CellIndex {
         if let index = indexes[pin.sha256] { return index }
-        let file = try await object(pin)
+        let file = try await object(pin, holding: &mine)
         do {
             let index = try decodeCatalog(CellIndex.self, from: Data(contentsOf: file))
             indexes[pin.sha256] = index
@@ -140,9 +167,19 @@ public actor CellRouter {
         }
     }
 
-    /// The pinned object's verified file, downloaded only when the cache lacks it.
-    private func object(_ pin: Pin) async throws -> URL {
+    /// The pinned object's verified file, held for the running request, downloaded only when the
+    /// cache lacks it and at most once at a time.
+    private func object(_ pin: Pin, holding mine: inout [String]) async throws -> URL {
+        held[pin.sha256, default: 0] += 1
+        mine.append(pin.sha256)
         if let file = cache.cached(pin.sha256) { return file }
+        let task = downloads[pin.sha256] ?? Task { try await fetchObject(pin) }
+        downloads[pin.sha256] = task
+        defer { downloads[pin.sha256] = nil }
+        return try await task.value
+    }
+
+    private func fetchObject(_ pin: Pin) async throws -> URL {
         let url = try resolve(pin)
         let data: Data
         do {

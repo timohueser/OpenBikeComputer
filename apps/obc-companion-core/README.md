@@ -3,7 +3,7 @@
 The companion app's Rust core: verified network and terrain cells assembled into a map in memory,
 and routes planned over it by `obc-route` at the device's node limit. `src/ffi.rs` is the
 hand-written C ABI, `include/obc_companion_core.h` declares it, and `include/module.modulemap`
-lets the OBCKit `OBCRouting` module do `import OBCCompanionCore`.
+lets the `OBCRouting` package (`companion-ios/Packages/OBCRouting`) do `import OBCCompanionCore`.
 
 ## Build
 
@@ -17,9 +17,9 @@ obc companion-core aarch64-apple-ios-sim  # the simulator slice alone
 
 A named slice is rebuilt and the other slices on disk are kept.
 
-**Every OBCKit build needs the XCFramework first.** SwiftPM resolves it with the package, so
-`swift test`, `xcodegen generate` and every app build fail without it. Nothing rebuilds it after a
-Rust change: run `obc companion-core` again. `obc ios-companion` packs the phone slice itself.
+**The `OBCRouting` package and the app need the XCFramework first.** Without it, the package
+manifest stops and names `obc companion-core`. Nothing in Xcode rebuilds it after a Rust change:
+run `obc companion-core` again. The suite commands and `obc ios-companion` pack it themselves.
 
 ## Test
 
@@ -28,8 +28,8 @@ obc test -p obc-companion-core
 ```
 
 `tests/route.rs` routes over the web builder's cell fixture and pins the result in
-`tests/route-vector.json`. The OBCKit `CellRouterTests` suite checks the Swift side against the
-same vector. After a deliberate router change, rewrite it:
+`tests/route-vector.json`. The `OBCRouting` `CellRouterTests` suite checks the Swift side against
+the same vector. After a deliberate router change, rewrite it:
 
 ```sh
 OBC_REGENERATE=1 cargo test -p obc-companion-core

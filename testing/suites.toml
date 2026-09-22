@@ -258,16 +258,30 @@ triggers = [
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCKit/Tests/**",
   "specs/vectors/**",
+]
+sleep_exception = { reason = "Condition polling has a 30-second default deadline; negative observation windows and mock/model timing assertions use bounded real time.", issue = "#1788" }
+
+# The phone's router over the Rust core. Packing first keeps the core current, and cargo
+# is incremental, so an unchanged core packs quickly.
+[[suite]]
+id = "swift.obcrouting-host"
+route = "ordinary"
+command = "tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test"
+jobs = ["ios-unit"]
+platforms = ["macos"]
+triggers = [
+  "companion-ios/Packages/OBCRouting/**",
+  "companion-ios/Packages/OBCKit/Package.swift",
+  "companion-ios/Packages/OBCKit/Sources/OBCDomain/**",
   "apps/obc-companion-core/**",
   "apps/obc-web-assemble/tests/fixture/**",
   "tools/build-companion-core.sh",
 ]
-sleep_exception = { reason = "Condition polling has a 30-second default deadline; negative observation windows and mock/model timing assertions use bounded real time.", issue = "#1788" }
 
 [[suite]]
 id = "ios.xcuitest"
 route = "ordinary"
-command = "companion-ios/scripts/capture-website-screenshots.sh --check"
+command = "tools/build-companion-core.sh aarch64-apple-ios-sim && companion-ios/scripts/capture-website-screenshots.sh --check"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -492,7 +506,7 @@ ci_only = true
 [[suite]]
 id = "ci.ios-app-build"
 route = "ordinary"
-command = "xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
+command = "tools/build-companion-core.sh aarch64-apple-ios-sim && xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -501,6 +515,7 @@ triggers = [
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
+  "companion-ios/Packages/OBCRouting/**",
   "apps/obc-companion-core/**",
   "tools/build-companion-core.sh",
 ]
@@ -511,7 +526,7 @@ triggers = [
 [[suite]]
 id = "ci.ios-release-build"
 route = "ordinary"
-command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
+command = "tools/build-companion-core.sh aarch64-apple-ios-sim && xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
 jobs = ["ios-release"]
 platforms = ["macos"]
 triggers = [
@@ -519,6 +534,7 @@ triggers = [
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
+  "companion-ios/Packages/OBCRouting/**",
   "apps/obc-companion-core/**",
   "tools/build-companion-core.sh",
 ]
