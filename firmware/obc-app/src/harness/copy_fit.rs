@@ -31,8 +31,10 @@ const PANEL: Size = Size::new(240, 320);
 const COPY_W: i32 = crate::screen::vocab::chrome::copy_w(PANEL.width as i32);
 
 /// The screen no seed can build: its state holds an `obc_reader::peaks::Selection`, which only a
-/// mounted map with a peak-article section hands out. Its draw is `landmarks::reading` and reads
-/// none of its own fields, so `LandmarkSources` below draws the same page with the same copy.
+/// mounted map with a peak-article section hands out, and this harness has no such map. Its draw
+/// is `landmarks::reading(.., sources = false)` and reads none of its own fields, so the page it
+/// draws is the one [`the_article_page_fits_the_panel_in_every_language`] renders through
+/// `Landmarks`. What is unmeasured is only the article a peak's own section carries.
 const NO_SEED: [&str; 1] = ["PeakArticle"];
 
 /// A seed: a screen, and a walk over it. Every frame of the walk is measured, not only the last
@@ -216,9 +218,15 @@ fn plain(screens: Vec<Screen>) -> Vec<Seed> {
 }
 
 /// Walk `seed` in `language` and return every string its frames asked to draw, with the screen the
-/// frame was on. The clock steps past a sheet's slide between gestures, because a sliding page
+/// frame was on. `stage` runs once the seed is on the stack, for a screen whose page needs domain
+/// state under it. The clock steps past a sheet's slide between gestures, because a sliding page
 /// owns its input.
-fn walk(seed: Seed, language: Language, bytes: &[u8]) -> Vec<(&'static str, obc_render::text_tap::TextDraw)> {
+fn walk(
+    seed: Seed,
+    language: Language,
+    bytes: &[u8],
+    stage: impl FnOnce(&mut App),
+) -> Vec<(&'static str, obc_render::text_tap::TextDraw)> {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid fixture");
@@ -231,6 +239,7 @@ fn walk(seed: Seed, language: Language, bytes: &[u8]) -> Vec<(&'static str, obc_
     app.set_backlight_available(true);
     let (screen, gestures) = seed;
     assert!(app.ui.stack.push(screen).is_ok(), "the seed fits the screen stack");
+    stage(&mut app);
 
     let mut scratch = Box::new(obc_render::RenderScratch::new());
     let mut buf = Buf::new(PANEL.width as i32, PANEL.height as i32);
@@ -266,6 +275,27 @@ fn walk(seed: Seed, language: Language, bytes: &[u8]) -> Vec<(&'static str, obc_
 /// Longer than any sheet slide, so the page a gesture opened has landed before the next one.
 const SLIDE_STEP_MS: u32 = 400;
 
+/// Why `drawn` does not fit, if it does not.
+fn complaint(name: &str, language: Language, drawn: &obc_render::text_tap::TextDraw) -> Option<String> {
+    let (at, size) = (drawn.area.top_left, drawn.area.size);
+    let (right, bottom) = (at.x + size.width as i32, at.y + size.height as i32);
+    if at.x < 0 || right > PANEL.width as i32 || at.y < 0 || bottom > PANEL.height as i32 {
+        return Some(format!(
+            "  {name} {language:?}: {:?} draws off the panel, at x {}..{}, y {}..{}",
+            drawn.text, at.x, right, at.y, bottom
+        ));
+    }
+    // A line the screen centres on the panel midline is laid out across the whole panel.
+    let centred = at.x + right == PANEL.width as i32;
+    (centred && size.width as i32 > COPY_W).then(|| {
+        format!(
+            "  {name} {language:?}: centred {:?} is {} px over the {COPY_W} px copy width",
+            drawn.text,
+            size.width as i32 - COPY_W
+        )
+    })
+}
+
 #[test]
 fn every_screen_is_seeded() {
     let seeded: Vec<&str> = seeds().iter().map(|(s, _)| s.name()).collect();
@@ -281,26 +311,44 @@ fn every_string_fits_the_panel_in_every_language() {
     let mut offenders: Vec<String> = Vec::new();
     for language in Language::ALL {
         for seed in seeds() {
-            for (name, drawn) in walk(seed, language, &bytes) {
-                let (at, size) = (drawn.area.top_left, drawn.area.size);
-                let (right, bottom) = (at.x + size.width as i32, at.y + size.height as i32);
-                let centred = at.x + right == PANEL.width as i32;
-                let budget = if centred { COPY_W } else { PANEL.width as i32 };
-                if at.x < 0 || right > PANEL.width as i32 || at.y < 0 || bottom > PANEL.height as i32 {
-                    offenders.push(format!(
-                        "  {name} {language:?}: {:?} draws off the panel, at x {}..{}, y {}..{}",
-                        drawn.text, at.x, right, at.y, bottom
-                    ));
-                } else if size.width as i32 > budget {
-                    offenders.push(format!(
-                        "  {name} {language:?}: centred {:?} is {} px over the {budget} px copy width",
-                        drawn.text,
-                        size.width as i32 - budget
-                    ));
-                }
+            for (name, drawn) in walk(seed, language, &bytes, |_| {}) {
+                offenders.extend(complaint(name, language, &drawn));
             }
         }
     }
+    report(offenders);
+}
+
+/// The reading page, which `Landmarks`, `LandmarkSources` and `PeakArticle` all draw. It needs a
+/// map with a landmark section under it, so it is its own sweep: the minimal fixture leaves the
+/// page on its status line, which draws none of the article's copy.
+#[test]
+fn the_article_page_fits_the_panel_in_every_language() {
+    // The first article line the fixture carries. A page that is not ready draws its status line
+    // and none of the article, which is a hole rather than a pass, so the sweep proves it read one.
+    const FIRST_LINE: &str = "First source page.";
+
+    let bytes = crate::landmarks::tests::map();
+    let mut offenders: Vec<String> = Vec::new();
+    let mut read_an_article = false;
+    for language in Language::ALL {
+        // Press opens the selected card's article; each step turns a page of it, or of the sources.
+        for seed in [
+            (Screen::Landmarks(LandmarksScreen), vec![Gesture::Press, Gesture::Step(1), Gesture::Step(1)]),
+            (Screen::LandmarkSources(LandmarkSourcesScreen), vec![Gesture::Step(1), Gesture::Step(1)]),
+        ] {
+            for (name, drawn) in walk(seed, language, &bytes, |app| app.ui.landmarks.restart(false)) {
+                read_an_article |= drawn.text == FIRST_LINE;
+                offenders.extend(complaint(name, language, &drawn));
+            }
+        }
+    }
+    assert!(read_an_article, "no frame drew {FIRST_LINE:?}: the walk never reached the article page");
+    report(offenders);
+}
+
+/// Fail on everything that did not fit, once, naming each one.
+fn report(mut offenders: Vec<String>) {
     offenders.sort();
     offenders.dedup();
     assert!(
