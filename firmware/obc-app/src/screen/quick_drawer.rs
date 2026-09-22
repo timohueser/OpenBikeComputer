@@ -24,7 +24,7 @@ use crate::Msg;
 
 use super::vocab::chrome::stroke2;
 use super::vocab::sheet::{self, Edge, SheetMotion, SheetTiming};
-use super::{palette, Ctx, Render, Screen, ScreenTick, SettingsScreen, Transition};
+use super::{palette, Ctx, Render, Screen, ScreenTick, SettingsPage, Transition};
 
 /// How long the sheet takes to slide down from the top edge on open (ms). A default to iterate on
 /// glass, not a measurement.
@@ -188,7 +188,7 @@ impl QuickDrawerScreen {
                 // goes: the sheet reaches this row from inside settings too, so a row that kept
                 // that descent would lay one way down on another. Back therefore leaves settings
                 // for the view the rider rides on, not for a drawer they have finished with.
-                Some(Control::Settings) => Transition::OverRoot(Screen::Settings(SettingsScreen::new())),
+                Some(Control::Settings) => Transition::OverRoot(Screen::Settings(SettingsPage::hub())),
                 Some(Control::Power) => {
                     self.slide_to(Page::PowerConfirm, cx.now_ms);
                     Transition::None

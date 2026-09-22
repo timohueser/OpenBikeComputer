@@ -5,6 +5,7 @@
 pub(crate) mod band;
 pub(crate) mod card;
 pub(crate) mod chrome;
+pub(crate) mod flags;
 pub(crate) mod fmt;
 pub(crate) mod list;
 pub(crate) mod marquee;

@@ -1,16 +1,12 @@
 //! The shared scrolling-list widget: the wrapping cursor ([`on_step`]), the window math
 //! ([`window_start`]), and [`draw_rows`], which walks the visible slots, paints the row cursor and
 //! the separators, and finishes with the scrollbar. Each screen keeps only its per-row body and
-//! its Press semantics.
+//! its Press semantics. A settings page is not one of these: it is a [`rows`](super::rows) list.
 
 use core::fmt::Write;
 
-use embedded_graphics::{prelude::Point, primitives::Rectangle};
-use obc_render::{
-    rect,
-    text::{Font, TextAlign},
-    Surface,
-};
+use embedded_graphics::primitives::Rectangle;
+use obc_render::{rect, Surface};
 
 use super::chrome::{title_frame, LIST_TOP};
 use crate::screen::{palette, Transition};
@@ -148,24 +144,6 @@ pub(crate) fn draw_rows<S: Surface>(
     scrollbar(cv, geo.w - 8, geo.top, geo.visible as i32 * geo.row_h, total, sb_first, geo.visible);
 }
 
-/// The nav-menu row body: a pointer triangle and a label, centred in the row area.
-pub(crate) fn nav_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {
-    let x = area.top_left.x;
-    let mid = area.top_left.y + area.size.height as i32 / 2;
-    let bullet = if selected { palette::INK } else { palette::SUBTEXT };
-    cv.triangle(Point::new(x + 14, mid - 9), Point::new(x + 14, mid + 9), Point::new(x + 27, mid), bullet);
-    cv.text(label, Point::new(x + 38, mid - 14), Font::Body, TextAlign::Left, palette::INK);
-}
-
-/// A whole nav-menu draw: the chrome plus [`nav_row`]s with hairline separators.
-pub(crate) fn nav_list(cv: &mut impl Surface, w: i32, h: i32, title: &str, items: &[&str], selected: usize) {
-    const ROW_H: i32 = 52;
-    let geo = ListGeometry::below_title(w, h, ROW_H, 8, 16, Separators::All);
-    list_frame(cv, w, h, title, selected + 1, items.len(), geo.visible);
-    let first = window_start(selected, geo.visible, items.len()) as i32;
-    draw_rows(cv, geo, items.len(), selected, first, |cv, row| nav_row(cv, row.area, items[row.index], row.selected));
-}
-
 /// [`title_frame`] with a `pos / total` counter on the right, but only when the list can scroll.
 /// A counter on a list that fits is noise.
 pub(crate) fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos: usize, total: usize, visible: usize) {
@@ -201,6 +179,8 @@ pub(crate) fn scrollbar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embedded_graphics::prelude::Point;
+    use obc_render::text::{Font, TextAlign};
 
     #[test]
     fn step_selection_wraps_backward_past_the_top() {

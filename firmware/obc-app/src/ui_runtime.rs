@@ -381,8 +381,8 @@ impl UiRuntime {
     }
 
     /// Feed the host's per-slot sensor status, pushed each pass and stored app-side, so no radio
-    /// type crosses the seam. A change while the Sensors screen is up dirties the map; on any other
-    /// screen the status is not drawn, so an update repaints nothing.
+    /// type crosses the seam. A change while a screen that draws the status is up dirties the map;
+    /// on any other screen an update repaints nothing.
     pub(crate) fn set_sensor_status(&mut self, status: &[crate::sensors::SensorStatus]) {
         let mut next = self.sensor_status;
         for (dst, src) in next.iter_mut().zip(status) {
@@ -414,8 +414,9 @@ impl UiRuntime {
         }
     }
 
+    /// The Sensors pages, and Connections, whose Sensors door counts the connected ones.
     fn sensors_screen_up(&self) -> bool {
-        matches!(self.stack.last(), Some(Screen::Sensors(_) | Screen::SensorScan(_)))
+        matches!(self.stack.last(), Some(Screen::Sensors(_) | Screen::SensorScan(_) | Screen::Connections(_)))
     }
 
     /// Whether the base screen draws the connected indicator: everything whose base is
@@ -457,11 +458,12 @@ impl UiRuntime {
         }
     }
 
-    /// Whether the top screen is one of the settings screens: the gate `SettingsMachine` uses to
-    /// hold a pending save until exit. It reads the kind each screen declares in its `screens!`
-    /// row, so a new settings screen cannot be forgotten here.
+    /// Whether the topmost opaque screen is one of the settings screens: the gate `SettingsMachine`
+    /// uses to hold a pending save until exit. A sheet over a settings page (the value editor, the
+    /// quick drawer) is still inside the subtree. It reads the kind each screen declares in its
+    /// `screens!` row, so a new settings screen cannot be forgotten here.
     pub(crate) fn top_is_settings(&self) -> bool {
-        self.stack.last().is_some_and(|s| s.kind().is_settings())
+        self.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(|s| s.kind().is_settings())
     }
 
     /// Millis until the idle-return timeout expires, or `None` when no return is pending. At least
