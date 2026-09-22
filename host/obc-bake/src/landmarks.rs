@@ -402,7 +402,7 @@ impl LandmarkBakery<'_> {
         // artifact and the finished directory replaces it.
         let staging = artifact.with_extension("part");
         let _ = std::fs::remove_dir_all(&staging);
-        let content = obc_pack::landmarks::compile(&manifest, &boundary, &staging)?;
+        let content = obc_pack::landmarks::compile(&manifest, &boundary, &staging, false)?;
         write_json(
             &staging.join(LANDMARK_DOC),
             &LandmarkDoc {

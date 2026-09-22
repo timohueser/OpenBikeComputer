@@ -17,6 +17,48 @@ impl Fixture {
     fn json(&mut self, path: &str, value: Value) {
         self.pin(path, serde_json::to_vec(&value).unwrap());
     }
+    /// One captured Commons file: distinct pixels, its own credits, categories, camera and depicts.
+    fn photo(
+        &mut self,
+        name: &str,
+        shade: u8,
+        license: &str,
+        categories: &[&str],
+        camera: Option<(f64, f64)>,
+        depicts: Option<&str>,
+    ) -> Value {
+        let mut buffer = std::io::Cursor::new(vec![]);
+        let pixels = image::RgbImage::from_pixel(2, 2, image::Rgb([shade, 0, 0]));
+        image::DynamicImage::ImageRgb8(pixels).write_to(&mut buffer, image::ImageFormat::Png).unwrap();
+        let bytes = buffer.into_inner();
+        let sha1 = <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let path = format!("photos/{name}.png");
+        self.pin(&path, bytes);
+        let mut extended = json!({"Artist":{"value":"Example"},"LicenseUrl":{"value":license}});
+        if let Some((latitude, longitude)) = camera {
+            extended["GPSLatitude"] = json!({"value": latitude.to_string()});
+            extended["GPSLongitude"] = json!({"value": longitude.to_string()});
+        }
+        let metadata = format!("meta/{name}.json");
+        self.json(
+            &metadata,
+            json!({"query":{"pages":{"1":{"pageid":1,"title":format!("File:{name}.png"),
+            "categories": categories.iter().map(|title| json!({"title": title})).collect::<Vec<_>>(),
+            "imageinfo":[{"url":format!("https://example.test/{path}"),
+            "descriptionurl":format!("https://commons.wikimedia.org/wiki/File:{name}.png"),
+            "timestamp":"2026-09-22T00:00:00Z","sha1":sha1,"extmetadata":extended}]}}}}),
+        );
+        let mut image = json!({"filename":format!("{name}.png"),"path":path,"metadata_path":metadata});
+        if let Some(qid) = depicts {
+            let media = format!("media/{name}.json");
+            self.json(
+                &media,
+                json!({"entities":{"M1":{"statements":{"P180":[{"mainsnak":{"datavalue":{"value":{"id":qid}}}}]}}}}),
+            );
+            image["depicts_path"] = json!(media);
+        }
+        image
+    }
     fn article(&mut self, id: &str, language: &str, title: &str, body: &str) -> Value {
         let path = format!("articles/{id}-{language}.json");
         let html = format!("articles/{id}-{language}.html");
@@ -110,7 +152,7 @@ fn peak_catalogue_keeps_explicit_associations_and_shared_assets_independent_of_e
     fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
-    let first = peaks::compile(&manifest, &boundary, &f.root.join("first")).unwrap();
+    let first = peaks::compile(&manifest, &boundary, &f.root.join("first"), false).unwrap();
     assert_eq!((first.counts.captured, first.counts.candidates, first.counts.texts, first.counts.images), (6, 5, 3, 1));
     assert_eq!(
         first.associations.iter().map(|a| (a.node_id, a.article_id.as_str())).collect::<Vec<_>>(),
@@ -122,9 +164,11 @@ fn peak_catalogue_keeps_explicit_associations_and_shared_assets_independent_of_e
     assert!(first.omissions.iter().any(|o| o.qid == "Q2" && o.reason == "no_usable_captured_language"));
     assert!(first.omissions.iter().any(|o| o.qid == "Q3" && o.reason == "unsupported_license"));
     assert_eq!(fs::read_dir(f.root.join("first")).unwrap().count(), 2);
-    assert!(super::compile(&manifest, &boundary, &f.root.join("landmarks")).unwrap_err().contains("peak compiler"));
+    assert!(super::compile(&manifest, &boundary, &f.root.join("landmarks"), false)
+        .unwrap_err()
+        .contains("peak compiler"));
     assert!(serde_json::from_slice::<Content>(&fs::read(f.root.join("first/peaks.json")).unwrap()).is_err());
-    peaks::compile(&manifest, &boundary, &f.root.join("second")).unwrap();
+    peaks::compile(&manifest, &boundary, &f.root.join("second"), false).unwrap();
     for file in fs::read_dir(f.root.join("first")).unwrap() {
         let file = file.unwrap();
         assert_eq!(fs::read(file.path()).unwrap(), fs::read(f.root.join("second").join(file.file_name())).unwrap());
@@ -154,4 +198,125 @@ fn peak_discovery_matches_the_map_classifier_and_ignores_way_and_unnamed_objects
     assert_eq!(source.summits[0].tags["wikidata"], "Q1");
     assert_eq!(source.osm_sha256, hash(&fs::read(osm).unwrap()));
     fs::remove_dir_all(root).unwrap();
+}
+
+const FREE: &str = "https://creativecommons.org/licenses/by/4.0/";
+
+/// Each peak isolates one rule, so the expected photo of a peak changes if that rule is removed.
+#[test]
+fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
+    let mut f = Fixture { root: obcm_testkit::scratch::scratch_dir("landmarks", "peak-photos"), sources: vec![] };
+    let (views, fallback, camera, depicts, mut wanted) = {
+        let mut make = |name: &str,
+                        shade: u8,
+                        license: &str,
+                        categories: &[&str],
+                        camera: Option<(f64, f64)>,
+                        depicts: Option<&str>,
+                        kind: &str| {
+            let mut value = f.photo(name, shade, license, categories, camera, depicts);
+            value["source"] = json!(kind);
+            value
+        };
+        (
+            // A view of the peak outranks a plain image claim. A subcategory of views from the peak
+            // is refused outright.
+            vec![
+                make("c", 30, FREE, &["Category:Views of Alpspitz"], None, None, "P4291"),
+                make("d", 40, FREE, &[], None, None, "P18"),
+                make("e", 50, FREE, &["Category:Views from the Alpspitz in winter"], None, None, "P18"),
+            ],
+            // A file that is only in the views subcategory is not a member of the entity's own
+            // category, so the category pool cannot admit it. The first claim is unusable and the
+            // second is not.
+            vec![
+                make("g", 60, FREE, &["Category:Views of Hochblassen"], None, None, "commons-category"),
+                make("x", 70, "https://example.test/nonfree", &[], None, None, "P18"),
+                make("y", 80, FREE, &[], None, None, "P18"),
+            ],
+            // The camera of the alphabetically first claim stands on the summit.
+            vec![make("n", 90, FREE, &[], Some((0.5, 0.5)), None, "P18"), make("p", 100, FREE, &[], None, None, "P18")],
+            // A category member that depicts the peak outranks a plain image claim.
+            vec![
+                make("h", 110, FREE, &["Category:Watzmann"], None, Some("Q8"), "commons-category"),
+                make("m", 120, FREE, &[], None, None, "P18"),
+            ],
+            // Metadata for three candidates and bytes for none of them.
+            vec![
+                make("r", 130, FREE, &[], None, None, "P18"),
+                make("s", 140, FREE, &[], None, None, "P18"),
+                make("t", 150, FREE, &[], None, None, "P18"),
+            ],
+        )
+    };
+    let claim =
+        |files: &[&str]| files.iter().map(|file| json!({"mainsnak":{"datavalue":{"value":file}}})).collect::<Vec<_>>();
+    for image in &mut wanted {
+        image.as_object_mut().unwrap().remove("path");
+    }
+    let mut places = vec![];
+    let peaks = [
+        ("Q5", "Alpspitz", views, claim(&["d.png", "e.png"]), claim(&["c.png"])),
+        ("Q6", "Hochblassen", fallback, claim(&["x.png", "y.png"]), claim(&[])),
+        ("Q7", "Zugspitze", camera, claim(&["n.png", "p.png"]), claim(&[])),
+        ("Q8", "Watzmann", depicts, claim(&["m.png"]), claim(&[])),
+        ("Q9", "Hochkalter", wanted, claim(&["r.png", "s.png", "t.png"]), claim(&[])),
+    ];
+    for (id, name, images, lead, panorama) in peaks {
+        f.json(
+            &format!("entities/{id}.json"),
+            json!({"entities":{id:{"id":id,"labels":{"en":{"value":name}},"sitelinks":{"enwiki":{"title":name}},
+                "claims":{
+                    "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.5,"longitude":0.5}}}}],
+                    "P373":[{"mainsnak":{"datavalue":{"value":name}}}],
+                    "P18":lead,
+                    "P4291":panorama}}}}),
+        );
+        let article = f.article(id, "en", name, "A limestone summit.");
+        let mut place = json!({"qid":id,"articles":[article],"images":images});
+        if let Some(member) = place["images"].as_array().unwrap().iter().find(|i| i["source"] == "commons-category") {
+            let listing = format!("categories/{id}.json");
+            f.json(&listing,json!({"query":{"categorymembers":[{"title":format!("File:{}", member["filename"].as_str().unwrap())}]}}));
+            place["commons_categories"] = json!([{"title": format!("Category:{name}"), "path": listing}]);
+        }
+        places.push(place);
+        f.json(&format!("links/{id}.json"), json!({"entities":{id:{"id":id}}}));
+    }
+    let linked = [(1i64, "Q5"), (2, "Q6"), (3, "Q7"), (4, "Q8"), (5, "Q9")];
+    let nodes: Vec<_> = linked.iter().map(|(id, qid)| {
+        json!({"node_id":id,"latitude":0.5,"longitude":0.5,"tags":{"natural":"peak","name":"Summit","wikidata":qid}})
+    }).collect();
+    f.json("summits.json", json!({"schema":1,"osm_sha256":"a".repeat(64),"summits":nodes}));
+    let resolutions: Vec<_> = linked
+        .iter()
+        .map(|(id, qid)| json!({"node_id":id,"kind":"wikidata","path":format!("links/{qid}.json"),"status":"resolved"}))
+        .collect();
+    let manifest = f.root.join("manifest.json");
+    fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
+    let boundary = f.root.join("boundary.json");
+    fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
+    let result = peaks::compile(&manifest, &boundary, &f.root.join("out"), true).unwrap();
+    let chosen =
+        |name: &str| hash(&photo::prepare(&fs::read(f.root.join(format!("photos/{name}.png"))).unwrap()).unwrap());
+    let selected: Vec<_> =
+        result.records.iter().filter_map(|r| r.article.photo.as_ref()).map(|p| p.sha256.clone()).collect();
+    assert_eq!(selected, ["c", "y", "p", "h"].map(chosen));
+    // Q9 has no acquired bytes, so the compiler asks for the two best and says nothing about a
+    // missing photo until the capture has answered.
+    assert_eq!(
+        result.photo_requests.iter().map(|r| (r.qid.as_str(), r.filename.as_str())).collect::<Vec<_>>(),
+        [("Q9", "r.png"), ("Q9", "s.png")]
+    );
+    assert!(result.omissions.iter().all(|o| o.qid != "Q9"));
+    // A compile no capture drives asks for nothing and says why the record has no photo.
+    let shipped = peaks::compile(&manifest, &boundary, &f.root.join("shipped"), false).unwrap();
+    assert!(shipped.photo_requests.is_empty());
+    assert!(shipped.omissions.iter().any(|o| o.qid == "Q9" && o.reason == "no_usable_captured_image"));
+    let document = fs::read_to_string(f.root.join("shipped/peaks.json")).unwrap();
+    assert!(!document.contains("photo_requests"), "a shipped catalogue carries no request list");
+    let reasons: BTreeSet<_> = result.omissions.iter().map(|o| o.reason.as_str()).collect();
+    assert!(reasons.contains("views_from_the_site"), "a view from the summit is refused");
+    assert!(reasons.contains("photo_identity_mismatch"), "a category member proves its own membership");
+    assert!(reasons.contains("unsupported_license"));
+    fs::remove_dir_all(f.root).unwrap();
 }
