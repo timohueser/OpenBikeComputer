@@ -4,6 +4,7 @@ use crate::convert::{ObcrEmitter, RouteStats};
 use crate::reader::{decode_route_points_between_checked, WaypointCursor};
 use crate::{RouteReader, MAX_POINTS_PER_CHUNK};
 use heapless::Vec;
+use obc_formats::bike::BikeType;
 use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, Error};
 use obc_formats::obcm::{PoiMetadata, SourceId};
 use obc_formats::obcr::{RouteSourceKey, VisitDescriptor, WaypointProvenance, HEADER_FULL_LEN, WAYPOINT_LEN};
@@ -20,21 +21,21 @@ pub struct VisitTarget {
     pub display: (i32, i32),
 }
 impl VisitTarget {
-    pub fn approach(self, map: RouteSourceKey, profile: u8) -> Option<(i32, i32)> {
-        if self.map != map || !self.metadata.source.is_valid() || profile >= 8 {
+    pub fn approach(self, map: RouteSourceKey, profile: BikeType) -> Option<(i32, i32)> {
+        if self.map != map || !self.metadata.source.is_valid() {
             return None;
         }
         match self.metadata.approach {
-            Some(a) => (a.source.is_valid() && a.profile_mask & (1 << profile) != 0).then_some((a.lon, a.lat)),
+            Some(a) => (a.source.is_valid() && a.profile_mask & (1 << profile as u8) != 0).then_some((a.lon, a.lat)),
             None => Some(self.display),
         }
     }
     /// Explicit approaches must be reached exactly. Other places use the bounded graph snap.
-    pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(), Error> {
+    pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: BikeType) -> Result<(), Error> {
         self.destination(src, profile).map(|_| ())
     }
     /// The actual final graph coordinate, validated against this map-bound place.
-    pub fn destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(i32, i32), Error> {
+    pub fn destination(self, src: &dyn obc_formats::io::ByteSource, profile: BikeType) -> Result<(i32, i32), Error> {
         use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
         use obc_formats::obcr::CHUNK_META_LEN;
         let approach = self.approach(self.map, profile).ok_or(Error::BadOffset)?;
@@ -447,7 +448,7 @@ impl VisitBuilder {
         &mut self,
         target: VisitTarget,
         leg: &dyn obc_formats::io::ByteSource,
-        profile: u8,
+        profile: BikeType,
     ) -> Result<(), Error> {
         let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
         if self.phase != Phase::Outbound
@@ -543,6 +544,7 @@ impl VisitBuilder {
                 }
             }
             Phase::Geometry => {
+                self.em.set_bike_type(original.bike_type());
                 let mut capture = HeaderSink { sink, header: &mut self.header };
                 self.stats = Some(self.em.finish(
                     &mut capture,

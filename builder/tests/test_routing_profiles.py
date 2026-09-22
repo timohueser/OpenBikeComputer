@@ -118,20 +118,24 @@ def _profile_table(data):
     return count, data[table_off:end]
 
 CUSTOM = {
-    "name": "TestBike",
+    "name": "Road",
     "default": 4.0,  # -> 64
     "highway": {"cycleway": 1.0, "track": 7.0, "steps": "forbidden", "primary": 2.5},
     "surface": {"paved": 1.0, "gravel": 5.0, "rough": "forbidden"},
     "climb_weight": 12,  # v12 §8.6: flat metres charged per metre of ascent
 }
-MINIMAL = {"name": "Zwei", "default": 2.0}
+MINIMAL = {"name": "Gravel", "default": 2.0}
+
+def _four(road, gravel=None):
+    """The four bike types in their fixed order, with the given Road and Gravel entries."""
+    return [road, gravel or {"name": "Gravel"}, {"name": "MTB"}, {"name": "Touring"}]
 
 @requires_pack
 def test_custom_profiles_round_trip_to_112_bytes(tmp_path):
-    """A config with custom profiles packs to §8.6 records that match byte-for-byte."""
-    data = _pack(tmp_path, [CUSTOM, MINIMAL])
+    """A config with custom weights packs to §8.6 records that match byte-for-byte."""
+    data = _pack(tmp_path, _four(CUSTOM, MINIMAL))
     count, table = _profile_table(data)
-    assert count == 2
+    assert count == 4
     rec0 = table[:PROFILE_RECORD_LEN]
     rec1 = table[PROFILE_RECORD_LEN:2 * PROFILE_RECORD_LEN]
     assert rec0 == _expected_record(CUSTOM)
@@ -148,17 +152,26 @@ def test_custom_profiles_round_trip_to_112_bytes(tmp_path):
 @requires_pack
 def test_forbidden_primary_is_quantized_to_zero(tmp_path):
     """The acceptance-criterion shape: switching a class to forbidden zeroes its wire byte."""
-    profile = {"name": "NoBigRoads", "default": 2.0, "highway": {"primary": "forbidden"}}
-    data = _pack(tmp_path, [profile])
+    profile = {"name": "Road", "default": 2.0, "highway": {"primary": "forbidden"}}
+    data = _pack(tmp_path, _four(profile))
     _count, table = _profile_table(data)
     assert table[NAME_LEN + HIGHWAY_CLASSES.index("primary")] == 0
 
 @requires_pack
-def test_single_profile_count(tmp_path):
-    data = _pack(tmp_path, [CUSTOM])
-    count, table = _profile_table(data)
-    assert count == 1
-    assert table == _expected_record(CUSTOM)
+def test_anything_but_the_four_bike_types_is_rejected(tmp_path):
+    """The count, the order and the names of the profiles are fixed (OBCM §8.6)."""
+    cfg = json.load(open(SCHEMA_PRESET))
+    cfg.pop("_meta", None)
+    for profiles in ([CUSTOM], _four(CUSTOM)[::-1], _four({"name": "Racer"})):
+        cfg["routing"] = {"profiles": profiles}
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps(cfg))
+        proc = subprocess.run(
+            [_pack_bin(), TINY_PBF, str(cfg_path), str(tmp_path / "out.obcm"), "--no-land"],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode != 0, f"{[p['name'] for p in profiles]} must fail the pack"
+        assert "four bike types" in proc.stdout + proc.stderr
 
 @requires_pack
 def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
@@ -166,7 +179,7 @@ def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
     — the identical failure the builder API surfaces as a job error."""
     cfg = json.load(open(SCHEMA_PRESET))
     cfg.pop("_meta", None)
-    cfg["routing"] = {"profiles": [{"name": "Bad", "highway": {"cycleway": 0.5}}]}
+    cfg["routing"] = {"profiles": _four({"name": "Road", "highway": {"cycleway": 0.5}})}
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps(cfg))
     proc = subprocess.run(

@@ -32,12 +32,15 @@ PAGES = SETTINGS / "page.rs"
 # The quick drawer's two shortcuts also stay on their settings pages: brightness on Display, the
 # Bluetooth radio on Connections.
 ALLOWED_SHARED_FIELDS: set[str] = {"brightness", "ble_enabled"}
+# The bike type is one current value the rider sets before a ride, from the route-plan sheet, the
+# start card or the Ride settings page (owner decision). All three open the same editor.
+ALLOWED_SHARED_BINDINGS: set[str] = {"BikeProfile"}
 
 # The census, pinned at the declared controls. Update these when controls are added or removed;
 # a parser change must not lower them.
 ROW_LABELS = 26
 SHEET_BINDINGS = 12
-PAGE_BINDINGS = 10
+PAGE_BINDINGS = 11
 
 # `cx.settings.<field> = …`, or `s.<field> = …` after `let s = &mut *cx.settings` — the production
 # write paths a screen has into the persisted record. `=(?!=)` so an equality test is not read as
@@ -103,7 +106,12 @@ def main() -> int:
     for table in PAGE_TABLE.findall(PAGES.read_text()):
         page_bindings.update(BINDING.findall(table))
 
-    for binding in sorted(sheet_bindings & page_bindings):
+    for binding in sorted(ALLOWED_SHARED_BINDINGS - (sheet_bindings & page_bindings)):
+        failures.append(
+            f"ALLOWED_SHARED_BINDINGS names `{binding}`, but it is not on both a sheet row and a page "
+            f"row — a vacuous exception hides a blind parser; drop it or fix the parser."
+        )
+    for binding in sorted((sheet_bindings & page_bindings) - ALLOWED_SHARED_BINDINGS):
         failures.append(
             f"`{binding}` has two homes: a sheet row in {CONTEXT.relative_to(ROOT)} and a page row in "
             f"{PAGES.relative_to(ROOT)}. Delete the page row in the same push that moves the editor."

@@ -164,7 +164,7 @@ immediately after encryption. A timestamp the device stamps later in the session
 
 ## 7. Object layouts
 
-A route object's payload is exactly the bytes of an OBCR v3 file
+A route object's payload is exactly the bytes of an OBCR file
 ([`OBCR_Spec.md`](OBCR_Spec.md)); the device stores and serves it verbatim. An update package's
 payload is exactly the bytes of an OBCU container ([`OBCU_Spec.md`](OBCU_Spec.md) §1).
 

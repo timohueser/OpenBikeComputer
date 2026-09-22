@@ -13,6 +13,7 @@ extern crate std;
 
 pub mod articles;
 pub mod assistant;
+pub mod bike;
 pub mod cache;
 pub mod io;
 pub mod obcm;

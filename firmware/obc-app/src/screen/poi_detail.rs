@@ -247,7 +247,7 @@ impl PoiDetailScreen {
             .poi
             .metadata
             .approach
-            .map_or(self.is_landmark(), |a| a.profile_mask & (1 << rx.settings.bike_profile_idx.min(7)) == 0)
+            .map_or(self.is_landmark(), |a| a.profile_mask & (1 << rx.settings.bike_type as u8) == 0)
         {
             rx.t(Msg::AssistantNoRoad)
         } else {

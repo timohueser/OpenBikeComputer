@@ -56,8 +56,8 @@ export function decodeRouteHeader(bytes: Uint8Array): RouteHeader {
     const view = viewOf(bytes);
     if (view.getUint32(0, false) !== MAGIC) throw new RouteError("That file is not an OBCR route.");
     const version = bytes[4];
-    if (version !== 4) {
-        throw new RouteError(`That route is OBCR v${version}; this page writes v4.`);
+    if (version !== 5) {
+        throw new RouteError(`That route is OBCR v${version}; this page writes v5.`);
     }
     const nameLen = Math.min(bytes[6], ROUTE_NAME_MAX);
     return {

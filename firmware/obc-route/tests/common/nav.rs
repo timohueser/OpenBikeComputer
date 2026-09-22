@@ -4,14 +4,14 @@ use obc_formats::io::SliceSource;
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavScratch};
 
-/// Parse `bytes` and run the router under bike profile `profile_idx` with a full-size scratch +
+/// Parse `bytes` and run the router for `bike` with a full-size scratch +
 /// fresh tile cache, returning `(result, obcr_bytes, cache_stats)`.
 pub fn plan_p(
     bytes: &[u8],
     from: (i32, i32),
     to: (i32, i32),
     name: &str,
-    profile_idx: u8,
+    bike: obc_route::BikeType,
 ) -> (Result<obc_route::RouteStats, NavError>, Vec<u8>, obc_reader::NavCacheStats) {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("a serialized map parses");
@@ -20,7 +20,7 @@ pub fn plan_p(
     let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, name, profile_idx, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
+    let res = plan_route(&r, from, to, name, bike, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     (res, sink.buf, tiles.stats())
 }
 

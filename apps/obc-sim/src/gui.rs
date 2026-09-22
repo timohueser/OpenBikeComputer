@@ -370,10 +370,6 @@ impl SimGui {
         let boot_settings = settings_store.load().unwrap_or_default();
         app.set_settings(boot_settings);
         args.stamp_initial_clock(&mut app);
-        // Mirror the map's routing-profile names into the app for the bike-type editor and the
-        // created-route overview label. The sim loads one map, so this is a one-shot; a device
-        // re-runs it on every map load.
-        app.set_nav_profiles(map_tables.nav_profiles());
         app.set_map_nav_graph(map_tables.has_nav_graph());
         // Device-info built-ins for the System settings screen: the firmware version, standing in
         // as the sim's crate version, and the loaded map's name and version. The free-space scan is
@@ -953,6 +949,7 @@ impl eframe::App for SimGui {
                 match crate::routes::import_gpx(
                     &mut self.store,
                     &path,
+                    self.app.settings().bike_type,
                     Some((&self.map.reader(), self.map.route_attribution_key())),
                 ) {
                     Ok(s) => {

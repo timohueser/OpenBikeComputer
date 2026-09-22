@@ -63,6 +63,13 @@ off = "Arrêt"
 manual = "Manuel"
 auto = "Auto"
 
+# --- BikeType labels (the four fixed bike types) ---
+[bike_type]
+road = "Route"
+gravel = "Gravel"
+mtb = "VTT"
+touring = "Randonnée"
+
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
 off = "Arrêt"
@@ -204,6 +211,7 @@ fields = "Champs"
 pages = "Défil. auto"
 climb = "Montée"
 waypoints = "Points"
+bike_type = "Type de vélo"
 
 # --- Display settings screen ---
 [display]

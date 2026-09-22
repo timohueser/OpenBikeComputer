@@ -28,7 +28,6 @@ impl VisitHarness {
     }
     fn with_harness(mut h: Harness, mapped: bool) -> Self {
         h.app.activate_route(0);
-        h.app.set_nav_profiles(obc_reader::Reader::new(h.map.as_ref().unwrap(), &h.tables, &h.cache).nav_profiles());
         h.app.set_map_nav_graph(true);
         let mut this = Self {
             h,
@@ -49,7 +48,7 @@ impl VisitHarness {
             progress_m: 0,
             occurrence: 0,
             required_anchors_m: [0; 3],
-            profile: 0,
+            profile: obc_route::BikeType::Road,
             facts_policy: REVIEW_FACTS_POLICY,
             unresolved_avoidance: false,
         };
@@ -505,7 +504,7 @@ fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
         progress_m: 500,
         occurrence: 0,
         required_anchors_m: [rejoin; 3],
-        profile: 0,
+        profile: obc_route::BikeType::Road,
         facts_policy: REVIEW_FACTS_POLICY,
         unresolved_avoidance: false,
     };

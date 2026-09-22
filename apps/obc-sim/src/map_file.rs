@@ -252,7 +252,6 @@ mod terrain_tests {
 
     fn plan(session: &mut Session, replace: Option<&Path>) -> Option<Vec<u8>> {
         let mut app = App::new_idle(AppState::new(512, 512, 1.0));
-        app.set_nav_profiles(session.map.tables().nav_profiles());
         app.set_map_nav_graph(true);
         let mut elevation = session.map.elevation();
         // The native altitude drain uses this same retained elevation object.

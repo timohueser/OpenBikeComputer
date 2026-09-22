@@ -284,7 +284,6 @@ fn tour_screens_dwell_with_no_present_miss() {
         state.mode = CameraMode::Follow;
         state.heading_up = true;
         let mut app = App::new(state);
-        app.set_nav_profiles(tables.nav_profiles());
         app.set_routes_with_ids(store.catalog(), store.ids());
         app.set_settings(settings);
         if !store.catalog().is_empty() {
@@ -504,7 +503,6 @@ fn demo_reset_rebuild_and_seek_present_clean() {
         state.mode = CameraMode::Follow;
         state.heading_up = true;
         let mut app = App::new(state);
-        app.set_nav_profiles(tables.nav_profiles());
         app.set_routes_with_ids(store.catalog(), store.ids());
         app.set_settings(settings);
         if !store.catalog().is_empty() {

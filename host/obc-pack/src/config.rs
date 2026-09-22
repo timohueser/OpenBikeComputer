@@ -14,7 +14,8 @@ use crate::nav::{
     highway_class_index, surface_class_index, DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES, SURFACE_CLASS_NAMES,
 };
 use crate::semantic::{SemanticClass, SemanticScheme};
-use obc_formats::obcm::{NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN, VERSION as OBCM_VERSION};
+use obc_formats::bike::BikeType;
+use obc_formats::obcm::VERSION as OBCM_VERSION;
 
 use crate::serialize::{NavProfile, Style};
 
@@ -78,11 +79,14 @@ pub fn config_schema() -> Value {
     let routing_props = properties["routing"]["properties"].as_object_mut().expect("routing properties");
     routing_props["min_component_edges"]["description"] =
         Value::String("Drop disconnected graph components below this many edges; the largest is always kept.".into());
-    routing_props["profiles"]["description"] =
-        Value::String("Bike profiles selectable by index; every non-forbidden multiplier is >= 1.0.".into());
+    routing_props["profiles"]["description"] = Value::String(
+        "Exactly the four bike types, in order: Road, Gravel, MTB, Touring (OBCM §8.6). Only the weights are \
+         tunable; every non-forbidden multiplier is >= 1.0."
+            .into(),
+    );
     routing_props["profiles"].as_object_mut().expect("profiles schema").remove("default");
-    routing_props["profiles"]["minItems"] = Value::from(1);
-    routing_props["profiles"]["maxItems"] = Value::from(NAV_MAX_PROFILES);
+    routing_props["profiles"]["minItems"] = Value::from(BikeType::ALL.len());
+    routing_props["profiles"]["maxItems"] = Value::from(BikeType::ALL.len());
 
     let defs = root.get_mut("$defs").and_then(Value::as_object_mut).expect("config definitions");
     annotate_definitions(defs);
@@ -684,7 +688,7 @@ pub struct Routing {
     /// Keep every connected graph component with at least this many edges, plus the largest. Wired
     /// into [`crate::nav::build_graph_with`].
     pub min_component_edges: usize,
-    /// 1..=8 routing profiles, quantized to the wire form. Never empty.
+    /// One routing profile per [`BikeType`], in type order, quantized to the wire form.
     pub profiles: Vec<NavProfile>,
 }
 
@@ -1148,14 +1152,13 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
 
     let profile = defs.get_mut("profile").expect("profile schema");
     profile["description"] = Value::String(
-        "One bike profile: a display name plus per-class edge-weight multipliers. Unlisted classes use `default`."
+        "One bike type's routing weights: its name plus per-class edge-weight multipliers. Unlisted classes use \
+         `default`."
             .into(),
     );
     let props = profile["properties"].as_object_mut().expect("profile properties");
-    props["name"]["description"] =
-        Value::String("Display name shown on the device (UTF-8, at most 12 bytes on the wire).".into());
-    props["name"]["maxLength"] = Value::from(NAV_PROFILE_NAME_LEN);
-    props["name"]["x-maxUtf8Bytes"] = Value::from(NAV_PROFILE_NAME_LEN);
+    props["name"]["description"] = Value::String("The bike type this profile routes for. The order is fixed.".into());
+    props["name"]["enum"] = BikeType::ALL.iter().map(|bike| Value::from(bike.profile_name())).collect();
     props["default"]["description"] =
         Value::String("Multiplier applied to any highway/surface class not listed below.".into());
     props["climb_weight"]["description"] = Value::String(
@@ -1200,15 +1203,13 @@ impl RoutingDocument {
     }
 }
 
-/// Validate and quantize `routing.profiles`: 1..=[`NAV_MAX_PROFILES`] entries.
+/// Validate and quantize `routing.profiles`: exactly one entry per [`BikeType`], in type order.
 fn normalize_profiles(profiles: Vec<ProfileDocument>) -> Result<Vec<NavProfile>, String> {
-    if profiles.is_empty() {
-        return Err("routing.profiles must list at least one profile".into());
-    }
-    if profiles.len() > NAV_MAX_PROFILES {
+    let names: Vec<&str> = profiles.iter().map(|profile| profile.name.as_str()).collect();
+    let want: Vec<&str> = BikeType::ALL.iter().map(|bike| bike.profile_name()).collect();
+    if names != want {
         return Err(format!(
-            "routing.profiles has {} entries; the OBCM profile table supports at most {NAV_MAX_PROFILES}",
-            profiles.len()
+            "routing.profiles must list exactly the four bike types in order {want:?}; found {names:?}"
         ));
     }
     profiles.into_iter().enumerate().map(|(index, profile)| profile.normalize(index)).collect()
@@ -1219,11 +1220,6 @@ impl ProfileDocument {
     /// validation and admissible quantization are semantic checks.
     fn normalize(self, index: usize) -> Result<NavProfile, String> {
         let name = self.name;
-        if name.len() > NAV_PROFILE_NAME_LEN {
-            return Err(format!(
-                "config routing.profiles[{index}].name: {name:?} exceeds {NAV_PROFILE_NAME_LEN} UTF-8 bytes on the wire"
-            ));
-        }
         let default_q = match self.default_multiplier {
             None => 32u8,
             Some(multiplier) => quantize_multiplier_value(&multiplier, &name, "default", "(unlisted)")?,
@@ -2018,16 +2014,24 @@ mod tests {
         }
     }
 
+    /// A `routing` section with the four bike types, the Road entry carrying `road`'s fields.
+    fn four_profiles(road: &str) -> String {
+        format!(
+            r#"{{"routing":{{"min_component_edges":12,"profiles":[{{"name":"Road"{road}}},{{"name":"Gravel"}},{{"name":"MTB"}},{{"name":"Touring"}}]}}}}"#
+        )
+    }
+
     #[test]
     fn routing_parses_and_quantizes_custom_profile() {
-        let text = r#"{"routing":{"min_component_edges":12,"profiles":[
-            {"name":"Test","default":2.0,"highway":{"cycleway":1.0,"primary":2.5,"steps":"forbidden"},
-             "surface":{"paved":1.0,"gravel":4.0}}]}}"#;
-        let cfg = Config::parse(text).expect("custom routing parses");
+        let text = four_profiles(
+            r#","default":2.0,"highway":{"cycleway":1.0,"primary":2.5,"steps":"forbidden"},
+             "surface":{"paved":1.0,"gravel":4.0}"#,
+        );
+        let cfg = Config::parse(&text).expect("custom routing parses");
         assert_eq!(cfg.routing.min_component_edges, 12);
-        assert_eq!(cfg.routing.profiles.len(), 1);
+        assert_eq!(cfg.routing.profiles.len(), 4);
         let p = &cfg.routing.profiles[0];
-        assert_eq!(p.name, "Test");
+        assert_eq!(p.name, "Road");
         assert_eq!(p.highway[0], 16, "cycleway 1.0×");
         assert_eq!(p.highway[12], 40, "primary 2.5× = 40");
         assert_eq!(p.highway[4], 0, "steps forbidden");
@@ -2039,9 +2043,9 @@ mod tests {
 
     #[test]
     fn routing_rejects_sub_unit_multiplier() {
-        let text = r#"{"routing":{"profiles":[{"name":"Bad","highway":{"cycleway":0.5}}]}}"#;
+        let text = four_profiles(r#","highway":{"cycleway":0.5}"#);
         // `Config` isn't `Debug`, so match the Err arm rather than `expect_err`.
-        let err = match Config::parse(text) {
+        let err = match Config::parse(&text) {
             Ok(_) => panic!("a <1.0 multiplier must error"),
             Err(e) => e,
         };
@@ -2049,13 +2053,19 @@ mod tests {
     }
 
     #[test]
-    fn routing_rejects_malformed_profiles() {
-        assert!(Config::parse(r#"{"routing":{"profiles":[]}}"#).is_err(), "empty profiles must error");
-        let nine: Vec<String> = (0..9).map(|i| format!("{{\"name\":\"P{i}\"}}")).collect();
-        let text = format!("{{\"routing\":{{\"profiles\":[{}]}}}}", nine.join(","));
-        assert!(Config::parse(&text).is_err(), "9 profiles must exceed the 8-cap");
+    fn routing_rejects_anything_but_the_four_bike_types_in_order() {
+        for profiles in [
+            r#"[]"#,
+            r#"[{"name":"Road"},{"name":"Gravel"},{"name":"MTB"}]"#,
+            r#"[{"name":"Road"},{"name":"Gravel"},{"name":"MTB"},{"name":"Touring"},{"name":"Cargo"}]"#,
+            r#"[{"name":"Gravel"},{"name":"Road"},{"name":"MTB"},{"name":"Touring"}]"#,
+            r#"[{"name":"Road"},{"name":"Gravel"},{"name":"Mountain"},{"name":"Touring"}]"#,
+        ] {
+            let text = format!(r#"{{"routing":{{"profiles":{profiles}}}}}"#);
+            assert!(Config::parse(&text).is_err(), "{profiles} must be rejected");
+        }
         assert!(
-            Config::parse(r#"{"routing":{"profiles":[{"name":"X","highway":{"autobahn":2.0}}]}}"#).is_err(),
+            Config::parse(&four_profiles(r#","highway":{"autobahn":2.0}"#)).is_err(),
             "an unknown highway class must error (typo protection)"
         );
     }
@@ -2086,10 +2096,10 @@ mod tests {
         // 1.0 quantizes to 16, just under 1.0 is rejected — consistent both sides.
         assert_eq!(quantize_multiplier(&serde_json::json!(1.0), "p", "highway", "cycleway").unwrap(), 16);
         assert!(quantize_multiplier(&serde_json::json!(0.99), "p", "highway", "cycleway").is_err());
-        // Profile-count caps.
+        // Exactly the four bike types.
         let profiles = &schema["properties"]["routing"]["properties"]["profiles"];
-        assert_eq!(profiles["minItems"].as_u64(), Some(1));
-        assert_eq!(profiles["maxItems"].as_u64(), Some(NAV_MAX_PROFILES as u64));
+        assert_eq!(profiles["minItems"].as_u64(), Some(4));
+        assert_eq!(profiles["maxItems"].as_u64(), Some(4));
         // The class-name enums are exactly the canonical tables (the config vocabulary).
         let hw_enum: Vec<&str> = schema["$defs"]["profile"]["properties"]["highway"]["propertyNames"]["enum"]
             .as_array()
@@ -2123,16 +2133,12 @@ mod tests {
         assert_eq!(weights, vec![10, 8, 6, 8], "Road / Gravel / MTB / Touring");
         assert_eq!(shipped.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Road", "Gravel", "MTB", "Touring"]);
 
-        let cfg = Config::parse(r#"{"routing":{"profiles":[{"name":"Steep","climb_weight":255},{"name":"Blind"}]}}"#)
-            .expect("both profiles parse");
+        let cfg = Config::parse(&four_profiles(r#","climb_weight":255"#)).expect("the profiles parse");
         assert_eq!(cfg.routing.profiles[0].climb_weight, 255, "the maximum weight is legal — the term is additive");
         assert_eq!(cfg.routing.profiles[1].climb_weight, 0, "unstated is climb-blind, not inherited");
 
         // Unlike a multiplier there is no admissibility floor, so nothing here is rejected for
         // being too small; a value outside u8 is a type error from serde.
-        assert!(
-            Config::parse(r#"{"routing":{"profiles":[{"name":"X","climb_weight":256}]}}"#).is_err(),
-            "256 does not fit the u8 wire field"
-        );
+        assert!(Config::parse(&four_profiles(r#","climb_weight":256"#)).is_err(), "256 does not fit the u8 wire field");
     }
 }

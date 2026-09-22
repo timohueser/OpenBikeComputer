@@ -95,11 +95,7 @@ impl DrawTarget for Buf {
 /// an empty POI directory and an empty hours pool. It renders as a flat backdrop, so the only
 /// non-backdrop pixels come from whatever is drawn on top. `marker` is the header's marker color.
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
-    build_min_obcm_profiles(marker, &["Default"])
-}
-
-/// [`build_min_obcm`] with a caller-chosen profile table (1..=8 names, every multiplier 1.0×).
-pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
+    let profiles: &[&str] = &["Default"];
     // Every offset a header or directory carries is a count of `U = 16`-byte units, so every
     // structure one reaches starts on a unit boundary and the bytes between them are `0xFF` filler.
     // The 57-byte header is not a unit multiple, so the style table begins at 64.

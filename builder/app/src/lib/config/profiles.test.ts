@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NavProfile, PackConfig, SchemaEnvelope } from "./model";
 import {
-    addProfile,
     cellValue,
     checkClimbWeight,
     checkMultiplier,
@@ -14,7 +13,6 @@ import {
     profileClimbWeight,
     profileDefault,
     readProfileSchema,
-    removeProfile,
     resetProfile,
     setCell,
     setClimbWeight,
@@ -71,9 +69,6 @@ describe("readProfileSchema", () => {
         expect(PS.surfaceClasses).toEqual(["unknown", "paved", "gravel"]);
         expect(PS.multiplierMin).toBe(1.0);
         expect(PS.defaultMultiplier).toBe(2.0);
-        expect(PS.minProfiles).toBe(1);
-        expect(PS.maxProfiles).toBe(8);
-        expect(PS.nameMaxBytes).toBe(12);
         expect(PS.climbMin).toBe(0);
         expect(PS.climbMax).toBe(255);
         expect(PS.climbDefault).toBe(0);
@@ -91,13 +86,6 @@ describe("readProfileSchema", () => {
         const bare = { schema_version: 1, format_version: 6, source: "binary", schema: { $defs: { style: { properties: {} } } } } as unknown as SchemaEnvelope;
         expect(readProfileSchema(bare)).toBeNull();
         expect(readProfileSchema(null)).toBeNull();
-    });
-
-    it("prefers the schema's UTF-8 byte cap over JSON Schema character length", () => {
-        const env = schemaEnvelope() as any;
-        env.schema.$defs.profile.properties.name.maxLength = 99;
-        env.schema.$defs.profile.properties.name["x-maxUtf8Bytes"] = 12;
-        expect(readProfileSchema(env)?.nameMaxBytes).toBe(12);
     });
 });
 
@@ -217,28 +205,7 @@ describe("routing lifecycle over a config", () => {
         expect(PS.defaultProfiles[0].name).toBe("Road");
     });
 
-    it("adds profiles up to the schema max, seeding them at the default", () => {
-        const cfg = bareConfig();
-        ensureRouting(cfg, PS); // 2 shipped defaults
-        for (let i = 2; i < 8; i++) expect(addProfile(cfg, PS)).not.toBeNull();
-        expect(cfg.routing!.profiles.length).toBe(8);
-        expect(addProfile(cfg, PS)).toBeNull(); // capped at maxProfiles
-        const added = cfg.routing!.profiles[7];
-        expect(added.default).toBe(2.0);
-        expect(added.highway).toBeUndefined(); // every class inherits the default
-        // …and it states no climb weight, so the packer reads it as climb-blind.
-        expect(hasClimbWeight(added)).toBe(false);
-        expect(profileClimbWeight(added, PS)).toBe(0);
-    });
-
-    it("refuses to remove the last profile", () => {
-        const cfg = bareConfig();
-        ensureRouting(cfg, PS).profiles = [{ name: "Only", default: 2.0 }];
-        expect(removeProfile(cfg, 0, PS)).toBe(false);
-        expect(cfg.routing!.profiles.length).toBe(1);
-    });
-
-    it("resets a profile to its shipped default by name", () => {
+    it("resets a bike type to its shipped weights", () => {
         const cfg = bareConfig();
         ensureRouting(cfg, PS);
         cfg.routing!.profiles[0].highway = { cycleway: 9.0 }; // tamper with Road
