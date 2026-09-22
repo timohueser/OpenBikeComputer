@@ -81,7 +81,8 @@ fn source_join_content_pool_and_independent_photo_readback() {
         },
     ];
     let bbox = (7_000_000, 46_000_000, 9_000_000, 48_000_000);
-    let landmarks = landmark_map::load(&path, &links, bbox).unwrap();
+    let artifact = [path.clone()];
+    let landmarks = landmark_map::load(&artifact, &links, bbox).unwrap();
     assert_eq!(landmarks[0].record.osm, Some(linked));
     assert!(landmarks[0].hours.is_some(), "a non-service source retains its hours");
     assert_eq!(landmarks[1].record.osm, None);
@@ -116,12 +117,83 @@ fn source_join_content_pool_and_independent_photo_readback() {
     assert_eq!(decoded, pixels);
     assert!(landmark_map::serialize(&[landmarks[1].clone(), landmarks[0].clone()], &[POI_HOURS_REF_NONE, 3]).is_err());
     assert!(landmark_map::serialize(&[landmarks[0].clone(), landmarks[0].clone()], &[3, 3]).is_err());
-    let key = landmark_map::fingerprint(&path).unwrap();
+    let key = landmark_map::fingerprint(&artifact).unwrap();
     content.records[0].name = "Andere Burg".into();
     std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();
-    assert_ne!(key, landmark_map::fingerprint(&path).unwrap());
+    assert_ne!(key, landmark_map::fingerprint(&artifact).unwrap());
     std::fs::write(root.join("photo.rgb222"), vec![0; PHOTO_PIXELS]).unwrap();
-    assert!(landmark_map::fingerprint(&path).is_err(), "a cache hit must verify declared photo hashes");
-    assert!(landmark_map::load(&path, &links, bbox).is_err());
+    assert!(landmark_map::fingerprint(&artifact).is_err(), "a cache hit must verify declared photo hashes");
+    assert!(landmark_map::load(&artifact, &links, bbox).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Neighbouring regions overlap, so a cell can be handed the same place twice. One record per QID
+/// reaches the map, both sides of a border reach it, and the winner is the same for either order.
+#[test]
+fn overlapping_artifacts_merge_by_qid() {
+    let root = obcm_testkit::scratch::scratch_dir("landmark-map", "merge");
+    let record = |qid: &str, name: &str| Record {
+        qid: qid.into(),
+        name: name.into(),
+        category: 1,
+        latitude: 47.0,
+        longitude: 8.0,
+        default_language: "de".into(),
+        fallback_sources: vec![],
+        variants: vec![TextVariant {
+            language: "de".into(),
+            text_pages: vec!["Eine Burg.".into()],
+            attribution: credit(),
+        }],
+        photo: None,
+    };
+    let artifact = |region: &str, records: Vec<Record>| {
+        let dir = root.join(region);
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = Content {
+            schema: 2,
+            input_sha256: region.into(),
+            policy_sha256: "policy".into(),
+            category_policy_sha256: "categories".into(),
+            languages: vec!["en".into(), "de".into(), "fr".into(), "es".into()],
+            source_coverage: serde_json::json!({}),
+            counts: Default::default(),
+            candidate_qids: vec![],
+            records,
+            omissions: vec![],
+        };
+        let path = dir.join("content.json");
+        std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();
+        path
+    };
+    let west = artifact("west", vec![record("Q1", "Westburg"), record("Q7", "Grenzburg")]);
+    let east = artifact("east", vec![record("Q7", "Grenzburg-Ost"), record("Q9", "Ostburg")]);
+    let bbox = (7_000_000, 46_000_000, 9_000_000, 48_000_000);
+
+    let merged = landmark_map::load(&[west.clone(), east.clone()], &[], bbox).unwrap();
+    assert_eq!(
+        merged.iter().map(|l| l.record.qid).collect::<Vec<_>>(),
+        vec![1, 7, 9],
+        "one record per QID, and a cell on the seam carries both sides"
+    );
+    let reversed = landmark_map::load(&[east.clone(), west.clone()], &[], bbox).unwrap();
+    assert!(
+        merged.iter().zip(&reversed).all(|(a, b)| a.record.encode() == b.record.encode() && a.content == b.content),
+        "the merge does not depend on the order the artifacts arrive in"
+    );
+    // The two Q7 records differ in the name blob alone, so the lower name digest is the winner.
+    fn lower<'a>(a: &'a str, b: &'a str) -> &'a str {
+        if <[u8; 32]>::from(Sha256::digest(a)) < <[u8; 32]>::from(Sha256::digest(b)) {
+            a
+        } else {
+            b
+        }
+    }
+    assert_eq!(merged[1].content[0], lower("Grenzburg", "Grenzburg-Ost").as_bytes());
+    assert_eq!(
+        landmark_map::fingerprint(&[west.clone(), east.clone()]).unwrap(),
+        landmark_map::fingerprint(&[east, west]).unwrap(),
+        "the cell cache key is over the set of artifacts, not their order"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
