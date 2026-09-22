@@ -128,7 +128,7 @@ def run(args):
             identities.update(found)
     places = []
     for index, (identity, direct) in enumerate(sorted(identities.items())):
-        place = shared.capture_place(capture, identity) if direct is None else shared.capture_assets(capture, identity, direct)
+        place = shared.capture_place(capture, identity, True) if direct is None else shared.capture_assets(capture, identity, direct, True)
         places.append(place)
         print(f"peak article {index + 1}/{len(identities)}: {identity} articles={len(place['articles'])} images={len(place['images'])}", flush=True)
     def manifest():

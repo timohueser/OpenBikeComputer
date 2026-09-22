@@ -471,40 +471,44 @@ def capture_locales(capture: Capture, value: dict) -> None:
         pending = following
 
 
-def capture_place(capture: Capture, qid: str) -> dict:
+def capture_place(capture: Capture, qid: str, photo_without_text: bool = False) -> dict:
     value = entity(capture, qid)
     place = dict(qid=qid, articles=[], images=[], outcomes=[])
     if not value or "missing" in value:
         place["outcomes"].append(dict(asset="entity", status="acquisition-failed"))
         return place
-    return capture_assets(capture, qid, value)
+    return capture_assets(capture, qid, value, photo_without_text)
 
 
-def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
+def capture_assets(capture: Capture, qid: str, value: dict, photo_without_text: bool = False) -> dict:
+    """`photo_without_text` is the peak collection, where a photo alone is a record. A collection
+    that needs text asks for no image of an entity that cannot have one."""
     place = dict(qid=qid, articles=[], images=[], outcomes=[])
     place["entity_revision"] = value.get("lastrevid")
     place["name"] = next((value.get("labels", {}).get(lang, {}).get("value") for lang in LANGUAGES if value.get("labels", {}).get(lang)), qid)
     coordinates = claim_values(value, "P625")
     place["coordinate"] = coordinates[0] if coordinates else None
-    if not any(lang + "wiki" in value.get("sitelinks", {}) for lang in LANGUAGES):
-        place["outcomes"].append(dict(asset="article", status="no-supported-sitelink"))
-        return place
-    capture_locales(capture, value)
     candidates = {(name.replace("_", " "), prop, None)
                   for prop in IMAGE_PROPERTIES for name in claim_values(value, prop) if isinstance(name, str)}
-    for language in LANGUAGES:
-        link = value.get("sitelinks", {}).get(language + "wiki")
-        if not link:
-            place["outcomes"].append(dict(asset="article", language=language, status="no-sitelink"))
-            continue
-        record, lead, status = article(capture, qid, language, link["title"])
-        place["outcomes"].append(dict(asset="article", language=language, status=status))
-        if record:
-            place["articles"].append(record)
-            if not lead:
-                place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
-        if lead:
-            candidates.add((lead, "wikipedia-lead", language))
+    if not any(lang + "wiki" in value.get("sitelinks", {}) for lang in LANGUAGES):
+        place["outcomes"].append(dict(asset="article", status="no-supported-sitelink"))
+        if not photo_without_text:
+            return place
+    else:
+        capture_locales(capture, value)
+        for language in LANGUAGES:
+            link = value.get("sitelinks", {}).get(language + "wiki")
+            if not link:
+                place["outcomes"].append(dict(asset="article", language=language, status="no-sitelink"))
+                continue
+            record, lead, status = article(capture, qid, language, link["title"])
+            place["outcomes"].append(dict(asset="article", language=language, status=status))
+            if record:
+                place["articles"].append(record)
+                if not lead:
+                    place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
+            if lead:
+                candidates.add((lead, "wikipedia-lead", language))
     place["commons_categories"] = []
     for category in claim_values(value, "P373"):
         if not isinstance(category, str):

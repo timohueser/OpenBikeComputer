@@ -344,14 +344,25 @@ pub fn compile(
         // The summit's own OSM coordinate, not the article entity's: a photo taken at the summit
         // shows the view from the peak, which does not help a rider identify it.
         let summit = associations.get(&id).and_then(|linked| linked.first()).map(|a| (a.latitude, a.longitude));
+        // A photo identifies a summit as well as a short article does, so a record needs one or
+        // the other. Both omissions are already stated when it has neither.
         if let Some(article) = prepare_article(
-            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos },
+            &Inputs {
+                root,
+                sources: &snapshot.sources,
+                locales: &locales,
+                output,
+                select_photos,
+                text_required: false,
+            },
             place,
             &entity,
             &mut Found { omissions: &mut result.omissions, requests: &mut result.photo_requests },
             summit,
-        )? {
-            result.counts.texts += 1;
+        )?
+        .filter(|article| !article.variants.is_empty() || article.photo.is_some())
+        {
+            result.counts.texts += usize::from(!article.variants.is_empty());
             if let Some(photo) = &article.photo {
                 result.counts.images += 1;
                 result.counts.photo_bytes += photo.bytes;

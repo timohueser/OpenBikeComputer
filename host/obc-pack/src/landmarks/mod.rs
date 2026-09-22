@@ -413,7 +413,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_phot
         content.candidate_qids.push(qid.clone());
         // A landmark photo is taken at the landmark, so it has no camera-distance reference.
         let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
-            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos },
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos, text_required: true },
             &place,
             entity,
             &mut Found { omissions: &mut content.omissions, requests: &mut content.photo_requests },
@@ -529,6 +529,9 @@ struct Inputs<'a> {
     /// Only a compile a capture drives asks for originals. A production compile holds every
     /// original it ranked, so a candidate with no bytes is one it cannot use, not one it waits for.
     select_photos: bool,
+    /// A landmark answers "what is this place", which needs text. A peak is identified by sight,
+    /// so a photo alone is a record there.
+    text_required: bool,
 }
 
 /// The captured file members of the place's own Commons categories. The listing is a pinned source
@@ -568,7 +571,7 @@ fn prepare_article(
     found: &mut Found,
     summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
-    let Inputs { root, sources, locales, output, select_photos } = *inputs;
+    let Inputs { root, sources, locales, output, select_photos, text_required } = *inputs;
     let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
@@ -588,14 +591,25 @@ fn prepare_article(
             }
         }
     }
+    // A record with no usable text always states that omission. Only a collection that accepts a
+    // photo alone goes on to look for one.
     if variants.is_empty() {
         omit("article", "no_usable_captured_language".into());
-        return Ok(None);
+        if text_required {
+            return Ok(None);
+        }
     }
-    let (default_language, fallback_sources) = locale::default_language(entity, locales, &variants);
+    let (default_language, fallback_sources) = match variants.is_empty() {
+        true => (String::new(), Vec::new()),
+        false => locale::default_language(entity, locales, &variants),
+    };
+    // A record with no text has no default language, so it takes the first label in UI order. A
+    // record that has text keeps the name rule it always had.
+    let ui_label = || locale::languages().into_iter().find_map(|(code, _)| entity["labels"][&code]["value"].as_str());
     let name = entity["labels"][&default_language]["value"]
         .as_str()
         .or_else(|| entity["labels"]["en"]["value"].as_str())
+        .or_else(|| variants.is_empty().then(ui_label).flatten())
         .or_else(|| place["name"].as_str())
         .ok_or("site name missing")?;
     let name = crate::name::to_repertoire(&text::normalize(name));

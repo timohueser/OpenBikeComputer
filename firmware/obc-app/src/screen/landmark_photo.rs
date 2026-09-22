@@ -81,10 +81,10 @@ impl LandmarkPhotoScreen {
     pub fn handle(&mut self, gesture: Gesture, cx: &mut Ctx) -> Transition {
         if self.linked {
             match gesture {
+                // With no text the photo is the whole record, so stepping has nowhere to go.
                 Gesture::Step(n) => {
-                    if let Some(article) = cx.landmarks.article {
-                        cx.landmarks.page = if n < 0 { article.text_pages as u16 - 1 } else { 0 };
-                    }
+                    let Some(article) = cx.landmarks.article else { return Transition::None };
+                    cx.landmarks.page = if n < 0 { article.text_pages as u16 - 1 } else { 0 };
                     return Transition::Pop;
                 }
                 Gesture::Press if matches!(self.selection, crate::photo::ContentSelection::Peak(_)) => {
