@@ -133,24 +133,6 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
         )
         .unwrap();
     let mut rides = FlatRideStore::new(HostStore(owner.0.clone())).unwrap();
-    assert!(!rides.open(1, None, 0));
-    assert_eq!(rides.discard(), Err(obc_app::recorder::RecorderError::ReadOnly));
-    let stats = RideStats {
-        distance_m: 0,
-        moving_time_s: 0,
-        avg_speed_cms: 0,
-        climb_m: 0,
-        unix_at_anchor: 0,
-        anchor_ms: 0,
-        clock_trusted: false,
-        avg_hr: None,
-        max_hr: None,
-        avg_cadence: None,
-        avg_power: None,
-        max_power: None,
-    };
-    assert_eq!(rides.checkpoint(stats, None), Ok(obc_app::recorder::CheckpointStatus::Unsupported));
-    assert!(matches!(rides.finalize(stats), RideClose::Failed));
     assert_eq!(rides.delete_by_id(replaced.id.0), Ok(true));
     assert_eq!(rides.delete_by_id(replaced.id.0), Ok(false), "confirmed absence before a catalog reload");
     // Unreadable card metadata must fail refresh, not publish unsynced defaults.

@@ -1,13 +1,13 @@
 use crate::{
     flat_routes::{metadata_error, scope},
     flat_store::HostStore,
-    RideRepository, TrackRepository,
+    RideRepository,
 };
 use obc_app::{
-    catalog_state::CatalogError, device_core::StoreRevision, metadata::MetadataError, recorder::RideClose,
-    CatalogObjectId, RideEntry, RideSummary,
+    catalog_state::CatalogError, device_core::StoreRevision, metadata::MetadataError, CatalogObjectId, RideEntry,
+    RideSummary,
 };
-use obc_route::{Profile, RideInfo, RideStats};
+use obc_route::{Profile, RideInfo};
 use obc_storage::flat::{metadata, EntryFlags, ObjectId, ObjectKind, Revision, Store};
 
 pub struct FlatRideStore {
@@ -100,28 +100,6 @@ impl RideRepository for FlatRideStore {
         let mut preview = Default::default();
         obc_route::ride_track_into::<{ obc_app::NAV_PREVIEW_MAX }>(&source, profile, &mut preview).ok()?;
         Some(preview.to_vec())
-    }
-}
-
-impl TrackRepository for FlatRideStore {
-    fn open(&mut self, _session: u32, _name: Option<&str>, _now_ms: u32) -> bool {
-        false
-    }
-    fn finalize(&mut self, _stats: RideStats) -> RideClose {
-        RideClose::Failed
-    }
-    fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
-        Err(obc_app::recorder::RecorderError::ReadOnly)
-    }
-    fn checkpoint(
-        &mut self,
-        _stats: RideStats,
-        _continuation: Option<obc_app::RideContinuation>,
-    ) -> Result<obc_app::recorder::CheckpointStatus, obc_app::recorder::RecorderError> {
-        Ok(obc_app::recorder::CheckpointStatus::Unsupported)
-    }
-    fn append(&mut self, _point: obc_ports::TrackPoint) -> bool {
-        false
     }
 }
 
