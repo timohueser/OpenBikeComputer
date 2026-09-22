@@ -29,6 +29,14 @@ const OUT = "obc-out";
 const PROBE = ".probe";
 const PROBE_BYTES = new Uint8Array([0x4f, 0x42, 0x43, 0x32]); // "OBC2"
 
+export const STORAGE_QUOTA_MESSAGE =
+    "The browser ran out of storage while building this map. Reduce the map selection and try again.";
+
+/** DOM storage APIs report quota exhaustion by name across realms and worker boundaries. */
+export function isStorageQuotaError(cause: unknown): boolean {
+    return typeof cause === "object" && cause !== null && (cause as { name?: unknown }).name === "QuotaExceededError";
+}
+
 /**
  * The one entry an assembly's output lives in, under {@link OUT}. A fixed scratch name, not the
  * map's filename: the handle is opened before the run, and both sides can then simply agree.
@@ -110,15 +118,44 @@ export function cellStoreRevision(catalog: Catalog): string {
     return `r${hi.toString(16).padStart(8, "0")}${lo.toString(16).padStart(8, "0")}`;
 }
 
-/** Where a run's downloaded cells are kept, and what is already there. */
-export interface CellStore {
-    /** The revision directory these cells live in — the worker opens the same one. */
-    readonly revision: string;
+/** Read-only knowledge of cells already stored for one catalog revision. */
+export interface CellInventory {
     /** Whether `key` is present at exactly `bytes` bytes. A short file is a torn
      *  write and answers `false`, so the cell is fetched again over it. */
     has(key: string, bytes: number): Promise<boolean>;
+}
+
+/** Where a run's downloaded cells are kept, and what is already there. */
+export interface CellStore extends CellInventory {
+    /** The revision directory these cells live in — the worker opens the same one. */
+    readonly revision: string;
     /** Write one verified cell. Overwrites, so a re-fetch heals a torn file. */
     put(key: string, bytes: Uint8Array): Promise<void>;
+}
+
+function cellInventory(dir: Directory): CellInventory {
+    return {
+        async has(key, bytes) {
+            try {
+                const file = await (await dir.getFileHandle(key)).getFile();
+                return file.size === bytes;
+            } catch {
+                return false;
+            }
+        },
+    };
+}
+
+/** Inspect one existing revision without creating or sweeping cache directories. */
+export async function openCellInventory(revision: string): Promise<CellInventory | null> {
+    const root = await opfsRoot();
+    if (!root) return null;
+    try {
+        const home = await root.getDirectoryHandle(ROOT);
+        return cellInventory(await home.getDirectoryHandle(revision));
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -140,15 +177,8 @@ export async function openCellStore(revision: string): Promise<CellStore | null>
         return null;
     }
     return {
+        ...cellInventory(dir),
         revision,
-        async has(key, bytes) {
-            try {
-                const file = await (await dir.getFileHandle(key)).getFile();
-                return file.size === bytes;
-            } catch {
-                return false;
-            }
-        },
         async put(key, bytes) {
             const handle = await dir.getFileHandle(key, { create: true });
             const writable = await handle.createWritable();
@@ -173,6 +203,37 @@ export async function clearMapWorkStorage(): Promise<void> {
     const root = await opfsRoot();
     if (!root) return;
     for (const name of [ROOT, OUT, SCRATCH]) await removeDirectoryIfPresent(root, name);
+}
+
+/** Delete output and scratch from an interrupted run, without deleting reusable cells. */
+export async function clearAssemblyStorage(): Promise<void> {
+    const root = await opfsRoot();
+    if (!root) return;
+    for (const name of [OUT, SCRATCH]) await removeDirectoryIfPresent(root, name);
+}
+
+/** Bytes an accepted run will reclaim before it downloads anything. */
+export async function reclaimableAssemblyBytes(): Promise<number> {
+    const root = await opfsRoot();
+    if (!root) return 0;
+    let bytes = 0;
+    for (const name of [OUT, SCRATCH]) {
+        let dir: Directory;
+        try {
+            dir = await root.getDirectoryHandle(name);
+        } catch {
+            continue;
+        }
+        for await (const [entry, metadata] of dir.entries()) {
+            if (metadata.kind !== "file") continue;
+            try {
+                bytes += (await (await dir.getFileHandle(entry)).getFile()).size;
+            } catch {
+                // A file that cannot be inspected is not safe to promise as reclaimable.
+            }
+        }
+    }
+    return bytes;
 }
 
 /** Delete only the assembled-map staging area, leaving reusable cells and merge scratch alone. */
@@ -250,19 +311,22 @@ async function probeWrite(): Promise<boolean> {
 }
 
 /**
- * Whether the origin has room for `bytes` more, with a margin.
+ * Whether the origin has room for `bytes` more, with a margin. `reclaimableBytes` is temporary
+ * output and scratch that an accepted run deletes before it writes anything; it is already in the
+ * browser's reported usage, so it must not be charged twice.
  *
  * A quota refusal mid-download is a poor failure — half a country fetched and a run that has to
  * start over in memory — so the question is asked once, before anything is fetched. A browser that
  * will not estimate gets the benefit of the doubt.
  */
-export async function hasRoomFor(bytes: number): Promise<boolean> {
+export async function hasRoomFor(bytes: number, reclaimableBytes = 0): Promise<boolean> {
     const storage = globalThis.navigator?.storage;
     if (!storage?.estimate) return true;
     try {
         const { quota, usage } = await storage.estimate();
         if (quota === undefined) return true;
-        return quota - (usage ?? 0) > bytes * 1.1;
+        const retainedUsage = Math.max(0, (usage ?? 0) - Math.max(0, reclaimableBytes));
+        return quota - retainedUsage > bytes * 1.1;
     } catch {
         return true;
     }
@@ -472,6 +536,8 @@ export interface MapSink {
     close(): void;
     /** Whether the handle is still open. Diagnostics. */
     readonly open: boolean;
+    /** A write operation refused because the origin exhausted its quota. */
+    readonly quotaExceeded: boolean;
 }
 
 /**
@@ -488,12 +554,14 @@ export async function openMapSink(): Promise<MapSink | null> {
     if (!root) return null;
     let handle: SyncHandle | null = null;
     let written = 0;
+    let quotaExceeded = false;
     const sink: MapSink = {
         create() {
             if (!handle) return false;
             try {
                 handle.truncate(0);
-            } catch {
+            } catch (cause) {
+                quotaExceeded ||= isStorageQuotaError(cause);
                 return false;
             }
             written = 0;
@@ -508,7 +576,8 @@ export async function openMapSink(): Promise<MapSink | null> {
                     const n = handle.write(bytes, { at: written });
                     written += n;
                     return n === bytes.byteLength;
-                } catch {
+                } catch (cause) {
+                    quotaExceeded ||= isStorageQuotaError(cause);
                     return false;
                 }
             },
@@ -535,7 +604,8 @@ export async function openMapSink(): Promise<MapSink | null> {
                 handle.truncate(written);
                 handle.flush();
                 return true;
-            } catch {
+            } catch (cause) {
+                quotaExceeded ||= isStorageQuotaError(cause);
                 return false;
             }
         },
@@ -549,6 +619,9 @@ export async function openMapSink(): Promise<MapSink | null> {
         },
         get open() {
             return handle !== null;
+        },
+        get quotaExceeded() {
+            return quotaExceeded;
         },
     };
     try {
@@ -613,6 +686,8 @@ export interface ScratchFiles {
     discard(): Promise<void>;
     /** How many pool handles are open. Diagnostics. */
     readonly open: number;
+    /** A write operation refused because the origin exhausted its quota. */
+    readonly quotaExceeded: boolean;
 }
 
 /** The scratch name of one pool slot. Fixed, so the sweep and the pool agree. */
@@ -635,6 +710,7 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
     const live = new Map<number, { slot: number; written: number }>();
     let next = 0;
     let dir: Directory | null = null;
+    let quotaExceeded = false;
     const sink: ScratchFiles = {
         create() {
             const slot = free.pop();
@@ -646,7 +722,8 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
             }
             try {
                 handle.truncate(0);
-            } catch {
+            } catch (cause) {
+                quotaExceeded ||= isStorageQuotaError(cause);
                 free.push(slot);
                 return -1;
             }
@@ -665,7 +742,8 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
                     const n = handle.write(bytes, { at: at.written });
                     at.written += n;
                     return n === bytes.byteLength;
-                } catch {
+                } catch (cause) {
+                    quotaExceeded ||= isStorageQuotaError(cause);
                     return false;
                 }
             },
@@ -693,9 +771,17 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
         remove(id) {
             const at = live.get(id);
             if (!at) return false;
+            const handle = handles[at.slot];
+            if (!handle) return false;
+            try {
+                // A removed run is finished. Truncate it now so a pool slot that is not reused does
+                // not keep its bytes against the origin's quota for the rest of the assembly.
+                handle.truncate(0);
+            } catch (cause) {
+                quotaExceeded ||= isStorageQuotaError(cause);
+                return false;
+            }
             live.delete(id);
-            // The bytes are reclaimed at the slot's next `create` or at `discard`; freeing the slot
-            // is what matters mid-run.
             free.push(at.slot);
             return true;
         },
@@ -714,6 +800,9 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
         },
         get open() {
             return handles.filter((h) => h !== null).length;
+        },
+        get quotaExceeded() {
+            return quotaExceeded;
         },
     };
     try {

@@ -32,6 +32,7 @@ import {
     openMapSink,
     openScratchStore,
     readCellBytes,
+    STORAGE_QUOTA_MESSAGE,
     syncReadsAvailable,
     takeIoStats,
     type CellReader,
@@ -152,25 +153,32 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                     throw new AssembleError("capacity", "The required disk-backed assembly scratch is no longer available.");
                 }
                 post({ type: "writing", mode: sink ? "disk" : "memory" });
-                result = await assembleCells(
-                    [...req.cells, ...opened.extra],
-                    req.schemaJson,
-                    req.skinJson,
-                    req.options,
-                    (phase, fraction) => {
-                        post({ type: "progress", phase, fraction });
-                    },
-                    req.knownEmpty,
-                    // The raster, when the catalog publishes one. A terrain-less catalog
-                    // sends nothing and the map is written with an empty terrain region.
-                    req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
-                    opened.sources,
-                    // Adapted rather than passed through: the store's sink is a file and
-                    // knows nothing about identities. `sealed` has nothing to do here — the
-                    // same digest and length arrive on the result — but the seam requires it.
-                    sink ? { ...sinkMethods(sink), sealed: () => {} } : undefined,
-                    scratch ?? undefined,
-                );
+                try {
+                    result = await assembleCells(
+                        [...req.cells, ...opened.extra],
+                        req.schemaJson,
+                        req.skinJson,
+                        req.options,
+                        (phase, fraction) => {
+                            post({ type: "progress", phase, fraction });
+                        },
+                        req.knownEmpty,
+                        // The raster, when the catalog publishes one. A terrain-less catalog
+                        // sends nothing and the map is written with an empty terrain region.
+                        req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
+                        opened.sources,
+                        // Adapted rather than passed through: the store's sink is a file and
+                        // knows nothing about identities. `sealed` has nothing to do here — the
+                        // same digest and length arrive on the result — but the seam requires it.
+                        sink ? { ...sinkMethods(sink), sealed: () => {} } : undefined,
+                        scratch ?? undefined,
+                    );
+                } catch (cause) {
+                    if (sink?.quotaExceeded || scratch?.quotaExceeded) {
+                        throw new AssembleError("io", STORAGE_QUOTA_MESSAGE);
+                    }
+                    throw cause;
+                }
             } finally {
                 // The moment the run is over, whether it finished or threw: every handle is
                 // an exclusive lock on a file the next run will want, and for the sink one
