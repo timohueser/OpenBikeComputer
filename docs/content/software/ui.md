@@ -19,19 +19,16 @@ capability is a cross-cutting fact the row states once, so nothing else matches 
 
 | Capability | What it decides |
 | --- | --- |
-| `kind` | `Riding`, `Nav`, `Overlay` or `Settings`. The overlay and settings behaviors hang off it. |
+| `kind` | `Base`, `Overlay` or `Settings`. The overlay and settings behaviors hang off it. |
 | `base` | `Map`, `LiveRiding` or `Chrome`. It gates map reads, live-data repaint, and the Bluetooth indicator. |
 | `reader` | When the screen needs the streamed map at draw: never, always, or for articles, a photo, or POI data. |
 | `render_key` | Which set of facts a repaint of this screen depends on. |
-| `timed` | The screen has timed content, so its tick can ask for a repaint. |
-| `hold_fill` | The screen draws a live fill while a guarded hold charges. |
 | `recess` | A drawer draws this screen again one shade down, instead of leaving it standing. |
 | `idle_exempt` | The idle-return timeout must never take this screen away. |
 | `ride_view` | A deliberate ride view: the idle timeout leaves it while a ride is tracked. |
 | `browse_exempt` | A deliberate browse view: the idle timeout does not return it to Home when no ride is tracked. |
 | `blocks_chords` | While it is on top, the device-wide drawer chords are refused. |
 | `blocks_escape` | While it is on top, the global Back-hold escape does not leave it. |
-| `remap` | Which catalog the screen's held indices are re-pointed against after a store rescan. |
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -124,11 +121,11 @@ host's generics stop at the dispatch:
 ```rust
 fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition
 
-// The `screens!` dispatch, generic over the host's draw target and its map scene.
-fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
-where D: DrawTarget, F: Fn(u16) -> D::Color, S: MapScene
+// The `screens!` dispatch, generic over the host's draw target and its color policy.
+fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
+where D: DrawTarget, F: Fn(u16) -> D::Color
 
-// What a screen module writes. The generic form stays with the map-scene draws and their callers.
+// What a screen module writes. The `RenderFrame` form stays with the map draws and their callers.
 fn draw(&self, cv: &mut impl Surface, rx: &mut Render)
 ```
 
