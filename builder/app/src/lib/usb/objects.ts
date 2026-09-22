@@ -233,8 +233,11 @@ export function decodeTripObject(data: Uint8Array): TripObject {
             leaveM: view.getUint32(at + 12, true),
         });
     }
+    const key = view.getBigUint64(56, true);
+    // The device reads key 0 as "no trip".
+    if (key === 0n) throw new ObjectDecodeError("trip object has key 0.");
     return {
-        key: view.getBigUint64(56, true),
+        key,
         name: paddedName(data, 4, 5, 48),
         startDate: view.getUint16(54, true),
         days,

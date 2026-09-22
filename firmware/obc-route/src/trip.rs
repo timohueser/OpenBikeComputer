@@ -142,12 +142,12 @@ fn read_header(src: &dyn ByteSource) -> Result<TripSummary, Error> {
     let name_len = (h[4] as usize).min(NAME_CAP);
     let mut name = String::new();
     let _ = name.push_str(utf8_prefix(&h[5..5 + name_len]));
-    Ok(TripSummary {
-        key: u64::from_le_bytes([h[56], h[57], h[58], h[59], h[60], h[61], h[62], h[63]]),
-        name,
-        start_date: rd_u16(&h, 54),
-        day_count,
-    })
+    let key = u64::from_le_bytes([h[56], h[57], h[58], h[59], h[60], h[61], h[62], h[63]]);
+    // Progress and ride records use key 0 for "no trip".
+    if key == 0 {
+        return Err(Error::BadOffset);
+    }
+    Ok(TripSummary { key, name, start_date: rd_u16(&h, 54), day_count })
 }
 
 /// The whole encoded object's size for a given day count: `64 + 16·day_count`.

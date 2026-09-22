@@ -102,7 +102,7 @@ public enum TripObjectCodec {
 
     /// Decode a trip object. Every field is reached by an explicit offset and bounds-checked, so
     /// malformed device bytes throw ``DeviceError/readFailed`` and never trap. The length must be
-    /// exactly `64 + 16·day_count`, which also rejects a torn write.
+    /// exactly `64 + 16·day_count`, which also rejects a torn write, and the key must be nonzero.
     public static func decode(_ data: Data) throws -> Trip {
         guard data.count >= headerLength else { throw DeviceError.readFailed }
         let b = data.startIndex
@@ -118,8 +118,11 @@ public enum TripObjectCodec {
                 joinMeters: data.readUInt32LE(at: at + 8),
                 leaveMeters: data.readUInt32LE(at: at + 12))
         }
+        let key = data.readUInt64LE(at: b + keyOffset)
+        // The device reads key 0 as "no trip".
+        guard key != 0 else { throw DeviceError.readFailed }
         return Trip(
-            key: data.readUInt64LE(at: b + keyOffset), name: name,
+            key: key, name: name,
             startDate: data.readUInt16LE(at: b + startDateOffset), days: days)
     }
 

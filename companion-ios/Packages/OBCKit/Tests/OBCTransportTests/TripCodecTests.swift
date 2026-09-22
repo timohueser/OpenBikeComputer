@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import OBCDomain
+@testable import OBCDomain
 @testable import OBCTransport
 
 /// The Swift half of the shared-vector pin for the trip object. Catalog metadata comes from v4
@@ -53,6 +53,14 @@ struct TripCodecTests {
         var wrongVersion = bytes
         wrongVersion[wrongVersion.startIndex] = 2
         #expect(throws: DeviceError.self) { try TripObjectCodec.decode(wrongVersion) }
+        let zeroKey = TripObjectCodec.encode(.init(key: 0, name: "X", startDate: 0, days: []))
+        #expect(throws: DeviceError.self) { try TripObjectCodec.decode(zeroKey) }
+    }
+
+    @Test
+    func tripKeyIsNeverZero() {
+        #expect(TripRecord.key(fnv1a: 0) == 1)
+        #expect(TripRecord.key(fnv1a: 0xA1) == 0xA1)
     }
 
     @Test

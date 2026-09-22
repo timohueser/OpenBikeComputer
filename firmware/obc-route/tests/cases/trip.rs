@@ -106,6 +106,13 @@ fn rejects_wrong_version() {
     assert_eq!(read_trip_day(&SliceSource(&bytes), 0), Err(Error::BadVersion));
 }
 
+#[test]
+fn rejects_zero_key() {
+    let bytes = encode(0, "X", 0, &whole(&[1]));
+    assert_eq!(TripMeta::read(&SliceSource(&bytes)), Err(Error::BadOffset));
+    assert_eq!(read_trip_day(&SliceSource(&bytes), 0), Err(Error::BadOffset));
+}
+
 /// A file shorter than `64 + 16·day_count` (a torn write) is rejected on the length check.
 #[test]
 fn rejects_length_mismatch() {

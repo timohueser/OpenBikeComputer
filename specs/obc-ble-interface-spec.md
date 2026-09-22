@@ -261,12 +261,15 @@ any other length, which also rejects a torn write.
 
 - **Trip key.** The phone chooses the key and keeps it for the life of the trip. A re-upload of the
   same trip writes the same key. Device progress and rides refer to the key, not to the object id.
+  Key 0 means "no trip" in those records, so a reader rejects a trip object with key 0. Reversing a
+  trip makes a new trip with a new key, so its progress starts empty.
 - **Day names and stats.** The display name of a day ("Day 2 Ulrichen") is the OBCR name of its
   route. Distance and climb come from the route's OBCR header. The trip object repeats neither.
 - **Main line.** A day that starts on the main line has `join_m = 0`. A day that ends on the main
   line has `leave_m` at or past the end of its route; readers clamp `leave_m` to the route length.
   Other values mark an out-and-back spur to a stop off the line. The device skips the spur when it
-  joins the rest of one day to the next day.
+  joins the rest of one day to the next day. The `leave_m` of day N−1 and the `join_m` of day N
+  name the same point on the main line.
 - **Reference-only.** A day route is a route object id. A route that no stored trip references is a
   top-level route. Membership is one level deep: a route is in at most one trip, or standalone.
 - **Dangling refs are tolerated on read.** A day route deleted individually does not invalidate
@@ -289,13 +292,21 @@ writes it at Finish of a ride on a trip day, and keeps it in the ride-archive Me
 | Field | Meaning |
 | :-- | :-- |
 | position day | the day that contains the last matched position |
-| position route | the route ObjectId of that day when the record was written |
+| position route | the route ObjectId and Revision of that day when the record was written |
 | position metres | metres into that day's route |
 | last finished day | the last day the rider finished; none before the first Finish |
 | finish dates | for each day, the date of its Finish in days since 1970-01-01; 0 = none |
 
-A re-upload of the same trip key keeps the record. When the route of the position day changed, the
-position metres read as 0. The last finished day stays.
+- **Re-upload.** A re-upload of the same trip key keeps the record. The position metres count
+  only while the trip names the same route ObjectId, at the same Revision, for the position day.
+  Otherwise they read as 0, and the last finished day stays.
+- **Fewer days.** A position day or a last finished day at or past `day_count` reads as none. A
+  re-upload with fewer days thus never reads as a done trip.
+- **Bound.** The Metadata object holds at most 16 progress records, in write order. A write moves
+  its record to the end. Before a write, the device drops each record whose key no stored trip
+  holds. When 16 records remain, it drops the first one.
+- **No route hold.** A progress record never blocks a route replace or remove, unlike the navigator
+  checkpoint. The Revision check voids a stale position instead.
 
 #### Day rules
 

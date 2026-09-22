@@ -121,6 +121,13 @@ impl TripSummary {
     }
 }
 
+/// A route object as the store holds it. A replace keeps the id and bumps the revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteVersion {
+    pub id: CatalogObjectId,
+    pub revision: u64,
+}
+
 /// The device's own progress through one trip: the device writes it at Finish and the phone never
 /// sees it. It is keyed on the trip key, so it survives a re-upload of the same trip.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,8 +135,8 @@ pub struct TripProgress {
     pub key: u64,
     /// The day that contains the position.
     pub day: u16,
-    /// That day's route id when the record was written.
-    pub day_route: CatalogObjectId,
+    /// That day's route when the record was written.
+    pub day_route: RouteVersion,
     /// Metres into that day's route.
     pub metres: u32,
     /// The last finished day; `None` before the first Finish.
@@ -144,24 +151,47 @@ impl TripSummary {
         progress.filter(|p| p.key == self.key)
     }
 
+    /// A record day that is still a day of this trip. A re-upload with fewer days drops the rest,
+    /// so old progress never reads as a finished trip.
+    fn in_trip(&self, day: u16) -> Option<u16> {
+        (usize::from(day) < self.stage_ids.len()).then_some(day)
+    }
+
     /// The day to ride next: `max(last finished + 1, day of the position)`. `None` when no day is
     /// left.
     pub fn next_day(&self, progress: Option<&TripProgress>) -> Option<u16> {
-        let next = self.own(progress).map_or(0, |p| p.last_finished.map_or(0, |d| d.saturating_add(1)).max(p.day));
-        (usize::from(next) < self.stage_ids.len()).then_some(next)
+        let next = self.own(progress).map_or(0, |p| {
+            let after_finish = p.last_finished.and_then(|d| self.in_trip(d)).map_or(0, |d| d + 1);
+            after_finish.max(self.in_trip(p.day).unwrap_or(0))
+        });
+        self.in_trip(next)
     }
 
-    /// Metres into the position's day. A re-upload that changed that day's route resets them to 0.
-    pub fn position_m(&self, progress: Option<&TripProgress>) -> u32 {
+    /// Metres into the position's day. They count only while the trip names the same route, at
+    /// the same revision, for that day; `revision_of` gives the store's current revision of a
+    /// route. Otherwise the position is the day start.
+    pub fn position_m(
+        &self,
+        progress: Option<&TripProgress>,
+        revision_of: impl Fn(CatalogObjectId) -> Option<u64>,
+    ) -> u32 {
         match self.own(progress) {
-            Some(p) if self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route) => p.metres,
+            Some(p)
+                if self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route.id)
+                    && revision_of(p.day_route.id) == Some(p.day_route.revision) =>
+            {
+                p.metres
+            }
             _ => 0,
         }
     }
 
     /// Whether day `k` is ticked: it is finished, or its end is behind the position.
     pub fn is_ticked(&self, k: u16, progress: Option<&TripProgress>) -> bool {
-        self.own(progress).is_some_and(|p| k < p.day || p.last_finished.is_some_and(|d| k <= d))
+        self.own(progress).is_some_and(|p| {
+            self.in_trip(p.day).is_some_and(|d| k < d)
+                || p.last_finished.and_then(|d| self.in_trip(d)).is_some_and(|d| k <= d)
+        })
     }
 
     /// The date of day `k`, in days since 1970-01-01. Dates follow the rides: the latest dated day
@@ -205,7 +235,7 @@ mod tests {
         TripProgress {
             key: KEY,
             day,
-            day_route: [10, 20, 30][usize::from(day)],
+            day_route: RouteVersion { id: [10, 20, 30][usize::from(day)], revision: 1 },
             metres: 54_000,
             last_finished,
             dates: all,
@@ -255,10 +285,23 @@ mod tests {
     #[test]
     fn a_changed_day_route_resets_the_position_to_the_day_start() {
         let p = progress(1, Some(0), &[]);
-        assert_eq!(trip(0).position_m(Some(&p)), 54_000);
+        assert_eq!(trip(0).position_m(Some(&p), |_| Some(1)), 54_000);
+        // The same route id replaced in place: a new revision, other geometry.
+        assert_eq!(trip(0).position_m(Some(&p), |_| Some(2)), 0);
         let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 21, 30] };
         let reuploaded = TripSummary::resolve(&input, &[], &[]);
-        assert_eq!(reuploaded.position_m(Some(&p)), 0);
+        assert_eq!(reuploaded.position_m(Some(&p), |_| Some(1)), 0);
         assert_eq!(reuploaded.next_day(Some(&p)), Some(1), "the last finished day stays");
+    }
+
+    #[test]
+    fn progress_past_a_shorter_reupload_is_dropped_not_done() {
+        // Recorded on a five-day version: in Day 5, Day 4 finished. The trip now has three days.
+        let t = trip(0);
+        let p = TripProgress { day: 4, last_finished: Some(3), ..progress(0, None, &[]) };
+        assert_eq!(t.next_day(Some(&p)), Some(0));
+        assert!(!(0..3).any(|k| t.is_ticked(k, Some(&p))));
+        let p = TripProgress { day: 1, last_finished: Some(3), ..progress(1, None, &[]) };
+        assert_eq!(t.next_day(Some(&p)), Some(1), "the position in Day 2 still counts");
     }
 }
