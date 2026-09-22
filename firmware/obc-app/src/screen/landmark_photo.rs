@@ -129,7 +129,7 @@ impl LandmarkPhotoScreen {
                     _ => Msg::AssistantPhotoUnavailableHint,
                 }
             };
-            cv.text(rx.t(label), Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+            cv.text(rx.t(label), Point::new(120, 286), Font::Label, TextAlign::Center, ON_ACCENT);
         }
     }
 }

@@ -95,7 +95,13 @@ impl LandmarksScreen {
         for (i, row) in rx.landmarks.rows.iter().enumerate() {
             let (x, y) = vp.to_screen(row.position.0, row.position.1);
             cv.round(rect(x - 11, y - 12, 23, 24), 4, if i == rx.landmarks.selected { AMBER } else { PARCHMENT });
-            cv.text(letter(i), Point::new(x, y - 12), Font::Label, TextAlign::Center, INK);
+            cv.text(
+                letter(i),
+                Point::new(x, y - 12),
+                Font::Label,
+                TextAlign::Center,
+                if i == rx.landmarks.selected { ON_ACCENT } else { INK },
+            );
         }
         let (x, y) = vp.to_screen(rx.landmarks.origin.0, rx.landmarks.origin.1);
         cv.disc(Point::new(x, y), 5, INK);
@@ -113,21 +119,21 @@ impl LandmarksScreen {
                 Point::new(12, 238),
                 Font::Body,
                 TextAlign::Left,
-                INK,
+                ON_ACCENT,
             );
             let mut range = heapless::String::<32>::new();
             let _ = write!(range, "{} ", rx.t(Msg::AssistantWithin));
             super::vocab::fmt::write_distance_coarse(&mut range, "", 10_000, rx.settings.units);
-            cv.text(&range, Point::new(12, 272), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text(&range, Point::new(12, 272), Font::Label, TextAlign::Left, SUBTEXT_ON_ACCENT);
             return;
         }
         if let Some(record) = state.record.filter(|_| state.ready()) {
             let mut label = heapless::String::<40>::new();
             let _ = write!(label, "{}  {}", letter(state.selected), rx.t(kind(record.category)));
-            cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT_ON_ACCENT);
             let name_row = rect(12, 238, 18 * Font::Label.char_width() as i32, Font::Label.line_height() as i32);
             let name = rx.marquee.fit(&state.name, name_row.size.width as i32, Font::Label, Some(name_row));
-            cv.text(&name, Point::new(12, 238), Font::Label, TextAlign::Left, INK);
+            cv.text(&name, Point::new(12, 238), Font::Label, TextAlign::Left, ON_ACCENT);
             label.clear();
             super::vocab::fmt::write_distance_coarse(
                 &mut label,
@@ -136,7 +142,7 @@ impl LandmarksScreen {
                 rx.settings.units,
             );
             let _ = write!(label, " {}", rx.t(Msg::AssistantStraight));
-            cv.text(&label, Point::new(12, 262), Font::Label, TextAlign::Left, INK);
+            cv.text(&label, Point::new(12, 262), Font::Label, TextAlign::Left, ON_ACCENT);
             cv.text(
                 if state.status == Status::Partial {
                     rx.t(Msg::AssistantPartialData)
@@ -146,7 +152,7 @@ impl LandmarksScreen {
                 Point::new(120, 288),
                 Font::Label,
                 TextAlign::Center,
-                SUBTEXT,
+                SUBTEXT_ON_ACCENT,
             );
         } else {
             cv.text(rx.t(status(state.status)), Point::new(12, 238), Font::Label, TextAlign::Left, INK);
@@ -240,7 +246,7 @@ where
         rx.t(visit_action(state, rx.poi_scratch, rx.settings.bike_profile_idx))
     };
     cv.round(rect(4, 282, 232, 34), 6, AMBER);
-    cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+    cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, ON_ACCENT);
 }
 pub(super) fn visit_action(
     state: &crate::landmarks::Landmarks,
@@ -289,8 +295,8 @@ pub(super) fn header(
         Some(marquee) => marquee.fit(title, title_budget, Font::Label, Some(rect(4, 4, 232, 34))),
         None => super::vocab::marquee::fit(title, title_budget, Font::Label),
     };
-    cv.text(&title, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
-    cv.text(&count, Point::new(228, 9), Font::Label, TextAlign::Right, PARCHMENT);
+    cv.text(&title, Point::new(12, 9), Font::Label, TextAlign::Left, BAR_TEXT);
+    cv.text(&count, Point::new(228, 9), Font::Label, TextAlign::Right, BAR_TEXT);
 }
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]

@@ -110,7 +110,12 @@ fn row_text(cv: &mut impl Surface, area: Rectangle, label: &str, line2: Option<L
         Some(line) => {
             let y = area.top_left.y;
             cv.text(label, Point::new(x, y + LINE1_DY), font, TextAlign::Left, ink);
-            let sub_ink = if ink == palette::CONTOUR { palette::CONTOUR } else { palette::SUBTEXT };
+            let sub_ink = match ink {
+                palette::CONTOUR => palette::CONTOUR,
+                palette::ON_ACCENT => palette::SUBTEXT_ON_ACCENT,
+                palette::ON_GUARD => palette::SUBTEXT_ON_GUARD,
+                _ => palette::SUBTEXT,
+            };
             let mut tx = x;
             if let Some(icon) = line.icon {
                 let cy = y + LINE2_DY + Font::Label.cap_mid() as i32;
@@ -150,7 +155,13 @@ pub(crate) fn nav_row(
     with_chevron: bool,
 ) {
     row_cursor(cv, area, selected, false);
-    let ink = if live { palette::INK } else { palette::CONTOUR };
+    let ink = if !live {
+        palette::CONTOUR
+    } else if selected {
+        palette::ON_ACCENT
+    } else {
+        palette::INK
+    };
     row_text(cv, area, label, line2, if with_chevron { CHEVRON_W } else { 0 }, ink);
     if with_chevron && live {
         chevron(cv, area, ink);
@@ -161,7 +172,7 @@ pub(crate) fn nav_row(
 /// opens it like any door; the confirm and its hold live on the page.
 pub(crate) fn danger_door_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {
     row_cursor(cv, area, selected, false);
-    let ink = if selected { palette::INK } else { palette::WARNING };
+    let ink = if selected { palette::ON_ACCENT } else { palette::WARNING };
     row_text(cv, area, label, None, CHEVRON_W, ink);
     chevron(cv, area, ink);
 }
@@ -169,7 +180,7 @@ pub(crate) fn danger_door_row(cv: &mut impl Surface, area: Rectangle, label: &st
 /// A row that flips a bool in place: the label and the slider.
 pub(crate) fn switch_row(cv: &mut impl Surface, area: Rectangle, label: &str, on: bool, selected: bool) {
     row_cursor(cv, area, selected, false);
-    row_text(cv, area, label, None, SWITCH_W, palette::INK);
+    row_text(cv, area, label, None, SWITCH_W, if selected { palette::ON_ACCENT } else { palette::INK });
     toggle_slider(cv, area, on);
 }
 
@@ -195,6 +206,8 @@ pub(crate) fn action_row(
     let ink = match (live, danger, selected) {
         (false, _, _) => palette::CONTOUR,
         (true, true, false) => palette::WARNING,
+        (true, true, true) => palette::ON_GUARD,
+        (true, false, true) => palette::ON_ACCENT,
         _ => palette::INK,
     };
     row_text(cv, area, label, hint.map(Line2::text), 0, ink);
@@ -290,7 +303,7 @@ pub(crate) fn confirm_row(
         return;
     }
     if guard {
-        cv.round(row, radius, palette::PARCHMENT_SHADE);
+        cv.round(row, radius, palette::GUARD_BASE);
         let fill_w = (row.size.width as f32 * hold_progress.clamp(0.0, 1.0)) as i32;
         if fill_w > 0 {
             cv.round(rect(row.top_left.x, row.top_left.y, fill_w, row.size.height as i32), radius, fill);
@@ -345,7 +358,13 @@ pub(crate) fn draw_guarded_rows(
             Point::new(geo.x + geo.label_dx, y + geo.label_dy),
             Font::Body,
             TextAlign::Left,
-            palette::INK,
+            if i == selected && item.guard {
+                palette::ON_GUARD
+            } else if i == selected {
+                palette::ON_ACCENT
+            } else {
+                palette::INK
+            },
         );
     }
 }

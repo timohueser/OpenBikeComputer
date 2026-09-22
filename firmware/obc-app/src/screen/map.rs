@@ -329,13 +329,17 @@ where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
+    // Map styles and their labels are authored RGB565. They may equal a UI role by chance, so the
+    // UI theme must not reinterpret them. Overlays drawn after this function use the theme again.
     let scene = rx.scene?;
+    cv.set_color_policy_enabled(false);
     let rx = &mut rx.render;
     // The only reader of the host's lent scratch, which is why every other screen may be drawn
     // with `None`. Reaching here without one means the host called a render entry point with `None`
     // under a map-drawing base, so skip the map rather than invent one.
     let Some(scratch) = rx.scratch.as_deref_mut() else {
         debug_assert!(false, "a map-drawing base needs the host's RenderScratch, but none was lent");
+        cv.set_color_policy_enabled(true);
         return None;
     };
     let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
@@ -408,6 +412,7 @@ where
         cv.disc(c, 7, super::palette::WARNING);
         cv.disc(c, 3, super::palette::INK);
     }
+    cv.set_color_policy_enabled(true);
     Some(marker565)
 }
 

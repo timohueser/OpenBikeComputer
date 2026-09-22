@@ -83,7 +83,8 @@ impl RidesScreen {
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let ride = &rides[row.index].summary;
             let (bx, y) = (row.area.top_left.x, row.area.top_left.y);
-            let accent = if row.selected { INK } else { SUBTEXT };
+            let ink = if row.selected { ON_ACCENT } else { INK };
+            let accent = if row.selected { SUBTEXT_ON_ACCENT } else { SUBTEXT };
 
             // The name budget always keeps the mark slot, drawn or not, so the truncation does
             // not move when a ride syncs.
@@ -91,7 +92,7 @@ impl RidesScreen {
             let mark_cx = bx + row.area.size.width as i32 - MARK_RIGHT_GAP - MARK_HALF;
             let name_px = (mark_cx - MARK_HALF - 8) - text_x; // mark's left edge − gap − name start
             let name = rx.marquee.fit(&ride.name, name_px, Font::Body, row.scroll());
-            cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, INK);
+            cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, ink);
             if ride.synced {
                 let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_mid() as i32);
                 synced_mark(cv, mark_c, accent);

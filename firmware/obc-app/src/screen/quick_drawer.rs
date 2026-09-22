@@ -305,7 +305,8 @@ impl QuickDrawerScreen {
                 Control::Ble => rx.settings.ble_enabled,
                 Control::Settings | Control::Power => false,
             };
-            let (fill, ink) = if on { (palette::AMBER, palette::INK) } else { (palette::CONTOUR, palette::PARCHMENT) };
+            let (fill, ink) =
+                if on { (palette::AMBER, palette::ON_ACCENT) } else { (palette::CONTOUR, palette::BAR_TEXT) };
             if selected {
                 cv.disc(c, 24, palette::INK);
                 cv.disc(c, 22, palette::PARCHMENT);
@@ -351,7 +352,7 @@ impl QuickDrawerScreen {
         }
         let knob = sheet::notch_x(x0, x1, self.staged, BRIGHTNESS_LEVELS);
         cv.disc(Point::new(knob, y), 8, palette::AMBER);
-        cv.disc(Point::new(knob, y), 3, palette::INK);
+        cv.disc(Point::new(knob, y), 3, palette::ON_ACCENT);
     }
 }
 

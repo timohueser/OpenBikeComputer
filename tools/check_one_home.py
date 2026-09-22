@@ -37,7 +37,7 @@ ALLOWED_SHARED_FIELDS: set[str] = {"brightness", "ble_enabled"}
 # a parser change must not lower them.
 ROW_LABELS = 26
 SHEET_BINDINGS = 12
-PAGE_BINDINGS = 10
+PAGE_BINDINGS = 11
 
 # `cx.settings.<field> = …`, or `s.<field> = …` after `let s = &mut *cx.settings` — the production
 # write paths a screen has into the persisted record. `=(?!=)` so an equality test is not read as

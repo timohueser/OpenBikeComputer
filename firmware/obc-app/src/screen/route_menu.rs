@@ -269,7 +269,7 @@ impl RouteMenuScreen {
         let sel = self.selected.min(total - 1);
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
-            let accent = if row.selected { INK } else { SUBTEXT };
+            let accent = if row.selected { ON_ACCENT } else { SUBTEXT };
             match rows[row.index] {
                 Row::Folder(ti) => draw_folder_row(cv, &row, &rx.marquee, &trips[ti], w, accent),
                 Row::Route(ri) => {
@@ -310,11 +310,11 @@ fn draw_route_row(
     let y = area.top_left.y;
     let name_x = area.top_left.x + NAME_INSET;
     let name = marquee.fit(&route.name, (w - 20) - name_x, Font::Body, row.scroll());
-    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
+    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, if row.selected { ON_ACCENT } else { INK });
 
     let sy = y + 35;
     if let Some(label) = unavailable {
-        cv.text(label, Point::new(name_x, sy), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text(label, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
         return;
     }
     let mut dist: heapless::String<12> = heapless::String::new();
@@ -358,10 +358,10 @@ fn draw_folder_row(
     let badge_x = w - 20 - badge_w;
     let badge_y = y + 8; // box y+8..y+32; Label cap (18 px) at y+11 → 3 px margin above and below
     cv.round(rect(badge_x, badge_y, badge_w, BADGE_H), 6, WOOD);
-    cv.text(&nbuf, Point::new(badge_x + badge_w / 2, badge_y + 3), Font::Label, TextAlign::Center, PARCHMENT);
+    cv.text(&nbuf, Point::new(badge_x + badge_w / 2, badge_y + 3), Font::Label, TextAlign::Center, BAR_TEXT);
 
     let name = marquee.fit(&t.name, (badge_x - 8) - name_x, Font::Body, row.scroll());
-    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
+    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, if row.selected { ON_ACCENT } else { INK });
 
     let sy = y + 35;
     let mut dist: heapless::String<12> = heapless::String::new();

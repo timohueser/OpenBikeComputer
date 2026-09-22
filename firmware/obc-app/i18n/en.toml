@@ -78,6 +78,10 @@ map_pois = "Map POIs"
 metric = "Metric"
 imperial = "Imperial"
 
+[theme]
+light = "Light"
+dark = "Dark"
+
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
 off = "Off"
@@ -237,6 +241,7 @@ waypoints = "Waypoints"
 title = "DISPLAY"
 idle = "Idle timeout"
 brightness = "Brightness"
+theme = "Theme"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]

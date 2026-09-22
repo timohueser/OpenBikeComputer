@@ -61,7 +61,13 @@ impl AssistantScreen {
             if i == self.selected {
                 cv.round(rect(10, y, rx.w - 20, 40), 6, AMBER);
             }
-            let ink = if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT };
+            let ink = if i == self.selected {
+                ON_ACCENT
+            } else if matches!(i, 0 | 1 | 2 | 5) {
+                INK
+            } else {
+                SUBTEXT
+            };
             cv.text(rx.t(label), Point::new(18, y + 5), Font::Body, TextAlign::Left, ink);
         }
         cv.vline(rx.w - 7, 44, 261, 2, RULE);
