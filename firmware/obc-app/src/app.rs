@@ -1012,6 +1012,19 @@ impl App {
 
     /// The active route's catalog index, or `None` when no route is loaded. A host syncs its
     /// route store's active bytes from this each pass; it never writes the field.
+    /// The name a ride opened now is saved under: the active route's, except that a ride on a
+    /// Ride-to-start splice takes the name of the route it leads to.
+    pub fn ride_name(&self) -> Option<&str> {
+        let active = self.active_route_index()?;
+        let ids = self.route_ids();
+        let name = |i: usize| self.routes().get(i).map(|r| r.name.as_str());
+        let origin = match self.navigator.approach_route() {
+            Some((splice, route)) if ids.get(active) == Some(&splice) => ids.iter().position(|&id| id == route),
+            _ => None,
+        };
+        origin.and_then(name).or_else(|| name(active))
+    }
+
     pub fn active_route_index(&self) -> Option<usize> {
         self.navigator.route_state().active_route
     }
@@ -1479,6 +1492,13 @@ impl App {
 
     /// Ride to start is spliced: start the ride on the approach and the route, as START RIDE does.
     fn ride_approach(&mut self, idx: usize) {
+        let origin = self.ui.stack.iter().find_map(|s| match s {
+            Screen::StartAway(prompt) => self.catalogs.route_ids().get(prompt.route()).copied(),
+            _ => None,
+        });
+        if let (Some(origin), Some(&splice)) = (origin, self.catalogs.route_ids().get(idx)) {
+            self.navigator.adopt_approach(splice, origin);
+        }
         self.drop_route_derived_state();
         self.catalogs.note_commit();
         self.catalogs.clear_detour_preview();

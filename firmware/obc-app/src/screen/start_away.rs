@@ -77,6 +77,10 @@ impl StartAwayScreen {
         StartAwayScreen { route: 0, from: (0, 0), start_m: 3_200, nearest, no_route, selected: Row::RideToStart }
     }
 
+    pub(crate) fn route(&self) -> usize {
+        self.route
+    }
+
     /// Ride to start found no way: leave Join nearest and Cancel, the cursor on the first.
     pub(crate) fn set_no_route(&mut self) {
         self.no_route = true;
