@@ -61,17 +61,17 @@ belong in a pull request, not in a runtime asset folder.
 
 ## Package provenance
 
-Every registered map is an OBCM v18 file built by `fixtures/build-map-package.sh` on a canonical
-bbox that is never self-sourced from a header. Each one has a build record in
+Every registered map is an OBCM v19 file with Light and Dark styles. The geographic payload comes
+from a canonical bbox that is never self-sourced from a header. Each one has a build record in
 `sources/ride-assistant/` that pins its source and output digests.
 
 | Package | Source | Build record |
 | --- | --- | --- |
-| `sim-grimsel` | Pinned `assistant-osm` Switzerland snapshot, on the canonical fixture bbox. OBCT terrain from Copernicus GLO-30 tile `N46_00_E008_00`. OBCR v4 route. Landmark text, photos and credits from the pinned `assistant-switzerland-content` package. | [grimsel-v18.json](sources/ride-assistant/grimsel-v18.json) |
-| `sim-monaco` | Pinned `assistant-osm` Monaco snapshot, plus the project-authored up-ahead GPX. | [monaco-v18.json](sources/ride-assistant/monaco-v18.json) |
-| `sim-freiburg` | Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`, box `7.77,47.97,7.93,48.14`. 12 by 19 km of the Rhine plain with one city, three towns, 26 villages and 14 hamlets. No terrain, no route, no track: it exists for the settlement labels. | [freiburg-v18.json](sources/ride-assistant/freiburg-v18.json) |
-| `sim-assistant-west-cork` | A complete-relation extract of the pinned Ireland snapshot, with compiled landmark content. | [west-cork-v18.json](sources/ride-assistant/west-cork-v18.json) |
-| `sim-assistant-meiringen` | A crop of the pinned Swiss national PBF, with compiled landmark and peak content. Not a full-country map. | [meiringen-v18.json](sources/ride-assistant/meiringen-v18.json) |
+| `sim-grimsel` | Pinned `assistant-osm` Switzerland snapshot, on the canonical fixture bbox. OBCT terrain from Copernicus GLO-30 tile `N46_00_E008_00`. OBCR v4 route. Landmark text, photos and credits from the pinned `assistant-switzerland-content` package. | [grimsel-v19.json](sources/ride-assistant/grimsel-v19.json) |
+| `sim-monaco` | Pinned `assistant-osm` Monaco snapshot, plus the project-authored up-ahead GPX. | [monaco-v19.json](sources/ride-assistant/monaco-v19.json) |
+| `sim-freiburg` | Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`, box `7.77,47.97,7.93,48.14`. 12 by 19 km of the Rhine plain with one city, three towns, 26 villages and 14 hamlets. No terrain, no route, no track: it exists for the settlement labels. | [freiburg-v19.json](sources/ride-assistant/freiburg-v19.json) |
+| `sim-assistant-west-cork` | A complete-relation extract of the pinned Ireland snapshot, with compiled landmark content. | [west-cork-v19.json](sources/ride-assistant/west-cork-v19.json) |
+| `sim-assistant-meiringen` | A crop of the pinned Swiss national PBF, with compiled landmark and peak content. Not a full-country map. | [meiringen-v19.json](sources/ride-assistant/meiringen-v19.json) |
 
 When you run the fixture baker, set `OBC_GRIMSEL_LANDMARKS` to the content package's
 `content.json` and `OBC_GRIMSEL_PEAKS` to the pinned `peak-content/peaks.json`.

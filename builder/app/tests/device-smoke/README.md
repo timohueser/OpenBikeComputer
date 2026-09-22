@@ -52,14 +52,13 @@ name rather than on a timeout.
 ## The map
 
 `apps/obc-sim/assets/grimsel-demo.obcm`, whose sources, producer and digests are pinned in
-`fixtures/sources/ride-assistant/grimsel-demo-v18.json`. Nothing is assembled at run time and the
+`fixtures/sources/ride-assistant/grimsel-demo-v19.json`. Nothing is assembled at run time and the
 digest is checked before the first byte moves.
 
-Its length is exactly 19,713 whole **card blocks**. The flat store lays an object out over 512-byte
+Its length is exactly 19,715 whole **card blocks**. The flat store lays an object out over 512-byte
 blocks inside its extents, so a payload that is not a multiple of 512 ends inside a block and the
-device's last write carries a partial tail; this one does not. It costs no padding: a map carrying
-an OBCT v3 **surface** terrain region starts that region on a 512-byte boundary and the region is a
-whole number of blocks, so the file ends on one by construction.
+device's last write carries a partial tail; this one does not. The producer pads the authored style
+tail so the complete paired-style map ends on the boundary.
 
 This is not the USB packet boundary. A stream record on the wire is four bytes of record prefix, a
 sixteen-byte frame header and its payload, batched into writes of tens of kilobytes, so no host
