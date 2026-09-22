@@ -877,7 +877,7 @@ mod tests {
     #[test]
     fn a_charging_hold_delays_every_deferring_family() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_hold_progress(0.5);
+        app.set_hold_progress(0.5, 0.0);
 
         pair(&mut app, Some(4242));
         app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 1, total_kib: 10 }));
@@ -887,7 +887,7 @@ mod tests {
         assert_eq!(app.debug_stack_len(), 1);
 
         // The hold settles: one sweep lands every deferred High fact.
-        app.set_hold_progress(0.0);
+        app.set_hold_progress(0.0, 0.0);
         app.advance_animations(InputClock(100));
         let up = |app: &App, f: fn(&Screen) -> bool| app.ui.stack.iter().any(f);
         assert!(up(&app, |s| matches!(s, Screen::Passkey(_))), "the passkey card landed");
@@ -910,7 +910,7 @@ mod tests {
         // A button is physically down when the install begins.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.set_hold_progress(0.5);
+        app.set_hold_progress(0.5, 0.0);
         app.post_dfu_landing(DfuLanding::InstallBegan);
         assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the terminal frame lands under the hold");
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
@@ -918,14 +918,14 @@ mod tests {
         // The scan answer and the failure landing share the row, so they share the rule.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.set_hold_progress(0.9);
+        app.set_hold_progress(0.9, 0.0);
         let report = DfuScanReport { installed: mk("v1"), staged: mk("v2"), first_install: false };
         app.post_dfu_landing(DfuLanding::Scanned(Ok(report)));
         assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "the scan answer lands under the hold");
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.set_hold_progress(0.3);
+        app.set_hold_progress(0.3, 0.0);
         app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::NoCard));
         assert!(matches!(app.top_screen(), Screen::DfuError(_)), "the failure lands under the hold");
     }
@@ -942,20 +942,20 @@ mod tests {
 
         // A hold keeps the first verdict unconsumed while the other arrives.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_hold_progress(0.5);
+        app.set_hold_progress(0.5, 0.0);
         app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
         app.post_boot_update(fail());
-        app.set_hold_progress(0.0);
+        app.set_hold_progress(0.0, 0.0);
         app.advance_animations(InputClock(100));
         assert_eq!(cards(&app), 1, "one card, never two");
         assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the first verdict owns the slot");
 
         // Symmetric the other way round: a confirm arriving behind a failure is rejected too.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_hold_progress(0.5);
+        app.set_hold_progress(0.5, 0.0);
         app.post_boot_update(fail());
         app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
-        app.set_hold_progress(0.0);
+        app.set_hold_progress(0.0, 0.0);
         app.advance_animations(InputClock(100));
         assert_eq!(cards(&app), 1);
         match app.top_screen() {

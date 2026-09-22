@@ -856,7 +856,8 @@ pub(crate) async fn run_app(
         // Feed the live hold progress before anything below consults it: every hold-deferral rule
         // this pass runs must read this pass's charge state. A loop woken from warm sleep otherwise
         // saw a seconds-stale 0.0 and could land or close a pushed screen mid-charge.
-        app.set_hold_progress(display.hold_progress());
+        let (select_p, back_p) = display.hold_progress();
+        app.set_hold_progress(select_p, back_p);
 
         let transferring = crate::flat_store::transfer_active();
         exec.facts.note_transfer(if transferring {
@@ -2551,8 +2552,8 @@ pub(crate) async fn run_app(
 
             // Feed the Select hold progress to the map render so the in-screen confirm bars track the
             // hold. `App`'s own input plane is not driven here, so the render would otherwise read 0.
-            let hold_p = display.hold_progress();
-            app.set_hold_progress(hold_p);
+            let (hold_p, back_hold_p) = display.hold_progress();
+            app.set_hold_progress(hold_p, back_hold_p);
 
             // The pass's own render decision is this frame's dirty signal. What it replaces is the
             // input to the board redraw folds below, not the folds: each demand here is physical and

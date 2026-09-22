@@ -21,6 +21,19 @@ use crate::screen::vocab::marquee::Marquee;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
 use crate::settings::{DateTime, Settings};
 
+/// One frame's hold charge on the two hold buttons, as the host's own input plane sees them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HoldSample {
+    pub(crate) select: f32,
+    pub(crate) back: f32,
+}
+
+impl HoldSample {
+    fn charging(&self) -> bool {
+        self.select > 0.0 || self.back > 0.0
+    }
+}
+
 pub(crate) struct UiRuntime {
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
@@ -68,10 +81,12 @@ pub(crate) struct UiRuntime {
     /// the clock, so a long modal operation cannot donate its elapsed time to the ordinary screen
     /// that replaces it.
     pub(crate) idle_return_timing: bool,
-    /// Host-supplied Select hold-progress (0.0-1.0) for the in-screen confirm fills. `None` on the
-    /// single-loop hosts; the two-plane firmware feeds it each frame, because its holds live on a
-    /// plane `App`'s own never sees.
-    pub(crate) hold_progress_override: Option<f32>,
+    /// Host-supplied hold progress (0.0-1.0) for both hold buttons. `None` on the single-loop
+    /// hosts; the two-plane firmware feeds it each frame, because its holds live on a plane
+    /// `App`'s own never sees. Select drives the in-screen confirm fills; Back is here because a
+    /// Back hold defers a card too, and a sample that carried Select alone deferred nothing on the
+    /// board.
+    pub(crate) hold_progress_override: Option<HoldSample>,
     /// Set whenever a gesture changed the screen stack: a hold charging at that moment was aimed
     /// at a screen that is no longer the top, so it must be cancelled and never delivered to
     /// whatever replaced it.
@@ -414,10 +429,10 @@ impl UiRuntime {
         self.base_content() == BaseContent::Chrome
     }
 
-    /// Whether a hold gesture is charging right now. It reads the host-fed Select progress and
-    /// `App`'s own input plane, and gates the passkey card so it never lands mid-hold.
+    /// Whether a hold gesture is charging right now. It reads the host-fed sample and `App`'s own
+    /// input plane, and gates the passkey card so it never lands mid-hold.
     pub(crate) fn hold_charging(&self) -> bool {
-        self.hold_progress_override.is_some_and(|p| p > 0.0)
+        self.hold_progress_override.is_some_and(|p| p.charging())
             || self.input.select_hold_progress() > 0.0
             || self.input.back_hold_progress() > 0.0
     }
