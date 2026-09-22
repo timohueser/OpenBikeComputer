@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 57640,
+        "app": 57672,
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -96,7 +96,7 @@
         "source_commit": "claude/rtr-start-away head",
         "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
         "changes": "App +32 B: Navigator keeps the join point Join nearest gives the next fresh ride, whether the detour-family plan is Ride to start, and the adopted splice's and route's ids, so the ride is saved under the route's name. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline. Board guards passed: 311,320 B linked resident, residual main stack 48,104 B. No base rebuild or device flash."
+        "verification": "One head build compared with the recorded baseline. Board guards passed: 311,576 B linked resident, residual main stack 47,848 B. No base rebuild or device flash."
       },
       "_find_place_allocation_measurement": {
         "source_commit": "45e463b67b2ac69626b1f65ef29b7f74e0e604c7",
