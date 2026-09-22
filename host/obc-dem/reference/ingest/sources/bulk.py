@@ -59,6 +59,8 @@ class BulkSource(Source):
                 raise Refuse(f"{path}: the registry expected a raster or a zip, not {path.suffix}")
         if absent:
             print(f"  {absent} of {len(wanted)} square(s) are not published: a coverage edge")
-        if not rasters:
+        if not rasters and not self.skip_missing:
             raise Refuse(f"{self.key}: none of the {len(wanted)} file(s) the box needs is published")
+        # A box the state publishes nothing for is a coverage edge like any other, and a
+        # per-tile run over a country box meets one at every corner: it is empty, not wrong.
         return rasters

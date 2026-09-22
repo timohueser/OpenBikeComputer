@@ -93,10 +93,10 @@ class CogWindows(Source):
                     paths.append(cut)
                 print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → "
                       f"{box[2]:.4f},{box[3]:.4f}")
+        # A box no published square covers is a coverage edge, not a fault: a per-tile run
+        # over a country's box meets one at every corner of the country.
         if absent:
             print(f"  {absent} read(s) found no published square for their part of the box")
-        if not paths:
-            raise Refuse(f"{self.key}: no published square covers that box")
         return paths
 
     def window(self, url: str, box, path: Path):
