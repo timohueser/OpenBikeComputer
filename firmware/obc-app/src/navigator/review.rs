@@ -177,8 +177,6 @@ pub(super) struct ReviewState {
     pub after: AfterCheckpoint,
     pub recovery_seen: bool,
     pub owed: bool,
-    /// The standing checkpoint is this session's plain route selection, not an accepted plan.
-    pub selection: bool,
     pub latest_origin: Option<ReviewOrigin>,
 }
 impl ReviewState {
@@ -200,7 +198,6 @@ impl ReviewState {
             after: AfterCheckpoint::Phase,
             recovery_seen: false,
             owed: false,
-            selection: false,
             latest_origin: None,
         }
     }
@@ -278,7 +275,7 @@ impl NavigatorMachine {
             return false;
         }
         if self.review.checkpoint.is_some() {
-            if self.review.selection {
+            if self.review.checkpoint.is_some_and(|standing| standing.selection) {
                 // A plain selection is replaced by the next one, or cleared behind it. Only an
                 // accepted plan holds guidance up until the card says it is no longer accepted.
                 if index.is_none() {
@@ -379,6 +376,7 @@ impl NavigatorMachine {
             lat: context.origin.1,
             phase,
             unresolved_avoidance: context.unresolved_avoidance,
+            selection: false,
             lower_m: progress_m,
             upper_m,
         };
@@ -548,14 +546,14 @@ impl NavigatorMachine {
             return Some(self.review.after);
         }
         self.review.status = ReviewStatus::Accepted;
-        self.review.selection = self.review.after == AfterCheckpoint::Selected;
+        let selection = self.review.after == AfterCheckpoint::Selected;
         // Only a confirmed write settles the debt: a refused one leaves the previous route on the
         // card, which a restart must not offer for a route the rider is no longer following.
-        self.review.owed &= !self.review.selection;
+        self.review.owed &= !selection;
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
-        if !self.review.selection {
+        if !selection {
             self.route = PlanPhase::Active;
         }
         Some(self.review.after)
@@ -723,6 +721,7 @@ impl crate::App {
             lat: summary.start_lat,
             phase: JourneyPhase::Following,
             unresolved_avoidance: source.unresolved_avoidance,
+            selection: true,
             lower_m: 0,
             upper_m: source.distance_m,
         };
@@ -1409,6 +1408,9 @@ mod tests {
             assert!(!app.recording(), "selecting a route is not starting a ride");
             assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
             assert!(app.requested_route_checkpoint().is_none(), "a confirmed write settles the debt");
+            // A selection records no progress, so a fresh ride is not dragged back to the start.
+            app.test_start_ride();
+            assert!(!app.navigator.pending_seam(), "a plain selection is not a measured anchor");
             // Stopping guidance clears it again, so a restart offers nothing.
             app.activate_route(usize::MAX);
             ack_checkpoint(&mut app);
@@ -1436,6 +1438,7 @@ mod tests {
             lat: 0,
             phase: JourneyPhase::Following,
             unresolved_avoidance: false,
+            selection: false,
             lower_m: 0,
             upper_m: route.total_distance_m,
         };
@@ -1490,6 +1493,7 @@ mod tests {
             lat: 47_000_000,
             phase: JourneyPhase::Outbound,
             unresolved_avoidance: false,
+            selection: false,
             lower_m: 0,
             upper_m: 500,
         };

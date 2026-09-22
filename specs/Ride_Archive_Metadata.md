@@ -41,15 +41,16 @@ on StoreId `42` repeated 16 times.
 
 The checkpoint starts at `32 + row_count * 40`. The Metadata header StoreId binds
 both route fingerprints to the same card. This is only a recovery offer for the
-most recently accepted Assistant journey; it does not restore ordinary navigation
-or start Recorder. Absence preserves ordinary boot behavior.
+route guidance was following, whether the rider selected it or accepted it as an
+Assistant plan; it does not restore navigation or start Recorder by itself.
+Absence preserves ordinary boot behavior.
 
 | Checkpoint offset | Bytes | Value |
 | --: | --: | :-- |
-| 0 | 8 | accepted Route ObjectId, nonzero |
-| 8 | 8 | accepted Route Revision, nonzero |
-| 16 | 8 | accepted payload length, nonzero |
-| 24 | 4 | accepted payload CRC-32 |
+| 0 | 8 | followed Route ObjectId, nonzero |
+| 8 | 8 | followed Route Revision, nonzero |
+| 16 | 8 | followed payload length, nonzero |
+| 24 | 4 | followed payload CRC-32 |
 | 28 | 4 | matched progress, metres |
 | 32 | 28 | optional original Route ObjectId/Revision/length/CRC; all zero when absent |
 | 60 | 4 | route occurrence anchor |
@@ -57,14 +58,16 @@ or start Recorder. Absence preserves ordinary boot behavior.
 | 68 | 4 | signed latitude, microdegrees |
 | 72 | 1 | phase: `0` Following, `1` Outbound, `2` AtStop, `3` Returning |
 | 73 | 1 | unresolved avoidance: `0` or `1` |
-| 74 | 2 | zero |
+| 74 | 1 | selection: `0` an accepted plan, `1` the rider's own route choice |
+| 75 | 1 | zero |
 | 76 | 4 | lower progress bound, metres |
 | 80 | 4 | upper progress bound, metres |
 | 84 | 12 | zero |
 
 Progress must be within the stored bounds. Coordinates must be geographic.
 Visit phases require an original fingerprint. An absent original must have all
-28 bytes zero. Unknown phases or nonzero reserved bytes are invalid.
+28 bytes zero. A selection has no original and phase `0`, and its progress is not
+a measured anchor. Unknown phases or nonzero reserved bytes are invalid.
 
 Checkpoint edits validate their exact current Route targets separately from
 ride proof rows. They use the current complete image and the same Metadata-head

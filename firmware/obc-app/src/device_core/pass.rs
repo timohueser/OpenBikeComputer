@@ -545,8 +545,12 @@ impl App {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.navigator.reset_detour();
+            // Only a measured anchor re-joins the route. A plain route selection records no
+            // progress, so re-anchoring a fresh ride to it would drag the matcher back to the route
+            // start from wherever the rider actually is.
             if let Some(checkpoint) = self
                 .assistant_checkpoint()
+                .filter(|checkpoint| !checkpoint.selection)
                 .filter(|_| self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted)
             {
                 if let Some(index) = self

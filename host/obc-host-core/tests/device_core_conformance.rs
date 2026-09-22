@@ -1598,6 +1598,7 @@ fn a_delete_waits_for_the_checkpoint_that_would_refuse_it() {
             lat: 0,
             phase: JourneyPhase::Following,
             unresolved_avoidance: false,
+            selection: false,
             lower_m: 0,
             upper_m: 12_000,
         }),
