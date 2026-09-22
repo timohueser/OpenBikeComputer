@@ -11,6 +11,8 @@ mod coverage;
 mod landmark_map;
 #[path = "cases/merge_fills.rs"]
 mod merge_fills;
+#[path = "cases/names.rs"]
+mod names;
 #[path = "cases/nav_round_trip.rs"]
 mod nav_round_trip;
 #[path = "cases/pipeline.rs"]

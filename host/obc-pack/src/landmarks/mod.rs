@@ -598,7 +598,7 @@ fn prepare_article(
         .or_else(|| entity["labels"]["en"]["value"].as_str())
         .or_else(|| place["name"].as_str())
         .ok_or("site name missing")?;
-    let name = text::normalize(name);
+    let name = crate::name::to_repertoire(&text::normalize(name));
     if !text::supported(&name) {
         omit("site", "name_glyph".into());
         return Ok(None);

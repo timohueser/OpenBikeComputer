@@ -233,12 +233,13 @@ where
         }
     }
     let subtype = POI_TABLE[best?].subtype;
+    let fallbacks = || [name_en, int_name].into_iter().flatten();
     if subtype == SUMMIT_SUBTYPE_ID {
-        let name = utf8_record_name(raw_name?)?;
+        let name = utf8_record_name(&crate::name::device_name(raw_name?, fallbacks())?)?;
         return Some(Classification { subtype, name: Some(name), raw_hours: None, elevation_m, population: None });
     }
     if settlement_class_of(subtype).is_some() {
-        let name = utf8_record_name(&pick_settlement_name(raw_name?, short_name, name_en, int_name)?)?;
+        let name = utf8_record_name(&pick_settlement_name(raw_name?, short_name, fallbacks())?)?;
         return Some(Classification { subtype, name: Some(name), raw_hours: None, elevation_m: None, population });
     }
     Some(Classification {
@@ -258,8 +259,9 @@ pub fn settlement_payload(population: Option<u32>) -> u16 {
 }
 
 /// Cut a UTF-8 name to the record's fixed `Name` field on a character boundary. Summits and
-/// settlements keep their own spelling, so this is the whole treatment they get. `None` when the
-/// name is empty or holds a control character.
+/// settlements keep their own spelling inside the device glyph repertoire, so this is the whole
+/// treatment they get after [`crate::name::device_name`]. `None` when the name is empty or holds a
+/// control character.
 fn utf8_record_name(raw: &str) -> Option<String> {
     let name = raw.trim();
     let mut end = name.len().min(POI_NAME_LEN);
@@ -270,29 +272,20 @@ fn utf8_record_name(raw: &str) -> Option<String> {
     (!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.into())
 }
 
-/// Choose the settlement name the device can draw: the local name, else its ASCII fold, else
-/// `name:en`, else `int_name`. `None` drops the settlement, because a row of question marks is
-/// worse than no label. The fold turns Cyrillic, Greek and CJK into word breaks, so it gives an
-/// empty result for them and the language fall-backs run.
+/// Choose the settlement name the device can draw, through the shared fall-back ladder.
 ///
 /// The local name is `short_name` when the source gives a shorter one — the map shows 12
 /// characters, so "Freiburg" is the whole label where "Freiburg im Breisgau" is a cut.
-fn pick_settlement_name(
+fn pick_settlement_name<'a>(
     name: &str,
     short_name: Option<&str>,
-    name_en: Option<&str>,
-    int_name: Option<&str>,
+    fallbacks: impl IntoIterator<Item = &'a str>,
 ) -> Option<String> {
     let local = short_name
         .map(str::trim)
         .filter(|short| !short.is_empty() && short.chars().count() < name.trim().chars().count())
         .unwrap_or(name);
-    // `glyph_supported` reads the real font strip, so the repertoire cannot drift from it.
-    let drawable = |name: &&str| name.chars().all(obc_render::glyph_supported);
-    if drawable(&local) {
-        return Some(local.into());
-    }
-    normalize_name(local).or_else(|| [name_en, int_name].into_iter().flatten().find(drawable).map(Into::into))
+    crate::name::device_name(local, fallbacks)
 }
 
 /// Fill missing summit heights from the shared geographic terrain lattice.
@@ -341,112 +334,23 @@ pub fn ring_centroid(coords: &[(f64, f64)]) -> (f64, f64) {
     (sx / n, sy / n)
 }
 
-/// Fold one non-ASCII char to its ASCII spelling. German umlauts get their proper digraphs (ä to ae,
-/// ß to ss); the rest of Latin-1 Supplement and Latin Extended-A strips to the base letter. Anything
-/// else — CJK, Cyrillic, Greek, emoji — is unmappable and answers `None`, and the caller turns it
-/// into a word break rather than gluing neighbours together.
-fn fold_char(c: char) -> Option<&'static str> {
-    Some(match c {
-        'Ä' => "Ae",
-        'ä' => "ae",
-        'Ö' => "Oe",
-        'ö' => "oe",
-        'Ü' => "Ue",
-        'ü' => "ue",
-        'ß' | 'ſ' => "ss",
-        'Æ' => "AE",
-        'æ' => "ae",
-        'Œ' => "OE",
-        'œ' => "oe",
-        'Ĳ' => "IJ",
-        'ĳ' => "ij",
-        'Þ' => "Th",
-        'þ' => "th",
-        'Ð' | 'Đ' | 'Ď' => "D",
-        'ð' | 'đ' | 'ď' => "d",
-        'À'..='Å' | 'Ā' | 'Ă' | 'Ą' => "A",
-        'à'..='å' | 'ā' | 'ă' | 'ą' => "a",
-        'Ç' | 'Ć' | 'Ĉ' | 'Ċ' | 'Č' => "C",
-        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => "c",
-        'È'..='Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => "E",
-        'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => "e",
-        'Ĝ' | 'Ğ' | 'Ġ' | 'Ģ' => "G",
-        'ĝ' | 'ğ' | 'ġ' | 'ģ' => "g",
-        'Ĥ' | 'Ħ' => "H",
-        'ĥ' | 'ħ' => "h",
-        'Ì'..='Ï' | 'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' => "I",
-        'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => "i",
-        'Ĵ' => "J",
-        'ĵ' => "j",
-        'Ķ' => "K",
-        'ķ' | 'ĸ' => "k",
-        'Ĺ' | 'Ļ' | 'Ľ' | 'Ŀ' | 'Ł' => "L",
-        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => "l",
-        'Ñ' | 'Ń' | 'Ņ' | 'Ň' | 'Ŋ' => "N",
-        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŉ' | 'ŋ' => "n",
-        'Ò'..='Õ' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => "O",
-        'ò'..='õ' | 'ø' | 'ō' | 'ŏ' | 'ő' => "o",
-        'Ŕ' | 'Ŗ' | 'Ř' => "R",
-        'ŕ' | 'ŗ' | 'ř' => "r",
-        'Ś' | 'Ŝ' | 'Ş' | 'Š' => "S",
-        'ś' | 'ŝ' | 'ş' | 'š' => "s",
-        'Ţ' | 'Ť' | 'Ŧ' => "T",
-        'ţ' | 'ť' | 'ŧ' => "t",
-        'Ù'..='Û' | 'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => "U",
-        'ù'..='û' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => "u",
-        'Ŵ' => "W",
-        'ŵ' => "w",
-        'Ý' | 'Ŷ' | 'Ÿ' => "Y",
-        'ý' | 'ÿ' | 'ŷ' => "y",
-        'Ź' | 'Ż' | 'Ž' => "Z",
-        'ź' | 'ż' | 'ž' => "z",
-        _ => return None,
-    })
-}
-
 /// Normalize an OSM `name` for the record's fixed-width, printable-ASCII `Name` field, one byte per
-/// char: ASCII-fold, replace anything unmappable with a word break, collapse whitespace, trim, and
-/// cap at 24 bytes. Empty after all that gives `None`, and the device shows the subtype label.
+/// char: spell every character in ASCII, replace anything unreachable with a word break, collapse
+/// whitespace, trim, and cap at 24 bytes. Empty after all that gives `None`, and the device shows
+/// the subtype label.
 ///
 /// The fold is a format constraint, not a font one: the device font renders Latin-1 and Latin
 /// Extended-A for phone-supplied route and ride names, and only these fixed-width packed POI names
 /// fold.
 pub fn normalize_name(raw: &str) -> Option<String> {
-    let mut out = String::with_capacity(raw.len().min(28));
-    let mut pending_space = false;
-    let emit = |s: &str, out: &mut String, pending: &mut bool| {
-        if *pending && !out.is_empty() {
-            out.push(' ');
-        }
-        *pending = false;
-        out.push_str(s);
-    };
-    for c in raw.chars() {
-        match c {
-            // Printable ASCII minus space; 0x7F (DEL) has no glyph, so it falls
-            // through to the word-break arm with the controls.
-            '!'..='~' => {
-                let mut buf = [0u8; 1];
-                emit(c.encode_utf8(&mut buf), &mut out, &mut pending_space);
-            }
-            _ => match fold_char(c) {
-                Some(piece) => emit(piece, &mut out, &mut pending_space),
-                // Space, controls, and unmappable scripts all become one break.
-                None => pending_space = true,
-            },
-        }
-    }
+    let mut out = crate::name::to_ascii_name(raw);
     // Byte cap: everything is ASCII by now, so bytes == chars; re-trim in case
     // the cut lands just after a space.
     out.truncate(24);
     while out.ends_with(' ') {
         out.pop();
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 pub fn dedupe(candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
@@ -679,7 +583,8 @@ mod tests {
     fn name_unmappable_becomes_empty_or_break() {
         // Pure CJK ⇒ unnamed (device falls back to the subtype label).
         assert_eq!(normalize_name("北京烤鸭"), None);
-        assert_eq!(normalize_name("Καφενείο"), None);
+        // Greek and Cyrillic transliterate rather than vanish.
+        assert_eq!(normalize_name("Καφενείο").as_deref(), Some("Kafeneio"));
         // Mixed: the unmappable run breaks the word instead of gluing neighbors.
         assert_eq!(normalize_name("Edeka 市場 Nord").as_deref(), Some("Edeka Nord"));
         assert_eq!(normalize_name("AB水CD").as_deref(), Some("AB CD"));
@@ -797,14 +702,15 @@ mod tests {
 
     #[test]
     fn an_unshowable_name_folds_then_falls_back_to_english() {
-        assert_eq!(place("village", &[("name", "Мирный")]), None, "no fold and no English name");
+        let c = place("village", &[("name", "Мирный")]).expect("Cyrillic transliterates");
+        assert_eq!(c.name.as_deref(), Some("Mirnyy"), "no fall-back is needed once the fold reaches it");
         let c = place("village", &[("name", "東京"), ("name:en", "Tokyo")]).expect("classifies");
         assert_eq!(c.name.as_deref(), Some("Tokyo"));
         let c = place("village", &[("name", "東京"), ("int_name", "Tokyo")]).expect("classifies");
         assert_eq!(c.name.as_deref(), Some("Tokyo"), "int_name is the last fall-back");
         // A name the fold can spell never reaches the language fall-backs.
         let c = place("village", &[("name", "Ost—Dorf"), ("name:en", "East")]).expect("classifies");
-        assert_eq!(c.name.as_deref(), Some("Ost Dorf"), "the fold answers first");
+        assert_eq!(c.name.as_deref(), Some("Ost-Dorf"), "the fold answers first");
     }
 
     #[test]
