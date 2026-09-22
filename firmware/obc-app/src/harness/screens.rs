@@ -1266,27 +1266,97 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
 }
 
-/// The deepest screen stack a descent reaches, walked instead of asserted from one hand-written
-/// path. The alphabet is the three navigating gestures — a step, a press and a guarded hold — so
-/// this bounds the ordinary way down and the reserve it leaves for host-pushed cards. A sheet is
-/// outside that bound and does not spend a card slot either: `card_scheduler::land` takes any open
-/// drawer off before the card goes on.
-///
-/// `MAX_DEPTH` is not a wall. `apply` drops an overflowing push behind a `debug_assert`, so a
-/// release build loses the screen without a sound, which is why the descent's ceiling is pinned.
+/// The quick drawer's Settings row starts central settings from the root pair and drops the
+/// descent the squeeze came from, so laps of squeeze and press stay at one depth and Back leaves
+/// settings for the view the rider rides on.
 #[test]
-fn the_deepest_descent_leaves_the_host_card_slots_free() {
+fn laps_of_the_drawer_settings_row_stay_on_the_root() {
+    /// One lap: the squeeze, the steps to the settings control, and the press.
+    fn lap(app: &mut App, ms: &mut u32) {
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the squeeze opens the sheet");
+        *ms += 1_000;
+        app.advance_animations(InputClock(*ms)); // settle the open slide
+        for _ in 0..2 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → bluetooth → settings
+        }
+        app.apply_gesture(Gesture::Press);
+    }
+
+    fn shape(app: &App) -> Vec<&'static str> {
+        app.ui.stack.iter().map(Screen::name).collect()
+    }
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.set_backlight_available(true);
+    let mut ms = 1_000;
+    for lap_no in 0..8 {
+        lap(&mut app, &mut ms);
+        assert_eq!(shape(&app), ["Home", "Map", "Settings"], "lap {lap_no} left the root pair");
+        // Two pages down the settings tree, which the next lap has to drop.
+        app.apply_gesture(Gesture::Step(4)); // → System
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1)); // → Date & time, a page rather than an editor sheet
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(shape(&app), ["Home", "Map", "Settings", "System", "DateTime"], "lap {lap_no} did not descend");
+    }
+
+    lap(&mut app, &mut ms);
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "Back out of settings leaves for the riding view");
+
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host card still has room after the laps");
+}
+
+/// A sheet needs a slot of its own, so at the ceiling the squeeze is refused and reports that
+/// nothing moved. The alternative is `apply` dropping the push behind a `debug_assert`: a rider
+/// squeezing at a full stack and getting silence.
+#[test]
+fn a_squeeze_at_the_ceiling_is_refused() {
+    use crate::screen::MAX_DEPTH;
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.set_backlight_available(true);
+    while app.ui.stack.len() < MAX_DEPTH - 1 {
+        let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+    }
+    assert!(app.apply_chord(crate::input::Chord::Quick), "with the last slot free the sheet opens");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+    assert!(app.apply_chord(crate::input::Chord::Quick), "and the same chord closes it again");
+
+    let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+    assert_eq!(app.ui.stack.len(), MAX_DEPTH, "the stack is at the ceiling");
+    assert!(!app.apply_chord(crate::input::Chord::Quick), "a full stack refuses the squeeze");
+    assert_eq!(app.ui.stack.len(), MAX_DEPTH, "and nothing moved");
+}
+
+/// The deepest screen stack a rider reaches, walked instead of asserted from one hand-written
+/// path. The alphabet is the three navigating gestures — a step, a press and a guarded hold — and
+/// the three device-wide chords, so this bounds every way down, including the ways a sheet opens.
+///
+/// `MAX_DEPTH` is not a wall: `apply` drops an overflowing push behind a `debug_assert`, and a
+/// release build then loses the screen without a sound. So the walk has to reach the ceiling and
+/// stop there. It does: the last slot is reachable, one squeeze past it is refused by
+/// `toggle_drawer`, and a card that arrives at a full stack is deferred rather than dropped —
+/// `card_scheduler::land` reports `false` and the one-shot fact behind the card survives. A card
+/// is measured against the deepest stack with no sheet on it, because `land` takes any open
+/// drawer off before the card goes on.
+#[test]
+fn the_deepest_descent_stops_at_max_depth() {
+    use crate::input::Chord;
+
     /// Steps taken on a page before its gesture. The probe below proves one more step reaches no
     /// page the walk misses, so a list that outgrows this cannot go under-walked in silence.
     const ROWS: i32 = 16;
     /// A tree that outgrows this is no longer the one these numbers describe.
-    const VISITS: usize = 400;
+    const VISITS: usize = 2_000;
 
-    /// One move: `k` steps, then that gesture.
+    /// One move: `k` steps then that gesture, or one device-wide chord.
     #[derive(Clone, Copy, Debug)]
     enum Move {
         Press(i32),
         Hold(i32),
+        Chord(Chord),
     }
 
     fn seeded() -> App {
@@ -1313,6 +1383,12 @@ fn the_deepest_descent_leaves_the_host_card_slots_free() {
             let (steps, gesture) = match *mv {
                 Move::Press(k) => (k, Gesture::Press),
                 Move::Hold(k) => (k, Gesture::Hold),
+                Move::Chord(chord) => {
+                    app.apply_chord(chord);
+                    ms += 1_000;
+                    app.advance_animations(InputClock(ms));
+                    continue;
+                }
             };
             for _ in 0..steps {
                 app.apply_gesture(Gesture::Step(1));
@@ -1328,18 +1404,26 @@ fn the_deepest_descent_leaves_the_host_card_slots_free() {
         app.ui.stack.iter().map(Screen::name).collect()
     }
 
+    /// The slots a host card would find: the stack under any open sheet.
+    fn under_the_sheet(app: &App) -> usize {
+        crate::screen::base_index(&app.ui.stack) + 1
+    }
+
     // Each stack shape is expanded once, from the first path that reaches it: every row of that one
     // representative is then pressed and held.
     let mut seen: std::collections::BTreeSet<Vec<&'static str>> = std::collections::BTreeSet::new();
-    let mut pending: Vec<(Vec<Move>, Vec<&'static str>)> = vec![(Vec::new(), shape(&seeded()))];
+    let mut pending: Vec<(Vec<Move>, Vec<&'static str>, usize)> =
+        vec![(Vec::new(), shape(&seeded()), under_the_sheet(&seeded()))];
     let mut deepest: Vec<&'static str> = Vec::new();
+    let mut deepest_for_a_card = 0usize;
     let mut visits = 0usize;
-    while let Some((path, here)) = pending.pop() {
+    while let Some((path, here, base)) = pending.pop() {
         if !seen.insert(here.clone()) {
             continue;
         }
         visits += 1;
         assert!(visits < VISITS, "the walk outgrew its budget on {path:?}");
+        deepest_for_a_card = deepest_for_a_card.max(base);
         if here.len() > deepest.len() {
             deepest = here;
         }
@@ -1348,27 +1432,33 @@ fn the_deepest_descent_leaves_the_host_card_slots_free() {
             for k in 0..=ROWS {
                 let mut next = path.clone();
                 next.push(row(k));
-                let child = shape(&walk(&next));
+                let reached_app = walk(&next);
+                let child = shape(&reached_app);
                 if k == ROWS {
                     assert!(reached.contains(&child), "ROWS is too small: {k} steps reach {child:?}");
                 } else if reached.insert(child.clone()) {
-                    pending.push((next, child));
+                    pending.push((next, child, under_the_sheet(&reached_app)));
                 }
             }
         }
+        for chord in [Chord::Quick, Chord::Context, Chord::Assistant] {
+            let mut next = path.clone();
+            next.push(Move::Chord(chord));
+            let reached_app = walk(&next);
+            let child = shape(&reached_app);
+            pending.push((next, child, under_the_sheet(&reached_app)));
+        }
     }
 
-    assert!(seen.len() >= 25, "the walk reached only {} stacks — it stopped early", seen.len());
+    assert!(seen.len() >= 1_000, "the walk reached only {} stacks — it stopped early", seen.len());
     assert!(
         seen.contains(&vec!["Home", "Map", "Menu", "Settings", "Ride", "StatFields", "AddField"]),
         "the walk missed the documented deepest rider path"
     );
-    assert_eq!(deepest.len(), 7, "the deepest descent is now {deepest:?}");
-    assert_eq!(
-        crate::screen::MAX_DEPTH - deepest.len(),
-        3,
-        "the host-pushed cards lost a reserved slot to a deeper descent"
-    );
+    assert_eq!(deepest.len(), crate::screen::MAX_DEPTH, "the deepest stack is now {deepest:?}");
+    // The ceiling is reached by ordinary pages, not by a sheet in the last slot, so the deepest a
+    // host card can find is the ceiling too: there it waits for the rider to climb back out.
+    assert_eq!(deepest_for_a_card, crate::screen::MAX_DEPTH, "the deepest stack with no sheet on it moved");
 }
 
 /// A shutdown in progress is not cancellable by either device-wide input. It cannot be expressed
