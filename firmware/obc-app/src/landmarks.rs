@@ -425,7 +425,7 @@ impl crate::App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use obc_formats::{io::SliceSource, obcm};
     use obc_reader::{MapCache, MapTables};
@@ -443,7 +443,9 @@ mod tests {
         }
         out
     }
-    fn map() -> Vec<u8> {
+    /// A map with one landmark section: seven records with article text, credits and no photo.
+    /// The copy-fit gate renders the reading page over it, so the builder is crate-visible.
+    pub(crate) fn map() -> Vec<u8> {
         map_with_credits(&["Credit page one.", "Credit page two."])
     }
     fn map_with_credits(credits: &[&str]) -> Vec<u8> {
