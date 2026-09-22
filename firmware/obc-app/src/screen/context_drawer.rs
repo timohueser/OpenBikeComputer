@@ -15,6 +15,12 @@
 //! closed. A switch ([`ContextToggle`]) flips a `bool` in place and keeps the sheet up, because the
 //! row draws its own state, so the control stays legible and the rider sets a whole group of them
 //! for one repaint of the screen underneath.
+//!
+//! The settings pages speak the same bindings. A value row on a settings page opens the editor
+//! alone, as a sheet over the page ([`ContextDrawerScreen::editor`]), so one editor serves every
+//! value the device has, whichever surface it is reached from.
+
+use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
 use obc_reader::{PoiCategory, PoiCategorySet};
@@ -26,10 +32,14 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::navigator::RouteState;
-use crate::settings::UpAheadSource;
+use crate::screen::quick_drawer::{brightness_percent, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
+use crate::settings::{
+    ClimbMode, IdleReturn, Language, Units, UpAheadSource, WaypointMode, STAT_CYCLE_MAX, STAT_CYCLE_MIN,
+    UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP,
+};
 use crate::{AppState, Msg, Settings};
 
-use super::vocab::rows;
+use super::vocab::rows::{self, Line2, RowIcon, ROW_GAP};
 use super::vocab::sheet::{self, Edge, SheetMotion, SheetTiming};
 use super::{palette, Ctx, DetourScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition};
 
@@ -45,8 +55,7 @@ const STEP_MS: u32 = 48;
 /// The motion the shared sheet engine runs this sheet on.
 pub(crate) const MOTION: SheetTiming = SheetTiming { open_ms: OPEN_MS, slide_ms: SLIDE_MS, step_ms: STEP_MS };
 
-/// One row's height, and the padding above the first row / below the last.
-const ROW_H: i32 = 44;
+/// The padding above the first row / below the last.
 const SHEET_PAD: i32 = 12;
 
 /// The nested value editor's sheet height: one title line, the staged choice, and the notch strip
@@ -59,9 +68,14 @@ const EDITOR_H: i32 = 148;
 /// sheet rather than becoming a page.
 const MAX_SHEET_H: i32 = 244;
 
-/// At most five rows are visible; longer category menus scroll within the sheet.
-const VISIBLE_ROWS: usize = ((MAX_SHEET_H - SHEET_PAD * 2) / ROW_H) as usize;
 const MAX_ROWS: usize = 8;
+
+/// Above this many choices the track shows only its ends: a notch per choice would be a comb.
+const DENSE_ABOVE: u8 = 12;
+
+/// The GPS fix intervals the editor offers, in seconds: every second up to ten, then the long
+/// rests. A ladder rather than a range, so the far end is a few steps away.
+pub(crate) const FIX_LADDER: [u16; 17] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 45, 60, 90, 120];
 
 /// What a context row reads about the base under the sheet: whether it may be pressed, and what
 /// the value it binds to currently is.
@@ -81,9 +95,9 @@ pub(crate) struct ContextFacts<'a> {
     pub nav_profiles: &'a crate::NavProfiles,
 }
 
-/// A typed value a context row edits in place of opening a screen. The binding owns where the
-/// value lives, how many choices it has and what each one is called; the drawer owns the page, the
-/// staging, the commit and the drawing.
+/// A typed value a row edits in the nested editor. The binding owns where the value lives, how
+/// many choices it has and what each one is called; the drawer owns the page, the staging, the
+/// commit and the drawing.
 ///
 /// Choices are addressed by ordinal, which is also what the render key carries — so "the staged
 /// value" is one `u8` for every binding there will ever be.
@@ -105,12 +119,27 @@ pub enum ContextValue {
     /// appears without a hardcoded list, and a map that offers no choice makes the row inert rather
     /// than a control that walks a ring of one.
     BikeProfile,
+
+    /// The settings pages' values. Each is one [`Settings`] field.
+    IdleReturn,
+    /// The backlight level, the same row the quick drawer edits. Staged levels drive the panel
+    /// live through [`ContextDrawerScreen::staged_brightness`].
+    Brightness,
+    /// The GPS fix interval, on [`FIX_LADDER`].
+    FixInterval,
+    /// The riding pages' auto-flip period, every second of its range.
+    StatCycle,
+    ClimbMode,
+    WaypointMode,
+    Units,
+    /// The local UTC offset in quarter hours.
+    UtcOffset,
 }
 
 impl ContextValue {
     /// How many choices this binding offers. Takes the facts because a binding's choices may be
     /// map data rather than a compiled-in list.
-    fn count(self, f: &ContextFacts) -> u8 {
+    pub(crate) fn count(self, f: &ContextFacts) -> u8 {
         match self {
             // "Everything" plus the six categories.
             ContextValue::UpAheadFilter => 1 + PoiCategory::ALL.len() as u8,
@@ -119,66 +148,137 @@ impl ContextValue {
 
             // At most `NAV_MAX_PROFILES`, which is also the notch strip's own ceiling.
             ContextValue::BikeProfile => f.nav_profiles.len() as u8,
+
+            ContextValue::IdleReturn => IdleReturn::COUNT as u8,
+            ContextValue::Brightness => BRIGHTNESS_LEVELS,
+            ContextValue::FixInterval => FIX_LADDER.len() as u8,
+            ContextValue::StatCycle => (STAT_CYCLE_MAX - STAT_CYCLE_MIN + 1) as u8,
+            ContextValue::ClimbMode => ClimbMode::COUNT as u8,
+            ContextValue::WaypointMode => WaypointMode::COUNT as u8,
+            ContextValue::Units => Units::COUNT as u8,
+            ContextValue::UtcOffset => ((UTC_OFFSET_MAX - UTC_OFFSET_MIN) / UTC_OFFSET_STEP + 1) as u8,
         }
     }
 
+    /// Whether the choices are a ring of named alternatives (the cursor wraps) or an axis with
+    /// ends (the cursor clamps).
+    fn wraps(self) -> bool {
+        !matches!(
+            self,
+            ContextValue::IdleReturn
+                | ContextValue::Brightness
+                | ContextValue::FixInterval
+                | ContextValue::StatCycle
+                | ContextValue::UtcOffset
+        )
+    }
+
     /// Whether the row that binds this may be pressed: the row is live exactly when the binding
-    /// accepts. A filter is as meaningful over an empty list as over a full one, and a source scope
-    /// is a preference no ride state can invalidate, so only the bike profile ever refuses — it
-    /// needs a map that offers more than one profile.
+    /// accepts. A filter is as meaningful over an empty list as over a full one, and a preference
+    /// is a preference in every ride state, so only the bike profile ever refuses — it needs a map
+    /// that offers more than one profile.
     fn accepts(self, f: &ContextFacts) -> bool {
         match self {
-            ContextValue::UpAheadFilter | ContextValue::UpAheadSource | ContextValue::FindResults => true,
-
             ContextValue::BikeProfile => f.nav_profiles.len() > 1,
+            _ => true,
         }
     }
 
     /// The ordinal currently committed — where the editor opens, and the choice it keeps marked.
-    fn committed(self, f: &ContextFacts) -> u8 {
+    pub(crate) fn committed(self, f: &ContextFacts) -> u8 {
+        let s = f.settings;
         match self {
             ContextValue::UpAheadFilter => filter_choice(f.state.up_ahead_filter),
-            ContextValue::UpAheadSource => f.settings.up_ahead_source as u8,
-            ContextValue::FindResults => f.settings.find_results as u8,
+            ContextValue::UpAheadSource => s.up_ahead_source as u8,
+            ContextValue::FindResults => s.find_results as u8,
 
             // The effective index, not the stored one: a stale index against a smaller map opens
             // on profile 0 and marks profile 0, which is the profile the router will use.
-            ContextValue::BikeProfile => f.nav_profiles.effective(f.settings.bike_profile_idx),
+            ContextValue::BikeProfile => f.nav_profiles.effective(s.bike_profile_idx),
+
+            ContextValue::IdleReturn => s.idle_return as u8,
+            ContextValue::Brightness => s.brightness.min(BRIGHTNESS_MAX),
+            // The nearest rung at or below the stored interval, so a value off the ladder still
+            // opens on a rung.
+            ContextValue::FixInterval => FIX_LADDER.iter().rposition(|&v| v <= s.fix_interval_s).unwrap_or(0) as u8,
+            ContextValue::StatCycle => (s.stat_cycle_s.clamp(STAT_CYCLE_MIN, STAT_CYCLE_MAX) - STAT_CYCLE_MIN) as u8,
+            ContextValue::ClimbMode => s.climb_mode as u8,
+            ContextValue::WaypointMode => s.waypoint_mode as u8,
+            ContextValue::Units => s.units as u8,
+            ContextValue::UtcOffset => {
+                ((s.utc_offset_min.clamp(UTC_OFFSET_MIN, UTC_OFFSET_MAX) - UTC_OFFSET_MIN) / UTC_OFFSET_STEP) as u8
+            }
         }
     }
 
     /// Write `ordinal` to wherever this binding's value lives.
     fn commit(self, cx: &mut Ctx, ordinal: u8) {
+        let s = &mut *cx.settings;
         match self {
             ContextValue::UpAheadFilter => cx.state.up_ahead_filter = choice_filter(ordinal),
-            ContextValue::FindResults => cx.settings.find_results = crate::settings::FindResults::from_byte(ordinal),
+            ContextValue::FindResults => s.find_results = crate::settings::FindResults::from_byte(ordinal),
             ContextValue::UpAheadSource => {
-                cx.settings.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
+                s.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
             }
 
             // The ordinal came from the editor's ring, which is `count` long, so the loaded map
             // already has it.
-            ContextValue::BikeProfile => cx.settings.bike_profile_idx = ordinal,
+            ContextValue::BikeProfile => s.bike_profile_idx = ordinal,
+
+            ContextValue::IdleReturn => s.idle_return = IdleReturn::from_byte(ordinal),
+            ContextValue::Brightness => s.brightness = ordinal.min(BRIGHTNESS_MAX),
+            ContextValue::FixInterval => s.fix_interval_s = FIX_LADDER[(ordinal as usize).min(FIX_LADDER.len() - 1)],
+            ContextValue::StatCycle => s.stat_cycle_s = (STAT_CYCLE_MIN + ordinal as u16).min(STAT_CYCLE_MAX),
+            ContextValue::ClimbMode => s.climb_mode = ClimbMode::from_byte(ordinal),
+            ContextValue::WaypointMode => s.waypoint_mode = WaypointMode::from_byte(ordinal),
+            ContextValue::Units => s.units = Units::from_byte(ordinal),
+            ContextValue::UtcOffset => {
+                s.local_offset_known = true;
+                s.utc_offset_min = (UTC_OFFSET_MIN + ordinal as i16 * UTC_OFFSET_STEP).min(UTC_OFFSET_MAX);
+            }
         }
     }
 
     /// What `ordinal` is called, in the rider's language, or, for the bike profile, in the map's
-    /// own words. The borrow is `rx`'s because those names live in
-    /// [`NavProfiles`](crate::NavProfiles) rather than in `.rodata`.
-    fn choice_label<'a>(self, ordinal: u8, rx: &'a Render) -> &'a str {
+    /// own words. A number is written into `buf`; a name is borrowed from the catalog or from
+    /// [`NavProfiles`](crate::NavProfiles), which is why the borrow is `rx`'s.
+    pub(crate) fn choice_label<'a>(self, ordinal: u8, rx: &'a Render, buf: &'a mut heapless::String<24>) -> &'a str {
+        let lang = rx.settings.language;
         match self {
             ContextValue::UpAheadFilter => match choice_category(ordinal) {
                 Some(cat) => rx.t(super::poi_menu::category_msg(cat)),
                 None => rx.t(Msg::UpAheadEverything),
             },
             ContextValue::UpAheadSource => {
-                UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)].name(rx.settings.language)
+                UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)].name(lang)
             }
 
             // The generic `Profile N` fallback is deliberately not used: it exists for an empty
             // table, and an empty table makes this row inert, so it has no reachable case here.
             ContextValue::BikeProfile => rx.nav_profiles.name(ordinal).unwrap_or(""),
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
+
+            ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
+            ContextValue::ClimbMode => ClimbMode::from_byte(ordinal).name(lang),
+            ContextValue::WaypointMode => WaypointMode::from_byte(ordinal).name(lang),
+            ContextValue::Units => Units::from_byte(ordinal).name(lang),
+            ContextValue::Brightness => {
+                let _ = write!(buf, "{}%", brightness_percent(ordinal));
+                buf.as_str()
+            }
+            ContextValue::FixInterval => {
+                let _ = write!(buf, "{} s", FIX_LADDER[(ordinal as usize).min(FIX_LADDER.len() - 1)]);
+                buf.as_str()
+            }
+            ContextValue::StatCycle => {
+                let _ = write!(buf, "{} s", (STAT_CYCLE_MIN + ordinal as u16).min(STAT_CYCLE_MAX));
+                buf.as_str()
+            }
+            ContextValue::UtcOffset => {
+                let min = (UTC_OFFSET_MIN + ordinal as i16 * UTC_OFFSET_STEP).min(UTC_OFFSET_MAX);
+                let _ = buf.push_str(&super::vocab::fmt::utc_offset(min));
+                buf.as_str()
+            }
         }
     }
 
@@ -186,15 +286,14 @@ impl ContextValue {
     /// label alone rather than inventing a glyph.
     fn choice_icon(self, ordinal: u8) -> Option<PoiCategory> {
         match self {
-            ContextValue::UpAheadSource | ContextValue::BikeProfile | ContextValue::FindResults => None,
-
             ContextValue::UpAheadFilter => choice_category(ordinal),
+            _ => None,
         }
     }
 }
 
-/// A `bool` a context row flips in place. The binding owns where the bit lives; the drawer owns the
-/// row, the slider it draws and what a press does.
+/// A `bool` a row flips in place. The binding owns where the bit lives; the drawer owns the row,
+/// the slider it draws and what a press does.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextToggle {
@@ -209,12 +308,15 @@ pub enum ContextToggle {
     MapLandmarks,
     MapPois,
     MapPoiCategory(PoiCategory),
+    /// The settings pages' switches.
+    PowerSaver,
+    BleEnabled,
 }
 
 impl ContextToggle {
     /// Whether the bit is set — what the row's slider draws, and what the render key reports as the
     /// selected row's committed state.
-    fn read(self, f: &ContextFacts) -> bool {
+    pub(crate) fn read(self, f: &ContextFacts) -> bool {
         match self {
             ContextToggle::MapPeaks => f.settings.map_peaks,
             ContextToggle::MapLandmarks => f.settings.map_landmarks,
@@ -224,22 +326,27 @@ impl ContextToggle {
             ContextToggle::MapScaleBar => f.settings.map_scale_bar,
             ContextToggle::MapContours => f.settings.map_contours,
             ContextToggle::FindHideClosed => f.settings.find_hide_closed,
+            ContextToggle::PowerSaver => f.settings.power_saver,
+            ContextToggle::BleEnabled => f.settings.ble_enabled,
         }
     }
 
     /// Flip it. [`App`](crate::App)'s one `==` diff over [`Settings`] turns the write into a save,
     /// and a later flip supersedes an in-flight older revision, so three of them cannot queue three
     /// competing writes.
-    fn flip(self, cx: &mut Ctx) {
+    pub(crate) fn flip(self, cx: &mut Ctx) {
+        let s = &mut *cx.settings;
         match self {
-            ContextToggle::MapPeaks => cx.settings.map_peaks = !cx.settings.map_peaks,
-            ContextToggle::MapLandmarks => cx.settings.map_landmarks = !cx.settings.map_landmarks,
-            ContextToggle::MapPois => cx.settings.map_pois = !cx.settings.map_pois,
-            ContextToggle::MapPoiCategory(cat) => cx.settings.map_poi_categories ^= category_bit(cat),
-            ContextToggle::MapClock => cx.settings.map_clock = !cx.settings.map_clock,
-            ContextToggle::MapScaleBar => cx.settings.map_scale_bar = !cx.settings.map_scale_bar,
-            ContextToggle::MapContours => cx.settings.map_contours = !cx.settings.map_contours,
-            ContextToggle::FindHideClosed => cx.settings.find_hide_closed = !cx.settings.find_hide_closed,
+            ContextToggle::MapPeaks => s.map_peaks = !s.map_peaks,
+            ContextToggle::MapLandmarks => s.map_landmarks = !s.map_landmarks,
+            ContextToggle::MapPois => s.map_pois = !s.map_pois,
+            ContextToggle::MapPoiCategory(cat) => s.map_poi_categories ^= category_bit(cat),
+            ContextToggle::MapClock => s.map_clock = !s.map_clock,
+            ContextToggle::MapScaleBar => s.map_scale_bar = !s.map_scale_bar,
+            ContextToggle::MapContours => s.map_contours = !s.map_contours,
+            ContextToggle::FindHideClosed => s.find_hide_closed = !s.find_hide_closed,
+            ContextToggle::PowerSaver => s.power_saver = !s.power_saver,
+            ContextToggle::BleEnabled => s.ble_enabled = !s.ble_enabled,
         }
     }
 }
@@ -341,12 +448,16 @@ impl ContextAction {
             ContextAction::Routes => Screen::RouteMenu(RouteMenuScreen::new()),
 
             // The shorter sheet takes the taller one's place, already landed.
-            ContextAction::MapIcons => Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_ICONS, cx.now_ms)),
-            ContextAction::MapPoiCategories => {
-                Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_POI_CATEGORIES, cx.now_ms))
+            ContextAction::MapIcons => {
+                Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_ICONS, cx.now_ms, cx.settings.language))
             }
+            ContextAction::MapPoiCategories => Screen::ContextDrawer(ContextDrawerScreen::swapped_in(
+                &MAP_POI_CATEGORIES,
+                cx.now_ms,
+                cx.settings.language,
+            )),
             ContextAction::MapDisplay => {
-                Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_DISPLAY, cx.now_ms))
+                Screen::ContextDrawer(ContextDrawerScreen::swapped_in(&MAP_DISPLAY, cx.now_ms, cx.settings.language))
             }
             ContextAction::Toggle(t) => {
                 t.flip(cx);
@@ -364,18 +475,42 @@ pub struct ContextRow {
     pub action: ContextAction,
 }
 
-fn row_font(row: &ContextRow, label: &str) -> Font {
-    let room = if matches!(row.action, ContextAction::Toggle(_)) { 136 } else { 172 };
-    if label.contains('\n') || obc_render::text::text_width(label, Font::Body) > room {
-        Font::Label
-    } else {
-        Font::Body
+impl ContextRow {
+    /// Whether the row draws a second line: a value row states its value there, the category door
+    /// its count, and a label the catalog breaks over two lines takes both.
+    fn two_lines(&self, lang: Language) -> bool {
+        matches!(self.action, ContextAction::Edit(_) | ContextAction::MapPoiCategories)
+            || crate::t(self.label, lang).contains('\n')
+    }
+
+    fn height(&self, lang: Language) -> i32 {
+        rows::row_height(self.two_lines(lang))
     }
 }
 
 /// A screen's declared contextual content — the rows the bottom sheet offers, in sheet order.
 pub struct ContextMenu {
     pub rows: &'static [ContextRow],
+}
+
+impl ContextMenu {
+    /// The row heights in `lang`, for the window math. The language is fixed while a sheet is
+    /// open, because the page that changes it is never under one.
+    fn heights(&self, lang: Language) -> heapless::Vec<i32, MAX_ROWS> {
+        self.rows.iter().map(|r| r.height(lang)).collect()
+    }
+
+    /// The rows on the sheet with the cursor on `selected`: the first and one-past-last index.
+    fn window(&self, selected: u8, lang: Language) -> (usize, usize) {
+        rows::window_by_height(&self.heights(lang), selected as usize, MAX_SHEET_H - 2 * SHEET_PAD)
+    }
+
+    /// The sheet height its rows need, bounded to a sheet.
+    fn root_height(&self, selected: u8, lang: Language) -> i32 {
+        let (first, end) = self.window(selected, lang);
+        let rows: i32 = self.rows[first..end].iter().map(|r| r.height(lang)).sum();
+        SHEET_PAD * 2 + rows + ROW_GAP * (end - first).saturating_sub(1) as i32
+    }
 }
 
 /// The ride context: the secondary actions the four riding views share.
@@ -489,23 +624,23 @@ pub(crate) enum Page {
     Editor,
 }
 
-impl Page {
-    /// This page's sheet height over `menu`. The root grows with its table; every editor is the
-    /// same three lines.
-    fn height(self, menu: &ContextMenu) -> i32 {
-        match self {
-            Page::Root => SHEET_PAD * 2 + ROW_H * menu.rows.len().min(VISIBLE_ROWS) as i32,
-            Page::Editor => EDITOR_H,
-        }
-    }
+/// What a sheet holds: a declared row table, or one value's editor alone. The editor alone is what
+/// a settings page opens over itself: it has no root page, so its commit and its Back close the
+/// sheet instead of sliding back.
+#[derive(Clone, Copy)]
+enum Sheet {
+    Menu(&'static ContextMenu),
+    Editor { value: ContextValue, label: Msg },
 }
 
-/// The contextual drawer's whole state: when it opened, the table it was opened over, the cursor,
-/// the page, and the ordinal the editor has staged but not committed.
+/// The contextual drawer's whole state: when it opened, what it holds, the cursor, the page, and
+/// the ordinal the editor has staged but not committed.
 pub struct ContextDrawerScreen {
     /// The open, the page slide and the base-draw debt, on this sheet's own [`MOTION`].
     pub(crate) motion: SheetMotion,
-    menu: &'static ContextMenu,
+    sheet: Sheet,
+    /// The UI language the sheet opened in: what its row heights were measured in.
+    lang: Language,
     selected: u8,
     page: Page,
     /// The choice the editor is previewing. Meaningful only on [`Page::Editor`]; off that page
@@ -516,15 +651,43 @@ pub struct ContextDrawerScreen {
 impl ContextDrawerScreen {
     /// A drawer over `menu` that has begun to open, with the first row selected. Its slide starts
     /// on the first frame that ticks it, not on the pass the chord was resolved in.
-    pub fn opening(menu: &'static ContextMenu) -> Self {
+    pub fn opening(menu: &'static ContextMenu, lang: Language) -> Self {
         debug_assert!(menu.rows.len() <= MAX_ROWS, "a context table is a sheet, not a page — see MAX_ROWS");
-        ContextDrawerScreen { motion: SheetMotion::opening(), menu, selected: 0, page: Page::Root, staged: 0 }
+        ContextDrawerScreen {
+            motion: SheetMotion::opening(),
+            sheet: Sheet::Menu(menu),
+            lang,
+            selected: 0,
+            page: Page::Root,
+            staged: 0,
+        }
     }
 
     /// A drawer over `menu` that is already landed: the sheet a row of another sheet swapped in.
     /// It makes no entrance, and it owes the screen below the band it gives back.
-    pub fn swapped_in(menu: &'static ContextMenu, now_ms: u32) -> Self {
-        ContextDrawerScreen { motion: SheetMotion::landed(now_ms, MOTION), ..ContextDrawerScreen::opening(menu) }
+    pub fn swapped_in(menu: &'static ContextMenu, now_ms: u32, lang: Language) -> Self {
+        ContextDrawerScreen { motion: SheetMotion::landed(now_ms, MOTION), ..ContextDrawerScreen::opening(menu, lang) }
+    }
+
+    /// One value's editor, opening over a settings page on what is already committed. `label` is
+    /// the row's name, which titles the editor.
+    pub(crate) fn editor(value: ContextValue, label: Msg, f: &ContextFacts) -> Self {
+        ContextDrawerScreen {
+            motion: SheetMotion::opening(),
+            sheet: Sheet::Editor { value, label },
+            lang: f.settings.language,
+            selected: 0,
+            page: Page::Editor,
+            staged: value.committed(f),
+        }
+    }
+
+    /// The declared rows, or none for an editor alone.
+    fn rows(&self) -> &'static [ContextRow] {
+        match self.sheet {
+            Sheet::Menu(menu) => menu.rows,
+            Sheet::Editor { .. } => &[],
+        }
     }
 
     /// The exact facts this drawer draws, for the pass's render key: the page, the selected row,
@@ -536,14 +699,14 @@ impl ContextDrawerScreen {
     /// them, so a rider drifting off route re-draws the sheet once and a moving map costs nothing.
     pub(crate) fn key(&self, f: &ContextFacts) -> (u8, u8, u8, u8, u8) {
         let mut live = 0u8;
-        for (i, row) in self.menu.rows.iter().enumerate().take(MAX_ROWS) {
+        for (i, row) in self.rows().iter().enumerate().take(MAX_ROWS) {
             if row.action.available(f) {
                 live |= 1 << i;
             }
         }
         // Both answers are "what the selected row is set to", the only per-row state either shape
         // draws.
-        let committed = match self.menu.rows.get(self.selected as usize).map(|r| r.action) {
+        let committed = match self.selected_action() {
             Some(ContextAction::Edit(v)) => v.committed(f),
             Some(ContextAction::Toggle(t)) => t.read(f) as u8,
             _ => 0,
@@ -551,12 +714,26 @@ impl ContextDrawerScreen {
         (self.page as u8, self.selected, self.staged, committed, live)
     }
 
-    /// The binding the selected row carries, if it is a value row.
+    /// What the cursor is on: the selected row's action, or the lone editor's binding.
+    fn selected_action(&self) -> Option<ContextAction> {
+        match self.sheet {
+            Sheet::Menu(menu) => menu.rows.get(self.selected as usize).map(|r| r.action),
+            Sheet::Editor { value, .. } => Some(ContextAction::Edit(value)),
+        }
+    }
+
+    /// The binding the editor edits, if the cursor is on a value row.
     fn value(&self) -> Option<ContextValue> {
-        match self.menu.rows.get(self.selected as usize).map(|r| r.action) {
+        match self.selected_action() {
             Some(ContextAction::Edit(v)) => Some(v),
             _ => None,
         }
+    }
+
+    /// The backlight level the editor is previewing, while it is the brightness editor. `None`
+    /// everywhere else, so the committed row drives the panel.
+    pub(crate) fn staged_brightness(&self) -> Option<u8> {
+        (self.page == Page::Editor && self.value() == Some(ContextValue::Brightness)).then_some(self.staged)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -572,7 +749,7 @@ impl ContextDrawerScreen {
     }
 
     fn handle_root(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let rows = self.menu.rows;
+        let rows = self.rows();
         match g {
             Gesture::Step(n) => {
                 self.selected = super::vocab::list::step_selection(self.selected as usize, n, rows.len()) as u8;
@@ -599,11 +776,11 @@ impl ContextDrawerScreen {
                     }
                 }
             }
-            Gesture::Back if core::ptr::eq(self.menu, &MAP_POI_CATEGORIES) => {
-                Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_ICONS, cx.now_ms)))
+            Gesture::Back if self.holds(&MAP_POI_CATEGORIES) => {
+                Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_ICONS, cx.now_ms, self.lang)))
             }
-            Gesture::Back if core::ptr::eq(self.menu, &MAP_ICONS) => {
-                Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_DISPLAY, cx.now_ms)))
+            Gesture::Back if self.holds(&MAP_ICONS) => {
+                Transition::Replace(Screen::ContextDrawer(Self::swapped_in(&MAP_DISPLAY, cx.now_ms, self.lang)))
             }
             Gesture::Back => Transition::Pop,
             // A context row has no held action, and Back-hold is resolved above screen dispatch.
@@ -611,32 +788,46 @@ impl ContextDrawerScreen {
         }
     }
 
+    fn holds(&self, menu: &'static ContextMenu) -> bool {
+        matches!(self.sheet, Sheet::Menu(m) if core::ptr::eq(m, menu))
+    }
+
+    /// Leave the editor: back to the root page, or, for an editor alone, off the stack.
+    fn leave_editor(&mut self, now_ms: u32) -> Transition {
+        match self.sheet {
+            Sheet::Menu(_) => {
+                self.slide_to(Page::Root, now_ms);
+                Transition::None
+            }
+            Sheet::Editor { .. } => Transition::Pop,
+        }
+    }
+
     fn handle_editor(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let Some(value) = self.value() else {
-            // Unreachable: the editor is only ever opened from a value row. Falling back to the
-            // root is still better than editing nothing on a page with no title.
-            self.slide_to(Page::Root, cx.now_ms);
-            return Transition::None;
+            // Unreachable: the editor is only ever opened from a value row. Falling back is still
+            // better than editing nothing on a page with no title.
+            return self.leave_editor(cx.now_ms);
         };
         match g {
-            // A ring, not an axis: these are named alternatives, so the cursor wraps. The quick
-            // drawer's brightness clamps instead, because a value axis has ends.
+            // Named alternatives are a ring, so the cursor wraps; a value axis has ends, so it
+            // clamps.
             Gesture::Step(n) => {
                 let count = value.count(&cx.context_facts()) as usize;
-                self.staged = super::vocab::list::step_selection(self.staged as usize, n, count) as u8;
+                self.staged = if value.wraps() {
+                    super::vocab::list::step_selection(self.staged as usize, n, count) as u8
+                } else {
+                    (self.staged as i32 + n).clamp(0, count as i32 - 1) as u8
+                };
                 Transition::None
             }
             Gesture::Press => {
                 value.commit(cx, self.staged);
-                self.slide_to(Page::Root, cx.now_ms);
-                Transition::None
+                self.leave_editor(cx.now_ms)
             }
             // Discard: the staged ordinal is abandoned, so the row's value reverts to the
             // committed one on the next frame.
-            Gesture::Back => {
-                self.slide_to(Page::Root, cx.now_ms);
-                Transition::None
-            }
+            Gesture::Back => self.leave_editor(cx.now_ms),
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -681,10 +872,19 @@ impl ContextDrawerScreen {
         }
     }
 
+    /// A page's sheet height. The root grows with its table; every editor is the same three
+    /// lines, and an editor alone has no root to differ from.
+    fn page_height(&self, page: Page) -> i32 {
+        match (page, self.sheet) {
+            (Page::Root, Sheet::Menu(menu)) => menu.root_height(self.selected, self.lang),
+            _ => EDITOR_H,
+        }
+    }
+
     /// The sheet height this frame: the page's own, or the interpolation between two pages' while a
     /// slide runs — which is how the sheet grows and shrinks with its content.
     fn sheet_height(&self, now_ms: u32) -> i32 {
-        self.motion.height(now_ms, MOTION, self.other_page().height(self.menu), self.page.height(self.menu))
+        self.motion.height(now_ms, MOTION, self.page_height(self.other_page()), self.page_height(self.page))
     }
 
     fn draw_page(&self, cv: &mut impl Surface, rx: &Render, page: Page, top: i32, x: i32) {
@@ -694,99 +894,60 @@ impl ContextDrawerScreen {
         }
     }
 
-    /// The row table: a label, and — on every live row — the chevron that says pressing it goes
-    /// somewhere. A value row's chevron leads to its editor rather than to a screen.
-    ///
-    /// A switch row draws its state instead of a chevron, because it goes nowhere and because the
-    /// screen under the sheet is frozen, so the slider moving is the only feedback a flip gets
-    /// until the sheet closes. It is the settings tree's own slider, from the shared row
-    /// vocabulary.
-    ///
-    /// The row does not state its value, and that is measured rather than chosen: a label plus the
-    /// longest choice does not fit one row, and a two-line row does not fit the row pitch. The
-    /// editor one press away is where the value is spelled out and the committed one is marked.
+    /// The row table, in the shared row grammar: a door with its chevron, a value with what it is
+    /// set to under the label, a switch with its slider.
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
+        let Sheet::Menu(menu) = self.sheet else { return };
         let facts = rx.context_facts();
-        let first = (self.selected as usize).saturating_sub(VISIBLE_ROWS - 1);
-        for (i, row) in self.menu.rows.iter().enumerate().skip(first).take(VISIBLE_ROWS) {
-            let area =
-                rect(x + rows::ROW_X, top + SHEET_PAD + (i - first) as i32 * ROW_H, rx.w - 2 * rows::ROW_X, ROW_H - 4);
+        let (first, end) = menu.window(self.selected, self.lang);
+        let mut y = top + SHEET_PAD;
+        for (i, row) in menu.rows.iter().enumerate().take(end).skip(first) {
+            let h = row.height(self.lang);
+            let area = rect(x + rows::ROW_X, y, rx.w - 2 * rows::ROW_X, h);
             let live = row.action.available(&facts);
-            rows::row_cursor(cv, area, i as u8 == self.selected, false);
-            let ink = if live { palette::INK } else { palette::CONTOUR };
+            let selected = i as u8 == self.selected;
             let label = rx.t(row.label);
-            if row.action == ContextAction::MapPoiCategories {
-                use core::fmt::Write as _;
-                let mut summary = heapless::String::<16>::new();
-                let _ = write!(summary, "{} / {}", rx.settings.map_poi_categories.count_ones(), PoiCategory::ALL.len());
-                cv.text_vcentered(
-                    label,
-                    area.top_left.x + 14,
-                    (area.top_left.y, 20),
-                    Font::Label,
-                    TextAlign::Left,
-                    ink,
-                );
-                cv.text_vcentered(
-                    &summary,
-                    area.top_left.x + 14,
-                    (area.top_left.y + 20, 20),
-                    Font::Label,
-                    TextAlign::Left,
-                    ink,
-                );
-            } else if let Some((first, second)) = label.split_once('\n') {
-                for (line, text) in [first, second].into_iter().enumerate() {
-                    cv.text_vcentered(
-                        text,
-                        area.top_left.x + 14,
-                        (area.top_left.y + line as i32 * 20, 20),
-                        Font::Label,
-                        TextAlign::Left,
-                        ink,
-                    );
-                }
-            } else {
-                cv.text_vcentered(
-                    label,
-                    area.top_left.x + 14,
-                    (area.top_left.y, ROW_H - 4),
-                    row_font(row, label),
-                    TextAlign::Left,
-                    ink,
-                );
-            }
+            let mut buf = heapless::String::<24>::new();
             match row.action {
-                ContextAction::Toggle(t) => super::vocab::rows::toggle_slider(cv, area, t.read(&facts)),
-                _ if live => {
-                    let right = area.top_left.x + area.size.width as i32;
-                    let (cx0, cy) = (right - 18, area.top_left.y + (ROW_H - 4) / 2);
-                    cv.triangle(Point::new(cx0, cy - 8), Point::new(cx0, cy + 8), Point::new(cx0 + 9, cy), ink);
+                ContextAction::Toggle(t) => rows::switch_row(cv, area, label, t.read(&facts), selected),
+                ContextAction::Edit(v) => {
+                    let value = v.choice_label(v.committed(&facts), rx, &mut buf);
+                    let icon = v.choice_icon(v.committed(&facts)).map(RowIcon::Poi);
+                    rows::nav_row(cv, area, label, Some(Line2 { icon, text: value }), selected, live, true);
                 }
-                _ => {}
+                ContextAction::MapPoiCategories => {
+                    let _ = write!(buf, "{} / {}", rx.settings.map_poi_categories.count_ones(), PoiCategory::ALL.len());
+                    rows::nav_row(cv, area, label, Some(Line2::text(&buf)), selected, live, true);
+                }
+                _ => rows::nav_row(cv, area, label, None, selected, live, true),
             }
+            y += h + ROW_GAP;
         }
         super::vocab::list::scrollbar(
             cv,
             x + rx.w - 7,
             top + SHEET_PAD,
-            ROW_H * VISIBLE_ROWS as i32,
-            self.menu.rows.len(),
+            MAX_SHEET_H - 2 * SHEET_PAD,
+            menu.rows.len(),
             first,
-            VISIBLE_ROWS,
+            end - first,
         );
     }
 
     /// The nested value editor: the row's own label as the title, the staged choice spelled out
     /// (with its icon where the value has one), and a notch strip whose tick marks what is already
-    /// committed.
+    /// committed. A long axis shows only its end notches.
     fn draw_editor(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         let Some(value) = self.value() else { return };
-        let label = self.menu.rows.get(self.selected as usize).map_or("", |r| rx.t(r.label));
+        let label = match self.sheet {
+            Sheet::Menu(menu) => menu.rows.get(self.selected as usize).map_or("", |r| rx.t(r.label)),
+            Sheet::Editor { label, .. } => rx.t(label),
+        };
         cv.text(label, Point::new(x + 14, top + 18), Font::Label, TextAlign::Left, palette::WOOD);
         cv.hline(x + 12, top + 47, rx.w - 24, palette::RULE);
 
-        let choice = value.choice_label(self.staged, rx);
+        let mut buf = heapless::String::<24>::new();
+        let choice = value.choice_label(self.staged, rx, &mut buf);
         let cap_mid = Font::Body.cap_mid() as i32;
         let name_x = match value.choice_icon(self.staged) {
             Some(cat) => {
@@ -803,9 +964,12 @@ impl ContextDrawerScreen {
         let count = value.count(&facts);
         let committed = value.committed(&facts);
         cv.round(rect(x0, y - 2, x1 - x0, 5), 2, palette::PARCHMENT_SHADE);
+        let dense = count > DENSE_ABOVE;
         for i in 0..count {
             let px = sheet::notch_x(x0, x1, i, count);
-            cv.vline(px, y - 6, 13, 1, palette::SUBTEXT);
+            if !dense || i == 0 || i + 1 == count {
+                cv.vline(px, y - 6, 13, 1, palette::SUBTEXT);
+            }
             if i == committed {
                 sheet::committed_tick(cv, px, y + 22, palette::WOOD);
             }
@@ -898,15 +1062,15 @@ mod tests {
     }
 
     fn drawer() -> ContextDrawerScreen {
-        ContextDrawerScreen::opening(&RIDE)
+        ContextDrawerScreen::opening(&RIDE, Language::En)
     }
 
     fn up_ahead_drawer() -> ContextDrawerScreen {
-        ContextDrawerScreen::opening(&UP_AHEAD)
+        ContextDrawerScreen::opening(&UP_AHEAD, Language::En)
     }
 
     fn map_drawer() -> ContextDrawerScreen {
-        ContextDrawerScreen::opening(&MAP)
+        ContextDrawerScreen::opening(&MAP, Language::En)
     }
 
     /// Each row replaces the sheet, so Back from the destination lands on the base.
@@ -1027,19 +1191,23 @@ mod tests {
     /// Every declared table is a sheet, not a page, and fits the key's availability mask.
     #[test]
     fn pinned_by_the_row_tables() {
-        // The derivation itself, so a geometry change is read here rather than asserted twice.
-        assert_eq!(VISIBLE_ROWS, 5, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
-
         let declared: &[&ContextMenu] =
             &[&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE];
         for menu in declared {
             assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
-            for page in [Page::Root, Page::Editor] {
-                let h = page.height(menu);
+            for selected in 0..menu.rows.len() as u8 {
+                let h = menu.root_height(selected, Language::En);
                 assert!(h <= MAX_SHEET_H, "a {h} px sheet is a page — bound it or scroll it first");
+                let (first, end) = menu.window(selected, Language::En);
+                assert!((first..end).contains(&(selected as usize)), "the cursor is always on the sheet");
             }
             assert!(!menu.rows.is_empty(), "an empty table must not be declared: the chord shows no empty sheet");
         }
+        // The seven category switches scroll five at a time, and a uniform table keeps one height
+        // wherever the cursor is, so the sheet does not breathe while the rider scrolls.
+        let heights: heapless::Vec<i32, 8> = (0..7).map(|i| MAP_POI_CATEGORIES.root_height(i, Language::En)).collect();
+        assert!(heights.iter().all(|h| *h == heights[0]), "{heights:?}");
+        assert_eq!(MAP_POI_CATEGORIES.window(6, Language::En), (2, 7));
     }
 
     /// The whole editor contract in one pass: a value row slides to its editor on the committed
@@ -1163,7 +1331,7 @@ mod tests {
             }
         }
         assert_eq!(
-            ContextDrawerScreen::opening(&ROUTE_PLAN).key(&facts).4,
+            ContextDrawerScreen::opening(&ROUTE_PLAN, Language::En).key(&facts).4,
             0,
             "…and the one binding that refuses leaves its row out of the live mask"
         );
@@ -1199,10 +1367,10 @@ mod tests {
     /// page's own height.
     #[test]
     fn the_sheet_grows_into_the_editor_and_back() {
-        let root_h = Page::Root.height(&UP_AHEAD);
+        let root_h = UP_AHEAD.root_height(0, Language::En);
         assert!(root_h < EDITOR_H, "the two-row table is shorter than the editor, so the sheet must grow");
 
-        let mut d = ContextDrawerScreen::opening(&UP_AHEAD);
+        let mut d = ContextDrawerScreen::opening(&UP_AHEAD, Language::En);
         d.slide_to(Page::Editor, 1_000);
         let grow: heapless::Vec<i32, 8> =
             [0, 45, 90, 135, SLIDE_MS].iter().map(|dt| d.sheet_height(1_000 + dt)).collect();
@@ -1217,23 +1385,25 @@ mod tests {
         assert!(shrink.windows(2).all(|p| p[0] >= p[1]), "…and back: {shrink:?}");
     }
 
-    /// A row label clears the control drawn beside it in the same row. That control is a chevron
-    /// or a slider, not text, so the copy-fit gate cannot see it; this measures the label against
-    /// the room the draw leaves beside it.
-    ///
-    /// There are two budgets, not one. A door or a value row clears the chevron; a switch row
-    /// clears the wider slider and its margin. If a column overruns, the copy shortens; the slider
-    /// and the row do not. The font is the one `row_font` picks for the label it is handed.
+    /// The sheet is all copy, so this is its overflow check: every row label clears its own
+    /// right-hand control on a 240 px panel in every language — in Body, or in the Label cut the
+    /// row falls back to — every value stated under a label fits the same column, and every editor
+    /// choice fits the editor line.
     #[test]
-    fn every_row_label_clears_its_own_control_in_every_language() {
+    fn every_label_and_choice_fits_the_sheet_in_every_language() {
+        use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
         const W: i32 = 240;
-        const MIN_CLEAR: i32 = 8;
-        // The draw's own geometry: the row area is inset `ROW_X` from both screen edges, the label
-        // starts 14 px inside it, the chevron takes the last 18 px and the slider the last 54.
+        // The row kit's geometry: the row area is inset `ROW_X` from both screen edges, the text
+        // starts 10 px inside it, the chevron column is 28 px and the switch column 58 px.
         let area_w = W - 2 * rows::ROW_X;
-        let door_room = area_w - 14 - 18 - MIN_CLEAR;
-        let switch_room = area_w - 14 - 54 - MIN_CLEAR;
-        assert_eq!((door_room, switch_room), (172, 136), "the two row budgets, pinned");
+        let (door_room, switch_room) = (area_w - 10 - 28, area_w - 10 - 58);
+        assert_eq!((door_room, switch_room), (174, 144), "the two row budgets, pinned");
+        // `draw_editor` starts the choice at x + 48 with a category icon in the gutter, and the
+        // sheet's own right inset is 12.
+        let choice_room = W - 48 - 12;
+        let w = World::riding();
+        let facts = w.facts();
+        let mut buf = heapless::String::<24>::new();
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
             for menu in [
                 &RIDE,
@@ -1250,17 +1420,124 @@ mod tests {
             ] {
                 for row in menu.rows {
                     let label = t(row.label, lang);
-                    let font = row_font(row, label);
-                    assert!(label.lines().count() <= 2);
-                    let lw = label.lines().map(|line| text_width(line, font) as i32).max().unwrap_or(0);
                     let room = match row.action {
                         ContextAction::Toggle(_) => switch_room,
                         _ => door_room,
                     };
-                    assert!(lw <= room, "{lang:?}: row label {label:?} ({lw} px) overruns {room} px");
+                    let lw = label.lines().map(|line| text_width(line, Font::Label) as i32).max().unwrap_or(0);
+                    assert!(lw <= room, "{lang:?}: row label {label:?} ({lw} px) overruns {room} px even in Label");
+                    let ContextAction::Edit(v) = row.action else { continue };
+                    // The map's names are not in the catalog; they are measured at their cap below.
+                    if v == ContextValue::BikeProfile {
+                        continue;
+                    }
+                    for ordinal in 0..v.count(&facts) {
+                        buf.clear();
+                        let choice = choice_text(v, ordinal, lang, &mut buf);
+                        let cw = text_width(choice, Font::Body) as i32;
+                        assert!(cw <= choice_room, "{lang:?}: choice {choice:?} ({cw} px) overruns {choice_room} px");
+                        let vw = text_width(choice, Font::Label) as i32 + 28;
+                        assert!(vw <= door_room, "{lang:?}: value {choice:?} with its icon gutter overruns the row");
+                    }
+                }
+            }
+            // The settings pages' values, which no sheet table declares.
+            for v in [
+                ContextValue::IdleReturn,
+                ContextValue::Brightness,
+                ContextValue::FixInterval,
+                ContextValue::StatCycle,
+                ContextValue::ClimbMode,
+                ContextValue::WaypointMode,
+                ContextValue::Units,
+                ContextValue::UtcOffset,
+            ] {
+                for ordinal in 0..v.count(&facts) {
+                    buf.clear();
+                    let choice = choice_text(v, ordinal, lang, &mut buf);
+                    let cw = text_width(choice, Font::Body) as i32;
+                    assert!(cw <= choice_room, "{lang:?}: choice {choice:?} ({cw} px) overruns {choice_room} px");
                 }
             }
         }
+        // The bike binding's worst case is the name field filled: 12 monospace `Body` characters.
+        let widest_profile_name = NAV_PROFILE_NAME_LEN as i32 * Font::Body.char_width() as i32;
+        assert_eq!(widest_profile_name, 168, "12 §8.6 name bytes in Body, pinned");
+        assert!(widest_profile_name <= choice_room, "a full-length profile name overruns the editor line");
+    }
+
+    /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.
+    /// [`ContextValue::BikeProfile`] has none, because its choices are map data.
+    fn choice_text(v: ContextValue, ordinal: u8, lang: Language, buf: &mut heapless::String<24>) -> &str {
+        use core::fmt::Write as _;
+        match v {
+            ContextValue::UpAheadFilter => match choice_category(ordinal) {
+                Some(cat) => t(super::super::poi_menu::category_msg(cat), lang),
+                None => t(Msg::UpAheadEverything, lang),
+            },
+            ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
+            ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
+            ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
+            ContextValue::ClimbMode => ClimbMode::from_byte(ordinal).name(lang),
+            ContextValue::WaypointMode => WaypointMode::from_byte(ordinal).name(lang),
+            ContextValue::Units => Units::from_byte(ordinal).name(lang),
+            ContextValue::Brightness => {
+                let _ = write!(buf, "{}%", brightness_percent(ordinal));
+                buf.as_str()
+            }
+            ContextValue::FixInterval => {
+                let _ = write!(buf, "{} s", FIX_LADDER[ordinal as usize]);
+                buf.as_str()
+            }
+            ContextValue::StatCycle => {
+                let _ = write!(buf, "{} s", STAT_CYCLE_MIN + ordinal as u16);
+                buf.as_str()
+            }
+            ContextValue::UtcOffset => {
+                let _ = buf
+                    .push_str(&super::super::vocab::fmt::utc_offset(UTC_OFFSET_MIN + ordinal as i16 * UTC_OFFSET_STEP));
+                buf.as_str()
+            }
+
+            ContextValue::BikeProfile => unreachable!("the map's own names are measured at their §8.6 cap"),
+        }
+    }
+
+    /// An editor alone, as a settings page opens it: it opens on the committed choice, an axis
+    /// clamps at its ends, Select commits and closes the sheet, Back closes it without a commit,
+    /// and the brightness preview is live only while that editor is up.
+    #[test]
+    fn an_editor_alone_commits_and_pops() {
+        let mut w = World::riding();
+        w.settings.fix_interval_s = 12; // off the ladder: opens on the rung below, 10 s
+        let mut d = ContextDrawerScreen::editor(ContextValue::FixInterval, Msg::PowerGpsFix, &w.facts());
+        assert_eq!(d.page, Page::Editor);
+        assert_eq!(d.staged, 9, "12 s opens on the 10 s rung");
+        assert!(matches!(w.press(&mut d, Gesture::Step(100)), Transition::None));
+        assert_eq!(d.staged, FIX_LADDER.len() as u8 - 1, "an axis clamps at its top");
+        assert!(matches!(w.press(&mut d, Gesture::Step(-1)), Transition::None));
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Pop), "commit closes the sheet");
+        assert_eq!(w.settings.fix_interval_s, 90);
+
+        let mut d = ContextDrawerScreen::editor(ContextValue::Units, Msg::SystemUnits, &w.facts());
+        assert!(matches!(w.press(&mut d, Gesture::Step(1)), Transition::None));
+        assert_eq!(d.staged, 1, "a ring wraps");
+        assert!(matches!(w.press(&mut d, Gesture::Back), Transition::Pop), "Back closes the sheet");
+        assert_eq!(w.settings.units, Units::Metric, "…without committing");
+
+        let mut d = ContextDrawerScreen::editor(ContextValue::Brightness, Msg::DisplayBrightness, &w.facts());
+        assert_eq!(d.staged_brightness(), Some(BRIGHTNESS_MAX));
+        w.press(&mut d, Gesture::Step(-2));
+        assert_eq!(d.staged_brightness(), Some(BRIGHTNESS_MAX - 2), "the panel follows the staged level");
+        let plain = ContextDrawerScreen::opening(&UP_AHEAD, Language::En);
+        assert_eq!(plain.staged_brightness(), None);
+
+        let mut d = ContextDrawerScreen::editor(ContextValue::UtcOffset, Msg::DatetimeOffset, &w.facts());
+        assert_eq!(d.staged, 48, "+00:00 is 48 quarter hours above -12:00");
+        w.press(&mut d, Gesture::Step(8));
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.utc_offset_min, 120);
+        assert!(w.settings.local_offset_known);
     }
 
     /// A switch row flips in place and keeps the sheet: each one flips its own field both ways,
@@ -1273,7 +1550,7 @@ mod tests {
         {
             let ContextAction::Toggle(t) = toggle.action else { panic!("the display sheet is all switch rows") };
             let mut w = World::riding();
-            let mut d = ContextDrawerScreen::opening(&MAP_DISPLAY);
+            let mut d = ContextDrawerScreen::opening(&MAP_DISPLAY, Language::En);
             w.press(&mut d, Gesture::Step(i as i32));
             assert_eq!(d.key(&w.facts()).3, 1, "all three default on");
 
@@ -1313,7 +1590,7 @@ mod tests {
 
         // Landed on its first frame: `visible_height` is already the whole table, and the tick
         // reports no further wake — a second open animation would show up as both.
-        let target = Page::Root.height(&MAP_DISPLAY);
+        let target = MAP_DISPLAY.root_height(0, Language::En);
         let first = swapped.tick_timers(w.now_ms);
         let visible = swapped.motion.visible_height(w.now_ms, MOTION, target);
         assert_eq!(visible, target, "the swapped-in sheet is already landed");
@@ -1345,7 +1622,7 @@ mod tests {
     }
 
     fn route_plan_drawer() -> ContextDrawerScreen {
-        ContextDrawerScreen::opening(&ROUTE_PLAN)
+        ContextDrawerScreen::opening(&ROUTE_PLAN, Language::En)
     }
 
     /// The bike-type row is live exactly where the loaded map offers a choice: with no map and
@@ -1412,8 +1689,8 @@ mod tests {
     #[test]
     fn map_categories_scroll_and_survive_master_switch_and_restart() {
         let mut world = World::riding();
-        let mut categories = ContextDrawerScreen::opening(&MAP_POI_CATEGORIES);
-        assert_eq!(Page::Root.height(&MAP_POI_CATEGORIES), MAX_SHEET_H);
+        let mut categories = ContextDrawerScreen::opening(&MAP_POI_CATEGORIES, Language::En);
+        assert!(MAP_POI_CATEGORIES.root_height(0, Language::En) <= MAX_SHEET_H, "seven switches scroll inside a sheet");
         world.press(&mut categories, Gesture::Step(2));
         for _ in 2..PoiCategory::ALL.len() {
             world.press(&mut categories, Gesture::Press);

@@ -42,7 +42,7 @@ pub struct SensorStatus {
     /// The connection phase — also encodes "no sensor saved" as [`SensorPhase::NotSet`].
     pub phase: SensorPhase,
     /// The sensor's last-read battery percent, when it exposed the Battery Level characteristic.
-    /// Rendered as `Connected · 78%`.
+    /// Rendered as `Connected 78%`.
     pub battery: Option<u8>,
     /// Boot-relative millis of the freshest decoded value, or `0` for none yet.
     pub last_value_ms: u32,

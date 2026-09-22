@@ -54,7 +54,7 @@ mod route_menu;
 mod route_overview;
 mod route_received;
 mod route_swap;
-mod settings;
+pub(crate) mod settings;
 mod statistics;
 mod trip_delete;
 pub(crate) mod vocab;
@@ -104,9 +104,8 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AboutScreen, AddFieldScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen, FirmwareScreen,
-    LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
-    StatFieldsScreen, SystemScreen, UnitsScreen,
+    AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
+    StatFieldsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -135,6 +134,13 @@ pub enum Transition {
     Pop,
     /// Swap this screen for `screen` without growing the stack.
     Replace(Screen),
+    /// Drop the descent back to the root pair — the Home root and the view it stands on, what an
+    /// escape leaves under its Menu — and push `screen` there.
+    ///
+    /// It is the transition for a row on a sheet. A sheet opens over anything, the way down its
+    /// own row opens included, so a row that landed over the descent would lay one way down on
+    /// another and spend a slot every lap.
+    OverRoot(Screen),
     /// Truncate to the Home root and push `screen`, landing on a clean `[Home, screen]` from any
     /// depth rather than leaving stale screens buried under the new one.
     Root(Screen),
@@ -197,6 +203,12 @@ pub fn apply(stack: &mut Stack, t: Transition) {
             if let Some(top) = stack.last_mut() {
                 *top = s;
             }
+        }
+        Transition::OverRoot(s) => {
+            // Keep the Home root and the view it stands on. The push that follows cannot
+            // overflow: that pair and one screen fit any MAX_DEPTH.
+            stack.truncate(2);
+            let _ = stack.push(s);
         }
         Transition::Root(s) => {
             stack.truncate(1); // keep the Home root
@@ -916,33 +928,25 @@ screens! {
     /// The advisory warning card: missing sensors, or a slow (fragmented) map. Host-pushed,
     /// coalesced, and dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
-    Settings(SettingsScreen) => Caps::settings(),
-    Ride(RideScreen) => Caps::settings(),
-    DateTime(DateTimeScreen) => Caps::settings(),
-    Units(UnitsScreen) => Caps::settings(),
+    /// The Settings hub and its pages: one screen type over a row table each. The value rows open
+    /// the drawer editor as a sheet over the page.
+    Settings(SettingsPage) => Caps::settings(),
+    Ride(SettingsPage) => Caps::settings(),
+    Display(SettingsPage) => Caps::settings(),
+    /// The Connections page: the Bluetooth switch, the phone's status and Forget, and the door to
+    /// the sensors. Its status lines follow the sensor slots, so it keys on them.
+    Connections(SettingsPage) => Caps::settings().key(RenderKeyKind::SensorSettings),
+    Power(SettingsPage) => Caps::settings(),
+    System(SettingsPage) => Caps::settings(),
+    DateTime(SettingsPage) => Caps::settings(),
+    Firmware(SettingsPage) => Caps::settings(),
     StatFields(StatFieldsScreen) => Caps::settings(),
     AddField(AddFieldScreen) => Caps::settings(),
-    /// The Map's clock and scale-bar overlay toggles, and the idle-return timeout.
-    Display(DisplayScreen) => Caps::settings(),
-    /// The Connections menu: Phone (Bluetooth pairing) and Sensors (BLE sensor scan).
-    Connections(ConnectionsScreen) => Caps::settings(),
-    Power(PowerScreen) => Caps::settings(),
-    /// Radio on/off, status line, Paired row, and the hold-guarded Forget phone row.
-    Bluetooth(BluetoothScreen) => Caps::settings(),
-    /// The HR, power and cadence rows with their live status. Press opens the scan list; holding a
-    /// saved row forgets it.
+    /// The BLE-sensor pages: their rows draw the per-slot status, so they key on it.
     Sensors(SensorsScreen) => Caps::settings().key(RenderKeyKind::SensorSettings),
-    /// One quantity's live scan list; press saves and connects the highlighted sensor.
     SensorScan(SensorScanScreen) => Caps::settings().key(RenderKeyKind::SensorSettings),
-    /// Cycles the UI language by endonym.
+    /// The Language pick list.
     Language(LanguageScreen) => Caps::settings(),
-    /// The System menu: a thin nav list opening Units, Date & Time, Language, Firmware, About and
-    /// Reset.
-    System(SystemScreen) => Caps::settings(),
-    /// The device-info ledger and the "Install update" door into the update flow.
-    Firmware(FirmwareScreen) => Caps::settings(),
-    /// The credits page: OpenStreetMap and ODbL, Copernicus, and the firmware's licence and source
-    /// pointer. Read-only, scrolled by line.
     About(AboutScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings(),
     /// The "Checking update..." wait while the board validates the staged package. The answer
@@ -1071,7 +1075,7 @@ impl Screen {
             Screen::RouteSwap(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
-            Screen::Bluetooth(s) => s.selection_is_guarded(state.bond_status.can_forget(state.device.ble_paired)),
+            Screen::Connections(s) => s.selection_is_guarded(state),
             Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, routes),

@@ -52,14 +52,10 @@ both = "Les deux"
 waypoints = "Points"
 map_pois = "POI carte"
 
-# --- Units: the `Units` enum name + the Units settings screen ---
+# --- Units: the `Units` enum names ---
 [units]
 metric = "Métrique"
 imperial = "Impérial"
-title = "UNITÉS"
-distance = "Distance"
-speed = "Vitesse"
-elevation = "Altitude"
 
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
@@ -198,26 +194,22 @@ title = "DATE & HEURE"
 gps_fix = "Fix GPS"
 searching = "Recherche fix"
 local_time = "Heure locale"
-offset = "Décalage"
+offset = "Décalage UTC"
 utc = "UTC "
 
 # --- Ride settings ---
 [ride]
 title = "SORTIE"
 fields = "Champs"
-fields_sub = "disposition"
-pages = "Pages"
-pages_sub = "auto-défil."
+pages = "Défil. auto"
 climb = "Montée"
-climb_sub = "panneau"
 waypoints = "Points"
-waypoints_sub = "puce"
 
 # --- Display settings screen ---
 [display]
 title = "AFFICHAGE"
-idle = "Veille"
-idle_sub = "délai"
+idle = "Délai veille"
+brightness = "Luminosité"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
@@ -238,29 +230,23 @@ contours = "Relief"
 # --- Power settings screen ---
 [power]
 title = "ÉNERGIE"
-gps_fix = "Fix GPS"
-gps_fix_sub = "intervalle"
+gps_fix = "Intervalle GPS"
 power_save = "Économie"
-power_save_sub = "basse conso"
 
-# --- Connections settings menu (Phone / Sensors) ---
+# --- Connections page: the Bluetooth switch, the phone status and the sensors door ---
 [connections]
 title = "CONNEXIONS"
 phone = "Téléphone"
 sensors = "Capteurs"
+not_paired = "Non appairé"
+connected = "connecté"
 
-# --- Bluetooth settings screen ---
+# --- The phone link: its status words and the Forget action ---
 [bluetooth]
 removing = "Suppression..."
 remove_failed = "Échec de suppression"
 restart = "Redémarrage requis"
-title = "BLUETOOTH"
 radio = "Bluetooth"
-radio_sub = "radio"
-status = "État"
-paired = "Appairé"
-yes = "oui"
-no = "non"
 forget = "Oublier tél."
 off = "Arrêt"
 connected = "Connecté"
@@ -480,7 +466,6 @@ datetime = "Date & heure"
 language = "Langue"
 update = "Firmware"
 about = "À propos"
-reset = "Réinitialiser"
 
 # --- About page (issue #1149): the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
@@ -493,7 +478,7 @@ firmware = "Firmware"
 # --- Firmware page (device info ledger + the SD-sideload install action) ---
 [firmware]
 title = "FIRMWARE"
-install_update = "Installer la mise à jour"
+install_update = "Mettre à jour"
 recording = "Enreg."
 version = "Micrologiciel"
 map = "Carte"
