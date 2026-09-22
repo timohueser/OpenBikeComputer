@@ -97,9 +97,44 @@ pub(crate) fn wrapped_line_pitch(font: Font) -> i32 {
     font.line_height() as i32 - 5
 }
 
+/// The wrap budget of a line laid out across the whole panel: the frame width less the rounded
+/// outline and its clearance either side.
+pub(crate) const fn copy_w(w: i32) -> i32 {
+    w - 12
+}
+
+/// Greedy word wrap over the monospace cell, one call of `emit` per line. The budget counts
+/// characters, not bytes: the face renders every char of its repertoire in one cell, so a byte
+/// count breaks the accented languages early. A single word wider than the budget clips.
+fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
+    let budget = (width_px / font.char_width() as i32).max(1) as usize;
+    let mut line: heapless::String<64> = heapless::String::new();
+    for word in text.split(' ') {
+        let used = line.chars().count();
+        if used != 0 && used + 1 + word.chars().count() > budget {
+            emit(&line);
+            line.clear();
+        }
+        if !line.is_empty() {
+            let _ = line.push(' ');
+        }
+        let _ = line.push_str(word);
+    }
+    if !line.is_empty() {
+        emit(&line);
+    }
+}
+
+/// The number of `font` lines `text` wraps into within `width_px`, for a caller that sizes a slot
+/// before it draws. At least 1.
+pub(crate) fn wrapped_lines(text: &str, width_px: i32, font: Font) -> i32 {
+    let mut lines = 0;
+    wrap(text, width_px, font, |_| lines += 1);
+    lines.max(1)
+}
+
 /// Draw `text` word-wrapped into centred `font` lines within `width_px`, the first line at
-/// `top_y`. The wrap is greedy over the monospace cell width, and a single word wider than the
-/// budget clips. Returns the `y` just past the last line, so a caller can stack more below it.
+/// `top_y`. Returns the `y` just past the last line, so a caller can stack more below it.
 pub(crate) fn wrapped(
     cv: &mut impl Surface,
     text: &str,
@@ -109,27 +144,28 @@ pub(crate) fn wrapped(
     font: Font,
     color: u16,
 ) -> i32 {
+    wrapped_aligned(cv, text, cx, top_y, width_px, font, TextAlign::Center, color)
+}
+
+/// [`wrapped`] with the alignment spelled out, for copy that sits in a row instead of on the
+/// panel's centreline.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn wrapped_aligned(
+    cv: &mut impl Surface,
+    text: &str,
+    x: i32,
+    top_y: i32,
+    width_px: i32,
+    font: Font,
+    align: TextAlign,
+    color: u16,
+) -> i32 {
     let lh = wrapped_line_pitch(font);
-    let char_w = font.char_width() as i32;
-    let budget = (width_px / char_w).max(1) as usize;
     let mut y = top_y;
-    let mut line: heapless::String<48> = heapless::String::new();
-    for word in text.split(' ') {
-        let extra = if line.is_empty() { word.len() } else { line.len() + 1 + word.len() };
-        if extra > budget && !line.is_empty() {
-            cv.text(&line, Point::new(cx, y), font, TextAlign::Center, color);
-            y += lh;
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        let _ = line.push_str(word);
-    }
-    if !line.is_empty() {
-        cv.text(&line, Point::new(cx, y), font, TextAlign::Center, color);
+    wrap(text, width_px, font, |line| {
+        cv.text(line, Point::new(x, y), font, align, color);
         y += lh;
-    }
+    });
     y
 }
 
@@ -200,6 +236,14 @@ pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The face draws one cell per char, so the wrap budget counts chars.
+    #[test]
+    fn the_wrap_budget_counts_glyph_cells_not_bytes() {
+        let copy = "Réessayez plus tôt"; // 18 chars, 20 bytes
+        assert_eq!(wrapped_lines(copy, 18 * Font::Label.char_width() as i32, Font::Label), 1);
+        assert_eq!(wrapped_lines(copy, 17 * Font::Label.char_width() as i32, Font::Label), 2);
+    }
 
     #[test]
     fn the_recalculating_banner_band_stays_on_panel_and_clear_of_the_marker() {
