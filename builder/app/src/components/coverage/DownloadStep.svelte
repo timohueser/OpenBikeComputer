@@ -21,15 +21,21 @@
     import {
         cellStoreRevision,
         cellStoreWritable,
+        clearAssemblyStorage,
         clearCellStores,
         clearMapWorkStorage,
         discardCellStore,
         discardMapOutput,
         hasRoomFor,
+        isStorageQuotaError,
+        openCellInventory,
         openCellStore,
         readMapOutput,
-        type CellStore,
+        reclaimableAssemblyBytes,
+        STORAGE_QUOTA_MESSAGE,
+        type CellInventory,
     } from "../../lib/cells/store";
+    import { projectedRunDiskBytes } from "../../lib/cells/quota";
     import { acquireMapWorkStorage } from "../../lib/cells/workBarrier";
     import { saveBlob } from "../../lib/download";
     import { platform } from "../../lib/platform";
@@ -70,16 +76,6 @@
      *  engine plus caches plus terrain stays a fraction of a tab's budget. Passed to both the
      *  assembly and the estimate, so the projection prices the run that will actually happen. */
     const SORT_BUDGET_BYTES = 256 * 1024 * 1024;
-
-    /** What a run of this ledger needs from OPFS, all three tenants together: the cells (minus
-     *  terrain, which never goes to disk), the assembled map the sink writes, and the merge's
-     *  spill. Used by the estimate effect and by `begin`, so the projection and the run decide
-     *  OPFS-or-fallback by the same arithmetic — a run that can store its cells but not its output
-     *  would otherwise fail at the first write, after the download. */
-    function runDiskNeed(l: { totalBytes: number; core: { bytes: number }; terrain: { bytes: number } | null }) {
-        const terrain = l.terrain?.bytes ?? 0;
-        return l.totalBytes - terrain + l.totalBytes + 2.5 * l.core.bytes;
-    }
 
     const ledger = $derived(store.ledger);
     const detailBand = $derived(detailBandId(store.catalog));
@@ -611,11 +607,17 @@
      *
      * Terrain is never skipped: it is not in the store.
      */
-    async function skipCached(
+    interface CachedPlan {
+        plan: CellDownloadPlan;
+        cells: number;
+        bytes: number;
+    }
+
+    async function scanCached(
         plan: CellDownloadPlan,
-        cells: CellStore,
-        runOp: <T>(operation: () => Promise<T>) => Promise<T>,
-    ): Promise<CellDownloadPlan> {
+        cells: CellInventory,
+        runOp: <T>(operation: () => Promise<T>) => Promise<T> = (operation) => operation(),
+    ): Promise<CachedPlan> {
         const wanted: typeof plan.items = [];
         let bytes = 0;
         let have = 0;
@@ -630,9 +632,11 @@
             wanted.push(item);
             bytes += item.cell.bytes;
         }
-        cachedCells = have;
-        cachedBytes = haveBytes;
-        return { ...plan, items: wanted, totalBytes: bytes };
+        return {
+            plan: { ...plan, items: wanted, totalBytes: bytes },
+            cells: have,
+            bytes: haveBytes,
+        };
     }
 
     /** What the selection is called in the file and on the device. */
@@ -749,17 +753,25 @@
         if (!cellStore) out.transientCellRevision = null;
         let fetchPlan = plan;
         if (cellStore) {
-            fetchPlan = await skipCached(plan, cellStore, runOp);
+            const cached = await scanCached(plan, cellStore, runOp);
+            fetchPlan = cached.plan;
+            cachedCells = cached.cells;
+            cachedBytes = cached.bytes;
             // Asked once, before a byte is fetched, and about the WHOLE run — cells, the
             // map the sink writes, the merge's spill — because all three live in OPFS: a
             // store with room for the cells but not the output would fail at the first
             // write, after the download.
-            const hasRoom = await runOp(() => hasRoomFor(runDiskNeed(l)));
+            const reclaimable = await runOp(reclaimableAssemblyBytes);
+            const hasRoom = await runOp(() => hasRoomFor(projectedRunDiskBytes(l, cachedBytes), reclaimable));
             if (!hasRoom) {
                 cellStore = null;
                 fetchPlan = plan;
                 cachedCells = 0;
                 cachedBytes = 0;
+            } else {
+                // Only an admitted run replaces the previous temporary output. A refused run leaves
+                // it alone, and accepted work reclaims the bytes before the first download.
+                await runOp(clearAssemblyStorage);
             }
         }
 
@@ -783,10 +795,11 @@
                                 // backpressure instead of letting gigabytes queue behind it.
                             await runOp(() =>
                                 cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
+                                    if (isStorageQuotaError(cause)) throw new Error(STORAGE_QUOTA_MESSAGE);
                                     throw new Error(
-                                        `The map could not be saved to this browser's storage (${
+                                        `The map could not be written to this browser's storage (${
                                             cause instanceof Error ? cause.message : String(cause)
-                                        }). Free some disk space and try again.`,
+                                        }).`,
                                     );
                                 }),
                             );
@@ -959,7 +972,7 @@
         estimate = null;
         estimateLedger = null;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
-        if (!l || !l.isFinal || l.cellCount === 0 || !idle) {
+        if (!l || !l.isFinal || l.cellCount === 0 || !idle || clearingCells) {
                 // Every exit clears the pending flag: a selection that empties or a run
                 // that starts must not leave "waiting for an estimate" latched with
                 // nothing left to answer it.
@@ -970,7 +983,14 @@
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
         const terrainBytes = l.terrain?.bytes ?? 0;
-        const diskNeed = runDiskNeed(l);
+        const reuseCells = keepCells;
+        const resolution = store.resolution;
+        const indices = store.indices;
+        const catalog = store.catalog;
+        const plan = reuseCells && resolution && indices
+            ? planCells(resolution, catalog, indices, store.terrain)
+            : null;
+        const revision = cellStoreRevision(catalog);
         estimatePending = true;
         estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
@@ -981,7 +1001,15 @@
                 // will write, with room for the WHOLE run. The worker ANDs in its own
                 // sync-handle probe.
             void (async () => {
-                const onDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
+                const writable = await cellStoreWritable();
+                let storedCellBytes = 0;
+                if (writable && plan) {
+                    const cells = await openCellInventory(revision);
+                    if (cells) storedCellBytes = (await scanCached(plan, cells)).bytes;
+                }
+                const reclaimable = writable ? await reclaimableAssemblyBytes() : 0;
+                const diskNeed = projectedRunDiskBytes(l, storedCellBytes);
+                const onDisk = writable && (await hasRoomFor(diskNeed, reclaimable));
                 if (destroyed || estimateId !== estimateGeneration || l !== ledger) return;
                 estimateLedger = l;
                 ensureWorker().postMessage({

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 interface TestCellStore {
     revision: string;
     alive: boolean;
-    has: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
+    has: ReturnType<typeof vi.fn<(key: string, bytes: number) => Promise<boolean>>>;
     put: ReturnType<typeof vi.fn<(key: string, bytes: Uint8Array) => Promise<undefined>>>;
 }
 
@@ -16,19 +16,24 @@ const seams = vi.hoisted(() => ({
     sendMapBytes: vi.fn(),
     readMapOutput: vi.fn(async () => new Blob([Uint8Array.of(1, 2, 3, 4)])),
     cellStoreWritable: vi.fn(async () => false),
+    clearAssemblyStorage: vi.fn(async () => undefined),
     clearCellStores: vi.fn(async () => undefined),
     clearMapWorkStorage: vi.fn(async () => undefined),
-    hasRoomFor: vi.fn(async () => false),
+    hasRoomFor: vi.fn(async (_bytes: number, _reclaimable = 0) => false),
+    openCellInventory: vi.fn<() => Promise<TestCellStore | null>>(async () => null),
     openCellStore: vi.fn<() => Promise<TestCellStore | null>>(async () => null),
     downloadCells: vi.fn(),
     discardCellStore: vi.fn(async () => undefined),
     discardMapOutput: vi.fn(async () => undefined),
+    reclaimableAssemblyBytes: vi.fn(async () => 0),
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
     /** Make the worker end the run with a `done` the protocol guard rejects. */
     unreadableDone: false,
+    workerError: null as string | null,
     workerAssemble: 0,
     requireDisk: false,
+    memoryRequiresDisk: false,
     holdEstimates: false,
     estimateReplies: [] as Array<(error?: boolean) => void>,
     workerTerminate: 0,
@@ -42,13 +47,16 @@ const seams = vi.hoisted(() => ({
 vi.mock("../../lib/cells/store", () => ({
     cellStoreRevision: () => "test-revision",
     cellStoreWritable: seams.cellStoreWritable,
+    clearAssemblyStorage: seams.clearAssemblyStorage,
     clearCellStores: seams.clearCellStores,
     clearMapWorkStorage: seams.clearMapWorkStorage,
     discardCellStore: seams.discardCellStore,
     discardMapOutput: seams.discardMapOutput,
     hasRoomFor: seams.hasRoomFor,
+    openCellInventory: seams.openCellInventory,
     openCellStore: seams.openCellStore,
     readMapOutput: seams.readMapOutput,
+    reclaimableAssemblyBytes: seams.reclaimableAssemblyBytes,
 }));
 
 vi.mock("../../lib/catalog/download", () => ({
@@ -90,7 +98,7 @@ class AssembleWorker {
                                 budgetBytes: 100,
                                 ceilingBytes: 100,
                                 headroomBytes: 97,
-                                fits: true,
+                                fits: !seams.memoryRequiresDisk || request.onDisk === true,
                             },
                         },
                     }),
@@ -101,6 +109,14 @@ class AssembleWorker {
             seams.workerAssemble += 1;
             seams.requireDisk = request.requireDisk ?? false;
             queueMicrotask(() => {
+                if (seams.workerError) {
+                    this.onmessage?.(
+                        new MessageEvent("message", {
+                            data: { type: "error", code: "io", message: seams.workerError },
+                        }),
+                    );
+                    return;
+                }
                 this.onmessage?.(
                     new MessageEvent("message", {
                         data: seams.workerOutput === "stored"
@@ -135,12 +151,17 @@ describe("direct assembler delivery", () => {
     beforeEach(() => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         vi.stubGlobal("Worker", AssembleWorker);
+        try {
+            globalThis.localStorage?.removeItem("obcm.keepMapCells");
+        } catch {}
         seams.sendMapBlob.mockReset();
         seams.sendMapBytes.mockReset();
         seams.cellStoreWritable.mockReset().mockResolvedValue(false);
+        seams.clearAssemblyStorage.mockReset().mockResolvedValue(undefined);
         seams.clearCellStores.mockReset().mockResolvedValue(undefined);
         seams.clearMapWorkStorage.mockReset().mockResolvedValue(undefined);
         seams.hasRoomFor.mockReset().mockResolvedValue(false);
+        seams.openCellInventory.mockReset().mockResolvedValue(null);
         seams.openCellStore.mockReset().mockResolvedValue(null);
         seams.downloadCells.mockReset().mockImplementation(
             async (
@@ -157,11 +178,14 @@ describe("direct assembler delivery", () => {
         );
         seams.discardCellStore.mockReset().mockResolvedValue(undefined);
         seams.discardMapOutput.mockClear();
+        seams.reclaimableAssemblyBytes.mockReset().mockResolvedValue(0);
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
         seams.unreadableDone = false;
+        seams.workerError = null;
         seams.workerAssemble = 0;
         seams.requireDisk = false;
+        seams.memoryRequiresDisk = false;
         seams.holdEstimates = false;
         seams.estimateReplies = [];
         seams.workerTerminate = 0;
@@ -197,6 +221,63 @@ describe("direct assembler delivery", () => {
         await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
         expect(seams.requireDisk).toBe(true);
         expect(seams.workerAssemble).toBe(1);
+        expect(seams.clearAssemblyStorage).toHaveBeenCalledOnce();
+        await unmount(component);
+    });
+
+    it("admits a disk-only rebuild when cached cells make the quota projection fit", async () => {
+        seams.memoryRequiresDisk = true;
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockImplementation(async (bytes: number) => bytes <= 2_200_000_000);
+        const cells = testCellStore();
+        cells.has.mockImplementation(async (key) => key === "cached");
+        seams.openCellInventory.mockResolvedValue(cells);
+        seams.openCellStore.mockResolvedValue(cells);
+        seams.plan = {
+            items: [
+                { band: "fine", cell: { id: "cell-1", sha256: "cached", bytes: 800_000_000 } },
+                { band: "fine", cell: { id: "cell-2", sha256: "missing", bytes: 200_000_000 } },
+            ],
+            totalBytes: 1_000_000_000,
+            knownEmpty: [],
+        };
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const large = {
+            ...store,
+            ledger: {
+                totalBytes: 1_000_000_000,
+                cellCount: 2,
+                core: { bytes: 400_000_000 },
+                terrain: null,
+                isFinal: true,
+            },
+        };
+
+        const { component, target } = await mountReadyStep({ store: large });
+        (target.querySelector('.cell-storage input[type="checkbox"]') as HTMLInputElement).click();
+        await tick();
+        await waitForReady(target);
+        expect(seams.hasRoomFor).toHaveBeenCalledWith(2_200_000_000, 0);
+
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(seams.requireDisk).toBe(true);
+        expect(seams.workerAssemble).toBe(1);
+        expect(cells.has).toHaveBeenCalledWith("cached", 800_000_000);
+        expect(cells.has).toHaveBeenCalledWith("missing", 200_000_000);
+        await unmount(component);
+    });
+
+    it("keeps prior assembly files when the fresh disk preflight refuses", async () => {
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(false);
+        seams.openCellStore.mockResolvedValue(testCellStore());
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const { component } = await mountReadyStep();
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(seams.clearAssemblyStorage).not.toHaveBeenCalled();
+        expect(seams.workerAssemble).toBe(1);
         await unmount(component);
     });
 
@@ -214,8 +295,10 @@ describe("direct assembler delivery", () => {
         await expectSecondRunRefused(component);
         await tick();
         vi.advanceTimersByTime(500);
-        await Promise.resolve();
-        await tick();
+        for (let attempt = 0; attempt < 10 && seams.estimateReplies.length < 2; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
         expect(seams.estimateReplies).toHaveLength(2);
         oldReply();
         oldReply(true);
@@ -310,21 +393,7 @@ describe("direct assembler delivery", () => {
             rootBody: "{}",
             holeCells: () => [],
         };
-        const target = document.createElement("div");
-        document.body.append(target);
-        const component = mount(DownloadStep, {
-            target,
-            props: { store: store as never },
-        });
-
-        // The mandatory memory preflight is deliberately debounced by 500 ms.
-        await tick();
-        vi.advanceTimersByTime(500);
-        await Promise.resolve();
-        await tick();
-        // Only the preflight debounce needs a clock. Restore the real event
-        // model before exercising AbortSignal and the component click.
-        vi.useRealTimers();
+        const { component, target } = await mountReadyStep({ store });
         const job = new DeviceJob("map");
         const running = job.run(
             (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
@@ -852,6 +921,33 @@ describe("direct assembler delivery", () => {
         await unmount(component);
     });
 
+    it("tells the rider to reduce the selection only for a quota failure", async () => {
+        seams.workerError =
+            "The browser ran out of storage while building this map. Reduce the map selection and try again.";
+        const quota = await mountReadyStep();
+        (quota.target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 40 && !quota.target.textContent?.includes("ran out of storage"); attempt++) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            await tick();
+        }
+        expect(quota.target.textContent).toContain("ran out of storage");
+        expect(quota.target.textContent).toContain("Reduce the map selection");
+        await unmount(quota.component);
+
+        seams.workerError = "the scratch handle was closed";
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const ordinary = await mountReadyStep();
+        (ordinary.target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 40 && !ordinary.target.textContent?.includes("scratch handle"); attempt++) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            await tick();
+        }
+        expect(ordinary.target.textContent).toContain("the scratch handle was closed");
+        expect(ordinary.target.textContent).not.toContain("ran out of storage");
+        expect(ordinary.target.textContent).not.toContain("Reduce the map selection");
+        await unmount(ordinary.component);
+    });
+
     it("keeps the ordinary download path and does not delete its source early", async () => {
         seams.workerOutput = "file";
         const { component, target } = await mountReadyStep();
@@ -903,9 +999,15 @@ async function mountReadyStep(
     document.body.append(target);
     const component = mount(DownloadStep, { target, props: { ...props, store: (props.store ?? store) as never } });
     await tick();
+    for (let attempt = 0; attempt < 10 && target.textContent?.includes("Deleting…"); attempt++) {
+        await Promise.resolve();
+        await tick();
+    }
     vi.advanceTimersByTime(500);
-    await Promise.resolve();
-    await tick();
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await Promise.resolve();
+        await tick();
+    }
     vi.useRealTimers();
     return { component, target };
 }
@@ -914,7 +1016,7 @@ function testCellStore(): TestCellStore {
     return {
         revision: "test-revision",
         alive: true,
-        has: vi.fn(async () => false),
+        has: vi.fn(async (_key: string, _bytes: number) => false),
         put: vi.fn(async (_key: string, _bytes: Uint8Array) => undefined),
     };
 }
