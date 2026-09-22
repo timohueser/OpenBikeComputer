@@ -3,11 +3,14 @@
 use crate::common::NoFix;
 use obc_app::device_core::{ExternalFacts, OutcomeSlots};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
-use obc_app::{App, AppState, Gesture, Mode, RideContinuation, RideDamage, Screen};
+use obc_app::{App, AppState, Gesture, Mode, RideContinuation, RideDamage, RideOrigin, Screen, TripInput};
+use obc_formats::bike::BikeType;
+use obc_formats::ride::TripRef;
 use obc_ports::{RideClock, Sensors};
 
 fn continuation() -> RideContinuation {
     RideContinuation {
+        origin: RideOrigin { bike: BikeType::Touring, trip: TripRef::new(1, 1, 2) },
         ridden_m: 12_345.0,
         moving_m: 12_000.0,
         moving_s: 2_700.0,
@@ -44,6 +47,14 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
         app.recorder.continuation(),
         expected,
         "Navigator must consume the continuation edge instead of applying the fresh-session reset"
+    );
+
+    app.set_trips(&[TripInput { id: 5, key: 1, name: "Alps", start_date: 0, stage_ids: &[] }]);
+    let stats = app.ride_stats();
+    assert_eq!(
+        (stats.bike, stats.trip, stats.trip_name.as_str()),
+        (BikeType::Touring, TripRef::new(1, 1, 2), "Alps"),
+        "the continued ride keeps its trip day and names the trip at save"
     );
 }
 

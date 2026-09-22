@@ -111,7 +111,7 @@ export async function gpxToObcr(gpx: Uint8Array, name: string): Promise<Uint8Arr
 }
 
 /**
- * Convert a finished ride-v3 object's bytes into a GPX 1.1 document naming the track `name`.
+ * Convert a finished ride-v4 object's bytes into a GPX 1.1 document naming the track `name`.
  *
  * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
  */

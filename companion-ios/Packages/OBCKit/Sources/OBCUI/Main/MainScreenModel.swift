@@ -926,6 +926,18 @@ public final class MainScreenModel {
         }
     }
 
+    /// Change a tracked ride's bike type. Phone-local, like a rename: the device copy keeps the
+    /// type the ride started with.
+    public func setRideBikeType(_ id: RideID, to type: BikeType) {
+        guard let index = rides.firstIndex(where: { $0.id == id }) else { return }
+        rides[index].bikeType = type
+        if var summary = rideSummaries[id] {
+            summary.bikeType = type
+            rideSummaries[id] = summary
+            library.saveRideSummary(summary)
+        }
+    }
+
     /// Land a just-imported route at the top of Planned and in the library, so it survives a
     /// relaunch and can upload later.
     public func addImportedRoute(_ record: PlannedRouteRecord) {

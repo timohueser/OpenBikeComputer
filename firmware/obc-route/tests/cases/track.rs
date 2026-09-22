@@ -164,7 +164,7 @@ fn gpx_rejects_the_retired_unfinished_sample_log() {
 }
 
 #[test]
-fn gpx_reads_finished_v3_samples_and_skips_footer() {
+fn gpx_reads_finished_samples_and_skips_footer() {
     let points = [pt(5, 6, 7, 8, true), pt(15, 16, 17, 18, false)];
     let mut ride = log_of(&points);
     ride.extend_from_slice(&encode_footer(&Footer::new(

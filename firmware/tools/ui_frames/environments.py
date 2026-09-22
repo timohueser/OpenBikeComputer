@@ -65,13 +65,13 @@ def plain_route(stage: Stage) -> Staging:
 
 
 def tracks(stage: Stage) -> Staging:
-    """Two stored ride objects for the Rides screen, from the pinned `ride-v3.bin` protocol vector.
+    """Two stored ride objects for the Rides screen, from the pinned `ride-v4.bin` protocol vector.
 
     Both rows are conservatively unsynced; flat synced and retention metadata belong to the later
     ride-domain boundary.
     """
     where = stage.dir("tracks")
-    ride = (stage.vectors / "ride-v3.bin").read_bytes()
+    ride = (stage.vectors / "ride-v4.bin").read_bytes()
     (where / "ride-0.obcr").write_bytes(ride)
     patched = bytearray(ride)
     offset, distance = RIDE_DISTANCE

@@ -34,8 +34,9 @@ export class ObjectDecodeError extends Error {
 const NO_U8 = 0xff;
 const NO_U16 = 0xffff;
 const RIDE_SAMPLE_LEN = 20;
-const RIDE_FOOTER_LEN = 84;
+const RIDE_FOOTER_LEN = 144;
 const RIDE_NAME_CAP = 48;
+const RIDE_TRIP_AT = 84;
 
 /** One recorded point. Coordinates are degrees × 1e7 (a ~1 cm grid); `null` means the sensor was
  *  absent, dropped, or stale. */
@@ -51,9 +52,20 @@ export interface RidePoint {
     powerW: number | null;
 }
 
-/** A downloaded v3 ride: the recorded sample bytes followed by one fixed summary footer. */
+/** The trip day a ride started on (spec §7.2). */
+export interface RideTrip {
+    /** Never 0: key 0 means "no trip" on the wire. */
+    key: bigint;
+    /** 0-based. */
+    dayIndex: number;
+    dayCount: number;
+    /** The trip's name when the ride was saved; empty when the device no longer held the trip. */
+    name: string;
+}
+
+/** A downloaded v4 ride: the recorded sample bytes followed by one fixed summary footer. */
 export interface RideObject {
-    version: 3;
+    version: 4;
     name: string;
     startTime: number;
     distanceM: number;
@@ -65,11 +77,14 @@ export interface RideObject {
     avgCadence: number | null;
     avgPower: number | null;
     maxPower: number | null;
+    /** The bike type current at the start, `0..=3` (Road, Gravel, MTB, Touring). */
+    bikeType: number;
+    trip: RideTrip | null;
     points: RidePoint[];
 }
 
 /**
- * Decode the only ride-object format: verbatim 20-byte samples followed by the fixed 84-byte v3
+ * Decode the only ride-object format: verbatim 20-byte samples followed by the fixed 144-byte v4
  * footer. The footer's point count determines the complete object length.
  */
 export function decodeRideObject(data: Uint8Array): RideObject {
@@ -80,21 +95,20 @@ export function decodeRideObject(data: Uint8Array): RideObject {
         throw new ObjectDecodeError("ride object has no OBRF footer.");
     }
     const version = data[footer + 4];
-    if (version !== 3) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 3.`);
-    const nameLen = data[footer + 5];
-    if (
-        nameLen > RIDE_NAME_CAP ||
-        view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN ||
-        data[footer + 31] !== 0 ||
-        data.subarray(footer + 36 + nameLen).some((byte) => byte !== 0)
-    ) {
+    if (version !== 4) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 4.`);
+    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 31] !== 0) {
         throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
-    let name: string;
-    try {
-        name = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(footer + 36, footer + 36 + nameLen));
-    } catch {
-        throw new ObjectDecodeError("ride object name is not UTF-8.");
+    const name = footerName(data, footer + 36, data[footer + 5]);
+    const trip = footer + RIDE_TRIP_AT;
+    const tripKey = view.getBigUint64(trip, true);
+    const dayIndex = data[trip + 8];
+    const dayCount = data[trip + 9];
+    const bikeType = data[trip + 10];
+    const tripName = footerName(data, trip + 12, data[trip + 11]);
+    const noTrip = tripKey === 0n && dayIndex === 0 && dayCount === 0 && tripName === "";
+    if (bikeType > 3 || (tripKey === 0n ? !noTrip : dayIndex >= dayCount)) {
+        throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
     const pointCount = view.getUint32(footer + 24, true);
     const expected = pointCount * RIDE_SAMPLE_LEN + RIDE_FOOTER_LEN;
@@ -120,7 +134,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     }
 
     return {
-        version: 3,
+        version: 4,
         points,
         name,
         startTime: view.getUint32(footer + 8, true),
@@ -133,10 +147,24 @@ export function decodeRideObject(data: Uint8Array): RideObject {
         avgCadence: absent8(data[footer + 30]),
         avgPower: absent16(view.getUint16(footer + 32, true)),
         maxPower: absent16(view.getUint16(footer + 34, true)),
+        bikeType,
+        trip: tripKey === 0n ? null : { key: tripKey, dayIndex, dayCount, name: tripName },
     };
 }
 
-/** Encode a v3 object for the loopback device and byte-contract tests. */
+/** A zero-padded UTF-8 name field of `RIDE_NAME_CAP` bytes, `len` of them used. */
+function footerName(data: Uint8Array, at: number, len: number): string {
+    if (len > RIDE_NAME_CAP || data.subarray(at + len, at + RIDE_NAME_CAP).some((byte) => byte !== 0)) {
+        throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
+    }
+    try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(at, at + len));
+    } catch {
+        throw new ObjectDecodeError("ride object name is not UTF-8.");
+    }
+}
+
+/** Encode a v4 object for the loopback device and byte-contract tests. */
 export function encodeRideObject(r: RideObject): Uint8Array {
     const name = clippedUtf8(r.name, RIDE_NAME_CAP);
     const footer = r.points.length * RIDE_SAMPLE_LEN;
@@ -153,7 +181,7 @@ export function encodeRideObject(r: RideObject): Uint8Array {
         out[p + 17] = pt.cadenceRpm ?? NO_U8;
         view.setUint16(p + 18, pt.powerW ?? NO_U16, true);
     });
-    out.set([0x4f, 0x42, 0x52, 0x46, 3, name.length], footer);
+    out.set([0x4f, 0x42, 0x52, 0x46, 4, name.length], footer);
     view.setUint16(footer + 6, RIDE_FOOTER_LEN, true);
     view.setUint32(footer + 8, r.startTime, true);
     view.setUint32(footer + 12, r.distanceM, true);
@@ -167,6 +195,16 @@ export function encodeRideObject(r: RideObject): Uint8Array {
     view.setUint16(footer + 32, r.avgPower ?? NO_U16, true);
     view.setUint16(footer + 34, r.maxPower ?? NO_U16, true);
     out.set(name, footer + 36);
+    const trip = footer + RIDE_TRIP_AT;
+    if (r.trip) {
+        const tripName = clippedUtf8(r.trip.name, RIDE_NAME_CAP);
+        view.setBigUint64(trip, r.trip.key, true);
+        out[trip + 8] = r.trip.dayIndex;
+        out[trip + 9] = r.trip.dayCount;
+        out[trip + 11] = tripName.length;
+        out.set(tripName, trip + 12);
+    }
+    out[trip + 10] = r.bikeType;
     return out;
 }
 

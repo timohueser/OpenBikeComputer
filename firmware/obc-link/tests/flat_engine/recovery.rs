@@ -11,8 +11,8 @@ use obc_storage::flat::{
     StoreError, RIDE_RESUME_LEN,
 };
 
-/// `specs/vectors/ride-v3.bin`: three 20-byte `TrackPoint` samples, then the 84-byte v3 footer.
-const RIDE_V3: &[u8] = include_bytes!("../../../../specs/vectors/ride-v3.bin");
+/// `specs/vectors/ride-v4.bin`: three 20-byte `TrackPoint` samples, then the fixed footer.
+const RIDE_V4: &[u8] = include_bytes!("../../../../specs/vectors/ride-v4.bin");
 /// The export `specs/vectors/track-export.gpx` was taken under (`obc_vectors::TRACK_NAME`); the
 /// ride's own footer carries a different one, which is what [`RideInfo`] reads.
 const EXPORT_NAME: &str = "Schauinsland & back";
@@ -65,9 +65,9 @@ fn journaled_recording(seed: u64) -> (SparseDisk, (u64, u64)) {
     let key = {
         let mut device = boot(&disk);
         let key = device.seed_recording(RESERVE);
-        let (samples, footer) = RIDE_V3.split_at(RIDE_V3.len() - FOOTER_LEN);
+        let (samples, footer) = RIDE_V4.split_at(RIDE_V4.len() - FOOTER_LEN);
         checkpoint(&device, key, samples, samples);
-        checkpoint(&device, key, footer, RIDE_V3);
+        checkpoint(&device, key, footer, RIDE_V4);
         key
     };
     (disk, key)
@@ -82,7 +82,7 @@ fn catalog_write_offset() -> u32 {
     let (disk, key) = journaled_recording(1_420);
     let device = boot(&disk);
     let baseline = disk.ops();
-    finalise(&device, key, RIDE_V3.len() as u64, crc32(RIDE_V3)).expect("the probe finalises");
+    finalise(&device, key, RIDE_V4.len() as u64, crc32(RIDE_V4)).expect("the probe finalises");
     let (op, _, _) = disk
         .write_log()
         .into_iter()
@@ -108,7 +108,7 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     let baseline = disk.ops();
     disk.plan(FaultPlan { op: baseline + cut_at, when: When::Before });
     assert_eq!(
-        finalise(&device, key, RIDE_V3.len() as u64, crc32(RIDE_V3)),
+        finalise(&device, key, RIDE_V4.len() as u64, crc32(RIDE_V4)),
         Err(StoreError::Media),
         "the cut did not land inside finalisation",
     );
@@ -124,8 +124,8 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     );
     let recovered = device.store.recovered_ride().expect("the store recovers the interrupted ride");
     assert_eq!((recovered.id.0, recovered.revision.0), key);
-    assert_eq!(recovered.payload_len(), RIDE_V3.len() as u64, "the recovery lost journaled bytes");
-    assert_eq!(recovered.payload_crc, crc32(RIDE_V3), "the recovery reconstructed a different ride");
+    assert_eq!(recovered.payload_len(), RIDE_V4.len() as u64, "the recovery lost journaled bytes");
+    assert_eq!(recovered.payload_crc, crc32(RIDE_V4), "the recovery reconstructed a different ride");
 
     // The recorder retries the commit, publishing what the recovery handed back — not what this test
     // knows the ride to be, so a recovery that rebuilt the wrong length or CRC cannot pass here.
@@ -133,7 +133,7 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
         .expect("the retried finalisation publishes the ride");
     let entry = device.entry(id).expect("the final catalog names the ride");
     assert!(!entry.flags.has(EntryFlags::RECORDING));
-    assert_eq!((entry.payload_len, entry.payload_crc), (RIDE_V3.len() as u64, crc32(RIDE_V3)));
+    assert_eq!((entry.payload_len, entry.payload_crc), (RIDE_V4.len() as u64, crc32(RIDE_V4)));
     assert!(device.store.recovered_ride().is_none(), "a published ride is still offered as recording");
 
     // What the phone asks for, and what it gets.
@@ -141,11 +141,11 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     let answer = Answer::of(wire.answer());
     assert!(!answer.is_error(), "{answer:?}");
     let payload = wire.payload();
-    assert_eq!(payload, RIDE_V3, "GET served something other than the recovered ride");
+    assert_eq!(payload, RIDE_V4, "GET served something other than the recovered ride");
 
     // What the phone makes of those bytes: the vector's own totals, then the pinned export.
     let source = SliceSource(&payload);
-    let info = RideInfo::read(&source).expect("the recovered bytes are a finished v3 ride");
+    let info = RideInfo::read(&source).expect("the recovered bytes are a finished ride");
     assert_eq!(info.name.as_str(), "Sensor Ride");
     assert_eq!(info.point_count, 3);
     assert_eq!((info.distance_m, info.moving_time_s, info.avg_speed_cms, info.climb_m), (12_345, 3_600, 343, 120));

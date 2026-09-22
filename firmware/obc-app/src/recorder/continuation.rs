@@ -1,8 +1,11 @@
 //! The fixed continuation payload stored with a ride checkpoint.
 
+use obc_formats::bike::BikeType;
+use obc_formats::ride::TripRef;
+
 pub const RIDE_RESUME_LEN: usize = 96;
 const RESUME_MAGIC: [u8; 4] = *b"OBRC";
-const RESUME_VERSION: u16 = 1;
+const RESUME_VERSION: u16 = 2;
 
 pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; RIDE_RESUME_LEN] {
     const _: () = assert!(RIDE_RESUME_LEN == 96);
@@ -25,6 +28,12 @@ pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; R
     out[64..72].copy_from_slice(&state.cadence_ms_sum.to_le_bytes());
     out[72..76].copy_from_slice(&state.cadence_ms.to_le_bytes());
     out[76] = u8::from(start_time.is_some());
+    if let Some(trip) = state.origin.trip {
+        out[80..88].copy_from_slice(&trip.key.to_le_bytes());
+        out[88] = trip.day_index;
+        out[89] = trip.day_count;
+    }
+    out[90] = state.origin.bike as u8;
     out
 }
 
@@ -35,16 +44,24 @@ pub fn decode(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(super::RideContinuation,
         || bytes[46..48].iter().any(|byte| *byte != 0)
         || bytes[62..64].iter().any(|byte| *byte != 0)
         || bytes[76] > 1
-        || bytes[77..].iter().any(|byte| *byte != 0)
+        || bytes[77..80].iter().any(|byte| *byte != 0)
+        || bytes[91..].iter().any(|byte| *byte != 0)
     {
         return None;
     }
+    let key = u64::from_le_bytes(bytes[80..88].try_into().ok()?);
+    let trip = TripRef::new(key, bytes[88], bytes[89]);
+    if trip.is_none() && (key != 0 || bytes[88] != 0 || bytes[89] != 0) {
+        return None;
+    }
+    let origin = super::RideOrigin { bike: BikeType::from_u8(bytes[90])?, trip };
     let f32_at = |at: usize| {
         let mut raw = [0u8; 4];
         raw.copy_from_slice(&bytes[at..at + 4]);
         f32::from_bits(u32::from_le_bytes(raw))
     };
     let state = super::RideContinuation {
+        origin,
         ridden_m: f32_at(12),
         moving_m: f32_at(16),
         moving_s: f32_at(20),
@@ -74,6 +91,10 @@ mod tests {
     #[test]
     fn fixed_layout_retains_sensor_numerators_and_validates_reserved_fields() {
         let state = super::super::RideContinuation {
+            origin: super::super::RideOrigin {
+                bike: BikeType::Touring,
+                trip: TripRef::new(0x0102_0304_0506_0708, 2, 5),
+            },
             ridden_m: 1.0,
             moving_m: 2.0,
             moving_s: 3.0,
@@ -89,20 +110,26 @@ mod tests {
             cadence_ms: 13,
         };
         let bytes = encode(state, Some(0x01020304));
-        assert_eq!(&bytes[..16], &[79, 66, 82, 67, 1, 0, 96, 0, 4, 3, 2, 1, 0, 0, 128, 63]);
+        assert_eq!(&bytes[..16], &[79, 66, 82, 67, 2, 0, 96, 0, 4, 3, 2, 1, 0, 0, 128, 63]);
         assert_eq!(&bytes[32..48], &[6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0]);
         assert_eq!(&bytes[48..64], &[9, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0]);
         assert_eq!(&bytes[64..77], &[12, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 1]);
+        assert_eq!(&bytes[80..91], &[8, 7, 6, 5, 4, 3, 2, 1, 2, 5, 3]);
         assert_eq!(decode(&bytes), Some((state, Some(0x01020304))));
         assert_eq!(decode(&encode(state, None)), Some((state, None)));
-        for at in [0, 4, 6, 46, 62, 77, 95] {
+        let no_trip = super::super::RideContinuation { origin: super::super::RideOrigin::default(), ..state };
+        assert_eq!(decode(&encode(no_trip, None)), Some((no_trip, None)));
+        for at in [0, 4, 6, 46, 62, 77, 91, 95] {
             let mut invalid = bytes;
             invalid[at] ^= 1;
             assert!(decode(&invalid).is_none());
         }
-        let mut invalid = bytes;
-        invalid[76] = 2;
-        assert!(decode(&invalid).is_none());
+        // A start flag past 1, a day past the count, and a bike type past the four.
+        for (at, value) in [(76, 2), (88, 5), (90, 4)] {
+            let mut invalid = bytes;
+            invalid[at] = value;
+            assert!(decode(&invalid).is_none());
+        }
         for value in [f32::NAN, f32::INFINITY, -1.0] {
             let mut invalid = bytes;
             invalid[24..28].copy_from_slice(&value.to_bits().to_le_bytes());

@@ -12,6 +12,8 @@
 pub mod continuation;
 
 use obc_elevation::DeadBand;
+use obc_formats::bike::BikeType;
+use obc_formats::ride::{Name, TripRef};
 use obc_map_scene::ground_dist_m;
 use obc_ports::{Fix, TrackPoint};
 use obc_route::RideStats;
@@ -70,7 +72,14 @@ struct Motion {
     segment_start: bool,
 }
 
-/// The accumulator state that must cross a reset when a journaled ride is continued.
+/// What a ride records about its start: the current bike type and the trip day it started on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RideOrigin {
+    pub bike: BikeType,
+    pub trip: Option<TripRef>,
+}
+
+/// The state that must cross a reset when a journaled ride is continued.
 ///
 /// It is the raw integration state, not the rounded footer summary: averages need their numerators
 /// and denominators to merge post-reset samples without drift. Position and elevation anchors are
@@ -78,6 +87,7 @@ struct Motion {
 /// time.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RideContinuation {
+    pub origin: RideOrigin,
     pub ridden_m: f32,
     pub moving_m: f32,
     pub moving_s: f32,
@@ -168,7 +178,7 @@ pub enum RecorderError {
 /// this domain may attempt — a catalog it could not read completely is not one it may mutate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDamage {
-    /// The recovered bytes are not a ride-v3 sample/footer boundary.
+    /// The recovered bytes are not a ride-v4 sample/footer boundary.
     Payload,
     /// The recovered samples carry no decodable continuation image.
     Metadata,
@@ -454,6 +464,8 @@ pub struct RecorderMachine {
     /// coasting counts; a strap that is absent does not.
     cadence_ms_sum: u64,
     cadence_ms: u32,
+    /// Set when a fresh ride opens. A continued ride restores it with the totals.
+    origin: RideOrigin,
 }
 
 /// Which operation is with the executor. The outcome carries a token, not a subject, so this is how
@@ -513,6 +525,7 @@ impl RecorderMachine {
             max_power: 0,
             cadence_ms_sum: 0,
             cadence_ms: 0,
+            origin: RideOrigin { bike: BikeType::Road, trip: None },
         }
     );
 
@@ -1117,8 +1130,12 @@ impl RecorderMachine {
         (self.cadence_ms > 0).then(|| (self.cadence_ms_sum / self.cadence_ms as u64).min(u8::MAX as u64) as u8)
     }
 
+    pub(crate) fn set_origin(&mut self, origin: RideOrigin) {
+        self.origin = origin;
+    }
+
     /// The ride's footer facts: the totals as they stand, against the anchor stamped when this
-    /// operation was minted.
+    /// operation was minted. The trip name is App's to fill ([`App::ride_stats`](crate::App::ride_stats)).
     pub fn ride_stats(&self) -> RideStats {
         RideStats {
             distance_m: self.ridden_m as u32, // float→int casts saturate
@@ -1134,12 +1151,16 @@ impl RecorderMachine {
             avg_cadence: self.avg_cadence(),
             avg_power: self.avg_power(),
             max_power: self.max_power(),
+            bike: self.origin.bike,
+            trip: self.origin.trip,
+            trip_name: Name::EMPTY,
         }
     }
 
     /// Snapshot every accumulator needed to continue footer totals exactly after a reset.
     pub fn continuation(&self) -> RideContinuation {
         RideContinuation {
+            origin: self.origin,
             ridden_m: self.ridden_m,
             moving_m: self.moving_m,
             moving_s: self.moving_s,
@@ -1160,6 +1181,7 @@ impl RecorderMachine {
     /// keeps them. The anchors stay dropped, so the first post-boot sample re-anchors and starts a
     /// fresh segment.
     pub fn restore_continuation(&mut self, state: RideContinuation) {
+        self.origin = state.origin;
         self.ridden_m = state.ridden_m;
         self.moving_m = state.moving_m;
         self.moving_s = state.moving_s;
@@ -1241,6 +1263,7 @@ impl RecorderMachine {
             max_power: _,
             cadence_ms_sum: _,
             cadence_ms: _,
+            origin,
         } = self;
         assert!(session.is_none() && *seq == 0, "no ride has ever been open");
         assert_eq!(*last_checkpoint_ms, 0, "no checkpoint has been issued");
@@ -1256,6 +1279,7 @@ impl RecorderMachine {
         assert!(last_fix.is_none() && last_ms.is_none() && last_alt.is_none(), "no fix and no altitude");
         assert!(!*segment_break, "no gap to break a segment across");
         assert!(hr_last.is_none() && power_last.is_none() && cadence_last.is_none(), "no strap has reported");
+        assert_eq!(*origin, RideOrigin::default(), "no ride has started");
         self.assert_totals_are_zero();
     }
 
@@ -1266,7 +1290,8 @@ impl RecorderMachine {
         assert_eq!(self.moving_s, 0.0, "no moving time");
         assert_eq!(self.avg_kmh(), None, "no average");
         assert_eq!(self.climb_m(), 0.0, "no climb");
-        assert_eq!(self.continuation(), RideContinuation::default(), "and nothing to continue");
+        let zero = RideContinuation { origin: self.origin, ..RideContinuation::default() };
+        assert_eq!(self.continuation(), zero, "and nothing to continue");
         assert_eq!((self.avg_hr(), self.max_hr()), (None, None), "no heart-rate summary");
         assert_eq!((self.avg_power(), self.max_power()), (None, None), "no power summary");
         assert_eq!(self.avg_cadence(), None, "no cadence summary");
@@ -2223,6 +2248,7 @@ mod tests {
     #[test]
     fn a_recovered_continuation_restores_the_raw_summary_state() {
         let state = RideContinuation {
+            origin: RideOrigin { bike: BikeType::Mtb, trip: TripRef::new(9, 1, 3) },
             ridden_m: 12_345.5,
             moving_m: 12_000.25,
             moving_s: 2_400.0,
@@ -2242,6 +2268,7 @@ mod tests {
         assert_eq!(rec.continuation(), state);
         assert_eq!((rec.avg_hr(), rec.avg_power(), rec.avg_cadence()), (Some(150), Some(245), Some(87)));
         assert_eq!(rec.climb_m(), 321.0);
+        assert_eq!((rec.ride_stats().bike, rec.ride_stats().trip), (BikeType::Mtb, TripRef::new(9, 1, 3)));
     }
 
     #[test]

@@ -169,6 +169,12 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     public var avgPower: Int?
     public var maxPower: Int?
 
+    /// The bike type that was current when the ride started. The rider can change it on the phone;
+    /// the device copy does not change.
+    public var bikeType: BikeType
+    /// The trip day the ride started on, or nil.
+    public var trip: RideTrip?
+
     public init(
         id: RideID,
         name: String,
@@ -183,6 +189,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         avgCadence: Int? = nil,
         avgPower: Int? = nil,
         maxPower: Int? = nil,
+        bikeType: BikeType = .road,
+        trip: RideTrip? = nil,
         source: RideSource? = nil
     ) {
         self.id = id
@@ -198,7 +206,29 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.avgCadence = avgCadence
         self.avgPower = avgPower
         self.maxPower = maxPower
+        self.bikeType = bikeType
+        self.trip = trip
         self.source = source
+    }
+}
+
+/// The trip day a ride started on (`specs/obc-ble-interface-spec.md` §7.2).
+public struct RideTrip: Equatable, Sendable {
+    /// The trip key of the trip object; never 0.
+    public var key: UInt64
+    /// 0-based; the rider sees Day 1 for index 0.
+    public var dayIndex: Int
+    /// The trip's day count when the ride started.
+    public var dayCount: Int
+    /// The trip's name when the ride was saved. It stays after the trip is deleted, and it is empty
+    /// when the device no longer held the trip.
+    public var name: String
+
+    public init(key: UInt64, dayIndex: Int, dayCount: Int, name: String) {
+        self.key = key
+        self.dayIndex = dayIndex
+        self.dayCount = dayCount
+        self.name = name
     }
 }
 
