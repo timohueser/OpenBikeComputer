@@ -599,7 +599,7 @@ impl crate::App {
     pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         self.sync_find_preferences();
         if self.ui.find.state == State::Idle
-            && matches!(self.ui.stack.iter().rev().find(|s| !s.is_overlay()), Some(Screen::FindPlace(s)) if s.choices())
+            && matches!(crate::screen::base_screen(&self.ui.stack), Some(Screen::FindPlace(s)) if s.choices())
         {
             self.ui.find.action = Action::Refresh;
             self.handle_find_action();
@@ -668,7 +668,7 @@ impl crate::App {
                 }
             }
         }
-        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        let base = crate::screen::base_screen(&self.ui.stack);
         if let Some(Screen::VisitReview(screen)) = base {
             if screen.accepted {
                 let current = self.current_visit_index().and_then(|_| self.assistant_checkpoint());

@@ -98,6 +98,15 @@ pub(crate) struct StatsKey {
     /// The displayed heart-rate, power and cadence values, each `None` unless its field is on the
     /// grid, so an unconfigured sensor forces no render at its notification rate.
     live: (Option<u16>, Option<u16>, Option<u8>),
+    /// The climb done and the current elevation, each `Some` only while its own tile is on the
+    /// grid, exactly as the live sensor values are gated: a tile nobody pinned draws nothing, so
+    /// its metres must force no render.
+    ///
+    /// Exact bit patterns rather than the displayed integer, because the tiles are drawn in the
+    /// rider's units and a rounded metre holds still across a foot of imperial travel. The
+    /// elevation reads `u32::MAX` before the first sample, which no finite float shares.
+    climb_m: Option<u32>,
+    elevation_m: Option<u32>,
     /// The refresh the [`NextAhead`](crate::next_ahead::NextAhead) cache behind the six
     /// `Next: <category>` tiles asks for: which category is being re-taken, and the progress it is
     /// anchored at. `None` is the settled state.
@@ -200,7 +209,7 @@ impl App {
         };
         // Drawing starts at the lowest opaque screen: anything below it is covered and draws
         // nothing, so it is not part of the frame and not part of the key.
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = crate::screen::base_index(&self.ui.stack);
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         for screen in self.ui.stack.iter().skip(base) {
             // Cannot overflow: the stack itself is `MAX_DEPTH` long.
@@ -308,6 +317,10 @@ impl App {
                 fields.contains(StatField::Power).then(|| self.recorder.live_power_display()).flatten(),
                 fields.contains(StatField::Cadence).then(|| self.recorder.live_cadence_display()).flatten(),
             ),
+            climb_m: fields.contains(StatField::Climbed).then(|| self.recorder.climb_m().to_bits()),
+            elevation_m: fields
+                .contains(StatField::Elevation)
+                .then(|| self.recorder.current_elevation_m().map_or(u32::MAX, f32::to_bits)),
             next_ahead: self.ui.next_ahead.pending_refresh(),
         }
     }
