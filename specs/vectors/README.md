@@ -45,8 +45,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |
 | `status-transfer-storage-full.bin` | `status` msg 1 §4.3 | `storageFull` (6) — new-route upload (id `0xFFFF`) rejected at descriptor-open time, catalog full, nothing committed |
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
-| `status-command-result-ack.bin` | `status` msg 3 §4.3 | the answer to an `ackRides`: `ok`, `detail` = 3 newly-flagged rides |
-| `command-ack-rides.bin` | `ackRides` §4.4 cmd 2 | `count` 3 · ride ids 3, 5, 9 |
+| `status-command-result.bin` | `status` msg 3 §4.3 | the answer to an accepted `installFw`: `cmd` 3, `ok`, `detail` 0. Pins the four-byte layout and the position of `detail` |
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
 | `route-list.bin` | `routeList` object §7.4 | Three routes (ids 7, 8, and 9), with content CRCs; a 6-byte header and 76-byte entries. |
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. It is the shape of a fielded container and of the device-written rollback snapshot, and pairing it with the v2 file below pins the offset-compatibility guarantee across implementations |

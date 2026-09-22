@@ -308,7 +308,7 @@ impl CommandResult {
         Self { command, status, detail: 0 }
     }
 
-    /// `ackRides` reports its newly-flagged count in `detail`.
+    /// `detail` carries a command's own extra answer byte.
     pub fn with_detail(command: u8, status: CommandStatus, detail: u8) -> Self {
         Self { command, status, detail }
     }
@@ -316,8 +316,6 @@ impl CommandResult {
 
 /// `deleteObject`: `cmd u8 · type u8 · object_id u16 LE`.
 pub const CMD_DELETE_OBJECT: u8 = 1;
-/// `ackRides`: see [`AckRides`].
-pub const CMD_ACK_RIDES: u8 = 2;
 /// `installFw`: the `cmd` byte only. Asks the device to install the staged update package.
 pub const CMD_INSTALL_FW: u8 = 3;
 /// `forgetBond`: the `cmd` byte only. The device answers `commandResult(ok)`, then clears its side
@@ -338,61 +336,6 @@ pub const fn install_fw_reply(busy: bool) -> CommandStatus {
         CommandStatus::Busy
     } else {
         CommandStatus::Ok
-    }
-}
-
-/// The `ackRides` command: `cmd u8 · count u8 · count × object_id u16 LE`. The app lists the ride
-/// ids it holds and the device flags each listed id it still stores as synced. The flag means
-/// "downloaded at least once", so an id is never un-flagged. The command is idempotent and
-/// order-free, thus a long list can be split across writes. Unknown ids are ignored.
-///
-/// Borrowed view over the id bytes; bytes past `count × 2` are ignored.
-#[derive(Clone, Copy, Debug)]
-pub struct AckRides<'a> {
-    /// Exactly `count × 2` little-endian id bytes.
-    ids: &'a [u8],
-}
-
-impl<'a> AckRides<'a> {
-    pub const fn encoded_len(count: usize) -> usize {
-        2 + count * 2
-    }
-
-    /// Decode a full `command` write, starting at the command byte.
-    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
-        let [cmd, count, rest @ ..] = data else {
-            return Err(DescriptorError::Truncated);
-        };
-        if *cmd != CMD_ACK_RIDES {
-            return Err(DescriptorError::UnknownOp(*cmd));
-        }
-        let n = *count as usize * 2;
-        match rest.get(..n) {
-            Some(ids) => Ok(Self { ids }),
-            None => Err(DescriptorError::Truncated),
-        }
-    }
-
-    pub fn count(&self) -> usize {
-        self.ids.len() / 2
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = u16> + 'a {
-        self.ids.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]))
-    }
-
-    /// Returns the written length, or `None` for more than 255 ids or a too-small buffer. The
-    /// firmware only decodes; this is here for the shared-vector tests and the app-side codec.
-    pub fn encode(ids: &[u16], out: &mut [u8]) -> Option<usize> {
-        if ids.len() > u8::MAX as usize || out.len() < Self::encoded_len(ids.len()) {
-            return None;
-        }
-        out[0] = CMD_ACK_RIDES;
-        out[1] = ids.len() as u8;
-        for (i, id) in ids.iter().enumerate() {
-            out[2 + i * 2..4 + i * 2].copy_from_slice(&id.to_le_bytes());
-        }
-        Some(Self::encoded_len(ids.len()))
     }
 }
 
