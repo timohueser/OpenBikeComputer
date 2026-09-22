@@ -36,10 +36,13 @@ MAX_MEMBER_BYTES = 16 << 30
 
 # What the tail can open. A GeoTIFF carries its own CRS; an ESRI ASCII grid states its
 # origin and its step and never its CRS, so a row published or delivered as one names the
-# grid in `grid_epsg` and `placed` writes the `.prj` that format keeps a CRS in.
+# grid in `grid_epsg` and `placed` writes the `.prj` that format keeps a CRS in. An XYZ
+# grid carries none either and GDAL reads no sidecar for it, so the tail takes the row's
+# grid as its CRS directly.
 RASTER_SUFFIXES = {".tif", ".tiff"}
 GRID_SUFFIXES = {".asc"}
-READABLE = RASTER_SUFFIXES | GRID_SUFFIXES
+XYZ_SUFFIXES = {".xyz"}
+READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 
 # How long to wait before each retry. A service drops the occasional request and one box
 # pulls hundreds, so the first failure is never the answer.
@@ -402,6 +405,11 @@ class Source:
         self.grid_epsg = grid_epsg
         self.confirm_datum = confirm_datum
         self.steps = steps
+
+    def grid_crs(self):
+        """The CRS of a grid that carries none, from the row, or `None`."""
+
+        return CRS.from_epsg(self.grid_epsg) if self.grid_epsg else None
 
     def check_credential(self, key: str, credential, hosts) -> None:
         """Whether this adapter can honour the credential the row states.

@@ -6,10 +6,12 @@ the rasters to the tail. Files are cached by name in the work directory, so a se
 the same state or the same project downloads nothing.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..lattice import Refuse
 from .base import READABLE, Source, http_download, placed, unpack
+from .protocols import PARALLEL_REQUESTS
 
 
 class BulkSource(Source):
@@ -33,13 +35,21 @@ class BulkSource(Source):
             raise Refuse(f"{self.key}: nothing published covers {bbox}")
         workdir.mkdir(parents=True, exist_ok=True)
         rasters, absent = [], 0
-        for i, (name, url) in enumerate(wanted, 1):
-            path = http_download(url, workdir / name, optional=self.skip_missing,
+
+        def one(item):
+            name, url = item
+            return http_download(url, workdir / name, optional=self.skip_missing,
                                  headers=self.headers_for(url), what=f"{self.key} {name}")
+
+        # The files of one box are independent, and a box is tens of them, so they arrive
+        # a few at a time; unpacking stays in order below, because it is the disk's turn.
+        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
+            downloaded = list(pool.map(one, wanted))
+        for i, ((name, _), path) in enumerate(zip(wanted, downloaded), 1):
             if path is None:
                 absent += 1
                 continue
-            print(f"  fetch [{i}/{len(wanted)}] {name}")
+            print(f"  fetch [{i}/{len(wanted)}] {name}", flush=True)
             if path.suffix.lower() == ".zip":
                 rasters.extend(placed(raster, self, workdir)
                                for raster in unpack(path, workdir / f"{path.stem}.d", READABLE))

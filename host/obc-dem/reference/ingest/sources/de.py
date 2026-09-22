@@ -1,9 +1,9 @@
 """Germany: one row per federal state, because elevation is a state matter.
 
 There is no national DGM service, and the states do not agree on how to publish. Three
-shapes cover the six biggest: a WCS 2.0.1 (North Rhine-Westphalia, Hesse,
-Baden-Württemberg), a grid of tiles at a fixed URL (Bavaria, Saxony, Thuringia), and a
-STAC of cloud-optimised GeoTIFFs (Lower Saxony). All of them are keyless.
+shapes cover the six biggest: a WCS 2.0.1 (North Rhine-Westphalia, Hesse), a grid of
+tiles at a fixed URL (Bavaria, Saxony, Thuringia, Baden-Württemberg), and a STAC of
+cloud-optimised GeoTIFFs (Lower Saxony). All of them are keyless.
 
 Bavaria's INSPIRE WCS answers 401 and its credentials come from the LDBV by post, so
 Bavaria is a download. Saxony and Thuringia publish no WCS at all. Brandenburg's WCS
@@ -44,18 +44,20 @@ HE = Wcs20Source(
     axes=("E", "N"),
 )
 
-# The Baden-Württemberg coverage answers `UInt16`, so its heights are whole metres. That
-# is the archive's own quantum, so nothing is lost; the state's centimetre data is in the
-# `.xyz` bulk download, which is not a raster and is not worth a second code path.
-BW = Wcs20Source(
-    "de-bw", "Germany, Baden-Württemberg", "DGM1 1 m (whole metres over WCS)", 1.0,
+# LGL publishes DGM1 as 2 km zips of four 1 km XYZ grids in centimetres, on a grid whose
+# squares start on an odd kilometre of easting: 457, 459, … east and 5268, 5270, … north.
+# Its WCS answers the same model as whole metres, at 30 to 90 s a request by day, so the
+# files are the row. GDAL reads an XYZ grid but no CRS beside it; `grid_epsg` places it.
+BW = GridTiles(
+    "de-bw", "Germany, Baden-Württemberg", "DGM1 1 m", 1.0,
     "dl-de/by-2-0", "Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0", DHHN,
     (7.5, 47.5, 10.5, 49.8),
-    url="https://owsproxy.lgl-bw.de/owsproxy/wcs/WCS_INSP_BW_Hoehe_Coverage_DGM1",
-    coverage="EL.ElevationGridCoverage",
+    base="https://opengeodata.lgl-bw.de/data/dgm/",
+    name="dgm1_32_{east}_{north}_2_bw.zip",
     epsg=25832,
-    axes=("E", "N"),
-    scale=False,
+    tile_km=2,
+    origin_km=(1, 0),
+    grid_epsg=25832,
 )
 
 BY = GridTiles(
