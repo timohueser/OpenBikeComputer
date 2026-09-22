@@ -10,7 +10,9 @@ import OBCDomain
 ///
 /// It encodes from the canonical `Ride`, so a point may carry no elevation; `<ele>`
 /// is then omitted, never a sentinel. The recorded segment-start flag is preserved,
-/// so exports keep their pause boundaries.
+/// so exports keep their pause boundaries. Every point carries its ISO 8601 UTC
+/// `<time>`: Strava and Garmin Connect refuse an activity without times, or read it
+/// as a route.
 public struct GPXRideEncoder: RideFileEncoder {
     public let fileExtension = "gpx"
 
@@ -22,6 +24,7 @@ public struct GPXRideEncoder: RideFileEncoder {
         xml += "<gpx version=\"1.1\" creator=\"OpenBikeComputer\""
         xml += " xmlns=\"http://www.topografix.com/GPX/1/1\""
         xml += " xmlns:gpxtpx=\"http://www.garmin.com/xmlschemas/TrackPointExtension/v1\">\n"
+        xml += "<metadata><time>\(Self.time(ride.points.first?.timestamp ?? ride.summary.date))</time></metadata>\n"
         xml += "<trk><name>\(Self.escaped(ride.summary.name))</name>\n"
         xml += "<trkseg>\n"
 
@@ -34,6 +37,7 @@ public struct GPXRideEncoder: RideFileEncoder {
             if let ele = point.elevationMeters {
                 xml += "<ele>\(Self.ele(ele))</ele>"
             }
+            xml += "<time>\(Self.time(point.timestamp))</time>"
             xml += Self.extensions(point)
             xml += "</trkpt>\n"
         }
@@ -69,6 +73,11 @@ public struct GPXRideEncoder: RideFileEncoder {
         let fracDigits = String(magnitude % 1_000_000)
         let frac = String(repeating: "0", count: 6 - fracDigits.count) + fracDigits
         return "\(sign)\(whole).\(frac)"
+    }
+
+    /// "2026-09-11T08:00:00Z". The formatter is UTC by default.
+    private static func time(_ date: Date) -> String {
+        date.formatted(.iso8601)
     }
 
     /// Elevation to the whole metre, the ride object's own quantum.

@@ -18,15 +18,22 @@ public struct RideGPXFile: Transferable, Sendable {
 
     /// The ride name as a file name that every file system accepts: path separators, reserved
     /// characters and control characters become "-", and leading dots go, so the file is never
-    /// hidden.
+    /// hidden. File systems cap a name at 255 bytes and a ride name has no length limit, so the
+    /// base is cut to `maxBaseBytes` UTF-8 bytes on a character boundary.
     public static func fileName(for name: String) -> String {
         let reserved = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.controlCharacters)
         let cleaned = String(String.UnicodeScalarView(
             name.unicodeScalars.map { reserved.contains($0) ? "-" : $0 }
         ))
-        let trimmed = cleaned.trimmingCharacters(in: CharacterSet.whitespaces.union(["."]))
-        return (trimmed.isEmpty ? "Ride" : trimmed) + ".gpx"
+        let edges = CharacterSet.whitespaces.union(["."])
+        var base = cleaned.trimmingCharacters(in: edges)
+        while base.utf8.count > maxBaseBytes { base.removeLast() }
+        base = base.trimmingCharacters(in: edges)
+        return (base.isEmpty ? "Ride" : base) + ".gpx"
     }
+
+    /// Well under the 255-byte name limit, with room for ".gpx".
+    static let maxBaseBytes = 200
 
     public static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .gpx) { file in

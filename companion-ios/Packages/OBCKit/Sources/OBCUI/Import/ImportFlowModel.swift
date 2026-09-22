@@ -75,22 +75,27 @@ public final class ImportFlowModel {
     /// saved route already carries this name, offer update-in-place against new.
     public func open(data: Data, fileName: String) {
         do {
-            let route = try decode(data, fileName)
-            let pending = PendingImport(
-                route: route,
-                fileName: fileName,
-                fileData: data,
-                noDevicePaired: !isBonded(),
-                bikeType: lastBikeType.value
-            )
-            // A route by this name is already saved, so offer update-in-place against new.
-            if let existing = plannedRoute(named: route.name ?? fileName) {
-                collision = ImportCollision(pending: pending, existing: existing)
-            } else {
-                pendingImport = pending
-            }
+            open(route: try decode(data, fileName), fileName: fileName, fileData: data)
         } catch {
             importFailed = true
+        }
+    }
+
+    /// A route already in hand, such as a ride saved as a route: the same landing and the same
+    /// name-collision rule as a decoded file.
+    public func open(route: ImportedRoute, fileName: String, fileData: Data) {
+        let pending = PendingImport(
+            route: route,
+            fileName: fileName,
+            fileData: fileData,
+            noDevicePaired: !isBonded(),
+            bikeType: lastBikeType.value
+        )
+        // A route by this name is already saved, so offer update-in-place against new.
+        if let existing = plannedRoute(named: route.name ?? fileName) {
+            collision = ImportCollision(pending: pending, existing: existing)
+        } else {
+            pendingImport = pending
         }
     }
 
