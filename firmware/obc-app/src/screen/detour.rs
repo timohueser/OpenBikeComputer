@@ -898,20 +898,9 @@ mod tests {
 
     /// Convert [`HILL_GPX`] and run `f` with the route and its profile, as the App holds them.
     fn with_hill_route<R>(f: impl FnOnce(&obc_route::RouteReader, &obc_route::Profile) -> R) -> R {
-        use obc_formats::io::{ByteSink, Error, SliceSource};
-        #[derive(Default)]
-        struct VecSink(std::vec::Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-                self.0.extend_from_slice(b);
-                Ok(())
-            }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-                let o = off as usize;
-                self.0[o..o + b.len()].copy_from_slice(b);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
+        use obc_formats::io::SliceSource;
+
         let mut sink = VecSink::default();
         obc_route::gpx_to_obcr(&SliceSource(HILL_GPX.as_bytes()), "Hill", &mut sink).unwrap();
         let src = SliceSource(&sink.0);
