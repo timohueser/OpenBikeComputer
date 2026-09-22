@@ -38,6 +38,7 @@
 
 use embassy_nrf::pac;
 use embassy_nrf::pac::gpio::vals::{Ctrlsel, Dir, Drive, Input, Pull};
+use embassy_nrf::pac::spu::vals::Dmasec;
 use obc_dfu::blobstage::{sp_geometry, validate_stage, SpImageGeometry};
 
 /// The RAM execution carve, mirroring the app's `build.rs` contract. The stage carve in flash is
@@ -102,6 +103,8 @@ const VPR00_INITPC: *mut u32 = 0x5004_C808 as *mut u32;
 const VPR00_DMCONTROL: *mut u32 = 0x5004_C440 as *mut u32;
 const DM_DMACTIVE: u32 = 1 << 0;
 const DM_NDMRESET: u32 = 1 << 1;
+/// The FLPR's slot in the SPU's peripheral-permission table.
+const FLPR_SPU_INDEX: usize = 12;
 
 /// The six card pads on P2, in order: D3, CLK, D0, D2, D1, CMD.
 const SD_PADS: [usize; 6] = [0, 1, 2, 3, 4, 5];
@@ -636,9 +639,23 @@ fn vri_write(base: usize, off: usize, v: u32) {
     unsafe { ((base + off) as *mut u32).write_volatile(v) }
 }
 
+/// Grant the M33 secure access to the FLPR. The VPR resets non-secure, so a write to a VPR00
+/// secure-alias register without this is a precise BusFault. The bootloader keeps embassy off the
+/// FLPR, so nothing else in this image grants it.
+fn grant_secure_access() {
+    pac::SPU00.periph(FLPR_SPU_INDEX).perm().write(|w| {
+        w.set_secattr(true);
+        w.set_dmasec(Dmasec::Secure);
+    });
+}
+
 /// Stop the FLPR hart whatever it is doing. `CPURUN = 0` alone does NOT stop a running VPR core;
 /// the pulsed `ndmreset` through the Debug Module is the guarantee.
+///
+/// This is the FLPR lifecycle's one entry: every path that reaches a VPR00 register — bring-up,
+/// a retry, the hand-back — parks first, so the secure grant belongs here and nowhere else.
 fn park_hart() {
+    grant_secure_access();
     // SAFETY: fixed VPR00 MMIO; parking the coprocessor cannot corrupt M33 state.
     unsafe {
         VPR00_CPURUN.write_volatile(0);

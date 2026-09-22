@@ -96,8 +96,10 @@ fn main() -> ! {
     // HAL init: trims, debug unlock, glitch-detector off, default clocks (internal HF osc at
     // 64 MHz; the app raises itself to 128 MHz with its own config after the jump). With no
     // `gpiote` or `time-driver` feature compiled in, this enables no interrupt sources at all.
-    // `FlprReset::Leave` keeps embassy off the FLPR: `semmc.rs` owns its lifecycle, parks it
-    // again and resets the pads before the jump, and the app re-takes it from scratch.
+    // `FlprReset::Leave` keeps embassy off the FLPR, so the `Idle` fast path below never touches
+    // the coprocessor. `semmc.rs` owns the whole lifecycle instead: it grants the SPU permission
+    // the VPR00 secure alias needs, parks the hart, and resets the pads before the jump, so the
+    // app re-takes the FLPR from scratch.
     let mut config = embassy_nrf::config::Config::default();
     config.flpr_reset = embassy_nrf::config::FlprReset::Leave;
     let p = embassy_nrf::init(config);
