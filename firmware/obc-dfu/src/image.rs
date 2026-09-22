@@ -31,9 +31,10 @@ const HEADER_CRC_LEN: usize = 60;
 /// Byte cap of the NUL-padded `fw_version` field.
 pub const FW_VERSION_LEN: usize = 32;
 
-/// The largest raw image the wrapper accepts and the armer stages: the app slot, less a small
-/// margin. It lives here so the host tool, the armer and the bootloader agree on one ceiling.
-pub const MAX_IMAGE_LEN: u32 = 1_480_000;
+/// The largest raw image the wrapper accepts and the armer stages: the app slot, and nothing
+/// less. The bootloader's install engine checks the same bound against the slot its linker gives
+/// it ([`crate::layout`]), so an image the host tool wraps is one the device can flash.
+pub const MAX_IMAGE_LEN: u32 = crate::layout::APP_SLOT_LEN;
 
 /// The largest container a max-size image produces. The BLE and USB announce gate at this, so an
 /// image exactly at [`MAX_IMAGE_LEN`] is never refused for its own framing.

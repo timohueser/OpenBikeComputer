@@ -252,6 +252,27 @@ other:
         self.assertFalse(resource_guard.is_arena_symbol("nrf_sdc::mem::ARENA::hbe"))
         self.assertFalse(resource_guard.is_arena_symbol("embassy_executor::TASK_ARENA::hbe"))
 
+    def test_app_slot_parser_reads_the_bootloader_linker_script(self):
+        memory_x = (
+            "MEMORY\n{\n"
+            "    FLASH       : ORIGIN = 0x00000000, LENGTH = 32K\n"
+            "    SEMMC_STAGE : ORIGIN = 0x001F6000, LENGTH = 20K  /* staged blob */\n"
+            "    RAM         : ORIGIN = 0x20000000, LENGTH = 480K\n}\n"
+        )
+        self.assertEqual(resource_guard.parse_app_slot_len(memory_x), 0x1F6000 - 32 * 1024)
+
+    def test_app_slot_parser_fails_on_a_map_it_cannot_read(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "SEMMC_STAGE.*stale"):
+            resource_guard.parse_app_slot_len("MEMORY\n{\n    FLASH : ORIGIN = 0x0, LENGTH = 32K\n}\n")
+
+    def test_app_slot_gate_refuses_an_image_the_device_cannot_install(self):
+        """Measured against the shipping map, so the gate moves with `obc-boot/memory.x`."""
+        slot = resource_guard.parse_app_slot_len(resource_guard.APP_SLOT_MEMORY_X.read_text())
+        limit = slot - resource_guard.APP_SLOT_HEADROOM
+        self._check_board(self._board_measured(flash=limit), self._board_baseline())
+        with self.assertRaisesRegex(resource_guard.GuardError, "cannot be wrapped, staged or installed"):
+            self._check_board(self._board_measured(flash=limit + 1), self._board_baseline())
+
     def test_the_shipping_board_measurement_passes(self):
         self._check_board(self._board_measured(), self._board_baseline())
 

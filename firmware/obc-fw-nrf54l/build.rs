@@ -64,14 +64,17 @@ mod contract {
     // and the spec share. The carve is taken off the top of the app slot, so nothing else moves.
     // `obc-boot/memory.x` mirrors these by hand.
 
+    // The RRAM map below the coprocessor carve belongs to the update path, so `obc_dfu::layout`
+    // defines it and this script only spells it into the linker's regions.
+
     /// The DFU boot-state handoff page, named here because the stage carve sits against it.
-    pub const BOOT_STATE_BASE: usize = 0x001F_B000;
+    pub const BOOT_STATE_BASE: usize = obc_dfu::BOOT_STATE_BASE as usize;
     /// The blob-stage carve's length — the shared `obc-dfu` constant.
     pub const SEMMC_STAGE_LEN: usize = obc_dfu::blobstage::STAGE_LEN;
     /// The blob-stage carve's base: directly below the BOOT_STATE page.
-    pub const SEMMC_STAGE_BASE: usize = BOOT_STATE_BASE - SEMMC_STAGE_LEN;
+    pub const SEMMC_STAGE_BASE: usize = obc_dfu::SEMMC_STAGE_BASE as usize;
     /// The app slot's base, above the 32 KB bootloader.
-    pub const APP_SLOT_BASE: usize = 0x0000_8000;
+    pub const APP_SLOT_BASE: usize = obc_dfu::APP_SLOT_BASE as usize;
 
     /// The reserved carve, [`SEMMC_IMAGE_BYTES`] rounded up to 4 KiB.
     ///

@@ -81,10 +81,12 @@ over the resolved extents).
 `FW Version` is read back with trailing NULs trimmed; an over-long version string is
 truncated to 32 bytes on a UTF-8 char boundary at wrap time (never mid-codepoint).
 
-`Image Len` must not exceed **`MAX_IMAGE_LEN` = 1,480,000** bytes — the app slot minus a small
-margin. `obc-mkimage wrap` refuses a larger image. The **whole container** is
+`Image Len` must not exceed **`MAX_IMAGE_LEN` = 2,023,424** bytes. That is the app slot itself —
+`__semmc_stage_base - __app_slot_base` in §3's map — and nothing less: the bootloader's install
+engine erases and writes exactly that span, so an image which fits the slot is an image the device
+can install. `obc-mkimage wrap` refuses a larger image. The **whole container** is
 `64 + Image Len + Sig Len` bytes, so a transfer that gates on a length gates at the **container**
-ceiling `MAX_CONTAINER_LEN` = `MAX_IMAGE_LEN + 64 + 64` = 1,480,128: a raw image at the cap must not
+ceiling `MAX_CONTAINER_LEN` = `MAX_IMAGE_LEN + 64 + 64` = 2,023,552: a raw image at the cap must not
 be refused for its own framing. A container is delivered as a `PUT` of kind `7`
 ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.6, §4). Bytes past
 `64 + Image Len + Sig Len` in the delivered file are ignored (§2.3).
