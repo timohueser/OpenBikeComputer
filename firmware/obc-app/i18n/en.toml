@@ -382,7 +382,7 @@ on_phone = "on your phone"
 [rides]
 title = "RIDES"
 no_rides = "No rides yet"
-no_rides_sub = "Record a ride to see it here"
+no_rides_sub = "Record a ride"
 not_synced = "not synced"
 
 # --- Ride detail screen ---
