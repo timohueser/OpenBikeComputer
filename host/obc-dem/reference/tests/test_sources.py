@@ -193,8 +193,8 @@ class Requests(unittest.TestCase):
         """A subset outside the envelope is an `InvalidSubsetting` refusal, so a box that
         runs past the state's edge is clipped, and one wholly outside is not asked for."""
 
-        source = ingest.SOURCES["de-bw"]
-        box = split("de-bw")[0]
+        source = ingest.SOURCES["de-he"]
+        box = split("de-he")[0]
         (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(box, source.epsg)
         self.addCleanup(setattr, source, "envelope", None)
 
@@ -261,7 +261,7 @@ class Requests(unittest.TestCase):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
         rows take the coverage's native step instead."""
 
-        for key in ("de-bw", "uk", "it-bz"):
+        for key in ("uk", "it-bz"):
             with self.subTest(key):
                 _, values = query(ingest.SOURCES[key].url(split(key)[0]))
                 self.assertNotIn("scalesize", values)
@@ -327,6 +327,17 @@ class NamedGrids(unittest.TestCase):
             parts = name.split("_")
             east, north = int(parts[1][2:]), int(parts[2])
             self.assertEqual((east % 2, north % 2), (0, 0), name)
+
+    def test_baden_wuerttembergs_squares_start_on_an_odd_kilometre_of_easting(self):
+        """The published names run 457, 459, … east and 5268, 5270, … north, and the
+        Feldberg box is inside `dgm1_32_425_5302_2_bw.zip`."""
+
+        names = [name for name, _ in ingest.SOURCES["de-bw"].files(BOXES["de-bw"])]
+        for name in names:
+            parts = name.split("_")
+            east, north = int(parts[2]), int(parts[3])
+            self.assertEqual((east % 2, north % 2), (1, 0), name)
+        self.assertIn("dgm1_32_425_5302_2_bw.zip", names)
 
     def test_the_nztopo50_sheet_of_a_box_is_the_one_linz_publishes(self):
         """New Zealand's index is arithmetic, so these constants are the whole adapter.

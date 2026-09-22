@@ -110,7 +110,7 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
     number of pixel centres that fell outside the window, which should be none.
     """
 
-    values, src_transform, src_crs, bounds, voided = read_source(path)
+    values, src_transform, src_crs, bounds, voided = read_source(path, source.grid_crs())
     check_world(bounds, str(path))
     window = covering_window(bounds, pad=1)
     lattice, dropped = pool_onto_lattice(values, src_transform, src_crs, window)
@@ -169,7 +169,7 @@ def local_rasters(source: Source, directory: Path, bbox, into: Path) -> list[Pat
     delivered = sorted(path for path in directory.rglob("*")
                        if path.suffix.lower() in READABLE | {".zip"})
     if not delivered:
-        raise Refuse(f"{directory}: holds no .tif, .asc or .zip, so it is not what "
+        raise Refuse(f"{directory}: holds no .tif, .asc, .xyz or .zip, so it is not what "
                      f"`{source.key}` is delivered as; README.md names the format")
     paths = []
     for path in delivered:
@@ -181,9 +181,10 @@ def local_rasters(source: Source, directory: Path, bbox, into: Path) -> list[Pat
     for path in paths:
         path = placed(path, source, into)
         with open_raster(path) as src:
-            if src.crs is None:
+            crs = src.crs or source.grid_crs()
+            if crs is None:
                 raise Refuse(f"{path}: the raster has no CRS, so it cannot be placed")
-            west, south, east, north = transform_bounds(src.crs, WGS84, *src.bounds)
+            west, south, east, north = transform_bounds(crs, WGS84, *src.bounds)
         if not (east < bbox[0] or west > bbox[2] or north < bbox[1] or south > bbox[3]):
             keep.append(path)
     return keep

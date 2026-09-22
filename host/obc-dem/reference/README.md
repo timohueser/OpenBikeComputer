@@ -89,7 +89,7 @@ is per pixel, because coverage stops at borders: a better source keeps its own p
 the others' pixels in its gaps.
 
 Refused by name: a box at the antimeridian or outside the world box, a scaled band, an ESRI ASCII
-grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
+or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
 not recognise. An ellipsoidal product must be converted to orthometric first; nothing here does.
 
 Memory is one source raster plus the tiles it touches. A **monolithic** raster, such as a

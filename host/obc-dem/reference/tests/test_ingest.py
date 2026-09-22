@@ -379,6 +379,25 @@ class Ingest(ArchiveCase):
         _, _, _, _, voided = ingest.read_source(raster)
         self.assertAlmostEqual(voided, 0.5, places=3)
 
+    def test_an_xyz_grid_is_placed_by_the_rows_grid(self):
+        """Baden-Württemberg's DGM1 is XYZ text: no CRS, and GDAL reads no sidecar for it,
+        so the row's grid places it. A missing point is a void, not a refusal."""
+
+        lines = [f"{425000.5 + c:.2f} {5303019.5 - r:.2f} {1500.0 if (r, c) == (10, 10) else 1000.0:.2f}"
+                 for r in range(20) for c in range(20) if (r, c) != (5, 5)]
+        (self.inputs / "tile.xyz").write_text("\n".join(lines) + "\n")
+        lon, lat = rasterio.warp.transform(CRS.from_epsg(25832), ingest.WGS84, [425000, 425020], [5303000, 5303020])
+        code = ingest.main(["ingest", "de-bw", "--bbox", f"{lon[0] - 0.0005},{lat[0] - 0.0005},{lon[1] + 0.0005},{lat[1] + 0.0005}",
+                            "--archive", str(self.archive), "--input", str(self.inputs)])
+        self.assertEqual(code, 0)
+        _, path = self.only_tile()
+        with rasterio.open(path) as src:
+            data = src.read(1)
+        self.assertEqual(int(data.max()), 1500)
+        self.assertEqual(int((data == 1500).sum()), 1)
+        self.assertGreater(int((data == 1000).sum()), 0)
+        self.assertEqual(self.index()["tiles"], {next(iter(self.index()["tiles"])): "de-bw"})
+
     def test_a_source_coarser_than_the_step_invents_nothing(self):
         """A 20 m source reaches the lattice pixels its centres land in, and no others."""
 
