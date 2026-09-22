@@ -45,7 +45,7 @@ map-wide language argument.
 | Candidates | The QIDs before article selection, so the same compiler chooses which assets to acquire. |
 | Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no originals. `--photo-requests` names the two the compiler would use: the second covers a rejection only the bytes can prove. Without that flag the field is never written, and a candidate with no bytes is one the compiler cannot use. |
 | Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
-| Records | Sorted by QID: category 1–6, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
+| Records | Sorted by QID: category 1–16, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
 | Attribution | Article and photo source, revision, licence, the exact original notices and readable Sources pages. At most 8 KiB per asset, 256 pages per pair. |
 | Omissions | QID, asset and reason. A rejected photo leaves usable text available. |
 

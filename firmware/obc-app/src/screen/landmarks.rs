@@ -303,6 +303,16 @@ pub(super) fn kind(category: u8) -> Msg {
         4 => Msg::AssistantAbbey,
         5 => Msg::AssistantCathedral,
         6 => Msg::AssistantPass,
+        7 => Msg::AssistantMountainHut,
+        8 => Msg::AssistantObservationTower,
+        9 => Msg::AssistantBridgeAqueduct,
+        10 => Msg::AssistantDam,
+        11 => Msg::AssistantIndustrialHeritage,
+        12 => Msg::AssistantPilgrimageChurch,
+        13 => Msg::AssistantLighthouse,
+        14 => Msg::AssistantBoundaryOddity,
+        15 => Msg::AssistantGhostTown,
+        16 => Msg::AssistantMineralSpring,
         _ => Msg::AssistantLandmark,
     }
 }
@@ -324,7 +334,45 @@ fn status(status: Status) -> Msg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{i18n::t, settings::Language};
     use obc_formats::obcm::{landmarks::*, PoiApproach, PoiMetadata, SourceId};
+
+    #[test]
+    fn every_landmark_category_has_a_label_that_fits_both_cards() {
+        let expected = [
+            "Natural site",
+            "Castle / ruin",
+            "Archaeology",
+            "Abbey",
+            "Cathedral",
+            "Pass",
+            "Mountain hut",
+            "Lookout tower",
+            "Bridge/aqueduct",
+            "Dam",
+            "Industrial site",
+            "Pilgrim church",
+            "Lighthouse",
+            "Boundary oddity",
+            "Ghost town",
+            "Spring",
+        ];
+
+        for (index, expected) in expected.into_iter().enumerate() {
+            let category = index as u8 + 1;
+            assert_eq!(t(kind(category), Language::En), expected);
+            for language in Language::ALL {
+                let label = t(kind(category), language);
+                assert!(
+                    text_width(label, Font::Label) <= 16 * Font::Label.char_width(),
+                    "category {category} does not fit the landmark card in {language:?}: {label:?}"
+                );
+                assert!(label.len() <= 37, "category {category} overflows the card label buffer in {language:?}");
+            }
+        }
+        assert_eq!(t(kind(0), Language::En), "Landmark");
+        assert_eq!(t(kind(17), Language::En), "Landmark");
+    }
 
     #[test]
     fn article_and_photo_visit_availability_require_the_selected_sources_access() {
