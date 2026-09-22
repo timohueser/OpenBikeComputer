@@ -244,6 +244,9 @@ pub struct Ctx<'a> {
     pub routes: &'a [RouteSummary],
     pub rides: &'a [RideEntry],
     pub trips: &'a [crate::trip::TripSummary],
+    /// The device's trip progress records, at most one per trip key. A trip without one reads as
+    /// not started.
+    pub trip_progress: &'a [crate::trip::TripProgress],
     /// The App-owned POI-list snapshot, read-only: the POI list's `Gesture::Press` reads the
     /// highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen.
     pub poi_scratch: &'a PoiScratch,
@@ -298,6 +301,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         routes: &[],
         rides: &[],
         trips: &[],
+        trip_progress: &[],
         backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
         corridor: &[],
@@ -352,6 +356,9 @@ pub struct Render<'a> {
     pub internal_routes: u64,
     pub rides: &'a [RideEntry],
     pub trips: &'a [crate::trip::TripSummary],
+    /// The device's trip progress records, at most one per trip key. A trip without one reads as
+    /// not started.
+    pub trip_progress: &'a [crate::trip::TripProgress],
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
