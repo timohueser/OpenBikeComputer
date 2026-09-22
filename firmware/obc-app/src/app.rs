@@ -26,7 +26,6 @@ use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
 use crate::{DeviceStatus, Msg};
-use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -777,7 +776,7 @@ impl App {
 
     /// Whether the base (lowest opaque) screen draws the map. A render-on-demand host polls this
     /// to skip the whole map pipeline on a non-map frame: no `Reader` build, `None` to
-    /// [`render_map_timed`](App::render_map_timed), and a menu redraw with zero map I/O.
+    /// [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed), and a menu redraw with zero map I/O.
     pub fn base_draws_map(&self) -> bool {
         self.ui.base_draws_map()
     }
@@ -854,7 +853,7 @@ impl App {
     }
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
-    /// [`render_map_timed`](App::render_map_timed): a superset of
+    /// [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed): a superset of
     /// [`base_draws_map`](App::base_draws_map). Map-base screens always do, and the POI list and
     /// POI detail screens do until their one-shot reads resolve in the pre-draw prepare pass.
     /// After that they draw from frozen state, so the host skips the build again.
@@ -2503,51 +2502,18 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0.
-        self.render_scene_map_timed(
-            scratch,
-            target,
-            Some(reader),
-            Some(reader),
-            route,
-            None,
-            w,
-            h,
-            color_fn,
-            &NoopClock,
-        )
+        self.render_scene_map_timed(scratch, target, Some(reader), route, None, w, h, color_fn, &NoopClock)
     }
 
-    /// Like [`render_map`](App::render_map), but threads `clock` to the Map screen so the
-    /// returned [`RenderStats`] carries per-stage timings. The device's render benchmark uses it.
+    /// Timed map-plane render. `reader` is the frame's whole map source: the streamed geometry and
+    /// the core-only POI and hours preparation both come from it. `None` on a chrome-only frame,
+    /// which skips every map source.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_map_timed<D, F>(
+    pub fn render_scene_map_timed<D, F>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: Option<&Reader>,
-        route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-        clock: &dyn Clock,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        self.render_scene_map_timed(scratch, target, reader, reader, route, None, w, h, color_fn, clock)
-    }
-
-    /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
-    /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
-    /// so chrome-only frames can skip every map source.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_timed<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: Option<&S>,
-        core_reader: Option<&Reader>,
         route: Option<&RouteReader>,
         peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
@@ -2558,31 +2524,17 @@ impl App {
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: MapScene,
     {
-        self.render_scene_map_photo_timed(
-            scratch,
-            target,
-            scene,
-            core_reader,
-            route,
-            peak_view,
-            w,
-            h,
-            color_fn,
-            clock,
-            None,
-        )
+        self.render_scene_map_photo_timed(scratch, target, reader, route, peak_view, w, h, color_fn, clock, None)
     }
 
     /// Render the base, prepare bounded photo work, then compose covering screens.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_photo_timed<D, F, S>(
+    pub fn render_scene_map_photo_timed<D, F>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
-        scene: Option<&S>,
-        core_reader: Option<&Reader>,
+        reader: Option<&Reader>,
         route: Option<&RouteReader>,
         peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
@@ -2594,22 +2546,21 @@ impl App {
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: MapScene,
     {
         // The one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
-        self.prepare_find(core_reader, route);
-        self.prepare_peak_article(core_reader);
-        self.prepare_landmarks(core_reader);
+        self.prepare_find(reader, route);
+        self.prepare_peak_article(reader);
+        self.prepare_landmarks(reader);
         // Gesture handling records a route-relative pan as a distance cursor, because `Ctx` owns
         // no streamed reader. Resolve it here, before `Render` borrows state read-only.
         if let Some(route) = route {
             self.state.sync_pan_route(route);
         }
         if scratch.is_some() && self.ui.base_draws_map() && self.ui.render_clip.is_none() {
-            self.ui.map_icons.prepare(core_reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
+            self.ui.map_icons.prepare(reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
             // The overlay has no rider switch yet; `true` is the input a switch would drive.
-            self.ui.settlements.prepare(core_reader, &self.state.viewport(w, h), true);
+            self.ui.settlements.prepare(reader, &self.state.viewport(w, h), true);
         }
         // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
         let render_clip = self.ui.render_clip.take();
@@ -2620,14 +2571,7 @@ impl App {
         if self.ui.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
             let scope = self.up_ahead_scope();
             let local = self.place_local_time();
-            self.ui.ahead.prepare(
-                core_reader,
-                route,
-                self.navigator.climbs(),
-                scope,
-                &mut self.ui.corridor_scratch,
-                local,
-            );
+            self.ui.ahead.prepare(reader, route, self.navigator.climbs(), scope, &mut self.ui.corridor_scratch, local);
             if self.ui.ahead.pending() {
                 self.ui.map_dirty = true;
                 self.ui.next_wake_ms = Some(1);
@@ -2642,7 +2586,7 @@ impl App {
         // draw loop, so every screen's `draw` is side-effect-free.
         let navigation = self.navigator.route_state();
         self.ui.prepare_base(
-            core_reader,
+            reader,
             route,
             self.state.user_fix,
             navigation.active_route,
@@ -2717,7 +2661,6 @@ impl App {
             scratch,
 
             state,
-            activity,
             navigation,
             recorder,
             settings,
@@ -2761,7 +2704,7 @@ impl App {
 
             backlight: backlight_available,
         };
-        let mut rx = RenderFrame { scene, render: rx };
+        let mut rx = RenderFrame { scene: reader, render: rx };
         // A drawer recesses the base rather than replacing it: the base draws through the dim
         // LUT composed with the host's colour policy, the sheet through the untouched one. No
         // capture buffer, and no alpha for a 64-colour panel to approximate. Whether it recesses
@@ -2801,7 +2744,7 @@ impl App {
                     if !covered || page.covered_rebuild {
                         let (target, color) = cv.split();
                         for _ in 0..work.steps {
-                            work.runtime.step(page, core_reader, target, color, rx.settings.language);
+                            work.runtime.step(page, reader, target, color, rx.settings.language);
                             if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
                                 page.covered_rebuild = false;
                                 break;
@@ -2915,7 +2858,7 @@ impl App {
         self.ui.hold_progress_override = Some(progress);
     }
 
-    /// Arm the one-shot region clip for the next [`render_map_timed`](App::render_map_timed).
+    /// Arm the one-shot region clip for the next [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed).
     /// The host that drained a [`Dirty`](crate::Dirty) whose [`region`](crate::Dirty::region)
     /// survived calls this right before rendering, and the frame's `Canvas` then skips whole
     /// primitives whose bounds miss it. Pair it with a matching pixel clip on the framebuffer:
@@ -3031,6 +2974,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
+    use crate::harness::support::ride_summary;
     use crate::settings::SETTINGS_RETRY_BACKOFF_MS;
     use obc_ports::{CompassSource, LocationSource};
 
@@ -4058,11 +4002,9 @@ mod tests {
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
-    /// The deepest ordinary mid-ride settings path leaves room for the host's cards. It walks the
-    /// real navigation with gestures, then proves a host-pushed warning can still land. This is
-    /// the deepest modelled path, so read it with
-    /// `laps_of_escape_and_re_descent_leave_room_for_a_host_card`, which bounds the deepest
-    /// reachable one.
+    /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
+    /// walks that one path with gestures; how deep a descent can get at all, and the reserve that
+    /// leaves, belong to `the_deepest_descent_leaves_the_host_card_slots_free`.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4085,7 +4027,6 @@ mod tests {
 
         assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
         assert_eq!(app.ui.stack.len(), 7, "the full mid-ride settings path occupies seven slots");
-        assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 3, "three host-card slots stay reserved");
 
         app.on_warning(WarningFlags::REC_ERROR);
         assert_eq!(app.ui.stack.len(), 8, "the host warning pushes over the deepest normal path");
@@ -4926,12 +4867,14 @@ mod tests {
 
     #[test]
     fn auto_never_switches_away_from_a_menu() {
-        use crate::screen::{MenuScreen, ScreenKind};
+        use crate::screen::MenuScreen;
         use crate::settings::ClimbMode;
         let (mut app, idx) = climb_app(ClimbMode::Auto);
-        // Open the Menu over the Map (a Nav-kind screen on top).
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
-        assert_ne!(app.top_screen().kind(), ScreenKind::Riding, "top is now a menu, not a riding view");
+        assert!(
+            !matches!(app.top_screen(), Screen::Map(_) | Screen::Statistics(_)),
+            "the top is a menu, not one of the two views the entry edge replaces"
+        );
         enter_first_climb(&mut app, &idx);
         assert!(matches!(app.top_screen(), Screen::Menu(_)), "the menu is left untouched by the entry edge");
         assert!(
@@ -5398,18 +5341,9 @@ mod tests {
     #[test]
     fn ride_track_request_hands_out_the_id_until_answered() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let ride = |name: &str| crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced: false,
-            synced_at_utc: 0,
-        };
         app.set_rides(&[
-            crate::RideEntry { id: 7, summary: ride("A") },
-            crate::RideEntry { id: 9, summary: ride("B") },
+            crate::RideEntry { id: 7, summary: ride_summary("A") },
+            crate::RideEntry { id: 9, summary: ride_summary("B") },
         ]);
 
         assert_eq!(ride_track_request(&app), None, "no detail open — no request");
@@ -5425,12 +5359,12 @@ mod tests {
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
-        app.set_rides(&[crate::RideEntry { id: 9, summary: ride("B") }]);
+        app.set_rides(&[crate::RideEntry { id: 9, summary: ride_summary("B") }]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
         assert_eq!(ride_track_request(&app), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride("A") }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("A") }]);
         assert_eq!(app.activity.viewed_ride, None);
         assert_eq!(ride_track_request(&app), None);
     }
@@ -5445,18 +5379,6 @@ mod tests {
             bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
             start_lon: 100,
             start_lat: 100,
-        }
-    }
-
-    fn ride_summary(name: &str) -> crate::ride::RideSummary {
-        crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced: false,
-            synced_at_utc: 0,
         }
     }
 

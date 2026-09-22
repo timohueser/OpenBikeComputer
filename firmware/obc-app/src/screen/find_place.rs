@@ -80,11 +80,10 @@ impl FindPlaceScreen {
         }
         Transition::None
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         let Some(category) = self.category else {
             title_frame(cv, rx.w, rx.h, rx.t(Msg::AssistantFind), "");
@@ -277,11 +276,10 @@ impl VisitReviewScreen {
             _ => Transition::None,
         }
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         let points = rx.nav_preview;
         let visible = matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving)

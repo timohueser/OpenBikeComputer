@@ -16,7 +16,7 @@ use obc_map_scene::BBox;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
 use obc_reader::{MapTables, SliceSource};
 
-use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ReplayFix};
+use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ride_summary, ReplayFix};
 
 fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
     (0..n as crate::CatalogObjectId).collect()
@@ -1259,6 +1259,111 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
 
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
+}
+
+/// The deepest screen stack a descent reaches, walked instead of asserted from one hand-written
+/// path. The alphabet is the three navigating gestures — a step, a press and a guarded hold — so
+/// this bounds the ordinary way down and the reserve it leaves for host-pushed cards. A sheet is
+/// outside that bound and does not spend a card slot either: `card_scheduler::land` takes any open
+/// drawer off before the card goes on.
+///
+/// `MAX_DEPTH` is not a wall. `apply` drops an overflowing push behind a `debug_assert`, so a
+/// release build loses the screen without a sound, which is why the descent's ceiling is pinned.
+#[test]
+fn the_deepest_descent_leaves_the_host_card_slots_free() {
+    /// Steps taken on a page before its gesture. The probe below proves one more step reaches no
+    /// page the walk misses, so a list that outgrows this cannot go under-walked in silence.
+    const ROWS: i32 = 16;
+    /// A tree that outgrows this is no longer the one these numbers describe.
+    const VISITS: usize = 400;
+
+    /// One move: `k` steps, then that gesture.
+    #[derive(Clone, Copy, Debug)]
+    enum Move {
+        Press(i32),
+        Hold(i32),
+    }
+
+    fn seeded() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+        app.test_mount_store();
+        app.set_backlight_available(true);
+        app.set_routes_with_ids(&test_routes(), &IDS3);
+        app.set_rides(&[
+            crate::RideEntry { id: 7, summary: ride_summary("Ride A") },
+            crate::RideEntry { id: 9, summary: ride_summary("Ride B") },
+        ]);
+        // The escape is the way in from a riding view, and [Home, Map, Menu] is the deepest root a
+        // descent starts from. On the Map itself a step zooms and a press pauses.
+        app.apply_gesture(Gesture::BackHold);
+        app
+    }
+
+    /// One path replayed from a fresh device, a frame of animation after each move so a page that
+    /// slides has settled before its rows answer.
+    fn walk(path: &[Move]) -> App {
+        let mut app = seeded();
+        let mut ms = 1_000;
+        for mv in path {
+            let (steps, gesture) = match *mv {
+                Move::Press(k) => (k, Gesture::Press),
+                Move::Hold(k) => (k, Gesture::Hold),
+            };
+            for _ in 0..steps {
+                app.apply_gesture(Gesture::Step(1));
+            }
+            app.apply_gesture(gesture);
+            ms += 1_000;
+            app.advance_animations(InputClock(ms));
+        }
+        app
+    }
+
+    fn shape(app: &App) -> Vec<&'static str> {
+        app.ui.stack.iter().map(Screen::name).collect()
+    }
+
+    // Each stack shape is expanded once, from the first path that reaches it: every row of that one
+    // representative is then pressed and held.
+    let mut seen: std::collections::BTreeSet<Vec<&'static str>> = std::collections::BTreeSet::new();
+    let mut pending: Vec<(Vec<Move>, Vec<&'static str>)> = vec![(Vec::new(), shape(&seeded()))];
+    let mut deepest: Vec<&'static str> = Vec::new();
+    let mut visits = 0usize;
+    while let Some((path, here)) = pending.pop() {
+        if !seen.insert(here.clone()) {
+            continue;
+        }
+        visits += 1;
+        assert!(visits < VISITS, "the walk outgrew its budget on {path:?}");
+        if here.len() > deepest.len() {
+            deepest = here;
+        }
+        for row in [Move::Press as fn(i32) -> Move, Move::Hold as fn(i32) -> Move] {
+            let mut reached: std::collections::BTreeSet<Vec<&'static str>> = std::collections::BTreeSet::new();
+            for k in 0..=ROWS {
+                let mut next = path.clone();
+                next.push(row(k));
+                let child = shape(&walk(&next));
+                if k == ROWS {
+                    assert!(reached.contains(&child), "ROWS is too small: {k} steps reach {child:?}");
+                } else if reached.insert(child.clone()) {
+                    pending.push((next, child));
+                }
+            }
+        }
+    }
+
+    assert!(seen.len() >= 25, "the walk reached only {} stacks — it stopped early", seen.len());
+    assert!(
+        seen.contains(&vec!["Home", "Map", "Menu", "Settings", "Ride", "StatFields", "AddField"]),
+        "the walk missed the documented deepest rider path"
+    );
+    assert_eq!(deepest.len(), 7, "the deepest descent is now {deepest:?}");
+    assert_eq!(
+        crate::screen::MAX_DEPTH - deepest.len(),
+        3,
+        "the host-pushed cards lost a reserved slot to a deeper descent"
+    );
 }
 
 /// A shutdown in progress is not cancellable by either device-wide input. It cannot be expressed

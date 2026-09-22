@@ -2726,7 +2726,6 @@ pub(crate) async fn run_app(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
-                                    reader.as_ref(),
                                     route.as_ref(),
                                     panorama,
                                     FRAME_W as f32,
@@ -2770,7 +2769,6 @@ pub(crate) async fn run_app(
                         app.render_scene_map_photo_timed(
                             None,
                             &mut target,
-                            Some(&reader),
                             Some(&reader),
                             route.as_ref(),
                             None,
