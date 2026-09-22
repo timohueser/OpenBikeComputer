@@ -253,7 +253,8 @@ def extract(bundle, member: str, target: Path, archive: Path) -> None:
         part.unlink(missing_ok=True)
 
 
-def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj",)) -> list[Path]:
+def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj",),
+           optional: bool = False) -> list[Path]:
     """The rasters inside a downloaded or delivered archive, extracted once.
 
     A bulk product and a portal order both arrive as a zip of tiles. Only the rasters and
@@ -265,6 +266,10 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
     A zip inside the zip is only a problem when this level holds no raster of its own: an
     order that ships its documents as `metadata/docs.zip` beside the DEM is an ordinary
     delivery, and refusing it would be refusing the data over the paperwork.
+
+    `optional` is for a grid of files at a state's edge: Baden-Württemberg publishes a zip
+    for a square it has no heights for, holding the paperwork alone, and that is a coverage
+    edge rather than a delivery that went wrong.
     """
 
     rasters, nested = [], []
@@ -286,7 +291,7 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
         raise Refuse(f"{archive}: it holds no raster of its own, only another archive, "
                      f"`{nested[0]}`. Unpack that one yourself and pass the directory it is "
                      "in: a zip inside a zip is not a delivery shape the registry reads")
-    if not rasters:
+    if not rasters and not optional:
         raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
     return sorted(rasters)
 

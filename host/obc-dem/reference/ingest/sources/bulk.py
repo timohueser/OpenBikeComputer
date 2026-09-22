@@ -51,8 +51,9 @@ class BulkSource(Source):
                 continue
             print(f"  fetch [{i}/{len(wanted)}] {name}", flush=True)
             if path.suffix.lower() == ".zip":
-                rasters.extend(placed(raster, self, workdir)
-                               for raster in unpack(path, workdir / f"{path.stem}.d", READABLE))
+                inside = unpack(path, workdir / f"{path.stem}.d", READABLE, optional=self.skip_missing)
+                absent += not inside
+                rasters.extend(placed(raster, self, workdir) for raster in inside)
             elif path.suffix.lower() in READABLE:
                 rasters.append(placed(path, self, workdir))
             else:
