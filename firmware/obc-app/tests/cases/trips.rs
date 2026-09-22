@@ -35,7 +35,7 @@ fn app_with_three_routes() -> App {
 #[test]
 fn filed_vs_unfiled_partition() {
     let mut app = app_with_three_routes();
-    app.set_trips(&[TripInput { id: 1, name: "Alpen Traverse", stage_ids: &[7, 8] }]);
+    app.set_trips(&[TripInput { id: 1, key: 1, name: "Alpen Traverse", start_date: 0, stage_ids: &[7, 8] }]);
 
     assert_eq!(app.trips().len(), 1);
     let t = &app.trips()[0];
@@ -59,7 +59,7 @@ fn filed_vs_unfiled_partition() {
 #[test]
 fn dangling_ref_dropped_from_resolution() {
     let mut app = app_with_three_routes();
-    app.set_trips(&[TripInput { id: 1, name: "Partial", stage_ids: &[7, 99, 8] }]);
+    app.set_trips(&[TripInput { id: 1, key: 1, name: "Partial", start_date: 0, stage_ids: &[7, 99, 8] }]);
 
     let t = &app.trips()[0];
     assert_eq!(t.stage_ids.as_slice(), &[7, 99, 8]); // stored verbatim, dangling included
@@ -74,7 +74,7 @@ fn dangling_ref_dropped_from_resolution() {
 #[test]
 fn fully_dangling_trip_still_lists() {
     let mut app = app_with_three_routes();
-    app.set_trips(&[TripInput { id: 5, name: "Ghost", stage_ids: &[98, 99] }]);
+    app.set_trips(&[TripInput { id: 5, key: 1, name: "Ghost", start_date: 0, stage_ids: &[98, 99] }]);
 
     assert_eq!(app.trips().len(), 1);
     let t = &app.trips()[0];
@@ -94,7 +94,7 @@ fn fully_dangling_trip_still_lists() {
 #[test]
 fn stage_order_preserved() {
     let mut app = app_with_three_routes();
-    app.set_trips(&[TripInput { id: 1, name: "Reversed", stage_ids: &[9, 7] }]);
+    app.set_trips(&[TripInput { id: 1, key: 1, name: "Reversed", start_date: 0, stage_ids: &[9, 7] }]);
 
     let t = &app.trips()[0];
     assert_eq!(t.stage_indices.as_slice(), &[2, 0]);
@@ -107,8 +107,9 @@ fn stage_order_preserved() {
 fn max_trips_overflow_keeps_first_n() {
     let mut app = app_with_three_routes();
     let names: Vec<String> = (0..MAX_TRIPS + 5).map(|i| format!("Trip {i}")).collect();
-    let inputs: Vec<TripInput> =
-        (0..MAX_TRIPS + 5).map(|i| TripInput { id: i as u64, name: &names[i], stage_ids: &[7] }).collect();
+    let inputs: Vec<TripInput> = (0..MAX_TRIPS + 5)
+        .map(|i| TripInput { id: i as u64, key: 1, name: &names[i], start_date: 0, stage_ids: &[7] })
+        .collect();
     app.set_trips(&inputs);
 
     assert_eq!(app.trips().len(), MAX_TRIPS);
@@ -125,7 +126,7 @@ fn reresolves_across_a_route_rescan() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     // Route 8 is not present yet.
     app.set_routes_with_ids(&[route("Alpha", 10, 100)], &[7]);
-    app.set_trips(&[TripInput { id: 1, name: "Growing", stage_ids: &[7, 8] }]);
+    app.set_trips(&[TripInput { id: 1, key: 1, name: "Growing", start_date: 0, stage_ids: &[7, 8] }]);
     {
         let t = &app.trips()[0];
         assert_eq!(t.stage_indices.as_slice(), &[0]); // only 7 resolves

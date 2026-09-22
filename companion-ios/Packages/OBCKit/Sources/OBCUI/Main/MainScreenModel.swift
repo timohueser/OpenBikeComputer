@@ -480,9 +480,16 @@ public final class MainScreenModel {
         trip.stageIDs.compactMap { plannedDeviceObjectID(for: $0) }
     }
 
-    /// The CRC of the trip object an upload would send now: its name plus resolved stage ids.
+    /// The trip object an upload would send now: one whole day per resolved stage. The one
+    /// definition the encode and the fingerprint read.
+    private func currentTripObject(for trip: TripRecord, stageIDs: [DeviceObjectID]) -> TripObjectCodec.Trip {
+        TripObjectCodec.Trip(
+            key: trip.key, name: trip.name, startDate: 0, days: stageIDs.map(TripObjectCodec.Day.whole))
+    }
+
+    /// The CRC of the trip object an upload would send now.
     private func currentTripPayloadCRC(for trip: TripRecord) -> UInt32 {
-        TripObjectCodec.payloadCRC(name: trip.name, deviceStageIDs: currentTripDeviceStageIDs(for: trip))
+        TripObjectCodec.payloadCRC(currentTripObject(for: trip, stageIDs: currentTripDeviceStageIDs(for: trip)))
     }
 
     /// The trip twin of `provenCommittedCRC(for:)`.
@@ -536,14 +543,16 @@ public final class MainScreenModel {
             .sorted { $0.id.rawValue < $1.id.rawValue }
         for var trip in candidates {
             let stageIDs = currentTripDeviceStageIDs(for: trip)
-            let currentCRC = TripObjectCodec.payloadCRC(name: trip.name, deviceStageIDs: stageIDs)
+            let object = currentTripObject(for: trip, stageIDs: stageIDs)
+            let currentCRC = TripObjectCodec.payloadCRC(object)
             guard let entry = adoptable.first(where: { entry in
                 guard !claimed.contains(entry.id) else { return false }
                 if entry.crc32 == currentCRC { return true }
                 // The rename case: the device's copy is still under the catalog's name.
                 guard entry.name != trip.name else { return false }
-                return entry.crc32
-                    == TripObjectCodec.payloadCRC(name: entry.name, deviceStageIDs: stageIDs)
+                var renamed = object
+                renamed.name = entry.name
+                return entry.crc32 == TripObjectCodec.payloadCRC(renamed)
             }) else { continue }
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
             // The entry's CRC is what the device holds, so the trip reads as out of date and
@@ -675,7 +684,7 @@ public final class MainScreenModel {
         guard let trip = trip(tripID) else { return nil }
         let deviceStageIDs = currentTripDeviceStageIDs(for: trip)
         guard !deviceStageIDs.isEmpty else { return nil }
-        let payload = TripObjectCodec.encode(name: trip.name, deviceStageIDs: deviceStageIDs)
+        let payload = TripObjectCodec.encode(currentTripObject(for: trip, stageIDs: deviceStageIDs))
         return TripBlob(
             name: trip.name, deviceStageIDs: deviceStageIDs, payload: payload, targetObjectID: target)
     }
@@ -1070,7 +1079,7 @@ public final class MainScreenModel {
     private func pushTripObject(_ tripID: TripID, replacing objectID: DeviceObjectID?) {
         guard let trip = trip(tripID) else { return }
         let deviceStageIDs = currentTripDeviceStageIDs(for: trip)
-        let payload = TripObjectCodec.encode(name: trip.name, deviceStageIDs: deviceStageIDs)
+        let payload = TripObjectCodec.encode(currentTripObject(for: trip, stageIDs: deviceStageIDs))
         let crc = CRC32.checksum(payload)
         let blob = TripBlob(
             name: trip.name, deviceStageIDs: deviceStageIDs, payload: payload, targetObjectID: objectID)

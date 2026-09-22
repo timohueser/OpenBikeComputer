@@ -1,116 +1,158 @@
-//! The trip object: the metadata object that groups planned routes into one named unit. A trip
-//! references route object ids in ride order and holds no route bytes, so a membership edit never
-//! touches a route payload. The layout is in `obc-ble-interface-spec.md` and pinned by
-//! `specs/vectors/trip-v2.bin`.
+//! The trip object: the phone-authored metadata object that describes a trip's days. A trip
+//! references one route object per day, in ride order, and holds no route bytes. The layout is in
+//! `obc-ble-interface-spec.md` §7.7 and pinned by `specs/vectors/trip-v3.bin`.
 //!
-//! The object length is fully determined by the header: `56 + 8·stage_count` bytes. A decoder
+//! The object length is fully determined by the header: `64 + 16·day_count` bytes. A decoder
 //! rejects a payload of any other length with [`Error::BadOffset`], which is also the torn-write
 //! guard, because a cut-short write leaves a shorter file.
 
 use heapless::{String, Vec};
 
-use obc_formats::io::{rd_u16, ByteSink, ByteSource, Error};
+use obc_formats::io::{rd_u16, rd_u32, ByteSink, ByteSource, Error};
 use obc_formats::obcr::NAME_CAP;
 
 /// The trip-object version [`write_trip`] writes. The readers accept only this version.
-pub const TRIP_VERSION: u8 = 2;
-/// The fixed trip-object header length. The stage ids follow immediately.
-pub const TRIP_HEADER_LEN: usize = 56;
+pub const TRIP_VERSION: u8 = 3;
+/// The fixed trip-object header length. The day records follow immediately.
+pub const TRIP_HEADER_LEN: usize = 64;
+/// The length of one day record.
+pub const TRIP_DAY_LEN: usize = 16;
 
-/// The device's resident cap on a trip's stages. The wire format allows up to `u16::MAX`, and a
+/// The device's resident cap on a trip's days. The wire format allows up to `u16::MAX`, and a
 /// phone encoder is not bound by this cap, so [`TripMeta::read`] windows a longer trip instead of
 /// overflowing.
-pub const MAX_TRIP_STAGES: usize = 32;
+pub const MAX_TRIP_DAYS: usize = 32;
+
+/// One day of a trip: its route and where that route runs on the trip's main line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TripDay {
+    /// The day route's object id. A dangling id is carried verbatim; validation is the app's job.
+    pub route: u64,
+    /// Metres along the day route where it joins the main line.
+    pub join_m: u32,
+    /// Metres along the day route where it leaves the main line. A value at or past the route's
+    /// end means the day ends on the line.
+    pub leave_m: u32,
+}
+
+impl TripDay {
+    /// A day that starts and ends on the main line.
+    pub const fn whole(route: u64) -> TripDay {
+        TripDay { route, join_m: 0, leave_m: u32::MAX }
+    }
+
+    fn decode(b: &[u8]) -> TripDay {
+        TripDay {
+            route: u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
+            join_m: rd_u32(b, 8),
+            leave_m: rd_u32(b, 12),
+        }
+    }
+
+    fn encode(self, b: &mut [u8]) {
+        b[0..8].copy_from_slice(&self.route.to_le_bytes());
+        b[8..12].copy_from_slice(&self.join_m.to_le_bytes());
+        b[12..16].copy_from_slice(&self.leave_m.to_le_bytes());
+    }
+}
 
 /// The lightweight trip description, readable from the header alone, so a catalog scan is one
 /// small read per file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TripSummary {
+    pub key: u64,
     pub name: String<NAME_CAP>,
-    /// The stage count as stored, even when it exceeds [`MAX_TRIP_STAGES`].
-    pub stage_count: u16,
+    /// Days since 1970-01-01; 0 = no start date.
+    pub start_date: u16,
+    /// The day count as stored, even when it exceeds [`MAX_TRIP_DAYS`].
+    pub day_count: u16,
 }
 
 impl TripSummary {
     /// Read and validate a stored trip object's header. Cheap enough to call per file when
     /// building the trip catalog.
     pub fn read(src: &dyn ByteSource) -> Result<TripSummary, Error> {
-        let h = read_header(src)?;
-        Ok(TripSummary { name: h.name, stage_count: h.stage_count })
+        read_header(src)
     }
 }
 
-/// A trip's full metadata: its name and the ordered route object ids it references.
+/// A trip's resident metadata: its header fields and its day route ids in ride order. The
+/// per-day line offsets stay on the medium; [`read_trip_day`] reads one day when it is needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TripMeta {
+    pub key: u64,
     pub name: String<NAME_CAP>,
-    /// The route object ids this trip references, in ride order. A dangling id is carried
-    /// verbatim; validation is the app's job, not the codec's.
-    pub stage_ids: Vec<u64, MAX_TRIP_STAGES>,
-    /// The stored `stage_count` exceeded [`MAX_TRIP_STAGES`], so `stage_ids` holds only the first
-    /// [`MAX_TRIP_STAGES`] ids.
+    /// Days since 1970-01-01; 0 = no start date.
+    pub start_date: u16,
+    /// The day route ids in ride order. A dangling id is carried verbatim.
+    pub day_routes: Vec<u64, MAX_TRIP_DAYS>,
+    /// The stored `day_count` exceeded [`MAX_TRIP_DAYS`], so `day_routes` holds only the first
+    /// [`MAX_TRIP_DAYS`] days.
     pub truncated: bool,
 }
 
 impl TripMeta {
-    /// Read a stored trip object: the header plus the stage ids, windowed to [`MAX_TRIP_STAGES`].
-    /// A trip past the cap reads its first [`MAX_TRIP_STAGES`] ids with `truncated = true`.
+    /// Read a stored trip object: the header plus the day route ids, windowed to
+    /// [`MAX_TRIP_DAYS`].
     pub fn read(src: &dyn ByteSource) -> Result<TripMeta, Error> {
         let h = read_header(src)?;
-        let want = h.stage_count as usize;
-        let take = want.min(MAX_TRIP_STAGES);
-        let mut stage_ids = Vec::new();
-        // `read_header` already proved every stored stage is present, so this read cannot run
-        // short.
-        let mut buf = [0u8; 8 * MAX_TRIP_STAGES];
-        let bytes = &mut buf[..take * 8];
+        let take = (h.day_count as usize).min(MAX_TRIP_DAYS);
+        // `read_header` already proved every stored day is present, so this read cannot run short.
+        let mut buf = [0u8; TRIP_DAY_LEN * MAX_TRIP_DAYS];
+        let bytes = &mut buf[..take * TRIP_DAY_LEN];
         if take > 0 {
-            src.read_at(TRIP_HEADER_LEN as u64, bytes)?;
+            src.read_at(day_offset(0), bytes)?;
         }
-        for k in 0..take {
-            // Infallible: the loop count equals the pushed count, both at most MAX_TRIP_STAGES.
-            let at = k * 8;
-            let _ = stage_ids.push(u64::from_le_bytes([
-                bytes[at],
-                bytes[at + 1],
-                bytes[at + 2],
-                bytes[at + 3],
-                bytes[at + 4],
-                bytes[at + 5],
-                bytes[at + 6],
-                bytes[at + 7],
-            ]));
-        }
-        Ok(TripMeta { name: h.name, stage_ids, truncated: want > take })
+        let day_routes = bytes.as_chunks::<TRIP_DAY_LEN>().0.iter().map(|b| TripDay::decode(b).route).collect();
+        Ok(TripMeta {
+            key: h.key,
+            name: h.name,
+            start_date: h.start_date,
+            day_routes,
+            truncated: h.day_count as usize > take,
+        })
     }
 }
 
-/// Parsed trip-object header fields, shared by [`TripSummary::read`] and [`TripMeta::read`].
-struct Header {
-    stage_count: u16,
-    name: String<NAME_CAP>,
+/// Read day `k` of a stored trip object, validating the header first.
+pub fn read_trip_day(src: &dyn ByteSource, k: u16) -> Result<TripDay, Error> {
+    if k >= read_header(src)?.day_count {
+        return Err(Error::BadOffset);
+    }
+    let mut day = [0u8; TRIP_DAY_LEN];
+    src.read_at(day_offset(k as usize), &mut day)?;
+    Ok(TripDay::decode(&day))
 }
 
-fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
+const fn day_offset(k: usize) -> u64 {
+    (TRIP_HEADER_LEN + k * TRIP_DAY_LEN) as u64
+}
+
+fn read_header(src: &dyn ByteSource) -> Result<TripSummary, Error> {
     let mut h = [0u8; TRIP_HEADER_LEN];
     src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
     if h[0] != TRIP_VERSION {
         return Err(Error::BadVersion);
     }
-    let stage_count = rd_u16(&h, 2);
+    let day_count = rd_u16(&h, 2);
     // Length is fully determined by the header, so any other size is torn or malformed.
-    if src.len() != trip_object_len(stage_count) {
+    if src.len() != trip_object_len(day_count) {
         return Err(Error::BadOffset);
     }
     let name_len = (h[4] as usize).min(NAME_CAP);
     let mut name = String::new();
     let _ = name.push_str(utf8_prefix(&h[5..5 + name_len]));
-    Ok(Header { stage_count, name })
+    let key = u64::from_le_bytes([h[56], h[57], h[58], h[59], h[60], h[61], h[62], h[63]]);
+    // Progress and ride records use key 0 for "no trip".
+    if key == 0 {
+        return Err(Error::BadOffset);
+    }
+    Ok(TripSummary { key, name, start_date: rd_u16(&h, 54), day_count })
 }
 
-/// The whole encoded object's size for a given stage count: `56 + 8·stage_count`.
-pub const fn trip_object_len(stage_count: u16) -> u64 {
-    TRIP_HEADER_LEN as u64 + 8 * stage_count as u64
+/// The whole encoded object's size for a given day count: `64 + 16·day_count`.
+pub const fn trip_object_len(day_count: u16) -> u64 {
+    TRIP_HEADER_LEN as u64 + TRIP_DAY_LEN as u64 * day_count as u64
 }
 
 /// The longest valid-UTF-8 prefix of `b`. A byte-capped name can split a multi-byte char.
@@ -121,36 +163,38 @@ fn utf8_prefix(b: &[u8]) -> &str {
     }
 }
 
-/// Write a trip object to `sink` in one streaming pass. `stages` is truncated to `u16::MAX` and
+/// Write a trip object to `sink` in one streaming pass. `days` is truncated to `u16::MAX` and
 /// `name` to [`NAME_CAP`] bytes on a char boundary.
-pub fn write_trip(name: &str, stages: &[u64], sink: &mut dyn ByteSink) -> Result<(), Error> {
+pub fn write_trip(
+    key: u64,
+    name: &str,
+    start_date: u16,
+    days: &[TripDay],
+    sink: &mut dyn ByteSink,
+) -> Result<(), Error> {
     let mut end = name.len().min(NAME_CAP);
     while end > 0 && !name.is_char_boundary(end) {
         end -= 1;
     }
     let name = &name[..end];
-    let stage_count = stages.len().min(u16::MAX as usize);
+    let days = &days[..days.len().min(u16::MAX as usize)];
 
     let mut head = [0u8; TRIP_HEADER_LEN];
     head[0] = TRIP_VERSION;
-    // head[1] reserved = 0
-    head[2..4].copy_from_slice(&(stage_count as u16).to_le_bytes());
+    head[2..4].copy_from_slice(&(days.len() as u16).to_le_bytes());
     head[4] = name.len() as u8;
     head[5..5 + name.len()].copy_from_slice(name.as_bytes());
-    // head[53..56] reserved = 0
+    head[54..56].copy_from_slice(&start_date.to_le_bytes());
+    head[56..64].copy_from_slice(&key.to_le_bytes());
     sink.write(&head)?;
 
-    // Stream the stage ids in blocks so the whole table is never resident.
-    const BLOCK: usize = 32;
-    let mut buf = [0u8; BLOCK * 8];
-    let mut done = 0usize;
-    while done < stage_count {
-        let n = (stage_count - done).min(BLOCK);
-        for i in 0..n {
-            buf[i * 8..i * 8 + 8].copy_from_slice(&stages[done + i].to_le_bytes());
+    // Stream the days in blocks so the whole table is never resident.
+    let mut buf = [0u8; TRIP_DAY_LEN * 16];
+    for block in days.chunks(16) {
+        for (day, out) in block.iter().zip(buf.as_chunks_mut::<TRIP_DAY_LEN>().0) {
+            day.encode(out);
         }
-        sink.write(&buf[..n * 8])?;
-        done += n;
+        sink.write(&buf[..block.len() * TRIP_DAY_LEN])?;
     }
     Ok(())
 }

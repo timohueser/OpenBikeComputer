@@ -235,37 +235,94 @@ appended, and absent trailing fields mean "device default".
 The Config object carries **no firmware-version field**: the running image's version is the DIS
 Firmware Revision String (§3.1).
 
-### 7.7 `trip` — a trip object (v2)
+### 7.7 `trip` — a trip object (v3)
 
-A **trip** groups planned routes into one named unit. It references route object ids in ride order
-and never contains route bytes.
+A **trip** is a named list of days in ride order. Each day references one route object, the day
+route. The trip never contains route bytes. The phone writes the trip object.
 
 ```
-trip object v2 (56-byte header + 8 bytes/stage, little-endian):
-  version      u8   = 2
+trip object v3 (64-byte header + 16 bytes/day, little-endian):
+  version      u8   = 3
   reserved     u8   = 0
-  stage_count  u16
+  day_count    u16
   name_len     u8   ≤ 48
   name         char[48]  UTF-8, zero-padded
-  reserved     u8[3]  = 0
-  stages       stage_count × u64   flat-store ObjectIds, ride order
+  reserved     u8   = 0
+  start_date   u16  days since 1970-01-01; 0 = no start date
+  trip_key     u64  nonzero
+  days         day_count × 16 bytes, ride order:
+    route      u64  flat-store ObjectId of the day route
+    join_m     u32  metres along the day route where it joins the main line
+    leave_m    u32  metres along the day route where it leaves the main line
 ```
 
-The object length is fully determined by its header: `56 + 8·stage_count` bytes.
+The object length is fully determined by its header: `64 + 16·day_count` bytes. A reader rejects
+any other length, which also rejects a torn write.
 
-- **Reference-only.** A stage is a route object id. A route referenced by no stored trip is a
-  top-level route, and membership is exactly one level deep — a route lives in at most one trip, or
-  standalone.
-- **Dangling refs are tolerated on read.** A member route deleted individually does not invalidate
+- **Trip key.** The phone chooses the key and keeps it for the life of the trip. A re-upload of the
+  same trip writes the same key. Device progress and rides refer to the key, not to the object id.
+  Key 0 means "no trip" in those records, so a reader rejects a trip object with key 0. Reversing a
+  trip makes a new trip with a new key, so its progress starts empty.
+- **Day names and stats.** The display name of a day ("Day 2 Ulrichen") is the OBCR name of its
+  route. Distance and climb come from the route's OBCR header. The trip object repeats neither.
+- **Main line.** A day that starts on the main line has `join_m = 0`. A day that ends on the main
+  line has `leave_m` at or past the end of its route; readers clamp `leave_m` to the route length.
+  Other values mark an out-and-back spur to a stop off the line. The device skips the spur when it
+  joins the rest of one day to the next day. The `leave_m` of day N−1 and the `join_m` of day N
+  name the same point on the main line.
+- **Reference-only.** A day route is a route object id. A route that no stored trip references is a
+  top-level route. Membership is one level deep: a route is in at most one trip, or standalone.
+- **Dangling refs are tolerated on read.** A day route deleted individually does not invalidate
   the trip: the device serves the trip verbatim, dangling ids and all. The device never rewrites a
   stored trip. Dangling refs persist until the next trip upload replaces the object.
 - **Uploads commit verbatim.** A trip upload that references unknown route ids is stored as sent;
   validation belongs to the client.
-- **Recommended upload order: stages first, the trip object last.** An interrupted whole-trip push
-  then never leaves a trip pointing at nothing, and re-running the push is idempotent.
-- **Removing a trip removes only the trip object.** Its member routes become top-level routes; the
+- **Recommended upload order: day routes first, the trip object last.** An interrupted whole-trip
+  push then never leaves a trip pointing at nothing, and re-running the push is idempotent.
+- **Removing a trip removes only the trip object.** Its day routes become top-level routes; the
   wire has no cascading delete. A "delete trip *and* its routes" action is composed by the client as
   individual route removals plus the trip removal.
+
+#### Trip progress
+
+The device keeps one progress record per trip key. The record never crosses the wire. The device
+writes it at Finish of a ride on a trip day, and keeps it in the ride-archive Metadata object
+([`Ride_Archive_Metadata.md`](Ride_Archive_Metadata.md)) with the navigator checkpoint.
+
+| Field | Meaning |
+| :-- | :-- |
+| position day | the day that contains the last matched position |
+| position route | the route ObjectId and Revision of that day when the record was written |
+| position metres | metres into that day's route |
+| last finished day | the last day the rider finished; none before the first Finish |
+| finish dates | for each day, the date of its Finish in days since 1970-01-01; 0 = none |
+
+- **Re-upload.** A re-upload of the same trip key keeps the record. The position metres count
+  only while the trip names the same route ObjectId, at the same Revision, for the position day.
+  Otherwise they read as 0, and the last finished day stays.
+- **Fewer days.** A position day or a last finished day at or past `day_count` reads as none. A
+  re-upload with fewer days thus never reads as a done trip.
+- **Bound.** The Metadata object holds at most 16 progress records, in write order. A write moves
+  its record to the end. Before a write, the device drops each record whose key no stored trip
+  holds. When 16 records remain, it drops the first one.
+- **No route hold.** A progress record never blocks a route replace or remove, unlike the navigator
+  checkpoint. The Revision check voids a stale position instead.
+
+#### Day rules
+
+Days count from 0 in the object; the rider sees Day 1 for day 0.
+
+- **Next day.** `next = max(last finished + 1, position day)`. Without a record, day 0 is next.
+  When `next` is past the last day, the trip is done. Example: the rider stops 20 km before the end
+  of Day 2 and finishes. Day 3 is next, and the device loads the rest of Day 2 plus Day 3. When the
+  rider instead rides 20 km into Day 3, Day 3 is next with 20 km less to ride.
+- **Ticks.** A day is ticked when it is at or before the last finished day, or when it is before
+  the position day.
+- **Day dates.** Dates follow the rides. For day `k`, take the latest day `j ≤ k` with a finish
+  date: `date(k) = date(j) + (k − j)`. Without such a day, `date(k) = start_date + k`. Without a
+  start date either, day `k` has no date and no weekday.
+- **Trip to go.** The rest of the loaded day, plus the distance and climb of the routes of all
+  later days.
 
 ## 8. Security
 

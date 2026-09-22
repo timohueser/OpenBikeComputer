@@ -5755,7 +5755,7 @@ mod tests {
     fn repeated_catalog_feeds_do_not_repaint_but_changed_content_does() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let mut routes = [summary("Col")];
-        let trips = [crate::trip::TripInput { id: 20, name: "Tour", stage_ids: &[10] }];
+        let trips = [crate::trip::TripInput { id: 20, key: 1, name: "Tour", start_date: 0, stage_ids: &[10] }];
         let mut rides = [RideEntry { id: 30, summary: ride_summary("Ride") }];
         app.take_dirty();
         app.set_routes_with_ids(&routes, &[10]);

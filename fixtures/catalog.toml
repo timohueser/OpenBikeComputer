@@ -5,10 +5,10 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/b3b284ab09f9a2b72856cc9c26fd92a7d23ce6fdd7297a5882b1717dc063abb6.tar.gz"
-sha256 = "b3b284ab09f9a2b72856cc9c26fd92a7d23ce6fdd7297a5882b1717dc063abb6"
+archive = "packages/b016608fb00921d10648f529e637152867b65b6f3751871b1b55c5b4dbaa78f9.tar.gz"
+sha256 = "b016608fb00921d10648f529e637152867b65b6f3751871b1b55c5b4dbaa78f9"
 bytes = 4137061
-provenance = "OBCM v18, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain and authored OBCR v4 route. Schema 2 multilingual Swiss landmarks and separate bounded peak articles with original Sources. Canonical fixture bbox, and 19 settlement records. Exact source, producer and output identities: sources/ride-assistant/grimsel-v18.json."
+provenance = "OBCM v18, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain, authored OBCR v4 route and authored trip object v3. Schema 2 multilingual Swiss landmarks and separate bounded peak articles with original Sources. Canonical fixture bbox, and 19 settlement records. Exact source, producer and output identities: sources/ride-assistant/grimsel-v18.json."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
 
@@ -68,7 +68,7 @@ tracked_sources = { "photos/hahnen.json" = "sources/peak-view/photos/hahnen.json
 [profiles.test]
 summary = "All external fixture packages exercised by the full repository test suite"
 scenarios = ["grimsel", "monaco-upahead"]
-packages = ["peak-view-photos"]
+packages = ["peak-view-photos", "sim-freiburg"]
 
 [packages.assistant-osm]
 summary = "Pinned OSM sources for Ride Assistant: Switzerland, Monaco and regional West Cork"

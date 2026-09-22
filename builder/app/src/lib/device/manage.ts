@@ -4,7 +4,7 @@
  * Neither is a protocol feature, and that is the point: both ride on the one primitive the wire
  * already has, **a `PUT` naming an existing object replaces it in one commit**. A rename gets the
  * OBCR, rewrites the 48-byte name field in the payload, and puts the same object back under the same
- * `ObjectId`, so every reference to it survives. A trip edit does the same to its stage list.
+ * `ObjectId`, so every reference to it survives. A trip edit does the same to its day list.
  *
  * **Every replace carries the revision it expects**, checked at admission and again immediately
  * before the commit, so an object something else replaced in between fails the compare-and-swap
@@ -19,7 +19,7 @@
 
 import type { FlatStoreClient } from "../usb/client";
 import { truncateUtf8 } from "../format";
-import { decodeTripObject, encodeTripObject, type TripObject } from "../usb/objects";
+import { decodeTripObject, encodeTripObject, wholeDay, type TripObject } from "../usb/objects";
 import { ObjectKind, type CatalogEntry, type PutResponse } from "../usb/protocol";
 import { decodeRouteHeader, ROUTE_NAME_MAX } from "./route";
 
@@ -91,7 +91,10 @@ export async function createTrip(
     signal?: AbortSignal,
 ): Promise<PutResponse> {
     const clean = cleanName(name, TRIP_NAME_MAX, "Trip");
-    const bytes = encodeTripObject({ name: clean, stages: stages.map(stageId) });
+    // The key names this trip for life; zero is reserved for "no trip".
+    const key = crypto.getRandomValues(new BigUint64Array(1))[0] || 1n;
+    const days = stages.map((id) => wholeDay(stageId(id)));
+    const bytes = encodeTripObject({ key, name: clean, startDate: 0, days });
     return client.put({ kind: ObjectKind.Trip, displayName: clean }, bytes, { signal });
 }
 
@@ -129,22 +132,22 @@ export async function updateTrip(
 export function addStage(trip: TripObject, routeId: bigint): TripObject {
     // Adding a stage that is already in the trip is a no-op, not a duplicate: the
     // menu offering the add has no way to know the trip's current stages are stale.
-    if (trip.stages.includes(routeId)) return trip;
-    return { ...trip, stages: [...trip.stages, routeId] };
+    if (trip.days.some((day) => day.route === routeId)) return trip;
+    return { ...trip, days: [...trip.days, wholeDay(routeId)] };
 }
 
 export function removeStage(trip: TripObject, index: number): TripObject {
-    return { ...trip, stages: trip.stages.filter((_, i) => i !== index) };
+    return { ...trip, days: trip.days.filter((_, i) => i !== index) };
 }
 
 /** Move the stage at `index` by `delta` places, clamped to the list. */
 export function moveStage(trip: TripObject, index: number, delta: number): TripObject {
-    const to = Math.max(0, Math.min(trip.stages.length - 1, index + delta));
-    if (to === index || index < 0 || index >= trip.stages.length) return trip;
-    const stages = [...trip.stages];
-    const [moved] = stages.splice(index, 1);
-    stages.splice(to, 0, moved);
-    return { ...trip, stages };
+    const to = Math.max(0, Math.min(trip.days.length - 1, index + delta));
+    if (to === index || index < 0 || index >= trip.days.length) return trip;
+    const days = [...trip.days];
+    const [moved] = days.splice(index, 1);
+    days.splice(to, 0, moved);
+    return { ...trip, days };
 }
 
 /** Trimmed, non-empty, inside the field's byte cap. */

@@ -25,7 +25,13 @@ impl FlatTripStore {
     pub fn inputs(&self) -> Vec<TripInput<'_>> {
         self.rows
             .iter()
-            .map(|(id, _, trip)| TripInput { id: *id, name: trip.name.as_str(), stage_ids: trip.stage_ids.as_slice() })
+            .map(|(id, _, trip)| TripInput {
+                id: *id,
+                key: trip.key,
+                name: trip.name.as_str(),
+                start_date: trip.start_date,
+                stage_ids: trip.day_routes.as_slice(),
+            })
             .collect()
     }
 
@@ -105,7 +111,8 @@ mod tests {
 
     fn trip(ids: &[u64]) -> Vec<u8> {
         let mut bytes = VecSink::default();
-        obc_route::write_trip("Stages", ids, &mut bytes).unwrap();
+        let days: Vec<_> = ids.iter().copied().map(obc_route::TripDay::whole).collect();
+        obc_route::write_trip(1, "Stages", 0, &days, &mut bytes).unwrap();
         bytes.bytes().to_vec()
     }
 

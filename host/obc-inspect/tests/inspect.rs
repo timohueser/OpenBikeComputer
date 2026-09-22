@@ -86,10 +86,10 @@ fn a_route_reports_its_name_its_points_and_its_waypoints() {
 /// The trip object and the settings blob carry no magic. Both are still named.
 #[test]
 fn the_two_headerless_formats_are_named_by_content() {
-    let trip = json_report(Path::new("../../specs/vectors/trip-v2.bin"));
+    let trip = json_report(Path::new("../../specs/vectors/trip-v3.bin"));
     assert_eq!(trip["format"], "obt");
-    assert_eq!(trip["stage_count"], 3);
-    assert_eq!(trip["stages"].as_array().expect("the stage ids").len(), 3);
+    assert_eq!(trip["day_count"], 3);
+    assert_eq!(trip["days"].as_array().expect("the days").len(), 3);
 
     let dir = scratch_dir("obc-inspect", "settings");
     let path = dir.join("obc-settings.bin");

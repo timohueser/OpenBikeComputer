@@ -400,7 +400,7 @@ mod tests {
     ) -> TripSummary {
         let ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> =
             (0..catalog.len() as crate::CatalogObjectId).collect();
-        TripSummary::resolve(&TripInput { id, name, stage_ids: stages }, catalog, &ids)
+        TripSummary::resolve(&TripInput { id, key: 1, name, start_date: 0, stage_ids: stages }, catalog, &ids)
     }
 
     fn run(

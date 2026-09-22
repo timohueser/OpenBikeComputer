@@ -8,8 +8,8 @@ use obc_formats::{ride::FOOTER_LEN as RIDE_FOOTER_LEN, track::RECORD_LEN as TRAC
 use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{
     all, crc32, dir, ride_v3, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
-    TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME,
-    TRIP_DANGLING_STAGE, TRIP_NAME, TRIP_STAGE_IDS,
+    TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME, TRIP_DAYS,
+    TRIP_KEY, TRIP_NAME, TRIP_START_DATE,
 };
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -248,23 +248,33 @@ fn ride_vector_reads_through_the_production_codec() {
     assert_eq!(preview.as_slice(), &[(7_800_000, 48_000_000), (7_801_200, 48_001_000), (7_803_000, 48_002_000)]);
 }
 
-/// The trip vector pins §7.7, including full-width route ids and its self-describing length.
+/// The trip vector pins §7.7, including full-width ids and its self-describing length.
 #[test]
 fn trip_vectors_are_self_consistent() {
-    let trip = fixture("trip-v2.bin");
-    // Header: version 2, reserved 0, stage_count 3, name "Alpen Traverse".
-    assert_eq!(trip[0], 2, "trip object version");
+    let trip = fixture("trip-v3.bin");
+    assert_eq!(trip[0], 3, "trip object version");
     assert_eq!(trip[1], 0, "reserved");
-    let stage_count = u16::from_le_bytes([trip[2], trip[3]]);
-    assert_eq!(stage_count, 3);
+    let day_count = u16::from_le_bytes([trip[2], trip[3]]);
+    assert_eq!(day_count as usize, TRIP_DAYS.len());
     let name_len = trip[4] as usize;
     assert_eq!(&trip[5..5 + name_len], TRIP_NAME.as_bytes());
-    // Length is self-describing: 56-byte header + 8 bytes/stage.
-    assert_eq!(trip.len(), 56 + 8 * stage_count as usize);
-    let stages: Vec<u64> = (0..stage_count as usize)
-        .map(|k| u64::from_le_bytes(trip[56 + 8 * k..64 + 8 * k].try_into().unwrap()))
+    assert_eq!(u16::from_le_bytes([trip[54], trip[55]]), TRIP_START_DATE);
+    assert_eq!(u64::from_le_bytes(trip[56..64].try_into().unwrap()), TRIP_KEY);
+    // Length is self-describing: 64-byte header + 16 bytes/day.
+    assert_eq!(trip.len(), 64 + 16 * day_count as usize);
+    let days: Vec<(u64, u32, u32)> = trip[64..]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|d| {
+            (
+                u64::from_le_bytes(d[0..8].try_into().unwrap()),
+                u32::from_le_bytes(d[8..12].try_into().unwrap()),
+                u32::from_le_bytes(d[12..16].try_into().unwrap()),
+            )
+        })
         .collect();
-    assert_eq!(stages, vec![TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
+    assert_eq!(days, TRIP_DAYS);
 }
 
 /// The OBCT terrain shard (`OBCT_Spec.md`): the checked-in bytes parse through the production
