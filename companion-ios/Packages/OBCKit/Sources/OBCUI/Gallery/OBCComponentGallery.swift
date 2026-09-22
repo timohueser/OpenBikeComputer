@@ -104,6 +104,10 @@ public struct OBCComponentGallery: View {
                     ElevationProfileView(samples: [220, 260, 240, 380, 330, 470, 360, 450, 390, 410])
                 }
 
+                section("Marker-on-line editor") {
+                    LineMarkerGallerySection()
+                }
+
                 section("Disclosure Row + Waypoints Dropdown") {
                     OBCDisclosureRow(
                         systemImage: "mappin.and.ellipse",
