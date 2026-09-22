@@ -179,6 +179,7 @@ the stack without it.</figcaption>
 | `Push(screen)` | Add a top screen. |
 | `Pop` | Remove the top screen, except Home. |
 | `Replace(screen)` | Replace the top screen. |
+| `OverRoot(screen)` | Keep Home and the view under it, and add one screen. |
 | `Root(screen)` | Keep Home and add one screen. |
 | `Home` | Remove all screens above Home. |
 
@@ -466,9 +467,10 @@ Delete lives on one row. A hold anywhere else deletes nothing.
 
 ## Ride Assistant
 
-Holding **Up + Select** opens Ride Assistant, which answers four questions from installed offline
-data: find a place, what is next on the route, nearby landmarks, and easier routes. There is no
-network in any of them.
+Holding **Up + Select** opens Ride Assistant over the riding view. The pages that were open go, and
+a search or an unanswered detour on them stops. Back returns to the riding view. Ride Assistant
+answers four questions from installed offline data: find a place, what is next on the route, nearby
+landmarks, and easier routes. There is no network in any of them.
 
 ### Find a place
 
