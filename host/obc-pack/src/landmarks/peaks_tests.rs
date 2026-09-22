@@ -204,7 +204,7 @@ const FREE: &str = "https://creativecommons.org/licenses/by/4.0/";
 #[test]
 fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
     let mut f = Fixture { root: obcm_testkit::scratch::scratch_dir("landmarks", "peak-photos"), sources: vec![] };
-    let (views, fallback, camera, depicts) = {
+    let (views, fallback, camera, depicts, mut wanted) = {
         let mut make = |name: &str,
                         shade: u8,
                         license: &str,
@@ -239,16 +239,26 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
                 make("h", 110, FREE, &["Category:Watzmann"], None, Some("Q8"), "commons-category"),
                 make("m", 120, FREE, &[], None, None, "P18"),
             ],
+            // Metadata for three candidates and bytes for none of them.
+            vec![
+                make("r", 130, FREE, &[], None, None, "P18"),
+                make("s", 140, FREE, &[], None, None, "P18"),
+                make("t", 150, FREE, &[], None, None, "P18"),
+            ],
         )
     };
     let claim =
         |files: &[&str]| files.iter().map(|file| json!({"mainsnak":{"datavalue":{"value":file}}})).collect::<Vec<_>>();
+    for image in &mut wanted {
+        image.as_object_mut().unwrap().remove("path");
+    }
     let mut places = vec![];
     let peaks = [
         ("Q5", "Alpspitz", views, claim(&["d.png", "e.png"]), claim(&["c.png"])),
         ("Q6", "Hochblassen", fallback, claim(&["x.png", "y.png"]), claim(&[])),
         ("Q7", "Zugspitze", camera, claim(&["n.png", "p.png"]), claim(&[])),
         ("Q8", "Watzmann", depicts, claim(&["m.png"]), claim(&[])),
+        ("Q9", "Hochkalter", wanted, claim(&["r.png", "s.png", "t.png"]), claim(&[])),
     ];
     for (id, name, images, lead, panorama) in peaks {
         f.json(
@@ -261,10 +271,16 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
                     "P4291":panorama}}}}),
         );
         let article = f.article(id, "en", name, "A limestone summit.");
-        places.push(json!({"qid":id,"articles":[article],"images":images}));
+        let mut place = json!({"qid":id,"articles":[article],"images":images});
+        if let Some(member) = place["images"].as_array().unwrap().iter().find(|i| i["source"] == "commons-category") {
+            let listing = format!("categories/{id}.json");
+            f.json(&listing,json!({"query":{"categorymembers":[{"title":format!("File:{}", member["filename"].as_str().unwrap())}]}}));
+            place["commons_categories"] = json!([{"title": format!("Category:{name}"), "path": listing}]);
+        }
+        places.push(place);
         f.json(&format!("links/{id}.json"), json!({"entities":{id:{"id":id}}}));
     }
-    let linked = [(1i64, "Q5"), (2, "Q6"), (3, "Q7"), (4, "Q8")];
+    let linked = [(1i64, "Q5"), (2, "Q6"), (3, "Q7"), (4, "Q8"), (5, "Q9")];
     let nodes: Vec<_> = linked.iter().map(|(id, qid)| {
         json!({"node_id":id,"latitude":0.5,"longitude":0.5,"tags":{"natural":"peak","name":"Summit","wikidata":qid}})
     }).collect();
@@ -280,8 +296,16 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
     let result = peaks::compile(&manifest, &boundary, &f.root.join("out")).unwrap();
     let chosen =
         |name: &str| hash(&photo::prepare(&fs::read(f.root.join(format!("photos/{name}.png"))).unwrap()).unwrap());
-    let selected: Vec<_> = result.records.iter().map(|r| r.article.photo.as_ref().unwrap().sha256.clone()).collect();
+    let selected: Vec<_> =
+        result.records.iter().filter_map(|r| r.article.photo.as_ref()).map(|p| p.sha256.clone()).collect();
     assert_eq!(selected, ["c", "y", "p", "h"].map(chosen));
+    // Q9 has no acquired bytes, so the compiler asks for the two best and says nothing about a
+    // missing photo until the capture has answered.
+    assert_eq!(
+        result.photo_requests.iter().map(|r| (r.qid.as_str(), r.filename.as_str())).collect::<Vec<_>>(),
+        [("Q9", "r.png"), ("Q9", "s.png")]
+    );
+    assert!(result.omissions.iter().all(|o| o.qid != "Q9"));
     let reasons: BTreeSet<_> = result.omissions.iter().map(|o| o.reason.as_str()).collect();
     assert!(reasons.contains("views_from_the_site"), "a view from the summit is refused");
     assert!(reasons.contains("photo_identity_mismatch"), "a category member proves its own membership");

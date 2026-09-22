@@ -167,16 +167,21 @@ pub(super) struct Signals {
 
 impl Signals {
     /// Commons keeps views taken from a place, and views of it, in `<prefix><category>`
-    /// subcategories of the place's own Commons category. That category is the entity's P373
-    /// claim, so no other place can match.
-    pub(super) fn views(&self, category: &str, prefix: &str) -> bool {
-        let Some(name) = category.strip_prefix("Category:") else { return false };
+    /// subcategories of the place's own Commons category. Those categories are the entity's own
+    /// P373 claims, so no other place can match. A qualifier follows the name over any
+    /// non-alphanumeric boundary, which is a space, a comma or a bracket on Commons.
+    pub(super) fn views(&self, categories: &[String], prefix: &str) -> bool {
+        let named = |rest: &str| {
+            categories.iter().filter_map(|category| category.strip_prefix("Category:")).any(|name| {
+                rest.strip_prefix(name).is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+            })
+        };
         self.categories.iter().any(|title| {
             title
                 .strip_prefix("Category:")
                 .and_then(|title| title.strip_prefix(prefix))
                 .map(|rest| rest.strip_prefix("the ").unwrap_or(rest))
-                .is_some_and(|rest| rest == name || rest.strip_prefix(name).is_some_and(|tail| tail.starts_with(' ')))
+                .is_some_and(named)
         })
     }
 }
@@ -327,14 +332,18 @@ mod tests {
             camera: None,
             depicts: BTreeSet::new(),
         };
+        let claimed = ["Category:Alpspitz".to_owned(), "Category:Hochblassen".to_owned()];
         for (title, expected) in [
             ("Category:Views from Alpspitz", true),
             ("Category:Views from the Alpspitz in winter", true),
+            ("Category:Views from Alpspitz, Bavaria", true),
+            ("Category:Views from Alpspitz (winter)", true),
+            ("Category:Views from Hochblassen", true),
             ("Category:Views from Alpspitzli", false),
             ("Category:Views of Alpspitz", false),
             ("Category:Alpspitz", false),
         ] {
-            assert_eq!(signals(title).views("Category:Alpspitz", "Views from "), expected, "{title}");
+            assert_eq!(signals(title).views(&claimed, "Views from "), expected, "{title}");
         }
     }
 

@@ -22,7 +22,7 @@ Switzerland coverage. Acquiring a country capture is [CAPTURE.md](../../../../fi
 A schema 1 source manifest: each raw response has a relative path, URL, byte count and SHA-256.
 Entity responses are `entities/QID.json`, parent classes are in `classes/`, locale entities in
 `locales/`. The compiler verifies the registered bytes before it selects sites, and derives
-coordinates and types from the raw entities rather than the manifest's display data. A raw
+coordinates and types from the raw entities. A raw
 `wbgetentities` response can carry an explicit redirect; the compiler keeps the edge to the
 canonical class before it follows parents.
 
@@ -42,7 +42,8 @@ map-wide language argument.
 | Part | What is in it |
 | --- | --- |
 | Identity | Input digests (source manifest, boundary) and policy digests (category file, extraction code, dependency lock, image recipe, language mapping, locale rules). A separate category-policy digest lets acquisition check its own discovery roots. |
-| Candidates | The QIDs before article selection, so the same compiler can choose which assets to acquire from a manifest with empty article and image lists. |
+| Candidates | The QIDs before article selection, so the same compiler chooses which assets to acquire. |
+| Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no originals. This names the two the compiler would use: the second covers a rejection only the bytes can prove. Absent once every original is there. |
 | Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
 | Records | Sorted by QID: category 1–6, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
 | Attribution | Article and photo source, revision, licence, the exact original notices and readable Sources pages. At most 8 KiB per asset, 256 pages per pair. |
@@ -70,13 +71,14 @@ merge order.
 
 ### Photos
 
-All variants of a site share one photo. The pools, best first, are `P18` claims, article leads,
-`P373` Commons category members, and the `P4291`, `P8592` and `P5252` view claims; captured bytes
-prove the pool, and a rejection moves to the next candidate. A `Views from <P373 category>` member
-is refused; a `Views of <P373 category>` member, a `depicts` (P180) statement naming the record,
-and, for a peak, a camera over 500 m from the summit each rank a file up. Ties keep the pool order,
-then the normalized filename; selection never depends on device language. **Reject a photo if its
-credits cannot fit beside every retained article's credits**, and keep those articles.
+All variants of a site share one photo. Both sides read the pool order from
+`specs/photo-pools.json`: `P18` claims, article leads, `P373` Commons category members, then the
+`P4291`, `P8592` and `P5252` view claims. Captured bytes prove the pool, and a rejection moves to
+the next candidate. A `Views from <category>` member is refused; a `Views of <category>` member,
+a `depicts` (P180) statement naming the record, and, for a peak, a camera over 500 m from the
+summit rank a file up. Ties keep the pool order, then the normalized filename; selection never
+depends on device language. **Reject a photo if its credits cannot fit beside every retained
+article's credits**, and keep those articles.
 
 A CC BY or CC BY-SA photo needs a nonempty captured Artist identity. A generic credit such as "Own
 work" does not identify a creator, and empty Artist metadata gives `photo_creator_missing`: the
@@ -101,25 +103,23 @@ target/debug/obc-bake peaks \
 ```
 
 `peak-candidates --osm FILE --boundary GEOJSON --out FILE` is the offline discovery entry point.
-It uses the map's POI classifier and reads named summit nodes only; `summits.json` keeps the
-original node IDs, coordinates and tags plus the source PBF digest.
+It uses the map's POI classifier and reads named summit nodes only; `summits.json` keeps the node
+IDs, coordinates and tags plus the source PBF digest.
 
 Acquisition resolves explicit `wikidata` and `wikipedia=language:title` tags and nothing else.
-Captured API normalization and redirect edges establish canonical identity. Without a QID, the
-explicit Wikipedia language links select the first available UI edition in UI order and its page
-ID is the identity. A truncated language-link response, a failed resolution or a conflicting pair
-of explicit tags is an omission. **There are no inferred links and no generated translations.**
-
-The Commons category is read only for an entity with no `P18` claim, four members at most.
+Captured normalization and redirect edges establish canonical identity. Without a QID, the explicit
+Wikipedia language links select the first UI edition in UI order and its page ID is the identity.
+A truncated language-link response, a failed resolution or a conflicting pair of explicit tags is
+an omission. **There are no inferred links and no generated translations.**
 
 `peaks.json` is schema 1, collection `peaks`. Each record has an `id` and the shared article
 fields but no landmark category; `associations` keeps every usable OSM node-to-article link with
-the summit's original coordinates. Records are stored once per canonical identity, and all
-associations and language variants share one photo.
+the summit's original coordinates. Records are stored once per identity, and all associations and
+language variants share one photo.
 
 **The two collections do not mix.** A peak capture cannot enter the landmark compiler, and
 `peaks.json` cannot enter the landmark map serializer. The packer and cutter take
-`--peaks PATH/peaks.json`, repeatable for several regional catalogues, and join only the full node
+`--peaks PATH/peaks.json`, repeatable for several catalogues, and join only the full node
 identities of emitted summit POIs. `obc-bake bake --peaks FILE` and the planet baker take one
 global catalogue; their cache keys include the peak content fingerprint.
 
