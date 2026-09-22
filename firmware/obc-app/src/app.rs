@@ -1202,6 +1202,39 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Cancel a plan the rider can no longer answer. A plan is a question, and the screens it is
+    /// asked from are the only place to drop it: the chooser and its preview for a detour, the
+    /// planning spinner for a route search. A question that outlives them holds the planner arena,
+    /// and its release keeps a result nobody accepted — a line drawn over the active route, or a
+    /// computed route left in the store.
+    ///
+    /// It reads the stack shape, because the transitions that drop a descent whole — `OverRoot`
+    /// under the Assistant chord and under the drawer's settings row — never reach the screens in
+    /// it, so none of them can cancel on its own way out. An adopted result is not a question:
+    /// the splice truncates its own screens off once the rider has the spliced route.
+    ///
+    /// The route family's preview and failure phases are not read here. They belong to the
+    /// Assistant's review, whose own release is reconciled from the stack by
+    /// [`prepare_find`](App::prepare_find); cancelling the plan under it would leave the review
+    /// machine holding a checkpoint for a plan that no longer exists.
+    fn release_unreachable_plans(&mut self) {
+        use crate::navigator::PlanFamily;
+        if self.navigator.plan_awaits_rider(PlanFamily::Detour)
+            && !self.ui.stack.iter().any(|s| matches!(s, Screen::Detour(_) | Screen::DetourPreview(_)))
+        {
+            self.admit_navigator_intent(NavigatorIntent::CancelDetour);
+        }
+        if self.navigator.route_search_running()
+            && !self
+                .ui
+                .stack
+                .iter()
+                .any(|s| matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Nav))
+        {
+            self.admit_navigator_intent(NavigatorIntent::CancelPlan);
+        }
+    }
+
     /// Drop the detour preview polyline when Navigator drops the plan it previews.
     ///
     /// The shape is derived from the plan and is drawn over the still-active route, so a preview
@@ -1751,23 +1784,21 @@ impl App {
         }
         match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
+            // The Assistant is a place of its own, not a page over the descent the squeeze came
+            // from: it lands on the root pair, like the drawer's settings row, so the depth it
+            // opens at does not depend on where the rider was and Back leaves it for the riding
+            // view. A dropped screen releases nothing itself, so what it held is reconciled from
+            // the stack shape: the corridor here, a detour below, and the find and visit state on
+            // the next frame's `prepare_find`.
             Chord::Assistant => {
-                if let Some(index) = self.ui.stack.iter().rposition(|s| matches!(s, Screen::Assistant(_))) {
-                    self.ui.stack.truncate(index + 1);
-                } else {
-                    let assistant = Screen::Assistant(screen::AssistantScreen::new());
-                    let transition = if self.ui.stack.len() < self.ui.stack.capacity() {
-                        screen::Transition::Push(assistant)
-                    } else {
-                        screen::Transition::Root(assistant)
-                    };
-                    screen::apply(&mut self.ui.stack, transition);
-                }
+                let assistant = Screen::Assistant(screen::AssistantScreen::new());
+                screen::apply(&mut self.ui.stack, screen::Transition::OverRoot(assistant));
                 self.ui.map_dirty = true;
                 self.ui.last_input_ms = self.ui.now_ms;
                 self.ui.idle_return_timing = true;
                 self.ui.cancel_holds();
                 self.ui.reconcile_corridor(self.up_ahead_scope());
+                self.release_unreachable_plans();
                 true
             }
             // A base screen that declares no `ContextMenu` gets nothing, not an empty drawer.
@@ -1810,9 +1841,9 @@ impl App {
     /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
     /// same drawer therefore toggles it shut, and the other one swaps in rather than stacking.
     ///
-    /// A sheet needs a slot of its own. At the ceiling the squeeze is refused, like the Assistant
-    /// chord beside it, rather than pushed into a full stack where the arrival would be dropped
-    /// without a sound.
+    /// A sheet needs a slot of its own. At the ceiling the squeeze is refused, rather than pushed
+    /// into a full stack where the arrival would be dropped without a sound. The Assistant chord
+    /// beside it needs no such guard: it drops to the root pair, which always has room.
     fn toggle_drawer(&mut self, drawer: Screen) -> bool {
         let opening = drawer.row();
         // With a sheet already up its slot is reused, so only a full stack under no sheet refuses.
@@ -2318,6 +2349,7 @@ impl App {
         self.sync_find_preferences();
         self.handle_find_action();
         self.sync_detour_preview(detour_planned_before);
+        self.release_unreachable_plans();
         // Opening a POI list drops the previous snapshot so its first draw re-queries. Gated on
         // a fresh open, so a step within the list does not wipe the frozen snapshot.
         if self.ui.stack.len() > depth_before && matches!(self.ui.stack.last(), Some(Screen::PoiList(_))) {
@@ -3363,22 +3395,6 @@ mod tests {
     }
 
     #[test]
-    fn assistant_shortcut_at_full_stack_leaves_room_for_its_actions() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        while app.ui.stack.len() < app.ui.stack.capacity() {
-            screen::apply(&mut app.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
-        }
-        assert!(app.apply_chord(Chord::Assistant));
-        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-        app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::Home(_)));
-    }
-
-    #[test]
     fn a_fix_under_an_open_drawer_plans_no_repaint() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
         assert!(pass_fix(&mut app, moving(90.0), 1_000).map, "the bare Map repaints on a fresh fix");
@@ -4060,7 +4076,7 @@ mod tests {
 
     /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
     /// walks that one path with gestures; how deep a rider can get at all, and what that leaves,
-    /// belong to `the_deepest_descent_stops_at_max_depth`.
+    /// belong to `the_deepest_descent_stops_short_of_max_depth`.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4925,40 +4941,65 @@ mod tests {
         assert_eq!(app.storage.free_bytes(), None, "and a scan with no figure leaves the rider a `--`");
     }
 
-    /// The preview polyline is derived from the detour plan, so Back on the preview takes it
-    /// with the plan.
+    /// The preview polyline is derived from the detour plan, so the plan takes it along whichever
+    /// way the rider leaves the preview: Back on it, or the Assistant chord, which drops the whole
+    /// detour flow off the stack and leaves no screen that could answer for the plan.
     #[test]
-    fn cancelling_a_detour_drops_its_preview_polyline() {
+    fn leaving_a_detour_drops_its_preview_polyline() {
         use crate::screen::{DetourPreviewScreen, DetourScreen};
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.set_routes_with_ids(&[summary("Road")], &[7]);
-        app.state.has_nav_graph = true;
-        app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
-        app.navigator.route_state_mut().active_route = Some(0);
-        app.navigator.route_state_mut().progress_m = 1_000;
-        app.navigator.route_state_mut().route_total_m = 20_000;
-        app.test_start_ride();
+        /// A ride on a route, with a detour planned and its preview landed, as the flow does it.
+        fn previewing() -> App {
+            let mut app = App::new(AppState::new(0, 0, 1.0));
+            app.set_routes_with_ids(&[summary("Road")], &[7]);
+            app.state.has_nav_graph = true;
+            app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
+            app.navigator.route_state_mut().active_route = Some(0);
+            app.navigator.route_state_mut().progress_m = 1_000;
+            app.navigator.route_state_mut().route_total_m = 20_000;
+            app.test_start_ride();
 
-        // Plan a detour and land its preview, exactly as the flow does.
-        let chooser = DetourScreen::new(app.navigator.route_state());
-        let preview =
-            crate::host::DetourPreview { cost_delta_m: 420, total_distance_m: 1_220, rejoin_m: 2_000, ascent_m: None };
-        app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
-            route: 0,
-            from: (7_800_000, 48_000_000),
-            progress_m: 1_000,
-            target_m: 1_800,
-        }));
-        let _ = app.ui.stack.push(Screen::Detour(chooser));
-        let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));
-        app.set_detour_preview(&[(7_812_000, 48_001_000), (7_816_000, 48_001_000)]);
-        assert!(!app.catalogs.detour_preview_for(Some(0)).is_empty(), "the host's shape is cached");
+            let chooser = DetourScreen::new(app.navigator.route_state());
+            let preview = crate::host::DetourPreview {
+                cost_delta_m: 420,
+                total_distance_m: 1_220,
+                rejoin_m: 2_000,
+                ascent_m: None,
+            };
+            app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
+                route: 0,
+                from: (7_800_000, 48_000_000),
+                progress_m: 1_000,
+                target_m: 1_800,
+            }));
+            let _ = app.ui.stack.push(Screen::Detour(chooser));
+            let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));
+            app.set_detour_preview(&[(7_812_000, 48_001_000), (7_816_000, 48_001_000)]);
+            assert!(!app.catalogs.detour_preview_for(Some(0)).is_empty(), "the host's shape is cached");
+            app
+        }
 
+        let mut app = previewing();
         app.apply_gesture(Gesture::Back); // the rider drops the detour
         assert!(
             app.catalogs.detour_preview_for(Some(0)).is_empty(),
             "and the shape goes with the plan, not one frame later"
         );
+
+        let mut app = previewing();
+        assert!(app.apply_chord(Chord::Assistant));
+        assert!(!app.navigator.detour_planned(), "the chord took the plan with the screens that answer for it");
+        assert!(app.catalogs.detour_preview_for(Some(0)).is_empty(), "…and its shape off the map");
+
+        let mut app = previewing();
+        app.set_backlight_available(true);
+        assert!(app.apply_chord(Chord::Quick));
+        app.advance_animations(InputClock(2_000)); // settle the sheet's open slide
+        for _ in 0..2 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → bluetooth → settings
+        }
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Settings(_)), "the drawer's row drops the detour flow too");
+        assert!(!app.navigator.detour_planned(), "…and takes the plan with it");
     }
 
     /// The Detour chooser is an interaction in progress, not an auto-switch sibling, so a climb
