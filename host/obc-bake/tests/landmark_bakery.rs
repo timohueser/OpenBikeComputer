@@ -1,8 +1,8 @@
 //! The landmark stage's acceptance criteria, all of them offline.
 //!
-//! The `.poly` comes from a [`LocalExtracts`] root and the capture is a fake that writes an empty
-//! but well-formed source directory, so the compiler that runs is the real one and no test ever
-//! reaches Wikidata.
+//! The `.poly` and the extract come from a [`LocalExtracts`] root and the capture is a fake that
+//! discovers a fixed candidate list and writes an empty but well-formed source directory, so the
+//! compiler that runs is the real one and no test ever reaches Wikidata.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -35,7 +35,8 @@ fn write_poly(root: &Path, w: f64, s: f64, e: f64, n: f64) {
 }
 
 /// A capture that writes what the tool would write for a boundary with nothing in it, and records
-/// every boundary it was handed.
+/// every boundary it was handed. Its candidate list is the extract's bytes, so a test moves the
+/// candidates by rewriting the extract.
 #[derive(Default)]
 struct FakeCapture {
     calls: Mutex<Vec<String>>,
@@ -46,8 +47,21 @@ impl LandmarkCapture for FakeCapture {
         "a fake capture".into()
     }
 
-    fn capture(&self, boundary: &Path, policy: &Path, out: &Path, _p: &Progress) -> Result<(), String> {
+    fn candidates(&self, extract: &Path) -> Result<Vec<u8>, String> {
+        let tagged = std::fs::read_to_string(extract).map_err(|e| e.to_string())?;
+        Ok(format!(r#"{{"schema":1,"osm_sha256":"0","qids":["{}"]}}"#, tagged.trim()).into_bytes())
+    }
+
+    fn capture(
+        &self,
+        boundary: &Path,
+        policy: &Path,
+        candidates: &Path,
+        out: &Path,
+        _p: &Progress,
+    ) -> Result<(), String> {
         let boundary_bytes = std::fs::read(boundary).unwrap();
+        let candidate_bytes = std::fs::read(candidates).unwrap();
         self.calls.lock().unwrap().push(String::from_utf8(boundary_bytes.clone()).unwrap());
         let sha = |bytes: &[u8]| -> String {
             use sha2::{Digest, Sha256};
@@ -61,6 +75,7 @@ impl LandmarkCapture for FakeCapture {
                 "boundary_sha256": sha(&boundary_bytes),
                 "policy_sha256": sha(&std::fs::read(policy).unwrap()),
                 "language_sha256": sha(obc_pack::landmarks::LANGUAGE_BYTES),
+                "candidates_sha256": sha(&candidate_bytes),
             })
             .to_string(),
         )
@@ -92,7 +107,15 @@ impl Fixture {
         let dir = scratch(name);
         let fixture = Fixture { extracts: dir.join("extracts"), tree: dir.join("tree"), cache: dir.join("cache"), dir };
         write_poly(&fixture.extracts, 7.0, 47.0, 7.5, 47.5);
+        fixture.write_extract("Q1");
         fixture
+    }
+
+    /// The region's extract, which this fixture's discovery reads as one tagged QID.
+    fn write_extract(&self, qid: &str) {
+        let path = self.extracts.join("europe/testland-latest.osm.pbf");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, qid).unwrap();
     }
 
     fn run(
@@ -229,5 +252,23 @@ fn a_capture_of_a_different_boundary_is_never_compiled() {
     let recaptured = fixture.run(&capture, false, false);
     assert_eq!(recaptured.regions[0].status, LandmarkStatus::Captured, "{}", recaptured.render());
     assert_eq!(capture.calls.lock().unwrap().len(), 2);
+    assert_eq!(fixture.captures().len(), 2, "one capture directory per recipe");
+}
+
+/// Candidates are a capture input like the boundary: one more tagged object in the extract asks
+/// for other sources, so it captures into its own directory rather than into the old one.
+#[test]
+fn a_capture_of_another_candidate_list_is_never_compiled() {
+    let fixture = Fixture::new("moved-candidates");
+    let capture = FakeCapture::default();
+    fixture.run(&capture, false, false);
+
+    fixture.write_extract("Q2");
+    let refused = fixture.run(&capture, false, true);
+    assert_eq!(refused.regions[0].status, LandmarkStatus::CaptureMissing, "{}", refused.render());
+    assert_eq!(capture.calls.lock().unwrap().len(), 1, "--no-capture never goes to the network");
+
+    let recaptured = fixture.run(&capture, false, false);
+    assert_eq!(recaptured.regions[0].status, LandmarkStatus::Captured, "{}", recaptured.render());
     assert_eq!(fixture.captures().len(), 2, "one capture directory per recipe");
 }

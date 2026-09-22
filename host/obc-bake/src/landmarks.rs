@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! regions.toml ──▶ .poly ──▶ coverage ──▶ boundary.geojson
+//!                .osm.pbf ──▶ wikidata tags ──▶ candidates.json
 //!                                              │
 //!           policy.json + content-languages ───┤
 //!                                              ▼
@@ -13,9 +14,16 @@
 //! ```
 //!
 //! A third artifact class beside the cells and the terrain, on the same shape as terrain: its own
-//! cache, its own skip key, its own command. It is not a step of the cell bake because its inputs
-//! are neither the OSM extract nor the schema — a schema bump must not re-enter it, and a Wikipedia
-//! edit must not re-bake a cell.
+//! cache, its own skip key, its own command. It reads the region's extract, but only for the QIDs
+//! the extract names itself; it is still not a step of the cell bake, because a schema bump must
+//! not re-enter it and a Wikipedia edit must not re-bake a cell.
+//!
+//! # Where candidates come from
+//!
+//! The extract's explicit `wikidata` tags, and nothing else. Discovery is therefore offline and
+//! bounded by the region's own data instead of a bounding box around it, and every landmark has a
+//! map object the rider can be routed to. The list is a superset: the compiler applies the exact
+//! polygon and the category policy to the captured entities.
 //!
 //! # The network step
 //!
@@ -32,10 +40,12 @@
 //!
 //! # What "unchanged" means here
 //!
-//! One key over the capture's own source digests and the three documents that decide what is
-//! captured at all: the boundary, the category policy and the shared UI language set. The language
-//! set is not a detail of the compiler here — it decides which articles are fetched and which
-//! places are eligible, so adding a language must re-capture, not just re-compile.
+//! One key over the capture's own source digests and the four documents that decide what is
+//! captured at all: the candidate list, the boundary, the category policy and the shared UI
+//! language set. The language set is not a detail of the compiler here — it decides which articles
+//! are fetched and which places are eligible, so adding a language must re-capture, not just
+//! re-compile. The candidate list is derived, not curated, so an extract that tags one more object
+//! is a new recipe and a new capture directory.
 //!
 //! The compiler's digest of itself is recorded beside the artifact rather than keyed on, because
 //! it is only known after a compile; [`LANDMARK_RECIPE_VERSION`] is what an operator moves when
@@ -62,6 +72,8 @@ pub const LANDMARKS_DIR: &str = "landmarks";
 pub const CONTENT_DOC: &str = "content.json";
 /// The artifact's own declaration, beside it.
 pub const LANDMARK_DOC: &str = "landmarks.json";
+/// The QID list the capture is pinned to, beside the boundary in the region's cache.
+pub const CANDIDATE_DOC: &str = "candidates.json";
 const CAPTURE_MANIFEST: &str = "manifest.json";
 const CAPTURE_RECIPE: &str = "recipe.json";
 const POLICY_DOC: &str = "policy.json";
@@ -77,6 +89,7 @@ pub struct LandmarkDoc {
     pub policy_sha256: String,
     pub boundary_sha256: String,
     pub language_sha256: String,
+    pub candidates_sha256: String,
     /// The article languages the artifact stores, as the compiler reports them.
     pub languages: Vec<String>,
     /// The compiler's own digest of its rules, recorded for provenance rather than keyed on.
@@ -95,8 +108,18 @@ pub struct LandmarkDoc {
 pub trait LandmarkCapture {
     /// Where captures come from, for the run header.
     fn describe(&self) -> String;
-    /// Capture `boundary` under `policy` into `out`, resuming whatever `out` already holds.
-    fn capture(&self, boundary: &Path, policy: &Path, out: &Path, progress: &Progress) -> Result<(), String>;
+    /// The candidate QIDs `extract` names, as the `candidates.json` a capture is pinned to.
+    fn candidates(&self, extract: &Path) -> Result<Vec<u8>, String>;
+    /// Capture the `candidates` inside `boundary` under `policy` into `out`, resuming whatever
+    /// `out` already holds.
+    fn capture(
+        &self,
+        boundary: &Path,
+        policy: &Path,
+        candidates: &Path,
+        out: &Path,
+        progress: &Progress,
+    ) -> Result<(), String>;
 }
 
 /// The real capture: `tools/landmark_capture.py`.
@@ -135,7 +158,22 @@ impl LandmarkCapture for PythonCapture {
         format!("{} {}", self.python.display(), self.script.display())
     }
 
-    fn capture(&self, boundary: &Path, policy: &Path, out: &Path, progress: &Progress) -> Result<(), String> {
+    /// In this process, not in the tool: discovery is offline and deterministic, so it belongs to
+    /// the binary that compiles, and the stage needs its digest before it can name a capture
+    /// directory.
+    fn candidates(&self, extract: &Path) -> Result<Vec<u8>, String> {
+        let candidates = obc_pack::landmarks::discover::candidates(extract)?;
+        serde_json::to_vec_pretty(&candidates).map_err(|e| e.to_string())
+    }
+
+    fn capture(
+        &self,
+        boundary: &Path,
+        policy: &Path,
+        candidates: &Path,
+        out: &Path,
+        progress: &Progress,
+    ) -> Result<(), String> {
         progress.check()?;
         let status = Command::new(&self.python)
             .arg(&self.script)
@@ -143,6 +181,8 @@ impl LandmarkCapture for PythonCapture {
             .arg(boundary)
             .arg("--policy")
             .arg(policy)
+            .arg("--candidates")
+            .arg(candidates)
             .arg("--out")
             .arg(out)
             .arg("--select-with")
@@ -300,16 +340,23 @@ impl LandmarkBakery<'_> {
         let poly = self.source.fetch_poly(region, progress)?;
         let coverage = Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
         let boundary_text = coverage.geojson();
+        // Even a run that captures nothing reads the extract: the candidate list is what the skip
+        // key is over, and it is only known after the extract has been read.
+        let extract = self.source.fetch(region, progress)?;
+        let candidate_bytes = self.capture.candidates(&extract.path)?;
         let recipe = Recipe {
             boundary_sha256: crate::hash::text(&boundary_text),
             policy_sha256: crate::hash::bytes(obc_pack::landmarks::POLICY_BYTES),
             language_sha256: crate::hash::bytes(obc_pack::landmarks::LANGUAGE_BYTES),
+            candidates_sha256: crate::hash::bytes(&candidate_bytes),
         };
         let region_cache = self.opts.cache.join(LANDMARKS_DIR).join(flat(region));
         let capture_dir = region_cache.join(recipe.key());
         let boundary = region_cache.join(format!("{}.geojson", recipe.key()));
+        let candidates = region_cache.join(format!("{}-{CANDIDATE_DOC}", recipe.key()));
         std::fs::create_dir_all(&region_cache).map_err(|e| format!("{}: {e}", region_cache.display()))?;
         std::fs::write(&boundary, &boundary_text).map_err(|e| format!("{}: {e}", boundary.display()))?;
+        std::fs::write(&candidates, &candidate_bytes).map_err(|e| format!("{}: {e}", candidates.display()))?;
 
         let mut status = LandmarkStatus::Compiled;
         if !capture_current(&capture_dir, &recipe)? {
@@ -329,7 +376,7 @@ impl LandmarkBakery<'_> {
                 region.id,
                 capture_dir.display()
             ));
-            self.capture.capture(&boundary, policy, &capture_dir, progress)?;
+            self.capture.capture(&boundary, policy, &candidates, &capture_dir, progress)?;
             if !capture_current(&capture_dir, &recipe)? {
                 return Err(format!("{} captured no usable sources for this boundary", capture_dir.display()));
             }
@@ -366,6 +413,7 @@ impl LandmarkBakery<'_> {
                 policy_sha256: recipe.policy_sha256,
                 boundary_sha256: recipe.boundary_sha256,
                 language_sha256: recipe.language_sha256,
+                candidates_sha256: recipe.candidates_sha256,
                 languages: content.languages.clone(),
                 compiler_policy_sha256: content.policy_sha256.clone(),
                 artifact_sha256: artifact_digest(&staging)?.0,
@@ -429,6 +477,8 @@ struct Recipe {
     /// `specs/content-languages.json`. It decides which article editions are fetched and which
     /// places are eligible at all, so it belongs here and not only in the compiler's own digest.
     language_sha256: String,
+    /// The QIDs read from the region's extract. A retagged object is a different capture.
+    candidates_sha256: String,
 }
 
 impl Recipe {
@@ -436,8 +486,8 @@ impl Recipe {
     /// has to separate one recipe from the next.
     fn key(&self) -> String {
         crate::hash::text(&format!(
-            "boundary={}\npolicy={}\nlanguages={}\n",
-            self.boundary_sha256, self.policy_sha256, self.language_sha256
+            "boundary={}\npolicy={}\nlanguages={}\ncandidates={}\n",
+            self.boundary_sha256, self.policy_sha256, self.language_sha256, self.candidates_sha256
         ))[..12]
             .to_string()
     }
@@ -449,6 +499,7 @@ struct CaptureRecipe {
     boundary_sha256: String,
     policy_sha256: String,
     language_sha256: String,
+    candidates_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,6 +532,7 @@ fn capture_current(dir: &Path, recipe: &Recipe) -> Result<bool, String> {
     if captured.boundary_sha256 != recipe.boundary_sha256
         || captured.policy_sha256 != recipe.policy_sha256
         || captured.language_sha256 != recipe.language_sha256
+        || captured.candidates_sha256 != recipe.candidates_sha256
     {
         return Ok(false);
     }
@@ -501,8 +553,8 @@ fn fingerprint(manifest: &Path, recipe: &Recipe) -> Result<String, String> {
         read_manifest(manifest)?.ok_or_else(|| format!("{}: no capture manifest to key on", manifest.display()))?;
     let sources: BTreeMap<String, String> = manifest.sources.into_iter().map(|s| (s.path, s.sha256)).collect();
     let mut key = format!(
-        "landmark-recipe={LANDMARK_RECIPE_VERSION}\nboundary={}\npolicy={}\nlanguages={}\n",
-        recipe.boundary_sha256, recipe.policy_sha256, recipe.language_sha256
+        "landmark-recipe={LANDMARK_RECIPE_VERSION}\nboundary={}\npolicy={}\nlanguages={}\ncandidates={}\n",
+        recipe.boundary_sha256, recipe.policy_sha256, recipe.language_sha256, recipe.candidates_sha256
     );
     for (path, sha256) in sources {
         key.push_str(&format!("{path}={sha256}\n"));
@@ -559,8 +611,12 @@ mod tests {
     /// which is exactly the case a capture with no places produces.
     #[test]
     fn the_language_set_moves_the_capture_key_and_the_fingerprint() {
-        let base =
-            Recipe { boundary_sha256: "b".into(), policy_sha256: "p".into(), language_sha256: "en-de-fr-es".into() };
+        let base = Recipe {
+            boundary_sha256: "b".into(),
+            policy_sha256: "p".into(),
+            language_sha256: "en-de-fr-es".into(),
+            candidates_sha256: "c".into(),
+        };
         let fifth = Recipe { language_sha256: "en-de-fr-es-it".into(), ..base.clone() };
         assert_ne!(base.key(), fifth.key(), "a new language set captures into its own directory");
 

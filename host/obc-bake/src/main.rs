@@ -20,6 +20,7 @@ use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
 usage:
+  obc-bake landmark-candidates --osm FILE --out FILE
   obc-bake landmark-content --snapshot FILE --boundary GEOJSON --out DIR
   obc-bake peak-candidates --osm FILE --boundary GEOJSON --out FILE
   obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
@@ -102,10 +103,11 @@ usage:
         --force              re-compile even when unchanged
         --no-capture         never call the capture tool; compile what the cache holds
 
-      The boundary is the region's own `.poly`, so nothing here is hand-drawn. The
-      capture reads live Wikidata, Wikipedia and Commons: it is the one step of any
-      bake that two runs can disagree on, it is resumable, and the run says when it
-      starts. `tools/landmark_capture.py` is found through OBC_LANDMARK_CAPTURE_TOOL.
+      The boundary is the region's own `.poly` and the candidates are the `wikidata`
+      tags of its own extract, so nothing here is hand-drawn. The capture reads live
+      Wikidata, Wikipedia and Commons: it is the one step of any bake that two runs
+      can disagree on, it is resumable, and the run says when it starts.
+      `tools/landmark_capture.py` is found through OBC_LANDMARK_CAPTURE_TOOL.
 
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
@@ -126,6 +128,7 @@ fn main() -> ExitCode {
     let command = args.first().map(String::as_str).unwrap_or("");
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     let result = match command {
+        "landmark-candidates" => run_landmark_candidates(rest),
         "landmark-content" => run_landmark_content(rest),
         "landmarks" => run_landmark_stage(rest),
         "peaks" => run_peaks(rest),
@@ -802,6 +805,17 @@ fn run_landmark_content(args: &[String]) -> Result<(), String> {
         content.omissions.len()
     );
     Ok(())
+}
+
+fn run_landmark_candidates(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["osm", "out"])?;
+    if !positional.is_empty() {
+        return Err("landmark-candidates accepts named flags only".into());
+    }
+    obc_pack::landmarks::discover::discover(
+        Path::new(flags.get("osm").ok_or("landmark-candidates requires --osm FILE")?),
+        Path::new(flags.get("out").ok_or("landmark-candidates requires --out FILE")?),
+    )
 }
 
 fn run_peak_candidates(args: &[String]) -> Result<(), String> {
