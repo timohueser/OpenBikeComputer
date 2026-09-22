@@ -3,12 +3,19 @@
 //! assertions pin the ordering, the retry counts, the byte math, and every failure edge.
 
 use obc_dfu::engine::{abandon_arm, run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
-use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, PAGE_LEN};
+use obc_dfu::{
+    BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, APP_SLOT_BASE, MAX_EXTENTS, MAX_IMAGE_LEN,
+    PAGE_LEN,
+};
 use std::collections::BTreeMap;
 
 const BLOCK: usize = 512;
 const HEADER_LEN: usize = 64;
-const SLOT: Slot = Slot { base: 0x8000, len: 16 * 1024 };
+/// A small model slot, so the sequencing tests stay cheap. Its base is the real one, because
+/// the IO mock turns addresses into offsets.
+const SLOT: Slot = Slot { base: APP_SLOT_BASE, len: 16 * 1024 };
+/// The slot the bootloader really hands in.
+const APP_SLOT: Slot = Slot { base: APP_SLOT_BASE, len: MAX_IMAGE_LEN };
 /// Fills the flash model before any write; distinct from both image bytes and the 0xFF pad.
 const FLASH_BLANK: u8 = 0xAA;
 const BUF_LEN: usize = 4096;
@@ -43,13 +50,13 @@ struct MockIo {
 }
 
 impl MockIo {
-    fn new(state: &BootState) -> MockIo {
+    fn new(state: &BootState, slot_len: u32) -> MockIo {
         let page = state.encode();
         let mut state_page = vec![0u8; PAGE_LEN];
         state_page[..page.len()].copy_from_slice(page.as_bytes());
         MockIo {
             disk: BTreeMap::new(),
-            flash: vec![FLASH_BLANK; SLOT.len as usize],
+            flash: vec![FLASH_BLANK; slot_len as usize],
             state_page,
             ops: Vec::new(),
             kill_at_write: None,
@@ -62,8 +69,8 @@ impl MockIo {
         }
     }
 
-    /// Lays `bytes` across `extents`, with slack in the final block, as a FAT file sits in its
-    /// cluster chain.
+    /// Lays `bytes` across `extents`, with slack in the final block, as an object sits in the
+    /// extents it owns.
     fn load_file(&mut self, bytes: &[u8], extents: &[Extent]) {
         let mut off = 0usize;
         for e in extents {
@@ -185,7 +192,7 @@ fn image(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[1]).collect()
 }
 
-/// The extent chain covers the whole file, header included, as the armer resolves `UPDATE.BIN`.
+/// The extent chain covers the whole object, header included, as the armer resolves a package.
 fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) {
     let header = ImageHeader::new(img, version);
     let mut file = header.encode().to_vec();
@@ -200,28 +207,34 @@ fn stage(img: &[u8], version: &str, extents: &[Extent]) -> (Vec<u8>, StagedRef) 
     (file, staged)
 }
 
-/// An extent chain with irregular run lengths, to exercise the chain walk.
+/// An extent chain with irregular run lengths and gaps between them, to exercise the chain walk.
+/// It spreads the file over as many runs as the record holds, which is the worst case the installer
+/// can be handed.
 fn chain_for(file_len: usize, first_block: u32) -> Vec<Extent> {
     let need = file_len.div_ceil(BLOCK) as u32;
+    let runs = (MAX_EXTENTS as u32).min(need);
     let mut out = Vec::new();
     let mut placed = 0u32;
     let mut at = first_block;
-    let mut run = 3u32; // 3, 1, 5, 3, 1, 5, ...
-    while placed < need {
-        let blocks = run.min(need - placed);
+    for run in 0..runs {
+        let left_after = runs - run - 1; // one block each for the runs still to come
+        let blocks = ((need / runs) + run % 3).max(1).min(need - placed - left_after);
         out.push(Extent { start_block: at, blocks });
         placed += blocks;
         at += blocks + 7; // gaps between runs — fragmentation
-        run = match run {
-            3 => 1,
-            1 => 5,
-            _ => 3,
-        };
+    }
+    // Whatever the uneven split left over rides on the last run.
+    if placed < need {
+        out.last_mut().expect("a non-empty file has at least one run").blocks += need - placed;
     }
     out
 }
 
 fn armed(img_len: usize, with_rollback: bool) -> (MockIo, BootState, Vec<u8>, StagedRef) {
+    armed_in(SLOT, img_len, with_rollback)
+}
+
+fn armed_in(slot: Slot, img_len: usize, with_rollback: bool) -> (MockIo, BootState, Vec<u8>, StagedRef) {
     let img = image(img_len);
     let extents = chain_for(img_len + HEADER_LEN, 1000);
     let (file, update) = stage(&img, "v2.0.0-new", &extents);
@@ -234,7 +247,7 @@ fn armed(img_len: usize, with_rollback: bool) -> (MockIo, BootState, Vec<u8>, St
         None
     };
     let state = BootState::Armed { generation: 7, update, rollback: rollback.as_ref().map(|(_, r)| *r) };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, slot.len);
     io.load_file(&file, &extents);
     if let Some((rb_file, rb)) = &rollback {
         io.load_file(rb_file, rb.extents());
@@ -243,8 +256,12 @@ fn armed(img_len: usize, with_rollback: bool) -> (MockIo, BootState, Vec<u8>, St
 }
 
 fn run_engine(io: &mut MockIo, state: &BootState) -> Outcome {
+    run_engine_in(io, state, &SLOT)
+}
+
+fn run_engine_in(io: &mut MockIo, state: &BootState, slot: &Slot) -> Outcome {
     let mut buf = [0u8; BUF_LEN];
-    run(state, &SLOT, io, &mut buf)
+    run(state, slot, io, &mut buf)
 }
 
 fn assert_flash_is(io: &MockIo, img: &[u8]) {
@@ -339,7 +356,7 @@ fn verify_truncated_chain_rejected() {
     let short = &extents[..extents.len() - 1];
     let staged_short = StagedRef::new(update.header, update.len, update.crc32, short).unwrap();
     let state = BootState::Armed { generation: 1, update: staged_short, rollback: None };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, SLOT.len);
     io.load_file(&file, &extents);
 
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
@@ -362,6 +379,19 @@ fn slot_bounds_gate() {
 
     let (mut io, state, _, _) = armed(SLOT.len as usize + 1, false);
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
+    assert_eq!(io.count_write_lines(), 0);
+}
+
+/// `MAX_IMAGE_LEN` is the app slot, so the engine's two length gates coincide there: an image at
+/// the cap installs wall to wall, and one byte more is rejected before anything is erased.
+#[test]
+fn an_image_at_the_cap_fills_the_app_slot() {
+    let (mut io, state, img, _) = armed_in(APP_SLOT, MAX_IMAGE_LEN as usize, false);
+    assert_eq!(run_engine_in(&mut io, &state, &APP_SLOT), Outcome::Installed);
+    assert_eq!(&io.flash[..], &img[..], "a slot-filling image is written wall to wall");
+
+    let (mut io, state, _, _) = armed_in(APP_SLOT, MAX_IMAGE_LEN as usize + 1, false);
+    assert_eq!(run_engine_in(&mut io, &state, &APP_SLOT), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0);
 }
 
@@ -427,7 +457,7 @@ fn abandon_arm_clears_to_idle_and_boots_old_app() {
 #[test]
 fn abandon_arm_on_non_armed_is_a_noop_jump() {
     let state = BootState::Idle { installed: None, last_outcome: None };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, SLOT.len);
     assert_eq!(abandon_arm(&state, &mut io), Outcome::Jump);
     assert!(io.ops.is_empty(), "no writes on a non-Armed abandon");
 }
@@ -486,7 +516,7 @@ fn rollback_path() {
     let (rb_file, snapshot) = stage(&rb_img, "v1.0.0-known-good", &rb_extents);
     let trial_hdr = ImageHeader::new(&image(9001), "v2.0.0-bad");
     let state = BootState::Trial { generation: 4, installed: trial_hdr, rollback: Some(snapshot) };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, SLOT.len);
     io.load_file(&rb_file, &rb_extents);
 
     assert_eq!(run_engine(&mut io, &state), Outcome::Installed);
@@ -509,7 +539,7 @@ fn rollback_bad_snapshot_keeps_trial_image() {
     let (rb_file, snapshot) = stage(&rb_img, "v1.0.0", &rb_extents);
     let trial_hdr = ImageHeader::new(&image(9001), "v2.0.0-trial");
     let state = BootState::Trial { generation: 4, installed: trial_hdr, rollback: Some(snapshot) };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, SLOT.len);
     io.load_file(&rb_file, &rb_extents);
     let key = *io.disk.keys().nth(1).unwrap();
     io.disk.get_mut(&key).unwrap()[9] ^= 0xFF;
@@ -530,7 +560,7 @@ fn rollback_bad_snapshot_keeps_trial_image() {
 fn accept_and_clear() {
     let installed = ImageHeader::new(&image(1234), "v1.0.0-first");
     let state = BootState::Trial { generation: 1, installed, rollback: None };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, SLOT.len);
 
     assert_eq!(run_engine(&mut io, &state), Outcome::Jump);
     assert_eq!(io.ops, vec![Op::WriteState("idle")], "exactly one op: the Idle write");
@@ -546,7 +576,7 @@ fn accept_and_clear() {
 #[test]
 fn idle_jumps_untouched() {
     let state = BootState::Idle { installed: None, last_outcome: None };
-    let mut io = MockIo::new(&state);
+    let mut io = MockIo::new(&state, SLOT.len);
     assert_eq!(run_engine(&mut io, &state), Outcome::Jump);
     assert!(io.ops.is_empty());
 }

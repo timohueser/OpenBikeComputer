@@ -60,6 +60,9 @@ pub struct PeakContent {
     pub associations: Vec<Association>,
     pub records: Vec<PeakArticle>,
     pub omissions: Vec<Omission>,
+    /// Absent from a compiled catalogue: a production compile has every original it ranked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub photo_requests: Vec<PhotoRequest>,
 }
 
 pub(super) fn is_summit(tags: &BTreeMap<String, String>) -> bool {
@@ -114,27 +117,8 @@ pub fn discover(osm: &Path, boundary: &Path, output: &Path) -> Result<(), String
     if let Some(error) = error {
         return Err(error);
     }
-    let mut file = fs::File::open(osm).map_err(|e| e.to_string())?;
-    let mut digest = Sha256::new();
-    use std::io::Read as _;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    let source = SummitSource {
-        schema: 1,
-        osm_sha256: digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect(),
-        summits: summits.into_values().collect(),
-    };
+    let source = SummitSource { schema: 1, osm_sha256: file_digest(osm)?, summits: summits.into_values().collect() };
     fs::write(output, serde_json::to_vec_pretty(&source).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
-fn qid(id: &str) -> bool {
-    id.starts_with('Q') && id[1..].parse::<u64>().ok().is_some_and(|v| v > 0)
 }
 
 fn wikipedia(value: &str) -> Option<(&str, &str)> {
@@ -158,10 +142,10 @@ fn identity(
     let raw = json_pinned(root, sources, resolution.path.as_deref().ok_or("link_resolution_missing")?)?;
     match resolution.kind.as_str() {
         "wikidata" => {
-            let original = summit.tags.get("wikidata").filter(|id| qid(id)).ok_or("invalid_wikidata_link")?;
+            let original = summit.tags.get("wikidata").filter(|id| is_qid(id)).ok_or("invalid_wikidata_link")?;
             let value = &raw["entities"][original];
             let canonical = string(value, "id")?;
-            if !qid(canonical)
+            if !is_qid(canonical)
                 || value.get("missing").is_some()
                 || (canonical != original
                     && (value["redirects"]["from"] != *original || value["redirects"]["to"] != canonical))
@@ -174,7 +158,7 @@ fn identity(
             let (language, title) =
                 summit.tags.get("wikipedia").and_then(|v| wikipedia(v)).ok_or("invalid_wikipedia_link")?;
             let page = assets::resolved_page(&raw, title)?;
-            if let Some(id) = page["pageprops"]["wikibase_item"].as_str().filter(|id| qid(id)) {
+            if let Some(id) = page["pageprops"]["wikibase_item"].as_str().filter(|id| is_qid(id)) {
                 Ok((id.into(), None))
             } else {
                 if raw.get("continue").is_some() {
@@ -199,7 +183,7 @@ fn identity(
                     json_pinned(root, sources, resolution.canonical_path.as_deref().ok_or("canonical_page_missing")?)?
                 };
                 let canonical_page = assets::resolved_page(&canonical_raw, title)?;
-                if let Some(id) = canonical_page["pageprops"]["wikibase_item"].as_str().filter(|id| qid(id)) {
+                if let Some(id) = canonical_page["pageprops"]["wikibase_item"].as_str().filter(|id| is_qid(id)) {
                     return Ok((id.into(), None));
                 }
                 let page_id = canonical_page["pageid"].as_u64().filter(|id| *id > 0).ok_or("wikipedia_page_missing")?;
@@ -228,7 +212,12 @@ fn identity(
 
 /// Compile peak records once per canonical identity, preserving every OSM association.
 /// This format cannot be passed to the landmark map serializer.
-pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<PeakContent, String> {
+pub fn compile(
+    snapshot_path: &Path,
+    boundary: &Path,
+    output: &Path,
+    select_photos: bool,
+) -> Result<PeakContent, String> {
     let (snapshot, mut input) = load_snapshot(snapshot_path)?;
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
     let capture = snapshot.peaks.as_ref().ok_or("snapshot has no peak collection")?;
@@ -251,6 +240,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         include_bytes!("../poi.rs"),
         include_bytes!("../../../../Cargo.lock"),
         locale::LANGUAGE_BYTES,
+        PHOTO_POOL_BYTES,
     ] {
         policy.extend(bytes);
     }
@@ -265,6 +255,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         associations: Vec::new(),
         records: Vec::new(),
         omissions: Vec::new(),
+        photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
@@ -350,10 +341,28 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
     for (id, entity) in entities {
         let place =
             snapshot.places.iter().find(|p| p["qid"] == id).ok_or_else(|| format!("missing peak capture {id}"))?;
-        if let Some(article) =
-            prepare_article(root, &snapshot.sources, place, &entity, &locales, output, &mut result.omissions)?
+        // The summit's own OSM coordinate, not the article entity's: a photo taken at the summit
+        // shows the view from the peak, which does not help a rider identify it.
+        let summit = associations.get(&id).and_then(|linked| linked.first()).map(|a| (a.latitude, a.longitude));
+        // A photo identifies a summit as well as a short article does, so a record needs one or
+        // the other. Both omissions are already stated when it has neither.
+        if let Some(article) = prepare_article(
+            &Inputs {
+                root,
+                sources: &snapshot.sources,
+                locales: &locales,
+                output,
+                select_photos,
+                text_required: false,
+            },
+            place,
+            &entity,
+            &mut Found { omissions: &mut result.omissions, requests: &mut result.photo_requests },
+            summit,
+        )?
+        .filter(|article| !article.variants.is_empty() || article.photo.is_some())
         {
-            result.counts.texts += 1;
+            result.counts.texts += usize::from(!article.variants.is_empty());
             if let Some(photo) = &article.photo {
                 result.counts.images += 1;
                 result.counts.photo_bytes += photo.bytes;

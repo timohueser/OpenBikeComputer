@@ -65,6 +65,7 @@ pub mod stat_fields;
 pub mod store_meta;
 pub mod trip;
 pub(crate) mod ui_runtime;
+pub mod upload_facts;
 pub mod wall_clock;
 pub mod whats_next;
 
@@ -99,6 +100,7 @@ pub use settings::{
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
+pub use upload_facts::{CatalogUpload, CatalogUploadKind, UploadFacts};
 
 /// Durable identity of a catalog object. This is the flat store's `ObjectId` width; UI code keeps
 /// the primitive alias so `obc-app` does not depend on a storage implementation.

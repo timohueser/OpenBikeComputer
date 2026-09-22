@@ -985,8 +985,8 @@ Ride and storage fixtures:
   --gpx PATH              Replay a GPX track
   --at SECONDS            GPX playback time for a headless render
   --script-at SECONDS     GPX script position; replay continues from here to --at
-  --card PATH             Reopen an existing persistent Unix card without importing files
-  --create-card PATH      Create a new Unix card, import MAP/routes once, then exit
+  --card PATH             Reopen an existing persistent card without importing files
+  --create-card PATH      Create a new card, import MAP/routes once, then exit
   --routes-dir DIR        Route and trip import directory (default: routes/)
   --tracks-dir DIR        Ride/track-store directory (default: tracks/)
   --import PATH           Import GPX to --card, or convert to --routes-dir, then exit

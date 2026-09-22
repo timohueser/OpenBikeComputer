@@ -357,24 +357,28 @@ impl HostStore {
         Ok(Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::initialize(media, StoreId(identity))?, persistent)))))
     }
 
-    /// Create a new sparse Unix card under an existing directory. Never overwrite a path.
-    /// Success includes file and parent-directory sync barriers.
-    /// If initialization or the final directory barrier fails, leave the file for inspection.
-    #[cfg(unix)]
+    /// Create a new sparse card under an existing directory. Never overwrite a path.
+    /// The card is initialized under a temporary sibling and published by a rename, so the
+    /// card name never names an incomplete card. When this returns the bytes and the name
+    /// are both durable. A crash before the rename leaves no card name and one temporary
+    /// sibling. If the rename lands and the directory barrier then fails, the card keeps its
+    /// name and creation still reports the failure.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn create_file(path: impl AsRef<std::path::Path>) -> Result<Self, ImportError> {
         let path = path.as_ref();
-        let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(path)?;
+        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        let (file, temporary) = tempfile::NamedTempFile::new_in(parent)?.into_parts();
         let card = NativeCard::locked(file, None)?;
         card.file.set_len(CARD_BYTES)?;
+        // Initialization ends on a file sync barrier, so only the name remains to publish.
         let owner = Self::new(HostMedia::File(RefCell::new(card)))?;
-        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-        std::fs::File::open(parent)?.sync_all()?;
+        publish(temporary, path, parent)?;
         Ok(owner)
     }
 
-    /// Mount an existing Unix card, including the common store's recording recovery.
+    /// Mount an existing card, including the common store's recording recovery.
     /// This never initializes or resets a card. Exhausted readable stores remain read-only.
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open_file(path: impl AsRef<std::path::Path>) -> Result<Self, ImportError> {
         let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
         let card = NativeCard::locked(file, None)?;
@@ -565,5 +569,52 @@ impl HostStore {
     }
 }
 
-#[cfg(all(test, unix))]
+/// Give a complete card its final name. The move refuses an occupied name; it never
+/// replaces a file. A rename is durable only after the directory entry reaches storage.
+#[cfg(unix)]
+fn publish(temporary: tempfile::TempPath, path: &std::path::Path, parent: &std::path::Path) -> io::Result<()> {
+    if let Err(refused) = temporary.persist_noclobber(path) {
+        // exFAT and many network mounts do not implement an exclusive rename. macOS reports
+        // `ENOTSUP`, which `ErrorKind` leaves uncategorized, so anything but an occupied
+        // name falls back to a reserved name.
+        if refused.error.kind() == io::ErrorKind::AlreadyExists {
+            return Err(refused.error);
+        }
+        reserve_and_rename(refused.path, path)?;
+    }
+    std::fs::File::open(parent)?.sync_all()
+}
+
+/// Publish where an exclusive rename is unavailable. The exclusive create holds the name
+/// against every other owner, and the plain rename replaces that reservation with the card.
+#[cfg(unix)]
+fn reserve_and_rename(temporary: tempfile::TempPath, path: &std::path::Path) -> io::Result<()> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    temporary.persist(path).map_err(|error| error.error)
+}
+
+/// Windows cannot sync a directory. `MOVEFILE_WRITE_THROUGH` returns only once the move
+/// is on disk, and the absent `MOVEFILE_REPLACE_EXISTING` keeps an occupied name refused.
+#[cfg(windows)]
+fn publish(temporary: tempfile::TempPath, path: &std::path::Path, _parent: &std::path::Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    fn wide(path: &std::path::Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    }
+    // The move must see an ordinary file: `keep` clears the temporary attribute.
+    let from = temporary.keep().map_err(|error| error.error)?;
+    let (source, target) = (wide(&from), wide(path));
+    // SAFETY: both arguments are null-terminated wide strings that outlive the call.
+    let moved = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if moved == 0 {
+        let error = io::Error::last_os_error();
+        let _ = std::fs::remove_file(&from);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

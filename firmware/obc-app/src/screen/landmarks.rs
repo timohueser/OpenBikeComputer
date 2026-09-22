@@ -74,11 +74,10 @@ impl LandmarksScreen {
         }
         Transition::None
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         if rx.landmarks.reading {
             reading(cv, rx, false);
@@ -127,7 +126,7 @@ impl LandmarksScreen {
             let _ = write!(label, "{}  {}", letter(state.selected), rx.t(kind(record.category)));
             cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT);
             let name_row = rect(12, 238, 18 * Font::Label.char_width() as i32, Font::Label.line_height() as i32);
-            let name = rx.marquee.fit(&state.name, 18, Some(name_row));
+            let name = rx.marquee.fit(&state.name, name_row.size.width as i32, Font::Label, Some(name_row));
             cv.text(&name, Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             label.clear();
             super::vocab::fmt::write_distance_coarse(
@@ -172,11 +171,10 @@ impl LandmarkSourcesScreen {
         }
         Transition::None
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         reading(cv, rx, true);
     }
@@ -201,15 +199,16 @@ pub(crate) fn detail(state: &crate::landmarks::Landmarks) -> Option<obc_reader::
         distance_m: state.selected()?.key.distance_m,
     })
 }
-pub(super) fn reading<D, F, S>(cv: &mut Canvas<D, F>, rx: &RenderFrame<'_, S>, sources: bool)
+pub(super) fn reading<D, F>(cv: &mut Canvas<D, F>, rx: &RenderFrame<'_, '_>, sources: bool)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
-    S: obc_map_scene::MapScene,
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;
-    let page = state.article.filter(|_| state.ready()).map(|_| {
+    // Sources stand on their own: a record with a photo and no text still credits that photo.
+    let content = state.ready() && (sources || state.article.is_some());
+    let page = content.then(|| {
         if sources {
             (state.source_page + 1, state.source_pages)
         } else {
@@ -222,7 +221,7 @@ where
         page,
         (!sources).then_some(&rx.marquee),
     );
-    if !state.ready() || state.article.is_none() {
+    if !content {
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
     }
@@ -285,10 +284,10 @@ pub(super) fn header(
         let _ = write!(count, "{current}/{total}");
     }
     let reserved = if count.is_empty() { 0 } else { text_width(&count, Font::Label) as usize + 12 };
-    let title_chars = (216 - reserved) / Font::Label.char_width() as usize;
+    let title_budget = 216 - reserved as i32;
     let title = match marquee {
-        Some(marquee) => marquee.fit(title, title_chars, Some(rect(4, 4, 232, 34))),
-        None => super::vocab::marquee::fit(title, title_chars),
+        Some(marquee) => marquee.fit(title, title_budget, Font::Label, Some(rect(4, 4, 232, 34))),
+        None => super::vocab::marquee::fit(title, title_budget, Font::Label),
     };
     cv.text(&title, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
     cv.text(&count, Point::new(228, 9), Font::Label, TextAlign::Right, PARCHMENT);

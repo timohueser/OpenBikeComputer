@@ -52,14 +52,10 @@ both = "Beides"
 waypoints = "Wegpunkte"
 map_pois = "POIs"
 
-# --- Units: the `Units` enum name + the Units settings screen ---
+# --- Units: the `Units` enum names ---
 [units]
 metric = "Metrisch"
 imperial = "Imperial"
-title = "EINHEITEN"
-distance = "Distanz"
-speed = "Tempo"
-elevation = "Höhe"
 
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
@@ -198,26 +194,22 @@ title = "DATUM & ZEIT"
 gps_fix = "GPS-Fix"
 searching = "Suche nach Fix"
 local_time = "Ortszeit"
-offset = "Offset"
+offset = "UTC-Offset"
 utc = "UTC "
 
 # --- Ride settings ---
 [ride]
 title = "FAHRT"
 fields = "Datenfelder"
-fields_sub = "Anordnung"
-pages = "Seiten"
-pages_sub = "autom."
+pages = "Auto-Wechsel"
 climb = "Anstieg"
-climb_sub = "Panel"
 waypoints = "Wegpunkte"
-waypoints_sub = "Chip"
 
 # --- Display settings screen ---
 [display]
 title = "ANZEIGE"
-idle = "Ruhe"
-idle_sub = "Timeout"
+idle = "Ruhezeit"
+brightness = "Helligkeit"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
@@ -239,29 +231,23 @@ contours = "Konturen"
 # --- Power settings screen ---
 [power]
 title = "ENERGIE"
-gps_fix = "GPS-Fix"
-gps_fix_sub = "Intervall"
+gps_fix = "GPS-Intervall"
 power_save = "Sparmodus"
-power_save_sub = "wenig Strom"
 
-# --- Connections settings menu (Phone / Sensors) ---
+# --- Connections page: the Bluetooth switch, the phone status and the sensors door ---
 [connections]
 title = "VERBINDUNG"
 phone = "Telefon"
 sensors = "Sensoren"
+not_paired = "Nicht gekoppelt"
+connected = "verbunden"
 
-# --- Bluetooth settings screen ---
+# --- The phone link: its status words and the Forget action ---
 [bluetooth]
 removing = "Wird entfernt..."
 remove_failed = "Entfernen fehlgeschlagen"
 restart = "Neustart erforderlich"
-title = "BLUETOOTH"
 radio = "Bluetooth"
-radio_sub = "Funk"
-status = "Status"
-paired = "Gekoppelt"
-yes = "ja"
-no = "nein"
 forget = "Entkoppeln"
 off = "Aus"
 connected = "Verbunden"
@@ -305,7 +291,7 @@ erases = "Löscht alle Werte"
 saved_time = "& die Uhrzeit."
 confirm = "Bestätigen"
 keep_holding = "Weiter halten"
-hold_to_erase = "Zum Löschen halten"
+hold_to_erase = "Halten: löschen"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -425,7 +411,7 @@ recording = "Fahrt läuft"
 # --- The Detour flow (#882): planning copy, preview title, failure hints ---
 [detour]
 title = "UMLEITUNG"
-planning = "Umleitung wird geplant..."
+planning = "Wird geplant..."
 commit_failed = "Umleitung fehlgeschlagen."
 rejoin_hint = "Späteren Wiedereinstieg wählen."
 
@@ -481,7 +467,6 @@ datetime = "Datum & Zeit"
 language = "Sprache"
 update = "Firmware"
 about = "Info"
-reset = "Zurücksetzen"
 
 # --- About page (issue #1149): the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
@@ -494,7 +479,7 @@ firmware = "Firmware"
 # --- Firmware page (device info ledger + the SD-sideload install action) ---
 [firmware]
 title = "FIRMWARE"
-install_update = "Update von Karte installieren"
+install_update = "Aktualisieren"
 recording = "Aufnahme"
 version = "Firmware"
 map = "Karte"
@@ -502,7 +487,7 @@ card_free = "Karte frei"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Karte prüfen..."
+checking = "Update prüfen..."
 installed = "Installiert"
 staged = "Update"
 confirm_title = "INSTALLIEREN"
@@ -516,19 +501,18 @@ installing_body = "Die LED blinkt während der Installation. Danach startet das 
 installing_power = "Nicht ausschalten."
 updated_title = "AKTUALISIERT"
 updated = "Aktualisiert auf"
-failed_title = "UPDATE FEHLGESCHLAGEN"
+failed_title = "UPDATE-FEHLER"
 failed_not_started = "Das Update wurde nicht gestartet."
 failed_reverted = "Die vorherige Firmware ist weiterhin installiert."
 title = "UPDATE"
-not_found = "Keine UPDATE.BIN auf der Karte."
+not_found = "Es wurde noch kein Update gesendet."
 unreadable = "Update-Datei nicht lesbar."
 damaged = "Die Update-Datei ist beschädigt."
 too_large = "Die Update-Datei ist zu groß für dieses Gerät."
-fragmented = "Die Update-Datei ist zu fragmentiert. Lösche UPDATE.BIN und kopiere sie erneut auf die Karte."
+fragmented = "Das Update ist zu fragmentiert. Sende es erneut."
 untrusted = "Diese Update-Datei ist nicht für dieses Gerät signiert."
 install_recording = "Beende und speichere deine Fahrt, bevor du ein Update installierst."
-install_pending_save = "Eine Fahrt wird noch gespeichert. Versuche es gleich erneut."
-install_no_card = "Keine Karte gefunden. Lege die Karte ein und versuche es erneut."
+install_no_card = "Die Karte ist nicht bereit. Versuche es erneut."
 install_snapshot_failed = "Sicherungskopie konnte nicht auf die Karte geschrieben werden. Update nicht installiert."
 install_state_write = "Update konnte nicht vorbereitet werden. Es wurde nichts geändert."
 
@@ -721,16 +705,16 @@ profile_blocked = "Radtyp gesperrt"
 blocked_route = "Route gesperrt"
 unmatched = "Abseits der Route"
 review_visit = "Route ansehen"
-current_visit = "Aktueller Besuch"
+current_visit = "Aktueller\nBesuch"
 current_leg = "Aktueller Weg"
 save_unknown = "Speicherstand offen"
 
 cancel_visit = "Abbrechen"
 arrival = "Ziel erreicht"
 guidance_continues = "Navigation geht weiter"
-resume_journey = "Tour fortsetzen"
+resume_navigation = "Navigation"
 resume_route = "Fortsetzen"
-saved_journey = "Gespeicherte Route"
+saved_route = "Gespeicherte Route"
 
 [find_context]
 hide_closed = "Geschlossen\nausblenden"

@@ -25,7 +25,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="obc-landmark-fixture-") as temporary:
             outputs = [Path(temporary) / name for name in ("first", "second")]
             for output in outputs:
-                subprocess.run([str(executable), "landmarks", "--snapshot", str(source / "manifest.json"),
+                subprocess.run([str(executable), "landmark-content", "--snapshot", str(source / "manifest.json"),
                                 "--boundary", str(source / "regions.geojson"),
                                 "--out", str(output)], cwd=ROOT, check=True)
             files = [{file.name: file.read_bytes() for file in output.iterdir()} for output in outputs]

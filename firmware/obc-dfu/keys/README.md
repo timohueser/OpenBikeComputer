@@ -9,7 +9,7 @@ A malformed file is a build error.
 |---|---|
 | `obcu-release.pub` | The production public key, `include_bytes!`d into `obc_dfu::sig::RELEASE_PUBKEY`. The armer trusts this key and nothing else. |
 | `test/obcu-test.seed` | The test secret seed. Public by construction — it is in the repo. |
-| `test/obcu-test.pub` | The test public key. Used by the host tests, `specs/vectors/update-container-v2.bin` and the simulator's synthetic `UPDATE.BIN`. |
+| `test/obcu-test.pub` | The test public key. Used by the host tests, `specs/vectors/update-container-v2.bin` and the simulator's synthetic package. |
 
 **Never commit a production seed.** There is no private release key in this repository. The
 production seed lives only in the GitHub Actions environment secret `OBCU_SIGNING_SEED`

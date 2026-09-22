@@ -52,14 +52,10 @@ both = "Ambos"
 waypoints = "Puntos"
 map_pois = "POI mapa"
 
-# --- Units: the `Units` enum name + the Units settings screen ---
+# --- Units: the `Units` enum names ---
 [units]
 metric = "Métrico"
 imperial = "Imperial"
-title = "UNIDADES"
-distance = "Distancia"
-speed = "Velocidad"
-elevation = "Altitud"
 
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
@@ -198,26 +194,22 @@ title = "FECHA Y HORA"
 gps_fix = "Fix GPS"
 searching = "Buscando fix"
 local_time = "Hora local"
-offset = "Desfase"
+offset = "Desfase UTC"
 utc = "UTC "
 
 # --- Ride settings ---
 [ride]
 title = "SALIDA"
 fields = "Campos"
-fields_sub = "disposición"
-pages = "Páginas"
-pages_sub = "auto-cambio"
+pages = "Auto-cambio"
 climb = "Subida"
-climb_sub = "panel"
 waypoints = "Puntos"
-waypoints_sub = "aviso"
 
 # --- Display settings screen ---
 [display]
 title = "PANTALLA"
-idle = "Reposo"
-idle_sub = "espera"
+idle = "Espera"
+brightness = "Brillo"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
@@ -238,29 +230,23 @@ contours = "Relieve"
 # --- Power settings screen ---
 [power]
 title = "ENERGÍA"
-gps_fix = "Fix GPS"
-gps_fix_sub = "intervalo"
+gps_fix = "Intervalo GPS"
 power_save = "Ahorro"
-power_save_sub = "bajo consumo"
 
-# --- Connections settings menu (Phone / Sensors) ---
+# --- Connections page: the Bluetooth switch, the phone status and the sensors door ---
 [connections]
 title = "CONEXIONES"
 phone = "Teléfono"
 sensors = "Sensores"
+not_paired = "No vinculado"
+connected = "conectado"
 
-# --- Bluetooth settings screen ---
+# --- The phone link: its status words and the Forget action ---
 [bluetooth]
 removing = "Eliminando..."
 remove_failed = "No se pudo eliminar"
 restart = "Reinicia para terminar"
-title = "BLUETOOTH"
 radio = "Bluetooth"
-radio_sub = "radio"
-status = "Estado"
-paired = "Vinculado"
-yes = "sí"
-no = "no"
 forget = "Olvidar tel."
 off = "Apagado"
 connected = "Conectado"
@@ -299,7 +285,7 @@ all_added_sub = "Quita uno antes"
 title = "RESTABLECER"
 complete = "Restablecido"
 restarting = "Reiniciando"
-factory = "Ajustes fábrica"
+factory = "Restablecer"
 erases = "Borra los ajustes"
 saved_time = "y la hora."
 confirm = "Confirmar"
@@ -480,7 +466,6 @@ datetime = "Fecha y hora"
 language = "Idioma"
 update = "Firmware"
 about = "Acerca de"
-reset = "Restablecer"
 
 # --- About page (issue #1149): the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
@@ -493,7 +478,7 @@ firmware = "Firmware"
 # --- Firmware page (device info ledger + the SD-sideload install action) ---
 [firmware]
 title = "FIRMWARE"
-install_update = "Instalar actualización desde la tarjeta"
+install_update = "Actualizar"
 recording = "Grabando"
 version = "Firmware"
 map = "Mapa"
@@ -501,7 +486,7 @@ card_free = "Tarjeta libre"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Leyendo tarjeta..."
+checking = "Comprobando..."
 installed = "Instalada"
 staged = "Actualización"
 confirm_title = "ACTUALIZAR"
@@ -515,19 +500,18 @@ installing_body = "El LED parpadea durante la instalación. Después se reinicia
 installing_power = "No apagues el dispositivo."
 updated_title = "ACTUALIZADO"
 updated = "Actualizado a"
-failed_title = "ACTUALIZACIÓN FALLIDA"
+failed_title = "NO ACTUALIZADO"
 failed_not_started = "La actualización no se inició."
 failed_reverted = "El firmware anterior sigue instalado."
 title = "ACTUALIZACIÓN"
-not_found = "No hay UPDATE.BIN en la tarjeta."
+not_found = "No se ha enviado ninguna actualización."
 unreadable = "No se pudo leer el archivo de actualización."
 damaged = "El archivo de actualización está dañado."
 too_large = "El archivo de actualización es demasiado grande para este dispositivo."
-fragmented = "El archivo de actualización está muy fragmentado. Borra UPDATE.BIN y cópialo de nuevo en la tarjeta."
+fragmented = "La actualización está muy fragmentada. Envíala de nuevo."
 untrusted = "Este archivo de actualización no está firmado para este dispositivo."
 install_recording = "Termina y guarda tu ruta antes de instalar una actualización."
-install_pending_save = "Todavía se está guardando una ruta. Inténtalo de nuevo en un momento."
-install_no_card = "No se encontró la tarjeta. Insértala e inténtalo de nuevo."
+install_no_card = "La tarjeta no está lista. Inténtalo de nuevo."
 install_snapshot_failed = "No se pudo guardar una copia de seguridad en la tarjeta. Actualización no instalada."
 install_state_write = "No se pudo preparar la actualización. No se cambió nada."
 
@@ -727,9 +711,9 @@ save_unknown = "Guardado incierto"
 cancel_visit = "Cancelar"
 arrival = "Has llegado"
 guidance_continues = "La guía continúa"
-resume_journey = "Reanudar ruta"
+resume_navigation = "Navegación"
 resume_route = "Reanudar"
-saved_journey = "Ruta guardada"
+saved_route = "Ruta guardada"
 
 [find_context]
 hide_closed = "Ocultar\ncerrados"

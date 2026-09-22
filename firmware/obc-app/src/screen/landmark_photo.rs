@@ -5,7 +5,6 @@ use crate::{
     Gesture, Msg,
 };
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
-use obc_map_scene::MapScene;
 use obc_render::{
     text::{Font, TextAlign},
     Canvas, Surface,
@@ -82,10 +81,10 @@ impl LandmarkPhotoScreen {
     pub fn handle(&mut self, gesture: Gesture, cx: &mut Ctx) -> Transition {
         if self.linked {
             match gesture {
+                // With no text the photo is the whole record, so stepping has nowhere to go.
                 Gesture::Step(n) => {
-                    if let Some(article) = cx.landmarks.article {
-                        cx.landmarks.page = if n < 0 { article.text_pages as u16 - 1 } else { 0 };
-                    }
+                    let Some(article) = cx.landmarks.article else { return Transition::None };
+                    cx.landmarks.page = if n < 0 { article.text_pages as u16 - 1 } else { 0 };
                     return Transition::Pop;
                 }
                 Gesture::Press if matches!(self.selection, crate::photo::ContentSelection::Peak(_)) => {
@@ -108,11 +107,10 @@ impl LandmarkPhotoScreen {
         }
     }
 
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: MapScene,
     {
         cv.clear(PARCHMENT);
         let page = self.linked.then_some(rx.landmarks.article).flatten().map(|article| {

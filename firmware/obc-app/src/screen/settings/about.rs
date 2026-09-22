@@ -23,10 +23,6 @@ const PITCH: i32 = 22;
 const START_PAD: i32 = 16;
 /// Room under the last line. A Label cell is 24 px, which is 2 px more than [`PITCH`].
 const BOTTOM_PAD: i32 = 14;
-/// Line budget in [`Font::Label`] characters: `(240 - 2·14) / 12 = 17` for a 240 px panel.
-#[cfg(test)]
-const LINE_CHARS: usize = 17;
-
 /// The OSMF requested credit, pre-wrapped. Legal formulas are not translated.
 const OSM_LINES: &[&str] =
     &["\u{00a9} OpenStreetMap", "contributors", "Open Database", "License (ODbL)", "openstreetmap", ".org/copyright"];
@@ -139,7 +135,6 @@ impl AboutScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Language;
     use crate::AppState;
 
     fn run(scr: &mut AboutScreen, g: Gesture) -> Transition {
@@ -173,19 +168,6 @@ mod tests {
             joined.push_str(line);
         }
         assert_eq!(joined, obc_elevation::COPERNICUS_ATTRIBUTION);
-    }
-
-    #[test]
-    fn every_line_fits_the_panel() {
-        for (caption, lines) in SECTIONS {
-            for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-                let text = crate::i18n::t(caption, lang);
-                assert!(text.chars().count() <= LINE_CHARS, "caption {text:?} ({lang:?}) exceeds {LINE_CHARS} chars");
-            }
-            for line in lines {
-                assert!(line.chars().count() <= LINE_CHARS, "line {line:?} exceeds {LINE_CHARS} chars");
-            }
-        }
     }
 
     #[test]

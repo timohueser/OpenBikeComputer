@@ -101,13 +101,18 @@ pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
             if r.content[2].is_absent() != r.content[3].is_absent() {
                 return Err(Error::Format("unpaired peak photo".into()));
             }
-            let bundle = d.content(&section, &r, 1, obc_formats::articles::MAX_BYTES).map_err(malformed)?;
-            obc_reader::articles::select(&bundle, *b"en").map_err(malformed)?;
+            if r.content[1].is_absent() && r.content[2].is_absent() {
+                return Err(Error::Format("peak article with neither text nor a photo".into()));
+            }
+            if !r.content[1].is_absent() {
+                let bundle = d.content(&section, &r, 1, obc_formats::articles::MAX_BYTES).map_err(malformed)?;
+                obc_reader::articles::select(&bundle, *b"en").map_err(malformed)?;
+            }
             let limits =
                 [MAX_NAME_BYTES, obc_formats::articles::MAX_BYTES, PHOTO_MAX_COMPRESSED as u32, MAX_ATTRIBUTION_BYTES];
             let mut blobs: [Option<Blob>; 4] = std::array::from_fn(|_| None);
             for (j, reference) in r.content.into_iter().enumerate() {
-                if j >= 2 && reference.is_absent() {
+                if j >= 1 && reference.is_absent() {
                     continue;
                 }
                 d.content(&section, &r, j, limits[j]).map_err(malformed)?;

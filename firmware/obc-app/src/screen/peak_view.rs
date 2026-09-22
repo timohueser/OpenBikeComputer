@@ -132,10 +132,16 @@ impl PeakViewScreen {
             }
             Gesture::Press => {
                 if self.selected_source().is_some_and(|source| cx.landmarks.peak_source == Some(source))
-                    && cx.landmarks.ready()
-                    && cx.landmarks.article.is_some()
+                    && cx.landmarks.has_content()
                 {
                     cx.landmarks.page = 0;
+                    // A record with no text has only its photo, so Select opens that page itself.
+                    if cx.landmarks.article.is_none() {
+                        let Some(selection) = cx.landmarks.selection() else { return Transition::None };
+                        return Transition::Push(super::Screen::LandmarkPhoto(
+                            super::LandmarkPhotoScreen::content(selection, &cx.landmarks.name).linked(),
+                        ));
+                    }
                     cx.landmarks.reading = true;
                     return Transition::Push(super::Screen::PeakArticle(super::PeakArticleScreen {
                         selection: cx.landmarks.peak.unwrap(),
@@ -338,7 +344,8 @@ fn draw_peak_annotations(
         let x = bearing_x(peak.azimuth_q4, heading_q4, w, profile.horizontal_fov_q4()).unwrap_or(0);
         let summit_y = angle_y(profile, peak.angle_q4, bottom);
         let headroom = (summit_y - LABEL_GAP - COMPASS_H - 2).max(12);
-        let name = fit(peak.name.as_str(), (headroom / 6).max(2) as usize);
+        // The label is drawn at divisor 2, so its cells are half a Label cell wide.
+        let name = fit(peak.name.as_str(), headroom * 2, Font::Label);
         let label_bottom = (summit_y - LABEL_GAP).max(COMPASS_H + 14);
         let color = if Some(i) == selected { palette::WOOD } else { palette::INK };
         let leader_top = (summit_y - LABEL_GAP + 1).max(COMPASS_H + 2);
@@ -361,25 +368,27 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
     let top = rx.h - LEDGER_H;
     cv.fill(rect(0, top, rx.w, LEDGER_H), palette::PARCHMENT);
     cv.hline(0, top, rx.w, palette::WOOD);
-    let chars = ((rx.w - 20) / Font::Label.char_width() as i32) as usize;
+    let ledger_budget = rx.w - 20;
     let Some(peak) = selected.and_then(|i| profile.peaks.get(i)) else {
         let pending = rx.peak_view.is_none_or(|terrain| !terrain.view_ready(heading, profile.horizontal_fov_q4()));
         if !pending && !visible_indices(profile, heading).is_empty() {
             return;
         }
-        let status = fit(rx.t(if pending { Msg::PeakViewPreparing } else { Msg::PeakViewNoPeaks }), chars);
+        let status =
+            fit(rx.t(if pending { Msg::PeakViewPreparing } else { Msg::PeakViewNoPeaks }), ledger_budget, Font::Label);
         cv.text(&status, Point::new(10, top + 7), Font::Label, TextAlign::Left, palette::SUBTEXT);
         return;
     };
 
-    let info = rx.landmarks.peak_source == Some(peak.source) && rx.landmarks.ready() && rx.landmarks.article.is_some();
-    let chars = chars.saturating_sub(if info { 2 } else { 0 });
+    let info = rx.landmarks.peak_source == Some(peak.source) && rx.landmarks.has_content();
+    // The info disc takes two cells off the name.
+    let name_budget = ledger_budget - if info { 2 * Font::Label.char_width() as i32 } else { 0 };
     if info {
         cv.disc(Point::new(rx.w - 16, top + 17), 9, palette::WOOD);
         cv.text("i", Point::new(rx.w - 16, top + 5), Font::Label, TextAlign::Center, palette::PARCHMENT);
     }
     let name_row = rect(10, top + 5, rx.w - if info { 44 } else { 20 }, Font::Label.line_height() as i32);
-    let name = rx.marquee.fit(peak.name.as_str(), chars, Some(name_row));
+    let name = rx.marquee.fit(peak.name.as_str(), name_budget, Font::Label, Some(name_row));
     cv.text(&name, Point::new(10, top + 5), Font::Label, TextAlign::Left, palette::INK);
     let mut details: heapless::String<40> = heapless::String::new();
     if let Some(meters) = peak.elevation_m {
@@ -645,10 +654,10 @@ mod tests {
 
     #[test]
     fn vertical_labels_keep_utf8_and_fit_even_the_smallest_headroom() {
-        assert_eq!(fit("Grossglockner", 6).as_str(), "Gros..");
-        assert_eq!(fit("Älplerhorn", 4).as_str(), "Äl..");
-        assert_eq!(fit("Peak", 2).as_str(), "..", "the smallest headroom keeps the dots alone");
-        assert_eq!(fit("Peak", 4).as_str(), "Peak");
+        assert_eq!(fit("Grossglockner", 6 * 12, Font::Label).as_str(), "Gros..");
+        assert_eq!(fit("Älplerhorn", 4 * 12, Font::Label).as_str(), "Äl..");
+        assert_eq!(fit("Peak", 2 * 12, Font::Label).as_str(), "..", "the smallest headroom keeps the dots alone");
+        assert_eq!(fit("Peak", 4 * 12, Font::Label).as_str(), "Peak");
     }
 
     #[test]

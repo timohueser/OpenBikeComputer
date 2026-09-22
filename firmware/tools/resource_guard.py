@@ -9,7 +9,7 @@ tools rather than an ELF Python package so a fresh checkout needs only the selec
 from __future__ import annotations
 
 GOVERNS = ['firmware/obc-fw-nrf54l/**', 'firmware/obc-boot/**', 'firmware/tools/resource_baseline.json']
-RULE = 'A release image fits the recorded resource baseline: RAM, frames, boot chain and bootloader flash.'
+RULE = 'A release image fits the recorded resource baseline and the app slot: RAM, frames, boot chain, bootloader flash and image size.'
 
 import argparse
 import json
@@ -32,6 +32,16 @@ WRITABLE_SYMBOL_TYPES = frozenset("bBdDsS")
 # NOBITS (`.bss`, `.uninit`) as llvm-nm spells it — the arena is one of these, and a claim that it
 # is not (`d`/`D` = it acquired an initializer, `r` = it stopped being writable) is a real finding.
 NOBITS_SYMBOL_TYPES = frozenset("bB")
+APP_SLOT_MEMORY_X = HERE.parent / "obc-boot" / "memory.x"
+# What the slot keeps free of the image. `llvm-size` totals the section sizes, while the flashed
+# binary is contiguous and also carries the alignment padding between them, which no section total
+# reports. One RRAM page covers that padding; the slot needs no other reserve, because the staged
+# blob carve and the state pages all sit outside it (obc-boot/memory.x).
+APP_SLOT_HEADROOM = 4096
+MEMORY_REGION_RE = re.compile(
+    r"^\s*(?P<name>\w+)\s*:\s*ORIGIN\s*=\s*(?P<origin>0x[0-9A-Fa-f]+)\s*,\s*LENGTH\s*=\s*(?P<length>\d+[KM]?)",
+    re.M,
+)
 STRICT_ALIGN_PROBE = HERE / "strict_align_probe.rs"
 EMBEDDED_TARGET = "thumbv8m.main-none-eabihf"
 EMBEDDED_TARGET_CFG = 'cfg(all(target_arch = "arm", target_os = "none"))'
@@ -130,6 +140,38 @@ def parse_size_output(output: str, extra_required: frozenset[str] = frozenset())
     if missing:
         raise GuardError(f"llvm-size output is stale/incomplete; missing section(s): {', '.join(missing)}")
     return sections
+
+
+def parse_app_slot_len(memory_x: str) -> int:
+    """The app slot's length from `obc-boot/memory.x`: the span between the bootloader's own FLASH
+    region and the staged-blob carve above it.
+
+    The linker script is the authority for the slot, and `obc_dfu::layout` is pinned to it by that
+    crate's `layout` test. So the bound this gate applies is the bound the host wrapper, the armer
+    and the install engine apply — an image over it can be built, but never wrapped or installed.
+    """
+    regions = {
+        match["name"]: (int(match["origin"], 16), region_bytes(match["length"]))
+        for match in MEMORY_REGION_RE.finditer(memory_x)
+    }
+    missing = sorted({"FLASH", "SEMMC_STAGE"} - regions.keys())
+    if missing:
+        raise GuardError(f"memory.x declares no {', '.join(missing)} region; the app-slot parser is stale")
+    boot_base, boot_len = regions["FLASH"]
+    stage_base, _ = regions["SEMMC_STAGE"]
+    slot = stage_base - (boot_base + boot_len)
+    if slot <= APP_SLOT_HEADROOM:
+        raise GuardError(f"memory.x leaves an app slot of {slot} B; the parser or the map is wrong")
+    return slot
+
+
+def region_bytes(length: str) -> int:
+    """A linker `LENGTH` as bytes: `32K`, `1M` or a plain count."""
+    if length.endswith("K"):
+        return int(length[:-1]) * 1024
+    if length.endswith("M"):
+        return int(length[:-1]) * 1024 * 1024
+    return int(length)
 
 
 def parse_stack_bounds(output: str) -> tuple[int, int]:
@@ -684,12 +726,13 @@ def load_baseline(path: Path) -> dict[str, object]:
         baseline = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise GuardError(f"cannot read baseline {path}: {error}") from error
-    if baseline.get("schema_version") != 3:
+    if baseline.get("schema_version") != 4:
         raise GuardError(
-            f"unsupported baseline schema in {path}; expected schema_version 3 "
+            f"unsupported baseline schema in {path}; expected schema_version 4 "
             "(v2 added the boot-chain block: task_frame_limit / residual_stack_min / "
             "boot_chain_ceiling / boot_chain_roots; v3 added the deep-ride high-water gate: "
-            "deep_ride_high_water / deep_ride_margin_min)"
+            "deep_ride_high_water / deep_ride_margin_min; v4 added the resident band's lower "
+            "end: resident_ram_slack)"
         )
     return baseline
 
@@ -710,10 +753,31 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         f"= {measured.resident:,} B linked resident; .uninit {measured.uninit:,} B; "
         f"flash {measured.flash:,} B"
     )
+    check_app_slot(args.profile, measured)
+    ceiling = profile["resident_ram_max"]
+    slack = profile["resident_ram_slack"]
+    pinned = profile["measured_resident"]
     require(
-        measured.resident <= profile["resident_ram_max"],
+        measured.resident <= ceiling,
         f"{args.profile} resident RAM grew to {measured.resident} B (.bss + .data), above the "
-        f"approved {profile['resident_ram_max']} B baseline; itemize/approve the increase",
+        f"approved {ceiling} B baseline; itemize/approve the increase",
+    )
+    # The other end of the same band, because a `<=` ceiling stays green on a link that *shrinks*.
+    # Without it every slice that saves RAM leaves the ceiling further above the real link, and the
+    # headroom the next slice reads off the baseline is fiction.
+    #
+    # The floor sits one slack below the PINNED link, not below the ceiling. Below the ceiling it
+    # would be exact equality with `measured_resident`, so one deleted byte — or a host toolchain
+    # linking a little less than CI — would fail a change for a reason outside itself. One slack of
+    # give in each direction lets an ordinary deletion ride until the next re-pin and still bounds
+    # the dead headroom at two slacks.
+    below = pinned - measured.resident
+    require(
+        below <= slack,
+        f"{args.profile} resident RAM is {measured.resident} B (.bss + .data), {below} B below the "
+        f"{pinned} B pinned link and so past its {slack} B slack: the link shrank. Re-pin "
+        "measured_resident to the `embedded` CI job's figure and resident_ram_max to that figure "
+        "plus resident_ram_slack, rather than leaving the saving as headroom nothing measured",
     )
     # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
     # `.uninit` once held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
@@ -768,6 +832,23 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     if measured.boot is not None:
         check_boot_chain(args.profile, profile, measured.boot)
     print(f"{args.profile}: resource guards passed")
+
+
+def check_app_slot(profile_name: str, measured: BoardMeasurement) -> None:
+    """The image has to fit the slot it is installed into, which is what `MAX_IMAGE_LEN` is.
+
+    `obc-mkimage wrap` refuses an oversize image too, but only when the release is already being
+    cut. This says so on the build that made it.
+    """
+    slot = parse_app_slot_len(APP_SLOT_MEMORY_X.read_text())
+    limit = slot - APP_SLOT_HEADROOM
+    print(f"{profile_name}: image {measured.flash:,} B of the {slot:,} B app slot (limit {limit:,} B)")
+    require(
+        measured.flash <= limit,
+        f"{profile_name} links {measured.flash} B of image, over the {limit} B limit: the app slot "
+        f"is {slot} B, less {APP_SLOT_HEADROOM} B of section-alignment headroom. `obc-dfu`'s "
+        "MAX_IMAGE_LEN is that same slot, so this image cannot be wrapped, staged or installed",
+    )
 
 
 def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMeasurement) -> None:

@@ -275,6 +275,31 @@ inspect *args:
     ( cd "$OBC_ROOT" && _run cargo build --release --quiet -p obc-inspect )
     _run "$OBC_ROOT/target/release/obc-inspect" "$@"
 
+# The one guarded way to delete from the R2 maps bucket: cells, terrain objects,
+# reference tiles and strays alike. It reads the bucket and the credential from
+# tools/obc.local, the same variables `obc bake publish` uses.
+#
+#   obc r2 rm cell-catalog/cells/fine/1204/1052.<sha256>.obcm   # the plan, and no more
+#   obc r2 rm --prefix reference/v1/16/3410
+#   obc r2 rm <key> --apply --reason "bad ingest" --confirm "<the plan's own string>"
+#
+# A published cell, preview or index carries the digest of its bytes in its key. `rm`
+# prints what it would delete, with each object's size and age, and stops. `--apply` takes
+# back the confirmation that plan printed — a count and a digest of the whole key list —
+# so neither a stale command line nor a bucket that moved under it deletes anything.
+# The catalogue root, any object the live catalogue names (cells included, through their
+# band indexes), the reference index and `removed.jsonl` each need `--i-mean-it <key>` on
+# top. A catalogue this cannot read is a refusal. Every removal is appended to
+# `removed.jsonl` at the bucket root.
+# Delete objects from the R2 maps bucket, with a plan first. Args: rm <KEY>… | rm --prefix P
+[group('maps')]
+r2 *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/r2.py" "$@"
+
 # Bake the published cell catalog. `obc bake` processes every regions.toml entry;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree
@@ -282,6 +307,7 @@ inspect *args:
 #
 #   obc bake europe/germany/baden-wuerttemberg
 #   obc bake terrain --sources /tmp/dem   # the OBCT band, own revision track
+#   obc bake landmarks europe/switzerland # capture + compile, own revision track
 #   obc bake verify
 #   obc bake publish                  # plan only
 #   obc bake publish --target r2      # upload content first, catalog root last
@@ -300,6 +326,7 @@ bake *args:
     if [[ -z "${OBC_PYOSMIUM_UP_TO_DATE:-}" && -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]; then
       export OBC_PYOSMIUM_UP_TO_DATE="$OBC_ROOT/.venv/bin/pyosmium-up-to-date"
     fi
+    export OBC_LANDMARK_CAPTURE_TOOL="${OBC_LANDMARK_CAPTURE_TOOL:-$OBC_ROOT/tools/landmark_capture.py}"
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
     bin="$OBC_ROOT/target/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
@@ -404,6 +431,13 @@ bake *args:
         shift
         _run "$bin" terrain --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
+      landmarks)
+        # The landmark artifact class, on its own revision track. Capture reads live Wikidata,
+        # Wikipedia and Commons — the one non-reproducible step of any bake — and is resumable, so
+        # an interrupted country is continued by repeating the command.
+        shift
+        _run "$bin" landmarks --out "$tree" "$@"
+        _say "bake tree: $tree — landmark artifacts under $tree/landmarks" ;;
       regions|check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
@@ -686,7 +720,15 @@ test *args:
         # `--lib` is the library-only loop: nextest builds one target and doctests, which are a
         # separate Cargo run over the whole package, stay out of it. Cargo rejects `--lib` on a
         # package with no library, so an unbuildable scope fails before anything runs.
-        library_only "$@" || _run cargo test --locked --doc "$@"
+        if ! library_only "$@"; then
+          # A scope with no library is a hard error for `--doc`, not an empty run, so a
+          # binary-only package would fail the task after every one of its tests passed.
+          if python3 "$OBC_TOOLS/cargo_scope.py" has-library "$@"; then
+            _run cargo test --locked --doc "$@"
+          else
+            _hint "no library in this scope: no doctests to run"
+          fi
+        fi
         ;;
     esac
 
@@ -791,7 +833,14 @@ check *args:
         step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
         step "board build (default, release)" cargo build --release --locked
         popd >/dev/null
-      else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
+      else _warn "skip the nRF54L gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("embedded"); fi
+      # The `board` gate is the `embedded` AND `boot` jobs. The bootloader keeps the COM wave in
+      # software, so it has no FLPR blob and runs whether or not a RISC-V gcc is installed.
+      pushd "$OBC_ROOT/firmware/obc-boot" >/dev/null
+      step "bootloader clippy (default)"   cargo clippy --locked -- -D warnings
+      step "bootloader clippy (rtt)"       cargo clippy --locked --features rtt -- -D warnings
+      step "bootloader build (release)"    cargo build --release --locked
+      popd >/dev/null
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
@@ -874,6 +923,17 @@ req *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/req.py" "$@"
+
+# The raw log of one red job is about a megabyte; this prints each failed step's last lines.
+#   obc ci            obc ci --pr N            obc ci RUN_ID
+# Print the failures of a CI run: this branch's latest, a PR's, or one by id. Args: [RUN] [--pr N] [--branch B] [--lines N]
+[group('agent')]
+ci *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/ci_log.py" "$@"
 
 # The routes and the granularity policy live in docs/testing.md.
 # Inspect the test selection plan from any directory. Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters

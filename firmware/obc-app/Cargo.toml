@@ -36,6 +36,10 @@ libm = { version = "0.2", default-features = false } # no arch asm: identical co
 external-fixtures = []
 
 [dev-dependencies]
+# The same `obc-render` the crate already depends on, with the host-only text tap turned on: the
+# copy-fit gate reads the (box, font, string) of every text draw a frame makes. A dev-dependency
+# feature reaches the test build only, so the device image is untouched.
+obc-render = { path = "../obc-render", features = ["text-tap"] }
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
 # integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
 obcm-testkit = { path = "../../host/obcm-testkit" }

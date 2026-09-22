@@ -53,7 +53,7 @@
   },
   "content_members": 1110,
   "archive_members": 1111,
-  "recipe": "cargo build --locked --release -p obc-bake; obc-bake landmarks --snapshot CAPTURE/manifest.json --boundary CAPTURE/boundary.geojson --out OUTPUT; tools/obc fixtures pack assistant-switzerland-content OUTPUT --output assistant-switzerland-content.tar.gz",
+  "recipe": "cargo build --locked --release -p obc-bake; obc-bake landmark-content --snapshot CAPTURE/manifest.json --boundary CAPTURE/boundary.geojson --out OUTPUT; tools/obc fixtures pack assistant-switzerland-content OUTPUT --output assistant-switzerland-content.tar.gz",
   "scope": "Compiled multilingual content and RGB222 photos only. Raw country captures remain in the local acquisition cache. Text and photo source notices are retained per record.",
   "verification": {
     "offline_compiler_passes": 2,

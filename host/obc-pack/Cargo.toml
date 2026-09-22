@@ -79,6 +79,9 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 scraper = { version = "0.27", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 obc-render = { version = "0.1.0", path = "../../firmware/obc-render" }
+# Unicode decomposition for the name fold: it reaches every accented letter the device font lacks,
+# so only the letters with no decomposition need a hand-written spelling.
+unicode-normalization = "0.1"
 percent-encoding = "2"
 sha1 = "0.10.6"
 zlib-rs = "0.6.7"

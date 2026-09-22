@@ -1,4 +1,4 @@
-//! The screens of the SD-sideload firmware-update flow, reached from Settings → System. Each is a
+//! The screens of the firmware-update flow, reached from Settings → System. Each is a
 //! static card through the normal screen stack: the two waits, the install confirm, the terminal
 //! "Installing update" card, the error card, and the two one-time boot-outcome cards.
 
@@ -24,7 +24,7 @@ fn wait_card(cv: &mut impl Surface, rx: &Render, spin: &Spinner, title: &str, ca
     let (w, h) = (rx.w, rx.h);
     title_frame(cv, w, h, title, "");
     spin.draw_needle(cv, w, h);
-    cv.text(caption, Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, palette::INK);
+    wrapped(cv, caption, w / 2, h * 72 / 100, chrome::copy_w(w), palette::INK);
 }
 
 /// Centred body copy at `Font::Label`. Each catalog string is authored on one line and wrapped
@@ -33,7 +33,7 @@ fn wrapped(cv: &mut impl Surface, text: &str, cx: i32, top_y: i32, width_px: i32
     chrome::wrapped(cv, text, cx, top_y, width_px, Font::Label, color)
 }
 
-/// The scan wait: the spinner over "Checking card..." until the board answers. Back cancels; a
+/// The scan wait: the spinner over "Checking update..." until the board answers. Back cancels; a
 /// later answer is then dropped.
 #[derive(Debug, Default)]
 pub struct DfuCheckScreen {
@@ -231,7 +231,7 @@ impl DfuInstallingScreen {
 /// Which half of the flow the error card reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuErrorReason {
-    /// The staging scan rejected `UPDATE.BIN`.
+    /// The staging scan rejected the staged package.
     Scan(DfuScanError),
     /// The install drain refused to arm, or the arm itself failed.
     Install(DfuInstallError),
@@ -325,7 +325,7 @@ impl DfuUpdatedScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuUpdatedTitle), "");
         card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
-        cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
+        chrome::wrapped(cv, rx.t(Msg::DfuUpdated), w / 2, TITLE_BAR_H + 104, chrome::copy_w(w), Font::Body, INK);
         version_lines(cv, &self.version, w / 2, TITLE_BAR_H + 134, w - 2 * INSET, Font::Body, TextAlign::Center, AMBER);
     }
 }

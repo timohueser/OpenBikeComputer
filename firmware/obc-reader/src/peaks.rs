@@ -142,7 +142,15 @@ impl Reader<'_> {
             return Ok(None);
         };
         let record = directory.record(&section, association.index)?;
-        crate::articles::select(&directory.content(&section, &record, 1, obc_formats::articles::MAX_BYTES)?, *b"en")?;
+        // Content is text or a photo. A record with neither is one Peak View must not mark.
+        if record.content[1].is_absent() {
+            directory.content(&section, &record, 2, obcm::landmarks::PHOTO_MAX_COMPRESSED as u32)?;
+        } else {
+            crate::articles::select(
+                &directory.content(&section, &record, 1, obc_formats::articles::MAX_BYTES)?,
+                *b"en",
+            )?;
+        }
         Ok(Some(Selection { generation: self.generation(), association }))
     }
     /// Revalidates the generation and identity before exposing bounded content windows.

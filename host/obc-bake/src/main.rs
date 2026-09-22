@@ -20,7 +20,8 @@ use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
 usage:
-  obc-bake landmarks --snapshot FILE --boundary GEOJSON --out DIR
+  obc-bake landmark-candidates --osm FILE --out FILE
+  obc-bake landmark-content --snapshot FILE --boundary GEOJSON --out DIR
   obc-bake peak-candidates --osm FILE --boundary GEOJSON --out FILE
   obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
       Compile pinned article and image captures offline for the map content stage.
@@ -48,7 +49,6 @@ usage:
         --summary-json FILE  write the machine-readable run summary
         --all                update/bake the whole planet through resumable source shards
         --no-terrain         skip the automatic terrain stage below
-        --landmarks FILE     embed compiled landmark content.json and its photos
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
         --reference DIR      reference archive mirror for the terrain stage's crest lifts
@@ -58,6 +58,10 @@ usage:
       nav graph's ascents integrated from the terrain in the tree, so a bake without
       it quietly produces a flatter map. Incremental like the cells — a tree whose
       terrain is current pays one skip-pass.
+
+      Landmarks are read from the tree the same way: every cell is cut with the
+      compiled content of each region whose coverage selects it, merged by QID, so a
+      cell on a border carries both sides. Run `obc-bake landmarks` to put them there.
 
   obc-bake terrain [REGION…] --sources DIR [flags]
       Bake the curated coverage's OBCT terrain cells into the tree's terrain band.
@@ -88,6 +92,23 @@ usage:
         --source SOURCE         Geofabrik base or directory (for the .poly files)
         --force                 re-bake even when unchanged
 
+  obc-bake landmarks [REGION…] [flags]
+      Capture and compile each region's landmark artifact into the tree's landmark
+      band. Landmarks have their OWN revision track: this never re-bakes an OBCM
+      cell, and a schema bump never re-compiles a landmark artifact.
+        --out TREE           output tree (default: ./obc-bake)
+        --cache DIR          extract/poly download cache; also holds the raw captures
+        --regions FILE       curated region list
+        --source SOURCE      Geofabrik base or directory (for the .poly files)
+        --force              re-compile even when unchanged
+        --no-capture         never call the capture tool; compile what the cache holds
+
+      The boundary is the region's own `.poly` and the candidates are the `wikidata`
+      tags of its own extract, so nothing here is hand-drawn. The capture reads live
+      Wikidata, Wikipedia and Commons: it is the one step of any bake that two runs
+      can disagree on, it is resumable, and the run says when it starts.
+      `tools/landmark_capture.py` is found through OBC_LANDMARK_CAPTURE_TOOL.
+
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
         --target TARGET      `dir:PATH` (default: dry run) or `r2`
@@ -107,7 +128,9 @@ fn main() -> ExitCode {
     let command = args.first().map(String::as_str).unwrap_or("");
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     let result = match command {
-        "landmarks" => run_landmarks(rest),
+        "landmark-candidates" => run_landmark_candidates(rest),
+        "landmark-content" => run_landmark_content(rest),
+        "landmarks" => run_landmark_stage(rest),
         "peaks" => run_peaks(rest),
         "peak-candidates" => run_peak_candidates(rest),
         "regions" => run_regions(rest),
@@ -185,6 +208,22 @@ fn run_regions(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The curated list narrowed by positional ids, or all of it.
+fn select_regions(
+    all: Vec<obc_bake::regions::Region>,
+    wanted: &[String],
+) -> Result<Vec<obc_bake::regions::Region>, String> {
+    if wanted.is_empty() {
+        return Ok(all);
+    }
+    for want in wanted {
+        if !all.iter().any(|r| &r.id == want) {
+            return Err(format!("`{want}` is not in the curated region list — add it there first"));
+        }
+    }
+    Ok(all.into_iter().filter(|r| wanted.contains(&r.id)).collect())
+}
+
 fn run_bake(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
@@ -205,7 +244,6 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "base-url",
             "dem-sources",
             "reference",
-            "landmarks",
             "peaks",
         ],
     )?;
@@ -222,17 +260,7 @@ fn run_bake(args: &[String]) -> Result<(), String> {
     // Region ids are positional, which also reads as "these regions are baked together" — and for
     // cells that is not cosmetic, because co-baked neighbours are what complete each other's border
     // cells.
-    let wanted = positional;
-    let regions: Vec<_> = if wanted.is_empty() {
-        all_regions
-    } else {
-        for want in &wanted {
-            if !all_regions.iter().any(|r| &r.id == want) {
-                return Err(format!("`{want}` is not in the curated region list — add it there first"));
-            }
-        }
-        all_regions.into_iter().filter(|r| wanted.contains(&r.id)).collect()
-    };
+    let regions = select_regions(all_regions, &positional)?;
 
     let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
     run_cell_bake(&flags, out, regions, &presets_dir)
@@ -342,7 +370,6 @@ fn run_cell_bake(
             // than flagged: the terrain a cell samples must be the terrain the same catalog
             // publishes, and a flag would be a second place for the two to disagree.
             terrain: obc_bake::terrain::in_tree(&out)?,
-            landmarks: flags.get("landmarks").map(PathBuf::from),
             peaks: flags.get("peaks").map(PathBuf::from),
         },
     };
@@ -432,7 +459,6 @@ fn run_planet_bake(
             // than flagged: the terrain a cell samples must be the terrain the same catalog
             // publishes, and a flag would be a second place for the two to disagree.
             terrain: obc_bake::terrain::in_tree(&out)?,
-            landmarks: flags.get("landmarks").map(PathBuf::from),
             peaks: flags.get("peaks").map(PathBuf::from),
         },
     }
@@ -533,17 +559,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     )?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
 
-    let all_regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
-    let regions: Vec<_> = if positional.is_empty() {
-        all_regions
-    } else {
-        for want in &positional {
-            if !all_regions.iter().any(|r| &r.id == want) {
-                return Err(format!("`{want}` is not in the curated region list — add it there first"));
-            }
-        }
-        all_regions.into_iter().filter(|r| positional.contains(&r.id)).collect()
-    };
+    let regions = select_regions(obc_bake::regions::load(flags.get("regions").map(Path::new))?, &positional)?;
 
     let number = |name: &str, default: u32| -> Result<u32, String> {
         match flags.get(name) {
@@ -730,15 +746,61 @@ fn default_cache_dir() -> PathBuf {
     PathBuf::from(home).join(".cache/obcm/geofabrik")
 }
 
-fn run_landmarks(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("landmarks accepts named flags only".into());
+/// `obc-bake landmarks [REGION…]` — the landmark artifact class, per curated region.
+fn run_landmark_stage(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &["force", "no-capture"], &["out", "regions", "source", "cache"])?;
+    let regions = select_regions(obc_bake::regions::load(flags.get("regions").map(Path::new))?, &positional)?;
+    let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
+    let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
+    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
+    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let no_capture = flags.has("no-capture");
+    // Resolved even for a `--no-capture` run: a stage that cannot capture should say so at the
+    // start, not after the first region turns out to need it.
+    let capture = obc_bake::landmarks::PythonCapture::from_env()?;
+
+    let summary = obc_bake::landmarks::LandmarkBakery {
+        regions: &regions,
+        source: source.as_ref(),
+        capture: &capture,
+        opts: obc_bake::landmarks::LandmarkBakeOptions { out, cache, force: flags.has("force"), no_capture },
     }
-    let snapshot = flags.get("snapshot").ok_or("landmarks requires --snapshot FILE")?;
-    let boundary = flags.get("boundary").ok_or("landmarks requires --boundary GEOJSON")?;
-    let output = flags.get("out").ok_or("landmarks requires --out DIR")?;
-    let content = obc_pack::landmarks::compile(Path::new(snapshot), Path::new(boundary), Path::new(output))?;
+    .run(&obc_pack::progress::Progress::stdout())?;
+    print!("{}", summary.render());
+    if summary.ok() {
+        return Ok(());
+    }
+    // Named separately, because the two causes want different actions and a run can have both: a
+    // region the cache simply does not hold yet, and a region whose run said why it failed.
+    let missing =
+        summary.regions.iter().filter(|r| r.status == obc_bake::landmarks::LandmarkStatus::CaptureMissing).count();
+    let mut problems = Vec::new();
+    if missing > 0 {
+        problems.push(format!(
+            "{missing} region(s) have no current capture{}",
+            if no_capture { " — re-run without --no-capture to fetch them" } else { "" }
+        ));
+    }
+    if !summary.warnings.is_empty() {
+        problems.push(format!("{} region(s) failed — see the warning(s) above", summary.warnings.len()));
+    }
+    Err(problems.join("; "))
+}
+
+fn run_landmark_content(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
+    if !positional.is_empty() {
+        return Err("landmark-content accepts named flags only".into());
+    }
+    let snapshot = flags.get("snapshot").ok_or("landmark-content requires --snapshot FILE")?;
+    let boundary = flags.get("boundary").ok_or("landmark-content requires --boundary GEOJSON")?;
+    let output = flags.get("out").ok_or("landmark-content requires --out DIR")?;
+    let content = obc_pack::landmarks::compile(
+        Path::new(snapshot),
+        Path::new(boundary),
+        Path::new(output),
+        flags.has("photo-requests"),
+    )?;
     println!(
         "{} candidates, {} texts, {} photos ({} RGB222 bytes); {} omissions",
         content.counts.candidates,
@@ -748,6 +810,17 @@ fn run_landmarks(args: &[String]) -> Result<(), String> {
         content.omissions.len()
     );
     Ok(())
+}
+
+fn run_landmark_candidates(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["osm", "out"])?;
+    if !positional.is_empty() {
+        return Err("landmark-candidates accepts named flags only".into());
+    }
+    obc_pack::landmarks::discover::discover(
+        Path::new(flags.get("osm").ok_or("landmark-candidates requires --osm FILE")?),
+        Path::new(flags.get("out").ok_or("landmark-candidates requires --out FILE")?),
+    )
 }
 
 fn run_peak_candidates(args: &[String]) -> Result<(), String> {
@@ -762,7 +835,7 @@ fn run_peak_candidates(args: &[String]) -> Result<(), String> {
     )
 }
 fn run_peaks(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out"])?;
+    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
     if !positional.is_empty() {
         return Err("peaks accepts named flags only".into());
     }
@@ -770,6 +843,7 @@ fn run_peaks(args: &[String]) -> Result<(), String> {
         Path::new(flags.get("snapshot").ok_or("peaks requires --snapshot FILE")?),
         Path::new(flags.get("boundary").ok_or("peaks requires --boundary GEOJSON")?),
         Path::new(flags.get("out").ok_or("peaks requires --out DIR")?),
+        flags.has("photo-requests"),
     )?;
     println!(
         "{} peak candidates, {} articles, {} photos, {} associations; {} omissions",

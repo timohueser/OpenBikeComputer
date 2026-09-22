@@ -87,6 +87,10 @@ impl Landmarks {
     pub(crate) fn ready(&self) -> bool {
         matches!(self.status, Status::Ready | Status::Partial)
     }
+    /// Content is text or a photo. Peak View marks a summit by this, and opens what it names.
+    pub(crate) fn has_content(&self) -> bool {
+        self.ready() && (self.article.is_some() || self.photo_available)
+    }
     pub(crate) fn restart(&mut self, next: bool) {
         self.after = if next { self.rows.last().map(|r| r.key) } else { None };
         self.rows.clear();
@@ -135,10 +139,19 @@ impl Landmarks {
         if let Some(selection) = self.peak {
             return reader.with_peak_article(selection, |section, directory, record| {
                 let name = directory.content(section, &record, 0, MAX_NAME_BYTES)?;
-                let bundle = directory.content(section, &record, 1, obc_formats::articles::MAX_BYTES)?;
+                let bundle = match record.content[1].is_absent() {
+                    true => None,
+                    false => Some(directory.content(section, &record, 1, obc_formats::articles::MAX_BYTES)?),
+                };
                 let photo = directory.content(section, &record, 2, PHOTO_MAX_COMPRESSED as u32).ok();
                 let credits = photo.and_then(|_| directory.content(section, &record, 3, MAX_ATTRIBUTION_BYTES).ok());
-                self.read_content(&name, &bundle, credits.as_ref().map(|s| s as &dyn ByteSource), sources, language)
+                self.read_content(
+                    &name,
+                    bundle.as_ref().map(|s| s as &dyn ByteSource),
+                    credits.as_ref().map(|s| s as &dyn ByteSource),
+                    sources,
+                    language,
+                )
             });
         }
         let Some(section) = map_section(reader.source())? else {
@@ -185,7 +198,7 @@ impl Landmarks {
         let photo = directory.content(&section, record.photo, PHOTO_MAX_COMPRESSED as u32).ok();
         let credits =
             photo.and_then(|_| directory.content(&section, record.photo_attribution, MAX_ATTRIBUTION_BYTES).ok());
-        self.read_content(&name, &bundle, credits.as_ref().map(|s| s as &dyn ByteSource), sources, language)?;
+        self.read_content(&name, Some(&bundle), credits.as_ref().map(|s| s as &dyn ByteSource), sources, language)?;
         if !self.photo_available {
             record.photo = ContentRef::default();
             record.photo_attribution = ContentRef::default();
@@ -197,7 +210,7 @@ impl Landmarks {
     fn read_content(
         &mut self,
         name: &dyn ByteSource,
-        bundle: &dyn ByteSource,
+        bundle: Option<&dyn ByteSource>,
         photo_credits: Option<&dyn ByteSource>,
         sources: bool,
         language: [u8; 2],
@@ -210,7 +223,7 @@ impl Landmarks {
         if self.loaded == Some(requested) {
             return Ok(());
         }
-        let article = obc_reader::articles::select(bundle, language)?;
+        let article = bundle.map(|bundle| obc_reader::articles::select(bundle, language)).transpose()?;
         self.name.clear();
         let mut bytes = [0; MAX_NAME_BYTES as usize];
         let bytes = bytes.get_mut(..name.len() as usize).ok_or(Error::BadOffset)?;
@@ -219,13 +232,35 @@ impl Landmarks {
         if self.name.is_empty() || !self.name.chars().all(|c| matches!(c,' '..='~'|'\u{a0}'..='\u{17f}')) {
             return Err(Error::BadOffset);
         }
-        let text = content(bundle, article.text, MAX_TEXT_BYTES)?;
-        let credits = content(bundle, article.attribution, MAX_ATTRIBUTION_BYTES)?;
-        self.article_pages = credit_count(&credits)?;
+        let pages = match bundle.zip(article) {
+            Some((bundle, article)) => Some((
+                article,
+                content(bundle, article.text, MAX_TEXT_BYTES)?,
+                content(bundle, article.attribution, MAX_ATTRIBUTION_BYTES)?,
+            )),
+            None => None,
+        };
+        self.article_pages = match &pages {
+            Some((_, _, credits)) => credit_count(credits)?,
+            None => 0,
+        };
         let photo_credits = photo_credits.filter(|_| self.loaded.is_none() || self.photo_available);
         let photo_count = photo_credits.and_then(|source| credit_count(source).ok());
         self.photo_available = photo_count.is_some();
         self.source_pages = self.article_pages + photo_count.unwrap_or(0);
+        let Some((article, text, credits)) = pages else {
+            // A record with a photo and no text has no reading page. Its Sources are the photo's.
+            let credits = photo_credits.ok_or(Error::BadOffset)?;
+            self.text.clear();
+            if sources {
+                let mut bytes = [0; MAX_PAGE_BYTES];
+                let page = read_display_page(credits, self.source_pages + 4, self.source_page + 4, &mut bytes)?;
+                self.text.push_str(page).map_err(|_| Error::BadOffset)?;
+            }
+            self.article = None;
+            self.loaded = Some(requested);
+            return Ok(());
+        };
         let photo_source = sources && self.source_page >= self.article_pages;
         let (source, index, count) = if sources {
             if photo_source {
@@ -330,6 +365,9 @@ impl crate::App {
         }
         let sources = matches!(screen, Screen::LandmarkSources(_));
         let language = self.settings().language.article_code();
+        // A photo-only record opens its photo straight from Peak View, with no article screen
+        // between, so Peak View itself anchors the binding it made.
+        let bound = self.ui.landmarks.peak.zip(self.ui.landmarks.peak_source);
         let peak = self
             .ui
             .stack
@@ -337,6 +375,7 @@ impl crate::App {
             .rev()
             .find_map(|screen| match screen {
                 Screen::PeakArticle(page) => Some(Some((page.selection, page.source))),
+                Screen::PeakView(_) => Some(bound),
                 Screen::Landmarks(_) => Some(None),
                 _ => None,
             })
@@ -425,7 +464,7 @@ impl crate::App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use obc_formats::{io::SliceSource, obcm};
     use obc_reader::{MapCache, MapTables};
@@ -443,7 +482,9 @@ mod tests {
         }
         out
     }
-    fn map() -> Vec<u8> {
+    /// A map with one landmark section: seven records with article text, credits and no photo.
+    /// The copy-fit gate renders the reading page over it, so the builder is crate-visible.
+    pub(crate) fn map() -> Vec<u8> {
         map_with_credits(&["Credit page one.", "Credit page two."])
     }
     fn map_with_credits(credits: &[&str]) -> Vec<u8> {

@@ -34,10 +34,9 @@ pub(crate) fn tile(
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
     // A caption wider than the tile scrolls once when it changes and then rests on its head. It
     // must never move perpetually while riding.
-    let char_w = Font::Label.char_width() as i32;
-    let chars = ((area.size.width as i32 - 5) / char_w).max(0) as usize;
-    let caption_row = rect(x + 5, cy, chars as i32 * char_w, Font::Label.line_height() as i32);
-    let label = marquee.fit_once(label, chars, caption_row);
+    let caption_budget = area.size.width as i32 - 5;
+    let caption_row = rect(x + 5, cy, caption_budget, Font::Label.line_height() as i32);
+    let label = marquee.fit_once(label, caption_budget, Font::Label, caption_row);
     cv.text(&label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
     let vy = cy + 18;
     match value_align {
@@ -92,7 +91,7 @@ pub(crate) fn category_tile(
     cv.round(area, 5, bg);
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
     poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), SUBTEXT, bg);
-    let name = fit(name, ((w - CATEGORY_TILE_NAME_X - 5) / Font::Label.char_width() as i32).max(0) as usize);
+    let name = fit(name, w - CATEGORY_TILE_NAME_X - 5, Font::Label);
     cv.text(&name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
     cv.text(value, Point::new(x + w - 8, cy + 18), Font::Display, TextAlign::Right, value_color);
 }
@@ -131,7 +130,7 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
         let dist = super::fmt::distance_short(wp.dist_along_m.saturating_sub(cx.navigation.progress_m), cx.units);
         cv.text(&dist, Point::new(x + w - 10, ry), font, TextAlign::Right, INK);
         let budget = w - 20 - text_width(&dist, font) as i32 - 8;
-        let name = fit(wp.name.as_str(), (budget / font.char_width() as i32).max(0) as usize);
+        let name = fit(wp.name.as_str(), budget, font);
         cv.text(&name, Point::new(x + 10, ry), font, TextAlign::Left, INK);
     }
 }

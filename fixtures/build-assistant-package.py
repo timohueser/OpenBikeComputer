@@ -105,14 +105,17 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
         landmarks = store.package_root("assistant-switzerland-content") / "content.json"
     if landmarks is None:
         wiki = store.package_root("assistant-wiki")
-        run(bin_dir / "obc-bake", "landmarks", "--snapshot", wiki / "manifest.json", "--boundary", wiki / "regions.geojson", "--out", work / "landmarks")
+        run(bin_dir / "obc-bake", "landmark-content", "--snapshot", wiki / "manifest.json", "--boundary", wiki / "regions.geojson", "--out", work / "landmarks")
         landmarks = work / "landmarks/content.json"
     if peaks is None and region == "meiringen":
         peaks = store.package_root("peak-content") / "peaks.json"
     peak_args = ["--peaks", peaks] if peaks else []
     tree = work / "tree"
+    # The cell bake reads the region's compiled landmarks from the tree, so put them where
+    # `obc-bake landmarks` puts them. This recipe compiles one region, from a pinned capture.
+    shutil.copytree(landmarks.parent, tree / "landmarks" / region_id)
     run(bin_dir / "obc-bake", "bake", region_id, "--regions", regions, "--source", local_source,
-        "--dem-sources", store.package_root("assistant-terrain"), "--landmarks", landmarks, *peak_args,
+        "--dem-sources", store.package_root("assistant-terrain"), *peak_args,
         "--presets-dir", ROOT / "builder/presets", "--skin", "default", "--out", tree, "--base-url", "http://localhost/assistant",
         "--generated-at", "2026-09-15T00:00:00Z", "--summary-json", work / "summary.json", "--fail-fast")
     native = work / "native-terrain"

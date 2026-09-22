@@ -185,6 +185,36 @@ impl Coverage {
         out
     }
 
+    /// The coverage as a GeoJSON `MultiPolygon`, µdeg-rounded.
+    ///
+    /// The one shape a downstream tool can be handed: the same even-odd assembly the cell
+    /// selection is taken on, so a boundary that selects a cell cannot exclude what stands in it.
+    /// Rounded to microdegrees because every decision in this bakery is, and because the text is
+    /// hashed — float noise from a different GEOS build must not invalidate a capture that took
+    /// hours.
+    pub fn geojson(&self) -> String {
+        use std::fmt::Write;
+        let mut rings = Vec::new();
+        for poly in &self.polys {
+            collect_polygon_rings(poly, &mut rings);
+        }
+        let mut s = String::from("{\n  \"type\": \"MultiPolygon\",\n  \"coordinates\": [");
+        for (p, polygon) in rings.iter().enumerate() {
+            let _ = write!(s, "{}\n    [", if p == 0 { "" } else { "," });
+            for (r, ring) in polygon.iter().enumerate() {
+                let _ = write!(s, "{}\n      [", if r == 0 { "" } else { "," });
+                for (i, &(lat, lon)) in ring.iter().enumerate() {
+                    let deg = |v: i64| format!("{:.6}", v as f64 / 1e6);
+                    let _ = write!(s, "{}[{}, {}]", if i == 0 { "" } else { ", " }, deg(lon), deg(lat));
+                }
+                s.push(']');
+            }
+            s.push_str("\n    ]");
+        }
+        s.push_str("\n  ]\n}\n");
+        s
+    }
+
     /// Whether the coverage contains a cell's whole square — the canonical / `partial` decision.
     ///
     /// `boundary` is [`Coverage::boundary_cells`] for the cell's size, passed in because a bake
@@ -196,6 +226,26 @@ impl Coverage {
         let (min_lon, min_lat, _, _) = cell.square();
         let half = cell.size() / 2;
         self.contains(min_lat + half, min_lon + half)
+    }
+}
+
+/// One polygon per entry, exterior ring first — the nesting GeoJSON needs and
+/// [`collect_rings`] deliberately throws away.
+fn collect_polygon_rings(geom: &Geom, out: &mut Vec<Vec<URing>>) {
+    match geom {
+        Geom::Polygon { exterior, interiors } => {
+            let rings: Vec<URing> =
+                std::iter::once(exterior).chain(interiors).filter_map(|ring| to_udeg_ring(ring)).collect();
+            if !rings.is_empty() {
+                out.push(rings);
+            }
+        }
+        Geom::Multi(parts) => {
+            for part in parts {
+                collect_polygon_rings(part, out);
+            }
+        }
+        Geom::Line(_) | Geom::Empty => {}
     }
 }
 
@@ -465,6 +515,25 @@ mod tests {
                     47.25\n   7.75 47.25\n   7.75 47.75\n   7.25 47.75\n   7.25 47.25\nEND\nEND\n";
         let punched = Coverage::parse_poly(hole).expect("poly");
         assert!((punched.area_km2() - 0.75 * area).abs() < 5.0, "{}", punched.area_km2());
+    }
+
+    /// The shape the landmark capture and the landmark compiler are handed: the same assembly the
+    /// cell selection is taken on, holes and all.
+    #[test]
+    fn the_geojson_is_the_assembled_shape_with_its_holes() {
+        let hole = "region\n1\n   7.0 47.0\n   8.0 47.0\n   8.0 48.0\n   7.0 48.0\n   7.0 47.0\nEND\n!2\n   7.25 \
+                    47.25\n   7.75 47.25\n   7.75 47.75\n   7.25 47.75\n   7.25 47.25\nEND\nEND\n";
+        let text = Coverage::parse_poly(hole).unwrap().geojson();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid GeoJSON");
+        assert_eq!(value["type"], "MultiPolygon");
+        let polygons = value["coordinates"].as_array().unwrap();
+        assert_eq!(polygons.len(), 1);
+        assert_eq!(polygons[0].as_array().unwrap().len(), 2, "the exterior and its hole");
+        for ring in polygons[0].as_array().unwrap() {
+            let points = ring.as_array().unwrap();
+            assert_eq!(points.first(), points.last(), "GeoJSON rings are closed");
+        }
+        assert_eq!(text, Coverage::parse_poly(hole).unwrap().geojson(), "the text is hashed, so it is stable");
     }
 
     #[test]

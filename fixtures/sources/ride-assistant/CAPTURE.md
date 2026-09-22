@@ -9,40 +9,53 @@ raw archive.
 
 ## Acquire
 
-Build the compiler and get the pinned country boundary first. Run from the repository root:
+Build the compiler, get the pinned country boundary and extract, then read the candidates from
+that extract. Run from the repository root:
 
 ```sh
 cargo build -p obc-bake --locked
 tools/obc fixtures sync assistant-osm
+FIXTURES="$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-osm"
 OBC_LANDMARK_CAPTURE="${OBC_LANDMARK_CAPTURE:-$HOME/.cache/openbikecomputer/bake/landmarks/switzerland}"
+target/debug/obc-bake landmark-candidates \
+  --osm "$FIXTURES/switzerland.osm.pbf" --out .artifacts/switzerland-candidates.json
 python3 tools/landmark_capture.py \
-  --boundary "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-osm/switzerland-boundary.geojson" \
+  --boundary "$FIXTURES/switzerland-boundary.geojson" \
+  --candidates .artifacts/switzerland-candidates.json \
   --policy host/obc-pack/src/landmarks/policy.json \
   --select-with target/debug/obc-bake \
   --out "$OBC_LANDMARK_CAPTURE"
 ```
 
-The command uses two workers and at most four requests per second in total. It queries each
-included category root inside the boundary's bounding box, deduplicates QIDs, then captures the
-raw entities, their P279 class closure, the en/de/fr/es articles at exact revisions, and the P18
-and lead-image candidates with their Commons metadata. Responses land in `queries/`, `entities/`,
-`classes/`, `locales/`, `articles/` and `images/`, with `manifest.json` recording every URL, byte
-count, SHA-256 and outcome. The response limit is 32 MiB.
+Candidates are the QIDs the extract's own objects carry in a `wikidata` tag. Nothing is matched by
+name or by coordinate, so discovery is offline and every landmark has a map object with an
+approach. A tag that is not a QID is listed in `rejected` and does not stop the run. `--sweep` adds a Wikidata class query for the natural-curiosities group, whose places are
+often unmapped; it is off by default.
 
-`obc-bake landmarks` makes every text, image and attribution decision afterwards, offline. Site
+The command uses two workers and at most ten requests per second in total. It sends `maxlag=5` and
+a descriptive User-Agent, and it waits for the `Retry-After` of a `429` or a `503` before it asks
+again. It captures the entities fifty per request, their P279 class closure, the en/de/fr/es
+articles at exact revisions, and the P18 and lead-image candidates with their Commons metadata. A
+batch whose response is larger than the compiler reads is asked for again in halves.
+Responses land in `entities/`, `classes/`, `locales/`, `articles/`, `images/` and, with `--sweep`,
+`queries/`, with `manifest.json` recording every URL, byte count, SHA-256 and outcome. The response
+limit is 32 MiB.
+
+`obc-bake landmark-content` makes every text, image and attribution decision afterwards, offline. Site
 eligibility comes from the exact polygon and the category policy, not from P17 country claims or a
 curated list, and the acquisition checks its category file digest against the compiler's embedded
 policy digest so the two cannot disagree.
 
 **Resume with the same arguments and the same output directory.** A completed request is reused
 only after its URL, byte count and digest check out. Failed requests stay failed; `--retry-failed`
-makes one more attempt at each, and the earlier records stay in `attempts/`. A changed boundary,
-category policy, language set or locale policy needs a **new** output directory. Never run two
-capture processes against one output directory.
+makes one more attempt at each, and the earlier records stay in `attempts/`. A changed candidate
+list, boundary, category policy, language set or locale policy needs a **new** output directory.
+Never run two capture processes against one output directory.
 
-An incomplete acquisition exits with status 2 and keeps the bytes it captured. Unresolved root
-queries, source requests or class closure make country coverage incomplete: do not report their
-absence as zero landmarks or zero images.
+An incomplete acquisition exits with status 2 and keeps the bytes it captured. Unresolved source
+requests, sweep queries or class closure make country coverage incomplete: do not report their
+absence as zero landmarks or zero images. A `wikidata` tag that names no item is a fact about the
+extract, not a failure: `unresolved_identities` counts those and coverage stays complete.
 
 Keep a separate copy of the built `obc-bake` when another build can replace the target binary; the
 capture checks its digest before and after selection.
@@ -52,9 +65,9 @@ capture checks its digest before and after selection.
 Check offline reproducibility by compiling twice into empty directories:
 
 ```sh
-target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+target/debug/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-a
-target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+target/debug/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-b
 diff -r .artifacts/content-a .artifacts/content-b
 ```
@@ -64,7 +77,7 @@ for each pass:
 
 ```sh
 cargo build -p obc-bake --release --locked
-target/release/obc-bake landmarks \
+target/release/obc-bake landmark-content \
   --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" \
   --out .artifacts/switzerland-content

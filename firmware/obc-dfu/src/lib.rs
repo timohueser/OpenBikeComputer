@@ -11,6 +11,7 @@ pub mod blobstage;
 pub mod crc32;
 pub mod engine;
 pub mod image;
+pub mod layout;
 pub mod sig;
 pub mod state;
 
@@ -22,9 +23,9 @@ pub use blobstage::{
 pub use crc32::{crc32, Crc32};
 pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, SD_BLOCK_LEN};
 pub use image::{
-    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, MAGIC, MAX_CONTAINER_LEN, MAX_IMAGE_LEN, RAM_END,
-    RAM_START,
+    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, MAGIC, MAX_CONTAINER_LEN, MAX_IMAGE_LEN,
 };
+pub use layout::{APP_SLOT_BASE, APP_SLOT_LEN, BOOT_STATE_BASE, RAM_END, RAM_START, SEMMC_STAGE_BASE, SETTINGS_BASE};
 pub use sig::{
     public_key_of, sign_image, signing_prefix, verify_image, PublicKey, PUBKEY_LEN, RELEASE_PUBKEY, SEED_LEN,
     SIG_CONTEXT, SIG_LEN, SIG_PREFIX_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE,

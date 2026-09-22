@@ -2823,6 +2823,7 @@ dependencies = [
  "obcm-testkit",
  "tempfile",
  "unicode-normalization",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2916,6 +2917,7 @@ dependencies = [
  "serde_path_to_error",
  "sha1",
  "sha2",
+ "unicode-normalization",
  "ureq",
  "url",
  "zip",
@@ -2951,6 +2953,7 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
+ "obc-render",
  "obcm-testkit",
  "zlib-rs",
 ]

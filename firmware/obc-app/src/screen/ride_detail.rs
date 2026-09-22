@@ -100,9 +100,8 @@ impl RideDetailScreen {
         let sync = if ride.synced { rx.t(Msg::RideDetailSynced) } else { rx.t(Msg::RidesNotSynced) };
         title_frame(cv, w, h, rx.t(Msg::RideStartTitle), sync);
 
-        let chars = ((w - 28) / Font::Body.char_width() as i32) as usize;
         let name_row = rect(14, LIST_TOP + 2, w - 28, Font::Body.line_height() as i32);
-        let name = rx.marquee.fit(&ride.name, chars, Some(name_row));
+        let name = rx.marquee.fit(&ride.name, w - 28, Font::Body, Some(name_row));
         cv.text(&name, Point::new(14, LIST_TOP + 2), Font::Body, TextAlign::Left, INK);
 
         let d = crate::settings::DateTime::from_unix(ride.start_time);

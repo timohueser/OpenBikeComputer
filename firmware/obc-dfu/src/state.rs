@@ -56,13 +56,13 @@ const OUTCOME_ROLLED_BACK: u8 = 1;
 const OUTCOME_STAGE_REJECTED: u8 = 2;
 const OUTCOME_ARM_ABANDONED: u8 = 3;
 
-/// Maximum extents in a single [`StagedRef`]. A ~900 KB image over 16 KB FAT clusters needs about
-/// 56 extents; 96 leaves headroom for a fragmented card. The armer errors out past this instead of
-/// truncating the extent chain.
-pub const MAX_EXTENTS: usize = 96;
+/// Maximum extents in a single [`StagedRef`]. A staged object holds at most eight extent ranges on
+/// the card, and each range is one contiguous block run, so eight is the whole of what an arm can
+/// ever resolve. The armer errors out past this instead of truncating the extent chain.
+pub const MAX_EXTENTS: usize = 8;
 
 /// A contiguous run of absolute 512-byte SD blocks. The extents are resolved before the arm, so the
-/// bootloader reads the staged image with no FAT code.
+/// bootloader reads the staged image with no catalog and no store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Extent {
     pub start_block: u32,

@@ -1,17 +1,17 @@
 import Foundation
 
-/// The outcome of an `installFw` request. The device only accepts the request, then runs its
-/// own on-glass check and confirm flow: the rider confirms and the device reboots to install.
-/// The command never waits for the human and never installs on its own.
+/// The outcome of an install request. The device only accepts the request, then runs its own
+/// on-glass check and confirm flow: the rider confirms and the device reboots to install. The
+/// request never waits for the human and never installs on its own.
 public enum FirmwareInstallResult: Equatable, Sendable {
-    /// `ok` (0): the request is accepted and the device opens its confirm flow.
+    /// The request is accepted and the device opens its confirm flow.
     case accepted
-    /// `notFound` (2): no `UPDATE.BIN` on the card to install.
+    /// The device holds no staged update package, so there is nothing to install.
     case noStaged
-    /// `busy` (3): a ride is recording, or an install request is already pending.
+    /// A ride is recording, or an install request is already pending.
     case busy
-    /// `error` (4): the staged image is already known-unusable.
+    /// The device refused this package.
     case rejected
-    /// `unknownCommand` (1): the device can't be updated over Bluetooth.
+    /// The device cannot be updated over this link.
     case unsupported
 }

@@ -6,7 +6,7 @@
  * and, when the run buffered it, the bytes. The caller decides what the file is called.
  */
 
-import type { InitInput } from "./pkg/obc_web_assemble.js";
+import type { InitInput, InitOutput } from "./pkg/obc_web_assemble.js";
 
 /** The runtime half of {@link AssembleErrorCode}, so the type and the boundary guard cannot drift apart. */
 export const ASSEMBLE_ERROR_CODES = ["input", "format", "capacity", "verify", "aborted", "io", "internal"] as const;
@@ -274,6 +274,20 @@ type Bridge = typeof import("./pkg/obc_web_assemble.js");
  *  can be retried rather than cached forever. */
 let loading: Promise<Bridge> | null = null;
 
+/** The instantiated module's own exports, kept for its `memory`. */
+let instantiated: InitOutput | null = null;
+
+/**
+ * How much linear memory the instance holds right now, or 0 before the module is up.
+ *
+ * wasm memory only grows, so read at the end of a run this is that run's peak — the figure
+ * {@link MemoryEstimate.engineBytes} projects. It is the only memory number a browser will state,
+ * and the worker carries it across so a test can hold the estimator to it.
+ */
+export function wasmMemoryBytes(): number {
+    return instantiated?.memory.buffer.byteLength ?? 0;
+}
+
 /**
  * Load and instantiate the wasm module, if it is not already up.
  *
@@ -298,7 +312,7 @@ async function load(source?: InitInput): Promise<Bridge> {
     let mod: Bridge;
     try {
         mod = await import("./pkg/obc_web_assemble.js");
-        await mod.default(source === undefined ? undefined : { module_or_path: source });
+        instantiated = await mod.default(source === undefined ? undefined : { module_or_path: source });
     } catch (cause) {
         throw new AssembleError(
             "internal",

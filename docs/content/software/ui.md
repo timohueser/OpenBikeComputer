@@ -14,9 +14,21 @@ The screen drawings below are schematics. They explain behavior. They are not pi
 ## Screen model
 
 Each screen is one variant of a `Screen` enum and owns its state by value. One table declares every
-variant with its capabilities, and generates the enum, the dispatch, and the capability data.
-Capabilities are the cross-cutting facts: base content or overlay, timers, holds, map reader, and
-what a repaint depends on.
+variant with its capabilities, and generates the enum, the dispatch, and the capability data. A
+capability is a cross-cutting fact the row states once, so nothing else matches on the variant:
+
+| Capability | What it decides |
+| --- | --- |
+| `kind` | `Base`, `Overlay` or `Settings`. The overlay and settings behaviors hang off it. |
+| `base` | `Map`, `LiveRiding` or `Chrome`. It gates map reads, live-data repaint, and the Bluetooth indicator. |
+| `reader` | When the screen needs the streamed map at draw: never, always, or for articles, a photo, or POI data. |
+| `render_key` | Which set of facts a repaint of this screen depends on. |
+| `recess` | A drawer draws this screen again one shade down, instead of leaving it standing. |
+| `idle_exempt` | The idle-return timeout must never take this screen away. |
+| `ride_view` | A deliberate ride view: the idle timeout leaves it while a ride is tracked. |
+| `browse_exempt` | A deliberate browse view: the idle timeout does not return it to Home when no ride is tracked. |
+| `blocks_chords` | While it is on top, the device-wide drawer chords are refused. |
+| `blocks_escape` | While it is on top, the global Back-hold escape does not leave it. |
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -60,7 +72,7 @@ what a repaint depends on.
   </g>
 
   <text class="d-tag" x="324" y="240">dispatched by match — static, zero-alloc</text>
-  <text class="d-sub" x="324" y="258" style="font-size:12px">add a screen = 1 module + 1 row in the screens! table</text>
+  <text class="d-sub" x="324" y="258" style="font-size:12px">one row per screen, with its capabilities</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
@@ -103,7 +115,19 @@ A screen handles one gesture, returns a transition, and draws the current frame.
 </figure>
 
 Input receives a mutable context; drawing receives a read-only one. A screen therefore cannot change
-state while it draws.
+state while it draws. `Canvas` implements `Surface` and `RenderFrame` derefs to `Render`, so the
+host's generics stop at the dispatch:
+
+```rust
+fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition
+
+// The `screens!` dispatch, generic over the host's draw target and its color policy.
+fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
+where D: DrawTarget, F: Fn(u16) -> D::Color
+
+// What a screen module writes. The `RenderFrame` form stays with the map draws and their callers.
+fn draw(&self, cv: &mut impl Surface, rx: &mut Render)
+```
 
 ## Navigation
 
@@ -145,7 +169,8 @@ The screen stack holds at most ten screens, and Home is always the first.
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The top screen returns a transition. The UI runtime applies it to the stack.</figcaption>
+<figcaption>A screen returns a transition, and <code>screen::apply</code> runs it. Cards land on
+the stack without it.</figcaption>
 </figure>
 
 | Transition | Stack operation |
@@ -154,6 +179,7 @@ The screen stack holds at most ten screens, and Home is always the first.
 | `Push(screen)` | Add a top screen. |
 | `Pop` | Remove the top screen, except Home. |
 | `Replace(screen)` | Replace the top screen. |
+| `OverRoot(screen)` | Keep Home and the view under it, and add one screen. |
 | `Root(screen)` | Keep Home and add one screen. |
 | `Home` | Remove all screens above Home. |
 
@@ -260,13 +286,15 @@ The four riding views offer the same four actions in the same order: Up ahead, D
 Routes. A row that cannot act now is drawn recessed and does nothing. A row that acts replaces the
 sheet with its screen, so one Back returns to the riding view the rider squeezed from.
 
-A row can hold a **value** instead of a screen, and slides the sheet to a small editor. The bike
-type is such a row, and its choices are the routing profile names of the loaded map, so a map built
-with a custom profile offers that profile without a firmware change. A row can also be a **switch**
-that flips in place, so a rider can change a group of preferences with the sheet open.
+A row can hold a **value** instead of a screen: it states the value under its label and slides
+the sheet to a small editor, a track with a notch per choice and a tick under the committed one.
+The bike type is such a row, and its choices are the routing profile names of the loaded map, so a
+map built with a custom profile offers that profile without a firmware change. A row can also be a
+**switch** that flips in place.
 
-The drawer is the only home for a setting that belongs to one screen, and a build check fails if a
-drawer and the settings tree write the same stored setting.
+A setting that belongs to one screen lives on that screen's sheet, and a build check fails when a
+sheet row and a settings page bind the same setting. Brightness and the Bluetooth radio, the quick
+drawer's shortcuts, are the recorded exceptions.
 
 The screen under a drawer is **frozen**: the drawer states its own facts for repaint, so a moving
 map under a sheet causes no work. Whether the screen below is **dimmed** is a property of that
@@ -439,9 +467,10 @@ Delete lives on one row. A hold anywhere else deletes nothing.
 
 ## Ride Assistant
 
-Holding **Up + Select** opens Ride Assistant, which answers four questions from installed offline
-data: find a place, what is next on the route, nearby landmarks, and easier routes. There is no
-network in any of them.
+Holding **Up + Select** opens Ride Assistant over the riding view. The pages that were open go, and
+a search or an unanswered detour on them stops. Back returns to the riding view. Ride Assistant
+answers four questions from installed offline data: find a place, what is next on the route, nearby
+landmarks, and easier routes. There is no network in any of them.
 
 ### Find a place
 
@@ -646,52 +675,18 @@ Unknown.
 
 ## Settings
 
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, up and down move the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where up and down change the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
-  <defs>
-    <marker id="aU8" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">Two levels of focus — rows, then fields</text>
+Five pages under one hub, every page a list of rows in the drawers' grammar:
 
-  <!-- Row focus -->
-  <rect class="d-panel" x="40" y="46" width="262" height="160" rx="12" />
-  <text class="d-label" x="60" y="70">Row focus</text>
-  <rect x="58" y="80" width="226" height="24" rx="5" class="d-amber" />
-  <text class="d-sub" x="68" y="96" style="fill:#000;font-size:12px">amber bar = the cursor</text>
-  <g font-family="var(--mono)">
-    <text class="d-sub" x="60" y="130" style="font-size:12px">up / down — move the cursor</text>
-    <text class="d-sub" x="60" y="152" style="font-size:12px">press &nbsp;— toggle / open a value</text>
-    <text class="d-sub" x="60" y="174" style="font-size:12px">back &nbsp;— climb one screen up</text>
-  </g>
+| Row | Looks like | Press |
+| --- | --- | --- |
+| Door | label, chevron | opens a page |
+| Value | label, value under it, chevron | opens the editor as a sheet over the page |
+| Switch | label, slider | flips in place |
+| Action | label, red when destructive | acts; a destructive one needs a hold |
+| Info | label, value under it | nothing; the cursor skips it |
+| Language | a pick list: flag, own name, a tick on the committed one | commits and returns |
 
-  <!-- transitions -->
-  <line class="d-flow" x1="304" y1="104" x2="416" y2="104" marker-end="url(#aU8)" />
-  <text class="d-sub" x="360" y="96" text-anchor="middle" style="font-size:12px">press a value row</text>
-  <line class="d-flow" x1="416" y1="150" x2="304" y2="150" marker-end="url(#aU8)" />
-  <text class="d-sub" x="360" y="166" text-anchor="middle" style="font-size:12px">back / last field</text>
-
-  <!-- Field focus -->
-  <rect class="d-panel-2" x="418" y="46" width="262" height="160" rx="12" />
-  <text class="d-label" x="438" y="70">Field focus</text>
-  <path d="M452 80 l7 -9 l7 9 z" fill="#ffaa00" />
-  <rect x="445" y="84" width="42" height="22" rx="4" class="d-muted" style="stroke:#ffaa00;stroke-width:1.5" />
-  <text class="d-sub" x="466" y="99" text-anchor="middle" style="font-size:12px">2025</text>
-  <path d="M452 110 l7 9 l7 -9 z" fill="#ffaa00" />
-  <text class="d-sub" x="500" y="99" style="font-size:12px">box = the live field</text>
-  <g font-family="var(--mono)">
-    <text class="d-sub" x="438" y="130" style="font-size:12px">up / down — change the value</text>
-    <text class="d-sub" x="438" y="152" style="font-size:12px">press &nbsp;— step to the next field</text>
-    <text class="d-sub" x="438" y="174" style="font-size:12px">back &nbsp;— step out of the field</text>
-  </g>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>A press moves focus between the row and its value. Up and Down change the focused value.</figcaption>
-</figure>
-
-Settings have two focus levels: the cursor selects a row, and a press moves focus into the value. A
-changed value is written when the rider leaves the Settings subtree, not once per step.
+A changed value is written when the rider leaves the Settings subtree, not once per step.
 
 Settings do not live on the card, so they survive a card change. The UI languages are English,
 German, French, and Spanish, and the build generates the translation table from four catalogs and
@@ -1050,8 +1045,21 @@ one.
 
 ## Visual vocabulary
 
-Screens compose shared primitives for titles, lists, rows, bands, tiles, text, and status, and each
-shared mechanism has one owner.
+Each shared mechanism has one owner, one module per concept under `screen/vocab/`:
+
+| Module | What it owns |
+| --- | --- |
+| `chrome` | The framed page header, the card glyphs, the Recalculating banner, and the shared text and stroke helpers. |
+| `list` | The scrolling list: the wrapping cursor, the window math, the row cursor, the separators, and the scrollbar. |
+| `rows` | The row grammar the settings pages and the drawers share (door, value, switch, action, info), the stat-ledger row, and the guarded action rows. |
+| `card` | Selection, input, and drawing for the action rows of full-screen cards. |
+| `tiles` | The rounded stat panes of the riding grid and the Fields editor, and the waypoint panel. |
+| `band` | The elevation band: the filled silhouette, the connected top stroke, and the peak label. |
+| `fmt` | One formatter per printed quantity and output style. |
+| `marquee` | The one long name a frame scrolls, by whole characters. |
+| `pager` | The two-page auto-flip the detail compositions share. |
+| `sheet` | The drawer sheets' shared motion and marks. |
+| `spinner` | The compass needle a working screen waits behind. |
 
 A name that does not fit its field is cut with two dots. One name per frame scrolls instead: the
 highlighted list row, a detail title, the selected peak in Peak View. Every font is monospace, so a
@@ -1092,15 +1100,32 @@ scrolls once when the name changes and then rests, so nothing moves while the ri
 Palette constants are written once and converted to the panel's 64 colors by the framebuffer, so a
 screen never picks a device color by hand.
 
+## Adding a screen
+
+One module and one row declare a screen. The row alone does not put it on the glass:
+
+| Step | Where |
+| --- | --- |
+| The state type, `handle`, and `draw`. | a new module under [`screen/`](src:firmware/obc-app/src/screen) |
+| The module declaration, the variant, and its capabilities. | [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs): its `mod` line and the `screens!` table |
+| Every string it prints, in four languages. | the catalogs under [`i18n/`](src:firmware/obc-app/i18n) |
+| The way in: a menu, drawer or settings row, a companion card, or the module that owns the work. | with that entry point, usually outside `screen/` |
+| A seed, and the gestures that reach a page the first frame does not draw. | [`harness/copy_fit.rs`](src:firmware/obc-app/src/harness/copy_fit.rs) |
+| A sweep frame, whose `expect` names the variant it must reach, and its digest row — one row per language for a `langs` frame. | [`ui-frames.toml`](src:firmware/ui-frames.toml), then `obc shot --accept` records the digest in [`ui-snapshots.sha256`](src:firmware/ui-snapshots.sha256) |
+
+The acceptance test is the copy-fit gate over every reachable screen and language.
+
 ## Source map
 
-- Screen table, capabilities, contexts, and transitions: [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
-- Gesture recognition: [`input.rs`](src:firmware/obc-app/src/input.rs), [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
-- Repaint state: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
-- Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
-- Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n)
-- Find a place and visits: [`find_place.rs`](src:firmware/obc-app/src/find_place.rs), [`visit.rs`](src:firmware/obc-route/src/visit.rs)
-- POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs)
+| Subject | Source |
+| --- | --- |
+| Screen table, capabilities, contexts, and transitions | [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs) |
+| Gesture recognition | [`input.rs`](src:firmware/obc-app/src/input.rs), [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs) |
+| Repaint state | [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs) |
+| Shared screen primitives | [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab) |
+| Settings and translations | [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n) |
+| Find a place and visits | [`find_place.rs`](src:firmware/obc-app/src/find_place.rs), [`visit.rs`](src:firmware/obc-route/src/visit.rs) |
+| POI and Up-ahead views | [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`whats_next.rs`](src:firmware/obc-app/src/screen/whats_next.rs) |
 
 See [system architecture](../architecture/) for the host loop and [rendering pipeline](../rendering/)
 for pixel generation.

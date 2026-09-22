@@ -126,7 +126,7 @@ tools/obc sim assistant-loop-crossing
 These use ordinary map loading and authored GPS replay. Once the packages and Cargo dependencies
 are cached they need no live source API.
 
-For a persistent Unix card, start with a path that does not exist:
+For a persistent card, start with a path that does not exist:
 
 ```sh
 tools/obc sim assistant-dunlough-access -- --create-card .artifacts/west-cork.obc

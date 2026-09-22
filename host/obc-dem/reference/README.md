@@ -5,8 +5,8 @@ holds finer national DTM heights on the OBCT lattice, and the bakery lifts a cre
 `specs/OBCT_Spec.md` §9 for the lift rule.
 
 `ingest.py` fills the archive from a national DTM. It runs once per source release, never during
-a bake. The archive lives on R2 at `<bucket>/reference/v1/`, beside the catalog prefix; the
-bakery reads a local copy, the owner's own archive or a mirror of one box.
+a bake. The archive lives on R2 at `<bucket>/reference/v1/`, beside the catalog prefix; a bakery
+run mirrors the tiles it needs.
 
 ## Run it
 
@@ -30,10 +30,9 @@ tile against the contract below. `publish` and `mirror` are `rclone copy`; a pub
 adds, and it merges its index with the one already on R2.
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
-time, the work directory wiped after each, each finished tile recorded as done in the source's
-manifest, so disk holds one tile's rasters and a stopped run resumes. The index is rebuilt once at
-the end. It still takes days per country: run one source at a time, and `check` before
-`publish`. To remove a tile from R2, delete the object by hand and publish again.
+time, the work wiped after each and the finished tile marked done in the source manifest, so disk
+holds one tile's rasters and a stopped run resumes. The index is rebuilt at the end. It still
+moves hundreds of gigabytes and takes days: run one source at a time, `check` before `publish`.
 
 ## The tile contract
 
@@ -189,3 +188,21 @@ The two bakers answer a short mirror differently. `obc-dem bake` warns and names
 `mirror --bbox` that covers them; `--allow-short-reference` publishes anyway. Either way the
 cell's skip key records the tiles the bake could read, so completing the mirror re-bakes exactly
 the short cells.
+
+### Removing a tile
+
+`publish` never deletes. Anything leaves the bucket through `obc r2 rm`:
+
+```sh
+obc r2 rm reference/v1/16/3410/2882.tif                  # the plan, then stop
+obc r2 rm <key> --apply --reason "a bad ingest" --confirm "<the plan's own string>"
+obc help r2                                              # the cap, the plan, the confirmation
+```
+
+| what it does for a tile | why |
+| --- | --- |
+| Rewrites `index.json` without it, and sends that before the object goes | a crash then leaves a tile nobody can reach, never an index entry with no tile behind it |
+| Refuses `index.json` itself unless `--i-mean-it` names it | a tile the index does not name is not in the archive |
+| Refuses a catalogue it cannot read | it is how `rm` tells a live object from a stray one |
+| Appends to `removed.jsonl` at the bucket root | after the index goes up, the digest and the reason are the only record left |
+| Leaves a local archive alone | `mirror` the box again, or `ingest` it again |

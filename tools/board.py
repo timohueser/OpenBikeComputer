@@ -42,12 +42,14 @@ def board_lock(path, command):
         yield handle.fileno()
 
 
-def probe_command(action, elf=None, probe=None, log=None):
+def probe_command(action, elf=None, probe=None, log=None, preverify=False):
     command = ["probe-rs", action, "--chip", CHIP, "--non-interactive"]
     if probe:
         command += ["--probe", probe]
     if action in ("run", "download"):
         command += FLASH_FLAGS
+    if preverify:
+        command.append("--preverify")
     if log:
         command += ["--target-output-file", str(log)]
     if elf:
@@ -126,6 +128,11 @@ def main(argv=None):
     parser.add_argument("elf", nargs="?", type=Path)
     parser.add_argument("--probe", default=os.environ.get("PROBE_RS_PROBE"))
     parser.add_argument("--log", type=Path, help="save decoded RTT output (run/attach only)")
+    parser.add_argument(
+        "--preverify",
+        action="store_true",
+        help="read the image back first and program nothing when it already matches (run/download only)",
+    )
     args = parser.parse_args(argv)
     if args.action in ("run", "download", "attach") and not args.elf:
         parser.error("this action needs the exact firmware ELF")
@@ -133,12 +140,14 @@ def main(argv=None):
         parser.error("this action does not take an ELF")
     if args.log and args.action not in ("run", "attach"):
         parser.error("--log is only available for run/attach")
+    if args.preverify and args.action not in ("run", "download"):
+        parser.error("--preverify is only available for run/download")
     if args.action == "doctor":
         return doctor()
     if args.elf:
         args.elf = args.elf.resolve(strict=True)
         print(f"ELF: {args.elf}\nSHA-256: {hashlib.sha256(args.elf.read_bytes()).hexdigest()}", flush=True)
-    command = probe_command(args.action, args.elf, args.probe, args.log)
+    command = probe_command(args.action, args.elf, args.probe, args.log, args.preverify)
     print(shlex.join(command), flush=True)
     with board_lock(lock_path(), command) as lock_fd:
         # The child retains the lock if the wrapper is terminated during a flash or RTT session.

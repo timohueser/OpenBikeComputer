@@ -13,7 +13,7 @@ use crate::Msg;
 use super::vocab::chrome::title_frame_ble;
 use super::vocab::list;
 use super::{
-    palette, Ctx, MapScreen, PeakViewScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
+    palette, Ctx, MapScreen, PeakViewScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick, SettingsPage,
     Transition,
 };
 
@@ -56,9 +56,6 @@ impl MenuText {
         &self.items[..self.len]
     }
 }
-
-/// Prototype switch: `true` draws the compass dial, `false` the 2×2 card grid.
-const COMPASS: bool = true;
 
 /// The unit direction of station `i` of `n`, from N and clockwise, so a Down step walks the ring
 /// clockwise.
@@ -146,7 +143,7 @@ impl MenuScreen {
                 MenuItem::Map => open_map(cx),
                 MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::default())),
 
-                MenuItem::Settings => Transition::Push(Screen::Settings(SettingsScreen::new())),
+                MenuItem::Settings => Transition::Push(Screen::Settings(SettingsPage::hub())),
             },
             Gesture::Back => Transition::Pop,
             Gesture::Hold => Transition::None,
@@ -165,22 +162,18 @@ impl MenuScreen {
         let txt = MenuText::resolve(rx, kinds);
         let mut batt: heapless::String<8> = heapless::String::new();
         let _ = write!(batt, "{}%", device.battery_pct);
-        if COMPASS {
-            draw_compass(
-                cv,
-                rx.w,
-                rx.h,
-                self.dial.selected().min(kinds.len() - 1),
-                self.dial.needle_deg,
-                ble,
-                &batt,
-                txt.title,
-                kinds,
-                txt.labels(),
-            );
-        } else {
-            draw_grid(cv, rx.w, rx.h, self.dial.selected().min(kinds.len() - 1), ble, &batt, kinds, &txt);
-        }
+        draw_compass(
+            cv,
+            rx.w,
+            rx.h,
+            self.dial.selected().min(kinds.len() - 1),
+            self.dial.needle_deg,
+            ble,
+            &batt,
+            txt.title,
+            kinds,
+            txt.labels(),
+        );
     }
 }
 
@@ -273,43 +266,6 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
     cv.disc(c, hub.max(1) as u32, INK);
     if hub >= 3 {
         cv.disc(c, (hub / 3) as u32, PARCHMENT);
-    }
-}
-
-/// The two-column card grid: an amber fill on the selected card, a tan outline on the rest. The
-/// card height comes from the row count, so all rows fit the panel.
-#[allow(clippy::too_many_arguments)] // one flat layout function; the kind/label slices stay pairwise
-fn draw_grid(
-    cv: &mut impl Surface,
-    w: i32,
-    h: i32,
-    selected: usize,
-    ble_connected: bool,
-    battery: &str,
-    kinds: &[MenuItem],
-    txt: &MenuText,
-) {
-    use palette::*;
-    title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
-    let rows = txt.len.div_ceil(2) as i32;
-    let card_h = ((h - 51 - 6 - (rows - 1) * 8) / rows).min(124);
-    for (i, label) in txt.labels().iter().enumerate() {
-        let col = (i % 2) as i32;
-        let row = (i / 2) as i32;
-        let (x, y) = (14 + col * 110, 51 + row * (card_h + 8));
-        let area = rect(x, y, 102, card_h);
-        let is_sel = i == selected;
-        if is_sel {
-            cv.round(area, 8, AMBER);
-        } else {
-            // Doubled 1px outlines for a 2px card edge.
-            cv.round_outline(area, 8, RULE);
-            cv.round_outline(rect(x + 1, y + 1, 100, card_h - 2), 7, RULE);
-        }
-        let ink = if is_sel { INK } else { SUBTEXT };
-        let bg = if is_sel { AMBER } else { PARCHMENT };
-        draw_icon(cv, kinds[i], Point::new(x + 51, y + card_h * 2 / 5), 1.5, ink, bg);
-        cv.text(label, Point::new(x + 51, y + card_h - 32), Font::Label, TextAlign::Center, INK);
     }
 }
 

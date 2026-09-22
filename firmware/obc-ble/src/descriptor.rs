@@ -18,7 +18,7 @@ pub enum ObjectType {
     /// Reserved on the CoC — Config crosses GATT whole-blob.
     ConfigBlob = 3,
     Diagnostics = 4,
-    /// A complete `UPDATE.BIN` OBCU container, app to device, upload only. The transfer layer sees
+    /// A complete OBCU update container, app to device, upload only. The transfer layer sees
     /// opaque bytes; installing it is the separate, confirmed `installFw` command.
     FwImage = 5,
     RouteList = 6,
@@ -202,17 +202,6 @@ impl TransferStatus {
         None
     }
 
-    /// Refuse a `fwImage` upload larger than the update-slot ceiling, before any bytes stream.
-    /// `total_len` is the whole OBCU container, so the caller passes a container-sized ceiling; the
-    /// constant stays out of this crate so the wire codec never links the DFU crate.
-    pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
-        if total_len > max_len {
-            Some(Self::Error)
-        } else {
-            None
-        }
-    }
-
     /// Refuse a map upload before any byte streams, because a map that fails at byte 300,000,000
     /// has cost the rider minutes. A map is new-only: the device never replaces a stored map in
     /// place, so a named id gets `notFound`. `min_len` is the OBCM header length, `headroom` the
@@ -308,7 +297,7 @@ impl CommandResult {
         Self { command, status, detail: 0 }
     }
 
-    /// `ackRides` reports its newly-flagged count in `detail`.
+    /// `detail` carries a command's own extra answer byte.
     pub fn with_detail(command: u8, status: CommandStatus, detail: u8) -> Self {
         Self { command, status, detail }
     }
@@ -316,9 +305,7 @@ impl CommandResult {
 
 /// `deleteObject`: `cmd u8 · type u8 · object_id u16 LE`.
 pub const CMD_DELETE_OBJECT: u8 = 1;
-/// `ackRides`: see [`AckRides`].
-pub const CMD_ACK_RIDES: u8 = 2;
-/// `installFw`: the `cmd` byte only. Asks the device to install the staged `/UPDATE.BIN`.
+/// `installFw`: the `cmd` byte only. Asks the device to install the staged update package.
 pub const CMD_INSTALL_FW: u8 = 3;
 /// `forgetBond`: the `cmd` byte only. The device answers `commandResult(ok)`, then clears its side
 /// of the bond, drops the link, and advertises for open pairing again. The gated `command`
@@ -330,73 +317,14 @@ pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
 /// outside it is rejected.
 pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
 
-/// Map the device state at the BLE edge to the `installFw` `commandResult.status`; the precedence
-/// is busy, then no stage, then invalid, then ok. The command never installs on its own: a physical
-/// confirm on the device is always necessary.
-pub const fn install_fw_reply(has_staged: bool, busy: bool, staged_invalid: bool) -> CommandStatus {
+/// Map the device state at the BLE edge to the `installFw` `commandResult.status`. The command
+/// never installs on its own: a physical confirm on the device is always necessary, and whether a
+/// package is staged is that flow's own answer rather than a second one given here.
+pub const fn install_fw_reply(busy: bool) -> CommandStatus {
     if busy {
         CommandStatus::Busy
-    } else if !has_staged {
-        CommandStatus::NotFound
-    } else if staged_invalid {
-        CommandStatus::Error
     } else {
         CommandStatus::Ok
-    }
-}
-
-/// The `ackRides` command: `cmd u8 · count u8 · count × object_id u16 LE`. The app lists the ride
-/// ids it holds and the device flags each listed id it still stores as synced. The flag means
-/// "downloaded at least once", so an id is never un-flagged. The command is idempotent and
-/// order-free, thus a long list can be split across writes. Unknown ids are ignored.
-///
-/// Borrowed view over the id bytes; bytes past `count × 2` are ignored.
-#[derive(Clone, Copy, Debug)]
-pub struct AckRides<'a> {
-    /// Exactly `count × 2` little-endian id bytes.
-    ids: &'a [u8],
-}
-
-impl<'a> AckRides<'a> {
-    pub const fn encoded_len(count: usize) -> usize {
-        2 + count * 2
-    }
-
-    /// Decode a full `command` write, starting at the command byte.
-    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
-        let [cmd, count, rest @ ..] = data else {
-            return Err(DescriptorError::Truncated);
-        };
-        if *cmd != CMD_ACK_RIDES {
-            return Err(DescriptorError::UnknownOp(*cmd));
-        }
-        let n = *count as usize * 2;
-        match rest.get(..n) {
-            Some(ids) => Ok(Self { ids }),
-            None => Err(DescriptorError::Truncated),
-        }
-    }
-
-    pub fn count(&self) -> usize {
-        self.ids.len() / 2
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = u16> + 'a {
-        self.ids.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]))
-    }
-
-    /// Returns the written length, or `None` for more than 255 ids or a too-small buffer. The
-    /// firmware only decodes; this is here for the shared-vector tests and the app-side codec.
-    pub fn encode(ids: &[u16], out: &mut [u8]) -> Option<usize> {
-        if ids.len() > u8::MAX as usize || out.len() < Self::encoded_len(ids.len()) {
-            return None;
-        }
-        out[0] = CMD_ACK_RIDES;
-        out[1] = ids.len() as u8;
-        for (i, id) in ids.iter().enumerate() {
-            out[2 + i * 2..4 + i * 2].copy_from_slice(&id.to_le_bytes());
-        }
-        Some(Self::encoded_len(ids.len()))
     }
 }
 

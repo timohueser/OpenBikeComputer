@@ -117,12 +117,16 @@ impl MapDisplay {
         self.last_overlay_span.is_some()
     }
 
-    /// The live Select hold progress from the shared input plane. It is fed to the map render so the
-    /// in-screen confirm bars track the hold: `App`'s own input plane is not driven on this
-    /// firmware, so without it the bar never fills.
+    /// The live `(Select, Back)` hold progress from the shared input plane. It is fed to the app so
+    /// the in-screen confirm bars track the Select hold and a Back hold defers a landing card:
+    /// `App`'s own input plane is not driven on this firmware, so without it the bar never fills
+    /// and no hold is seen at all.
     #[inline(always)]
-    pub(crate) fn hold_progress(&self) -> f32 {
-        self.input_plane.lock(|c| c.borrow().select_hold_progress())
+    pub(crate) fn hold_progress(&self) -> (f32, f32) {
+        self.input_plane.lock(|c| {
+            let p = c.borrow();
+            (p.select_hold_progress(), p.back_hold_progress())
+        })
     }
 
     /// Whether an ordinary hold or the Assistant chord is charging right now. This is the pre-fire

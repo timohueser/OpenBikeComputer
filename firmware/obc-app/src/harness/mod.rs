@@ -13,5 +13,7 @@ mod quick_drawer;
 mod screens;
 mod upload;
 
+mod copy_fit;
 mod marquee;
 mod nav;
+mod route_import;
