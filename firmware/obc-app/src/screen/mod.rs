@@ -134,6 +134,13 @@ pub enum Transition {
     Pop,
     /// Swap this screen for `screen` without growing the stack.
     Replace(Screen),
+    /// Drop the descent back to the root pair — the Home root and the view it stands on, what an
+    /// escape leaves under its Menu — and push `screen` there.
+    ///
+    /// It is the transition for a row on a sheet. A sheet opens over anything, the way down its
+    /// own row opens included, so a row that landed over the descent would lay one way down on
+    /// another and spend a slot every lap.
+    OverRoot(Screen),
     /// Truncate to the Home root and push `screen`, landing on a clean `[Home, screen]` from any
     /// depth rather than leaving stale screens buried under the new one.
     Root(Screen),
@@ -196,6 +203,12 @@ pub fn apply(stack: &mut Stack, t: Transition) {
             if let Some(top) = stack.last_mut() {
                 *top = s;
             }
+        }
+        Transition::OverRoot(s) => {
+            // Keep the Home root and the view it stands on. The push that follows cannot
+            // overflow: that pair and one screen fit any MAX_DEPTH.
+            stack.truncate(2);
+            let _ = stack.push(s);
         }
         Transition::Root(s) => {
             stack.truncate(1); // keep the Home root
