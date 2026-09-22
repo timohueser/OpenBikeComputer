@@ -33,8 +33,8 @@ use obc_app::screen::MapTransfer;
 use obc_app::{App, AppState, BleLink, BleStatus, Dirty, SensorPhase, SensorStatus};
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_ports::{
-    Button, ButtonEvent, CadenceSource, CompassSource, Fix, FuelGauge, HeartRateSource, InputClock, InputEvent,
-    InputSource, LocationSource, PowerSource, RideClock, Sensors,
+    AltimeterSource, Button, ButtonEvent, CadenceSource, CompassSource, Fix, FuelGauge, HeartRateSource, InputClock,
+    InputEvent, InputSource, LocationSource, PowerSource, RideClock, Sensors,
 };
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_route::{RouteIndex, RouteReader, RouteSummary};
@@ -149,6 +149,9 @@ struct Ports {
     /// it drives the rotation: heading-up, not panning, and a fix with no course. It is the one way
     /// the map's orientation moves with no gesture behind it.
     compass: Option<f32>,
+    /// A barometric altitude sample in metres. It arrives between fixes here, which the board's
+    /// fix-gated sensor never does, so the grid's climb tile has to move on its own.
+    altitude: Option<f32>,
 }
 
 struct One<T>(Option<T>);
@@ -180,6 +183,11 @@ impl FuelGauge for One<(u8,)> {
 impl CompassSource for One<f32> {
     fn poll(&mut self) -> Option<f32> {
         self.0.take()
+    }
+}
+impl AltimeterSource for One<(f32,)> {
+    fn poll(&mut self) -> Option<f32> {
+        self.0.take().map(|v| v.0)
     }
 }
 
@@ -243,6 +251,10 @@ impl Step {
     }
     fn compass(mut self, deg: f32) -> Step {
         self.ports.compass = Some(deg);
+        self
+    }
+    fn altitude(mut self, m: f32) -> Step {
+        self.ports.altitude = Some(m);
         self
     }
     /// A stationary fix, as at a traffic light. No `course`, so the heading-up map falls back to
@@ -361,6 +373,7 @@ impl Instance {
         let mut cadence = One(s.ports.cadence);
         let mut fuel = One(s.ports.battery.map(|p| (p,)));
         let mut compass = One(s.ports.compass);
+        let mut altimeter = One(s.ports.altitude.map(|m| (m,)));
         let mut facts = ExternalFacts::NONE;
         // The card this device has, reported every pass as the board reports its flat store's live
         // sequence. `store_writable` is what admits a ride recording, and these replays ride. A
@@ -378,6 +391,7 @@ impl Instance {
                 cadence: Some(&mut cadence),
                 fuel: Some(&mut fuel),
                 compass: Some(&mut compass),
+                altimeter: Some(&mut altimeter),
                 ..Sensors::new(&mut loc)
             },
             route,
@@ -477,14 +491,20 @@ fn route_summary() -> RouteSummary {
         .clone()
 }
 
-/// The device both instances start from: the three live sensor tiles pinned to the grid, one page
-/// of them so the auto-cycle never fires. A value the rider chose to see must repaint when it
-/// moves.
+/// The device both instances start from: the three live sensor tiles and the climb tile pinned to
+/// the grid, one page of them so the auto-cycle never fires. A value the rider chose to see must
+/// repaint when it moves.
+///
+/// The elevation tile is deliberately absent, as it is from the default grid. It and the climb read
+/// the same altimeter sample, so a grid holding both can never show what the climb field alone
+/// carries; the pinned-elevation grid is [`tiles_replay`]'s device.
 fn riding_device(camera: AppState) -> App {
     use obc_app::{StatField, StatFieldList};
     let mut app = App::new(camera);
-    let fields =
-        StatFieldList::decode(3, &[StatField::HeartRate as u8, StatField::Power as u8, StatField::Cadence as u8]);
+    let fields = StatFieldList::decode(
+        4,
+        &[StatField::HeartRate as u8, StatField::Power as u8, StatField::Cadence as u8, StatField::Climbed as u8],
+    );
     app.set_settings(obc_app::Settings { stat_fields: fields, ..*app.settings() });
     app
 }
@@ -580,6 +600,13 @@ fn replay() -> Vec<Step> {
     // Past the 5 s staleness gate with no fresh sample: every tile blanks.
     steps.push(step("the sensor tiles go stale", 36_000));
     steps.push(step("still blank", 37_000));
+    // Altitude between fixes: the first sample anchors the dead band, the second books 20 m of
+    // ascent, so the CLIMBED tile moves on a pass where nothing else did. This grid has no
+    // elevation tile, so the climb is the only altimeter fact the key can carry here.
+    steps.push(step("the altimeter anchors, no fix", 37_200).altitude(500.0).expect("Statistics"));
+    steps.push(step("the rider climbs, no fix", 37_600).altitude(520.0).expect("Statistics").probe(|app| {
+        assert!(app.recorder.climb_m() >= 20.0, "the dead band booked the ascent the tile draws");
+    }));
     // Progress and the climb move under the grid, with the fix that carries them.
     steps.push(step("progress under the grid", 38_000).fix(16));
     steps.push(step("more progress under the grid", 39_000).fix(17));
@@ -838,6 +865,9 @@ fn tiles_replay() -> Vec<Step> {
         }),
         step("both tiles are settled", 2_900).expect("Statistics"),
         step("and stay settled", 3_100).expect("Statistics"),
+        // The pinned elevation tile fills from the first altimeter sample, with no fix under it.
+        step("the altimeter reads, no fix", 3_200).altitude(500.0).expect("Statistics"),
+        step("and the reading holds", 3_250).expect("Statistics"),
     ];
     // Riding on: each fountain is passed in turn, so the water tile's named entry changes under a
     // grid whose other figures move with it.
@@ -887,8 +917,13 @@ fn the_next_category_tiles_stay_in_parity() {
         || {
             let mut app = App::new(camera);
             // Two of the six tiles, which is what makes the round-robin visible: with one placed,
-            // the single request is armed by the same pass the screen transition dirtied.
-            let fields = StatFieldList::decode(2, &[StatField::NextWater as u8, StatField::NextBikeShop as u8]);
+            // the single request is armed by the same pass the screen transition dirtied. The
+            // elevation tile rides with them: this is the grid a rider who pinned it has, and the
+            // one place the elevation field of the Statistics key is on its own.
+            let fields = StatFieldList::decode(
+                3,
+                &[StatField::NextWater as u8, StatField::NextBikeShop as u8, StatField::Elevation as u8],
+            );
             app.set_settings(obc_app::Settings { stat_fields: fields, ..*app.settings() });
             app
         },

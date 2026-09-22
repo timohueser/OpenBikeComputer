@@ -661,7 +661,8 @@ impl App {
             // Stamp fix freshness against the map-plane clock, the one the banner's staleness
             // check reads. It is off `AppState`, so a stationary fix forces no redraw.
             self.tick_state.last_fix_ms = Some(self.ui.now_ms);
-            if let Some(Screen::PeakView(screen)) = self.ui.stack.iter_mut().rev().find(|screen| !screen.is_overlay()) {
+            let base = screen::base_index(&self.ui.stack);
+            if let Some(Screen::PeakView(screen)) = self.ui.stack.get_mut(base) {
                 if screen.needs_position() {
                     screen.set_status(crate::peak_view::runtime::Status::Building(0));
                     self.ui.map_dirty = true;
@@ -1518,7 +1519,7 @@ impl App {
             &mut self.ui.stack,
             screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
         );
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         self.ui.map_dirty = true;
     }
 
@@ -1659,8 +1660,7 @@ impl App {
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new(mode))),
         );
         self.ui.map_dirty = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         true
     }
 
@@ -1722,7 +1722,7 @@ impl App {
     }
 
     fn peak_view_base(&self) -> Option<&screen::PeakViewScreen> {
-        match self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) {
+        match screen::base_screen(&self.ui.stack) {
             Some(Screen::PeakView(screen)) => Some(screen),
             _ => None,
         }
@@ -1766,8 +1766,7 @@ impl App {
                 self.ui.map_dirty = true;
                 self.ui.last_input_ms = self.ui.now_ms;
                 self.ui.idle_return_timing = true;
-                self.ui.input.cancel_holds();
-                self.ui.hold_cancel_pending = true;
+                self.ui.cancel_holds();
                 self.ui.reconcile_corridor(self.up_ahead_scope());
                 true
             }
@@ -1790,7 +1789,7 @@ impl App {
     /// lowest non-overlay row, so a sheet already up does not hide the content the chord asks
     /// about; that is what makes the same chord close the context drawer again.
     fn base_context(&self) -> Option<&'static crate::screen::ContextMenu> {
-        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| {
+        screen::base_screen(&self.ui.stack).and_then(|s| {
             if matches!(s, Screen::Assistant(_)) && self.current_visit_index().is_some() {
                 Some(&crate::screen::context_drawer::ASSISTANT_VISIT)
             } else if matches!(s, Screen::Assistant(_))
@@ -1832,8 +1831,7 @@ impl App {
         self.ui.map_dirty = true;
         self.ui.last_input_ms = self.ui.now_ms;
         self.ui.idle_return_timing = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         true
     }
 
@@ -2175,7 +2173,7 @@ impl App {
     fn escape_to_menu(&mut self) -> bool {
         // Asked of the base, not of `stack.last()`: a sheet opened over a card the rider must
         // answer is not consent to walk away from the card.
-        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        let base = screen::base_screen(&self.ui.stack);
         if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
             return false;
         }
@@ -2206,8 +2204,7 @@ impl App {
         // query exactly as a Back would.
         self.ui.reconcile_corridor(self.up_ahead_scope());
         if changed {
-            self.ui.input.cancel_holds();
-            self.ui.hold_cancel_pending = true;
+            self.ui.cancel_holds();
         }
         changed
     }
@@ -2325,8 +2322,7 @@ impl App {
         // The top screen changed under the rider's finger, so cancel any hold charging now: a
         // long-press aimed at the old top must not complete onto the new one.
         if stack_changed {
-            self.ui.input.cancel_holds();
-            self.ui.hold_cancel_pending = true;
+            self.ui.cancel_holds();
         }
         if self.settings != settings_before {
             // A rider edit: bump the revision and re-arm the save, superseding an older one.
@@ -2604,11 +2600,12 @@ impl App {
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
         let place_local = self.place_local_time();
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.ui.stack);
 
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
-        let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
+        let hold_progress =
+            self.ui.hold_progress_override.map_or_else(|| self.ui.input.select_hold_progress(), |p| p.select);
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
         let visit_target = self.assistant_visit_target();
@@ -2854,12 +2851,12 @@ impl App {
         self.ui.input.last_gesture()
     }
 
-    /// Feed the live Select hold-progress (0.0 to 1.0) for the in-screen confirm fills. The
-    /// two-plane firmware calls this each frame from its high-priority [`InputPlane`], whose hold
-    /// state `App`'s own plane does not see; without it the Reset bar never fills. The
+    /// Feed the live hold progress (0.0 to 1.0) of both hold buttons. The two-plane firmware calls
+    /// this each frame from its high-priority [`InputPlane`], whose hold state `App`'s own plane
+    /// does not see; without it the Reset bar never fills and no hold ever defers a card. The
     /// single-loop hosts never call it.
-    pub fn set_hold_progress(&mut self, progress: f32) {
-        self.ui.hold_progress_override = Some(progress);
+    pub fn set_hold_progress(&mut self, select: f32, back: f32) {
+        self.ui.hold_progress_override = Some(crate::ui_runtime::HoldSample { select, back });
     }
 
     /// Arm the one-shot region clip for the next [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed).
@@ -2913,10 +2910,8 @@ impl App {
             .ride_track_key(self.activity.viewed_ride)
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level is the UI's; the data half is the key's.
-        let assistant =
-            self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
-                |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
-            );
+        let assistant = screen::base_screen(&self.ui.stack)
+            .is_some_and(|s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()));
         let overview_open = assistant || self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
             .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))
@@ -2988,6 +2983,29 @@ mod tests {
         fn poll(&mut self) -> Option<Fix> {
             self.0.take()
         }
+    }
+
+    /// A card pushed outside the input path moves the stack under whatever is charging, so it must
+    /// ring the recogniser exactly as a gesture-driven move does. Setting the host's edge alone
+    /// leaves the App's own hold to complete onto the card.
+    #[test]
+    fn the_route_cleanup_card_cancels_a_hold_charging_under_it() {
+        use crate::harness::support::{down, keys};
+        use obc_ports::Button;
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
+        app.handle_input(InputClock(300), &mut keys(&[]));
+        assert!(app.ui.input.select_hold_progress() > 0.0, "a Select hold is charging");
+
+        app.offer_route_cleanup(crate::device_core::StoreIdentity::new(1));
+        assert!(matches!(app.top_screen(), Screen::RouteCleanup(_)), "the card is up");
+        assert!(app.take_hold_cancel(), "the host's own plane is told to cancel");
+
+        // Past the 500 ms threshold: the hold was aimed at the screen the card replaced, so it must
+        // never fire at all.
+        app.handle_input(InputClock(700), &mut keys(&[]));
+        assert!(app.ui.input.last_gesture().is_none(), "the cancelled hold does not complete onto the card");
     }
 
     /// The ride whose track the open detail still needs, read as the durable id.

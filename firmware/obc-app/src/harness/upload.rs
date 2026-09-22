@@ -320,12 +320,12 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
 #[test]
 fn a_charging_hold_defers_the_prompt_a_tick() {
     let mut app = idle_app();
-    app.set_hold_progress(0.5); // a hold is charging (the two-plane firmware's live feed)
+    app.set_hold_progress(0.5, 0.0); // a hold is charging (the two-plane firmware's live feed)
     route_upload(&mut app, 11, false);
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no host-pushed screen lands mid-hold");
 
     // The hold settles; the next pass delivers the pending prompt.
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.advance_animations(InputClock(100));
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)), "the deferred prompt lands");
 }
@@ -337,11 +337,11 @@ fn a_charging_hold_defers_the_auto_close_too() {
     route_upload(&mut app, 11, false);
 
     // The deadline passes mid-hold: never pop a screen out from under a charging hold.
-    app.set_hold_progress(0.7);
+    app.set_hold_progress(0.7, 0.0);
     app.advance_animations(InputClock(1_000 + UPLOAD_POPUP_TIMEOUT_MS + 5));
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)), "the close is deferred while charging");
 
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.advance_animations(InputClock(1_000 + UPLOAD_POPUP_TIMEOUT_MS + 60));
     assert!(matches!(app.top_screen(), Screen::Home(_)), "…and lands once the hold settles");
 }
@@ -369,12 +369,12 @@ fn a_pending_deferred_prompt_for_a_deleted_route_is_dropped() {
     // Arrival is deferred by a hold; the route is deleted before delivery. The id no longer
     // resolves in the catalog, so the prompt is dropped entirely.
     let mut app = idle_app();
-    app.set_hold_progress(0.5);
+    app.set_hold_progress(0.5, 0.0);
     route_upload(&mut app, 11, false);
     let r = routes();
     app.set_routes_with_ids(&[r[0].clone(), r[2].clone()], &[10, 12]);
 
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.advance_animations(InputClock(100));
     assert!(matches!(app.top_screen(), Screen::Home(_)), "a prompt for a vanished id never lands");
 }
@@ -573,10 +573,10 @@ fn the_passkey_card_outranks_the_trip_card_too() {
 fn a_charging_hold_defers_the_trip_card_a_tick() {
     let mut app = idle_app();
     feed_trip(&mut app);
-    app.set_hold_progress(0.5);
+    app.set_hold_progress(0.5, 0.0);
     trip_upload(&mut app, 5, false);
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no host-pushed screen lands mid-hold");
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.advance_animations(InputClock(100));
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)), "the deferred trip card lands");
 }

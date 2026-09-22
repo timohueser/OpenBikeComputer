@@ -160,25 +160,34 @@ fn the_card_is_not_dismissible_by_input() {
 #[test]
 fn a_hold_charging_defers_the_card_until_the_hold_settles() {
     // A host-pushed screen must never land mid-hold — it would yank the hold target out from under
-    // the rider. The board feeds the live Select hold-progress via `set_hold_progress`.
+    // the rider. The board feeds the live hold progress of both hold buttons via
+    // `set_hold_progress`, because `App`'s own recogniser sees nothing there.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
 
-    app.set_hold_progress(0.5); // a hold is charging
+    app.set_hold_progress(0.5, 0.0); // a hold is charging
     app.set_ble_status(pairing(1));
     assert!(!app.passkey_card_up(), "the card is deferred while a hold charges");
 
     // The desired state is re-fed every pass; once the hold settles the reconcile lands.
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.set_ble_status(pairing(1));
     assert!(app.passkey_card_up(), "the card opens once the hold settles");
 
     // Closing is deferred too: don't pop mid-hold.
-    app.set_hold_progress(0.5);
+    app.set_hold_progress(0.5, 0.0);
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert!(app.passkey_card_up(), "the card is held up while a hold charges");
-    app.set_hold_progress(0.0);
+    app.set_hold_progress(0.0, 0.0);
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert!(!app.passkey_card_up(), "the card closes once the hold settles");
+
+    // Back charges on the same plane and defers the same way.
+    app.set_hold_progress(0.0, 0.5);
+    app.set_ble_status(pairing(1));
+    assert!(!app.passkey_card_up(), "a charging Back hold defers the card too");
+    app.set_hold_progress(0.0, 0.0);
+    app.set_ble_status(pairing(1));
+    assert!(app.passkey_card_up(), "…and the card lands once the Back hold settles");
 }
 
 #[test]

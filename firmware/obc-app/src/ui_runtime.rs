@@ -21,6 +21,19 @@ use crate::screen::vocab::marquee::Marquee;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
 use crate::settings::{DateTime, Settings};
 
+/// One frame's hold charge on the two hold buttons, as the host's own input plane sees them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HoldSample {
+    pub(crate) select: f32,
+    pub(crate) back: f32,
+}
+
+impl HoldSample {
+    fn charging(&self) -> bool {
+        self.select > 0.0 || self.back > 0.0
+    }
+}
+
 pub(crate) struct UiRuntime {
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
@@ -68,10 +81,12 @@ pub(crate) struct UiRuntime {
     /// the clock, so a long modal operation cannot donate its elapsed time to the ordinary screen
     /// that replaces it.
     pub(crate) idle_return_timing: bool,
-    /// Host-supplied Select hold-progress (0.0-1.0) for the in-screen confirm fills. `None` on the
-    /// single-loop hosts; the two-plane firmware feeds it each frame, because its holds live on a
-    /// plane `App`'s own never sees.
-    pub(crate) hold_progress_override: Option<f32>,
+    /// Host-supplied hold progress (0.0-1.0) for both hold buttons. `None` on the single-loop
+    /// hosts; the two-plane firmware feeds it each frame, because its holds live on a plane
+    /// `App`'s own never sees. Select drives the in-screen confirm fills; Back is here because a
+    /// Back hold defers a card too, and a sample that carried Select alone deferred nothing on the
+    /// board.
+    pub(crate) hold_progress_override: Option<HoldSample>,
     /// Set whenever a gesture changed the screen stack: a hold charging at that moment was aimed
     /// at a screen that is no longer the top, so it must be cancelled and never delivered to
     /// whatever replaced it.
@@ -165,7 +180,7 @@ impl UiRuntime {
         tracking: bool,
     ) {
         self.now_ms = now_ms;
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         let first = base + usize::from(self.base_frozen());
         let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;
@@ -191,7 +206,7 @@ impl UiRuntime {
     /// and indicator gates read instead of open-coding a `matches!` on the enum. An overlay over a
     /// riding view still reports the riding view's content.
     fn base_content(&self) -> BaseContent {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         self.stack.get(base).map(|s| s.caps().base).unwrap_or(BaseContent::Chrome)
     }
 
@@ -204,7 +219,7 @@ impl UiRuntime {
     /// Whether an overlay sheet covers the base screen. A frozen base does not tick, and its rows
     /// on the panel stand, so its draw is skipped.
     pub(crate) fn base_frozen(&self) -> bool {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         self.stack.iter().skip(base + 1).any(|s| s.is_overlay())
     }
 
@@ -214,7 +229,7 @@ impl UiRuntime {
     /// resident frame. A base that recesses takes its second draw, because the recess is that draw.
     /// A sheet that is not purely covering asks for the base itself ([`Screen::needs_base`]).
     pub(crate) fn sheet_only(&self) -> bool {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         self.resident_frame
             && self.base_frozen()
             && self.stack.get(base).is_some_and(|s| !s.caps().recess)
@@ -222,7 +237,7 @@ impl UiRuntime {
     }
 
     pub(crate) fn spend_base_draw(&mut self) {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         for scr in self.stack.iter_mut().skip(base + 1) {
             scr.clear_base_debt();
         }
@@ -241,16 +256,12 @@ impl UiRuntime {
         // A frame that does not draw the base needs nothing the base reads. On the board that
         // build is an SD style-table parse the frame then throws away: about 45 ms of an 80 ms
         // open step.
-        let rebuilding_photo = self
-            .stack
-            .iter()
-            .rev()
-            .find(|s| !s.is_overlay())
-            .is_some_and(|s| matches!(s, Screen::LandmarkPhoto(page) if page.covered_rebuild));
+        let base = screen::base_index(&self.stack);
+        let rebuilding_photo =
+            self.stack.get(base).is_some_and(|s| matches!(s, Screen::LandmarkPhoto(page) if page.covered_rebuild));
         if self.sheet_only() && !rebuilding_photo {
             return false;
         }
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let Some(scr) = self.stack.get(base) else { return false };
         match scr.caps().reader {
             ReaderNeed::Always => true,
@@ -291,7 +302,7 @@ impl UiRuntime {
                 self.next_ahead.harvest(key, self.corridor_scratch.entries());
             }
         }
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         if let Some(scr) = self.stack.get_mut(base) {
             let mut px = screen::Prepare {
                 place_local,
@@ -360,7 +371,7 @@ impl UiRuntime {
     /// screen this pass. Deliberately not "anywhere on the stack": a tile behind a menu is not
     /// being read, and the query it would keep warm costs a card spin-up.
     fn stats_grid_shown(&self) -> bool {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.stack);
         matches!(self.stack.get(base), Some(Screen::Statistics(_)))
     }
 
@@ -414,10 +425,10 @@ impl UiRuntime {
         self.base_content() == BaseContent::Chrome
     }
 
-    /// Whether a hold gesture is charging right now. It reads the host-fed Select progress and
-    /// `App`'s own input plane, and gates the passkey card so it never lands mid-hold.
+    /// Whether a hold gesture is charging right now. It reads the host-fed sample and `App`'s own
+    /// input plane, and gates the passkey card so it never lands mid-hold.
     pub(crate) fn hold_charging(&self) -> bool {
-        self.hold_progress_override.is_some_and(|p| p > 0.0)
+        self.hold_progress_override.is_some_and(|p| p.charging())
             || self.input.select_hold_progress() > 0.0
             || self.input.back_hold_progress() > 0.0
     }
@@ -553,6 +564,14 @@ impl UiRuntime {
         let full = core::mem::take(&mut self.map_dirty);
         let region = self.region_dirty.take();
         Dirty { map: full || region.is_some(), overlay: false, region: if full { None } else { region } }
+    }
+
+    /// Cancel every hold in flight, because the stack moved under it: `App`'s own recogniser now,
+    /// and the host's own plane when it next drains the edge. A long press aimed at the screen that
+    /// has just been replaced must not complete onto whatever replaced it.
+    pub(crate) fn cancel_holds(&mut self) {
+        self.input.cancel_holds();
+        self.hold_cancel_pending = true;
     }
 
     /// Drain the pending hold-cancel edge: `true` when a gesture changed the screen stack, so any
