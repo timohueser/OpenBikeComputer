@@ -80,6 +80,7 @@ pub(crate) struct Executor {
     release: Option<bool>,
     progress_m: u32,
     rejoin_m: u32,
+    kind: obc_route::Leg,
     length_m: u32,
     ascent_m: u32,
     has_elevation: bool,
@@ -99,6 +100,7 @@ impl Executor {
             release: None,
             progress_m: 0,
             rejoin_m: 0,
+            kind: obc_route::Leg::Detour,
             length_m: 0,
             ascent_m: 0,
             has_elevation: false,
@@ -162,6 +164,7 @@ impl Executor {
                 self.original = Some(original);
                 self.progress_m = request.progress_m;
                 self.rejoin_m = request.target_m;
+                self.kind = request.leg;
                 let Some(quiesced) = app.nav_arena_precondition() else { return self.fail(NavigatorError::Workspace) };
                 *guard = match crate::arena::claim_nav(quiesced) {
                     Ok(g) => Some(g),
@@ -206,7 +209,7 @@ impl Executor {
                 if self.parse_sources(store, g).is_err() {
                     return self.fail(NavigatorError::Store);
                 };
-                g.begin_splice(self.progress_m, self.rejoin_m, self.length_m, self.has_elevation);
+                g.begin_splice(self.kind, self.progress_m, self.rejoin_m, self.length_m, self.has_elevation);
                 self.phase = Phase::Allocate(After::StartSplice);
                 None
             }
@@ -464,7 +467,7 @@ impl Executor {
                 if self.release.is_some() {
                     return None;
                 }
-                guard.as_mut()?.begin_trim(self.rejoin_m, self.has_elevation);
+                guard.as_mut()?.begin_trim(self.kind, self.rejoin_m, self.has_elevation);
                 self.stepped(Work::Trim)
             }
             (After::StartTrim, Err(_)) => {

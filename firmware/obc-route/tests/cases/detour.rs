@@ -15,7 +15,7 @@ use obc_route::corridor::{Corridor, CORRIDOR_MAX_PTS, MIN_DETOUR_SPAN_M};
 use obc_route::nav::{plan_detour, plan_route, NavError, NavScratch};
 use obc_route::reader::for_each_waypoint;
 use obc_route::splice::{splice_detour, trim_detour_to_tail};
-use obc_route::{RouteIndex, RoutePoint, RouteReader, TrimOutcome};
+use obc_route::{Leg, RouteIndex, RoutePoint, RouteReader, TrimOutcome};
 
 /// Global bbox, µdeg. Roomy, so the node quadtree subdivides.
 const GLOBAL: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
@@ -423,7 +423,8 @@ fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
 
     let mut sink = VecSink::default();
     let stats =
-        splice_detour(&orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink).unwrap();
+        splice_detour(Leg::Detour, &orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink)
+            .unwrap();
     (sink.buf, stats, dstats.total_distance_m)
 }
 
@@ -558,11 +559,73 @@ fn splice_self_input_is_previous_output() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(&orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).expect("a re-spliced route still parses");
     assert_eq!(idx.name(), "Detour · Road trip", "no stacked name prefixes");
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
+}
+
+/// Ride to start: a leg that rejoins at the route start comes first, and the whole route follows
+/// it unchanged, with the waypoints moved behind the leg.
+#[test]
+fn an_approach_splice_is_the_leg_then_the_whole_route() {
+    let obcr = road_route_obcr();
+    // The leg comes down the parallel street at 300 m, a datum 200 m above the route's start.
+    let mut g = String::from("<gpx><trk><trkseg>\n");
+    for (lon, lat) in [street_at(4), street_at(2), street_at(0), road_at(0)] {
+        let (lat, lon) = (lat as f64 * 1e-6, lon as f64 * 1e-6);
+        g.push_str(&format!("  <trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>300.0</ele></trkpt>\n"));
+    }
+    g.push_str("</trkseg></trk></gpx>");
+    let leg = convert("Approach leg", &g);
+
+    let osrc = SliceSource(&obcr[..]);
+    let oidx = RouteIndex::read(&osrc).unwrap();
+    let orig = RouteReader::new(&oidx, &osrc);
+    let lsrc = SliceSource(&leg[..]);
+    let lidx = RouteIndex::read(&lsrc).unwrap();
+    let det = RouteReader::new(&lidx, &lsrc);
+    let (leg_m, route_m) = (det.total_distance_m, orig.total_distance_m);
+
+    let mut trimmed = VecSink::default();
+    assert!(
+        matches!(trim_detour_to_tail(Leg::Approach, &orig, &det, 0, true, &mut trimmed), Ok(None)),
+        "an approach is not trimmed"
+    );
+    let mut sink = VecSink::default();
+    let stats = splice_detour(Leg::Approach, &orig, &det, 0, 0, leg_m, true, &mut sink).unwrap();
+
+    let src = SliceSource(&sink.buf[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let spliced = RouteReader::new(&idx, &src);
+    assert_eq!(idx.name(), "To start · Road trip", "the Routes list tells it from the route");
+    assert!(!idx.has_unresolved_avoidance(), "an approach avoids nothing");
+    assert!(
+        stats.total_distance_m.abs_diff(leg_m + route_m) <= 2,
+        "length {} is the leg {leg_m} plus the route {route_m}",
+        stats.total_distance_m
+    );
+    let start = spliced.position_at(0).unwrap();
+    assert_eq!((start.lon, start.lat), street_at(4), "the ride starts where the rider is");
+    for along in [0, 600, route_m] {
+        let (a, b) = (orig.position_at(along).unwrap(), spliced.position_at(leg_m + along).unwrap());
+        let drift = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
+        assert!(drift < 5.0, "route km {along} sits one leg further on ({drift} m off)");
+    }
+
+    let along = |bytes: &[u8]| {
+        let mut out = Vec::new();
+        for_each_waypoint(&SliceSource(bytes), |w| out.push(w.dist_along_m)).unwrap();
+        out
+    };
+    let (before, after) = (along(&obcr), along(&sink.buf));
+    assert_eq!(after.len(), before.len(), "every waypoint stays");
+    for (b, a) in before.iter().zip(&after) {
+        assert!((b + leg_m).abs_diff(*a) <= 6, "waypoint at {b} m moves to {a} m, one leg on");
+    }
+    let first = route_points(&sink.buf)[0];
+    assert!((99..=101).contains(&first.ele), "the leg lands on the start's height (got {} m)", first.ele);
 }
 
 fn trim_run(
@@ -578,7 +641,7 @@ fn trim_run(
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    let out = trim_detour_to_tail(&orig, &det, target_m, detour_has_elevation, &mut sink).unwrap();
+    let out = trim_detour_to_tail(Leg::Detour, &orig, &det, target_m, detour_has_elevation, &mut sink).unwrap();
     (out, sink.buf)
 }
 
@@ -597,7 +660,7 @@ fn spliced_total(
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    splice_detour(&orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
+    splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
         .unwrap()
         .total_distance_m
 }
@@ -728,7 +791,8 @@ fn splice_span_at_route_end() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    splice_detour(&orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink).unwrap();
+    splice_detour(Leg::Detour, &orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink)
+        .unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
@@ -933,8 +997,17 @@ fn spliced_span(
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(&orig, &det, split_m, rejoin_m, dstats.total_distance_m, dstats.has_elevation, &mut sink)
-        .unwrap();
+    let stats = splice_detour(
+        Leg::Detour,
+        &orig,
+        &det,
+        split_m,
+        rejoin_m,
+        dstats.total_distance_m,
+        dstats.has_elevation,
+        &mut sink,
+    )
+    .unwrap();
     (sink.buf, stats, dstats)
 }
 

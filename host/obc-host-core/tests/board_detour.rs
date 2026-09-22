@@ -191,7 +191,8 @@ impl Harness {
                     route: 0,
                     from: (500_000, 500_000),
                     progress_m: 0,
-                    target_m: 2226
+                    target_m: 2226,
+                    leg: obc_route::Leg::Detour,
                 })
             }),
             None

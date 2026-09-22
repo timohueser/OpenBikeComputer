@@ -149,6 +149,9 @@ impl RouteOverviewScreen {
                 if cx.recorder.recording() {
                     return Transition::Push(super::Screen::RouteSwap(super::RouteSwapScreen::new(self.route)));
                 }
+                if let Some(prompt) = super::StartAwayScreen::ask(cx, self.route) {
+                    return Transition::Push(super::Screen::StartAway(prompt));
+                }
                 super::start_ride(cx, self.route)
             }
             // The guarded hold is the confirmation, so there is no popup. It records the delete by

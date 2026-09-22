@@ -106,7 +106,7 @@ pub(crate) const fn copy_w(w: i32) -> i32 {
 /// Greedy word wrap over the monospace cell, one call of `emit` per line. The budget counts
 /// characters, not bytes: the face renders every char of its repertoire in one cell, so a byte
 /// count breaks the accented languages early. A single word wider than the budget clips.
-fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
+pub(crate) fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
     let budget = (width_px / font.char_width() as i32).max(1) as usize;
     let mut line: heapless::String<64> = heapless::String::new();
     for word in text.split(' ') {

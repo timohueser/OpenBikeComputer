@@ -1012,6 +1012,19 @@ impl App {
 
     /// The active route's catalog index, or `None` when no route is loaded. A host syncs its
     /// route store's active bytes from this each pass; it never writes the field.
+    /// The name a ride opened now is saved under: the active route's, except that a ride on a
+    /// Ride-to-start splice takes the name of the route it leads to.
+    pub fn ride_name(&self) -> Option<&str> {
+        let active = self.active_route_index()?;
+        let ids = self.route_ids();
+        let name = |i: usize| self.routes().get(i).map(|r| r.name.as_str());
+        let origin = match self.navigator.approach_route() {
+            Some((splice, route)) if ids.get(active) == Some(&splice) => ids.iter().position(|&id| id == route),
+            _ => None,
+        };
+        origin.and_then(name).or_else(|| name(active))
+    }
+
     pub fn active_route_index(&self) -> Option<usize> {
         self.navigator.route_state().active_route
     }
@@ -1209,7 +1222,7 @@ impl App {
     /// computed route left in the store.
     ///
     /// It reads the stack shape, because the transitions that drop a descent whole — `OverRoot`
-    /// under the Assistant chord and under the drawer's settings row — never reach the screens in
+    /// under the Assistant chord and under the drawer's settings row, and the escape chord — never reach the screens in
     /// it, so none of them can cancel on its own way out. An adopted result is not a question:
     /// the splice truncates its own screens off once the rider has the spliced route.
     ///
@@ -1220,7 +1233,10 @@ impl App {
     fn release_unreachable_plans(&mut self) {
         use crate::navigator::PlanFamily;
         if self.navigator.plan_awaits_rider(PlanFamily::Detour)
-            && !self.ui.stack.iter().any(|s| matches!(s, Screen::Detour(_) | Screen::DetourPreview(_)))
+            && !self.ui.stack.iter().any(|s| {
+                matches!(s, Screen::Detour(_) | Screen::DetourPreview(_))
+                    || matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Approach)
+            })
         {
             self.admit_navigator_intent(NavigatorIntent::CancelDetour);
         }
@@ -1378,6 +1394,15 @@ impl App {
         use obc_route::nav::NavError;
         // The run is over — see `land_route_plan` for the late-answer case.
         self.end_plan(PlanFamily::Detour, if result.is_ok() { PlanPhase::PreviewReady } else { PlanPhase::Failed });
+        // Ride to start has no preview to look at: its leg goes straight to the splice.
+        if self.navigator.approach() {
+            match (self.approach_planning(), result) {
+                (Some(_), Ok(_)) => self.admit_navigator_intent(NavigatorIntent::CommitDetour),
+                (Some(slot), Err(_)) => self.land_approach_failure(slot),
+                (None, _) => self.admit_navigator_intent(NavigatorIntent::CancelDetour),
+            }
+            return;
+        }
         let Some(i) = self
             .ui
             .stack
@@ -1413,6 +1438,19 @@ impl App {
     fn land_detour_commit(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
         self.navigator.note_commit(result.is_ok());
         let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(obc_route::nav::NavError::NoPath));
+        if self.navigator.approach() {
+            match (self.approach_planning(), resolved) {
+                (Some(_), Ok(idx)) => self.ride_approach(idx),
+                (Some(slot), Err(_)) => self.land_approach_failure(slot),
+                // The rider escaped the spinner, so the ride they asked for is no longer wanted:
+                // the cancel makes the release retract the publication.
+                (None, _) => {
+                    self.catalogs.clear_detour_preview();
+                    self.admit_navigator_intent(NavigatorIntent::CancelDetour);
+                }
+            }
+            return;
+        }
         match resolved {
             Ok(idx) => {
                 let anchor = self.ui.stack.iter().find_map(|s| match s {
@@ -1442,6 +1480,44 @@ impl App {
                 self.ui.map_dirty = true;
             }
         }
+    }
+
+    /// The stack slot of the Ride-to-start spinner, while it waits for its plan or its splice.
+    fn approach_planning(&self) -> Option<usize> {
+        self.ui
+            .stack
+            .iter()
+            .position(|s| matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Approach))
+    }
+
+    /// Ride to start is spliced: start the ride on the approach and the route, as START RIDE does.
+    fn ride_approach(&mut self, idx: usize) {
+        let origin = self.ui.stack.iter().find_map(|s| match s {
+            Screen::StartAway(prompt) => self.catalogs.route_ids().get(prompt.route()).copied(),
+            _ => None,
+        });
+        if let (Some(origin), Some(&splice)) = (origin, self.catalogs.route_ids().get(idx)) {
+            self.navigator.adopt_approach(splice, origin);
+        }
+        self.drop_route_derived_state();
+        self.catalogs.note_commit();
+        self.catalogs.clear_detour_preview();
+        // The spliced route starts at the fix the leg was planned from.
+        let Some((lon, lat)) = self.catalogs.routes().get(idx).map(|r| (r.start_lon, r.start_lat)) else { return };
+        self.navigator.set_active_route(Some(idx));
+        let ride = screen::begin_riding_session(&mut self.state, &mut self.activity, &mut self.recorder, lon, lat);
+        screen::apply(&mut self.ui.stack, ride);
+        self.ui.map_dirty = true;
+    }
+
+    /// Ride to start found no way: drop the spinner at `slot` and leave the prompt it came from
+    /// with Join nearest and Cancel.
+    fn land_approach_failure(&mut self, slot: usize) {
+        self.ui.stack.truncate(slot.max(1));
+        if let Some(Screen::StartAway(prompt)) = self.ui.stack.last_mut() {
+            prompt.set_no_route();
+        }
+        self.ui.map_dirty = true;
     }
 
     /// Feed whether the loaded map carries a non-empty nav graph, once at map open. It gates the
@@ -2249,6 +2325,7 @@ impl App {
         self.ui.reconcile_corridor(self.up_ahead_scope());
         if changed {
             self.ui.cancel_holds();
+            self.release_unreachable_plans();
         }
         changed
     }
@@ -4970,6 +5047,7 @@ mod tests {
                 from: (7_800_000, 48_000_000),
                 progress_m: 1_000,
                 target_m: 1_800,
+                leg: obc_route::Leg::Detour,
             }));
             let _ = app.ui.stack.push(Screen::Detour(chooser));
             let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));

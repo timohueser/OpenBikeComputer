@@ -81,6 +81,7 @@ pub struct DetourPlan {
     sink: VecSink,
     progress_m: u32,
     target_m: u32,
+    leg: obc_route::Leg,
 }
 
 impl DetourPlan {
@@ -104,6 +105,7 @@ impl DetourPlan {
             sink: VecSink::default(),
             progress_m: req.progress_m,
             target_m: req.target_m,
+            leg: req.leg,
         })
     }
 
@@ -126,6 +128,7 @@ pub struct DetourReady {
     detour_len_m: u32,
     progress_m: u32,
     rejoin_m: u32,
+    leg: obc_route::Leg,
     /// The plan's own [`RouteStats::has_elevation`](obc_route::RouteStats) — did the mounted
     /// terrain answer for this detour? Carried (never re-derived from the bytes: `0 m` is a real
     /// height) so the splice knows whether the leg's stored heights are sampled terrain to keep or
@@ -169,7 +172,14 @@ pub fn plan_detour_preview(
                 let didx = obc_route::RouteIndex::read(&src).ok()?;
                 let det = obc_route::RouteReader::new(&didx, &src);
                 let mut trim_sink = VecSink::default();
-                match obc_route::trim_detour_to_tail(orig, &det, plan.target_m, stats.has_elevation, &mut trim_sink) {
+                match obc_route::trim_detour_to_tail(
+                    plan.leg,
+                    orig,
+                    &det,
+                    plan.target_m,
+                    stats.has_elevation,
+                    &mut trim_sink,
+                ) {
                     Ok(Some(o)) => Some((o, trim_sink.into_bytes())),
                     _ => None,
                 }
@@ -214,6 +224,7 @@ pub fn plan_detour_preview(
                 detour_len_m,
                 progress_m: plan.progress_m,
                 rejoin_m,
+                leg: plan.leg,
                 has_elevation: stats.has_elevation,
             };
             (Some(ready), Ok(preview))
@@ -251,6 +262,7 @@ pub fn commit_detour(
             let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavigatorError::Store)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
             obc_route::splice_detour(
+                ready.leg,
                 orig,
                 &det,
                 ready.progress_m,
@@ -336,6 +348,7 @@ mod tests {
             detour_len_m: index.total_distance_m,
             progress_m: 0,
             rejoin_m: index.total_distance_m,
+            leg: obc_route::Leg::Detour,
             has_elevation: true,
         };
         let mut app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));
