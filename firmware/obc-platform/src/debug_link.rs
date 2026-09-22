@@ -22,7 +22,8 @@
 //! - `ride-damage payload` / `ride-damage metadata` — fabricate a damaged `RECORDING` object. The
 //!   operator issues the reset, because a self-reset would race the confirmation off the wire.
 //! - `ride-repair-fail` — arm a one-shot refusal of the next exact removal, without the commit.
-//! - `store-census` — print one line per catalog entry plus the count and free extents.
+//! - `store-census` — print one line per catalog entry, the count and free extents, and the
+//!   archive proof the card metadata holds: its store identity and every row with its stamp.
 //! - `dfu-install` — post the same install request the UI posts. Each armer phase streams back.
 //!
 //! Device to host: `T …` carries the last map frame's render stats (see [`Telemetry`]) at a low
