@@ -228,10 +228,10 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      # The iOS host's portability gate: the shared stack has to keep type-checking for the phone,
-      # and only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
-      - name: cargo check (iOS host, aarch64-apple-ios)
-        run: cargo check -p obc-ios-host --target aarch64-apple-ios --locked
+      # The iOS portability gate: the shared stack has to keep type-checking for the phone, and
+      # only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
+      - name: cargo check (iOS host and companion core, aarch64-apple-ios)
+        run: cargo check -p obc-ios-host -p obc-companion-core --target aarch64-apple-ios --locked
 
   test:
     env:
@@ -892,6 +892,17 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      # OBCKit's routing module links the companion core, and SwiftPM resolves its XCFramework
+      # with the package, so the Mac slice is packed before any OBCKit build.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios
+      - name: Pack the companion core (Mac slice)
+        run: tools/build-companion-core.sh aarch64-apple-darwin
       - name: OBCKit package tests (XCTest and Swift Testing, host)
         id: swift-tests
         working-directory: companion-ios/Packages/OBCKit
@@ -951,9 +962,9 @@ jobs:
         run: brew install xcodegen webp
       - name: Start the screenshot simulator
         run: companion-ios/scripts/capture-website-screenshots.sh --boot
-      # The OBCDevice shell links the Rust host, so this job needs a Rust toolchain and the
-      # simulator slice packed before xcodebuild plans a build: Xcode resolves an XCFramework
-      # before any of the target's own script phases run.
+      # The OBCDevice shell links the Rust host and the app links the companion core, so this job
+      # needs a Rust toolchain and both simulator slices packed before xcodebuild plans a build:
+      # Xcode resolves an XCFramework before any of the target's own script phases run.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -963,6 +974,8 @@ jobs:
           key: ios-host
       - name: Pack the iOS host (simulator slice)
         run: tools/build-ios-host.sh --sim-only
+      - name: Pack the companion core (simulator slice)
+        run: tools/build-companion-core.sh aarch64-apple-ios-sim
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
@@ -1003,7 +1016,7 @@ jobs:
   # The Release half of the mock-seam gate: mock and developer-panel code must never ship.
   # It shares no build output with `ios-app` — a different configuration writes a different
   # products directory — so it runs beside it instead of adding four minutes to the wall clock.
-  # The OBCCompanion scheme does not link the Rust host, so this job needs no toolchain.
+  # The app links the companion core, so this job packs its simulator slice first.
   ios-release:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-release')
@@ -1017,6 +1030,15 @@ jobs:
           persist-credentials: false
       - name: Install XcodeGen
         run: brew install xcodegen
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios
+      - name: Pack the companion core (simulator slice)
+        run: tools/build-companion-core.sh aarch64-apple-ios-sim
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
