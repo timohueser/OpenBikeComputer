@@ -89,10 +89,18 @@ wiring.
 
 1. Build the app twice, with version strings that differ. Wrap and sign both with `obc-mkimage`.
 2. Write the second container to the card as a kind-7 update object with the WebUSB client.
-3. On the device, open Settings ▸ System ▸ Update and install it. Watch the bootloader over RTT
-   (`cargo run --release --features rtt`): the verify, flash and readback lines must all appear,
-   and the app must confirm the trial on the next boot.
-4. For the rollback, wrap an image with an invalid reset vector. The bootloader installs it, the
+3. Flash the `rtt` bootloader build, then attach to it before you arm. The vector catch must be
+   off: probe-rs halts the core on the armer's warm reset, and the session then dies with a
+   misleading exception before the bootloader prints a line.
+
+   ```sh
+   probe-rs attach --chip nRF54LM20A --non-interactive --no-catch-reset --no-catch-hardfault \
+       target/thumbv8m.main-none-eabihf/release/obc-boot
+   ```
+
+4. On the device, open Settings ▸ System ▸ Update and install it. The verify, flash and readback
+   lines must all appear, and the app must confirm the trial on the next boot.
+5. For the rollback, wrap an image with an invalid reset vector. The bootloader installs it, the
    trial boot faults, the trial watchdog resets the board, and the next entry restores the
    reserve.
 
