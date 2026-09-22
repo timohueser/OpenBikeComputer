@@ -752,8 +752,8 @@ language set. A change in any of them is captured again, into its own directory,
 compiled again when its captured sources move.
 
 The cell bake reads those artifacts from the tree; there is no landmark flag. Each cell is cut
-with the compiled content of every region whose coverage selects it, and the packer merges the
-artifacts by QID: one record for each place, and the same record whatever order the artifacts
+with the compiled content of every region in the run whose coverage selects it, and the packer
+merges the artifacts by QID: one record for each place, and the same record whatever order the artifacts
 arrive in. A cell on a border is ground in two regions, so it carries both sides. A cell's cache
 key holds the artifacts it was cut from and no others, so a re-captured region re-cuts the cells
 that region reaches and leaves the rest of the tree alone.
