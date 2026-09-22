@@ -3,7 +3,7 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::navigator::{NavigatorError, NavigatorOutcome, PlannerWork};
 use obc_app::screen::{needle_region, Screen};
-use obc_app::{App, AppState, CatalogObjectId, Gesture, IdleReturn, Mode, NavRequest, RouteSummary, Settings};
+use obc_app::{App, AppState, CatalogObjectId, Chord, Gesture, IdleReturn, Mode, NavRequest, RouteSummary, Settings};
 use obc_map_scene::BBox;
 use obc_ports::{Fix, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
@@ -286,6 +286,31 @@ fn back_on_planning_cancels_cleanly() {
     host.answer_late(&mut app, |token| NavigatorOutcome::PlanFinished { token, route: 7 });
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
     assert_eq!(app.active_route_index(), None, "nothing activates after a cancel");
+}
+
+/// The spinner's Back is the only way to drop a route search, so a chord that takes the spinner
+/// off the stack has to release the search itself. Left running it holds the planner arena and
+/// finishes into a computed route the rider never asked to keep.
+#[test]
+fn the_assistant_chord_cancels_a_search_it_leaves_behind() {
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
+    let mut host = Planner::default();
+    open_detail(&mut app, &bytes);
+    let _req = request_route(&mut app, &mut host);
+    assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "the search is running under its spinner");
+
+    assert!(app.apply_chord(Chord::Assistant), "the hold opens the Assistant over the search");
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)), "…and the spinner is gone");
+    assert!(took_cancel(&mut app, &mut host), "the cancel one-shot rings, as it does for Back");
+
+    // The abandoned executor still answers. Navigator no longer holds that token, so nothing
+    // activates and no computed route is left behind.
+    nav_catalog(&mut app);
+    host.answer_late(&mut app, |token| NavigatorOutcome::PlanFinished { token, route: 7 });
+    assert_eq!(app.active_route_index(), None, "the late answer activates nothing");
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)), "…and lands on no screen");
 }
 
 #[test]

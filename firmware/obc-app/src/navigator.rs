@@ -588,6 +588,25 @@ impl NavigatorMachine {
         self.detour == PlanPhase::Committing
     }
 
+    /// Whether this family holds a plan that is still a question put to the rider, so a screen
+    /// could still drop it. [`Active`](PlanPhase::Active) is not: the result is adopted, and the
+    /// flow truncates its own screens off once the rider has it. Nor is
+    /// [`Committing`](PlanPhase::Committing), a splice already under way with no answer to give.
+    pub(crate) fn plan_awaits_rider(&self, family: PlanFamily) -> bool {
+        let phase = match family {
+            PlanFamily::Route => self.route,
+            PlanFamily::Detour => self.detour,
+        };
+        matches!(phase, PlanPhase::Requested | PlanPhase::Planning | PlanPhase::PreviewReady | PlanPhase::Failed)
+    }
+
+    /// Whether an ordinary route search is out with the planner: the phases the planning spinner
+    /// is up for, and the only ones the spinner's Back can cancel. A route preview or failure is
+    /// the Assistant's review, which has its own screens and its own release.
+    pub(crate) fn route_search_running(&self) -> bool {
+        matches!(self.route, PlanPhase::Requested | PlanPhase::Planning)
+    }
+
     /// A detour commit answered. Success adopts the spliced route; a failure returns the rider to
     /// the preview they came from, which is what makes a failed commit retryable.
     pub(crate) fn note_commit(&mut self, committed: bool) {
