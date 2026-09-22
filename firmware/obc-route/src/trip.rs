@@ -103,7 +103,7 @@ impl TripMeta {
         if take > 0 {
             src.read_at(day_offset(0), bytes)?;
         }
-        let day_routes = bytes.chunks_exact(TRIP_DAY_LEN).map(|b| TripDay::decode(b).route).collect();
+        let day_routes = bytes.as_chunks::<TRIP_DAY_LEN>().0.iter().map(|b| TripDay::decode(b).route).collect();
         Ok(TripMeta {
             key: h.key,
             name: h.name,
@@ -191,7 +191,7 @@ pub fn write_trip(
     // Stream the days in blocks so the whole table is never resident.
     let mut buf = [0u8; TRIP_DAY_LEN * 16];
     for block in days.chunks(16) {
-        for (day, out) in block.iter().zip(buf.chunks_exact_mut(TRIP_DAY_LEN)) {
+        for (day, out) in block.iter().zip(buf.as_chunks_mut::<TRIP_DAY_LEN>().0) {
             day.encode(out);
         }
         sink.write(&buf[..block.len() * TRIP_DAY_LEN])?;

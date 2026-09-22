@@ -263,7 +263,9 @@ fn trip_vectors_are_self_consistent() {
     // Length is self-describing: 64-byte header + 16 bytes/day.
     assert_eq!(trip.len(), 64 + 16 * day_count as usize);
     let days: Vec<(u64, u32, u32)> = trip[64..]
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .map(|d| {
             (
                 u64::from_le_bytes(d[0..8].try_into().unwrap()),
