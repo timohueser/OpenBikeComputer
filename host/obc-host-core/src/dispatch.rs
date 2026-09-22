@@ -2081,8 +2081,18 @@ mod tests {
             if save {
                 app.recorder.request(RecorderIntent::Save);
             }
-            for step in 0..4 {
-                let now = start + step * 1_000;
+            let times = if !save && start == 11_000 {
+                vec![
+                    start,
+                    start + 1_000,
+                    start + 1_000 + obc_app::recorder::CHECKPOINT_RETRY_MS,
+                    start + 32_001,
+                    start + 32_002,
+                ]
+            } else {
+                vec![start, start + 1_000, start + 2_000, start + 3_000]
+            };
+            for (step, now) in times.into_iter().enumerate() {
                 let mut loc = OneFix(None);
                 let mut plan = host.pass(
                     &mut app,
@@ -2153,8 +2163,8 @@ mod tests {
             store.open(1, Some("ride"), 0);
             app.recorder.request(RecorderIntent::Save);
             let mut operations = Vec::new();
-            for step in 0..8 {
-                let now = 9_000 + step;
+            let times = [9_000, 9_001, 9_002, 39_002, 39_003, 39_004, 39_005, 39_006];
+            for now in times {
                 let mut loc = OneFix(None);
                 let mut plan = host.pass(
                     &mut app,
