@@ -565,6 +565,65 @@ fn splice_self_input_is_previous_output() {
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
 }
 
+/// Ride to start: a leg that rejoins at the route start comes first, and the whole route follows
+/// it unchanged, with the waypoints moved behind the leg.
+#[test]
+fn an_approach_splice_is_the_leg_then_the_whole_route() {
+    let obcr = road_route_obcr();
+    // The leg comes down the parallel street at 300 m, a datum 200 m above the route's start.
+    let mut g = String::from("<gpx><trk><trkseg>\n");
+    for (lon, lat) in [street_at(4), street_at(2), street_at(0), road_at(0)] {
+        let (lat, lon) = (lat as f64 * 1e-6, lon as f64 * 1e-6);
+        g.push_str(&format!("  <trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>300.0</ele></trkpt>\n"));
+    }
+    g.push_str("</trkseg></trk></gpx>");
+    let leg = convert("Approach leg", &g);
+
+    let osrc = SliceSource(&obcr[..]);
+    let oidx = RouteIndex::read(&osrc).unwrap();
+    let orig = RouteReader::new(&oidx, &osrc);
+    let lsrc = SliceSource(&leg[..]);
+    let lidx = RouteIndex::read(&lsrc).unwrap();
+    let det = RouteReader::new(&lidx, &lsrc);
+    let (leg_m, route_m) = (det.total_distance_m, orig.total_distance_m);
+
+    let mut trimmed = VecSink::default();
+    assert!(matches!(trim_detour_to_tail(&orig, &det, 0, true, &mut trimmed), Ok(None)), "an approach is not trimmed");
+    let mut sink = VecSink::default();
+    let stats = splice_detour(&orig, &det, 0, 0, leg_m, true, &mut sink).unwrap();
+
+    let src = SliceSource(&sink.buf[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let spliced = RouteReader::new(&idx, &src);
+    assert_eq!(idx.name(), "Road trip", "the ride keeps the route's name");
+    assert!(!idx.has_unresolved_avoidance(), "an approach avoids nothing");
+    assert!(
+        stats.total_distance_m.abs_diff(leg_m + route_m) <= 2,
+        "length {} is the leg {leg_m} plus the route {route_m}",
+        stats.total_distance_m
+    );
+    let start = spliced.position_at(0).unwrap();
+    assert_eq!((start.lon, start.lat), street_at(4), "the ride starts where the rider is");
+    for along in [0, 600, route_m] {
+        let (a, b) = (orig.position_at(along).unwrap(), spliced.position_at(leg_m + along).unwrap());
+        let drift = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
+        assert!(drift < 5.0, "route km {along} sits one leg further on ({drift} m off)");
+    }
+
+    let along = |bytes: &[u8]| {
+        let mut out = Vec::new();
+        for_each_waypoint(&SliceSource(bytes), |w| out.push(w.dist_along_m)).unwrap();
+        out
+    };
+    let (before, after) = (along(&obcr), along(&sink.buf));
+    assert_eq!(after.len(), before.len(), "every waypoint stays");
+    for (b, a) in before.iter().zip(&after) {
+        assert!((b + leg_m).abs_diff(*a) <= 6, "waypoint at {b} m moves to {a} m, one leg on");
+    }
+    let first = route_points(&sink.buf)[0];
+    assert!((99..=101).contains(&first.ele), "the leg lands on the start's height (got {} m)", first.ele);
+}
+
 fn trim_run(
     orig_obcr: &[u8],
     detour_obcr: &[u8],

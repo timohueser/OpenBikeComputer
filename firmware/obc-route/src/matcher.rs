@@ -47,6 +47,9 @@ pub struct Match {
     pub dist_m: u32,
 }
 
+/// A scan's nearest candidate: `(chunk, seg, dist_m, progress_m)`.
+type Best = (usize, usize, f32, u32);
+
 #[derive(Clone, Copy)]
 enum RecoveryScan {
     Nearest,
@@ -181,6 +184,16 @@ impl RouteMatch {
         (!checked.off_route).then_some(checked)
     }
 
+    /// The route point nearest `(lon, lat)` anywhere on the route, the earliest of near-ties: what a
+    /// first lock finds, without a cursor to move. `off_route` says whether a first lock would
+    /// follow from there. `None` when no segment decodes.
+    #[inline(never)]
+    pub fn nearest(lon: i32, lat: i32, route: &RouteReader) -> Option<Match> {
+        let mut probe = RouteMatch::new();
+        let (best, _) = probe.scan((lon, lat), route, u32::MAX, None).ok()?;
+        best.map(|(_, _, dist, progress_m)| Match { progress_m, off_route: dist >= OFF_M, dist_m: dist as u32 })
+    }
+
     fn update_window(
         &mut self,
         lon: i32,
@@ -189,12 +202,48 @@ impl RouteMatch {
         ceiling_m: u32,
         recovery: Option<RecoveryScan>,
     ) -> Match {
-        let chunks = route.chunks();
-        if chunks.is_empty() {
+        if route.chunks().is_empty() {
             return Match { progress_m: 0, off_route: true, dist_m: u32::MAX };
         }
+        let Ok((best, ambiguous)) = self.scan((lon, lat), route, ceiling_m, recovery) else {
+            return Match { progress_m: self.progress_m, off_route: true, dist_m: u32::MAX };
+        };
+        let Some((bc, bs, bdist, bprog)) = best else {
+            // No segment in range, which happens only with a 1-point route.
+            return Match { progress_m: self.progress_m, off_route: true, dist_m: u32::MAX };
+        };
+
+        let now_off = if ambiguous || bdist >= OFF_M {
+            true
+        } else if bdist < ON_M {
+            false
+        } else {
+            self.off_route
+        };
+        self.off_route = now_off;
+        self.started = true;
+
+        // Advance only when on-route, so a far fix cannot drag progress.
+        if !now_off {
+            self.chunk = bc;
+            self.seg = bs;
+            self.progress_m = bprog;
+        }
+        Match { progress_m: self.progress_m, off_route: now_off, dist_m: bdist as u32 }
+    }
+
+    /// Search the window the cursor state selects for the nearest segment to `p`. Returns the best
+    /// candidate and whether a recovery check found it ambiguous. `Err` when a recovery scan meets a
+    /// chunk it cannot decode.
+    fn scan(
+        &mut self,
+        p: (i32, i32),
+        route: &RouteReader,
+        ceiling_m: u32,
+        recovery: Option<RecoveryScan>,
+    ) -> Result<(Option<Best>, bool), ()> {
+        let chunks = route.chunks();
         let total = route.total_distance_m;
-        let p = (lon, lat);
         let cur_gidx = route.global_seg_index(self.chunk, self.seg) as i64;
 
         // The first lock, an off-route rejoin and a requested re-lock scan wide. The re-lock
@@ -208,8 +257,7 @@ impl RouteMatch {
             (self.chunk.saturating_sub(1), BACK_SEGS, FWD_SEGS_ON)
         };
 
-        // Best so far: (chunk, seg, dist_m, progress_m).
-        let mut best: Option<(usize, usize, f32, u32)> = None;
+        let mut best: Option<Best> = None;
         let mut ambiguous = false;
         let mut c = first_chunk;
         let mut base_gidx = route.global_seg_index(first_chunk, 0) as i64;
@@ -221,7 +269,7 @@ impl RouteMatch {
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
             let decoded = route.decode_chunk(c, &mut self.buf).is_ok();
             if !decoded && recovery.is_some() {
-                return Match { progress_m: self.progress_m, off_route: true, dist_m: u32::MAX };
+                return Err(());
             }
             if decoded && self.buf.len() >= 2 {
                 let cum0 = chunks[c].cum_distance_m as f32;
@@ -300,28 +348,6 @@ impl RouteMatch {
             base_gidx += pc_segs;
             c += 1;
         }
-
-        let Some((bc, bs, bdist, bprog)) = best else {
-            // No segment in range, which happens only with a 1-point route.
-            return Match { progress_m: self.progress_m, off_route: true, dist_m: u32::MAX };
-        };
-
-        let now_off = if ambiguous || bdist >= OFF_M {
-            true
-        } else if bdist < ON_M {
-            false
-        } else {
-            self.off_route
-        };
-        self.off_route = now_off;
-        self.started = true;
-
-        // Advance only when on-route, so a far fix cannot drag progress.
-        if !now_off {
-            self.chunk = bc;
-            self.seg = bs;
-            self.progress_m = bprog;
-        }
-        Match { progress_m: self.progress_m, off_route: now_off, dist_m: bdist as u32 }
+        Ok((best, ambiguous))
     }
 }

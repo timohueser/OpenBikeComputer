@@ -120,9 +120,10 @@ pub struct Trimmer {
 }
 
 impl Trimmer {
+    /// An approach (`target_m == 0`) is never trimmed: a contact before the start would skip it.
     pub fn new(target_m: u32, has_elevation: bool) -> Self {
         Self {
-            phase: Phase::Tail,
+            phase: if target_m == 0 { Phase::Terminal(TrimStep::Done(None)) } else { Phase::Tail },
             target_m,
             has_elevation,
             tail: Tail { pts: Vec::new(), bbox: BBox { min_lon: 0, max_lon: 0, min_lat: 0, max_lat: 0 }, cl: 1.0 },

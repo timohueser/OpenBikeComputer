@@ -65,6 +65,8 @@ enum Phase {
 /// [`Failed`](SpliceStep::Failed). The caller owns the object; its one big field is the emitter.
 pub struct Splicer {
     phase: Phase,
+    /// The leg rejoins at the route start, so the output is the leg and then the whole route.
+    approach: bool,
     adds_avoidance: bool,
     assistant_candidate: bool,
     split_m: u32,
@@ -102,6 +104,11 @@ impl Splicer {
     /// A splicer for `original[0..split_m] + detour + original[rejoin_m..]`. The stored point
     /// facts and the final geometry determine the output, so the distance and elevation hints in
     /// the call shape are unused. `orig_name` supplies the derived route name.
+    ///
+    /// A leg that rejoins at the route start (`rejoin_m == 0`) is an approach: the way to the start,
+    /// then the whole route. It skips nothing, so it keeps the route's name and adds no avoidance.
+    /// Its heights take one offset, which lands its end on the start's height, and every waypoint
+    /// moves behind it.
     pub fn new(
         split_m: u32,
         rejoin_m: u32,
@@ -109,8 +116,9 @@ impl Splicer {
         _detour_has_elevation: bool,
         orig_name: &str,
     ) -> Splicer {
+        let approach = rejoin_m == 0;
         let mut name = heapless::String::new();
-        if !orig_name.starts_with(NAME_PREFIX) {
+        if !approach && !orig_name.starts_with(NAME_PREFIX) {
             let _ = name.push_str(NAME_PREFIX);
         }
         for ch in orig_name.chars() {
@@ -119,7 +127,8 @@ impl Splicer {
             }
         }
         Splicer {
-            adds_avoidance: true,
+            approach,
+            adds_avoidance: !approach,
             assistant_candidate: false,
             phase: Phase::Init,
             split_m,
@@ -221,8 +230,10 @@ impl Splicer {
                 for _ in 0..SPLICE_CHUNKS_PER_STEP {
                     if self.det_k >= detour.chunks().len() {
                         let (s0, s1) = (self.det_ele_first, self.det_ele_last);
-                        self.res_start = f32::from(self.ele_split) - f32::from(s0);
                         self.res_end = f32::from(self.ele_rejoin) - f32::from(s1);
+                        // An approach starts off the route, so only its end has a seam to meet.
+                        self.res_start =
+                            if self.approach { self.res_end } else { f32::from(self.ele_split) - f32::from(s0) };
                         // Restart the detour cursor for the emit pass.
                         self.det_k = 0;
                         self.prev_det = None;
@@ -283,7 +294,7 @@ impl Splicer {
                 }
                 match self.waypoint_cursor.as_mut().unwrap().next(orig.source()) {
                     Ok(Some(w)) => {
-                        let along = if w.dist_along_m <= self.split_m {
+                        let along = if !self.approach && w.dist_along_m <= self.split_m {
                             Some(w.dist_along_m)
                         } else if w.dist_along_m < self.rejoin_m {
                             None
