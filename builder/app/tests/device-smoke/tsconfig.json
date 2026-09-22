@@ -1,0 +1,12 @@
+{
+    // Its own, because this directory is its own npm package: `usb` is installed here and nowhere
+    // else, so `builder/app`'s check — which CI runs after `npm ci` there — must not reach these
+    // files. The compiler options are the app's, so the shipping modules these import are checked
+    // exactly as they are checked next door.
+    "extends": "../../tsconfig.json",
+    "compilerOptions": {
+        "types": ["node"],
+        "noEmit": true
+    },
+    "include": ["*.ts", "../../test-support/device-smoke/**/*.ts"]
+}

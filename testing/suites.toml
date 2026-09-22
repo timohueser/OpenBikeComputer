@@ -603,6 +603,22 @@ command = "cargo run -p obc-display --example row_hash_timing --release --locked
 package = "obc-display"
 targets = ["row_hash_timing"]
 
+# Run it by hand before a release, and after a firmware change to the flat store or the USB path.
+# Needs a board on both cables, a designated test card whose map it replaces, probe-rs with no other
+# probe session open, and `npm install` in its own directory. It cannot pass without hardware. The
+# physical procedure and its evidence live in the issue that asks for the run.
+[[suite]]
+id = "device.upload-smoke"
+route = "manual"
+command = "npm run smoke --prefix builder/app/tests/device-smoke -- --replace-map"
+platforms = ["linux", "macos"]
+triggers = [
+  "builder/app/tests/device-smoke/**",
+  "builder/app/test-support/device-smoke/**",
+  "apps/obc-sim/assets/grimsel-demo.obcm",
+  "tools/board.py",
+]
+
 [[suite]]
 id = "live.copernicus"
 route = "live"
