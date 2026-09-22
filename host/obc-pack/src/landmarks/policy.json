@@ -1,9 +1,6 @@
 {
   "date": "2026-09-14",
   "exclude_roots": [
-    "Q1662011",
-    "Q259209",
-    "Q56284712",
     "Q131681",
     "Q3215290",
     "Q47486890",
@@ -73,6 +70,85 @@
       "include": true,
       "roots": [
         "Q133056"
+      ]
+    },
+    "Mountain huts": {
+      "include": true,
+      "roots": [
+        "Q182676",
+        "Q339969"
+      ]
+    },
+    "Observation towers": {
+      "include": true,
+      "roots": [
+        "Q1440300"
+      ]
+    },
+    "Covered bridges, viaducts and aqueducts": {
+      "include": true,
+      "roots": [
+        "Q1825472",
+        "Q181348",
+        "Q12570",
+        "Q474",
+        "Q18870689"
+      ]
+    },
+    "Dams": {
+      "include": true,
+      "roots": [
+        "Q12323"
+      ]
+    },
+    "Industrial heritage": {
+      "include": true,
+      "roots": [
+        "Q820477",
+        "Q1506469",
+        "Q10832530",
+        "Q59772",
+        "Q185187",
+        "Q38720",
+        "Q40551",
+        "Q1179791"
+      ]
+    },
+    "Pilgrimage churches and hermitages": {
+      "include": true,
+      "roots": [
+        "Q10631691",
+        "Q20064854",
+        "Q56750657"
+      ]
+    },
+    "Lighthouses": {
+      "include": true,
+      "roots": [
+        "Q39715"
+      ]
+    },
+    "Boundary oddities": {
+      "include": true,
+      "roots": [
+        "Q316655",
+        "Q921099",
+        "Q590232",
+        "Q55818"
+      ]
+    },
+    "Ghost towns": {
+      "include": true,
+      "roots": [
+        "Q74047",
+        "Q350895"
+      ]
+    },
+    "Hot and mineral springs": {
+      "include": true,
+      "roots": [
+        "Q177380",
+        "Q1365924"
       ]
     }
   },
