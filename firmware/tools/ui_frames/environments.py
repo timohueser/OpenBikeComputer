@@ -82,8 +82,9 @@ def tracks(stage: Stage) -> Staging:
 
 def trips(stage: Stage) -> Staging:
     """A routes store with a trip folder: the two vector routes and grimsel-climb, named so their
-    sorted-scan ids are 0/1/2, plus `TP1.OBT` ("Alpen Traverse", stages [0, 1, 99]). The top level
-    then shows one folder grouping ids 0+1 above the loose grimsel route.
+    sorted-scan ids are 0/1/2, plus `TP1.OBT` ("Alpen Traverse", day routes [0, 1, 99], starting
+    Monday 2025-09-29). The top level then shows one folder grouping ids 0+1 above the loose grimsel
+    route.
     """
     where = stage.dir("trips")
     grimsel = stage.fixtures / "sim-grimsel" / "routes"

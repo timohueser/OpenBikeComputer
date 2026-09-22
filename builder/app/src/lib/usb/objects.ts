@@ -177,51 +177,93 @@ function clippedUtf8(value: string, cap: number): Uint8Array {
     return encoded.subarray(0, end);
 }
 
-export const TRIP_HEADER_LEN = 56;
+export const TRIP_HEADER_LEN = 64;
+export const TRIP_DAY_LEN = 16;
+
+/** One day of a trip: its route object id and where that route runs on the trip's main line. */
+export interface TripDay {
+    route: bigint;
+    /** Metres along the day route where it joins the main line. */
+    joinM: number;
+    /** Metres along the day route where it leaves the main line; at or past its end = ends on it. */
+    leaveM: number;
+}
+
+/** A day that starts and ends on the main line. */
+export function wholeDay(route: bigint): TripDay {
+    return { route, joinM: 0, leaveM: 0xffffffff };
+}
 
 /**
- * A trip: a name and an ordered list of **route object ids**, never route bytes.
+ * A trip (spec §7.7): a key, a name, a start date and one **route object id** per day, never route
+ * bytes.
  *
- * Dangling stages — a member route deleted on its own — are tolerated on read and served verbatim;
- * the device never rewrites a stored trip. Compaction happens when the *peer* re-uploads the trip
- * built from resolvable stages, which is why this decoder keeps every id it finds.
+ * Dangling days — a day route deleted on its own — are tolerated on read and served verbatim; the
+ * device never rewrites a stored trip. Compaction happens when the *peer* re-uploads the trip
+ * built from resolvable days, which is why this decoder keeps every day it finds.
  */
 export interface TripObject {
+    /** The trip's stable key; a re-upload keeps it. */
+    key: bigint;
     name: string;
-    stages: bigint[];
+    /** Days since 1970-01-01; 0 = no start date. */
+    startDate: number;
+    days: TripDay[];
 }
 
 export function decodeTripObject(data: Uint8Array): TripObject {
     if (data.length < TRIP_HEADER_LEN) {
-        throw new ObjectDecodeError(`trip object is ${data.length} bytes, shorter than its 56-byte header.`);
+        throw new ObjectDecodeError(`trip object is ${data.length} bytes, shorter than its 64-byte header.`);
     }
-    if (data[0] !== 2) {
-        throw new ObjectDecodeError(`trip object version ${data[0]}; this client decodes 2.`);
+    if (data[0] !== 3) {
+        throw new ObjectDecodeError(`trip object version ${data[0]}; this client decodes 3.`);
     }
     const view = viewOf(data);
-    const stageCount = view.getUint16(2, true);
-    const expected = TRIP_HEADER_LEN + 8 * stageCount;
+    const dayCount = view.getUint16(2, true);
+    const expected = TRIP_HEADER_LEN + TRIP_DAY_LEN * dayCount;
     if (data.length !== expected) {
-        throw new ObjectDecodeError(`trip with ${stageCount} stages should be ${expected} bytes, got ${data.length}.`);
+        throw new ObjectDecodeError(`trip with ${dayCount} days should be ${expected} bytes, got ${data.length}.`);
     }
-    const stages: bigint[] = [];
-    for (let i = 0; i < stageCount; i++) stages.push(view.getBigUint64(TRIP_HEADER_LEN + i * 8, true));
-    return { name: paddedName(data, 4, 5, 48), stages };
+    const days: TripDay[] = [];
+    for (let i = 0; i < dayCount; i++) {
+        const at = TRIP_HEADER_LEN + i * TRIP_DAY_LEN;
+        days.push({
+            route: view.getBigUint64(at, true),
+            joinM: view.getUint32(at + 8, true),
+            leaveM: view.getUint32(at + 12, true),
+        });
+    }
+    const key = view.getBigUint64(56, true);
+    // The device reads key 0 as "no trip".
+    if (key === 0n) throw new ObjectDecodeError("trip object has key 0.");
+    return {
+        key,
+        name: paddedName(data, 4, 5, 48),
+        startDate: view.getUint16(54, true),
+        days,
+    };
 }
 
 export function encodeTripObject(t: TripObject): Uint8Array {
-        // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip
-        // with 65,536 stages would encode as one with zero and the device would commit a trip that is
-        // not the trip it was given — a wrong object rather than a rejected one.
-    if (t.stages.length > 0xffff) {
-        throw new RangeError(`a trip carries at most 65535 stages; this one has ${t.stages.length}`);
+    // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip
+    // with 65,536 days would encode as one with zero and the device would commit a trip that is
+    // not the trip it was given — a wrong object rather than a rejected one.
+    if (t.days.length > 0xffff) {
+        throw new RangeError(`a trip carries at most 65535 days; this one has ${t.days.length}`);
     }
-    const out = new Uint8Array(TRIP_HEADER_LEN + 8 * t.stages.length);
+    const out = new Uint8Array(TRIP_HEADER_LEN + TRIP_DAY_LEN * t.days.length);
     const view = new DataView(out.buffer);
-    out[0] = 2;
-    view.setUint16(2, t.stages.length, true);
+    out[0] = 3;
+    view.setUint16(2, t.days.length, true);
     writePaddedName(out, 4, 5, 48, t.name);
-    t.stages.forEach((id, i) => view.setBigUint64(TRIP_HEADER_LEN + i * 8, id, true));
+    view.setUint16(54, t.startDate, true);
+    view.setBigUint64(56, t.key, true);
+    t.days.forEach((day, i) => {
+        const at = TRIP_HEADER_LEN + i * TRIP_DAY_LEN;
+        view.setBigUint64(at, day.route, true);
+        view.setUint32(at + 8, day.joinM, true);
+        view.setUint32(at + 12, day.leaveM, true);
+    });
     return out;
 }
 

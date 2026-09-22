@@ -125,7 +125,7 @@ export class DeviceDashboard {
      */
     get stagedIds(): Set<bigint> {
         const staged = new Set<bigint>();
-        for (const trip of this.trips) for (const id of trip.detail?.stages ?? []) staged.add(id);
+        for (const trip of this.trips) for (const day of trip.detail?.days ?? []) staged.add(day.route);
         return staged;
     }
 
@@ -144,7 +144,7 @@ export class DeviceDashboard {
      */
     stagesOf(trip: TripView): Array<{ id: bigint; route: CatalogEntry | null }> {
         const byId = new Map(this.routes.map((route) => [route.objectId, route]));
-        return (trip.detail?.stages ?? []).map((id) => ({ id, route: byId.get(id) ?? null }));
+        return (trip.detail?.days ?? []).map(({ route: id }) => ({ id, route: byId.get(id) ?? null }));
     }
 
     /** True where this entry is a ride the device is still recording, which cannot be served. */

@@ -18,7 +18,7 @@ import { FlatStoreClient } from "../src/lib/usb/client";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
 import { FlatDevice, initFlatDevice } from "../src/lib/usb/flat-device";
 import { loopbackLink } from "../src/lib/usb/loopback";
-import { encodeRideObject, encodeTripObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
+import { encodeRideObject, encodeTripObject, wholeDay, type RideObject, type RidePoint } from "../src/lib/usb/objects";
 import type { BytePipe, DeviceLink } from "../src/lib/usb/pipe";
 import { EntryFlags, ObjectKind } from "../src/lib/usb/protocol";
 import type { DeviceSession, DeviceState, DeviceWatcher } from "../src/lib/usb/session";
@@ -158,7 +158,8 @@ async function seedTour(device: FlatDevice): Promise<void> {
             stages.push(await seedGpxRoute(device, leg.name, legGpx(leg)));
         }
         const name = "Black Forest traverse";
-        device.seed({ kind: ObjectKind.Trip, displayName: name, bytes: encodeTripObject({ name, stages }) });
+        const bytes = encodeTripObject({ key: 1n, name, startDate: 0, days: stages.map(wholeDay) });
+        device.seed({ kind: ObjectKind.Trip, displayName: name, bytes });
     } catch (cause) {
         console.warn("dev-harness: could not seed the tour (is the wasm bridge built?)", cause);
     }
