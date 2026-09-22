@@ -1293,7 +1293,7 @@ position and filter generation; changing any of these cancels the old query.
 | 0 | Wikidata QID number | 8 | Nonzero `uint64`; the leading Q is implicit |
 | 8 | Longitude | 4 | Signed microdegrees, −180,000,000..180,000,000 |
 | 12 | Latitude | 4 | Signed microdegrees, −90,000,000..90,000,000 |
-| 16 | Category | 1 | 1..6, from the pinned landmark category policy |
+| 16 | Category | 1 | 1..16, from the pinned landmark category policy |
 | 17 | Reserved | 3 | Zero |
 | 20 | Hours reference | 2 | Shared §7.5 pool index, or `0xFFFF` |
 | 22 | Reserved | 2 | Zero |
