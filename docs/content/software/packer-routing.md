@@ -439,8 +439,10 @@ unchanged and rebuilds the identities, the adjacency, and the indexes.
 
 ### Weighting the graph: bike profiles
 
-A map carries a few bike profiles, and the defaults are Road, Gravel, MTB, and Touring. A profile
-gives a multiplier for each highway class and surface, and a climb weight.
+A map carries exactly four bike profiles, one per bike type: Road, Gravel, MTB, and Touring, in
+that order ([OBCM §8.6](src:specs/OBCM_Spec.md)). The device, the phone and the packer mean the same
+type by the same number, so only the weights are tunable. A profile gives a multiplier for each
+highway class and surface, and a climb weight.
 
 Every multiplier is at least one, and zero means forbidden. That is not a style choice: A* needs a
 heuristic that never overestimates, and a multiplier below one would make the straight-line
