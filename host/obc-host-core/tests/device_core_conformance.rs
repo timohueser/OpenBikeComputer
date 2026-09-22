@@ -1526,6 +1526,8 @@ fn selecting_a_route_owes_one_bounded_checkpoint_operation() {
     use obc_formats::assistant::PayloadFingerprint;
 
     let mut harness = recording_harness();
+    // Only a route being followed owes a checkpoint, so the rider is out on one.
+    harness.apply(Action::RideTheRoad);
     // The boot checkpoint read, which is what makes a selection owe one of its own.
     harness.app().offer_assistant_checkpoint(StoreIdentity::new(1), None);
     harness.app().activate_route(0);
@@ -1551,7 +1553,7 @@ fn selecting_a_route_owes_one_bounded_checkpoint_operation() {
     assert_eq!(harness.app().assistant_checkpoint().map(|saved| saved.route), Some(route));
     assert_eq!(harness.app().assistant_review_status(), ReviewStatus::Accepted);
     assert_eq!(harness.app().active_route_index(), Some(0));
-    assert!(!harness.state.app.recording(), "selecting a route is not starting a ride");
+    assert!(harness.state.app.recording(), "and the ride the rider was already on is untouched");
 }
 
 /// Deleting the active route, with same-pass Navigator delivery. The rider is not left being guided
@@ -1570,6 +1572,74 @@ fn deleting_the_active_route_drops_it_in_the_same_pass() {
     );
     assert_eq!(harness.state.app.active_route_index(), None, "and Navigator heard about it in that pass");
 }
+/// A rider's confirmed delete is never swallowed by the checkpoint that protects the route.
+///
+/// `check_route_change` refuses a removal for any object the checkpoint names, and a failed catalog
+/// outcome is never retried, so a removal that left while the checkpoint stood would leave the
+/// route in place with the rider's hold already spent. The removal waits for the clear instead.
+#[test]
+fn a_delete_waits_for_the_checkpoint_that_would_refuse_it() {
+    use obc_app::metadata::{MetadataEffect, MetadataOutcome};
+    use obc_formats::assistant::{JourneyPhase, NavigatorCheckpoint, PayloadFingerprint};
+
+    let mut harness = recording_harness();
+    let id = harness.app().route_ids()[0];
+    // The route is still selected and the card still names it, which is where a restart, or a ride
+    // that has finished, leaves the device.
+    harness.app().activate_route(0);
+    harness.app().offer_assistant_checkpoint(
+        StoreIdentity::new(1),
+        Some(NavigatorCheckpoint {
+            route: PayloadFingerprint { object: id, revision: 1, length: 4096, crc: 7 },
+            original: None,
+            progress_m: 0,
+            occurrence: 0,
+            lon: 0,
+            lat: 0,
+            phase: JourneyPhase::Following,
+            unresolved_avoidance: false,
+            lower_m: 0,
+            upper_m: 12_000,
+        }),
+    );
+    assert!(harness.app().assistant_checkpoint().is_some());
+
+    // Home -> Menu -> Routes -> the trip folder -> the route overview, then the guarded hold.
+    for _ in 0..6 {
+        if matches!(harness.app().top_screen(), Screen::RouteOverview(_)) {
+            break;
+        }
+        harness.app().apply_gesture(Gesture::Press);
+    }
+    assert!(matches!(harness.app().top_screen(), Screen::RouteOverview(_)), "the delete row lives on the overview");
+    harness.app().apply_gesture(Gesture::Step(1));
+    harness.app().apply_gesture(Gesture::Hold);
+
+    let mut plan = harness.pass();
+    assert!(plan.effects.catalog.take().is_none(), "the store would refuse this removal, so it waits");
+    let MetadataEffect::WriteCheckpoint { token, .. } =
+        plan.effects.metadata.take().expect("the checkpoint the removal waits on is given up");
+    assert!(harness.app().assistant_checkpoint_submission(token));
+    harness.state.outcomes.metadata.try_put(MetadataOutcome::CheckpointWritten { token }).unwrap();
+
+    let mut plan = harness.pass();
+    assert!(harness.app().assistant_checkpoint().is_none(), "giving up the checkpoint is what releases the route");
+    let effect = plan.effects.catalog.take().expect("and the confirmed delete leaves in that same pass");
+    assert!(
+        matches!(effect, CatalogEffect::RemoveObject { object, .. } if object == id),
+        "it is the route the rider held on: {effect:?}"
+    );
+    harness.answer_catalog(effect);
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        if let Some(effect) = plan.effects.catalog.take() {
+            harness.answer_catalog(effect);
+        }
+    }
+    assert!(!harness.app().route_ids().contains(&id), "the route the rider deleted is gone");
+    assert!(harness.app().assistant_checkpoint().is_none(), "and no checkpoint names it again");
+}
+
 /// A full effect slot and a full outcome slot. Both preserve the value already there, and a refused
 /// one comes back to its owner rather than being dropped.
 #[test]

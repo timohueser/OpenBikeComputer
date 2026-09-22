@@ -1307,7 +1307,8 @@ mod tests {
             );
             app.advance_animations(InputClock(now));
         };
-        let mut app = App::new_idle(AppState::new(500_000, 500_000, 10.0));
+        // The map-first app is riding: only a route being followed owes a checkpoint.
+        let mut app = App::new(AppState::new(500_000, 500_000, 10.0));
         feed_routes(&mut app, &routes, &mut NoTrace);
         app.activate_route(0);
         for _ in 0..8 {

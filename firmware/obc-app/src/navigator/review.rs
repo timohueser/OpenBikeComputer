@@ -471,6 +471,14 @@ impl NavigatorMachine {
         }
     }
 
+    /// Give up the checkpoint so a removal the store would otherwise refuse can go out.
+    pub(crate) fn clear_checkpoint_for_removal(&mut self) {
+        if self.review.checkpoint.is_some() && self.review.change.is_none() && !self.review.submitted {
+            self.review.change = Some(None);
+            self.review.after = AfterCheckpoint::Phase;
+        }
+    }
+
     pub(super) fn resume_review(&mut self, origin: ReviewOrigin) {
         if self.review.status != ReviewStatus::ResumeAvailable {
             return;
@@ -541,6 +549,9 @@ impl NavigatorMachine {
         }
         self.review.status = ReviewStatus::Accepted;
         self.review.selection = self.review.after == AfterCheckpoint::Selected;
+        // Only a confirmed write settles the debt: a refused one leaves the previous route on the
+        // card, which a restart must not offer for a route the rider is no longer following.
+        self.review.owed &= !self.review.selection;
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
@@ -650,6 +661,18 @@ impl crate::App {
         self.admit_navigator_intent(super::NavigatorIntent::ResumeAssistant { origin });
     }
 
+    /// Whether the standing checkpoint names an object a pending catalog removal would take. The
+    /// store refuses such a removal, and a refused removal is never retried, so the rider's
+    /// confirmed delete has to wait for the checkpoint to go rather than be dropped by it.
+    pub(crate) fn checkpoint_blocks_removal(&self) -> bool {
+        self.assistant_checkpoint().is_some_and(|checkpoint| {
+            [Some(checkpoint.route), checkpoint.original]
+                .into_iter()
+                .flatten()
+                .any(|protected| self.catalogs.pending_removes(protected.object))
+        })
+    }
+
     /// The active ordinary route that still owes a durable checkpoint, so a restart can offer
     /// Resume for it. An executor answers it once per selection with
     /// [`offer_route_checkpoint`](App::offer_route_checkpoint), because reading the exact payload
@@ -664,7 +687,17 @@ impl crate::App {
         {
             return None;
         }
+        if self.mode() == crate::activity::Mode::Idle {
+            // The Route overview makes a route active to preview it. Guidance is not running, so
+            // nothing is being followed and nothing is owed.
+            return None;
+        }
         let id = self.route_ids().get(self.active_route_index()?).copied()?;
+        // A route the rider has just asked to delete is not worth a new checkpoint, and writing one
+        // would put the removal back behind another clear.
+        if self.catalogs.pending_removes(id) {
+            return None;
+        }
         (review.checkpoint.is_none_or(|standing| standing.route.object != id)).then_some(id)
     }
 
@@ -675,9 +708,10 @@ impl crate::App {
         if self.requested_route_checkpoint() != Some(id) {
             return;
         }
-        self.navigator.review.owed = false;
         let (Some(source), Some(summary)) = (source, self.active_route_index().and_then(|i| self.routes().get(i)))
         else {
+            // Nothing is payable, so nothing stays owed.
+            self.navigator.review.owed = false;
             return;
         };
         let next = NavigatorCheckpoint {
@@ -693,6 +727,7 @@ impl crate::App {
             upper_m: source.distance_m,
         };
         if !next.valid() {
+            self.navigator.review.owed = false;
             return;
         }
         self.navigator.review.change = Some(Some(next));
@@ -870,8 +905,12 @@ impl crate::App {
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
                         self.navigator.request_seam(index, checkpoint.progress_m);
                     }
-                    if record && self.recorder.session().is_none() {
-                        self.recorder.request(crate::RecorderIntent::Start);
+                    if self.recorder.session().is_none() {
+                        // A route is active, so the mode and the camera follow whatever opened it.
+                        // Only the ride itself is the accepted plan's, never recovery's.
+                        if record {
+                            self.recorder.request(crate::RecorderIntent::Start);
+                        }
                         self.activity.mode = crate::activity::Mode::Riding;
                         let position = self.state.user_fix.map(|fix| (fix.lon, fix.lat));
                         if let Some((lon, lat)) = position {
@@ -1283,6 +1322,12 @@ mod tests {
         app.set_routes_with_ids(core::slice::from_ref(summary), &[id]);
         app
     }
+    /// A mounted app with guidance running, which is what owes a checkpoint.
+    fn riding(summary: &obc_route::RouteSummary, id: u64) -> crate::App {
+        let mut app = mounted(summary, id);
+        app.activity.mode = crate::activity::Mode::Riding;
+        app
+    }
     fn ordinary_store() -> StoreIdentity {
         StoreIdentity::new(1)
     }
@@ -1308,43 +1353,62 @@ mod tests {
         );
     }
 
-    /// Selecting an ordinary route owes exactly one checkpoint, keyed by the exact payload the
-    /// executor names. A source the executor cannot name leaves the selection without an offer,
-    /// and the refusal is not asked again.
+    /// Only a route the rider is following owes a checkpoint. A preview from the Route overview
+    /// runs no guidance, so it owes nothing and stays deletable. An unnamed source leaves no offer,
+    /// and a refused write stays owed rather than leaving the previous route on the card.
     #[test]
-    fn an_ordinary_selection_owes_one_checkpoint_and_an_unnamed_source_leaves_none() {
+    fn a_preview_owes_nothing_and_a_refused_selection_write_stays_owed() {
         use obc_formats::io::SliceSource;
         let (bytes, source) = ordinary_route();
         let held = SliceSource(&bytes);
         let index = obc_route::RouteIndex::read(&held).unwrap();
         let route = obc_route::RouteReader::new(&index, &held);
+        let facts =
+            RouteCheckpointSource { route: source, distance_m: route.total_distance_m, unresolved_avoidance: false };
+
+        // A preview: the Route overview makes the route active from Idle to show it.
+        let mut app = mounted(&route.summary(), source.object);
+        app.offer_assistant_checkpoint(ordinary_store(), None);
+        app.activate_route(0);
+        assert_eq!(app.active_route_index(), Some(0));
+        assert!(app.requested_route_checkpoint().is_none(), "a preview is not a route being followed");
+        assert!(app.navigator.checkpoint_change().is_none());
+
+        // Guidance running: the same selection now owes exactly one checkpoint.
         for named in [false, true] {
-            let mut app = mounted(&route.summary(), source.object);
+            let mut app = riding(&route.summary(), source.object);
             app.activate_route(0);
             assert!(app.requested_route_checkpoint().is_none(), "the card's own checkpoint is not read yet");
             app.offer_assistant_checkpoint(ordinary_store(), None);
             assert_eq!(app.requested_route_checkpoint(), Some(source.object));
-            app.offer_route_checkpoint(
-                source.object,
-                named.then_some(RouteCheckpointSource {
-                    route: source,
-                    distance_m: route.total_distance_m,
-                    unresolved_avoidance: false,
-                }),
-            );
-            assert!(app.requested_route_checkpoint().is_none(), "answered once per selection");
+            app.offer_route_checkpoint(source.object, named.then_some(facts));
             if !named {
                 assert!(app.navigator.checkpoint_change().is_none(), "nothing is owed to the card");
+                assert!(app.requested_route_checkpoint().is_none(), "and an unpayable debt is not re-asked");
                 assert_eq!(app.active_route_index(), Some(0), "a refused offer keeps the selection");
                 continue;
             }
+            assert!(app.requested_route_checkpoint().is_none(), "one write at a time");
+
+            // A refused write keeps the debt, so the card never names a route nobody follows.
+            let token = app.metadata.next_checkpoint_effect().unwrap().token();
+            app.navigator.checkpoint_issued(token);
+            assert!(app.assistant_checkpoint_submission(token));
+            let failed = MetadataOutcome::Failed { token, error: MetadataError::Busy };
+            assert!(app.metadata.apply_outcome(failed));
+            app.assistant_checkpoint_answer(failed);
+            assert!(app.assistant_checkpoint().is_none());
+            assert_eq!(app.requested_route_checkpoint(), Some(source.object), "the debt survives a refusal");
+            app.offer_route_checkpoint(source.object, Some(facts));
             ack_checkpoint(&mut app);
+
             let checkpoint = app.assistant_checkpoint().expect("the selection is durable");
             assert_eq!(checkpoint.route, source);
             assert_eq!((checkpoint.original, checkpoint.phase), (None, JourneyPhase::Following));
             assert_eq!((checkpoint.lower_m, checkpoint.upper_m), (0, route.total_distance_m));
             assert!(!app.recording(), "selecting a route is not starting a ride");
             assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+            assert!(app.requested_route_checkpoint().is_none(), "a confirmed write settles the debt");
             // Stopping guidance clears it again, so a restart offers nothing.
             app.activate_route(usize::MAX);
             ack_checkpoint(&mut app);
@@ -1406,7 +1470,12 @@ mod tests {
             assert_eq!(app.assistant_checkpoint().map(|c| c.route), Some(source));
             assert!(app.navigator.pending_seam(), "guidance rejoins at the recovered progress");
             assert!(!app.recording(), "navigation recovery is not recording recovery");
-            assert_eq!(app.mode(), crate::activity::Mode::Idle);
+            assert_eq!(app.mode(), crate::activity::Mode::Riding, "an active route is never Idle");
+            assert_eq!(
+                app.state.mode,
+                crate::app::CameraMode::Follow,
+                "and recovery returns to the riding view, not browse"
+            );
         }
     }
 

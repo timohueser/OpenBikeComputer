@@ -61,6 +61,14 @@ impl JourneyScreen {
             rx.t(if self.resume { Msg::AssistantResumeNavigation } else { Msg::AssistantArrival }),
             "",
         );
+        // The saved route's own name, so the offer says what it would resume. An error replaces
+        // the whole body, and a catalog that has not been fed yet names nothing.
+        let named = (self.resume && self.error.is_none())
+            .then_some(rx.find.resume_route)
+            .flatten()
+            .and_then(|row| rx.routes.get(usize::from(row)))
+            .map(|route| route.name.as_str())
+            .filter(|name| !name.is_empty());
         wrapped(
             cv,
             rx.t(self.error.map(JourneyError::message).unwrap_or(if self.resume {
@@ -69,11 +77,14 @@ impl JourneyScreen {
                 Msg::AssistantGuidanceContinues
             })),
             rx.w / 2,
-            112,
+            if named.is_some() { 96 } else { 112 },
             rx.w - 32,
             Font::Label,
             INK,
         );
+        if let Some(name) = named {
+            wrapped(cv, name, rx.w / 2, 134, rx.w - 32, Font::Body, INK);
+        }
         let label = if !self.resume {
             Msg::AssistantBackMap
         } else {

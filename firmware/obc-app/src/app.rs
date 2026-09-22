@@ -1481,6 +1481,10 @@ impl App {
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
+            self.ui.find.resume_route = self
+                .assistant_checkpoint()
+                .and_then(|saved| self.route_ids().iter().position(|&id| id == saved.route.object))
+                .and_then(|index| u8::try_from(index).ok());
         }
         let arrival = self.visit_arrival_pending();
         let accepted = self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted;
