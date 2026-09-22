@@ -16,13 +16,26 @@
   let done: Record<string, boolean> = {};
   let dismissing = '';
   let feedback = '';
+  /** Categories ticked in the filter. Empty means every category. */
+  let chosen: string[] = [];
   $: standing = suggestions.filter(s => s.status === 'open' || done[s.id]);
+  $: categories = [...new Set(standing.map(category))].sort()
+    .map(name => ({ name, count: standing.filter(s => category(s) === name).length }));
+  /** A category can go away while it is ticked, so the filter only applies the ones still here. */
+  $: picked = chosen.filter(name => categories.some(c => c.name === name));
+  $: shown = (picked.length ? standing.filter(s => picked.includes(category(s))) : standing)
+    .sort((a, b) => category(a).localeCompare(category(b)));
   $: groups = [
-    { name: 'New requirements', items: standing.filter(s => !s.requirementId) },
-    { name: 'Changes to requirements', items: standing.filter(s => s.requirementId) }
+    { name: 'New requirements', items: shown.filter(s => !s.requirementId) },
+    { name: 'Changes to requirements', items: shown.filter(s => s.requirementId) }
   ];
   $: decided = suggestions.filter(s => (s.status === 'accepted' || s.status === 'dismissed') && !done[s.id]);
   function subject(suggestion: RequirementSuggestionReview) { return requirements.find(r => r.id === suggestion.requirementId); }
+  /** What the item is about: its own category, or the category of the requirement it changes. */
+  function category(suggestion: RequirementSuggestionReview) {
+    return (suggestion.requirementId ? subject(suggestion)?.group : suggestion.group)?.trim() || 'No category';
+  }
+  function pick(name: string) { chosen = picked.includes(name) ? picked.filter(c => c !== name) : [...picked, name]; }
   function toggle(id: string) { expanded = expanded === id ? '' : id; }
   /** Who wrote it, when, and what it was read against. Svelte trims separators written as markup, so this is one string. */
   function meta(suggestion: RequirementSuggestionReview) {
@@ -51,6 +64,14 @@
   <div class="panel-head">
     <div class="row"><h2>Suggestions</h2><button class="text-button small" on:click={onclose}>Close</button></div>
     <p>Tick an item once you have written it yourself. Nothing here changes the draft.</p>
+    {#if categories.length > 1}
+      <div class="filters">
+        <button class="chip" class:on={!picked.length} aria-pressed={!picked.length} on:click={() => chosen = []}>All</button>
+        {#each categories as c (c.name)}
+          <button class="chip" class:on={picked.includes(c.name)} aria-pressed={picked.includes(c.name)} on:click={() => pick(c.name)}>{c.name} · {c.count}</button>
+        {/each}
+      </div>
+    {/if}
   </div>
   <div class="panel-scroll">
     {#each groups as group (group.name)}
@@ -98,6 +119,9 @@
   .panel-head { padding: 18px 18px 12px; border-bottom: 1px solid var(--slate-line); }
   .panel-head h2 { font-size: 15px; color: var(--slate-strong); }
   .panel-head p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .filters { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+  .chip { padding: 3px 9px; min-height: 0; font-size: 11px; color: var(--muted); background: var(--surface); border-radius: 999px; }
+  .chip.on { color: var(--surface); background: var(--slate); border-color: var(--slate); }
   .panel-scroll { flex: 1; overflow: auto; padding: 8px 12px 18px; scrollbar-width: thin; }
   .eyebrow { display: block; margin: 14px 6px 6px; color: var(--slate); }
   .empty { margin: 14px 6px; }
