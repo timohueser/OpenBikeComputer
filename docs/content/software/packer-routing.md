@@ -764,6 +764,10 @@ arrive in. A cell on a border is ground in two regions, so it carries both sides
 key holds the artifacts it was cut from and no others, so a re-captured region re-cuts the cells
 that region reaches and leaves the rest of the tree alone.
 
+Verify re-computes each artifact's digest, so one that moved after the cut fails the tree.
+Publish uploads the artifacts and records them in the catalogue. Nobody downloads one: the cells
+already carry the content, so the published copies are provenance.
+
 ## Attribution and share-alike
 
 OpenStreetMap data is under the Open Database License 1.0. A rendered map is a Produced Work, and
@@ -771,6 +775,9 @@ the device gives the required attribution on its About page. A published `.obcm`
 Derivative Database: the catalog declares `ODbL-1.0` and publishes the license text, and anyone who
 distributes that map data is bound by the same terms. A map with terrain-derived contours also
 carries the [Copernicus attribution](../terrain/#attribution).
+
+Landmark content is not OpenStreetMap: the catalogue states the class credit and the licences a
+region's texts and photos are under. Each place keeps its own notices.
 
 ## Implementation
 
