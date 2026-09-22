@@ -661,7 +661,8 @@ impl App {
             // Stamp fix freshness against the map-plane clock, the one the banner's staleness
             // check reads. It is off `AppState`, so a stationary fix forces no redraw.
             self.tick_state.last_fix_ms = Some(self.ui.now_ms);
-            if let Some(Screen::PeakView(screen)) = self.ui.stack.iter_mut().rev().find(|screen| !screen.is_overlay()) {
+            let base = screen::base_index(&self.ui.stack);
+            if let Some(Screen::PeakView(screen)) = self.ui.stack.get_mut(base) {
                 if screen.needs_position() {
                     screen.set_status(crate::peak_view::runtime::Status::Building(0));
                     self.ui.map_dirty = true;
@@ -1721,7 +1722,7 @@ impl App {
     }
 
     fn peak_view_base(&self) -> Option<&screen::PeakViewScreen> {
-        match self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) {
+        match screen::base_screen(&self.ui.stack) {
             Some(Screen::PeakView(screen)) => Some(screen),
             _ => None,
         }
@@ -1788,7 +1789,7 @@ impl App {
     /// lowest non-overlay row, so a sheet already up does not hide the content the chord asks
     /// about; that is what makes the same chord close the context drawer again.
     fn base_context(&self) -> Option<&'static crate::screen::ContextMenu> {
-        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| {
+        screen::base_screen(&self.ui.stack).and_then(|s| {
             if matches!(s, Screen::Assistant(_)) && self.current_visit_index().is_some() {
                 Some(&crate::screen::context_drawer::ASSISTANT_VISIT)
             } else if matches!(s, Screen::Assistant(_))
@@ -2172,7 +2173,7 @@ impl App {
     fn escape_to_menu(&mut self) -> bool {
         // Asked of the base, not of `stack.last()`: a sheet opened over a card the rider must
         // answer is not consent to walk away from the card.
-        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        let base = screen::base_screen(&self.ui.stack);
         if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
             return false;
         }
@@ -2909,10 +2910,8 @@ impl App {
             .ride_track_key(self.activity.viewed_ride)
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level is the UI's; the data half is the key's.
-        let assistant =
-            self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
-                |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
-            );
+        let assistant = screen::base_screen(&self.ui.stack)
+            .is_some_and(|s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()));
         let overview_open = assistant || self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
             .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))

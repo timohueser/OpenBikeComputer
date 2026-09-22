@@ -156,6 +156,12 @@ pub(crate) fn base_index(stack: &Stack) -> usize {
     stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0)
 }
 
+/// The lowest opaque screen itself: the frame's base. `None` only for an empty stack, which the
+/// root forbids.
+pub(crate) fn base_screen(stack: &Stack) -> Option<&Screen> {
+    stack.get(base_index(stack))
+}
+
 /// Nothing lands on top of a drawer: take any open sheet off the top of `stack`, and report whether
 /// one was there. Called wherever an ordinary screen arrives. A host card burying a sheet would
 /// strand it, so every arrival passes through here.
