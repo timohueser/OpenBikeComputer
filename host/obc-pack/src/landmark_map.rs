@@ -204,6 +204,9 @@ pub fn load(paths: &[PathBuf], links: &[LandmarkLink], bbox: (i64, i64, i64, i64
             {
                 continue;
             }
+            if record.variants.is_empty() {
+                return Err("landmark without text".into());
+            }
             let articles: Vec<_> = record.variants.iter().filter_map(article_link).collect();
             let link = links
                 .iter()
@@ -277,7 +280,11 @@ pub(crate) fn encode_content(
     if name.is_empty() || name.len() > MAX_NAME_BYTES as usize {
         return Err("article name budget".into());
     }
-    let bundle = article_bundle(default, variants)?;
+    // A record with a photo and no text has no bundle at all; §10.2 writes that reference absent.
+    let bundle = match variants.is_empty() {
+        true => Vec::new(),
+        false => article_bundle(default, variants)?,
+    };
     let mut blobs = [name.as_bytes().to_vec(), bundle, Vec::new(), Vec::new()];
     if let Some(photo) = photo {
         let pixels = photo_pixels(root, photo)?;

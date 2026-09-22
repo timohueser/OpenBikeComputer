@@ -98,7 +98,8 @@ mod tests {
         }
         let values = [b"Summit".to_vec(), obcm_testkit::articles::bundle(*b"de", variants), pixels, fields(&credits)];
         for (slot, bytes) in values.iter().enumerate() {
-            if slot >= 2 && photo.is_none() {
+            // An empty text is a record with no article bundle at all.
+            if (slot >= 2 && photo.is_none()) || (slot == 1 && text.is_empty()) {
                 continue;
             }
             record.content[slot] =
@@ -379,6 +380,42 @@ mod tests {
         app.apply_gesture(Gesture::Back);
         lifecycle.update(&mut app, &mut job, 30);
         assert_eq!(job.starts.last(), Some(&(40_000, 50_000)), "Live resumes the current fix");
+    }
+
+    #[test]
+    fn a_summit_with_a_photo_and_no_text_marks_and_opens_that_photo() {
+        let bytes = map(Some(true), "", false);
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut app = app();
+        app.apply_gesture(Gesture::Press);
+        prepare(&mut app, &reader);
+        assert_eq!(source(&app), Some(SourceId::osm(1, 101)));
+        assert!(app.ui.landmarks.has_content(), "a photo is content");
+        assert!(app.ui.landmarks.article.is_none() && app.ui.landmarks.text.is_empty());
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::LandmarkPhoto(_)), "Select opens the photo, not a text page");
+        prepare(&mut app, &reader);
+        decode(&mut app, &reader);
+        assert_eq!(app.photo_status(), Some(crate::photo::Status::Complete));
+        app.apply_gesture(Gesture::Step(1));
+        assert!(matches!(app.top_screen(), Screen::LandmarkPhoto(_)), "the photo is the whole record");
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        prepare(&mut app, &reader);
+        assert!(matches!(app.top_screen(), Screen::LandmarkSources(_)));
+        assert_eq!(app.ui.landmarks.text.as_str(), "Source credit.");
+        assert_eq!(app.ui.landmarks.source_pages, 1);
+        app.apply_gesture(Gesture::Back);
+        prepare(&mut app, &reader);
+        assert!(matches!(app.top_screen(), Screen::LandmarkPhoto(_)));
+        app.apply_gesture(Gesture::Back);
+        prepare(&mut app, &reader);
+        assert!(matches!(app.top_screen(), Screen::PeakView(_)));
+        assert_eq!(source(&app), Some(SourceId::osm(1, 101)));
+        assert!(app.ui.landmarks.has_content(), "the mark survives the return");
     }
 
     #[test]
