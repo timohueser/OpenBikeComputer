@@ -459,6 +459,14 @@ impl App {
                 let _ = self.pass.connections.ui_catalog.try_put(full.rejected);
             }
         }
+        // The store refuses a removal for an object the checkpoint names, and a refused removal is
+        // not retried, so the rider's confirmed delete would vanish. Give up the checkpoint first
+        // and leave the intent admitted: the admitted intent is what the domain would pull next, so
+        // holding the pull holds only this removal.
+        if self.checkpoint_blocks_removal() {
+            self.navigator.clear_checkpoint_for_removal();
+            return;
+        }
         if let Some(effect) = self.catalogs.next_effect_at(self.ui.now_ms) {
             let _ = effects.catalog.try_put(effect);
         }
