@@ -603,10 +603,13 @@ fn prepare_article(
         true => (String::new(), Vec::new()),
         false => locale::default_language(entity, locales, &variants),
     };
+    // A record with no text has no default language, so it takes the first label in UI order. A
+    // record that has text keeps the name rule it always had.
     let ui_label = || locale::languages().into_iter().find_map(|(code, _)| entity["labels"][&code]["value"].as_str());
     let name = entity["labels"][&default_language]["value"]
         .as_str()
-        .or_else(ui_label)
+        .or_else(|| entity["labels"]["en"]["value"].as_str())
+        .or_else(|| variants.is_empty().then(ui_label).flatten())
         .or_else(|| place["name"].as_str())
         .ok_or("site name missing")?;
     let name = crate::name::to_repertoire(&text::normalize(name));

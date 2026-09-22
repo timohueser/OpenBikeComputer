@@ -234,20 +234,21 @@ impl Landmarks {
         }
         let pages = match bundle.zip(article) {
             Some((bundle, article)) => Some((
+                article,
                 content(bundle, article.text, MAX_TEXT_BYTES)?,
                 content(bundle, article.attribution, MAX_ATTRIBUTION_BYTES)?,
             )),
             None => None,
         };
         self.article_pages = match &pages {
-            Some((_, credits)) => credit_count(credits)?,
+            Some((_, _, credits)) => credit_count(credits)?,
             None => 0,
         };
         let photo_credits = photo_credits.filter(|_| self.loaded.is_none() || self.photo_available);
         let photo_count = photo_credits.and_then(|source| credit_count(source).ok());
         self.photo_available = photo_count.is_some();
         self.source_pages = self.article_pages + photo_count.unwrap_or(0);
-        let Some((text, credits)) = pages else {
+        let Some((article, text, credits)) = pages else {
             // A record with a photo and no text has no reading page. Its Sources are the photo's.
             let credits = photo_credits.ok_or(Error::BadOffset)?;
             self.text.clear();
@@ -272,8 +273,7 @@ impl Landmarks {
                 (&credits as &dyn ByteSource, self.source_page + 4, self.article_pages + 4)
             }
         } else {
-            let pages = article.map_or(0, |a| a.text_pages as u16);
-            (&text as &dyn ByteSource, self.page.min(pages.saturating_sub(1)), pages)
+            (&text as &dyn ByteSource, self.page.min(article.text_pages as u16 - 1), article.text_pages as u16)
         };
         let mut bytes = [0; MAX_PAGE_BYTES];
         let result = read_display_page(source, count, index, &mut bytes);
@@ -288,7 +288,7 @@ impl Landmarks {
         };
         self.text.clear();
         self.text.push_str(text).map_err(|_| Error::BadOffset)?;
-        self.article = article;
+        self.article = Some(article);
         self.loaded = Some(requested);
         Ok(())
     }

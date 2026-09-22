@@ -361,3 +361,31 @@ fn a_photo_alone_is_a_peak_record_and_never_a_landmark() {
     assert_eq!(fs::read_dir(f.root.join("sites")).unwrap().count(), 1, "a refused landmark writes no photo");
     fs::remove_dir_all(f.root).unwrap();
 }
+
+/// The name rule for a record that has text: the default language's label, then English, then the
+/// OSM spelling. A label in another UI language belongs to a record with no default language.
+#[test]
+fn a_text_record_keeps_the_osm_name_when_its_default_language_has_no_label() {
+    let mut f = Fixture { root: obcm_testkit::scratch::scratch_dir("landmarks", "text-name"), sources: vec![] };
+    f.json(
+        "entities/Q5.json",
+        json!({"entities":{"Q5":{"id":"Q5","labels":{"fr":{"value":"Dent Wikidata"}},
+            "sitelinks":{"dewiki":{"title":"Zahn"}},"claims":{}}}}),
+    );
+    f.json("links/Q5.json", json!({"entities":{"Q5":{"id":"Q5"}}}));
+    let article = f.article("Q5", "de", "Zahn", "Ein hoher Zahn.");
+    let place = json!({"qid":"Q5","name":"Dent OSM","articles":[article],"images":[]});
+    let summit =
+        json!({"node_id":2,"latitude":0.5,"longitude":0.5,"tags":{"natural":"peak","name":"Dent OSM","wikidata":"Q5"}});
+    f.json("summits.json", json!({"schema":1,"osm_sha256":"a".repeat(64),"summits":[summit]}));
+    let boundary = f.root.join("boundary.json");
+    fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
+    let manifest = f.root.join("manifest.json");
+    fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":[place],
+        "peaks":{"summits_path":"summits.json","resolutions":[{"node_id":2,"kind":"wikidata","path":"links/Q5.json","status":"resolved"}]}})).unwrap()).unwrap();
+    let result = peaks::compile(&manifest, &boundary, &f.root.join("out"), false).unwrap();
+    let record = &result.records[0].article;
+    assert_eq!(record.default_language, "de");
+    assert_eq!(record.name, "Dent OSM", "a label in another UI language cannot displace the OSM name");
+    fs::remove_dir_all(f.root).unwrap();
+}
