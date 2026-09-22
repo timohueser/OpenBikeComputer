@@ -111,8 +111,7 @@ Three rules keep it there, and each one is a test:
 - **A redirect does not carry it.** `DropAuthOnRedirect` removes `Authorization` on any host
   change. A portal that redirects needs its real download host named in its index.
 
-`credential_style` on the adapter and the row's credential shape are checked where the row is
-written.
+`credential_style` on the adapter and the row's credential shape are checked at the row.
 
 Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 429 and a
 5xx are retried for up to twelve minutes; every other 4xx is refused at once with its body. A 404 is absence
