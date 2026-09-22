@@ -468,9 +468,13 @@ pub fn read_rows<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Ro
     }
     Ok(())
 }
-/// Observe the durable proof exactly as the card holds it: the image's own [`StoreId`] and every
-/// row, with no reconcile and no barrier. Policy reads [`read_rows`]; this reads back what a
-/// receipt committed, so an observer sees the same identity and stamp a remount would.
+/// Every proof row as the last commit left it, with no reconcile and no barrier. Policy reads
+/// [`read_rows`]; this reads back what a receipt committed, so an observer sees the same identity
+/// and stamp a remount would.
+///
+/// A card with no metadata object censuses as zero rows, the same answer as a card whose metadata
+/// holds none. The returned [`StoreId`] is always the mounted store's: a foreign image is a
+/// `WrongStore` error, never a row.
 #[inline(never)]
 pub fn census<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<StoreId, Error> {
     let mut bytes = [0u8; MAX_LEN];

@@ -173,7 +173,6 @@ fn a_receipt_commits_one_observable_proof_whose_clock_starts_once() {
     assert!(first.sequence > before, "the proof is a catalog commit, not a resident note");
 
     let (identity, rows) = census(&owner);
-    assert_eq!(identity, owner.store_id().unwrap(), "the proof names the card it lives on");
     assert_eq!(
         rows,
         [metadata::Row {
@@ -190,6 +189,7 @@ fn a_receipt_commits_one_observable_proof_whose_clock_starts_once() {
     let reopened = owner.remount_memory_snapshot();
     let (again, stamped) = census(&reopened);
     assert_eq!((again, stamped[0]), (identity, metadata::Row { timestamp: STAMP, ..rows[0] }));
+    assert_eq!(stamped[0].id, head.id, "the stamp lands on the archived ride, not another row");
 
     let rides = FlatRideStore::new(reopened.clone()).unwrap();
     assert_eq!(

@@ -179,18 +179,18 @@ fn status_store_changed_vector() {
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
-/// A `commandResult` that carries a `detail` byte. The fixture's command id is retired, so the
-/// vector pins the four-byte layout and the detail field rather than any live command.
+/// The committed `commandResult` bytes: the answer to an accepted `installFw`. It pins the
+/// four-byte layout, the echoed command id and the position of the `detail` byte.
 #[test]
-fn command_result_detail_vector() {
-    use obc_ble::{CommandResult, CommandStatus};
+fn command_result_vector() {
+    use obc_ble::{CommandResult, CommandStatus, CMD_INSTALL_FW};
 
-    let result_bytes = fixture("status-command-result-ack.bin");
+    let result_bytes = fixture("status-command-result.bin");
     let StatusMessage::CommandResult(r) = StatusMessage::decode(&result_bytes).unwrap().unwrap() else {
         panic!("expected commandResult")
     };
-    assert_eq!((r.command, r.status, r.detail), (2, CommandStatus::Ok, 3));
-    let (buf, len) = Msg::CommandResult(CommandResult::with_detail(2, CommandStatus::Ok, 3)).encode();
+    assert_eq!((r.command, r.status, r.detail), (CMD_INSTALL_FW, CommandStatus::Ok, 0));
+    let (buf, len) = Msg::CommandResult(CommandResult::new(CMD_INSTALL_FW, CommandStatus::Ok)).encode();
     assert_eq!(&buf[..len], &result_bytes[..]);
 }
 
