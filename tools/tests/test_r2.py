@@ -232,6 +232,14 @@ class Rm(unittest.TestCase):
         self.assertEqual(self.rm(CELL), 1)
         self.assertIn("live catalogue names it", self.printed.getvalue())
 
+    def test_a_base_url_the_catalogue_does_not_use_still_protects(self):
+        """A stale or mis-typed base may protect more than it must, never less."""
+
+        os.environ["OBC_MAPS_BASE_URL"] = "https://maps.example.org/somewhere-else"
+        self.assertEqual(self.rm(CELL), 1)
+        self.assertIn("live catalogue names it", self.printed.getvalue())
+        self.assertEqual(self.deleted(), [])
+
     def test_protection_fails_closed_when_the_catalogue_cannot_be_read(self):
         del self.bucket[f"{PREFIX}/catalog.json"]
         self.assertEqual(self.rm(CELL), 1)
