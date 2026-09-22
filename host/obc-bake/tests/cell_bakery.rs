@@ -351,6 +351,7 @@ impl Fixture {
             source_coverage: serde_json::json!({}),
             counts: obc_pack::landmarks::Counts { images: 1, ..Default::default() },
             candidate_qids: vec![],
+            photo_requests: vec![],
             records: vec![obc_pack::landmarks::Record {
                 qid: "Q1".into(),
                 name: "A place".into(),

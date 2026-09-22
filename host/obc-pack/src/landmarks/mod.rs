@@ -66,12 +66,23 @@ pub fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
 
 const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credits-8192;decode-32MiB-16384-128MiB";
 
-/// The photo candidate pools, best first. A pool also names the captured bytes that have to prove a
-/// candidate's origin, so a capture cannot hand the compiler an unrelated file.
-const PHOTO_SOURCES: [&str; 6] = ["P18", "wikipedia-lead", "commons-category", "P4291", "P8592", "P5252"];
+/// The photo candidate pools, best first, shared verbatim with the capture tool. A pool also names
+/// the captured bytes that have to prove a candidate's origin, so a capture cannot hand the
+/// compiler an unrelated file, and a pool one side offers and the other refuses would be a photo
+/// that can never be selected.
+pub const PHOTO_POOL_BYTES: &[u8] = include_bytes!("../../../../specs/photo-pools.json");
+
+fn photo_pools() -> Vec<String> {
+    serde_json::from_slice(PHOTO_POOL_BYTES).expect("checked photo pool order")
+}
+
 /// A camera this close to a summit looks out from it rather than at it. The radius is the owner's,
 /// taken from a sample of the photos the catalogue selects today.
 const CAMERA_METRES: f64 = 500.0;
+/// Originals the compiler asks a capture for per record: the winner, and one runner-up for the
+/// rejections that only the bytes can prove. Ranking reads metadata, which is kilobytes; an
+/// original is megabytes, so nothing else is downloaded.
+const PHOTO_REQUESTS: usize = 2;
 
 /// Equirectangular, which is exact enough well below a kilometre.
 fn metres(from: (f64, f64), to: (f64, f64)) -> f64 {
@@ -110,6 +121,17 @@ pub struct Content {
     pub candidate_qids: Vec<String>,
     pub records: Vec<Record>,
     pub omissions: Vec<Omission>,
+    /// Absent from a compiled catalogue: a production compile has every original it ranked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub photo_requests: Vec<PhotoRequest>,
+}
+/// One original the compiler wants bytes for, in the order it would use them. A capture acquires
+/// exactly these and never ranks anything itself.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PhotoRequest {
+    pub qid: String,
+    pub filename: String,
+    pub metadata_path: String,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Counts {
@@ -310,6 +332,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         policy_input.extend_from_slice(source);
     }
     policy_input.extend_from_slice(locale::LANGUAGE_BYTES);
+    policy_input.extend_from_slice(PHOTO_POOL_BYTES);
     policy_input.extend_from_slice(include_bytes!("locale.rs"));
     let locales = load_locales(root, &snapshot.sources)?;
     let mut input = raw;
@@ -325,6 +348,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         candidate_qids: Vec::new(),
         records: Vec::new(),
         omissions: Vec::new(),
+        photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
@@ -392,7 +416,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
             &Inputs { root, sources: &snapshot.sources, locales: &locales, output },
             &place,
             entity,
-            &mut content.omissions,
+            &mut Found { omissions: &mut content.omissions, requests: &mut content.photo_requests },
             None,
         )?
         else {
@@ -504,14 +528,45 @@ struct Inputs<'a> {
     output: &'a Path,
 }
 
+/// The captured file members of the place's own Commons categories. The listing is a pinned source
+/// and its title has to be one of the entity's own P373 claims, so a capture cannot widen the pool.
+fn category_members(
+    root: &Path,
+    sources: &[Source],
+    place: &Value,
+    categories: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let mut members = BTreeSet::new();
+    for listing in place["commons_categories"].as_array().into_iter().flatten() {
+        let title = string(listing, "title")?;
+        if !categories.iter().any(|name| name == title) {
+            return Err(format!("unclaimed commons category: {title}"));
+        }
+        let raw = json_pinned(root, sources, string(listing, "path")?)?;
+        for member in raw["query"]["categorymembers"].as_array().into_iter().flatten() {
+            if let Some(file) = string(member, "title")?.strip_prefix("File:") {
+                members.insert(file.replace('_', " "));
+            }
+        }
+    }
+    Ok(members)
+}
+
+/// What a preparation adds to the compiled document beside the record itself.
+struct Found<'a> {
+    omissions: &'a mut Vec<Omission>,
+    requests: &'a mut Vec<PhotoRequest>,
+}
+
 fn prepare_article(
     inputs: &Inputs,
     place: &Value,
     entity: &Value,
-    omissions: &mut Vec<Omission>,
+    found: &mut Found,
     summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
     let Inputs { root, sources, locales, output } = *inputs;
+    let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
         omissions.push(Omission { qid: qid.into(), asset: asset.into(), reason });
@@ -551,10 +606,13 @@ fn prepare_article(
             .map(|file| file.replace('_', " "))
             .collect()
     };
-    let category = claim_files("P373").into_iter().next().map(|name| format!("Category:{name}"));
+    // Every P373 claim, so the compiler and the capture cannot name different categories.
+    let categories: Vec<String> = claim_files("P373").into_iter().map(|name| format!("Category:{name}")).collect();
+    let members = category_members(root, sources, place, &categories)?;
+    let pools = photo_pools();
     let mut ranked = Vec::new();
     for image in place["images"].as_array().into_iter().flatten() {
-        let Some(tier) = image["source"].as_str().and_then(|source| PHOTO_SOURCES.iter().position(|p| *p == source))
+        let Some(tier) = image["source"].as_str().and_then(|source| pools.iter().position(|pool| pool == source))
         else {
             omit("photo", "photo_source_kind".into());
             continue;
@@ -566,26 +624,41 @@ fn prepare_article(
                 continue;
             }
         };
-        if category.as_deref().is_some_and(|name| signals.views(name, "Views from ")) {
+        if signals.views(&categories, "Views from ") {
             omit("photo", "views_from_the_site".into());
             continue;
         }
-        let allowed = match PHOTO_SOURCES[tier] {
+        // A candidate from the Commons category has to be in the captured listing of that category
+        // and to carry the category itself, so neither a swapped listing nor a swapped file passes.
+        let allowed = match pools[tier].as_str() {
             "wikipedia-lead" => lead.clone(),
-            "commons-category" => match category.as_deref().filter(|name| signals.categories.contains(*name)) {
-                Some(_) => BTreeSet::from([signals.filename.clone()]),
-                None => BTreeSet::new(),
+            "commons-category" => match categories.iter().any(|name| signals.categories.contains(name)) {
+                true => members.clone(),
+                false => BTreeSet::new(),
             },
             property => claim_files(property),
         };
         let near = summit.zip(signals.camera).is_some_and(|(summit, camera)| metres(summit, camera) <= CAMERA_METRES);
-        let of = category.as_deref().is_some_and(|name| signals.views(name, "Views of "));
+        let of = signals.views(&categories, "Views of ");
         let depicts = signals.depicts.contains(qid);
-        ranked.push(((near, !of, !depicts, tier, signals.filename), image, allowed));
+        ranked.push((((near, !of, !depicts, tier), signals.filename), image, allowed));
     }
     ranked.sort_by(|a, b| a.0.cmp(&b.0));
     let mut photo = None;
-    for (_, image, allowed) in &ranked {
+    let mut asked = 0;
+    for ((_, filename), image, allowed) in &ranked {
+        // Metadata alone ranks a candidate. Bytes arrive only after the compiler has asked for them.
+        if image.get("path").is_none() {
+            if asked < PHOTO_REQUESTS && allowed.contains(filename) {
+                asked += 1;
+                requests.push(PhotoRequest {
+                    qid: qid.into(),
+                    filename: filename.clone(),
+                    metadata_path: string(image, "metadata_path")?.to_owned(),
+                });
+            }
+            continue;
+        }
         match assets::photo(root, sources, image, allowed, qid) {
             Ok((candidate, pixels))
                 if variants.iter().all(|v| {
@@ -601,7 +674,7 @@ fn prepare_article(
             Err(reason) => omit("photo", reason),
         }
     }
-    if photo.is_none() {
+    if photo.is_none() && asked == 0 {
         omit("photo", "no_usable_captured_image".into());
     }
     Ok(Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }))

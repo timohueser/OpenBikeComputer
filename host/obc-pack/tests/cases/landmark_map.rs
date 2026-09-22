@@ -57,6 +57,7 @@ fn source_join_content_pool_and_independent_photo_readback() {
         source_coverage: serde_json::json!({}),
         counts: Default::default(),
         candidate_qids: vec![],
+        photo_requests: vec![],
         records: vec![record("Q2", 8.01), record("Q1", 8.0)],
         omissions: vec![],
     };
@@ -159,6 +160,7 @@ fn overlapping_artifacts_merge_by_qid() {
             source_coverage: serde_json::json!({}),
             counts: Default::default(),
             candidate_qids: vec![],
+            photo_requests: vec![],
             records,
             omissions: vec![],
         };

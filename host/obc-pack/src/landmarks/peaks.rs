@@ -60,6 +60,9 @@ pub struct PeakContent {
     pub associations: Vec<Association>,
     pub records: Vec<PeakArticle>,
     pub omissions: Vec<Omission>,
+    /// Absent from a compiled catalogue: a production compile has every original it ranked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub photo_requests: Vec<PhotoRequest>,
 }
 
 pub(super) fn is_summit(tags: &BTreeMap<String, String>) -> bool {
@@ -232,6 +235,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         include_bytes!("../poi.rs"),
         include_bytes!("../../../../Cargo.lock"),
         locale::LANGUAGE_BYTES,
+        PHOTO_POOL_BYTES,
     ] {
         policy.extend(bytes);
     }
@@ -246,6 +250,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         associations: Vec::new(),
         records: Vec::new(),
         omissions: Vec::new(),
+        photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
@@ -338,7 +343,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
             &Inputs { root, sources: &snapshot.sources, locales: &locales, output },
             place,
             &entity,
-            &mut result.omissions,
+            &mut Found { omissions: &mut result.omissions, requests: &mut result.photo_requests },
             summit,
         )? {
             result.counts.texts += 1;
