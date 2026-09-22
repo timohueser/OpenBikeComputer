@@ -329,43 +329,4 @@ mod tests {
         assert!(matches!(handle(&mut service, &mut activity, &mut rec, &mut nav, Gesture::Press), Transition::Home));
         assert_eq!(rec.test_take_intent(), None);
     }
-
-    /// A translation that does not fit fails here, instead of being clipped on glass.
-    #[test]
-    fn every_recovery_card_line_fits_in_every_language() {
-        use crate::i18n::t;
-        use crate::settings::Language;
-        use obc_render::text::text_width;
-
-        const W: i32 = 240;
-        const MIN_CLEAR: i32 = 8;
-        // `GuardedRowsGeometry::panel` puts a row at `rect(14, .., w - 28, ..)` and its label at
-        // `x + 12`, so the label runs from 26 to the right edge of the row at 226.
-        let row_room = (14 + (W - 28)) - (14 + 12) - MIN_CLEAR;
-        // The body line is centred on the full width, so it loses the clearance at both edges.
-        let body_room = W - MIN_CLEAR * 2;
-        assert_eq!((row_room, body_room), (192, 224), "the card's two budgets, pinned");
-
-        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            let title = t(Msg::RideRecoveryTitle, lang);
-            assert!(text_width(title, Font::Body) <= (W - 28) as u32, "{lang:?}: title {title:?} overruns its insets");
-            for mode in [
-                RecoveryMode::Resumable,
-                RecoveryMode::Damaged,
-                RecoveryMode::RepairFailed,
-                RecoveryMode::DiscardFailed,
-                RecoveryMode::Unrepairable,
-            ] {
-                let s = t(mode.body(), lang);
-                let px = text_width(s, Font::Label) as i32;
-                assert!(px <= body_room, "{lang:?}: body {s:?} ({px} px) overruns the {body_room} px card");
-            }
-            for row in [Row::Continue, Row::Discard, Row::Retry, Row::Leave] {
-                let s = t(row.label(), lang);
-                // `draw_guarded_rows` draws its labels in `Font::Body`, the wider tier.
-                let px = text_width(s, Font::Body) as i32;
-                assert!(px <= row_room, "{lang:?}: row {s:?} ({px} px) overruns the {row_room} px panel");
-            }
-        }
-    }
 }

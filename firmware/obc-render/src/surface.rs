@@ -14,7 +14,7 @@ use embedded_graphics::{
 };
 
 use crate::canvas::{rect, Canvas};
-use crate::text::{draw_text, draw_text_ccw, text_width, Font, TextAlign};
+use crate::text::{draw_text, draw_text_ccw, text_box, text_width, Font, TextAlign};
 
 /// The bounding box of a point set — for the primitives given as vertices (line, triangle).
 fn points_bbox(pts: &[Point]) -> Rectangle {
@@ -167,19 +167,13 @@ where
     }
 
     fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, color: u16) -> Point {
+        let area = text_box(s, at, font, align);
+        #[cfg(feature = "text-tap")]
+        crate::text_tap::note(area, font, s);
         // The glyph cell box is exact for the monospace face, so a string outside it decodes no
-        // glyphs at all. A multi-line string would break the single-cell-row math, so those always
-        // draw; no screen passes one. The rejected return is `at`, `draw_text`'s own fallback.
-        if !s.contains('\n') {
-            let w = text_width(s, font) as i32;
-            let x0 = match align {
-                TextAlign::Left => at.x,
-                TextAlign::Center => at.x - w / 2,
-                TextAlign::Right => at.x - w,
-            };
-            if self.rejects(&rect(x0, at.y, w, font.line_height() as i32)) {
-                return at;
-            }
+        // glyphs at all. The rejected return is `at`, `draw_text`'s own fallback.
+        if self.rejects(&area) {
+            return at;
         }
         let (target, c) = self.split();
         draw_text(target, s, at, font, align, c(color))
@@ -189,7 +183,10 @@ where
         let divisor = divisor.max(1);
         let width = text_width(s, font).div_ceil(divisor) as i32;
         let height = font.line_height().div_ceil(divisor) as i32;
-        if self.rejects(&rect(bottom_left.x, bottom_left.y - width, height, width)) {
+        let area = rect(bottom_left.x, bottom_left.y - width, height, width);
+        #[cfg(feature = "text-tap")]
+        crate::text_tap::note(area, font, s);
+        if self.rejects(&area) {
             return;
         }
         let (target, c) = self.split();
