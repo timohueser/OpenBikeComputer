@@ -6,7 +6,7 @@
   extraction, name folding, and the dedup pair. Coordinates sit near Freiburg on
   a tidy grid; only tags + relative distances matter.
 
-  Expected result (any config — POI extraction is config-free), 13 POIs kept,
+  Expected result (any config — POI extraction is config-free), 14 POIs kept,
   2 dedup-dropped, verified by ingest::tests::poi_fixture_end_to_end:
     N1 (501) -> water/drinking_water, "Marktbrunnen", node        KEPT
     N2 (502) -> resupply/supermarket, "Edeka Mueller" (folded ü)  KEPT (node
@@ -29,8 +29,8 @@
                  holds these characters, so nothing folds
     N10 (533) -> settlement/hamlet, a 33-byte name                KEPT, cut to
                  "A very long settlement n" on a character boundary
-    N11 (534) -> place=village, "Мирный", no name:en              (no candidate:
-                 the fold gives nothing and there is no fall-back)
+    N11 (534) -> place=village, "Мирный", no name:en              KEPT as
+                 "Mirnyy": Cyrillic transliterates, so no fall-back is needed
     N12 (535) -> settlement/village, "東京" + name:en=Tokyo       KEPT as "Tokyo"
     N13 (536) -> place=village with no name                       (no candidate)
     N14 (537) -> resupply/bakery, "Baeckerdorf" (folded ä)        KEPT: the
@@ -102,7 +102,7 @@
     <tag k="place" v="hamlet"/>
     <tag k="name" v="A very long settlement name indeed"/>
   </node>
-  <!-- N11: Cyrillic with no fall-back -> dropped -->
+  <!-- N11: Cyrillic with no fall-back -> transliterated -->
   <node id="534" version="1" lat="47.9560" lon="7.9000">
     <tag k="place" v="village"/>
     <tag k="name" v="Мирный"/>

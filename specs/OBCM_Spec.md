@@ -591,6 +591,10 @@ Service names are ASCII-folded at pack time to printable ASCII (`0x20..=0x7E`) a
 variable-width UTF-8. An unnamed POI (`Name Len == 0`) shows its subtype's fallback label
 on-device. The 24-byte `Name` field is `0xFF`-padded past `Name Len`.
 
+Every stored name, whatever the subtype, is inside the glyph repertoire of the device font —
+ASCII, Latin-1 Supplement and Latin Extended-A — because the producer spells any other character
+in Latin or takes another name tag, so a name never reaches the device as question marks.
+
 `HoursRef` is a 0-based index into the hours-pool section (§7.5): blob `i` lives at
 `hours_pool_offset * U + 2 + i*29`. `0xFFFF` means the POI has no (parseable) hours.
 Duplicate weekly schedules collapse to one pooled blob, so many POIs in a region

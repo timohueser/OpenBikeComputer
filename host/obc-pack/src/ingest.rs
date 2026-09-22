@@ -1205,8 +1205,8 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None, &quiet()).expect("ingest");
 
-        // 15 candidates (12 nodes + 3 way-centroids), 2 dedup-dropped ⇒ 13 kept.
-        assert_eq!(ing.pois.len(), 15, "distinct OSM identities survive");
+        // 16 candidates (13 nodes + 3 way-centroids), 2 dedup-dropped ⇒ 14 kept.
+        assert_eq!(ing.pois.len(), 16, "distinct OSM identities survive");
 
         let find = |name: Option<&str>, subtype: u8| {
             ing.pois
@@ -1244,8 +1244,8 @@ mod tests {
         assert_eq!(find(Some("Freiburg"), 21).population, Some(220_286), "a shorter short_name is stored");
         let ring = find(Some("Ringdorf"), 23);
         assert_eq!((ring.lat_udeg, ring.lon_udeg, ring.from_node), (47_950_200, 7_900_200, false));
-        assert!(!ing.pois.iter().any(|p| p.name.as_deref() == Some("Мирный")), "no fall-back ⇒ no record");
-        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 7").count(), 1);
+        find(Some("Mirnyy"), 23);
+        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 8").count(), 1);
     }
 
     #[test]

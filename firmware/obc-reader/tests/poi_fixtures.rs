@@ -1,5 +1,5 @@
 #![cfg(feature = "external-fixtures")]
-use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS};
+use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS, MAX_SUMMIT_RADIUS_M};
 
 // === Real-data smoke test ====================================================
 
@@ -30,4 +30,40 @@ fn monaco_water_query_smoke() {
     }
     // Sanity: the closest is well under the initial ring, so the query resolved in the first pass.
     assert!(out[0].distance_m < 1_000, "the nearest water POI is close");
+}
+
+// === Name repertoire =========================================================
+
+/// Every settlement and summit name in a real baked map is drawable on the device.
+///
+/// Settlements and summits are the two record kinds that keep their UTF-8 spelling, so they are
+/// the only ones a character outside the font could reach. `glyph_supported` reads the real font
+/// strip, so this asserts the bake and the device agree about the repertoire.
+#[test]
+fn baked_maps_hold_no_name_the_font_cannot_draw() {
+    for (package, file, settlements) in [("sim-freiburg", "freiburg.obcm", 44), ("sim-grimsel", "grimsel.obcm", 19)] {
+        let bytes = obc_fixtures::read(package, file);
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let r = Reader::new(&src, &tables, &cache);
+        let view = tables.bbox;
+
+        let check = |name: &str| {
+            for c in name.chars() {
+                assert!(obc_render::glyph_supported(c), "{package}: {name:?} holds {c:?}, which draws as `?`");
+            }
+        };
+
+        let mut seen = 0;
+        r.visit_settlements_in(&view, |s| {
+            check(&s.name);
+            seen += 1;
+        })
+        .unwrap();
+        assert_eq!(seen, settlements, "{package} carries the settlements its provenance records");
+
+        let centre = ((view.min_lon + view.max_lon) / 2, (view.min_lat + view.max_lat) / 2);
+        r.visit_summits_within(centre, MAX_SUMMIT_RADIUS_M, |s| check(&s.name)).unwrap();
+    }
 }
