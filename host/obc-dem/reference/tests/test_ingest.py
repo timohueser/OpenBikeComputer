@@ -472,6 +472,16 @@ class PerTile(ArchiveCase):
         self.assertEqual(ingest.main(run), 0)
         self.assertEqual(len(service.boxes), 3)  # every tile was done, so nothing was asked for
 
+    def test_per_tile_refuses_a_work_directory_that_holds_the_archive(self):
+        """The work directory is wiped between tiles, so one that holds the archive would
+        take the ingest with it."""
+
+        for work in (self.archive, self.archive.parent):
+            with self.subTest(work=work):
+                self.assertEqual(ingest.main(["ingest", "ch", "--bbox", "8,46,9,47", "--archive",
+                                              str(self.archive), "--work", str(work),
+                                              "--per-tile"]), 1)
+
     def test_per_tile_refuses_a_delivery(self):
         code = ingest.main(["ingest", "ch", "--bbox", "8,46,9,47", "--archive", str(self.archive),
                             "--input", str(self.inputs), "--per-tile"])

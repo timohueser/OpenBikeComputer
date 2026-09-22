@@ -143,7 +143,9 @@ def with_retry(attempt, what: str, absent=()):
         except urllib.error.HTTPError as error:
             if error.code in absent:
                 return None
-            raw = error.read()
+            # Far enough for the quoted head and for an OWS exception code, which stands
+            # at the top of the report; the rest of a server-controlled body is not read.
+            raw = error.read(64 * 1024)
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
             # An OWS `NoApplicableCode` is the server's own fault whatever status it rides
             # on; the LGL WCS sends it as a 404 while it is overloaded. So it is retried

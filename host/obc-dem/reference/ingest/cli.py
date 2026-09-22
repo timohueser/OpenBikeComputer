@@ -89,6 +89,11 @@ def command_ingest(args) -> int:
     else:
         source.require_credential()
         if per_tile:
+            # Per-tile wipes the work directory between tiles, so a work directory that
+            # holds the archive would delete days of ingest on the first tile.
+            if work.resolve() == root.resolve() or work.resolve() in root.resolve().parents:
+                raise Refuse(f"--work {work} holds --archive {root}; a per-tile run wipes the "
+                             "work directory between tiles, so name another one")
             ingest_per_tile(bbox, source, root, work)
             return finish(root, source)
         rasters = source.fetch(bbox, work)
