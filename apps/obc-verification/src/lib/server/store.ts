@@ -206,6 +206,20 @@ export class Store {
       return decided;
     });
   }
+  /** Undo a decision. The suggestion stands again, so a mistaken tick can be taken back. */
+  reopenRequirementSuggestion(id: string): RequirementSuggestion {
+    return this.atomic(() => {
+      const suggestion = this.get<RequirementSuggestion>('requirement-suggestion', id);
+      assert(['accepted', 'dismissed'].includes(suggestion.status), 'Only a decided suggestion can be put back.', 409);
+      assert(!suggestion.requirementId || !this.list<RequirementSuggestion>('requirement-suggestion')
+        .some(s => s.status === 'open' && s.requirementId === suggestion.requirementId),
+        'A newer suggestion for this requirement is already open.', 409);
+      const { decidedBy, decidedAt, feedback, ...rest } = suggestion;
+      const open: RequirementSuggestion = { ...rest, status: 'open' };
+      this.put('requirement-suggestion', id, open);
+      return open;
+    });
+  }
   githubUsers(): ApprovedGitHubUser[] {
     return this.db.prepare('SELECT id,login,admin FROM github_users ORDER BY login COLLATE NOCASE').all().map((row) => ({ id: String(row.id), login: String(row.login), admin: row.admin === 1 }));
   }
