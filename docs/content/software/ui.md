@@ -288,13 +288,12 @@ sheet with its screen, so one Back returns to the riding view the rider squeezed
 
 A row can hold a **value** instead of a screen: it states the value under its label and slides
 the sheet to a small editor, a track with a notch per choice and a tick under the committed one.
-The bike type is such a row. Its four choices are fixed, and the device names them in the rider's
-language, whatever map is loaded. A row can also be a **switch** that flips in place.
+The bike type is such a row, with four fixed choices. A row can also be a **switch** that flips in
+place.
 
 A setting that belongs to one screen lives on that screen's sheet, and a build check fails when a
 sheet row and a settings page bind the same setting. Brightness and the Bluetooth radio, the quick
-drawer's shortcuts, are recorded exceptions. So is the bike type: the rider sets it before a ride,
-from the route-plan sheet or the Ride settings page, with the same editor.
+drawer's shortcuts, and the bike type, also on the Ride page, are the recorded exceptions.
 
 The screen under a drawer is **frozen**: the drawer states its own facts for repaint, so a moving
 map under a sheet causes no work. Whether the screen below is **dimmed** is a property of that
