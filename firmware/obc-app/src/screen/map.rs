@@ -746,7 +746,7 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     // Everything but the name is fixed; the name gets whatever remains inside the max pill width.
     let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
     let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
-    let name = fit(name, (name_budget / font.char_width() as i32).max(0) as usize);
+    let name = fit(name, name_budget, font);
     let name_w = text_width(&name, font) as i32;
 
     let pw = fixed_w + name_w;
@@ -1832,8 +1832,7 @@ mod tests {
         let dist_w = text_width("299m", font) as i32;
         let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
         let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
-        let chars = (name_budget / font.char_width() as i32) as usize;
-        assert_eq!(fit("Pass Summit", chars).as_str(), "Pass Summit", "the full name fits, no ellipsis");
+        assert_eq!(fit("Pass Summit", name_budget, font).as_str(), "Pass Summit", "the full name fits, no ellipsis");
     }
 
     /// The ink glyph is the last writer at the anchor, and every pixel one step off it holds halo

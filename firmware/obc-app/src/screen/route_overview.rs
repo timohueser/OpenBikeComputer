@@ -190,9 +190,8 @@ impl RouteOverviewScreen {
             // width, where it is not truncated.
             title_frame(cv, w, h, rx.t(Msg::RouteOverviewNewRoute), "");
             let x = 16;
-            let chars = ((w - 2 * x) / Font::Body.char_width() as i32) as usize;
             let name_row = rect(x, LIST_TOP + 4, w - 2 * x, Font::Body.line_height() as i32);
-            let name = rx.marquee.fit(&summary.name, chars, Some(name_row));
+            let name = rx.marquee.fit(&summary.name, w - 2 * x, Font::Body, Some(name_row));
             cv.text(&name, Point::new(x, LIST_TOP + 4), Font::Body, TextAlign::Left, INK);
 
             let units = rx.settings.units;
@@ -218,8 +217,7 @@ impl RouteOverviewScreen {
             return;
         }
 
-        let chars = ((w - 28) / Font::Body.char_width() as i32) as usize;
-        let name = rx.marquee.fit(&summary.name, chars, Some(rect(0, 0, w, TITLE_BAR_H)));
+        let name = rx.marquee.fit(&summary.name, w - 28, Font::Body, Some(rect(0, 0, w, TITLE_BAR_H)));
         title_frame(cv, w, h, &name, "");
 
         let band_top = BAND_TOP;
