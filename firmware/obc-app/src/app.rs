@@ -2974,6 +2974,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
+    use crate::harness::support::ride_summary;
     use crate::settings::SETTINGS_RETRY_BACKOFF_MS;
     use obc_ports::{CompassSource, LocationSource};
 
@@ -4001,11 +4002,9 @@ mod tests {
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
-    /// The deepest ordinary mid-ride settings path leaves room for the host's cards. It walks the
-    /// real navigation with gestures, then proves a host-pushed warning can still land. This is
-    /// the deepest modelled path, so read it with
-    /// `laps_of_escape_and_re_descent_leave_room_for_a_host_card`, which bounds the deepest
-    /// reachable one.
+    /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
+    /// walks that one path with gestures; how deep a descent can get at all, and the reserve that
+    /// leaves, belong to `the_deepest_descent_leaves_the_host_card_slots_free`.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4028,7 +4027,6 @@ mod tests {
 
         assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
         assert_eq!(app.ui.stack.len(), 7, "the full mid-ride settings path occupies seven slots");
-        assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 3, "three host-card slots stay reserved");
 
         app.on_warning(WarningFlags::REC_ERROR);
         assert_eq!(app.ui.stack.len(), 8, "the host warning pushes over the deepest normal path");
@@ -5343,18 +5341,9 @@ mod tests {
     #[test]
     fn ride_track_request_hands_out_the_id_until_answered() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let ride = |name: &str| crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced: false,
-            synced_at_utc: 0,
-        };
         app.set_rides(&[
-            crate::RideEntry { id: 7, summary: ride("A") },
-            crate::RideEntry { id: 9, summary: ride("B") },
+            crate::RideEntry { id: 7, summary: ride_summary("A") },
+            crate::RideEntry { id: 9, summary: ride_summary("B") },
         ]);
 
         assert_eq!(ride_track_request(&app), None, "no detail open — no request");
@@ -5370,12 +5359,12 @@ mod tests {
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
-        app.set_rides(&[crate::RideEntry { id: 9, summary: ride("B") }]);
+        app.set_rides(&[crate::RideEntry { id: 9, summary: ride_summary("B") }]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
         assert_eq!(ride_track_request(&app), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride("A") }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("A") }]);
         assert_eq!(app.activity.viewed_ride, None);
         assert_eq!(ride_track_request(&app), None);
     }
@@ -5390,18 +5379,6 @@ mod tests {
             bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
             start_lon: 100,
             start_lat: 100,
-        }
-    }
-
-    fn ride_summary(name: &str) -> crate::ride::RideSummary {
-        crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced: false,
-            synced_at_utc: 0,
         }
     }
 
