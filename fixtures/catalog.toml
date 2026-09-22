@@ -5,9 +5,9 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/b016608fb00921d10648f529e637152867b65b6f3751871b1b55c5b4dbaa78f9.tar.gz"
-sha256 = "b016608fb00921d10648f529e637152867b65b6f3751871b1b55c5b4dbaa78f9"
-bytes = 4137061
+archive = "packages/430d5c3652564fa57c63abea1abb214a88dbf040d6ec1be6a8152656156a4bca.tar.gz"
+sha256 = "430d5c3652564fa57c63abea1abb214a88dbf040d6ec1be6a8152656156a4bca"
+bytes = 4137068
 provenance = "OBCM v18, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain, authored OBCR v5 route and authored trip object v3. Schema 2 multilingual Swiss landmarks and separate bounded peak articles with original Sources. Canonical fixture bbox, and 19 settlement records. Exact source, producer and output identities: sources/ride-assistant/grimsel-v18.json."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
