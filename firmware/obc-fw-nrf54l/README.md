@@ -259,10 +259,6 @@ corruption; keep it after a probe-rs upgrade.
 ELF must be the exact one installed, built with the same features and `DEFMT_LOG`**, or the decode
 is garbage. `cargo rtt` can rebuild before attaching but never programs the device.
 
-`obc board run ELF --preverify` (`run` and `download` only) reads the image back first and programs
-nothing when the board already holds it, then resets and streams RTT — one session that both
-restarts the board and catches its boot log. An ELF that differs is programmed as usual.
-
 | Symptom | Check and recovery |
 | --- | --- |
 | Probe busy / exclusive-access error | Run `obc board doctor`. Stop the owning RTT, debugger or programmer session with Ctrl-C, wait for it to exit, then retry. Do not kill all probe processes. |
@@ -272,6 +268,7 @@ restarts the board and catches its boot log. An ELF that differs is programmed a
 | VCOM stays unresponsive after those checks | Power-cycle the DK. A target reset does not reset the J-Link bridge. With both cables connected, unplugging one may leave the board powered. |
 | J3 absent from host USB enumeration | J3 is the separate native device cable, VID:PID `1209:0001`. Check the RTT VBUS lines, then reconnect J3. J4 serial ports do not prove J3 is working. |
 | J3 enumerates but the application cannot connect | Close the desktop or browser session that owns the interface, then reconnect J3. |
+| You need to restart a board and read its boot log | `obc board run ELF --preverify` reads the image back, programs nothing when the board already holds it, then resets and streams RTT. One session does both. An ELF that differs is programmed as usual. `--preverify` is for `run` and `download` only. |
 
 ## Driving it from a host (`debug-uart`)
 
