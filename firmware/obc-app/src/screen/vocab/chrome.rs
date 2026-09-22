@@ -228,29 +228,16 @@ pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::primitives::Rectangle;
 
     /// The face draws one cell per char, so the wrap budget counts chars.
     #[test]
     fn the_wrap_budget_counts_glyph_cells_not_bytes() {
         let copy = "Réessayez plus tôt"; // 18 chars, 20 bytes
-        /// A draw target that swallows every primitive.
-        struct NullSurface;
-        impl Surface for NullSurface {
-            fn clear(&mut self, _color: u16) {}
-            fn fill(&mut self, _area: Rectangle, _color: u16) {}
-            fn round(&mut self, _area: Rectangle, _radius: u32, _color: u16) {}
-            fn round_outline(&mut self, _area: Rectangle, _radius: u32, _color: u16) {}
-            fn line(&mut self, _a: Point, _b: Point, _color: u16) {}
-            fn triangle(&mut self, _a: Point, _b: Point, _c: Point, _color: u16) {}
-            fn disc(&mut self, _center: Point, _radius: u32, _color: u16) {}
-            fn text(&mut self, _s: &str, at: Point, _font: Font, _align: TextAlign, _color: u16) -> Point {
-                at
-            }
-        }
-        let pitch = wrapped_line_pitch(Font::Label);
-        // `wrapped` returns the y under the last line, so the count is the advance over the pitch.
-        let lines = |width_px| wrapped(&mut NullSurface, copy, 0, 0, width_px, Font::Label, 0) / pitch;
+        let lines = |width_px| {
+            let mut n = 0;
+            wrap(copy, width_px, Font::Label, |_| n += 1);
+            n
+        };
         assert_eq!(lines(18 * Font::Label.char_width() as i32), 1);
         assert_eq!(lines(17 * Font::Label.char_width() as i32), 2);
     }

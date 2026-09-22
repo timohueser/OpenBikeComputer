@@ -157,6 +157,15 @@ pub(crate) fn nav_row(
     }
 }
 
+/// A door onto a destructive page, lettered in warning red until the cursor lands on it. A press
+/// opens it like any door; the confirm and its hold live on the page.
+pub(crate) fn danger_door_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {
+    row_cursor(cv, area, selected, false);
+    let ink = if selected { palette::INK } else { palette::WARNING };
+    row_text(cv, area, label, None, CHEVRON_W, ink);
+    chevron(cv, area, ink);
+}
+
 /// A row that flips a bool in place: the label and the slider.
 pub(crate) fn switch_row(cv: &mut impl Surface, area: Rectangle, label: &str, on: bool, selected: bool) {
     row_cursor(cv, area, selected, false);

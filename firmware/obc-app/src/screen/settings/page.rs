@@ -18,7 +18,7 @@ use crate::screen::vocab::list::{list_frame, scrollbar};
 use crate::screen::vocab::rows::{self, Line2, RowIcon, ROW_GAP};
 use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::sensors::SensorPhase;
-use crate::{t, Msg};
+use crate::{t, AppState, Msg};
 
 /// A page the hub or another page opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,9 +169,9 @@ pub(crate) static FIRMWARE: Menu = Menu {
 impl Item {
     /// Whether the row is on the page at all. Only the phone's Forget row comes and goes: it is
     /// drawn only while there is a bond to drop.
-    fn shown(self, f: &ContextFacts) -> bool {
+    fn shown(self, state: &AppState) -> bool {
         match self {
-            Item::Act(Act::ForgetPhone) => f.state.bond_status.can_forget(f.state.device.ble_paired),
+            Item::Act(Act::ForgetPhone) => state.bond_status.can_forget(state.device.ble_paired),
             _ => true,
         }
     }
@@ -229,24 +229,24 @@ impl SettingsPage {
 
     /// The cursor, on a row that is shown and selectable. Walks forward, then wraps, so a hidden
     /// row under the cursor yields to the next one.
-    fn resolved(&self, f: &ContextFacts) -> usize {
+    fn resolved(&self, state: &AppState) -> usize {
         let rows = self.menu.rows;
-        let ok = |i: usize| rows[i].item.shown(f) && rows[i].item.selectable();
+        let ok = |i: usize| rows[i].item.shown(state) && rows[i].item.selectable();
         (0..rows.len()).map(|k| (self.selected + k) % rows.len()).find(|&i| ok(i)).unwrap_or(self.selected)
     }
 
     /// Move the cursor `n` selectable shown rows, wrapping at both ends.
-    fn step(&mut self, n: i32, f: &ContextFacts) {
+    fn step(&mut self, n: i32, state: &AppState) {
         let rows = self.menu.rows;
         let len = rows.len() as i32;
         let dir = n.signum();
-        let mut i = self.resolved(f) as i32;
+        let mut i = self.resolved(state) as i32;
         for _ in 0..n.unsigned_abs() {
             // Step at least one row, then on to the next selectable shown row, at most one lap.
             for _ in 0..len {
                 i = (i + dir).rem_euclid(len);
                 let item = rows[i as usize].item;
-                if item.selectable() && item.shown(f) {
+                if item.selectable() && item.shown(state) {
                     break;
                 }
             }
@@ -255,18 +255,17 @@ impl SettingsPage {
     }
 
     /// True while the cursor is on a guarded act, so its hold fill draws.
-    pub(crate) fn selection_is_guarded(&self, f: &ContextFacts) -> bool {
-        matches!(self.menu.rows[self.resolved(f)].item, Item::Act(Act::ForgetPhone))
+    pub(crate) fn selection_is_guarded(&self, state: &AppState) -> bool {
+        matches!(self.menu.rows[self.resolved(state)].item, Item::Act(Act::ForgetPhone))
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let facts = cx.context_facts();
-        let i = self.resolved(&facts);
+        let i = self.resolved(cx.state);
         let row = &self.menu.rows[i];
-        let live = row.item.live(&facts);
+        let live = row.item.live(&cx.context_facts());
         match g {
             Gesture::Step(n) => {
-                self.step(n, &facts);
+                self.step(n, cx.state);
                 Transition::None
             }
             Gesture::Press => match row.item {
@@ -299,9 +298,9 @@ impl SettingsPage {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         let facts = rx.context_facts();
-        let selected = self.resolved(&facts);
+        let selected = self.resolved(rx.state);
         let shown: heapless::Vec<usize, 8> =
-            (0..self.menu.rows.len()).filter(|&i| self.menu.rows[i].item.shown(&facts)).collect();
+            (0..self.menu.rows.len()).filter(|&i| self.menu.rows[i].item.shown(rx.state)).collect();
         let heights: heapless::Vec<i32, 8> = shown.iter().map(|&i| self.menu.rows[i].item.height()).collect();
         let avail = h - LIST_TOP - 6;
         let sel_pos = shown.iter().position(|&i| i == selected).unwrap_or(0);
@@ -317,15 +316,8 @@ impl SettingsPage {
             let label = rx.t(row.label);
             let mut buf = heapless::String::<24>::new();
             match row.item {
-                Item::Door(d) => {
-                    let line2 = d.hint(rx, &mut buf);
-                    let danger = d == Door::Reset;
-                    if danger {
-                        rows::action_row(cv, area, label, None, is_selected, true, true, 0.0);
-                    } else {
-                        rows::nav_row(cv, area, label, line2, is_selected, live, true);
-                    }
-                }
+                Item::Door(Door::Reset) => rows::danger_door_row(cv, area, label, is_selected),
+                Item::Door(d) => rows::nav_row(cv, area, label, d.hint(rx, &mut buf), is_selected, live, true),
                 Item::Value(v) => {
                     let text = v.choice_label(v.committed(&facts), rx, &mut buf);
                     rows::nav_row(cv, area, label, Some(Line2::text(text)), is_selected, live, true);
@@ -373,10 +365,12 @@ impl Door {
             Door::Language => Some(Line2 { icon: Some(RowIcon::Flag(lang)), text: lang.name() }),
             Door::Firmware => Some(Line2::text(if rx.fw_version.is_empty() { "--" } else { rx.fw_version })),
             Door::DateTime => {
+                // Day, month, time: 13 cells at most, which clears the chevron column in every
+                // language.
                 let local = rx.settings.local_clock();
                 let _ = write!(
                     buf,
-                    "{} {} \u{00b7} {:02}:{:02}",
+                    "{} {} {:02}:{:02}",
                     local.day,
                     crate::settings::month_name(local, lang),
                     local.hour,
@@ -385,10 +379,10 @@ impl Door {
                 Some(Line2::text(buf.as_str()))
             }
             Door::Sensors => {
-                let connected = rx.sensor_status.iter().filter(|s| s.phase == SensorPhase::Connected).count();
-                if connected == 0 {
-                    return None;
+                if !rx.settings.saved_sensors.iter().any(|s| s.present) {
+                    return Some(Line2::text(rx.t(Msg::SensorsNotSet)));
                 }
+                let connected = rx.sensor_status.iter().filter(|s| s.phase == SensorPhase::Connected).count();
                 let _ = write!(buf, "{connected} {}", rx.t(Msg::ConnectionsConnected));
                 Some(Line2::text(buf.as_str()))
             }
@@ -544,23 +538,51 @@ mod tests {
         st.device.ble_paired = true;
         run(&mut conn, &mut st, &mut s, Gesture::Step(2));
         assert_eq!(conn.selected, 3, "paired: the Forget row is on the page, past the info row");
-        let mut act = Activity::new(Mode::Idle);
-        assert!(conn.selection_is_guarded(&test_ctx(&mut st, &mut act, &mut s).context_facts()));
+        assert!(conn.selection_is_guarded(&st));
         run(&mut conn, &mut st, &mut s, Gesture::Press);
         assert!(!st.ble_forget_requested, "a plain press never forgets");
         run(&mut conn, &mut st, &mut s, Gesture::Hold);
         assert!(st.ble_forget_requested, "the completed hold records the forget request");
 
         st.device.ble_paired = false;
-        let mut act = Activity::new(Mode::Idle);
-        let cx = test_ctx(&mut st, &mut act, &mut s);
-        assert_eq!(conn.resolved(&cx.context_facts()), 0, "the row under the cursor vanished: it moves on");
-        assert!(!conn.selection_is_guarded(&cx.context_facts()));
+        assert_eq!(conn.resolved(&st), 0, "the row under the cursor vanished: it moves on");
+        assert!(!conn.selection_is_guarded(&st));
 
         let mut dt = SettingsPage::new(&DATETIME);
         assert_eq!(dt.selected, 2, "Date & time parks on its one editable row");
         run(&mut dt, &mut st, &mut s, Gesture::Step(-3));
         assert_eq!(dt.selected, 2, "…and stays there");
+    }
+
+    /// Every page label clears its right-hand column on the 240 px panel in every language, in
+    /// Body or in the Label cut the row falls back to, and none needs a second line for itself.
+    #[test]
+    fn every_page_label_fits_its_column_in_every_language() {
+        use obc_render::text::{text_width, Font};
+        let area_w = 240 - 2 * rows::ROW_X;
+        for lang in Language::ALL {
+            for menu in [&HUB, &RIDE, &DISPLAY, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
+                for row in menu.rows {
+                    let label = t(row.label, lang);
+                    assert!(
+                        !label.contains('\n'),
+                        "{lang:?}: page label {label:?} breaks lines; a page row states a value there"
+                    );
+                    let room = match row.item {
+                        Item::Toggle(_) => area_w - 10 - 58,
+                        Item::Door(_) | Item::Value(_) => area_w - 10 - 28,
+                        Item::Act(_) | Item::Info(_) => area_w - 10,
+                    };
+                    let lw = text_width(label, Font::Label) as i32;
+                    assert!(lw <= room, "{lang:?}: page label {label:?} ({lw} px) overruns {room} px even in Label");
+                }
+            }
+            // The fixed second lines: the two info values that are copy rather than data.
+            for msg in [Msg::DatetimeSearching, Msg::SensorsNotSet] {
+                let lw = text_width(t(msg, lang), Font::Label) as i32;
+                assert!(lw <= area_w - 10, "{lang:?}: {:?} overruns the info row", t(msg, lang));
+            }
+        }
     }
 
     fn drained_dfu(dfu: &mut crate::dfu::DfuState) -> Option<DfuAction> {

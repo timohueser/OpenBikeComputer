@@ -219,7 +219,7 @@ system = "System"
 [datetime]
 title = "DATE & TIME"
 gps_fix = "GPS fix"
-searching = "Searching for fix"
+searching = "Looking for fix"
 local_time = "Local time"
 offset = "UTC offset"
 utc = "UTC "

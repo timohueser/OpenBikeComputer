@@ -3930,6 +3930,18 @@ mod tests {
         app.apply_gesture(Gesture::Back); // System page → Settings list (still inside the settings subtree)
         assert!(!settings_dirty(&mut app), "the Settings list is itself a settings screen — save stays held");
 
+        // A sheet over a settings page is still inside the subtree: the pending edit stays held
+        // while the editor is up, and while the quick drawer is.
+        app.apply_gesture(Gesture::Step(-1)); // → System row
+        app.apply_gesture(Gesture::Press); // → System page
+        app.apply_gesture(Gesture::Press); // → the Units editor sheet
+        assert!(!settings_dirty(&mut app), "the editor sheet over a settings page holds the save");
+        app.apply_gesture(Gesture::Back); // close the sheet
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        assert!(!settings_dirty(&mut app), "the quick drawer over a settings page holds the save too");
+        app.apply_gesture(Gesture::Back); // close the drawer
+        app.apply_gesture(Gesture::Back); // System page → Settings list
+
         app.apply_gesture(Gesture::Back); // Settings list → Menu (left the settings subtree)
         assert!(settings_dirty(&mut app), "leaving settings flushes the pending edit — one coalesced save");
         assert!(!settings_dirty(&mut app), "and the flag drains — only saved once");
