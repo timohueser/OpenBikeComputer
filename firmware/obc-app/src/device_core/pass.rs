@@ -537,13 +537,14 @@ impl App {
     }
 
     /// A ride session opened: re-lock the matcher, restart the trail and the pace window, and — for
-    /// a fresh ride, never a recovered continuation — zero the accumulators and drop any detour in
-    /// flight.
+    /// a fresh ride, never a recovered continuation — zero the accumulators, record the ride's
+    /// origin and drop any detour in flight.
     fn begin_ride_session(&mut self, start: crate::recorder::SessionStart) {
         self.navigator.relock_matcher();
         if start == crate::recorder::SessionStart::Fresh {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
+            self.recorder.set_origin(self.ride_origin());
             self.navigator.reset_detour();
             // Only a measured anchor re-joins the route. A plain route selection records no
             // progress, so re-anchoring a fresh ride to it would drag the matcher back to the route

@@ -1,14 +1,17 @@
-//! Recorded-ride v3 summary access.
+//! Recorded-ride v4 summary access.
 //!
-//! The object begins with the existing 20-byte track samples and ends with one fixed 84-byte
+//! The object begins with the existing 20-byte track samples and ends with one fixed 144-byte
 //! footer. Recording therefore writes the final bytes directly; finalize is one footer append,
 //! never a whole-ride conversion.
 
 use heapless::String;
 
 use obc_formats::{
+    bike::BikeType,
     io::{ByteSource, DecodeError, Error},
-    ride::{checked_object_len, decode_footer, encode_footer, Footer, FOOTER_LEN, MAGIC, NAME_CAP, VERSION},
+    ride::{
+        checked_object_len, decode_footer, encode_footer, Footer, Name, TripRef, FOOTER_LEN, MAGIC, NAME_CAP, VERSION,
+    },
 };
 
 /// The totals captured by the app, plus the wall-clock anchor used to date the first sample.
@@ -29,6 +32,11 @@ pub struct RideStats {
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
     pub max_power: Option<u16>,
+    /// The bike type that was current when the ride started.
+    pub bike: BikeType,
+    /// The trip day the ride started on.
+    pub trip: Option<TripRef>,
+    pub trip_name: Name,
 }
 
 /// Encode the only finish-time payload write.
@@ -48,7 +56,7 @@ pub fn encode_summary_footer(
     } else {
         0
     };
-    encode_footer(&Footer::new(
+    let mut footer = Footer::new(
         name,
         start_time,
         stats.distance_m,
@@ -61,7 +69,10 @@ pub fn encode_summary_footer(
         stats.avg_cadence,
         stats.avg_power,
         stats.max_power,
-    ))
+    );
+    footer.bike = stats.bike;
+    footer.set_trip(stats.trip, stats.trip_name);
+    encode_footer(&footer)
 }
 
 /// A finished ride's list/detail summary, decoded with one footer-sized random read.
@@ -80,11 +91,14 @@ pub struct RideInfo {
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
     pub max_power: Option<u16>,
+    pub bike: BikeType,
+    pub trip: Option<TripRef>,
+    pub trip_name: String<NAME_CAP>,
 }
 
 impl RideInfo {
-    /// Read only the final 84 bytes, validate the v3 footer, then require the catalog/source length
-    /// to be exactly `point_count × 20 + 84`.
+    /// Read only the final footer bytes, validate the footer, then require the catalog/source length
+    /// to be exactly `point_count × 20 + FOOTER_LEN`.
     pub fn read(src: &dyn ByteSource) -> Result<RideInfo, Error> {
         let footer_at = src.len().checked_sub(FOOTER_LEN as u64).ok_or(Error::BadOffset)?;
         let mut bytes = [0u8; FOOTER_LEN];
@@ -105,6 +119,8 @@ impl RideInfo {
 
         let mut name = String::new();
         name.push_str(footer.name()).map_err(|_| Error::TooLarge)?;
+        let mut trip_name = String::new();
+        trip_name.push_str(footer.trip_name()).map_err(|_| Error::TooLarge)?;
         Ok(RideInfo {
             version: VERSION,
             name,
@@ -119,6 +135,9 @@ impl RideInfo {
             avg_cadence: footer.avg_cadence,
             avg_power: footer.avg_power,
             max_power: footer.max_power,
+            bike: footer.bike,
+            trip: footer.trip(),
+            trip_name,
         })
     }
 }

@@ -106,7 +106,7 @@ describe("gpxToObcr", () => {
 
 describe("trackToGpx", () => {
     it("reproduces the native exporter's GPX byte-for-byte", async () => {
-        const gpx = await trackToGpx(vector("ride-v3.bin"), TRACK_NAME);
+        const gpx = await trackToGpx(vector("ride-v4.bin"), TRACK_NAME);
         const expected = new TextDecoder().decode(vector("track-export.gpx"));
         // Compared as text so a failure diffs readably; the fixture is ASCII apart from nothing,
         // so text equality here *is* byte equality.
@@ -262,7 +262,7 @@ describe("failures", () => {
         expect(notGpx.message).toMatch(/\.fit|\.tcx/);
 
         const shortLog = await failure(() => trackToGpx(new Uint8Array(9), "x"));
-        expect(shortLog.message).toContain("ride-v3");
+        expect(shortLog.message).toContain("ride-v4");
 
         for (const e of [noTrack, notGpx, shortLog]) {
             expect(e.message.length, `"${e.message}" is too terse to be actionable`).toBeGreaterThan(60);

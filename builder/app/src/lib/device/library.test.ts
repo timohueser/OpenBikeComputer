@@ -83,7 +83,7 @@ function rideObject(name: string, startTime: number, points = 24): RideObject {
         });
     }
     return {
-        version: 3,
+        version: 4,
         name,
         startTime,
         distanceM: 12_340,
@@ -95,6 +95,8 @@ function rideObject(name: string, startTime: number, points = 24): RideObject {
         avgCadence: 80,
         avgPower: null,
         maxPower: null,
+        bikeType: 0,
+        trip: null,
         points: track,
     };
 }

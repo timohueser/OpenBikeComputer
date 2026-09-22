@@ -1190,14 +1190,14 @@ fn serve_recorder(
     }
     match effect {
         RecorderEffect::Checkpoint { token } => {
-            match tracks.checkpoint(app.recorder.ride_stats(), app.recorder.checkpoint_context()) {
+            match tracks.checkpoint(app.ride_stats(), app.recorder.checkpoint_context()) {
                 Ok(status) => RecorderOutcome::Checkpointed { token, status },
                 Err(error) => RecorderOutcome::Failed { token, error },
             }
         }
         // Recorder drains acknowledged samples before it admits this footer-only close.
         RecorderEffect::Finalize { token } => {
-            match tracks.finalize(app.recorder.ride_stats()) {
+            match tracks.finalize(app.ride_stats()) {
                 RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                 // The object was never created — a start this store refused, which already warned
                 // the rider. There is nothing to save, and saying so is terminal: answering `Failed`

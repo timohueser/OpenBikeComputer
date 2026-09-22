@@ -1,10 +1,11 @@
-//! Recorded ride v3 contract: verbatim samples, one fixed footer, and footer-based readers.
+//! Recorded ride v4 contract: verbatim samples, one fixed footer, and footer-based readers.
 
 use core::cell::RefCell;
 
 use obc_formats::{
+    bike::BikeType,
     io::{ByteSource, Error, SliceSource},
-    ride::{FOOTER_LEN, VERSION},
+    ride::{Name, TripRef, FOOTER_LEN, VERSION},
     track::encode_record,
 };
 use obc_ports::TrackPoint;
@@ -23,6 +24,9 @@ const STATS: RideStats = RideStats {
     avg_cadence: Some(85),
     avg_power: Some(210),
     max_power: Some(480),
+    bike: BikeType::Mtb,
+    trip: Some(TripRef { key: 7, day_index: 0, day_count: 2 }),
+    trip_name: Name::EMPTY,
 };
 
 fn pt(lon: i32, lat: i32, ele: i16, t_ms: u32, segment_start: bool) -> TrackPoint {
@@ -41,7 +45,7 @@ fn ride_of(points: &[TrackPoint], name: &str, stats: &RideStats) -> Vec<u8> {
 #[test]
 fn recorded_samples_are_the_served_bytes() {
     let points = [pt(7_842_000, 47_995_000, 300, 100_000, true), pt(-7_843_500, -47_996_000, -42, 161_500, false)];
-    let ride = ride_of(&points, "Höhenweg", &STATS);
+    let ride = ride_of(&points, "Höhenweg", &RideStats { trip_name: Name::new("Alpen"), ..STATS });
     let recorded: Vec<u8> = points.iter().flat_map(encode_record).collect();
 
     assert_eq!(&ride[..recorded.len()], recorded, "GET prefix is the exact recorded sample stream");
@@ -59,6 +63,7 @@ fn recorded_samples_are_the_served_bytes() {
         (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
         (Some(142), Some(176), Some(85), Some(210), Some(480))
     );
+    assert_eq!((info.bike, info.trip, info.trip_name.as_str()), (BikeType::Mtb, STATS.trip, "Alpen"));
 }
 
 struct ReadSpy<'a> {
@@ -86,7 +91,7 @@ fn list_summary_is_one_footer_only_random_read() {
 }
 
 #[test]
-fn exact_length_and_v3_are_mandatory() {
+fn exact_length_and_v4_are_mandatory() {
     let ride = ride_of(&[pt(1, 2, 3, 4, true)], "R", &STATS);
     assert!(RideInfo::read(&SliceSource(&ride[..ride.len() - 1])).is_err());
     let mut long = ride.clone();
@@ -95,7 +100,7 @@ fn exact_length_and_v3_are_mandatory() {
 
     let mut old = ride;
     let version = old.len() - FOOTER_LEN + 4;
-    old[version] = 2;
+    old[version] = 3;
     assert!(matches!(RideInfo::read(&SliceSource(&old)), Err(Error::BadVersion)));
 }
 
@@ -118,7 +123,7 @@ fn an_untrusted_boot_never_dates_a_ride_from_stale_persisted_time() {
 }
 
 #[test]
-fn profile_and_preview_stream_the_v3_samples() {
+fn profile_and_preview_stream_the_samples() {
     let points = [pt(0, 0, 100, 0, true), pt(0, 10_000, 300, 60_000, false), pt(0, 20_000, 200, 120_000, false)];
     let ride = ride_of(&points, "Bergtour", &STATS);
 

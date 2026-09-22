@@ -53,6 +53,7 @@ fn complete<T>(future: impl Future<Output = T>) -> T {
 }
 fn context(n: u32) -> RideContinuation {
     RideContinuation {
+        origin: Default::default(),
         ridden_m: n as f32 * 4.25,
         moving_m: n as f32 * 3.75,
         moving_s: n as f32,
@@ -94,6 +95,9 @@ fn stats() -> obc_route::RideStats {
         avg_cadence: None,
         avg_power: None,
         max_power: None,
+        bike: obc_formats::bike::BikeType::Road,
+        trip: None,
+        trip_name: obc_formats::ride::Name::EMPTY,
     }
 }
 fn setup() -> (&'static sim::SparseDisk, &'static FlatStore<FlatCard>, Writer, Recorder) {
