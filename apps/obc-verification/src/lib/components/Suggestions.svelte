@@ -39,6 +39,11 @@
     return (suggestion.requirementId ? subject(suggestion)?.group : suggestion.group)?.trim() || 'No category';
   }
   function toggle(id: string) { expanded = expanded === id ? '' : id; }
+  /** A reason often names a neighbouring requirement. Split it so each name the revision holds opens it. */
+  function named(reason: string) {
+    return reason.split(/\b([A-Za-z][A-Za-z0-9]*-\d+)\b/)
+      .map(part => ({ text: part, id: requirements.some(r => r.id === part) ? part : '' }));
+  }
   /** Who wrote it, when, and what it was read against. Svelte trims separators written as markup, so this is one string. */
   function meta(suggestion: RequirementSuggestionReview) {
     const parts = [suggestion.author, day(suggestion.createdAt)];
@@ -92,7 +97,7 @@
                   {#if current}<span class="eyebrow">Current</span><Markdown text={current.statement} />{/if}
                   <span class="eyebrow">{current ? 'Suggested' : 'Suggested statement'}</span>
                   <div class="statement"><Markdown text={s.statement} /></div>
-                  <span class="eyebrow">Why</span>{s.reason}
+                  <span class="eyebrow">Why</span>{#each named(s.reason) as part}{#if part.id}<a href="#requirement" on:click|preventDefault={() => onselect(part.id)}>{part.text}</a>{:else}{part.text}{/if}{/each}
                   {#if s.stale}<p class="stale">{s.stale}</p>{/if}
                 </div>
               {/if}
@@ -136,6 +141,7 @@
   .sub a { color: var(--slate); font-weight: 600; text-decoration: underline; }
   .body { margin-top: 6px; font-size: 13px; line-height: 1.5; }
   .body .eyebrow { margin: 10px 0 3px; color: var(--muted); }
+  .body a { color: var(--slate); font-weight: 600; }
   .body .statement { padding: 8px 10px; background: var(--slate-bg); border-left: 3px solid var(--slate); border-radius: 0 6px 6px 0; }
   .stale { margin: 8px 0 0; padding: 6px 9px; font-size: 12px; color: var(--amber); background: #fff6e2; border: 1px solid #ead9b3; border-radius: 6px; }
   .x { padding: 2px 4px; font-size: 16px; line-height: 1; color: var(--muted); background: transparent; border-color: transparent; }

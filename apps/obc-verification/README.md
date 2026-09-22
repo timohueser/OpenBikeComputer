@@ -172,7 +172,9 @@ exist, or a requirement no longer describes the product, suggest it and let the 
 Acceptance is an acknowledgment only; it changes no draft.
 
 1. Write the full replacement title and statement, not a patch.
-2. Keep `reason` to two or three sentences: the observation behind the suggestion.
+2. Keep `reason` to two or three sentences: the observation behind the suggestion. Name another
+   requirement here, never in the statement, which must be testable on its own. The panel links
+   each name in a reason to it.
 3. `POST /api/requirement-suggestions` with `baseRevision` at the current revision, `group` for a
    new requirement, and `requirementId` only for a change. `obc req suggest suggestion.json`
    validates, fills in the base revision and commit, and submits; use `--check` first.
