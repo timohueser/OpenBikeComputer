@@ -824,7 +824,14 @@ check *args:
         step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
         step "board build (default, release)" cargo build --release --locked
         popd >/dev/null
-      else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
+      else _warn "skip the nRF54L gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("embedded"); fi
+      # The `board` gate is the `embedded` AND `boot` jobs. The bootloader keeps the COM wave in
+      # software, so it has no FLPR blob and runs whether or not a RISC-V gcc is installed.
+      pushd "$OBC_ROOT/firmware/obc-boot" >/dev/null
+      step "bootloader clippy (default)"   cargo clippy --locked -- -D warnings
+      step "bootloader clippy (rtt)"       cargo clippy --locked --features rtt -- -D warnings
+      step "bootloader build (release)"    cargo build --release --locked
+      popd >/dev/null
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
