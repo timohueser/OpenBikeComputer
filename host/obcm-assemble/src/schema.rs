@@ -300,6 +300,30 @@ pub struct Skin {
     pub styles: Vec<SkinStyle>,
 }
 
+/// The two authored presentations carried by every assembled map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapStyles {
+    pub light: Skin,
+    pub dark: Skin,
+}
+
+impl MapStyles {
+    pub fn parse(light: &str, dark: &str) -> Result<Self, String> {
+        Ok(Self { light: Skin::parse(light)?, dark: Skin::parse(dark)? })
+    }
+
+    pub fn resolve(&self, schema: &Schema) -> Result<(Vec<StyleRecord>, Vec<StyleRecord>), String> {
+        let light = self.light.resolve(schema)?;
+        let dark = self.dark.resolve(schema)?;
+        let light_ids: Vec<u8> = light.iter().map(|style| style.id).collect();
+        let dark_ids: Vec<u8> = dark.iter().map(|style| style.id).collect();
+        if light_ids != dark_ids {
+            return Err(format!("the light style ids {light_ids:?} differ from the dark style ids {dark_ids:?}"));
+        }
+        Ok((light, dark))
+    }
+}
+
 impl Skin {
     pub fn parse(text: &str) -> Result<Skin, String> {
         serde_json::from_str(text).map_err(|e| format!("skin: {e}"))

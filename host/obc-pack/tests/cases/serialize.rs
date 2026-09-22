@@ -209,10 +209,10 @@ fn serialize_lods_header_single_empty_leaf() {
                                       // profiles (56 B each), always present.
     let profile_table_len = 4 * obc_formats::obcm::NAV_PROFILE_LEN;
     let nav_section_len = align_up(align_up(obc_formats::obcm::NAV_DIR_LEN) + profile_table_len);
-    assert_eq!(bin.len(), 144 + align_up(poi_dir_len) + hours_pool_len + nav_section_len);
+    assert_eq!(bin.len(), 144 + align_up(poi_dir_len) + hours_pool_len + nav_section_len + 1);
     assert_eq!(&bin[0..4], b"OBCM");
     assert_eq!(bin[4], obc_formats::obcm::VERSION); // version
-    assert_eq!(scaled_at(&bin, 21), 80, "the style table is at the first unit boundary past the 65-byte header");
+    assert_eq!(scaled_at(&bin, 21), 80, "the style table is at the first unit boundary past the 71-byte header");
     assert!(bin[obc_formats::obcm::HEADER_LEN..80].iter().all(|&b| b == FILLER), "and the gap behind it is 0xFF");
     assert_eq!(bin[40], 4, "producers write Offset Scale 4 (U = 16)");
     assert_eq!(u32::from_le_bytes(bin[41..45].try_into().unwrap()), 0, "obc-pack embeds no terrain");
@@ -253,7 +253,9 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(bin[nav_off + 26], 4, "profile_count = the 4 default profiles");
     assert_eq!(bin[nav_off + 27], 0, "reserved byte is 0");
     // The empty nav section is exactly the directory + the 4-profile table.
-    assert_eq!(nav_off + nav_section_len, bin.len(), "empty nav section is dir + profile table");
+    let dark_style_off = scaled_at(&bin, 65);
+    assert_eq!(nav_off + nav_section_len, dark_style_off, "empty nav section is dir + profile table");
+    assert_eq!(dark_style_off + 1, bin.len(), "empty dark style table is one count byte");
 
     let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer

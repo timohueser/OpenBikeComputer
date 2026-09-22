@@ -367,7 +367,8 @@ const abandoned =
 export async function assembleCells(
     cells: readonly AssembleCell[],
     schemaJson: string,
-    skinJson: string,
+    lightSkinJson: string,
+    darkSkinJson: string,
     options: AssembleOptions = {},
     onProgress?: AssembleProgress,
     knownEmpty: readonly AssembleKnownEmpty[] = [],
@@ -387,7 +388,7 @@ export async function assembleCells(
     let assembler: InstanceType<Bridge["Assembler"]> | null = null;
     try {
         const mod = await ensure();
-        assembler = new mod.Assembler(schemaJson, skinJson, JSON.stringify(options));
+        assembler = new mod.Assembler(schemaJson, lightSkinJson, darkSkinJson, JSON.stringify(options));
         for (const c of cells) {
             assembler.addCell(c.id, c.band, c.partial ?? false, c.bytes);
         }

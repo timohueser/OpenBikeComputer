@@ -6,9 +6,9 @@ pub mod landmarks;
 pub mod peaks;
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 18;
+pub const VERSION: u8 = 19;
 /// Fixed header, including optional terrain and landmark region pointers.
-pub const HEADER_LEN: usize = 65;
+pub const HEADER_LEN: usize = 71;
 /// Header offset of the `Offset Scale` byte.
 pub const HEADER_OFFSET_SCALE_OFF: usize = 40;
 /// Header offset of the `Terrain Offset` field.
@@ -19,7 +19,12 @@ pub const HEADER_LANDMARK_OFFSET_OFF: usize = 49;
 pub const HEADER_LANDMARK_LENGTH_OFF: usize = 53;
 pub const HEADER_PEAK_OFFSET_OFF: usize = 57;
 pub const HEADER_PEAK_LENGTH_OFF: usize = 61;
+/// Header offset of the scaled dark style-table offset.
+pub const HEADER_DARK_STYLE_OFFSET_OFF: usize = 65;
+/// Header offset of the dark user-position marker colour.
+pub const HEADER_DARK_MARKER_COLOR_OFF: usize = 69;
 pub const LOD_ENTRY_LEN: usize = 18;
+/// Length of one light or dark style record.
 pub const STYLE_RECORD_LEN: usize = 8;
 
 /// Width of the compact feature header. The common case: at most 255 vertices and an anchor that
@@ -699,12 +704,12 @@ mod tests {
         let mut fixture = [0u8; HEADER_LEN];
         fixture[..4].copy_from_slice(&MAGIC);
         fixture[4] = VERSION;
-        // The header is 65 bytes, so the style table begins at the first unit boundary past it.
+        // The header is 71 bytes, so the style table begins at the first unit boundary past it.
         let style = OffsetScale::DEFAULT.scaled(OffsetScale::DEFAULT.align_up(HEADER_LEN as u64).unwrap()).unwrap();
         fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
         fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
         validate_header_prefix(&fixture).unwrap();
-        assert_eq!(fixture[4], 0x12, "the version byte is the hard cut, and it cuts in both directions");
+        assert_eq!(fixture[4], 0x13, "the version byte is the hard cut, and it cuts in both directions");
         assert_eq!(style.units(), 5);
         assert_eq!(style.bytes(), 80);
     }
@@ -775,7 +780,7 @@ mod tests {
             };
             let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut sink);
             w.put(&[0u8; HEADER_LEN]).unwrap();
-            assert_eq!(w.at(), 65);
+            assert_eq!(w.at(), 71);
             let boundary = w.begin_section().unwrap();
             assert_eq!(w.at(), boundary, "the cursor is the boundary it just reached");
             w.put(b"style").unwrap();
@@ -786,9 +791,9 @@ mod tests {
             assert_eq!(w.begin_section().unwrap(), 96, "a second call at a boundary is a no-op");
             boundary
         };
-        assert_eq!(boundary, 80, "§1.2: the style table is the first unit boundary past the 65-byte header");
+        assert_eq!(boundary, 80, "§1.2: the style table is the first unit boundary past the 71-byte header");
         assert_eq!(OffsetScale::DEFAULT.scaled(boundary).map(ScaledOffset::units), Some(5), "…which is `5` in units");
-        assert_eq!(&out[65..80], &[FILLER; 15], "the gap is the format's one fill byte");
+        assert_eq!(&out[71..80], &[FILLER; 9], "the gap is the format's one fill byte");
         assert_eq!(&out[85..96], &[FILLER; 11]);
         assert_eq!(out.len(), 96);
     }
@@ -801,7 +806,7 @@ mod tests {
         w.put(&[0u8; HEADER_LEN]).unwrap();
         w.begin_section().unwrap();
         w.pad(3).unwrap();
-        assert_eq!(w.at(), 83, "65 rounded to 80, then three bytes of a computed run");
+        assert_eq!(w.at(), 83, "71 rounded to 80, then three bytes of a computed run");
         // The alignment run is a whole sector, which one `FILLER_RUN` covers without allocating.
         w.pad(512).unwrap();
         assert_eq!(w.at(), 595);

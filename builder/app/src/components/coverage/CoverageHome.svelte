@@ -65,7 +65,7 @@
         <section class="card">
             <div class="step-head">
                 <span class="num">2</span>
-                <h3>Skin</h3>
+                <h3>Map style</h3>
             </div>
             <SkinStep {store} />
         </section>

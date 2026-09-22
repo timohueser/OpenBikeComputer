@@ -8,8 +8,8 @@
 use obc_map_scene::BBox;
 use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
-    build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, resolve_offset, scaled, seal, LodSpec,
-    Style, STYLE_OFFSET, UNIT,
+    align_up, build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, resolve_offset, scaled, seal,
+    LodSpec, Style, FILLER, STYLE_OFFSET, UNIT,
 };
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
@@ -338,12 +338,10 @@ fn header_straddling_chunk_end_is_a_malformed_drop() {
     assert_eq!(status.capacity_dropped, 0);
 }
 
-/// A style table whose count byte claims more records than the file holds: `parse_styles` must
-/// stop at the last whole record. A valid 2-style file with the count byte forged up to 8 parses
-/// the two real records, shows none of the phantom six, and still constructs, because a truncated
-/// table is not a hard error.
+/// A style table whose count byte claims more records than the section holds is corrupt. Accepting
+/// only the whole prefix could give light and dark presentations different ID sets.
 #[test]
-fn truncated_style_table_parses_only_present_records() {
+fn truncated_style_table_is_rejected() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
     // `Style Offset` names the first unit boundary past the header, and the count byte is the
     // first byte of the style table.
@@ -352,16 +350,7 @@ fn truncated_style_table_parses_only_present_records() {
     let mut forged = bytes.clone();
     forged[style_off] = 8; // claim 8 styles; only 2 records (16 bytes) follow before the LOD table
 
-    let cache = MapCache::new();
-    let src = SliceSource(&forged);
-    let tables = MapTables::parse(&src).unwrap();
-    let r = Reader::new(&src, &tables, &cache);
-    assert!(r.style(1).is_some(), "the first real style still parses");
-    assert!(r.style(2).is_some(), "the second real style still parses");
-    // …and the decoder still works, so the truncated table did not corrupt the offsets after it.
-    let feats = decode(&r, 0, 0, &r.bbox);
-    assert_eq!(feats.len(), 1);
-    assert_eq!(feats[0].style_id, 1);
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)));
 }
 
 /// A `style_offset` at or past the end of the file is a corrupt header and must be rejected, not
@@ -370,10 +359,11 @@ fn truncated_style_table_parses_only_present_records() {
 /// must come from `parse_styles`, where there is no count byte to read.
 #[test]
 fn style_offset_at_eof_is_rejected() {
-    let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
-    let mut forged = bytes.clone();
+    let mut forged = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
     // The file ends on a unit boundary, so `== total` is a value the scaled field can express.
-    forged[21..25].copy_from_slice(&scaled(bytes.len()).to_le_bytes()); // style_offset = file length
+    forged.resize(align_up(forged.len()), FILLER);
+    let end = forged.len();
+    forged[21..25].copy_from_slice(&scaled(end).to_le_bytes()); // style_offset = file length
 
     assert!(
         matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)),

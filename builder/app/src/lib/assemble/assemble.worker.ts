@@ -157,7 +157,8 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                     result = await assembleCells(
                         [...req.cells, ...opened.extra],
                         req.schemaJson,
-                        req.skinJson,
+                        req.lightSkinJson,
+                        req.darkSkinJson,
                         req.options,
                         (phase, fraction) => {
                             post({ type: "progress", phase, fraction });

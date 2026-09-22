@@ -112,7 +112,8 @@ export class CoverageStore {
     regionErrors = $state<ReadonlyMap<string, string>>(new Map());
 
     selection = $state<Selection>(emptySelection(CORRIDOR_RADIUS_DEFAULT_M));
-    skinId = $state<string>("");
+    lightSkinId = $state<string>("default");
+    darkSkinId = $state<string>("dusk");
     customSkinRecords = $state<CustomSkinRecord[]>([]);
 
     /** The corridor panel's checked-but-not-yet-added routes, drawn dashed on
@@ -142,7 +143,6 @@ export class CoverageStore {
         this.rootBody = rootBody;
         this.skinStorage = skinStorage;
         this.customSkinRecords = loadCustomSkins(skinStorage, client.catalog.schema);
-        this.skinId = client.catalog.skins[0].id;
         void this.loadIndices();
     }
 
@@ -231,16 +231,40 @@ export class CoverageStore {
         ...this.customSkinRecords.map((record) => record.skin),
     ]);
 
-    readonly skin = $derived.by<SkinEntry>(() => {
-        return this.skins.find((s) => s.id === this.skinId) ?? this.catalog.skins[0];
+    readonly lightSkins = $derived.by<SkinEntry[]>(() =>
+        this.skins.filter((skin) => skin.id === "default" || this.basedOn(skin.id) === "default"),
+    );
+
+    readonly darkSkins = $derived.by<SkinEntry[]>(() =>
+        this.skins.filter((skin) => skin.id === "dusk" || this.basedOn(skin.id) === "dusk"),
+    );
+
+    readonly lightSkin = $derived.by<SkinEntry>(() => {
+        const skin = this.lightSkins.find((candidate) => candidate.id === this.lightSkinId) ?? this.lightSkins[0];
+        if (!skin) throw new Error('the catalog has no "default" Light skin');
+        return skin;
     });
+
+    readonly darkSkin = $derived.by<SkinEntry>(() => {
+        const skin = this.darkSkins.find((candidate) => candidate.id === this.darkSkinId) ?? this.darkSkins[0];
+        if (!skin) throw new Error('the catalog has no "dusk" Dark skin');
+        return skin;
+    });
+
+    private basedOn(id: string): string | null {
+        return this.customSkinRecords.find((record) => record.skin.id === id)?.based_on ?? null;
+    }
 
     saveCustomSkin(draft: SkinEntry, name: string, basedOn: string): SkinEntry {
         const existing = this.customSkinRecords.find((record) => record.skin.id === draft.id) ?? null;
+        const source = existing?.based_on ?? basedOn;
+        if (source !== "default" && source !== "dusk") {
+            throw new Error(`custom skin source ${JSON.stringify(source)} is not Light or Dark`);
+        }
         const skin = prepareCustomSkin(draft, this.catalog.schema, name, existing?.skin ?? null);
         const record: CustomSkinRecord = {
             skin,
-            based_on: existing?.based_on ?? basedOn,
+            based_on: source,
         };
         const next = existing
             ? this.customSkinRecords.map((candidate) => (candidate.skin.id === skin.id ? record : candidate))
@@ -249,7 +273,8 @@ export class CoverageStore {
         // skin that disappears on refresh.
         persistCustomSkins(this.skinStorage, this.catalog.schema, next);
         this.customSkinRecords = next;
-        this.skinId = skin.id;
+        if (record.based_on === "default") this.lightSkinId = skin.id;
+        else if (record.based_on === "dusk") this.darkSkinId = skin.id;
         return skin;
     }
 
@@ -258,7 +283,8 @@ export class CoverageStore {
         if (next.length === this.customSkinRecords.length) return;
         persistCustomSkins(this.skinStorage, this.catalog.schema, next);
         this.customSkinRecords = next;
-        if (this.skinId === id) this.skinId = this.catalog.skins[0].id;
+        if (this.lightSkinId === id) this.lightSkinId = "default";
+        if (this.darkSkinId === id) this.darkSkinId = "dusk";
     }
 
     /** What the panel's candidate would add to the committed map. */

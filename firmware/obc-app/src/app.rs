@@ -2,7 +2,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_elevation::ElevationSource;
-use obc_reader::Reader;
+use obc_reader::{MapStyleSet, Reader};
 use obc_render::{zoom_for_mpp, Canvas, Clock, NoopClock, RenderScratch, RenderStats, Viewport};
 use obc_route::{Profile, RouteReader};
 
@@ -2595,6 +2595,12 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        let style_set = match self.settings.theme {
+            crate::settings::Theme::Light => MapStyleSet::Light,
+            crate::settings::Theme::Dark => MapStyleSet::Dark,
+        };
+        let themed_reader = reader.map(|reader| reader.with_style_set(style_set));
+        let reader = themed_reader.as_ref();
         // The one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
         self.prepare_find(reader, route);

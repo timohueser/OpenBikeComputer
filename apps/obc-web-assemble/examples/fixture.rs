@@ -11,14 +11,16 @@
 //! cargo run --release -p obcm-assemble -- \
 //!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
 //!     --terrain apps/obc-web-assemble/tests/fixture/terrain.json \
-//!     --skin    apps/obc-web-assemble/tests/fixture/skin.json \
+//!     --light-skin apps/obc-web-assemble/tests/fixture/skin.json \
+//!     --dark-skin apps/obc-web-assemble/tests/fixture/dark-skin.json \
 //!     --out     apps/obc-web-assemble/tests/fixture/expected/map.obcm \
 //!     --accept-partial
 //! # 3. and again with no raster, which is `expected/flat.obcm`: the same selection with an empty
 //! #    terrain region.
 //! cargo run --release -p obcm-assemble -- \
 //!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
-//!     --skin    apps/obc-web-assemble/tests/fixture/skin.json \
+//!     --light-skin apps/obc-web-assemble/tests/fixture/skin.json \
+//!     --dark-skin apps/obc-web-assemble/tests/fixture/dark-skin.json \
 //!     --out     apps/obc-web-assemble/tests/fixture/expected/flat.obcm \
 //!     --accept-partial
 //! ```

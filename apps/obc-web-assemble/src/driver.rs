@@ -28,7 +28,7 @@ use std::cell::{Cell as StdCell, RefCell};
 
 use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
-use obcm_assemble::schema::{Schema, Skin};
+use obcm_assemble::schema::{MapStyles, Schema};
 use obcm_assemble::{
     assemble_full, CellInput, Clock, Error, KnownEmptyInput, MapStore, MemoryScratch, MemorySource, Options, ScratchId,
     ScratchStore, TerrainCellInput, TerrainJob, TerrainParams,
@@ -979,11 +979,12 @@ impl MapStore for HookedStore<'_, '_> {
 pub fn assemble_cells(
     cells: Vec<CellBytes>,
     schema_json: &str,
-    skin_json: &str,
+    light_skin_json: &str,
+    dark_skin_json: &str,
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
-    assemble_cells_with_known_empty(cells, Vec::new(), schema_json, skin_json, opts, hooks)
+    assemble_cells_with_known_empty(cells, Vec::new(), schema_json, light_skin_json, dark_skin_json, opts, hooks)
 }
 
 /// Assemble downloaded artifacts while retaining selected canonical-empty
@@ -992,11 +993,12 @@ pub fn assemble_cells_with_known_empty(
     cells: Vec<CellBytes>,
     known_empty: Vec<KnownEmptyCell>,
     schema_json: &str,
-    skin_json: &str,
+    light_skin_json: &str,
+    dark_skin_json: &str,
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
-    assemble_everything(cells, known_empty, None, Vec::new(), schema_json, skin_json, opts, hooks)
+    assemble_everything(cells, known_empty, None, Vec::new(), schema_json, light_skin_json, dark_skin_json, opts, hooks)
 }
 
 /// The full assembly, raster included.
@@ -1015,14 +1017,16 @@ pub fn assemble_everything(
     terrain: Option<TerrainLattice>,
     terrain_cells: Vec<TerrainCellBytes>,
     schema_json: &str,
-    skin_json: &str,
+    light_skin_json: &str,
+    dark_skin_json: &str,
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
     assemble(
         Wiring { cells, known_empty, terrain, terrain_cells, ..Wiring::default() },
         schema_json,
-        skin_json,
+        light_skin_json,
+        dark_skin_json,
         opts,
         hooks,
     )
@@ -1059,7 +1063,8 @@ pub struct Wiring<'r> {
 pub fn assemble(
     wiring: Wiring<'_>,
     schema_json: &str,
-    skin_json: &str,
+    light_skin_json: &str,
+    dark_skin_json: &str,
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
@@ -1087,7 +1092,8 @@ pub fn assemble(
         (_, r) => r,
     };
     let schema = Schema::parse(schema_json).map_err(|e| AssembleFailure::new(ErrorCode::Internal, e))?;
-    let skin = Skin::parse(skin_json).map_err(|e| AssembleFailure::new(ErrorCode::Internal, e))?;
+    let map_styles =
+        MapStyles::parse(light_skin_json, dark_skin_json).map_err(|e| AssembleFailure::new(ErrorCode::Internal, e))?;
 
     let projected: u64 = cells.iter().map(|c| c.bytes.len() as u64).sum::<u64>()
         + source_cells.iter().map(|c| c.byte_length as u64).sum::<u64>();
@@ -1229,24 +1235,25 @@ pub fn assemble(
             &memory_scratch
         }
     };
-    let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock, scratch) {
-        Ok(s) => s,
-        Err(e) => {
-            let p = progress.borrow();
-            // A cell that could not be read is the root cause of whatever the engine reported:
-            // `Cell::open` turns a failed read into "not a readable OBCM", which blames the catalog
-            // for the browser's storage. The host's own message wins. The map read-back matters
-            // more, because the verify pass reports every read failure as a defect, so a full disk
-            // would otherwise tell a rider the assembler is broken.
-            let read_failure = cache
-                .failure
-                .borrow()
-                .clone()
-                .or_else(|| sink_cache.failure.borrow().clone())
-                .map(|message| AssembleFailure::new(ErrorCode::Io, message));
-            return Err(map_error(e, p.aborted, read_failure.or_else(|| p.failure.clone())));
-        }
-    };
+    let summary =
+        match assemble_full(inputs, known_empty, job, &schema, &map_styles, &options, &mut store, &clock, scratch) {
+            Ok(s) => s,
+            Err(e) => {
+                let p = progress.borrow();
+                // A cell that could not be read is the root cause of whatever the engine reported:
+                // `Cell::open` turns a failed read into "not a readable OBCM", which blames the catalog
+                // for the browser's storage. The host's own message wins. The map read-back matters
+                // more, because the verify pass reports every read failure as a defect, so a full disk
+                // would otherwise tell a rider the assembler is broken.
+                let read_failure = cache
+                    .failure
+                    .borrow()
+                    .clone()
+                    .or_else(|| sink_cache.failure.borrow().clone())
+                    .map(|message| AssembleFailure::new(ErrorCode::Io, message));
+                return Err(map_error(e, p.aborted, read_failure.or_else(|| p.failure.clone())));
+            }
+        };
 
     let sha256: String = summary.sha256.iter().map(|b| format!("{b:02x}")).collect();
     let bytes = match core::mem::replace(&mut store.src.body, MapBody::Buffered(Vec::new())) {
@@ -1532,7 +1539,7 @@ mod tests {
 
     #[test]
     fn an_empty_selection_is_an_input_refusal() {
-        let e = assemble_cells(Vec::new(), "{}", "{}", &BridgeOptions::default(), &mut NoHooks)
+        let e = assemble_cells(Vec::new(), "{}", "{}", "{}", &BridgeOptions::default(), &mut NoHooks)
             .expect_err("nothing to assemble");
         assert_eq!(e.code, ErrorCode::Input);
     }
@@ -1542,8 +1549,16 @@ mod tests {
     #[test]
     fn an_all_known_empty_selection_is_an_input_refusal() {
         let empty = vec![KnownEmptyCell { id: "18/1204/1055".into(), band: "fine".into() }];
-        let e = assemble_cells_with_known_empty(Vec::new(), empty, "{}", "{}", &BridgeOptions::default(), &mut NoHooks)
-            .expect_err("known-empty coverage cannot supply binary tables");
+        let e = assemble_cells_with_known_empty(
+            Vec::new(),
+            empty,
+            "{}",
+            "{}",
+            "{}",
+            &BridgeOptions::default(),
+            &mut NoHooks,
+        )
+        .expect_err("known-empty coverage cannot supply binary tables");
         assert_eq!(e.code, ErrorCode::Input);
         assert!(e.message.contains("at least one artifact"), "{}", e.message);
     }
@@ -1564,7 +1579,7 @@ mod tests {
             r#"{"lods":[{"index":0}],"bands":[{"id":"fine","cell_log2":18,"lods":[0],"role":"core"}]}"#;
         const SKIN: &str = r#"{"marker_color":0,"styles":[]}"#;
         let cells = vec![CellBytes { id: "not-an-id".into(), band: "fine".into(), partial: false, bytes: vec![0; 8] }];
-        let e = assemble_cells(cells, SCHEMA, SKIN, &BridgeOptions::default(), &mut NoHooks).expect_err("bad id");
+        let e = assemble_cells(cells, SCHEMA, SKIN, SKIN, &BridgeOptions::default(), &mut NoHooks).expect_err("bad id");
         assert_eq!(e.code, ErrorCode::Internal);
         assert!(e.message.contains("not-an-id"), "{}", e.message);
     }

@@ -19,7 +19,8 @@ type WasmPreview = InstanceType<Bridge["SkinPreview"]>;
 export interface LiveSkinPreview {
     readonly width: number;
     readonly height: number;
-    setSkin(skinJson: string): void;
+    setStyles(lightSkinJson: string, darkSkinJson: string): void;
+    setTheme(dark: boolean): void;
     panBy(dx: number, dy: number): void;
     zoomAt(factor: number, x: number, y: number): void;
     resetCamera(): void;
@@ -91,7 +92,8 @@ async function mapBytes(fetchImpl: typeof fetch): Promise<Uint8Array> {
 
 export async function openLiveSkinPreview(
     schemaJson: string,
-    skinJson: string,
+    lightSkinJson: string,
+    darkSkinJson: string,
     options: { fetchImpl?: typeof fetch; wasm?: InitInput; map?: Uint8Array } = {},
 ): Promise<LiveSkinPreview> {
     try {
@@ -101,19 +103,22 @@ export async function openLiveSkinPreview(
             const error = skinStyleError(schema, JSON.parse(json).styles);
             if (error) throw new Error(error);
         };
-        admit(skinJson);
+        admit(lightSkinJson);
+        admit(darkSkinJson);
         const [mod, bytes] = await Promise.all([
             module(options.wasm),
             options.map ? Promise.resolve(options.map) : mapBytes(options.fetchImpl ?? globalThis.fetch),
         ]);
-        const preview: WasmPreview = new mod.SkinPreview(bytes, schemaJson, skinJson);
+        const preview: WasmPreview = new mod.SkinPreview(bytes, schemaJson, lightSkinJson, darkSkinJson);
         return {
             width: preview.width,
             height: preview.height,
-            setSkin: (next) => {
-                admit(next);
-                preview.set_skin(next);
+            setStyles: (light, dark) => {
+                admit(light);
+                admit(dark);
+                preview.set_styles(light, dark);
             },
+            setTheme: (dark) => preview.set_theme(dark),
             panBy: (dx, dy) => preview.pan_by(dx, dy),
             zoomAt: (factor, x, y) => preview.zoom_at(factor, x, y),
             resetCamera: () => preview.reset_camera(),
@@ -147,12 +152,14 @@ export async function renderSkinPreviewFrames(
 ): Promise<Record<string, SkinPreviewFrame>> {
     if (skins.length === 0) return {};
     const open = options.open ?? openLiveSkinPreview;
-    const preview = await open(schemaJson, JSON.stringify(skins[0]));
+    const first = JSON.stringify(skins[0]);
+    const preview = await open(schemaJson, first, first);
     try {
         const frames: Record<string, SkinPreviewFrame> = {};
         for (const [index, skin] of skins.entries()) {
             if (options.signal?.aborted) break;
-            preview.setSkin(JSON.stringify(skin));
+            const json = JSON.stringify(skin);
+            preview.setStyles(json, json);
             // wasm exposes a transient memory view. Each card needs an owned
             // snapshot before the next restamp overwrites that same frame.
             const pixels = new Uint8ClampedArray(preview.frame());

@@ -9,7 +9,10 @@ import {
 } from "./workerProtocol";
 
 function assembleReq(cells: WorkerCell[]): Extract<AssembleWorkerRequest, { type: "assemble" }> {
-    return { type: "assemble", requireDisk: false, cells, knownEmpty: [], schemaJson: "{}", skinJson: "{}", options: {} };
+    return {
+        type: "assemble", requireDisk: false, cells, knownEmpty: [], schemaJson: "{}",
+        lightSkinJson: "{}", darkSkinJson: "{}", options: {},
+    };
 }
 
 /** A structurally complete estimate, since the validator only checks the object's presence. */

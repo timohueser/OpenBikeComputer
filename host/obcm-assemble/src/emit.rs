@@ -81,7 +81,7 @@ pub fn fits_ceiling(bytes: u64, what: &str) -> Result<()> {
 pub const SCALE: OffsetScale = OffsetScale::DEFAULT;
 
 /// The byte offset of the style table in every shard this engine writes: the first unit boundary at
-/// or after the 57-byte header. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
+/// or after the 71-byte header. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
 pub const STYLE_OFFSET: u64 = 80;
 const _: () = assert!(STYLE_OFFSET >= HEADER_LEN as u64);
 
@@ -164,7 +164,7 @@ impl MapPlan {
     /// `usize` wraps past 4 GiB and hands the ceiling a small number it happily accepts.
     ///
     /// Region starts use scaled offsets and begin on a unit boundary. The landmark region follows
-    /// navigation; terrain is last. Each per-LOD and per-section interior carries its own gaps and
+    /// navigation; terrain follows the rebuilt sections, then the dark style table. Each interior carries its own gaps and
     /// ends on a unit boundary, which keeps this cursor aligned without a second rounding step.
     ///
     /// The terrain region is the one region that does not end on a boundary: an OBCT container is
@@ -194,7 +194,7 @@ impl MapPlan {
         // Terrain sits last, so that splicing it moves no other offset. A map with no raster ends
         // after its landmarks and writes `(0, 0)`, which is unambiguous because byte 0 is the
         // header itself.
-        let (terrain_offset, terrain_len, total) = if self.terrain_bytes == 0 {
+        let (terrain_offset, terrain_len, light_total) = if self.terrain_bytes == 0 {
             (0, 0, landmark_end)
         } else {
             let at = if self.surface_terrain { (landmark_end + 511) & !511 } else { align_up(landmark_end) };
@@ -202,6 +202,8 @@ impl MapPlan {
             let total = align_up(end);
             (at, total - at, total)
         };
+        let dark_style_offset = align_up(light_total);
+        let total = dark_style_offset.checked_add(style_len as u64).ok_or_else(|| self.past_u64())?;
         Ok(Layout {
             lod_table_offset,
             lod_offsets,
@@ -211,6 +213,7 @@ impl MapPlan {
             peak_offset,
             terrain_offset,
             terrain_len,
+            dark_style_offset,
             total,
         })
     }
@@ -245,6 +248,7 @@ struct Layout {
     /// header's pair is `(offset, len)` in bytes and both scale by the same rule. `0` exactly when
     /// `terrain_offset` is: a reader refuses a file that sets one alone.
     terrain_len: u64,
+    dark_style_offset: u64,
 
     total: u64,
 }
@@ -310,8 +314,10 @@ pub fn write(
     plan: &MapPlan,
     cells: &[Cell<'_>],
     nav_cells: &[&Cell<'_>],
-    styles: &[StyleRecord],
-    marker_color: u16,
+    light_styles: &[StyleRecord],
+    dark_styles: &[StyleRecord],
+    light_marker_color: u16,
+    dark_marker_color: u16,
     poi: &PoiSection,
     landmarks: &crate::landmarks::LandmarkSection,
     peaks: &crate::peaks::PeakSection,
@@ -321,7 +327,11 @@ pub fn write(
     scratch: &dyn ScratchStore,
     sink: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<(u64, [u8; 32])> {
-    let style_bytes = pack_style_table(styles);
+    let style_bytes = pack_style_table(light_styles);
+    let dark_style_bytes = pack_style_table(dark_styles);
+    if style_bytes.len() != dark_style_bytes.len() {
+        return Err(Error::Input("the light and dark style tables have different lengths".into()));
+    }
     let nav_projection = nav.projection(profile_table);
     let l = plan.layout(style_bytes.len(), poi.section_len(), nav_projection)?;
     if plan.landmark_bytes != landmarks.section_len() || plan.peak_bytes != peaks.section_len() {
@@ -358,12 +368,12 @@ pub fn write(
         };
         let mut w = MapWriter::new(SCALE, 0, &mut out);
 
-        // 1. Header (bbox stored lat, lon, lat, lon), then the filler that carries the 65-byte
+        // 1. Header (bbox stored lat, lon, lat, lon), then the filler that carries the 71-byte
         //    header to the style table's unit boundary.
         let mut header = header_bytes(
             plan.box_,
             plan.lods.len(),
-            marker_color,
+            light_marker_color,
             l.lod_table_offset,
             l.poi_offset,
             l.nav_offset,
@@ -378,6 +388,10 @@ pub fn write(
             .copy_from_slice(&scaled(l.peak_offset)?.to_le_bytes());
         header[obc_formats::obcm::HEADER_PEAK_LENGTH_OFF..obc_formats::obcm::HEADER_PEAK_LENGTH_OFF + 4]
             .copy_from_slice(&scaled(plan.peak_bytes)?.to_le_bytes());
+        header[obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF..obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF + 4]
+            .copy_from_slice(&scaled(l.dark_style_offset)?.to_le_bytes());
+        header[obc_formats::obcm::HEADER_DARK_MARKER_COLOR_OFF..obc_formats::obcm::HEADER_DARK_MARKER_COLOR_OFF + 2]
+            .copy_from_slice(&dark_marker_color.to_le_bytes());
         w.put(&header)?;
         w.begin_section()?;
 
@@ -420,6 +434,13 @@ pub fn write(
             w.begin_section()?;
         }
 
+        w.pad(
+            l.dark_style_offset
+                .checked_sub(w.at())
+                .ok_or_else(|| Error::Verify("dark style table starts before the current map cursor".into()))?,
+        )?;
+        w.put(&dark_style_bytes)?;
+
         w.at()
     };
 
@@ -435,7 +456,7 @@ pub fn write(
     Ok((delivered, hasher.finalize().into()))
 }
 
-/// The 57-byte OBCM header, byte-for-byte the packer's `header_bytes`. Split out because it is a
+/// The 71-byte OBCM header, byte-for-byte the packer's `header_bytes`. Split out because it is a
 /// restatement of `obc-pack`'s serializer, and `tests/pinning.rs` compares the two outputs directly
 /// rather than trusting that two copies of a table stay in step.
 ///
@@ -483,6 +504,7 @@ pub fn header_bytes(
     head.extend_from_slice(&scaled(terrain_offset)?.to_le_bytes());
     head.extend_from_slice(&scaled(terrain_len)?.to_le_bytes());
     head.extend_from_slice(&[0; 16]); // optional landmark and peak sections
+    head.extend_from_slice(&[0; 6]); // dark style offset and marker colour, filled by `write`
     debug_assert_eq!(head.len(), HEADER_LEN);
     Ok(head)
 }
@@ -535,6 +557,8 @@ pub const HEADER_MARKER_COLOR_AT: usize = 30;
 pub enum RestampError {
     /// Fewer than [`HEADER_LEN`] bytes — not an OBCM image at all.
     ShorterThanHeader,
+    /// The input is not an OBCM file of the current version.
+    WrongFormat,
     /// The header's `Style Offset` points past the end.
     BadStyleOffset,
     /// `offset + 1 + count · record` overflows `usize`.
@@ -565,13 +589,64 @@ pub fn restamp_style_table(
     if map.len() < HEADER_LEN {
         return Err(RestampError::ShorterThanHeader);
     }
+    if map[..4] != MAGIC || map[4] != VERSION {
+        return Err(RestampError::WrongFormat);
+    }
     // The table is restamped in a `map` that is already resident, so the file offset legitimately
     // becomes a `usize`: the narrowing is against RAM, not against the read seam.
     let style_offset =
         header_style_offset(map).and_then(|at| usize::try_from(at).ok()).ok_or(RestampError::BadStyleOffset)?;
-    let count = *map.get(style_offset).ok_or(RestampError::BadStyleOffset)? as usize;
-    let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
-    let slot = map.get_mut(style_offset..end).ok_or(RestampError::TableTruncated)?;
+    let (range, packed) = validated_style_stamp(map, style_offset, styles)?;
+    map[range].copy_from_slice(&packed);
+    map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&marker_color.to_le_bytes());
+    Ok(())
+}
+
+/// Stamp both authored presentations onto one OBCM image.
+pub fn restamp_style_tables(
+    map: &mut [u8],
+    light: &[StyleRecord],
+    dark: &[StyleRecord],
+    light_marker_color: u16,
+    dark_marker_color: u16,
+) -> core::result::Result<(), RestampError> {
+    if map.len() < HEADER_LEN {
+        return Err(RestampError::ShorterThanHeader);
+    }
+    if map[..4] != MAGIC || map[4] != VERSION {
+        return Err(RestampError::WrongFormat);
+    }
+    let scale =
+        OffsetScale::new(map[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF]).map_err(|_| RestampError::BadStyleOffset)?;
+    let light_offset =
+        header_style_offset(map).and_then(|offset| usize::try_from(offset).ok()).ok_or(RestampError::BadStyleOffset)?;
+    let at = obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF;
+    let units = u32::from_le_bytes(map[at..at + 4].try_into().expect("field is inside the checked header"));
+    let dark_offset = usize::try_from(scale.offset(units).bytes()).map_err(|_| RestampError::BadStyleOffset)?;
+    let (light_range, light_packed) = validated_style_stamp(map, light_offset, light)?;
+    let (dark_range, dark_packed) = validated_style_stamp(map, dark_offset, dark)?;
+    if light_range.start < HEADER_LEN
+        || dark_range.start < HEADER_LEN
+        || light_range.start < dark_range.end && dark_range.start < light_range.end
+    {
+        return Err(RestampError::BadStyleOffset);
+    }
+    map[light_range].copy_from_slice(&light_packed);
+    map[dark_range].copy_from_slice(&dark_packed);
+    map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&light_marker_color.to_le_bytes());
+    map[obc_formats::obcm::HEADER_DARK_MARKER_COLOR_OFF..obc_formats::obcm::HEADER_DARK_MARKER_COLOR_OFF + 2]
+        .copy_from_slice(&dark_marker_color.to_le_bytes());
+    Ok(())
+}
+
+fn validated_style_stamp(
+    map: &[u8],
+    offset: usize,
+    styles: &[StyleRecord],
+) -> core::result::Result<(core::ops::Range<usize>, Vec<u8>), RestampError> {
+    let count = *map.get(offset).ok_or(RestampError::BadStyleOffset)? as usize;
+    let end = offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
+    let slot = map.get(offset..end).ok_or(RestampError::TableTruncated)?;
     if styles.len() < count {
         return Err(RestampError::TooFewStyles { count, resolved: styles.len() });
     }
@@ -585,9 +660,7 @@ pub fn restamp_style_table(
     if have != want {
         return Err(RestampError::IdMismatch { have, want });
     }
-    slot.copy_from_slice(&packed);
-    map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&marker_color.to_le_bytes());
-    Ok(())
+    Ok((offset..end, packed))
 }
 
 /// The style table: `Count` then one 8-byte record per style, id ascending.
@@ -729,6 +802,8 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
+            0,
             0,
             &poi,
             &crate::landmarks::LandmarkSection::default(),

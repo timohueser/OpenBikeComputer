@@ -352,6 +352,24 @@ describe("refusals arrive as sentences", () => {
 });
 
 describe("custom skin admission", () => {
+    it("keeps Light and Dark edits in their source slots", () => {
+        let saved: string | null = null;
+        const storage = {
+            getItem: (key: string) => key === CUSTOM_SKINS_KEY ? saved : null,
+            setItem: (_key: string, value: string) => { saved = value; },
+        };
+        const client = CatalogClient.fromBody(canonicalCatalogBody, ROOT_URL, { fetchImpl: offline });
+        const store = new CoverageStore(client, canonicalCatalogBody, storage);
+        const light = store.saveCustomSkin(store.lightSkin, "My light", "default");
+        const dark = store.saveCustomSkin(store.darkSkin, "My dark", "dusk");
+
+        expect(store.lightSkin).toBe(light);
+        expect(store.darkSkin).toBe(dark);
+        expect(store.lightSkins).not.toContain(dark);
+        expect(store.darkSkins).not.toContain(light);
+        expect(() => store.saveCustomSkin(store.catalog.skins[0], "Wrong", "moonlight")).toThrow(/not Light or Dark/);
+    });
+
     it("keeps the selected saved skin and storage unchanged when an edit has an invalid drawing order", () => {
         let saved: string | null = null;
         const storage = {
@@ -365,7 +383,7 @@ describe("custom skin admission", () => {
         const draft = cloneSkin(skin);
         draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 128;
         expect(() => store.saveCustomSkin(draft, "Bad edit", "default")).toThrow(/drawing order/i);
-        expect(store.skinId).toBe(skin.id);
+        expect(store.lightSkinId).toBe(skin.id);
         expect(store.customSkinRecords).toEqual([{ skin, based_on: "default" }]);
         expect(saved).toBe(before);
         const reopened = new CoverageStore(client, canonicalCatalogBody, storage);

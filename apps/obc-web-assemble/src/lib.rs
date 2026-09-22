@@ -314,7 +314,8 @@ mod web {
     #[wasm_bindgen]
     pub struct Assembler {
         schema_json: String,
-        skin_json: String,
+        light_skin_json: String,
+        dark_skin_json: String,
         options: BridgeOptions,
         cells: Vec<CellBytes>,
         /// Cells the host keeps outside wasm memory and serves on demand. A cell's slot, which
@@ -333,19 +334,25 @@ mod web {
 
     #[wasm_bindgen]
     impl Assembler {
-        /// Start an assembly at a schema and a skin, as JSON text.
+        /// Start an assembly with the schema and both authored map styles, as JSON text.
         ///
         /// `options_json` is an optional object: `{acceptHoles, acceptPartial, readBlockBytes,
         /// mergeBudgetBytes}`, every field optional. Unknown keys are ignored, so a newer builder
         /// can talk to an older module. There is no `skipVerify`: the read-back is a precondition
         /// of writing a map.
         #[wasm_bindgen(constructor)]
-        pub fn new(schema_json: String, skin_json: String, options_json: Option<String>) -> Result<Assembler, JsValue> {
+        pub fn new(
+            schema_json: String,
+            light_skin_json: String,
+            dark_skin_json: String,
+            options_json: Option<String>,
+        ) -> Result<Assembler, JsValue> {
             let options = BridgeOptions::parse(options_json.as_deref().unwrap_or(""))
                 .map_err(|e| to_js(AssembleFailure { code: ErrorCode::Internal, message: e }))?;
             Ok(Assembler {
                 schema_json,
-                skin_json,
+                light_skin_json,
+                dark_skin_json,
                 options,
                 cells: Vec::new(),
                 source_cells: Vec::new(),
@@ -509,7 +516,15 @@ mod web {
                 sink: map_sink.as_ref().map(|s| s as &dyn MapWrites),
                 scratch: js_scratch.as_ref().map(|s| s as &dyn ScratchWrites),
             };
-            let out = assemble(wiring, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
+            let out = assemble(
+                wiring,
+                &self.schema_json,
+                &self.light_skin_json,
+                &self.dark_skin_json,
+                &self.options,
+                &mut hooks,
+            )
+            .map_err(to_js)?;
             let summary = out.summary_json.clone();
             self.taken = false;
             self.outcome = Some(out);

@@ -108,6 +108,10 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     # targets (monaco, grimsel-demo) died on the guard meant to protect them.
     (cd "$REPO_ROOT" && cargo run --release --bin obc-pack -- \
         "$src" "$PRESET" "$output" --bbox "$bbox" ${extra[@]+"${extra[@]}"})
+    (cd "$REPO_ROOT" && cargo run --release --bin obcm-assemble -- restamp \
+        --map "$output" --schema "$PRESET" \
+        --light-skin builder/presets/skins/default.json \
+        --dark-skin builder/presets/skins/dusk.json)
     ls -la "$output"
 }
 
@@ -166,6 +170,12 @@ assert map_bytes[:5] == b"OBCM" + bytes([version]), "expected current OBCM versi
 assert map_bytes[41:49] == bytes(8), "terrain region must be empty"
 assert terrain[:5] == b"OBCT\x03" and terrain[7] & 2, "expected surface terrain"
 unit = 1 << map_bytes[40]
+dark_offset = struct.unpack_from("<I", map_bytes, 65)[0] * unit
+dark_count = map_bytes[dark_offset]
+dark_len = 1 + dark_count * 8
+assert dark_offset + dark_len == len(map_bytes), "expected the dark style table at EOF"
+dark_styles = map_bytes[dark_offset:]
+del map_bytes[dark_offset:]
 align = max(512, unit)
 offset = (len(map_bytes) + align - 1) // align * align
 length = (len(terrain) + unit - 1) // unit * unit
@@ -173,6 +183,11 @@ struct.pack_into("<II", map_bytes, 41, offset // unit, length // unit)
 map_bytes.extend(bytes(offset - len(map_bytes)))
 map_bytes.extend(terrain)
 map_bytes.extend(bytes(offset + length - len(map_bytes)))
+dark_offset = (len(map_bytes) + unit - 1) // unit * unit
+map_bytes.extend(bytes(dark_offset - len(map_bytes)))
+map_bytes.extend(dark_styles)
+struct.pack_into("<I", map_bytes, 65, dark_offset // unit)
+map_bytes.extend(bytes((-len(map_bytes)) % 512))
 path.write_bytes(map_bytes)
 PY_EMBED
 }
