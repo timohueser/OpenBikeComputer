@@ -209,7 +209,7 @@ impl App {
         };
         // Drawing starts at the lowest opaque screen: anything below it is covered and draws
         // nothing, so it is not part of the frame and not part of the key.
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = crate::screen::base_index(&self.ui.stack);
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         for screen in self.ui.stack.iter().skip(base) {
             // Cannot overflow: the stack itself is `MAX_DEPTH` long.
