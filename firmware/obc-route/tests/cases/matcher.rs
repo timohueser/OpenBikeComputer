@@ -296,6 +296,47 @@ fn forward_bias_does_not_snap_back_on_a_loop() {
     );
 }
 
+/// The join scan keeps the earliest candidate unless a later one is more than the tie nearer. On a
+/// loop and an out-and-back the nearest point is late on the route, and a wide tie keeps the early
+/// one, where the 8 m live tie takes the late one.
+#[test]
+fn a_wide_tie_joins_the_earliest_candidate() {
+    let bytes = convert("Loop", &loop_gpx());
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let total = r.total_distance_m;
+    let start = decode_all(&r)[0];
+    // 410 m from the start and finish, about 300 m from the loop's last stretch.
+    let cl = (48.0_f64).to_radians().cos();
+    let (lon, lat) = (start.lon + (250.0 / 0.111_320 / cl) as i32, start.lat - north_ud(325.0));
+    let join = RouteMatch::nearest(lon, lat, &r, 200.0).unwrap();
+    assert!(join.progress_m < total / 4, "the loop joins near its start, got {} of {total} m", join.progress_m);
+    let live = RouteMatch::nearest(lon, lat, &r, 8.0).unwrap();
+    assert!(live.progress_m > total * 3 / 4, "the live tie takes the last stretch, got {}", live.progress_m);
+
+    // Out along the equator of the fixture, back 67 m north of it; the fix is 50 m north of the
+    // return leg, halfway along.
+    let bytes = convert(
+        "OutBack",
+        &gpx_from(&[
+            (48.0000, 7.8000, 200.0),
+            (48.0000, 7.8300, 200.0),
+            (48.0006, 7.8300, 200.0),
+            (48.0006, 7.8000, 200.0),
+        ]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let total = r.total_distance_m;
+    let (lon, lat) = (7_815_000, 48_000_600 + north_ud(50.0));
+    let join = RouteMatch::nearest(lon, lat, &r, 200.0).unwrap();
+    assert!(join.progress_m < total / 2, "the out leg joins, got {} of {total} m", join.progress_m);
+    let live = RouteMatch::nearest(lon, lat, &r, 8.0).unwrap();
+    assert!(live.progress_m > total / 2, "the live tie takes the return leg, got {}", live.progress_m);
+}
+
 /// An out-and-back: out along a north-bowing arc A→M→B, back straight B→A′, where A′ ends ~2 m
 /// north of A. Start and finish sit nearly on top of each other, so a small north offset at the
 /// start makes the finish segment marginally the nearest, which is what the first lock must resolve.
@@ -376,7 +417,7 @@ fn first_fix_far_off_route_reports_off_and_frozen() {
     assert!((res.dist_m as i32 - 500).abs() <= 5, "live cross-track {} m ~ 500", res.dist_m);
 
     // The same scan without a cursor names the point the frozen lock would not move to.
-    let near = RouteMatch::nearest(lon, lat, &r).unwrap();
+    let near = RouteMatch::nearest(lon, lat, &r, 8.0).unwrap();
     assert!(near.off_route && near.dist_m == res.dist_m);
     assert!(near.progress_m.abs_diff(r.total_distance_m / 2) <= 5, "nearest at mid-route, got {}", near.progress_m);
 }

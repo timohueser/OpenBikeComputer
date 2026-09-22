@@ -212,7 +212,13 @@ mod tests {
             })
             .unwrap();
         second.recorder.try_put(RecorderEffect::Finalize { token: recorder_ops.issue() }).unwrap();
-        let work = PlannerWork::Detour(DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 });
+        let work = PlannerWork::Detour(DetourRequest {
+            route: 0,
+            from: (0, 0),
+            progress_m: 0,
+            target_m: 500,
+            leg: obc_route::Leg::Detour,
+        });
         second.navigator.try_put(NavigatorEffect::Acquire { token: navigator_ops.issue(), work }).unwrap();
         second.settings.try_put(SettingsEffect::PersistRevision { token: settings_ops.issue(), revision: 4 }).unwrap();
 

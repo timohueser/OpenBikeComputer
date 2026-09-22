@@ -1209,7 +1209,7 @@ impl App {
     /// computed route left in the store.
     ///
     /// It reads the stack shape, because the transitions that drop a descent whole — `OverRoot`
-    /// under the Assistant chord and under the drawer's settings row — never reach the screens in
+    /// under the Assistant chord and under the drawer's settings row, and the escape chord — never reach the screens in
     /// it, so none of them can cancel on its own way out. An adopted result is not a question:
     /// the splice truncates its own screens off once the rider has the spliced route.
     ///
@@ -1382,10 +1382,11 @@ impl App {
         // The run is over — see `land_route_plan` for the late-answer case.
         self.end_plan(PlanFamily::Detour, if result.is_ok() { PlanPhase::PreviewReady } else { PlanPhase::Failed });
         // Ride to start has no preview to look at: its leg goes straight to the splice.
-        if let Some(i) = self.approach_planning() {
-            match result {
-                Ok(_) => self.admit_navigator_intent(NavigatorIntent::CommitDetour),
-                Err(_) => self.land_approach_failure(i),
+        if self.navigator.approach() {
+            match (self.approach_planning(), result) {
+                (Some(_), Ok(_)) => self.admit_navigator_intent(NavigatorIntent::CommitDetour),
+                (Some(slot), Err(_)) => self.land_approach_failure(slot),
+                (None, _) => self.admit_navigator_intent(NavigatorIntent::CancelDetour),
             }
             return;
         }
@@ -1424,10 +1425,16 @@ impl App {
     fn land_detour_commit(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
         self.navigator.note_commit(result.is_ok());
         let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(obc_route::nav::NavError::NoPath));
-        if let Some(slot) = self.approach_planning() {
-            match resolved {
-                Ok(idx) => self.ride_approach(idx),
-                Err(_) => self.land_approach_failure(slot),
+        if self.navigator.approach() {
+            match (self.approach_planning(), resolved) {
+                (Some(_), Ok(idx)) => self.ride_approach(idx),
+                (Some(slot), Err(_)) => self.land_approach_failure(slot),
+                // The rider escaped the spinner, so the ride they asked for is no longer wanted:
+                // the cancel makes the release retract the publication.
+                (None, _) => {
+                    self.catalogs.clear_detour_preview();
+                    self.admit_navigator_intent(NavigatorIntent::CancelDetour);
+                }
             }
             return;
         }
@@ -2298,6 +2305,7 @@ impl App {
         self.ui.reconcile_corridor(self.up_ahead_scope());
         if changed {
             self.ui.cancel_holds();
+            self.release_unreachable_plans();
         }
         changed
     }
@@ -5019,6 +5027,7 @@ mod tests {
                 from: (7_800_000, 48_000_000),
                 progress_m: 1_000,
                 target_m: 1_800,
+                leg: obc_route::Leg::Detour,
             }));
             let _ = app.ui.stack.push(Screen::Detour(chooser));
             let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));

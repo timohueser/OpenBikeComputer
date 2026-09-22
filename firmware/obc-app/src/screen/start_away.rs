@@ -20,8 +20,9 @@ use obc_render::{rect, text::Font, Surface};
 /// Straight-line metres from the route start past which START RIDE asks how to begin.
 pub(crate) const START_AWAY_M: u32 = 200;
 
-/// Join nearest shows only when its point is this far along the route. Nearer the start it is the
-/// same as Ride to start.
+/// On the first prompt, Join nearest shows only when its point is this far along the route. Nearer
+/// the start it is the same as Ride to start. Once Ride to start has failed, it always shows, so a
+/// row that starts the ride is always there.
 const JOIN_MIN_M: u32 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +85,7 @@ impl StartAwayScreen {
 
     fn join(&self) -> Option<(u32, u32)> {
         match self.nearest {
-            Nearest::Found { dist_m, along_m } if along_m >= JOIN_MIN_M => Some((dist_m, along_m)),
+            Nearest::Found { dist_m, along_m } => Some((dist_m, along_m)),
             _ => None,
         }
     }
@@ -94,7 +95,7 @@ impl StartAwayScreen {
         if !self.no_route {
             let _ = rows.push(Row::RideToStart);
         }
-        if self.join().is_some() {
+        if self.no_route || self.join().is_some_and(|(_, along_m)| along_m >= JOIN_MIN_M) {
             let _ = rows.push(Row::JoinNearest);
         }
         let _ = rows.push(Row::Cancel);
@@ -106,13 +107,14 @@ impl StartAwayScreen {
         rows.iter().position(|&r| r == self.selected).unwrap_or(0)
     }
 
-    /// Project the fix onto the whole route once the geometry is open.
+    /// Project the fix onto the whole route once the geometry is open. A later point wins only when
+    /// it is more than [`START_AWAY_M`] nearer, so a loop or an out-and-back joins its early pass.
     pub(crate) fn prepare(&mut self, px: &mut Prepare) {
         if self.nearest != Nearest::Pending || px.active_route != Some(self.route) {
             return;
         }
         let Some(route) = px.route else { return };
-        self.nearest = match RouteMatch::nearest(self.from.0, self.from.1, route) {
+        self.nearest = match RouteMatch::nearest(self.from.0, self.from.1, route, START_AWAY_M as f32) {
             Some(m) => Nearest::Found { dist_m: m.dist_m, along_m: m.progress_m },
             None => Nearest::Missing,
         };
@@ -127,6 +129,11 @@ impl StartAwayScreen {
                 Transition::None
             }
             Gesture::Press => match rows[i] {
+                // Without a routing graph the device never plans, so the answer is known at once.
+                Row::RideToStart if !cx.state.has_nav_graph => {
+                    self.set_no_route();
+                    Transition::None
+                }
                 Row::RideToStart => {
                     cx.navigator
                         .admit_intent(NavigatorIntent::PlanDetour(DetourRequest::approach(self.route, self.from)));
@@ -165,11 +172,13 @@ impl StartAwayScreen {
         push_distance(&mut to_start, self.start_m, units);
         let _ = to_start.push_str(rx.t(Msg::StartAwayThenRoute));
         let mut to_join: heapless::String<32> = heapless::String::new();
+        let mut join_hint = None;
         if let Some((dist_m, along_m)) = self.join() {
             push_distance(&mut to_join, dist_m, units);
             let _ = to_join.push_str(rx.t(Msg::StartAwayAwayAt));
             let unit = if units.is_imperial() { "mi" } else { "km" };
             let _ = write!(to_join, "{unit} {}", (units.dist(along_m as f32 / 1000.0) + 0.5) as u32);
+            join_hint = Some(to_join.as_str());
         }
 
         let rows = self.rows();
@@ -177,7 +186,7 @@ impl StartAwayScreen {
         for row in &rows {
             let option = match row {
                 Row::RideToStart => PromptOption { label: rx.t(Msg::StartAwayRideToStart), hint: Some(&to_start) },
-                Row::JoinNearest => PromptOption { label: rx.t(Msg::StartAwayJoinNearest), hint: Some(&to_join) },
+                Row::JoinNearest => PromptOption { label: rx.t(Msg::StartAwayJoinNearest), hint: join_hint },
                 Row::Cancel => PromptOption { label: rx.t(Msg::StartAwayCancel), hint: None },
             };
             let _ = options.push(option);
@@ -241,5 +250,10 @@ mod tests {
         prompt.set_no_route();
         assert_eq!(prompt.rows().as_slice(), [Row::JoinNearest, Row::Cancel]);
         assert_eq!(prompt.selected, Row::JoinNearest, "the cursor lands on Join nearest");
+        // After a failure a row that starts the ride stays, wherever the join point is.
+        for nearest in [Nearest::Found { dist_m: 300, along_m: 0 }, Nearest::Pending, Nearest::Missing] {
+            prompt.nearest = nearest;
+            assert_eq!(prompt.rows().as_slice(), [Row::JoinNearest, Row::Cancel], "{nearest:?}");
+        }
     }
 }
