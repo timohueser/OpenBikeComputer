@@ -221,15 +221,16 @@ def key_of(text: str, base: str | None) -> str | None:
 
     The publisher writes `<base>/<key under the catalogue prefix>`, and that base ends in
     the bucket's catalogue prefix, so the key is the URL's path without its leading slash.
-    With no base in the environment every absolute URL is read that way, which protects
-    more than it must — the safe direction for a delete.
+    Every URL the base does not cover — and every URL at all when the environment names no
+    base — is read that way too, so that a base that is unset, stale or mis-typed can only
+    protect more than it must, never less.
     """
 
     if "://" not in text:
         inside = text.removeprefix("./").lstrip("/")
         return catalog_key(inside) if inside and "." in inside.rpartition("/")[2] else None
-    if base:
-        return catalog_key(text[len(base) + 1:]) if text.startswith(f"{base}/") else None
+    if base and text.startswith(f"{base}/"):
+        return catalog_key(text[len(base) + 1:])
     return urlsplit(text).path.lstrip("/") or None
 
 
