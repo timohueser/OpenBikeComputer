@@ -828,6 +828,7 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::settings::Language;
     use crate::{Activity, AppState, Settings};
+    use obc_render::text::text_width;
 
     struct World {
         state: AppState,
@@ -1214,6 +1215,52 @@ mod tests {
             [0, 45, 90, 135, SLIDE_MS].iter().map(|dt| d.sheet_height(2_000 + dt)).collect();
         assert_eq!((shrink[0], shrink[4]), (EDITOR_H, root_h));
         assert!(shrink.windows(2).all(|p| p[0] >= p[1]), "…and back: {shrink:?}");
+    }
+
+    /// A row label clears the control drawn beside it in the same row. That control is a chevron
+    /// or a slider, not text, so the copy-fit gate cannot see it; this measures the label against
+    /// the room the draw leaves beside it.
+    ///
+    /// There are two budgets, not one. A door or a value row clears the chevron; a switch row
+    /// clears the wider slider and its margin. If a column overruns, the copy shortens; the slider
+    /// and the row do not. The font is the one `row_font` picks for the label it is handed.
+    #[test]
+    fn every_row_label_clears_its_own_control_in_every_language() {
+        const W: i32 = 240;
+        const MIN_CLEAR: i32 = 8;
+        // The draw's own geometry: the row area is inset `ROW_X` from both screen edges, the label
+        // starts 14 px inside it, the chevron takes the last 18 px and the slider the last 54.
+        let area_w = W - 2 * rows::ROW_X;
+        let door_room = area_w - 14 - 18 - MIN_CLEAR;
+        let switch_room = area_w - 14 - 54 - MIN_CLEAR;
+        assert_eq!((door_room, switch_room), (172, 136), "the two row budgets, pinned");
+        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
+            for menu in [
+                &RIDE,
+                &MAP,
+                &MAP_DISPLAY,
+                &MAP_ICONS,
+                &MAP_POI_CATEGORIES,
+                &UP_AHEAD,
+                &ROUTE_PLAN,
+                &FIND_PLACE,
+                &ASSISTANT_RESUME,
+                &ASSISTANT_VISIT,
+                &LANDMARK_CONTENT,
+            ] {
+                for row in menu.rows {
+                    let label = t(row.label, lang);
+                    let font = row_font(row, label);
+                    assert!(label.lines().count() <= 2);
+                    let lw = label.lines().map(|line| text_width(line, font) as i32).max().unwrap_or(0);
+                    let room = match row.action {
+                        ContextAction::Toggle(_) => switch_room,
+                        _ => door_room,
+                    };
+                    assert!(lw <= room, "{lang:?}: row label {label:?} ({lw} px) overruns {room} px");
+                }
+            }
+        }
     }
 
     /// A switch row flips in place and keeps the sheet: each one flips its own field both ways,
