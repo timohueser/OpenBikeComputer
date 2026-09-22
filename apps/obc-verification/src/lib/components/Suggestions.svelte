@@ -12,8 +12,11 @@
   export let ondecide: (id: string, accept: boolean, feedback?: string) => Promise<boolean>;
   /** The item whose body is open. Bound by the parent so a requirement can point at its own suggestion. */
   export let expanded = '';
-  /** Ticked in this session. The item stays in place, struck through, until the page is loaded again. */
+  /** Ticked in this session. The item sinks to the end of its list, struck through, to stay readable. */
   let done: Record<string, boolean> = {};
+  /** A saved revision ends the pass: what was ticked for it belongs under Decided, not in the list. */
+  let pass = revisionId;
+  $: if (revisionId !== pass) { pass = revisionId; done = {}; }
   let dismissing = '';
   let feedback = '';
   /** The category the list is held to. Empty is every category. */
@@ -24,7 +27,7 @@
   /** A chosen category can go away once its items are decided, and then the list holds nothing. */
   $: picked = categories.some(c => c.name === chosen) ? chosen : '';
   $: shown = (picked ? standing.filter(s => category(s) === picked) : standing)
-    .sort((a, b) => category(a).localeCompare(category(b)));
+    .sort((a, b) => Number(!!done[a.id]) - Number(!!done[b.id]) || category(a).localeCompare(category(b)));
   $: groups = [
     { name: 'New requirements', items: shown.filter(s => !s.requirementId) },
     { name: 'Changes to requirements', items: shown.filter(s => s.requirementId) }
