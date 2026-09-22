@@ -2986,6 +2986,29 @@ mod tests {
         }
     }
 
+    /// A card pushed outside the input path moves the stack under whatever is charging, so it must
+    /// ring the recogniser exactly as a gesture-driven move does. Setting the host's edge alone
+    /// leaves the App's own hold to complete onto the card.
+    #[test]
+    fn the_route_cleanup_card_cancels_a_hold_charging_under_it() {
+        use crate::harness::support::{down, keys};
+        use obc_ports::Button;
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
+        app.handle_input(InputClock(300), &mut keys(&[]));
+        assert!(app.ui.input.select_hold_progress() > 0.0, "a Select hold is charging");
+
+        app.offer_route_cleanup(crate::device_core::StoreIdentity::new(1));
+        assert!(matches!(app.top_screen(), Screen::RouteCleanup(_)), "the card is up");
+        assert!(app.take_hold_cancel(), "the host's own plane is told to cancel");
+
+        // Past the 500 ms threshold: the hold was aimed at the screen the card replaced, so it must
+        // never fire at all.
+        app.handle_input(InputClock(700), &mut keys(&[]));
+        assert!(app.ui.input.last_gesture().is_none(), "the cancelled hold does not complete onto the card");
+    }
+
     /// The ride whose track the open detail still needs, read as the durable id.
     fn ride_track_request(app: &App) -> Option<crate::CatalogObjectId> {
         app.derived_needs().ride_track.map(|key| key.ride)
