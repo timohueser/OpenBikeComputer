@@ -1,68 +1,47 @@
-"""The R2 seam: the rclone remote, and the plans `publish` and `mirror` run.
+"""The R2 seam: the archive's place in the maps bucket, and the plans `publish` and
+`mirror` run.
+
+The bucket itself is defined once for the repository, in `tools/r2.py`, which `obc r2 rm`
+is the other user of. A delete tool that disagreed with this one about where the archive
+sits would delete in the wrong place, so both read the same definition.
 
 `run_rclone` is the one seam the tests replace, so the commands reach it through this module
 and not through a name bound at import time.
 """
 
-import os
-import subprocess
-from dataclasses import dataclass
+import sys
 from pathlib import Path
 
 from .lattice import Refuse
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tools"))
+try:
+    import r2
+finally:
+    sys.path.pop(0)
 
-ARCHIVE_PREFIX = "reference/v1"
 
-@dataclass(frozen=True)
-class Remote:
-    """The archive's place on R2, and the child environment that defines it."""
-
-    path: str
-    env: dict[str, str]
+ARCHIVE_PREFIX = r2.ARCHIVE_PREFIX
+Remote = r2.Remote
 
 
 def r2_remote() -> Remote:
-    """The `RCLONE_CONFIG_OBCR2_*` remote, from the `OBC_R2_*` variables of `obc.local`.
+    """The archive's place on R2, from the `OBC_R2_*` variables of `obc.local`."""
 
-    The secret reaches rclone through the child's environment only: it is never an
-    argument, because argv is readable by every process on the box.
-    """
-
-    def need(name: str) -> str:
-        value = os.environ.get(name)
-        if not value:
-            raise Refuse(f"{name} is not set; source tools/obc.local, which holds the R2 credential")
-        return value
-
-    endpoint = os.environ.get("OBC_R2_ENDPOINT") or f"https://{need('OBC_R2_ACCOUNT_ID')}.r2.cloudflarestorage.com"
-    bucket = need("OBC_R2_BUCKET")
-    prefix = os.environ.get("OBC_R2_PREFIX", "").strip("/")
-    env = {
-        "RCLONE_CONFIG_OBCR2_TYPE": "s3",
-        "RCLONE_CONFIG_OBCR2_PROVIDER": "Cloudflare",
-        "RCLONE_CONFIG_OBCR2_REGION": "auto",
-        "RCLONE_CONFIG_OBCR2_ENDPOINT": endpoint,
-        "RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID": need("OBC_R2_ACCESS_KEY_ID"),
-        "RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY": need("OBC_R2_SECRET_ACCESS_KEY"),
-        "RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET": "true",
-    }
-    key_root = "/".join(part for part in (bucket, prefix, ARCHIVE_PREFIX) if part)
-    return Remote(f"OBCR2:{key_root}", env)
+    try:
+        bucket = r2.bucket_remote()
+    except r2.Refuse as exc:
+        raise Refuse(str(exc)) from exc
+    return Remote(f"{bucket.path}/{r2.archive_prefix()}", bucket.env)
 
 
 def run_rclone(argv: list[str], env: dict[str, str], capture: bool = False) -> str:
     """Spawn rclone with the remote in its environment. The one seam the tests replace."""
 
     try:
-        done = subprocess.run(["rclone", *argv], env={**os.environ, **env}, check=True,
-                              capture_output=capture, text=capture)
-        return done.stdout if capture else ""
-    except FileNotFoundError as exc:
-        raise Refuse("rclone is not on PATH — the publish and mirror steps need it "
-                     "(https://rclone.org/install/)") from exc
-    except subprocess.CalledProcessError as exc:
-        raise Refuse(f"rclone {argv[0]} failed with status {exc.returncode}") from exc
+        return r2.run_rclone(argv, env, capture)
+    except r2.Refuse as exc:
+        raise Refuse(str(exc)) from exc
 
 
 def publish_plan(root: Path, remote: Remote, staging: Path) -> list[list[str]]:
