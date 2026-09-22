@@ -425,7 +425,7 @@ recording = "Fahrt läuft"
 # --- The Detour flow (#882): planning copy, preview title, failure hints ---
 [detour]
 title = "UMLEITUNG"
-planning = "Plane Umleitung..."
+planning = "Wird geplant..."
 commit_failed = "Umleitung fehlgeschlagen."
 rejoin_hint = "Späteren Wiedereinstieg wählen."
 
@@ -516,7 +516,7 @@ installing_body = "Die LED blinkt während der Installation. Danach startet das 
 installing_power = "Nicht ausschalten."
 updated_title = "AKTUALISIERT"
 updated = "Aktualisiert auf"
-failed_title = "UPDATE FEHLER"
+failed_title = "UPDATE-FEHLER"
 failed_not_started = "Das Update wurde nicht gestartet."
 failed_reverted = "Die vorherige Firmware ist weiterhin installiert."
 title = "UPDATE"

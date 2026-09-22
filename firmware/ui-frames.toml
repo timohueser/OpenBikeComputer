@@ -1717,8 +1717,7 @@ script = "p*4 C d d p d p"
 expect = "RouteSwap"
 langs = ["de", "fr", "es"]
 
-# The detour spinner per-language: "Plane Umleitung..." is the copy the 240 px panel has to hold on
-# one Label line, and the German phrase is what forced it shorter.
+# The detour spinner per-language: the copy has to hold on one Label line at 240 px.
 [[frame]]
 name = "detour-planning"
 map = "{monaco}"
@@ -1777,8 +1776,17 @@ script = "B u p d*4 p d d d p"
 expect = "Firmware"
 langs = ["de", "fr", "es"]
 
-# Factory Reset armed but not yet charging, per-language: the armed step is the only place
-# `Hold to erase` shows, and it is Body copy centred on the whole panel.
+# Factory Reset before the arming press, per-language: the two warning lines and the Confirm
+# button stack on each other, so this is where a longer translation shows.
+[[frame]]
+name = "reset-confirm"
+map = "{grimsel}"
+script = "B u p d*4 p d*5 p"
+expect = "Reset"
+langs = ["de", "fr", "es"]
+
+# Armed but not yet charging, per-language: the only state that draws `Hold to erase`, which is
+# Body copy centred on the whole panel.
 [[frame]]
 name = "reset"
 map = "{grimsel}"

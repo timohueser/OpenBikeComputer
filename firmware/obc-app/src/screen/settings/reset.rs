@@ -64,8 +64,8 @@ impl ResetScreen {
 
         if self.done {
             card_check(cv, Point::new(w / 2, TITLE_BAR_H + 64), 26);
-            wrapped(cv, rx.t(Msg::ResetComplete), w / 2, TITLE_BAR_H + 110, copy_w(w), Font::Body, INK);
-            wrapped(cv, rx.t(Msg::ResetRestarting), w / 2, TITLE_BAR_H + 142, copy_w(w), Font::Label, SUBTEXT);
+            let y = wrapped(cv, rx.t(Msg::ResetComplete), w / 2, TITLE_BAR_H + 110, copy_w(w), Font::Body, INK);
+            wrapped(cv, rx.t(Msg::ResetRestarting), w / 2, y + 9, copy_w(w), Font::Label, SUBTEXT);
             return;
         }
 
@@ -73,11 +73,14 @@ impl ResetScreen {
         wrapped(cv, rx.t(Msg::ResetFactory), w / 2, TITLE_BAR_H + 90, copy_w(w), Font::Body, WARNING);
 
         if !self.armed {
-            wrapped(cv, rx.t(Msg::ResetErases), w / 2, TITLE_BAR_H + 124, copy_w(w), Font::Label, SUBTEXT);
-            wrapped(cv, rx.t(Msg::ResetSavedTime), w / 2, TITLE_BAR_H + 144, copy_w(w), Font::Label, SUBTEXT);
+            // The warning is one sentence over two catalog lines, and the button follows the last
+            // of them: each stacks on the y the wrap reports, so a longer translation pushes down
+            // instead of drawing over its neighbour.
+            let y = wrapped(cv, rx.t(Msg::ResetErases), w / 2, TITLE_BAR_H + 124, copy_w(w), Font::Label, SUBTEXT);
+            let y = wrapped(cv, rx.t(Msg::ResetSavedTime), w / 2, y, copy_w(w), Font::Label, SUBTEXT);
             let label = rx.t(Msg::ResetConfirm);
             let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
-            let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
+            let (bx, by) = (w / 2 - bw / 2, y + 8);
             cv.round(rect(bx, by, bw, bh), 8, AMBER);
             cv.text_vcentered(label, w / 2, (by, bh), Font::Body, TextAlign::Center, INK);
             return;

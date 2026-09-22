@@ -237,8 +237,7 @@ pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hi
 mod tests {
     use super::*;
 
-    /// The face draws one cell per char, so the wrap budget counts chars. Counting bytes broke
-    /// every line in the accented languages one word early.
+    /// The face draws one cell per char, so the wrap budget counts chars.
     #[test]
     fn the_wrap_budget_counts_glyph_cells_not_bytes() {
         let copy = "Réessayez plus tôt"; // 18 chars, 20 bytes
