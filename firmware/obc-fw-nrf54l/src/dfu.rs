@@ -63,6 +63,14 @@ fn app_slot_base() -> *const u8 {
     core::ptr::addr_of!(__app_slot_base)
 }
 
+/// The fixed app slot as memory-mapped RRAM. Callers still use the recorded image length; the full
+/// slice is only the bound that makes an out-of-slot record unrepresentable.
+fn app_slot() -> &'static [u8] {
+    // SAFETY: the linker reserves the app slot, RRAM is XIP-readable, and nothing writes program
+    // RRAM while the app runs.
+    unsafe { core::slice::from_raw_parts(app_slot_base(), obc_dfu::MAX_IMAGE_LEN as usize) }
+}
+
 /// One DFU status line: always to RTT, and on debug-uart builds queued for the VCOM `D`-line
 /// stream the on-glass gate watches. ASCII only, because it rides a serial console.
 pub(crate) fn status(line: &str) {
@@ -72,17 +80,33 @@ pub(crate) fn status(line: &str) {
 }
 
 /// Capture the running image's OBCU version for the identity strings. Called once, from `main`, as
-/// soon as the settings store exists and long before the BLE and USB planes are spawned. The
-/// boot-state page is the only place the device learns what it is, and to read it once at boot is
-/// what keeps `firmware_revision()` non-blocking on the BLE and USB paths.
+/// soon as the settings store exists and long before the BLE and USB planes are spawned. A record
+/// names the running image only when its bounded length and CRC match the app slot. Reading and
+/// checking it once at boot keeps `firmware_revision()` non-blocking on the link paths.
 ///
 /// `#[inline(never)]`: the decoded [`BootState`] is a 1.7 KB temporary and must live in this frame,
 /// which pops, rather than in `main`'s.
 #[inline(never)]
 pub(crate) fn seed_firmware_revision(settings: &mut RramSettingsStore) {
-    let running = settings.read_boot_state().running_image();
+    let running = verified_running_image(settings);
     crate::link::identity::seed_installed_version(running.as_ref());
     defmt::info!("dfu: running image is {=str}", crate::link::identity::firmware_revision().as_str());
+}
+
+/// The boot-state header when it describes the bytes in the app slot that execute now.
+///
+/// `#[inline(never)]`: the decoded [`BootState`] is a 1.7 KB temporary and the CRC walk must not
+/// enlarge its caller's frame.
+#[inline(never)]
+fn verified_running_image(settings: &mut RramSettingsStore) -> Option<ImageHeader> {
+    let state = settings.read_boot_state();
+    let installed = state.running_image()?;
+    if obc_dfu::matching_image(Some(&installed), app_slot()).is_some() {
+        Some(installed)
+    } else {
+        defmt::warn!("dfu: installed record does not match the running app slot (SWD reflash?)");
+        None
+    }
 }
 
 struct ArmReport {
@@ -234,8 +258,7 @@ async fn write_rollback(
     image: &'static [u8],
 ) -> Result<Option<StagedRef>, ScanError> {
     debug_assert_eq!(image.len() as u32, installed.image_len);
-    let crc = obc_dfu::crc32(image);
-    if crc != installed.image_crc32 {
+    if obc_dfu::matching_image(Some(installed), image).is_none() {
         defmt::warn!("dfu: running image doesn't match the installed record (SWD reflash?) — no rollback");
         return Ok(None);
     }
@@ -290,7 +313,7 @@ async fn write_rollback(
         ExtentsError::Io => ScanError::Io,
     })?;
     defmt::info!("dfu: rollback reserve written ({=u32} B raw image, {=usize} extent(s))", installed.image_len, count);
-    StagedRef::new(header, installed.image_len, crc, &extents[..count])
+    StagedRef::new(header, installed.image_len, installed.image_crc32, &extents[..count])
         .map(Some)
         .ok_or(ScanError::TooFragmented { extents: count as u32 })
 }
@@ -467,10 +490,10 @@ pub(crate) fn run_scan(
     // The full CRC pass over a 900 KB package takes seconds; feed the dog before returning.
     pet(wdt);
     // The no-rollback fact is knowable before the arm from the boot-state page: `Idle` with no
-    // installed record, and defensively any non-`Idle` page, arms with no rollback, so an
-    // unconfirmed trial is accepted rather than rolled back. The running-mismatch case needs the
-    // slot CRC, which is too heavy before the confirm, so it is not surfaced.
-    let installed = rollback_source(&settings.read_boot_state());
+    // installed record, a non-`Idle` page that names no running image, or a record that does not
+    // match the slot. Each arms with no rollback, so an unconfirmed trial is accepted rather than
+    // rolled back.
+    let installed = verified_running_image(settings);
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
     // The installed side of the confirm screen, and its same-version equality check, must speak

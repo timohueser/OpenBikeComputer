@@ -61,9 +61,9 @@ pub(crate) fn serial_string() -> heapless::String<16> {
     s
 }
 
-/// The running image's version as the DFU boot-state page recorded it, captured once at boot by
-/// [`seed_installed_version`]. The live prefix is `bytes[..len]`; `len == 0` means no installed
-/// record, which is a fact on a probe-flashed device, not a missing read.
+/// The running image's version from a boot-state record verified against the app slot, captured
+/// once at boot by [`seed_installed_version`]. The live prefix is `bytes[..len]`; `len == 0` means
+/// there is no matching installed record.
 ///
 /// A `Cell` behind a critical section: written once from `main` before anything else runs, then read
 /// from the BLE task, the USB task and the ride loop, none of which may block for it.
@@ -101,8 +101,8 @@ fn revision_of(installed_version: &str) -> heapless::String<FW_VERSION_LEN> {
     s
 }
 
-/// [`revision_of`] for a caller holding a live boot-state record: the DFU confirm screen, which
-/// reads the page itself, because it must show what the page says now, not the boot snapshot.
+/// [`revision_of`] for a caller holding a verified live boot-state record: the DFU confirm screen,
+/// which reads the page itself because it must show the current verified decision.
 pub(crate) fn revision_from(installed: Option<&ImageHeader>) -> heapless::String<FW_VERSION_LEN> {
     revision_of(installed.map(|h| h.fw_version_str()).unwrap_or(""))
 }
