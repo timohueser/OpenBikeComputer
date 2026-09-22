@@ -114,7 +114,7 @@ class AssembleWorker {
                 queueMicrotask(() =>
                     this.onmessage?.(
                         new MessageEvent("message", {
-                            data: { type: "done", warnings: [], summary: {} },
+                            data: { type: "done", warnings: [], summary: {}, wasmMemoryBytes: 16 * 1024 * 1024 },
                         }),
                     ),
                 );

@@ -284,9 +284,11 @@
                 void delivery.catch(() => {});
                 break;
             case "done":
-                    // The worker's OPFS ledger, for anyone profiling an assembly from
-                    // DevTools — a worker's own console does not surface.
-                if (msg.io) console.debug("[assemble] opfs i/o", msg.io);
+                    // The run's ledger: OPFS traffic and the linear memory the assembly ended
+                    // on. For anyone profiling an assembly from DevTools — a worker's own
+                    // console does not surface — and the only place either number is readable
+                    // from outside the worker. Nothing on screen reads them.
+                console.debug("[assemble] run", { wasmMemoryBytes: msg.wasmMemoryBytes, io: msg.io });
                 runWarnings = msg.warnings;
                 try {
                     await delivery;
