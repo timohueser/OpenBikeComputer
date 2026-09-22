@@ -2608,7 +2608,8 @@ impl App {
 
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
-        let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
+        let hold_progress =
+            self.ui.hold_progress_override.map_or_else(|| self.ui.input.select_hold_progress(), |p| p.select);
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
         let visit_target = self.assistant_visit_target();
@@ -2854,12 +2855,12 @@ impl App {
         self.ui.input.last_gesture()
     }
 
-    /// Feed the live Select hold-progress (0.0 to 1.0) for the in-screen confirm fills. The
-    /// two-plane firmware calls this each frame from its high-priority [`InputPlane`], whose hold
-    /// state `App`'s own plane does not see; without it the Reset bar never fills. The
+    /// Feed the live hold progress (0.0 to 1.0) of both hold buttons. The two-plane firmware calls
+    /// this each frame from its high-priority [`InputPlane`], whose hold state `App`'s own plane
+    /// does not see; without it the Reset bar never fills and no hold ever defers a card. The
     /// single-loop hosts never call it.
-    pub fn set_hold_progress(&mut self, progress: f32) {
-        self.ui.hold_progress_override = Some(progress);
+    pub fn set_hold_progress(&mut self, select: f32, back: f32) {
+        self.ui.hold_progress_override = Some(crate::ui_runtime::HoldSample { select, back });
     }
 
     /// Arm the one-shot region clip for the next [`render_scene_map_photo_timed`](App::render_scene_map_photo_timed).
