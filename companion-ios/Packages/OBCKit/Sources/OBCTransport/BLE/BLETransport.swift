@@ -349,7 +349,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         // The stored trip blob, decoded app-side for its name and stage ids. Reconcile falls back
         // to it only when the trip catalog's CRC cannot confirm the fingerprint.
         try TripObjectCodec.decode(try await download(id))

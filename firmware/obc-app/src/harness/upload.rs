@@ -475,7 +475,7 @@ fn an_upload_for_an_unknown_id_is_dropped() {
 /// File routes 10 + 11 into trip 5, the re-fed trip catalog a committed trip upload resolves
 /// against.
 fn feed_trip(app: &mut App) {
-    app.set_trips(&[crate::TripInput { id: 5, name: "Schwarzwald", stage_ids: &[10, 11] }]);
+    app.set_trips(&[crate::TripInput { id: 5, key: 1, name: "Schwarzwald", start_date: 0, stage_ids: &[10, 11] }]);
 }
 
 #[test]

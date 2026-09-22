@@ -120,7 +120,7 @@
     async function doRemoveStage(trip: TripView, index: number) {
         // Removing the last stage would leave an empty grouping — offer to take
         // the trip with it instead of leaving a husk on the card.
-        if ((trip.detail?.stages.length ?? 0) <= 1) {
+        if ((trip.detail?.days.length ?? 0) <= 1) {
             const ok = await confirmAction({
                 title: `Remove the last route from “${tripName(trip)}”?`,
                 body: "An empty trip is nothing, so the trip is deleted with it. The route stays on the device.",
@@ -214,8 +214,8 @@
             // Revalidate against the card as it is NOW, not as it was when the dialog opened.
             await dashboard.refresh(c);
             const fresh = dashboard.trips.find((t) => t.objectId === trip.objectId);
-            const known = new Set(trip.detail?.stages ?? []);
-            if (!fresh || fresh.detail === null || fresh.detail.stages.some((id) => !known.has(id))) {
+            const known = new Set(trip.detail?.days.map((day) => day.route) ?? []);
+            if (!fresh || fresh.detail === null || fresh.detail.days.some((day) => !known.has(day.route))) {
                 dashboard.error =
                     "The trip changed on the device while the dialog was open — nothing was deleted. Try again.";
                 return;

@@ -106,7 +106,7 @@ same numbers and defines no others.
 | --: | :-- | :-- |
 | 0 | invalid | never encoded |
 | 1 | route | OBCR payload |
-| 2 | trip | ordered route membership |
+| 2 | trip | the days of a trip, one route each |
 | 3 | ride | produced by the device; the one growing object (§7) |
 | 5 | map shard | one OBCM object, carrying its terrain inside it (`OBCM_Spec.md` §1.3) |
 | 6 | map set manifest | **retired.** No producer writes this kind; the value is not reissued |

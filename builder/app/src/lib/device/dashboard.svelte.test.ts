@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { DeviceDashboard } from "./dashboard.svelte";
 import type { RideScope } from "./rides";
 import { Crc32 } from "../usb/crc32";
-import { encodeTripObject } from "../usb/objects";
+import { encodeTripObject, wholeDay } from "../usb/objects";
 import { FlatDevice, flatDevice } from "../usb/flat-device";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { EntryFlags, ObjectKind } from "../usb/protocol";
@@ -35,7 +35,8 @@ function seedRoute(device: FlatDevice, name: string, seed = 0) {
 }
 
 function seedTrip(device: FlatDevice, name: string, stages: bigint[]) {
-    return device.seed({ kind: ObjectKind.Trip, displayName: name, bytes: encodeTripObject({ name, stages }) });
+    const bytes = encodeTripObject({ key: 1n, name, startDate: 0, days: stages.map(wholeDay) });
+    return device.seed({ kind: ObjectKind.Trip, displayName: name, bytes });
 }
 
 async function withDevice(

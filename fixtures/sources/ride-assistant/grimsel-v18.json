@@ -3,7 +3,7 @@
   "package": "sim-grimsel",
   "archive": {
     "bytes": 4137061,
-    "sha256": "b3b284ab09f9a2b72856cc9c26fd92a7d23ce6fdd7297a5882b1717dc063abb6"
+    "sha256": "b016608fb00921d10648f529e637152867b65b6f3751871b1b55c5b4dbaa78f9"
   },
   "producer": {
     "source_commit": "3d835f672",

@@ -20,8 +20,8 @@
 export interface TripStages {
     readonly objectId: bigint;
     readonly name: string;
-    /** The trip's stage ids, or null when the trip object could not be read. */
-    readonly detail: { readonly stages: readonly bigint[] } | null;
+    /** The trip's days, or null when the trip object could not be read. */
+    readonly detail: { readonly days: readonly { readonly route: bigint }[] } | null;
 }
 
 export type TripDeletePlan =
@@ -44,6 +44,10 @@ export type TripDeletePlan =
  * Decide what the delete-trip confirmation may offer for `trip`, given every trip on the card
  * (`allTrips` includes `trip` itself) and the ids of the routes that actually exist.
  */
+function routesOf(trip: TripStages): bigint[] {
+    return trip.detail?.days.map((day) => day.route) ?? [];
+}
+
 export function planTripDelete(
     trip: TripStages,
     allTrips: readonly TripStages[],
@@ -61,13 +65,13 @@ export function planTripDelete(
     }
 
     // Unique stage ids that are still routes on the device, in stage order.
-    const routes = [...new Set(trip.detail.stages)].filter((id) => existingRouteIds.has(id));
+    const routes = [...new Set(routesOf(trip))].filter((id) => existingRouteIds.has(id));
     if (routes.length === 0) return { offer: "trip-only", reason: null };
 
     // A route is shared when any other trip lists it too; remember who, for the note.
     const sharedIn = new Map<bigint, TripStages[]>();
     for (const other of others) {
-        for (const id of new Set(other.detail?.stages ?? [])) {
+        for (const id of new Set(routesOf(other))) {
             if (routes.includes(id)) sharedIn.set(id, [...(sharedIn.get(id) ?? []), other]);
         }
     }
