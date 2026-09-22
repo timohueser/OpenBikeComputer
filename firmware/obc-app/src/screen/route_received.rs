@@ -18,7 +18,7 @@ use crate::Msg;
 
 use super::vocab::band::TopStroke;
 use super::vocab::card::{ActionRows, CardEvent};
-use super::vocab::chrome::{card_check, title_frame, TITLE_BAR_H};
+use super::vocab::chrome::{card_check, copy_w, title_frame, wrapped, TITLE_BAR_H};
 use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::{
     palette, Ctx, Render, RouteMenuScreen, RouteOverviewScreen, Screen, ScreenTick, Transition, UPLOAD_POPUP_TIMEOUT_MS,
@@ -128,11 +128,13 @@ impl RouteReceivedScreen {
                 }
             }
             None => {
-                cv.text(
+                wrapped(
+                    cv,
                     rx.t(Msg::RouteReceivedRouteRemoved),
-                    Point::new(w / 2, TITLE_BAR_H + 24),
+                    w / 2,
+                    TITLE_BAR_H + 24,
+                    copy_w(w),
                     Font::Label,
-                    TextAlign::Center,
                     SUBTEXT,
                 );
             }
@@ -235,11 +237,13 @@ impl TripReceivedScreen {
                 cv.text(&count, Point::new(w / 2, TITLE_BAR_H + 68), Font::Label, TextAlign::Center, SUBTEXT);
             }
             None => {
-                cv.text(
+                wrapped(
+                    cv,
                     rx.t(Msg::TripReceivedTripRemoved),
-                    Point::new(w / 2, TITLE_BAR_H + 24),
+                    w / 2,
+                    TITLE_BAR_H + 24,
+                    copy_w(w),
                     Font::Label,
-                    TextAlign::Center,
                     SUBTEXT,
                 );
             }
@@ -303,30 +307,12 @@ impl RouteUpdatedScreen {
                 cv.text(&name, Point::new(w / 2, name_top), Font::Body, TextAlign::Center, INK);
             }
             None => {
-                cv.text(
-                    rx.t(Msg::RouteReceivedActiveRoute),
-                    Point::new(w / 2, name_top),
-                    Font::Body,
-                    TextAlign::Center,
-                    INK,
-                );
+                wrapped(cv, rx.t(Msg::RouteReceivedActiveRoute), w / 2, name_top, copy_w(w), Font::Body, INK);
             }
         }
         let line = Font::Label.line_height() as i32;
         let cap_top = name_top + Font::Body.line_height() as i32 + 14;
-        cv.text(
-            rx.t(Msg::RouteReceivedNavFollows),
-            Point::new(w / 2, cap_top),
-            Font::Label,
-            TextAlign::Center,
-            SUBTEXT,
-        );
-        cv.text(
-            rx.t(Msg::RouteReceivedNewVersion),
-            Point::new(w / 2, cap_top + line),
-            Font::Label,
-            TextAlign::Center,
-            SUBTEXT,
-        );
+        wrapped(cv, rx.t(Msg::RouteReceivedNavFollows), w / 2, cap_top, copy_w(w), Font::Label, SUBTEXT);
+        wrapped(cv, rx.t(Msg::RouteReceivedNewVersion), w / 2, cap_top + line, copy_w(w), Font::Label, SUBTEXT);
     }
 }

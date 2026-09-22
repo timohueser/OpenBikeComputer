@@ -1717,6 +1717,17 @@ script = "p*4 C d d p d p"
 expect = "RouteSwap"
 langs = ["de", "fr", "es"]
 
+# The detour spinner per-language: "Plane Umleitung..." is the copy the 240 px panel has to hold on
+# one Label line, and the German phrase is what forced it shorter.
+[[frame]]
+name = "detour-planning"
+map = "{monaco}"
+env = "monaco-route"
+script = "{detour_pre} C d p w p"
+expect = "NavPlanning"
+args = ["--gpx", "{upgpx}", "--at", "60", "--hold", "detour"]
+langs = ["de", "fr", "es"]
+
 # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
 # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
 [[frame]]
@@ -1766,6 +1777,15 @@ script = "B u p d*4 p d d d p"
 expect = "Firmware"
 langs = ["de", "fr", "es"]
 
+# Factory Reset armed but not yet charging, per-language: the armed step is the only place
+# `Hold to erase` shows, and it is Body copy centred on the whole panel.
+[[frame]]
+name = "reset"
+map = "{grimsel}"
+script = "B u p d*4 p d*5 p p"
+expect = "Reset"
+langs = ["de", "fr", "es"]
+
 [[frame]]
 name = "dfu-confirm"
 map = "{grimsel}"
@@ -1805,6 +1825,15 @@ name = "dfu-updated"
 map = "{grimsel}"
 expect = "DfuUpdated"
 args = ["--dfu", "confirmed=v1.0.0-14-g0a1b2c3-dirty"]
+langs = ["de", "fr", "es"]
+
+# Its failure twin per-language: the title sits in the 212 px title slot, and the sentence under it
+# wraps. The `notstarted` verdict names no version, so the card is title + sentence alone.
+[[frame]]
+name = "dfu-failed"
+map = "{grimsel}"
+expect = "DfuFailed"
+args = ["--dfu", "failed=notstarted"]
 langs = ["de", "fr", "es"]
 
 # title + the choice it stages. `Jetzt laden` is the width constraint on the row.
