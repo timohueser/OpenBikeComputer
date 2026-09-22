@@ -80,7 +80,7 @@ impl LandmarkRecord {
         (record.qid > 0
             && (-90_000_000..=90_000_000).contains(&record.lat)
             && (-180_000_000..=180_000_000).contains(&record.lon)
-            && (1..=6).contains(&record.category)
+            && (1..=16).contains(&record.category)
             && bytes[17..20] == [0; 3]
             && bytes[22..24] == [0, 0]
             && (record.osm.is_some() || record.hours_ref == POI_HOURS_REF_NONE))
@@ -112,3 +112,33 @@ pub const PHOTO_WINDOW_BITS: u8 = 12;
 pub const PHOTO_HISTORY: usize = 1 << PHOTO_WINDOW_BITS;
 /// Includes the zlib wrapper and worst-case stored-block overhead.
 pub const PHOTO_MAX_COMPRESSED: usize = PHOTO_PIXELS + 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn landmark_category_accepts_the_table_and_rejects_other_wire_ids() {
+        let record = LandmarkRecord {
+            qid: 1,
+            lon: 0,
+            lat: 0,
+            category: 1,
+            hours_ref: POI_HOURS_REF_NONE,
+            osm: None,
+            name: ContentRef::default(),
+            articles: ContentRef::default(),
+            photo: ContentRef::default(),
+            photo_attribution: ContentRef::default(),
+        };
+
+        for category in 1..=16 {
+            let bytes = LandmarkRecord { category, ..record }.encode();
+            assert_eq!(LandmarkRecord::decode(&bytes).map(|decoded| decoded.category), Some(category));
+        }
+        for category in [0, 17, u8::MAX] {
+            let bytes = LandmarkRecord { category, ..record }.encode();
+            assert!(LandmarkRecord::decode(&bytes).is_none());
+        }
+    }
+}
