@@ -259,6 +259,10 @@ corruption; keep it after a probe-rs upgrade.
 ELF must be the exact one installed, built with the same features and `DEFMT_LOG`**, or the decode
 is garbage. `cargo rtt` can rebuild before attaching but never programs the device.
 
+`obc board run ELF --preverify` (`run` and `download` only) reads the image back first and programs
+nothing when the board already holds it, then resets and streams RTT — one session that both
+restarts the board and catches its boot log. An ELF that differs is programmed as usual.
+
 | Symptom | Check and recovery |
 | --- | --- |
 | Probe busy / exclusive-access error | Run `obc board doctor`. Stop the owning RTT, debugger or programmer session with Ctrl-C, wait for it to exit, then retry. Do not kill all probe processes. |

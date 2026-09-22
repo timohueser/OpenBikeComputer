@@ -16,7 +16,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 
-import { bootFault, parseBootLog, type BootObservation } from "../../test-support/device-smoke/smoke";
+import { bootRefusal, parseBootLog, type BootObservation } from "../../test-support/device-smoke/smoke";
 
 /** What the run records about the image that was running when the observation was made. */
 export interface FirmwareIdentity {
@@ -59,9 +59,9 @@ export function reboot(options: BoardOptions, signal: AbortSignal): Promise<Rebo
 
         const take = (chunk: Buffer) => {
             log += chunk.toString("utf8");
-            const fault = bootFault(log);
-            if (fault) {
-                finish(() => reject(new Error(`The firmware refused the card or the map: ${fault}`)));
+            const refusal = bootRefusal(log);
+            if (refusal) {
+                finish(() => reject(refusal));
                 return;
             }
             const observation = parseBootLog(log);
