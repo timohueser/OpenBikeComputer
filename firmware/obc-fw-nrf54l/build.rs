@@ -75,6 +75,9 @@ mod contract {
     pub const SEMMC_STAGE_BASE: usize = obc_dfu::SEMMC_STAGE_BASE as usize;
     /// The app slot's base, above the 32 KB bootloader.
     pub const APP_SLOT_BASE: usize = obc_dfu::APP_SLOT_BASE as usize;
+    /// The persistent settings page, one page above BOOT_STATE — derived with it, so moving the
+    /// handoff page can neither gap nor overlap this one.
+    pub const SETTINGS_BASE: usize = obc_dfu::SETTINGS_BASE as usize;
 
     /// The reserved carve, [`SEMMC_IMAGE_BYTES`] rounded up to 4 KiB.
     ///
@@ -129,7 +132,7 @@ MEMORY
     FLASH       : ORIGIN = {APP_SLOT_BASE:#010X}, LENGTH = {app_len:#X} /* app slot ({app_kb}K) above the 32K obc-boot (#617) */
     SEMMC_STAGE : ORIGIN = {SEMMC_STAGE_BASE:#010X}, LENGTH = {stage_kb}K   /* staged sEMMC blob — armer→boot handoff (#1158, OBCU_Spec.md §3) */
     BOOT_STATE  : ORIGIN = {BOOT_STATE_BASE:#010X}, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
-    SETTINGS    : ORIGIN = 0x001FC000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
+    SETTINGS    : ORIGIN = {SETTINGS_BASE:#010X}, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
     RAM         : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
          SEMMC    {SEMMC_RAM_BASE:#010X} .. {FLPR_RAM_BASE:#010X}  ({semmc_kb}K)  sEMMC soft-peripheral image (INITPC = {SEMMC_RAM_BASE:#010X}, VRI at +{SEMMC_VRI_OFFSET})

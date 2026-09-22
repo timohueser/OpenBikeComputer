@@ -295,6 +295,9 @@ fn padded_len(len: u32) -> u32 {
     len.div_ceil(RRAM_LINE_LEN as u32) * RRAM_LINE_LEN as u32
 }
 
+// An image at `MAX_IMAGE_LEN` fills the slot, so its padded length must not spill past the end.
+const _: () = assert!(crate::layout::APP_SLOT_LEN.is_multiple_of(RRAM_LINE_LEN as u32));
+
 /// The shared pipeline behind an `Install` and a `Rollback`, so the two safety paths cannot
 /// diverge. `mismatch_state` is written when `verify` rejects the stage, `success_state` after a
 /// verified flash, and `verify_io_pre_erase` says whether a verify-pass SD error leaves the arm

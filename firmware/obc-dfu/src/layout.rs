@@ -9,10 +9,11 @@
 //!   0x0000_8000  app slot              APP_SLOT_BASE .. SEMMC_STAGE_BASE
 //!   0x001F_6000  SEMMC_STAGE   20 KB   the staged blob (`crate::blobstage`)
 //!   0x001F_B000  BOOT_STATE     4 KB
+//!   0x001F_C000  SETTINGS       4 KB   the app's, never the update path's
 //! ```
 
 use crate::blobstage::STAGE_LEN;
-use crate::engine::RRAM_LINE_LEN;
+use crate::state::PAGE_LEN;
 
 /// Base of the app slot: one past the bootloader's 32 KB region.
 pub const APP_SLOT_BASE: u32 = 0x0000_8000;
@@ -27,5 +28,6 @@ pub const SEMMC_STAGE_BASE: u32 = BOOT_STATE_BASE - STAGE_LEN as u32;
 /// The whole app slot. The install engine writes exactly this span and nothing outside it.
 pub const APP_SLOT_LEN: u32 = SEMMC_STAGE_BASE - APP_SLOT_BASE;
 
-// An image at the cap must still fit once the engine pads its tail up to an RRAM line.
-const _: () = assert!(APP_SLOT_LEN.is_multiple_of(RRAM_LINE_LEN as u32));
+/// Base of the app's settings page, one page above the boot-state page. The update path never
+/// touches it; it is here because it is what a moved boot-state page collides with.
+pub const SETTINGS_BASE: u32 = BOOT_STATE_BASE + PAGE_LEN as u32;

@@ -26,7 +26,7 @@ pub use image::{
     looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, MAGIC, MAX_CONTAINER_LEN, MAX_IMAGE_LEN, RAM_END,
     RAM_START,
 };
-pub use layout::{APP_SLOT_BASE, APP_SLOT_LEN, BOOT_STATE_BASE, SEMMC_STAGE_BASE};
+pub use layout::{APP_SLOT_BASE, APP_SLOT_LEN, BOOT_STATE_BASE, SEMMC_STAGE_BASE, SETTINGS_BASE};
 pub use sig::{
     public_key_of, sign_image, signing_prefix, verify_image, PublicKey, PUBKEY_LEN, RELEASE_PUBKEY, SEED_LEN,
     SIG_CONTEXT, SIG_LEN, SIG_PREFIX_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE,
