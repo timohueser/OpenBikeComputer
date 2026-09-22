@@ -151,6 +151,9 @@ describe("direct assembler delivery", () => {
     beforeEach(() => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         vi.stubGlobal("Worker", AssembleWorker);
+        try {
+            globalThis.localStorage?.removeItem("obcm.keepMapCells");
+        } catch {}
         seams.sendMapBlob.mockReset();
         seams.sendMapBytes.mockReset();
         seams.cellStoreWritable.mockReset().mockResolvedValue(false);
