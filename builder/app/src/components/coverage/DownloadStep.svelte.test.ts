@@ -25,6 +25,8 @@ const seams = vi.hoisted(() => ({
     discardMapOutput: vi.fn(async () => undefined),
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
+    /** Make the worker end the run with a `done` the protocol guard rejects. */
+    unreadableDone: false,
     workerAssemble: 0,
     requireDisk: false,
     holdEstimates: false,
@@ -114,7 +116,9 @@ class AssembleWorker {
                 queueMicrotask(() =>
                     this.onmessage?.(
                         new MessageEvent("message", {
-                            data: { type: "done", warnings: [], summary: {}, wasmMemoryBytes: 16 * 1024 * 1024 },
+                            data: seams.unreadableDone
+                                ? { type: "done", warnings: [], summary: {} }
+                                : { type: "done", warnings: [], summary: {}, wasmMemoryBytes: 16 * 1024 * 1024 },
                         }),
                     ),
                 );
@@ -155,6 +159,7 @@ describe("direct assembler delivery", () => {
         seams.discardMapOutput.mockClear();
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
+        seams.unreadableDone = false;
         seams.workerAssemble = 0;
         seams.requireDisk = false;
         seams.holdEstimates = false;
@@ -827,6 +832,23 @@ describe("direct assembler delivery", () => {
             ),
         ).resolves.toMatchObject({ objectId: 3n });
         expect(run.result).toBe("started after maintenance");
+        await unmount(component);
+    });
+
+    /** A stray message is droppable; the run's only ending is not. Dropping a `done` the guard
+     *  rejects would leave the screen waiting for a message that has already been sent. */
+    it("fails the run when the finished result is one this build cannot read", async () => {
+        seams.unreadableDone = true;
+        const { component, target } = await mountReadyStep();
+
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 40 && !target.textContent?.includes("Nothing was saved"); attempt++) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            await tick();
+        }
+
+        expect(target.textContent).toContain("Nothing was saved");
+        expect(seams.saveBlob).not.toHaveBeenCalled();
         await unmount(component);
     });
 

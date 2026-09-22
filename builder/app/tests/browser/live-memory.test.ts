@@ -7,7 +7,21 @@
  * estimator would still return its number and the preflight would still admit the run. This suite
  * is the measurement that can fail: it assembles the largest published region in the shipped
  * `dist/web` build, reads the linear memory the worker reports at `done`, and holds it against the
- * estimator's own engine term for the same selection and the same sort budget.
+ * same estimate's `peakBytes` for that selection and that sort budget.
+ *
+ * `peakBytes` is the right side of that comparison because both sides are whole-memory figures.
+ * The reported number is all of linear memory; `peakBytes` is the estimator's bottom line for all
+ * of it — engine, resident input and resident output — and it is the number `fits` is decided on
+ * and the download admitted on. The engine term alone would be a component: the terrain squares
+ * the bridge copies in and the engine's block caches are priced in `inputBytes`, and they are in
+ * linear memory too. Held to the bottom line the gate needs no margin, and it loses no power,
+ * because what it exists to catch is not small — a buffered map is the whole map, and buffered
+ * cells are the whole selection.
+ *
+ * It reads a figure; it does not re-fit one. An earlier measurement of the same selection, taken
+ * on a differently staged page, read less linear memory than this journey does. Nothing here
+ * isolates the engine term from the rest of the projection, so that difference stays unattributed
+ * and the estimator's own constants are not moved on the strength of it.
  *
  * It needs the live catalogue, so it is `live`: the published objects are the only input large
  * enough that buffering one would show. The fixture region in `assemble-download.test.js` is five
@@ -49,18 +63,12 @@ const PIXEL = Buffer.from(
   'base64',
 );
 
-/**
- * How far over its own engine term the run may land.
- *
- * The engine term is a linear fit, and the wasm allocator rounds a run's arenas up over it: a
- * country-scale run measures 1.062 of the term, to the byte, on repeated runs. The margin covers
- * that rounding and nothing else. It is not slack for growth — a run that buffers what the
- * estimator says it streams misses by hundreds of megabytes, not by ten percent.
- */
-const MARGIN = 1.1;
-
 /** Below this the gate cannot fail, because buffering the whole selection would still fit. */
 const MEANINGFUL_BYTES = 512 * 1024 * 1024;
+
+/** …and above this the suite is a 9 GB download rather than a measurement. A publish that crosses
+ *  it needs a deliberate choice of region, not this one. */
+const AFFORDABLE_BYTES = 4 * 1024 * 1024 * 1024;
 
 /** The engine's sort budget the download screen runs with, read from it so the two cannot drift. */
 async function sortBudgetBytes(): Promise<number> {
@@ -149,6 +157,9 @@ test('holds a country-scale assembly to the memory its estimate promised', async
     expect(totalCellBytes, 'the published catalogue is too small for this gate to be able to fail').toBeGreaterThan(
       MEANINGFUL_BYTES,
     );
+    expect(totalCellBytes, 'the published catalogue is larger than this suite is willing to download').toBeLessThan(
+      AFFORDABLE_BYTES,
+    );
 
     await initAssemble(await readFile(WASM));
     const estimate = await estimateMemory(
@@ -160,7 +171,8 @@ test('holds a country-scale assembly to the memory its estimate promised', async
     );
     notes.push(
       `selection: ${region.name}, ${totalCellBytes} B (${terrainBytes} B terrain)`,
-      `estimate: engine ${estimate.engineBytes} B, peak ${estimate.peakBytes} B, fits ${estimate.fits}`,
+      `estimate: engine ${estimate.engineBytes} B, input ${estimate.inputBytes} B, ` +
+        `output ${estimate.outputBytes} B, peak ${estimate.peakBytes} B, fits ${estimate.fits}`,
     );
 
     const search = page.getByLabel('Search regions');
@@ -200,11 +212,11 @@ test('holds a country-scale assembly to the memory its estimate promised', async
     const { wasmMemoryBytes } = await profile;
     notes.push(
       `wasm linear memory: ${wasmMemoryBytes} B, ` +
-        `${(wasmMemoryBytes / estimate.engineBytes).toFixed(3)} x the engine term`,
+        `${(wasmMemoryBytes / estimate.peakBytes).toFixed(3)} x the projected peak`,
     );
     expect(wasmMemoryBytes).toBeGreaterThan(0);
     expect(wasmMemoryBytes, 'the assembly held more memory than its estimate priced').toBeLessThanOrEqual(
-      estimate.engineBytes * MARGIN,
+      estimate.peakBytes,
     );
     expect(errors).toEqual([]);
   } catch (error) {

@@ -244,7 +244,15 @@
 
     async function onWorkerMessage(e: MessageEvent) {
         const msg = e.data as unknown;
-        if (!isWorkerResponse(msg)) return;
+        if (!isWorkerResponse(msg)) {
+                // A message this protocol does not speak is droppable. A malformed `done` is not:
+                // it is the run's only ending, so dropping it leaves the screen waiting for a
+                // result that will never come again.
+            if (typeof msg === "object" && msg !== null && (msg as { type?: unknown }).type === "done") {
+                await failRun(new Error("The assembly finished with a result this build cannot read."));
+            }
+            return;
+        }
         switch (msg.type) {
             case "estimate-result":
                 if (msg.estimateId !== estimateGeneration || estimateLedger !== ledger) return;
