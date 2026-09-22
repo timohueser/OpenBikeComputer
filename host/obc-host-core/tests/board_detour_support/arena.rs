@@ -66,11 +66,11 @@ impl NavGuard {
         let Work::Plan(planner) = &mut self.work else { return None };
         Some((planner, &mut self.scratch, &mut self.tiles, &mut self.output))
     }
-    pub fn begin_trim(&mut self, target: u32, elevation: bool) {
-        self.work = Work::Trim(Box::new(Trimmer::new(target, elevation)));
+    pub fn begin_trim(&mut self, leg: obc_route::Leg, target: u32, elevation: bool) {
+        self.work = Work::Trim(Box::new(Trimmer::new(leg, target, elevation)));
     }
-    pub fn begin_splice(&mut self, split: u32, rejoin: u32, len: u32, elevation: bool) {
-        self.work = Work::Splice(Box::new(Splicer::new(split, rejoin, len, elevation, self.original.name())));
+    pub fn begin_splice(&mut self, leg: obc_route::Leg, split: u32, rejoin: u32, len: u32, elevation: bool) {
+        self.work = Work::Splice(Box::new(Splicer::new(leg, split, rejoin, len, elevation, self.original.name())));
     }
     pub fn transform(&mut self, original: &dyn ByteSource, leg: &dyn ByteSource) -> (TransformStep, usize, usize) {
         let orig = RouteReader::new(&self.original, original);

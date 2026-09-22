@@ -22,6 +22,16 @@ pub(crate) const SPLICE_CHUNKS_PER_STEP: usize = 1;
 /// The spliced route's name prefix. A re-spliced detour keeps its name unchanged instead of
 /// stacking prefixes.
 const NAME_PREFIX: &str = "Detour · ";
+const APPROACH_PREFIX: &str = "To start · ";
+
+/// What a planned leg does to the route it joins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// Leaves the route, skips a span of it and rejoins it.
+    Detour,
+    /// Leads to the route's start. The whole route follows it.
+    Approach,
+}
 
 /// The height move (m) that forces the emitter to keep a vertex once the detour carries sampled
 /// terrain. It matches [`ELE_DEADBAND_M`], the band the nav emit and the GPX converter integrate
@@ -105,21 +115,22 @@ impl Splicer {
     /// facts and the final geometry determine the output, so the distance and elevation hints in
     /// the call shape are unused. `orig_name` supplies the derived route name.
     ///
-    /// A leg that rejoins at the route start (`rejoin_m == 0`) is an approach: the way to the start,
-    /// then the whole route. It skips nothing, so it keeps the route's name and adds no avoidance.
-    /// Its heights take one offset, which lands its end on the start's height, and every waypoint
-    /// moves behind it.
+    /// An [`Leg::Approach`] is the way to the start, then the whole route: it splits and rejoins at
+    /// 0 and skips nothing, so it adds no avoidance. Its heights take one offset, which lands its end
+    /// on the start's height, and every waypoint moves behind it.
     pub fn new(
+        leg: Leg,
         split_m: u32,
         rejoin_m: u32,
         _detour_len_m: u32,
         _detour_has_elevation: bool,
         orig_name: &str,
     ) -> Splicer {
-        let approach = rejoin_m == 0;
+        let approach = leg == Leg::Approach;
+        let (split_m, rejoin_m) = if approach { (0, 0) } else { (split_m, rejoin_m) };
         let mut name = heapless::String::new();
-        if !approach && !orig_name.starts_with(NAME_PREFIX) {
-            let _ = name.push_str(NAME_PREFIX);
+        if !orig_name.starts_with(NAME_PREFIX) && !orig_name.starts_with(APPROACH_PREFIX) {
+            let _ = name.push_str(if approach { APPROACH_PREFIX } else { NAME_PREFIX });
         }
         for ch in orig_name.chars() {
             if name.push(ch).is_err() {
@@ -455,6 +466,7 @@ fn blend_ele(sampled: i16, r0: f32, r1: f32, t: f32) -> i16 {
 /// step the splicer themselves.
 #[allow(clippy::too_many_arguments)]
 pub fn splice_detour(
+    leg: Leg,
     orig: &RouteReader,
     detour: &RouteReader,
     split_m: u32,
@@ -463,7 +475,7 @@ pub fn splice_detour(
     detour_has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, Error> {
-    let mut sp = Splicer::new(split_m, rejoin_m, detour_len_m, detour_has_elevation, orig.name());
+    let mut sp = Splicer::new(leg, split_m, rejoin_m, detour_len_m, detour_has_elevation, orig.name());
     loop {
         match sp.step(orig, detour, sink) {
             SpliceStep::Running => {}

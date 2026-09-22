@@ -184,13 +184,14 @@ impl RouteMatch {
         (!checked.off_route).then_some(checked)
     }
 
-    /// The route point nearest `(lon, lat)` anywhere on the route, the earliest of near-ties: what a
-    /// first lock finds, without a cursor to move. `off_route` says whether a first lock would
-    /// follow from there. `None` when no segment decodes.
+    /// The first-lock scan without a cursor to move: the route point nearest `(lon, lat)`, biased
+    /// to the earliest. A later candidate replaces the kept one only when it is more than `tie_m`
+    /// nearer; the live first lock uses 8 m. `off_route` says whether a lock would follow from
+    /// there. `None` when no segment decodes.
     #[inline(never)]
-    pub fn nearest(lon: i32, lat: i32, route: &RouteReader) -> Option<Match> {
+    pub fn nearest(lon: i32, lat: i32, route: &RouteReader, tie_m: f32) -> Option<Match> {
         let mut probe = RouteMatch::new();
-        let (best, _) = probe.scan((lon, lat), route, u32::MAX, None).ok()?;
+        let (best, _) = probe.scan((lon, lat), route, u32::MAX, None, tie_m).ok()?;
         best.map(|(_, _, dist, progress_m)| Match { progress_m, off_route: dist >= OFF_M, dist_m: dist as u32 })
     }
 
@@ -205,7 +206,7 @@ impl RouteMatch {
         if route.chunks().is_empty() {
             return Match { progress_m: 0, off_route: true, dist_m: u32::MAX };
         }
-        let Ok((best, ambiguous)) = self.scan((lon, lat), route, ceiling_m, recovery) else {
+        let Ok((best, ambiguous)) = self.scan((lon, lat), route, ceiling_m, recovery, TIE_EPS_M) else {
             return Match { progress_m: self.progress_m, off_route: true, dist_m: u32::MAX };
         };
         let Some((bc, bs, bdist, bprog)) = best else {
@@ -241,6 +242,7 @@ impl RouteMatch {
         route: &RouteReader,
         ceiling_m: u32,
         recovery: Option<RecoveryScan>,
+        tie_m: f32,
     ) -> Result<(Option<Best>, bool), ()> {
         let chunks = route.chunks();
         let total = route.total_distance_m;
@@ -336,7 +338,7 @@ impl RouteMatch {
                         let better = match best {
                             None => true,
                             Some((_, _, bd, _)) if self.started || recovery.is_some() => dist < bd,
-                            Some((_, _, bd, _)) => dist < bd - TIE_EPS_M,
+                            Some((_, _, bd, _)) => dist < bd - tie_m,
                         };
                         if better {
                             best = Some((c, s, dist, progress.min(total)));

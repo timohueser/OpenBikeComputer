@@ -291,6 +291,8 @@ pub struct NavigatorMachine {
     // Bits 0–1: family cleanup owed. Bit 2: outstanding release retains a preview.
     cancel_mask: u8,
     detour_commit: bool,
+    /// The detour-family plan is Ride to start. It outlives the request, which leaves at Acquire.
+    approach: bool,
     following: RouteState,
     /// Resident per-route caches, each with its own build key.
     profile: Option<Profile>,
@@ -327,6 +329,7 @@ impl NavigatorMachine {
             phase: OperationPhase::Idle,
             cancel_mask: 0,
             detour_commit: false,
+            approach: false,
             following: RouteState::new(),
             profile: None,
             profile_route: None,
@@ -371,12 +374,14 @@ impl NavigatorMachine {
                     return;
                 }
                 self.supersede(PlanFamily::Detour);
+                self.approach = request.leg == obc_route::Leg::Approach;
                 self.detour_request = Some(request);
                 self.detour = PlanPhase::Requested;
             }
             NavigatorIntent::CancelDetour => {
                 self.detour_request = None;
                 self.detour_commit = false;
+                self.approach = false;
                 self.supersede(PlanFamily::Detour);
                 self.detour = PlanPhase::Idle;
             }
@@ -585,6 +590,11 @@ impl NavigatorMachine {
         self.detour != PlanPhase::Idle
     }
 
+    /// Whether the detour-family plan is Ride to start.
+    pub(crate) fn approach(&self) -> bool {
+        self.approach
+    }
+
     /// Whether the in-flight detour operation is the splice rather than the search — the two have
     /// the same family and different answers.
     pub(crate) fn detour_committing(&self) -> bool {
@@ -654,6 +664,7 @@ impl NavigatorMachine {
         if self.detour == PlanPhase::Active {
             return;
         }
+        self.approach = false;
         self.supersede(PlanFamily::Detour);
         self.detour = PlanPhase::Idle;
     }
@@ -679,6 +690,7 @@ impl NavigatorMachine {
             phase,
             cancel_mask,
             detour_commit,
+            approach,
             following,
             profile,
             profile_route,
@@ -699,6 +711,7 @@ impl NavigatorMachine {
         assert!(*route == PlanPhase::Idle && *detour == PlanPhase::Idle, "neither family has been asked");
         assert!(route_request.is_none() && detour_request.is_none(), "no request waiting");
         assert!(*phase == OperationPhase::Idle && *cancel_mask == 0 && !*detour_commit, "no physical work pending");
+        assert!(!*approach, "no Ride to start is planned");
         following.assert_boot_state();
         assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
@@ -772,7 +785,7 @@ mod machine_tests {
     }
 
     fn detour_request() -> DetourRequest {
-        DetourRequest { route: 0, from: (0, 0), progress_m: 1_000, target_m: 1_600 }
+        DetourRequest { route: 0, from: (0, 0), progress_m: 1_000, target_m: 1_600, leg: obc_route::Leg::Detour }
     }
 
     /// The name of what an effect asks for, so a test can say what it expects without matching on a

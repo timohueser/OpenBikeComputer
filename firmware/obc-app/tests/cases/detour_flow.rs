@@ -586,7 +586,7 @@ fn every_way_a_plan_ends_releases_the_freeze() {
 
 #[test]
 fn request_shape_is_stable() {
-    let req = DetourRequest { route: 1, from: (2, 3), progress_m: 4, target_m: 5 };
+    let req = DetourRequest { route: 1, from: (2, 3), progress_m: 4, target_m: 5, leg: obc_route::Leg::Detour };
     let copy = req;
     assert_eq!((copy.route, copy.from, copy.progress_m, copy.target_m), (1, (2, 3), 4, 5));
 }
@@ -633,9 +633,13 @@ fn away_fix() -> Fix {
 
 /// An idle app on the road's overview, START RIDE pressed with `fix`.
 fn start_away(fix: Fix) -> App {
+    start_away_on(fix, true)
+}
+
+fn start_away_on(fix: Fix, nav_graph: bool) -> App {
     let mut app = App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05));
     crate::common::mount_store(&mut app);
-    app.set_map_nav_graph(true);
+    app.set_map_nav_graph(nav_graph);
     app.set_routes_with_ids(&[summary("Road")], &[7]);
     app.state.user_fix = Some(fix);
     // Home → Menu (Routes) → Route menu → overview → START RIDE.
@@ -670,7 +674,7 @@ fn ride_to_start_splices_the_leg_and_starts_the_ride_on_it() {
         Ok(DetourPreview { cost_delta_m: 2_300, total_distance_m: 2_300, rejoin_m: 0, ascent_m: None }),
     );
     assert!(host.took_commit(&mut app), "the leg goes straight to the splice");
-    app.set_routes_with_ids(&[summary("Road"), summary("Road")], &[7, 9]);
+    app.set_routes_with_ids(&[summary("Road"), summary("To start · Road")], &[7, 9]);
     answer_commit(&mut app, &mut host, Ok(9));
 
     assert_eq!(app.active_route_index(), Some(1), "the ride follows the approach and the route");
@@ -707,4 +711,77 @@ fn join_nearest_follows_the_route_from_its_nearest_point() {
     tick(&mut app, 0, None, Some(&route));
     let expected = route.total_distance_m * 6 / 10;
     assert!(app.progress_m().abs_diff(expected) < 30, "the ride joins at {expected} m, not {}", app.progress_m());
+}
+
+/// Without a routing graph the device never plans: Ride to start lands on the no-route prompt at
+/// once, and Join nearest starts the ride.
+#[test]
+fn without_a_routing_graph_ride_to_start_fails_at_once() {
+    let obcr = road_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+    let mut host = Planner::on(&route);
+    let mut app = start_away_on(away_fix(), false);
+    app.apply_gesture(Gesture::Press); // Ride to start
+    assert!(matches!(app.top_screen(), Screen::StartAway(_)));
+    assert!(detour_req(&mut app, &mut host).is_none(), "no plan without a graph");
+    app.apply_gesture(Gesture::Press); // the cursor is on Join nearest
+    assert!(app.recording(), "Join nearest starts the ride");
+}
+
+/// A failure leaves a row that starts the ride, also when the join point is inside the first km.
+#[test]
+fn a_failure_near_the_start_still_offers_join_nearest() {
+    let obcr = road_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+    let mut host = Planner::on(&route);
+    let start = road_at(0.0);
+    let mut app = start_away(Fix::at(start.lat + 2_695, start.lon)); // 300 m north of the start
+    app.apply_gesture(Gesture::Press); // Ride to start
+    answer_plan(&mut app, &mut host, Err(NavError::NoPath));
+    assert!(matches!(app.top_screen(), Screen::StartAway(_)));
+    app.apply_gesture(Gesture::Press);
+    assert!(app.recording(), "the cursor is on Join nearest, and it starts the ride");
+}
+
+/// The escape chord drops Ride to start at any point before the ride: nothing is adopted, no ride
+/// starts, and the release keeps nothing.
+#[test]
+fn the_escape_chord_abandons_ride_to_start_cleanly() {
+    let obcr = road_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+
+    // While it plans.
+    let mut host = Planner::on(&route);
+    let mut app = start_away(away_fix());
+    let before = app.active_route_index();
+    app.apply_gesture(Gesture::Press);
+    assert!(detour_req(&mut app, &mut host).is_some());
+    app.apply_gesture(Gesture::BackHold);
+    assert_eq!(host.retained_result(&mut app), Some(false), "the plan is released, not kept");
+    assert_eq!(app.active_route_index(), before);
+    assert!(!app.recording());
+
+    // While it splices.
+    let mut host = Planner::on(&route);
+    let mut app = start_away(away_fix());
+    app.apply_gesture(Gesture::Press);
+    assert!(detour_req(&mut app, &mut host).is_some());
+    answer_plan(
+        &mut app,
+        &mut host,
+        Ok(DetourPreview { cost_delta_m: 2_300, total_distance_m: 2_300, rejoin_m: 0, ascent_m: None }),
+    );
+    assert!(host.took_commit(&mut app));
+    app.apply_gesture(Gesture::BackHold);
+    app.set_routes_with_ids(&[summary("Road"), summary("To start · Road")], &[7, 9]);
+    answer_commit(&mut app, &mut host, Ok(9));
+    assert_eq!(app.active_route_index(), before, "the splice is not adopted");
+    assert!(!app.recording());
+    assert_eq!(host.retained_result(&mut app), Some(false), "the release retracts the splice");
 }

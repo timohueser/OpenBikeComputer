@@ -187,6 +187,7 @@ impl DetourScreen {
                         from: (fix.lon, fix.lat),
                         progress_m: self.start_m,
                         target_m: target,
+                        leg: obc_route::Leg::Detour,
                     }));
                     // Push rather than Replace, so Back from the spinner or the preview returns
                     // here with the steps intact.

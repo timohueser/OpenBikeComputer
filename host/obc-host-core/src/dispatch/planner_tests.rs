@@ -105,7 +105,8 @@ impl Planner {
                     route: 0,
                     from: (500_000, 500_000),
                     progress_m: 0,
-                    target_m: index.total_distance_m
+                    target_m: index.total_distance_m,
+                    leg: obc_route::Leg::Detour,
                 })
             }),
             NavigatorOutcome::Acquired { .. }

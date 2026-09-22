@@ -120,10 +120,13 @@ pub struct Trimmer {
 }
 
 impl Trimmer {
-    /// An approach (`target_m == 0`) is never trimmed: a contact before the start would skip it.
-    pub fn new(target_m: u32, has_elevation: bool) -> Self {
+    /// An approach is never trimmed: it has no tail to meet before the start.
+    pub fn new(leg: crate::splice::Leg, target_m: u32, has_elevation: bool) -> Self {
         Self {
-            phase: if target_m == 0 { Phase::Terminal(TrimStep::Done(None)) } else { Phase::Tail },
+            phase: match leg {
+                crate::splice::Leg::Approach => Phase::Terminal(TrimStep::Done(None)),
+                crate::splice::Leg::Detour => Phase::Tail,
+            },
             target_m,
             has_elevation,
             tail: Tail { pts: Vec::new(), bbox: BBox { min_lon: 0, max_lon: 0, min_lat: 0, max_lat: 0 }, cl: 1.0 },
@@ -295,13 +298,14 @@ impl Trimmer {
 /// Must stay `#[inline(never)]`: the trimmer and its decode buffer stay out of the caller's frame.
 #[inline(never)]
 pub fn trim_detour_to_tail(
+    leg: crate::splice::Leg,
     orig: &RouteReader,
     detour: &RouteReader,
     target_m: u32,
     has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<Option<TrimOutcome>, Error> {
-    let mut trim = Trimmer::new(target_m, has_elevation);
+    let mut trim = Trimmer::new(leg, target_m, has_elevation);
     loop {
         match trim.step(orig, detour, sink) {
             TrimStep::Running => {}
