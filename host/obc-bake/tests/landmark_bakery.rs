@@ -5,6 +5,7 @@
 //! compiler that runs is the real one and no test ever reaches Wikidata.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use obc_bake::landmarks::{LandmarkBakeOptions, LandmarkBakery, LandmarkCapture, LandmarkStatus};
@@ -40,6 +41,8 @@ fn write_poly(root: &Path, w: f64, s: f64, e: f64, n: f64) {
 #[derive(Default)]
 struct FakeCapture {
     calls: Mutex<Vec<String>>,
+    /// How often the extract was read for its tags, which is the cost the cache exists to avoid.
+    decodes: AtomicUsize,
 }
 
 impl LandmarkCapture for FakeCapture {
@@ -47,9 +50,11 @@ impl LandmarkCapture for FakeCapture {
         "a fake capture".into()
     }
 
-    fn candidates(&self, extract: &Path) -> Result<Vec<u8>, String> {
+    fn candidates(&self, extract: &Path, extract_sha256: &str) -> Result<Vec<u8>, String> {
         let tagged = std::fs::read_to_string(extract).map_err(|e| e.to_string())?;
-        Ok(format!(r#"{{"schema":1,"osm_sha256":"0","qids":["{}"]}}"#, tagged.trim()).into_bytes())
+        self.decodes.fetch_add(1, Ordering::Relaxed);
+        Ok(format!(r#"{{"schema":1,"osm_sha256":"{extract_sha256}","qids":["{}"],"rejected":[]}}"#, tagged.trim())
+            .into_bytes())
     }
 
     fn capture(
@@ -253,6 +258,26 @@ fn a_capture_of_a_different_boundary_is_never_compiled() {
     assert_eq!(recaptured.regions[0].status, LandmarkStatus::Captured, "{}", recaptured.render());
     assert_eq!(capture.calls.lock().unwrap().len(), 2);
     assert_eq!(fixture.captures().len(), 2, "one capture directory per recipe");
+}
+
+/// Reading a country's `wikidata` tags is a full decode of a multi-gigabyte extract, and every run
+/// needs the list. It is cached under the extract's digest, so only a new extract pays for it.
+#[test]
+fn the_candidate_list_is_read_from_the_extract_once_per_extract() {
+    let fixture = Fixture::new("candidate-cache");
+    let capture = FakeCapture::default();
+    fixture.run(&capture, false, false);
+    assert_eq!(capture.decodes.load(Ordering::Relaxed), 1);
+
+    // A second run has nothing to do. It still needs the list, and reads it from the cache.
+    let again = fixture.run(&capture, false, false);
+    assert_eq!(again.regions[0].status, LandmarkStatus::Unchanged, "{}", again.render());
+    assert_eq!(capture.decodes.load(Ordering::Relaxed), 1, "an unchanged extract is not decoded again");
+
+    // A new extract is a new digest, so its tags are read.
+    fixture.write_extract("Q2");
+    fixture.run(&capture, false, false);
+    assert_eq!(capture.decodes.load(Ordering::Relaxed), 2);
 }
 
 /// Candidates are a capture input like the boundary: one more tagged object in the extract asks

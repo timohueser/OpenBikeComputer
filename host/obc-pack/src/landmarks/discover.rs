@@ -18,15 +18,25 @@ pub struct Candidates {
     pub schema: u32,
     pub osm_sha256: String,
     pub qids: Vec<String>,
+    /// The distinct `wikidata` values that are not QIDs. A mistyped tag is an omission, never a
+    /// refusal: one of them must not make a region uncapturable.
+    pub rejected: Vec<String>,
 }
 
 /// Read every valid `wikidata` tag in `osm`, on a node, a way or a relation alike.
-pub fn candidates(osm: &Path) -> Result<Candidates, String> {
-    let mut qids = BTreeSet::new();
+///
+/// `osm_sha256` is the caller's digest of the same file, so discovery reads it once.
+pub fn candidates(osm: &Path, osm_sha256: &str) -> Result<Candidates, String> {
+    let (mut qids, mut rejected) = (BTreeSet::new(), BTreeSet::new());
     let mut take = |tags: &mut dyn Iterator<Item = (&str, &str)>| {
         for (key, value) in tags {
-            if key == "wikidata" && is_qid(value) {
+            if key != "wikidata" {
+                continue;
+            }
+            if is_qid(value) {
                 qids.insert(value.to_owned());
+            } else {
+                rejected.insert(value.to_owned());
             }
         }
     };
@@ -39,12 +49,17 @@ pub fn candidates(osm: &Path) -> Result<Candidates, String> {
             Element::Relation(r) => take(&mut r.tags()),
         })
         .map_err(|e| e.to_string())?;
-    Ok(Candidates { schema: 1, osm_sha256: file_digest(osm)?, qids: qids.into_iter().collect() })
+    Ok(Candidates {
+        schema: 1,
+        osm_sha256: osm_sha256.to_owned(),
+        qids: qids.into_iter().collect(),
+        rejected: rejected.into_iter().collect(),
+    })
 }
 
 /// The offline discovery entry point: `landmark-candidates --osm FILE --out FILE`.
 pub fn discover(osm: &Path, output: &Path) -> Result<(), String> {
-    let candidates = candidates(osm)?;
+    let candidates = candidates(osm, &file_digest(osm)?)?;
     fs::write(output, serde_json::to_vec_pretty(&candidates).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
@@ -56,8 +71,23 @@ mod tests {
     #[test]
     fn only_an_explicit_tag_becomes_a_candidate() {
         let osm = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/peak-discovery.osm.pbf");
-        let found = candidates(&osm).unwrap();
+        let digest = file_digest(&osm).unwrap();
+        let found = candidates(&osm, &digest).unwrap();
         assert_eq!(found.qids, ["Q1"], "the tagged node; the named ones are not matched by name");
+        assert!(found.rejected.is_empty());
         assert_eq!(found.osm_sha256, hash(&fs::read(&osm).unwrap()));
+    }
+
+    /// The rule is the capture tool's, character for character. A tag the tool would refuse must
+    /// never reach it: the tool stops before its first request, and the stage rewrites the list
+    /// from the extract on every run, so an operator cannot edit one out.
+    #[test]
+    fn a_mistyped_tag_is_an_omission_and_not_a_candidate() {
+        for value in ["Q0042", "Q+42", "Q0", "Q", "q42", "Q42 ", "wikidata:Q42", ""] {
+            assert!(!is_qid(value), "{value:?} is not a QID");
+        }
+        for value in ["Q1", "Q42", "Q18446744073709551616"] {
+            assert!(is_qid(value), "{value:?} is a QID");
+        }
     }
 }

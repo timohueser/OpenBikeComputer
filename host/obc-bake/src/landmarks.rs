@@ -42,7 +42,8 @@
 //!
 //! One key over the capture's own source digests and the four documents that decide what is
 //! captured at all: the candidate list, the boundary, the category policy and the shared UI
-//! language set. The language set is not a detail of the compiler here — it decides which articles
+//! language set. The candidate list itself is cached under the digest of the extract it was read
+//! from, so a run with nothing to do digests the extract rather than decoding it. The language set is not a detail of the compiler here — it decides which articles
 //! are fetched and which places are eligible, so adding a language must re-capture, not just
 //! re-compile. The candidate list is derived, not curated, so an extract that tags one more object
 //! is a new recipe and a new capture directory.
@@ -64,7 +65,7 @@ use crate::source::ExtractSource;
 use crate::util::write_json;
 
 /// Bumped when a change in this stage alters a published landmark artifact for unchanged inputs.
-pub const LANDMARK_RECIPE_VERSION: u32 = 1;
+pub const LANDMARK_RECIPE_VERSION: u32 = 2;
 
 /// The reserved directory name, in the cache and in the tree.
 pub const LANDMARKS_DIR: &str = "landmarks";
@@ -72,8 +73,9 @@ pub const LANDMARKS_DIR: &str = "landmarks";
 pub const CONTENT_DOC: &str = "content.json";
 /// The artifact's own declaration, beside it.
 pub const LANDMARK_DOC: &str = "landmarks.json";
-/// The QID list the capture is pinned to, beside the boundary in the region's cache.
-pub const CANDIDATE_DOC: &str = "candidates.json";
+/// The QID list the capture is pinned to, beside the boundary in the region's cache. One file per
+/// extract, because that is what the list is a function of.
+const CANDIDATE_STEM: &str = "candidates";
 const CAPTURE_MANIFEST: &str = "manifest.json";
 const CAPTURE_RECIPE: &str = "recipe.json";
 const POLICY_DOC: &str = "policy.json";
@@ -109,7 +111,9 @@ pub trait LandmarkCapture {
     /// Where captures come from, for the run header.
     fn describe(&self) -> String;
     /// The candidate QIDs `extract` names, as the `candidates.json` a capture is pinned to.
-    fn candidates(&self, extract: &Path) -> Result<Vec<u8>, String>;
+    /// `extract_sha256` is the stage's digest of the same file, so the extract is read once more,
+    /// not twice.
+    fn candidates(&self, extract: &Path, extract_sha256: &str) -> Result<Vec<u8>, String>;
     /// Capture the `candidates` inside `boundary` under `policy` into `out`, resuming whatever
     /// `out` already holds.
     fn capture(
@@ -161,8 +165,8 @@ impl LandmarkCapture for PythonCapture {
     /// In this process, not in the tool: discovery is offline and deterministic, so it belongs to
     /// the binary that compiles, and the stage needs its digest before it can name a capture
     /// directory.
-    fn candidates(&self, extract: &Path) -> Result<Vec<u8>, String> {
-        let candidates = obc_pack::landmarks::discover::candidates(extract)?;
+    fn candidates(&self, extract: &Path, extract_sha256: &str) -> Result<Vec<u8>, String> {
+        let candidates = obc_pack::landmarks::discover::candidates(extract, extract_sha256)?;
         serde_json::to_vec_pretty(&candidates).map_err(|e| e.to_string())
     }
 
@@ -340,23 +344,18 @@ impl LandmarkBakery<'_> {
         let poly = self.source.fetch_poly(region, progress)?;
         let coverage = Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
         let boundary_text = coverage.geojson();
-        // Even a run that captures nothing reads the extract: the candidate list is what the skip
-        // key is over, and it is only known after the extract has been read.
-        let extract = self.source.fetch(region, progress)?;
-        let candidate_bytes = self.capture.candidates(&extract.path)?;
+        let region_cache = self.opts.cache.join(LANDMARKS_DIR).join(flat(region));
+        std::fs::create_dir_all(&region_cache).map_err(|e| format!("{}: {e}", region_cache.display()))?;
+        let (candidates, candidate_bytes) = self.candidates(region, &region_cache, progress)?;
         let recipe = Recipe {
             boundary_sha256: crate::hash::text(&boundary_text),
             policy_sha256: crate::hash::bytes(obc_pack::landmarks::POLICY_BYTES),
             language_sha256: crate::hash::bytes(obc_pack::landmarks::LANGUAGE_BYTES),
             candidates_sha256: crate::hash::bytes(&candidate_bytes),
         };
-        let region_cache = self.opts.cache.join(LANDMARKS_DIR).join(flat(region));
         let capture_dir = region_cache.join(recipe.key());
         let boundary = region_cache.join(format!("{}.geojson", recipe.key()));
-        let candidates = region_cache.join(format!("{}-{CANDIDATE_DOC}", recipe.key()));
-        std::fs::create_dir_all(&region_cache).map_err(|e| format!("{}: {e}", region_cache.display()))?;
         std::fs::write(&boundary, &boundary_text).map_err(|e| format!("{}: {e}", boundary.display()))?;
-        std::fs::write(&candidates, &candidate_bytes).map_err(|e| format!("{}: {e}", candidates.display()))?;
 
         let mut status = LandmarkStatus::Compiled;
         if !capture_current(&capture_dir, &recipe)? {
@@ -429,6 +428,29 @@ impl LandmarkBakery<'_> {
 
         let (records, photos, bytes) = measure(&artifact)?;
         Ok(LandmarkOutcome { region_id: region.id.clone(), status, records, photos, bytes })
+    }
+
+    /// The region's candidate list, and the file it is in.
+    ///
+    /// Keyed on the extract's digest, because reading a country's `wikidata` tags is a full decode
+    /// of a multi-gigabyte file and every run needs the list, even one with nothing to do. The
+    /// digest is one read; the decode only happens for an extract this cache has not seen.
+    fn candidates(
+        &self,
+        region: &Region,
+        region_cache: &Path,
+        progress: &Progress,
+    ) -> Result<(PathBuf, Vec<u8>), String> {
+        let extract = self.source.fetch(region, progress)?;
+        let (_, extract_sha256) = crate::hash::file(&extract.path)?;
+        let path = region_cache.join(format!("{CANDIDATE_STEM}-{extract_sha256}.json"));
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Ok((path, bytes));
+        }
+        progress.log(format!("  {}: reading the wikidata tags of {}", region.id, extract.path.display()));
+        let bytes = self.capture.candidates(&extract.path, &extract_sha256)?;
+        std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok((path, bytes))
     }
 
     /// `<tree>/landmarks/<id segments>/`, the same nesting the tree gives a region document.

@@ -35,6 +35,9 @@ MAX_LOCALE_DEPTH = 8
 MAX_LOCALES = 64
 USER_AGENT = "OpenBikeComputer-landmark-capture/1.0 (https://github.com/timohueser/OpenBikeComputer)"
 MAX_SOURCE = 32 * 1024 * 1024
+# What the compiler reads a pinned JSON source up to (`landmarks::MAX_JSON_SOURCE`). A batch whose
+# response passes it is asked for again in halves, so every response a capture keeps is readable.
+MAX_JSON_SOURCE = 16 * 1024 * 1024
 # Every tagged object contributes its own types, so the closure is wider than a policy-root sweep
 # makes it. The bound is here to stop a runaway traversal, not to size the closure.
 MAX_CLASSES = 65536
@@ -317,24 +320,33 @@ def entity(capture: Capture, qid: str, directory: str = "entities") -> dict | No
     return value
 
 
-def entity_batch(capture: Capture, chunk: list[str], directory: str, props: str, **params: object) -> tuple[str, dict | None]:
-    """One request for up to fifty ids: the path it is captured at, and its entities by requested
-    id, or `None` when the request failed. `wbgetentities` keys a redirect under the id asked for,
-    which is what keeps an alias in the captured class closure."""
-    path = f"{directory}/batch-{digest('|'.join(chunk).encode())[:16]}.json"
-    raw = capture.json(path, api("www.wikidata.org", action="wbgetentities", ids="|".join(chunk), props=props, **params))
-    return path, None if raw is None else raw.get("entities", {})
-
-
 class Entities:
-    """The captured place entities, by QID. Places are read in the order they were captured in, so
-    one loaded batch serves a whole run of lookups."""
+    """The batched entity requests, and the responses read back by QID. Places are asked for and
+    read in one order, numeric by QID, so one loaded response serves a whole run of lookups."""
 
     def __init__(self, capture: Capture):
         self.capture = capture
         self.paths: dict[str, str] = {}
+        self.split: list[str] = []
         self.lock = threading.Lock()
         self.loaded = (None, {})
+
+    def fetch(self, chunk: list[str], directory: str, props: str, **params: object) -> list[tuple[list[str], str, dict | None]]:
+        """One request for up to fifty ids, per request made: its ids, the path it is captured at,
+        and its entities by requested id, or `None` when the request failed. `wbgetentities` keys a
+        redirect under the id asked for, which is what keeps an alias in the class closure."""
+        path = f"{directory}/batch-{digest('|'.join(chunk).encode())[:16]}.json"
+        url = api("www.wikidata.org", action="wbgetentities", ids="|".join(chunk), props=props, **params)
+        outcome = self.capture.fetch(path, url)
+        if len(chunk) > 1 and (outcome["status"] == "oversized" or outcome.get("bytes", 0) > MAX_JSON_SOURCE):
+            # A response no compiler can read is not an answer. Fewer ids is the only way to ask
+            # again, and each half is a request of its own with its own cached bytes.
+            self.split.append(path)
+            half = len(chunk) // 2
+            return self.fetch(chunk[:half], directory, props, **params) + self.fetch(chunk[half:], directory, props, **params)
+        if outcome["status"] != "ok":
+            return [(chunk, path, None)]
+        return [(chunk, path, json.loads((self.capture.root / path).read_bytes()).get("entities", {}))]
 
     def get(self, qid: str) -> dict | None:
         path = self.paths.get(qid)
@@ -526,33 +538,33 @@ def run(args) -> int:
     places, types, unresolved_identities = [], set(), []
     sites = "|".join(language + "wiki" for language in LANGUAGES)
     for chunk in batches(ordered):
-        path, values = entity_batch(capture, chunk, "entities", "info|labels|claims|sitelinks",
-                                    languages="|".join(LANGUAGES), sitefilter=sites)
-        for qid in chunk:
-            value = (values or {}).get(qid)
-            if value is None or "missing" in value:
-                # A tag that names nothing is a fact about the extract, not a failed request.
-                if values is not None:
-                    unresolved_identities.append(qid)
-                continue
-            entities.paths[qid] = path
-            places.append(dict(qid=qid, entity_path=path, entity_revision=value.get("lastrevid"), articles=[], images=[]))
-            # Only well-formed ids reach a batch: one bad id would refuse the whole request.
-            types.update(v["id"] for v in claim_values(value, "P31") if isinstance(v, dict) and re.fullmatch(QID, v.get("id", "")))
-        print(f"entities {len(places) + len(unresolved_identities)}/{len(ordered)}: {path}", flush=True)
+        for ids, path, values in entities.fetch(chunk, "entities", "info|labels|claims|sitelinks",
+                                                languages="|".join(LANGUAGES), sitefilter=sites):
+            for qid in ids:
+                value = (values or {}).get(qid)
+                if value is None or "missing" in value:
+                    # A tag that names nothing is a fact about the extract, not a failed request.
+                    if values is not None:
+                        unresolved_identities.append(qid)
+                    continue
+                entities.paths[qid] = path
+                places.append(dict(qid=qid, entity_path=path, entity_revision=value.get("lastrevid"), articles=[], images=[]))
+                # Only well-formed ids reach a batch: one bad id would refuse the whole request.
+                types.update(v["id"] for v in claim_values(value, "P31") if isinstance(v, dict) and re.fullmatch(QID, v.get("id", "")))
+        print(f"entities {len(places) + len(unresolved_identities)}/{len(ordered)}", flush=True)
     entities_complete = len(places) + len(unresolved_identities) == len(ordered)
 
     classes, missing, pending = {}, [], set(roots) | set(policy["exclude_roots"]) | types
     while pending:
         for chunk in batches(sorted(pending, key=lambda q: int(q[1:]))):
-            _, values = entity_batch(capture, chunk, "classes", "claims", redirects="yes")
-            for qid in chunk:
-                value = (values or {}).get(qid)
-                if value is None or "missing" in value:
-                    missing.append(qid)
-                    classes[qid] = []
-                    continue
-                classes[qid] = class_parents(value, qid)
+            for ids, _, values in entities.fetch(chunk, "classes", "claims", redirects="yes"):
+                for qid in ids:
+                    value = (values or {}).get(qid)
+                    if value is None or "missing" in value:
+                        missing.append(qid)
+                        classes[qid] = []
+                        continue
+                    classes[qid] = class_parents(value, qid)
         pending = {p for parents in classes.values() for p in parents if p not in classes and re.fullmatch(QID, p)}
         if len(classes) + len(pending) > MAX_CLASSES:
             raise ValueError("class closure exceeds bound")
@@ -560,8 +572,11 @@ def run(args) -> int:
     def manifest(asset_phase_complete):
         outcomes = capture.outcomes()
         failures = [o for o in outcomes if o["status"] != "ok"]
-        unresolved = [o for o in failures if not o["path"].startswith("queries/")]
-        sources = semantic_sources(outcomes)
+        # A batch that was asked for again in halves is answered by those halves. Its own response
+        # is neither a source the compiler reads nor a failure the capture is missing.
+        split = set(entities.split)
+        unresolved = [o for o in failures if not o["path"].startswith("queries/") and o["path"] not in split]
+        sources = [source for source in semantic_sources(outcomes) if source["path"] not in split]
         sources.append(dict(path="candidates.json", url="urn:openbikecomputer:osm-landmarks:" + candidates["osm_sha256"],
                             bytes=len(candidate_bytes), sha256=digest(candidate_bytes)))
         sources.sort(key=lambda source: source["path"])
@@ -570,7 +585,8 @@ def run(args) -> int:
                     policy_path="policy.json", candidates_path="candidates.json", queries=queries,
                     candidate_identities=len(qids), acquired_entities=sum("entity_revision" in p for p in places),
                     unresolved_identities=len(unresolved_identities), entity_coverage_complete=entities_complete,
-                    asset_phase_complete=asset_phase_complete, request_failures=len(failures), unresolved_source_failures=len(unresolved), missing_classes=missing,
+                    asset_phase_complete=asset_phase_complete, request_failures=len(failures), unresolved_source_failures=len(unresolved),
+                    split_requests=len(split), missing_classes=missing,
                     selection="Explicit OSM wikidata tags" + (f"; Wikidata class sweep for {SWEEP_GROUP}" if args.sweep else "")
                               + ". No name or coordinate match. The compiler applies the exact polygon, best-rank claims and exclusions.")
         write_json(args.out / "manifest.json", dict(schema=1, sources=sources, places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))

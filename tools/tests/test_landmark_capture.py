@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, Capture, Entities, LeadImage, batches, bbox, claim_values, class_parents, digest, entity, entity_batch, query, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, Capture, Entities, LeadImage, batches, bbox, claim_values, class_parents, digest, entity, query, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -92,10 +92,12 @@ class LandmarkCaptureTests(unittest.TestCase):
             for chunk in chunks:
                 body = json.dumps({"entities": {qid: {"id": qid} for qid in chunk}}).encode()
                 with patch("tools.landmark_capture.urlopen", return_value=Response(body)) as request:
-                    path, values = entity_batch(capture, chunk, "entities", "info|claims")
+                    made = entities.fetch(chunk, "entities", "info|claims")
                     self.assertEqual(request.call_count, 1, "one request for the whole chunk")
                     url = request.call_args.args[0].full_url
                     self.assertIn("ids=" + "%7C".join(chunk), url)
+                (ids, path, values) = made[0]
+                self.assertEqual((len(made), ids), (1, chunk))
                 self.assertEqual(sorted(values), sorted(chunk))
                 for qid in chunk:
                     entities.paths[qid] = path
@@ -108,14 +110,47 @@ class LandmarkCaptureTests(unittest.TestCase):
     def test_a_failed_batch_is_told_apart_from_an_entity_that_is_not_there(self):
         with tempfile.TemporaryDirectory() as directory:
             capture = Capture(Path(directory), interval=0)
+            entities = Entities(capture)
             body = json.dumps({"entities": {"Q1": {"id": "Q1"}, "Q2": {"id": "Q2", "missing": ""}}}).encode()
             with patch("tools.landmark_capture.urlopen", return_value=Response(body)):
-                _, values = entity_batch(capture, ["Q1", "Q2"], "entities", "info")
+                [(_, _, values)] = entities.fetch(["Q1", "Q2"], "entities", "info")
             self.assertIn("missing", values["Q2"])
             error = HTTPError(Response.url, 404, "Not found", {}, None)
             with patch("tools.landmark_capture.urlopen", side_effect=error):
-                _, failed = entity_batch(capture, ["Q3"], "entities", "info")
+                [(_, _, failed)] = entities.fetch(["Q3"], "entities", "info")
             self.assertIsNone(failed, "a failed request is not an absent entity")
+
+    def test_a_response_the_compiler_cannot_read_is_asked_for_again_in_halves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            entities = Entities(capture)
+            chunk = ["Q38", "Q39", "Q40", "Q142"]
+            def answer(request, **_kwargs):
+                asked = request.full_url.split("ids=")[1].split("&")[0].split("%7C")
+                return Response(json.dumps({"entities": {qid: {"id": qid, "pad": "x" * 30} for qid in asked}}).encode())
+            # The bound stands in for the compiler's 16 MiB: the whole chunk passes it, a half does not.
+            with patch("tools.landmark_capture.MAX_JSON_SOURCE", 200):
+                with patch("tools.landmark_capture.urlopen", side_effect=answer):
+                    made = entities.fetch(chunk, "entities", "info")
+            self.assertEqual([ids for ids, _, _ in made], [["Q38", "Q39"], ["Q40", "Q142"]], "halves, in order")
+            for ids, path, values in made:
+                self.assertEqual(sorted(values), sorted(ids))
+                self.assertLessEqual((Path(directory) / path).stat().st_size, 200)
+            # Its own response came back whole, so only `split` tells the manifest to drop it.
+            self.assertEqual(len(entities.split), 1)
+            self.assertIn(entities.split[0], [source["path"] for source in semantic_sources(capture.outcomes())])
+
+    def test_a_single_identity_that_cannot_fit_is_not_split_forever(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            entities = Entities(capture)
+            body = json.dumps({"entities": {"Q1": {"id": "Q1", "pad": "x" * 500}}}).encode()
+            with patch("tools.landmark_capture.MAX_JSON_SOURCE", 10):
+                with patch("tools.landmark_capture.urlopen", return_value=Response(body)) as request:
+                    made = entities.fetch(["Q1"], "entities", "info")
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(entities.split, [])
+            self.assertEqual(made[0][2]["Q1"]["id"], "Q1")
 
     def test_api_error_keeps_original_bytes_but_is_a_failure(self):
         with tempfile.TemporaryDirectory() as directory:
