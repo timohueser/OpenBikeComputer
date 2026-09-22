@@ -145,7 +145,7 @@ def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] |
     return violations
 
 
-def cargo_metadata(manifest: Path, *, include_dependencies: bool = False) -> dict[str, object]:
+def cargo_metadata(manifest: Path, *, resolve_all_features: bool = False) -> dict[str, object]:
     command = [
         "cargo",
         "metadata",
@@ -155,7 +155,9 @@ def cargo_metadata(manifest: Path, *, include_dependencies: bool = False) -> dic
         "--manifest-path",
         str(manifest),
     ]
-    if not include_dependencies:
+    if resolve_all_features:
+        command.append("--all-features")
+    else:
         command.append("--no-deps")
     try:
         output = subprocess.run(
@@ -220,7 +222,7 @@ def main() -> int:
             manifest = args.manifest_path.parent / policy["manifest"]
             policies_by_manifest.setdefault(manifest, []).append(policy)
         for manifest, policies in policies_by_manifest.items():
-            violations.extend(check_forbidden_features(cargo_metadata(manifest, include_dependencies=True), policies))
+            violations.extend(check_forbidden_features(cargo_metadata(manifest, resolve_all_features=True), policies))
         if violations:
             raise DependencyError("\n".join(violations))
     except (DependencyError, json.JSONDecodeError, KeyError, TypeError) as error:
