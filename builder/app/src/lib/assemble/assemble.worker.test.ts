@@ -9,6 +9,7 @@ vi.mock("./bridge", async (original) => ({ ...await original<typeof import("./br
 vi.mock("../cells/store", () => ({
     openCellReader: seams.reader, openMapSink: seams.sink, openScratchStore: seams.scratch,
     readCellBytes: seams.readBytes, syncReadsAvailable: seams.sync, takeIoStats: seams.io,
+    STORAGE_QUOTA_MESSAGE: "The browser ran out of storage while building this map. Reduce the map selection and try again.",
 }));
 
 const input = { id: "18/1204/1052", band: "network", partial: false, byteLength: 4, key: "cell" };
@@ -21,8 +22,8 @@ describe("assembly worker storage admission", () => {
     let messages: AssembleWorkerResponse[];
     let dispatch: (event: MessageEvent<AssembleWorkerRequest>) => Promise<void>;
     let reader: { read: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
-    let sink: { close: ReturnType<typeof vi.fn> };
-    let scratch: { discard: ReturnType<typeof vi.fn> };
+    let sink: { close: ReturnType<typeof vi.fn>; quotaExceeded: boolean };
+    let scratch: { discard: ReturnType<typeof vi.fn>; quotaExceeded: boolean };
     let result: { resident: boolean; sha256: string; byteLength: number; take: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn>; warnings: never[]; summary: object };
 
     beforeEach(async () => {
@@ -30,8 +31,8 @@ describe("assembly worker storage admission", () => {
         vi.resetAllMocks();
         messages = [];
         reader = { read: vi.fn(), close: vi.fn() };
-        sink = { close: vi.fn() };
-        scratch = { discard: vi.fn(async () => undefined) };
+        sink = { close: vi.fn(), quotaExceeded: false };
+        scratch = { discard: vi.fn(async () => undefined), quotaExceeded: false };
         result = { resident: false, sha256: "abc", byteLength: 4, take: vi.fn(() => Uint8Array.of(1, 2, 3, 4)), release: vi.fn(), warnings: [], summary: {} };
         seams.sync.mockResolvedValue(true);
         seams.reader.mockResolvedValue(reader);
@@ -117,6 +118,22 @@ describe("assembly worker storage admission", () => {
         expect(result.release).toHaveBeenCalledOnce();
         expect(messages.at(-1)).toMatchObject({ type: "error", message: "scratch cleanup failed" });
         expect(messages.some((m) => m.type === "stored-map" || m.type === "file" || m.type === "done")).toBe(false);
+    });
+
+    it("reports quota provenance without relabelling an ordinary scratch failure", async () => {
+        scratch.quotaExceeded = true;
+        seams.assemble.mockRejectedValueOnce(new Error("the scratch store's append returned a falsy value"));
+        await send(request());
+        expect(messages.at(-1)).toMatchObject({
+            type: "error",
+            code: "io",
+            message: "The browser ran out of storage while building this map. Reduce the map selection and try again.",
+        });
+
+        scratch.quotaExceeded = false;
+        seams.assemble.mockRejectedValueOnce(new Error("the scratch handle was closed"));
+        await send(request());
+        expect(messages.at(-1)).toMatchObject({ type: "error", message: "the scratch handle was closed" });
     });
 
     it("returns effective storage mode and correlates estimate failures", async () => {

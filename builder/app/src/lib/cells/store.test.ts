@@ -23,6 +23,8 @@ class FakeFile {
     bytes = new Uint8Array(0);
     /** Open sync handles. The real thing allows exactly one. */
     locked = false;
+    writeError: unknown = null;
+    truncateError: unknown = null;
 }
 
 class FakeSyncHandle {
@@ -39,6 +41,7 @@ class FakeSyncHandle {
     }
     write(from: Uint8Array, { at }: { at: number }): number {
         if (this.closed) throw new Error("the handle is closed");
+        if (this.file.writeError) throw this.file.writeError;
         const end = at + from.byteLength;
         if (end > this.file.bytes.length) {
             const grown = new Uint8Array(end);
@@ -49,6 +52,7 @@ class FakeSyncHandle {
         return from.byteLength;
     }
     truncate(size: number) {
+        if (this.file.truncateError) throw this.file.truncateError;
         this.file.bytes = this.file.bytes.slice(0, size);
     }
     flush() {}
@@ -254,6 +258,25 @@ describe("the write side", () => {
         expect([...root.dirs.keys()]).toEqual([]);
     });
 
+    it("counts and clears prior output and scratch without touching reusable cells", async () => {
+        const root = opfs();
+        const { clearAssemblyStorage, openCellStore, reclaimableAssemblyBytes } = await withOpfs(root);
+        const store = (await openCellStore("kept"))!;
+        await store.put(KEY_A, new Uint8Array([1, 2, 3, 4]));
+        for (const [directory, size] of [["obc-out", 5], ["obc-scratch", 7]] as const) {
+            const dir = await root.getDirectoryHandle(directory, { create: true });
+            const writable = await (await dir.getFileHandle("old", { create: true })).createWritable();
+            await writable.write(new Uint8Array(size));
+            await writable.close();
+        }
+
+        expect(await reclaimableAssemblyBytes()).toBe(12);
+        await clearAssemblyStorage();
+        expect(root.dirs.has("obc-cells")).toBe(true);
+        expect(root.dirs.has("obc-out")).toBe(false);
+        expect(root.dirs.has("obc-scratch")).toBe(false);
+    });
+
     it("discards only assembled output after direct delivery", async () => {
         const root = opfs();
         const { discardMapOutput, openCellStore } = await withOpfs(root);
@@ -285,10 +308,10 @@ describe("the write side", () => {
         expect(root.dirs.get("obc-cells")!.files.has(".probe")).toBe(true);
     });
 
-    it("asks about quota once, with a margin, and believes a browser that will not say", async () => {
-        const { hasRoomFor } = await withOpfs(opfs(), { quota: 1000, usage: 100 });
-        expect(await hasRoomFor(800)).toBe(true);
-        expect(await hasRoomFor(900)).toBe(false);
+    it("admits only above the projected bytes plus margin, and believes a browser that will not say", async () => {
+        const { hasRoomFor } = await withOpfs(opfs(), { quota: 1000, usage: 120 });
+        expect(await hasRoomFor(800)).toBe(false);
+        expect(await hasRoomFor(800, 1)).toBe(true);
         const { hasRoomFor: unmeasured } = await withOpfs(opfs());
         expect(await unmeasured(1e12)).toBe(true);
     });
@@ -453,6 +476,30 @@ describe("the map sink", () => {
         expect(sink.seal()).toBe(false);
     });
 
+    it("records quota provenance for a map write without relabelling other I/O", async () => {
+        const root = opfs();
+        const { openMapSink } = await withOpfs(root);
+        const sink = (await openMapSink())!;
+        try {
+            outIn(root).files.get(ENTRY)!.writeError = new DOMException("full", "QuotaExceededError");
+            expect(sink.write(new Uint8Array(1))).toBe(false);
+            expect(sink.quotaExceeded).toBe(true);
+        } finally {
+            sink.close();
+        }
+
+        const ordinaryRoot = opfs();
+        const { openMapSink: openOrdinary } = await withOpfs(ordinaryRoot);
+        const ordinary = (await openOrdinary())!;
+        try {
+            outIn(ordinaryRoot).files.get(ENTRY)!.writeError = new Error("closed");
+            expect(ordinary.write(new Uint8Array(1))).toBe(false);
+            expect(ordinary.quotaExceeded).toBe(false);
+        } finally {
+            ordinary.close();
+        }
+    });
+
     /**
      * A cancelled or crashed run leaves most of a map on disk. It is nothing to anyone — a partial
      * `.obcm` fails its own header checks — but it is not nothing to the quota, and opening the sink
@@ -612,6 +659,68 @@ describe("the scratch store", () => {
             expect(scratch.remove(dead)).toBe(false);
         } finally {
             await scratch.discard();
+        }
+    });
+
+    it("releases a finished stream's bytes before its pool slot is reused", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const scratch = (await openScratchStore(2))!;
+        try {
+            const a = scratch.create();
+            const b = scratch.create();
+            scratch.append(a, new Uint8Array(5));
+            scratch.append(b, new Uint8Array(7));
+            expect([...scratchIn(root).files.values()].reduce((sum, file) => sum + file.bytes.length, 0)).toBe(12);
+
+            expect(scratch.remove(a)).toBe(true);
+            expect([...scratchIn(root).files.values()].reduce((sum, file) => sum + file.bytes.length, 0)).toBe(7);
+            expect(scratch.len(b)).toBe(7);
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    it("does not free a slot whose retained bytes could not be truncated", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const scratch = (await openScratchStore(1))!;
+        try {
+            const id = scratch.create();
+            scratch.append(id, new Uint8Array(5));
+            scratchIn(root).files.get("x000.spill")!.truncateError = new Error("storage went away");
+            expect(scratch.remove(id)).toBe(false);
+            expect(scratch.len(id)).toBe(5);
+            expect(scratch.create()).toBe(-1);
+            expect(scratch.quotaExceeded).toBe(false);
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    it("records only a quota exception as quota provenance", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const scratch = (await openScratchStore(1))!;
+        try {
+            const id = scratch.create();
+            scratchIn(root).files.get("x000.spill")!.writeError = new DOMException("full", "QuotaExceededError");
+            expect(scratch.append(id, new Uint8Array(1))).toBe(false);
+            expect(scratch.quotaExceeded).toBe(true);
+        } finally {
+            await scratch.discard();
+        }
+
+        const ordinaryRoot = opfs();
+        const { openScratchStore: openOrdinary } = await withOpfs(ordinaryRoot);
+        const ordinary = (await openOrdinary(1))!;
+        try {
+            const id = ordinary.create();
+            scratchIn(ordinaryRoot).files.get("x000.spill")!.writeError = new Error("closed");
+            expect(ordinary.append(id, new Uint8Array(1))).toBe(false);
+            expect(ordinary.quotaExceeded).toBe(false);
+        } finally {
+            await ordinary.discard();
         }
     });
 
