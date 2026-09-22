@@ -43,8 +43,8 @@ def key_of(url: str) -> str:
 
 BAND_INDEX = key_of(next(row["url"] for row in CATALOG["cell_index"] if row["band"] == "fine"))
 CELL = key_of(CELL_INDEX["cells"][0]["url"])
-TILE = f"{PREFIX}/reference/v1/16/3410/2882.tif"
-ARCHIVE_INDEX = f"{PREFIX}/reference/v1/index.json"
+TILE = "reference/v1/16/3410/2882.tif"
+ARCHIVE_INDEX = "reference/v1/index.json"
 STRAY = "uploads/scratch.obcm"
 
 
@@ -325,7 +325,7 @@ class Rm(unittest.TestCase):
     def test_the_archive_sits_where_the_ingest_tool_publishes_it(self):
         """One definition of the bucket, so a delete cannot land beside a publish."""
 
-        self.assertEqual(r2.archive_prefix(), f"{PREFIX}/reference/v1")
+        self.assertEqual(r2.archive_prefix(), "reference/v1")
         self.assertEqual(r2.bucket_remote().path, "OBCR2:maps")
         self.assertEqual(r2.reference_tile(TILE), "3410/2882")
         self.assertIsNone(r2.reference_tile(CELL))

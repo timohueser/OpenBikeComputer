@@ -50,8 +50,10 @@ def source_envelope(transform: Affine, width: int, height: int):
     return float(x.min()), float(y.min()), float(x.max()), float(y.max())
 
 
-def read_source(path: Path):
+def read_source(path: Path, crs=None):
     """One raster as float32 heights with voids marked, plus its CRS, transform and box.
+
+    `crs` is the row's grid, for a format that carries none of its own.
 
     A void arrives as a declared sentinel, as a non-finite value, or undeclared. All three
     become `VOID` here, so the pooling below has one convention and no adapter has to know
@@ -62,7 +64,8 @@ def read_source(path: Path):
     """
 
     with open_raster(path) as src:
-        if src.crs is None:
+        src_crs = src.crs or crs
+        if src_crs is None:
             raise Refuse(f"{path}: the raster has no CRS, so it cannot be placed")
         if src.scales != (1.0,) or src.offsets != (0.0,):
             raise Refuse(
@@ -75,8 +78,8 @@ def read_source(path: Path):
             void |= values == np.float32(src.nodata)
         values[void] = VOID
         envelope = source_envelope(src.transform, src.width, src.height)
-        bounds = transform_bounds(src.crs, WGS84, *envelope)
-        return values, src.transform, src.crs, bounds, float(void.mean())
+        bounds = transform_bounds(src_crs, WGS84, *envelope)
+        return values, src.transform, src_crs, bounds, float(void.mean())
 
 
 def lattice_indices(transform: Affine, src_crs, rows, cols, to_wgs84):
