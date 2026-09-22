@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, Capture, Entities, LeadImage, batches, bbox, claim_values, class_parents, digest, entity, query, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, MAX_CATEGORY_CANDIDATES, Capture, Entities, LeadImage, batches, bbox, capture_assets, claim_values, class_parents, digest, entity, photo, query, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -230,6 +230,43 @@ class LandmarkCaptureTests(unittest.TestCase):
         parser.feed('<div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Local.jpg"><img src="//upload.wikimedia.org/wikipedia/en/a/a1/Local.jpg"></a><a class="mw-file-description" href="/wiki/File:Later.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/a/a1/Later.jpg"></a><h2>History</h2></div>')
         self.assertIsNone(parser.filename)
         self.assertEqual(parser.status, "unsupported-repository")
+
+    def test_photo_metadata_carries_categories_and_structured_data(self):
+        capture = Mock()
+        capture.json.side_effect = [
+            {"query": {"pages": {"7": {"pageid": 7, "title": "File:A.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/a.jpg"}]}}}},
+            {"entities": {"M7": {"statements": {"P180": []}}}},
+        ]
+        capture.fetch.return_value = {"status": "ok"}
+        record, status = photo(capture, "A.jpg")
+        self.assertEqual(status, "captured")
+        self.assertIn("prop=imageinfo%7Ccategories", capture.json.call_args_list[0].args[1])
+        self.assertIn("ids=M7", capture.json.call_args_list[1].args[1])
+        self.assertEqual(record["depicts_path"], f"images/{digest(b'A.jpg')}-mediainfo.json")
+
+    def test_candidate_pool_adds_view_claims_and_reads_a_category_only_without_p18(self):
+        def claims(**properties):
+            return {prop: [{"mainsnak": {"datavalue": {"value": name}}} for name in names] for prop, names in properties.items()}
+        value = {"sitelinks": {"enwiki": {"title": "Alpspitz"}}, "claims": claims(P4291=["Panorama.jpg"], P373=["Alpspitz"])}
+        capture = Mock()
+        capture.json.return_value = {"query": {"categorymembers": [{"title": "File:In_category.jpg"}, {"title": "Alpspitz"}]}}
+        patches = lambda: (patch("tools.landmark_capture.capture_locales"),
+                           patch("tools.landmark_capture.article", return_value=(None, None, "article-missing")),
+                           patch("tools.landmark_capture.photo", side_effect=lambda _, name: (dict(path="p", metadata_path="m", filename=name), "captured")))
+        for context in patches():
+            self.addCleanup(context.stop)
+            context.start()
+        place = capture_assets(capture, "Q5", value)
+        self.assertEqual([(i["source"], i["filename"]) for i in place["images"]],
+                         [("commons-category", "In category.jpg"), ("P4291", "Panorama.jpg")])
+        self.assertIn(f"cmlimit={MAX_CATEGORY_CANDIDATES}", capture.json.call_args.args[1])
+        self.assertIn("maxlag=", capture.json.call_args.args[1])
+        # A P18 claim is the better pool, so the category stays unread.
+        value["claims"].update(claims(P18=["Lead.jpg"]))
+        capture.json.reset_mock()
+        place = capture_assets(capture, "Q5", value)
+        self.assertEqual([i["source"] for i in place["images"]], ["P18", "P4291"])
+        capture.json.assert_not_called()
 
 
 if __name__ == "__main__":
