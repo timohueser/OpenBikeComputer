@@ -14,7 +14,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, wrapped_aligned, wrapped_line_pitch, wrapped_lines, LIST_TOP};
 use crate::screen::vocab::fmt::write_bytes_short;
 use crate::screen::{palette, Ctx, DfuCheckScreen, Render, Screen, Transition};
 use crate::Msg;
@@ -49,15 +49,15 @@ impl FirmwareScreen {
         let recording = rx.recording;
         let label = rx.t(Msg::FirmwareInstallUpdate);
         let inner_w = w - 2 * ROW_X - 20;
-        let lines = wrap_lines(label, inner_w);
-        let row_h = (lines * 22 + 20).max(46);
+        let lines = wrapped_lines(label, inner_w, Font::Label);
+        let row_h = (lines * wrapped_line_pitch(Font::Label) + 20).max(46);
         let row = rect(ROW_X, LIST_TOP, w - 2 * ROW_X, row_h);
 
         if !recording {
             cv.round(row, 6, AMBER);
         }
         let color = if recording { SUBTEXT } else { INK };
-        draw_wrapped_label(cv, label, ROW_X + 10, LIST_TOP + 12, inner_w, color);
+        wrapped_aligned(cv, label, ROW_X + 10, LIST_TOP + 12, inner_w, Font::Label, TextAlign::Left, color);
 
         let mut y = LIST_TOP + row_h + 10;
         if recording {
@@ -98,45 +98,6 @@ impl FirmwareScreen {
             cv.text(cap, Point::new(20, by), Font::Label, TextAlign::Left, SUBTEXT);
             cv.text(val, Point::new(20, by + 24), Font::Body, TextAlign::Left, INK);
         }
-    }
-}
-
-/// Number of [`Font::Label`] lines `text` wraps into within `width_px`. At least 1.
-fn wrap_lines(text: &str, width_px: i32) -> i32 {
-    let budget = (width_px / Font::Label.char_width() as i32).max(1) as usize;
-    let mut lines = 1;
-    let mut used = 0usize;
-    for word in text.split(' ') {
-        let extra = if used == 0 { word.len() } else { used + 1 + word.len() };
-        if extra > budget && used != 0 {
-            lines += 1;
-            used = word.len();
-        } else {
-            used = extra;
-        }
-    }
-    lines
-}
-
-/// Draw `text` wrapped into left-aligned [`Font::Label`] lines from `(x, top_y)` within `width_px`.
-fn draw_wrapped_label(cv: &mut impl Surface, text: &str, x: i32, top_y: i32, width_px: i32, color: u16) {
-    let budget = (width_px / Font::Label.char_width() as i32).max(1) as usize;
-    let mut y = top_y;
-    let mut line: heapless::String<64> = heapless::String::new();
-    for word in text.split(' ') {
-        let extra = if line.is_empty() { word.len() } else { line.len() + 1 + word.len() };
-        if extra > budget && !line.is_empty() {
-            cv.text(&line, Point::new(x, y), Font::Label, TextAlign::Left, color);
-            y += 22;
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        let _ = line.push_str(word);
-    }
-    if !line.is_empty() {
-        cv.text(&line, Point::new(x, y), Font::Label, TextAlign::Left, color);
     }
 }
 

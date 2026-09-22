@@ -10,7 +10,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::vocab::chrome::{card_check, card_triangle, title_frame, TITLE_BAR_H};
+use crate::screen::vocab::chrome::{card_check, card_triangle, copy_w, title_frame, wrapped, TITLE_BAR_H};
 use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::Settings;
 use crate::Msg;
@@ -64,38 +64,23 @@ impl ResetScreen {
 
         if self.done {
             card_check(cv, Point::new(w / 2, TITLE_BAR_H + 64), 26);
-            cv.text(rx.t(Msg::ResetComplete), Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
-            cv.text(
-                rx.t(Msg::ResetRestarting),
-                Point::new(w / 2, TITLE_BAR_H + 142),
-                Font::Label,
-                TextAlign::Center,
-                SUBTEXT,
-            );
+            let y = wrapped(cv, rx.t(Msg::ResetComplete), w / 2, TITLE_BAR_H + 110, copy_w(w), Font::Body, INK);
+            wrapped(cv, rx.t(Msg::ResetRestarting), w / 2, y + 9, copy_w(w), Font::Label, SUBTEXT);
             return;
         }
 
         card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 50), 24);
-        cv.text(rx.t(Msg::ResetFactory), Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
+        wrapped(cv, rx.t(Msg::ResetFactory), w / 2, TITLE_BAR_H + 90, copy_w(w), Font::Body, WARNING);
 
         if !self.armed {
-            cv.text(
-                rx.t(Msg::ResetErases),
-                Point::new(w / 2, TITLE_BAR_H + 124),
-                Font::Label,
-                TextAlign::Center,
-                SUBTEXT,
-            );
-            cv.text(
-                rx.t(Msg::ResetSavedTime),
-                Point::new(w / 2, TITLE_BAR_H + 144),
-                Font::Label,
-                TextAlign::Center,
-                SUBTEXT,
-            );
+            // The warning is one sentence over two catalog lines, and the button follows the last
+            // of them: each stacks on the y the wrap reports, so a longer translation pushes down
+            // instead of drawing over its neighbour.
+            let y = wrapped(cv, rx.t(Msg::ResetErases), w / 2, TITLE_BAR_H + 124, copy_w(w), Font::Label, SUBTEXT);
+            let y = wrapped(cv, rx.t(Msg::ResetSavedTime), w / 2, y, copy_w(w), Font::Label, SUBTEXT);
             let label = rx.t(Msg::ResetConfirm);
             let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
-            let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
+            let (bx, by) = (w / 2 - bw / 2, y + 8);
             cv.round(rect(bx, by, bw, bh), 8, AMBER);
             cv.text_vcentered(label, w / 2, (by, bh), Font::Body, TextAlign::Center, INK);
             return;
@@ -103,7 +88,7 @@ impl ResetScreen {
 
         let p = rx.hold_progress.clamp(0.0, 1.0);
         let prompt = if p > 0.02 { rx.t(Msg::ResetKeepHolding) } else { rx.t(Msg::ResetHoldToErase) };
-        cv.text(prompt, Point::new(w / 2, TITLE_BAR_H + 150), Font::Body, TextAlign::Center, INK);
+        wrapped(cv, prompt, w / 2, TITLE_BAR_H + 150, copy_w(w), Font::Body, INK);
         let (bx, bw, by, bh) = (40, w - 80, TITLE_BAR_H + 184, 16);
         let radius = (bh / 2) as u32;
         cv.round(rect(bx, by, bw, bh), radius, PARCHMENT_SHADE);
