@@ -141,7 +141,7 @@
 		)
 		(embedded_fonts no)
 	)
-	(symbol "+3V3_GPS"
+	(symbol "+3V2"
 		(power global)
 		(pin_numbers
 			(hide yes)
@@ -166,7 +166,146 @@
 				)
 			)
 		)
-		(property "Value" "+3V3_GPS"
+		(property "Value" "+3V2"
+			(at 0 3.556 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3V3_SD\""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(symbol "+3V2_0_1"
+			(polyline
+				(pts
+					(xy -0.762 1.27) (xy 0 2.54)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 2.54) (xy 0.762 1.27)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 0) (xy 0 2.54)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "+3V2_1_1"
+			(pin power_in line
+				(at 0 0 90)
+				(length 0)
+				(name ""
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
+	(symbol "+3V2_GPS"
+		(power global)
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 0)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "#PWR"
+			(at 0 -3.81 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "+3V2_GPS"
 			(at 0 3.556 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -220,7 +359,7 @@
 				)
 			)
 		)
-		(symbol "+3V3_GPS_0_1"
+		(symbol "+3V2_GPS_0_1"
 			(polyline
 				(pts
 					(xy -0.762 1.27) (xy 0 2.54)
@@ -258,7 +397,7 @@
 				)
 			)
 		)
-		(symbol "+3V3_GPS_1_1"
+		(symbol "+3V2_GPS_1_1"
 			(pin power_in line
 				(at 0 0 90)
 				(length 0)
@@ -1727,7 +1866,7 @@
 				)
 			)
 			(pin passive line
-				(at -5.08 -17.78 90)
+				(at 0 -17.78 90)
 				(length 5.08)
 				(name "VSS"
 					(effects
@@ -1799,8 +1938,9 @@
 				)
 			)
 			(pin passive line
-				(at -2.54 -17.78 90)
+				(at 0 -17.78 90)
 				(length 5.08)
+				(hide yes)
 				(name "GND"
 					(effects
 						(font
@@ -1819,6 +1959,7 @@
 			(pin passive line
 				(at 0 -17.78 90)
 				(length 5.08)
+				(hide yes)
 				(name "GND"
 					(effects
 						(font
@@ -1835,8 +1976,9 @@
 				)
 			)
 			(pin passive line
-				(at 2.54 -17.78 90)
+				(at 0 -17.78 90)
 				(length 5.08)
+				(hide yes)
 				(name "GND"
 					(effects
 						(font
@@ -1853,8 +1995,9 @@
 				)
 			)
 			(pin passive line
-				(at 5.08 -17.78 90)
+				(at 0 -17.78 90)
 				(length 5.08)
+				(hide yes)
 				(name "GND"
 					(effects
 						(font
@@ -2911,7 +3054,7 @@
 			)
 		)
 		(property "Footprint" "obc:BGA35N44X41P5X7_237X307X51"
-			(at 0 0 0)
+			(at 0 -1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -2923,7 +3066,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.nordicsemi.com/Products/nPM1300"
-			(at 0.254 0.508 0)
+			(at 0.254 -0.762 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -2934,7 +3077,7 @@
 			)
 		)
 		(property "Description" "Nordic nPM1300 PMIC (charger + dual buck), WLCSP"
-			(at 0.254 0.508 0)
+			(at 0.254 -0.762 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -2957,7 +3100,7 @@
 			)
 		)
 		(property "STANDARD" "IPC-7.51B"
-			(at 0 0 0)
+			(at 0 -1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -2969,7 +3112,7 @@
 			)
 		)
 		(property "MAXIMUM_PACKAGE_HEIGHT" "0.512mm"
-			(at 0 0 0)
+			(at 0 -1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -2981,7 +3124,7 @@
 			)
 		)
 		(property "MPN" "NPM1300-CAAA-R"
-			(at 0 0 0)
+			(at 0 -1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -2992,7 +3135,7 @@
 			)
 		)
 		(property "Manufacturer" "Nordic Semiconductor"
-			(at 0 0 0)
+			(at 0 -1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -3006,7 +3149,7 @@
 		(symbol "NPM1300-CAAA-R_0_1"
 			(rectangle
 				(start -17.78 27.94)
-				(end 17.78 -40.64)
+				(end 17.78 -50.165)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -3016,8 +3159,8 @@
 				)
 			)
 			(rectangle
-				(start 17.78 13.97)
-				(end 8.255 -1.27)
+				(start 17.78 12.7)
+				(end 8.255 -2.54)
 				(stroke
 					(width 0)
 					(type default)
@@ -3027,8 +3170,8 @@
 				)
 			)
 			(rectangle
-				(start 17.78 -3.81)
-				(end 8.255 -19.05)
+				(start 17.78 -10.16)
+				(end 8.255 -25.4)
 				(stroke
 					(width 0)
 					(type default)
@@ -3040,7 +3183,7 @@
 		)
 		(symbol "NPM1300-CAAA-R_1_1"
 			(text "BUCK1"
-				(at 13.208 7.62 0)
+				(at 13.208 6.35 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -3048,7 +3191,7 @@
 				)
 			)
 			(text "BUCK2"
-				(at 13.208 -10.16 0)
+				(at 13.208 -16.51 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -3056,7 +3199,7 @@
 				)
 			)
 			(pin output line
-				(at -22.86 -10.16 0)
+				(at -22.86 -11.43 0)
 				(length 5.08)
 				(name "LED0"
 					(effects
@@ -3074,7 +3217,7 @@
 				)
 			)
 			(pin output line
-				(at -22.86 -12.7 0)
+				(at -22.86 -13.97 0)
 				(length 5.08)
 				(name "LED1"
 					(effects
@@ -3092,7 +3235,7 @@
 				)
 			)
 			(pin output line
-				(at -22.86 -15.24 0)
+				(at -22.86 -16.51 0)
 				(length 5.08)
 				(name "LED2"
 					(effects
@@ -3110,7 +3253,7 @@
 				)
 			)
 			(pin power_out line
-				(at 22.86 -30.48 180)
+				(at 22.86 -39.37 180)
 				(length 5.08)
 				(name "LSOUT1/VOUTLDO1"
 					(effects
@@ -3128,7 +3271,7 @@
 				)
 			)
 			(pin power_out line
-				(at 22.86 -33.02 180)
+				(at 22.86 -41.91 180)
 				(length 5.08)
 				(name "LSOUT2/VOUTLDO2"
 					(effects
@@ -3146,7 +3289,7 @@
 				)
 			)
 			(pin power_in line
-				(at 22.86 -38.1 180)
+				(at 22.86 -46.99 180)
 				(length 5.08)
 				(name "AVSS"
 					(effects
@@ -3164,7 +3307,7 @@
 				)
 			)
 			(pin power_in line
-				(at 22.86 1.27 180)
+				(at 22.86 0 180)
 				(length 5.08)
 				(name "PVSS1"
 					(effects
@@ -3236,7 +3379,7 @@
 				)
 			)
 			(pin input line
-				(at 22.86 -22.86 180)
+				(at 22.86 -31.75 180)
 				(length 5.08)
 				(name "LSIN1/VINLDO1"
 					(effects
@@ -3254,7 +3397,7 @@
 				)
 			)
 			(pin input line
-				(at 22.86 -25.4 180)
+				(at 22.86 -34.29 180)
 				(length 5.08)
 				(name "LSIN2/VINLDO2"
 					(effects
@@ -3272,7 +3415,7 @@
 				)
 			)
 			(pin power_out line
-				(at 22.86 11.43 180)
+				(at 22.86 10.16 180)
 				(length 5.08)
 				(name "VOUT1"
 					(effects
@@ -3290,7 +3433,7 @@
 				)
 			)
 			(pin passive line
-				(at 22.86 3.81 180)
+				(at 22.86 2.54 180)
 				(length 5.08)
 				(name "SW1"
 					(effects
@@ -3362,7 +3505,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 -5.08 0)
+				(at -22.86 -6.35 0)
 				(length 5.08)
 				(name "GPIO3"
 					(effects
@@ -3380,7 +3523,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 -2.54 0)
+				(at -22.86 -3.81 0)
 				(length 5.08)
 				(name "GPIO2"
 					(effects
@@ -3398,7 +3541,7 @@
 				)
 			)
 			(pin power_out line
-				(at 22.86 -6.35 180)
+				(at 22.86 -12.7 180)
 				(length 5.08)
 				(name "VOUT2"
 					(effects
@@ -3488,7 +3631,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 -26.67 0)
+				(at -22.86 -31.75 0)
 				(length 5.08)
 				(name "SHPHLD"
 					(effects
@@ -3524,7 +3667,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 2.54 0)
+				(at -22.86 1.27 0)
 				(length 5.08)
 				(name "GPIO0"
 					(effects
@@ -3542,7 +3685,7 @@
 				)
 			)
 			(pin passive line
-				(at 22.86 -13.97 180)
+				(at 22.86 -20.32 180)
 				(length 5.08)
 				(name "SW2"
 					(effects
@@ -3560,7 +3703,7 @@
 				)
 			)
 			(pin input line
-				(at -22.86 -22.86 0)
+				(at -22.86 -25.4 0)
 				(length 5.08)
 				(name "VSET2"
 					(effects
@@ -3578,7 +3721,7 @@
 				)
 			)
 			(pin input line
-				(at -22.86 -20.32 0)
+				(at -22.86 -22.86 0)
 				(length 5.08)
 				(name "VSET1"
 					(effects
@@ -3596,7 +3739,7 @@
 				)
 			)
 			(pin input clock
-				(at -22.86 -30.48 0)
+				(at -22.86 -36.83 0)
 				(length 5.08)
 				(name "SCL"
 					(effects
@@ -3614,7 +3757,7 @@
 				)
 			)
 			(pin power_in line
-				(at -22.86 -38.1 0)
+				(at -22.86 -44.45 0)
 				(length 5.08)
 				(name "VDDIO"
 					(effects
@@ -3632,7 +3775,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 -33.02 0)
+				(at -22.86 -39.37 0)
 				(length 5.08)
 				(name "SDA"
 					(effects
@@ -3650,7 +3793,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 0 0)
+				(at -22.86 -1.27 0)
 				(length 5.08)
 				(name "GPIO1"
 					(effects
@@ -3668,7 +3811,7 @@
 				)
 			)
 			(pin power_in line
-				(at 22.86 -16.51 180)
+				(at 22.86 -22.86 180)
 				(length 5.08)
 				(name "PVSS2"
 					(effects
@@ -3678,6 +3821,258 @@
 					)
 				)
 				(number "E7"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
+	(symbol "PVSS1"
+		(power global)
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 0)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "#PWR"
+			(at 0 -6.35 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "PVSS1"
+			(at 0 -3.175 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GNDD\" , digital ground"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(symbol "PVSS1_0_1"
+			(rectangle
+				(start -1.27 -1.524)
+				(end 1.27 -2.032)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type outline)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 0) (xy 0 -1.524)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "PVSS1_1_1"
+			(pin power_in line
+				(at 0 0 270)
+				(length 0)
+				(name ""
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
+	(symbol "PVSS2"
+		(power global)
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 0)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "#PWR"
+			(at 0 -6.35 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "PVSS2"
+			(at 0 -3.175 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GNDD\" , digital ground"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(symbol "PVSS2_0_1"
+			(rectangle
+				(start -1.27 -1.524)
+				(end 1.27 -2.032)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type outline)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 0) (xy 0 -1.524)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "PVSS2_1_1"
+			(pin power_in line
+				(at 0 0 270)
+				(length 0)
+				(name ""
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -4469,7 +4864,7 @@
 		(in_pos_files yes)
 		(duplicate_pin_numbers_are_jumpers no)
 		(property "Reference" "U"
-			(at -7.62 8.89 0)
+			(at -7.62 13.716 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4480,7 +4875,7 @@
 			)
 		)
 		(property "Value" "TPS610997"
-			(at 0 -10.16 0)
+			(at 3.048 13.716 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4490,7 +4885,7 @@
 			)
 		)
 		(property "Footprint" "Package_SON:WSON-6-1EP_2x2mm_P0.65mm_EP1x1.6mm"
-			(at 0 0 0)
+			(at -0.254 -27.178 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -4501,7 +4896,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.ti.com/lit/ds/symlink/tps61099.pdf"
-			(at 0 0 0)
+			(at 1.524 -26.67 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -4512,7 +4907,7 @@
 			)
 		)
 		(property "Description" "5.0V fixed synchronous boost, 1uA Iq, true shutdown, WSON-6"
-			(at 0 0 0)
+			(at 1.27 -27.178 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -4523,7 +4918,7 @@
 			)
 		)
 		(property "MPN" "TPS610997DRVR"
-			(at 0 0 0)
+			(at 0 -27.178 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -4534,7 +4929,7 @@
 			)
 		)
 		(property "Manufacturer" "Texas Instruments"
-			(at 0 0 0)
+			(at 0 -26.924 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -4559,6 +4954,24 @@
 		)
 		(symbol "TPS610997_1_1"
 			(pin power_in line
+				(at -12.7 0 0)
+				(length 5.08)
+				(name "VIN"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "A1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
 				(at 0 -12.7 90)
 				(length 5.08)
 				(name "GND"
@@ -4568,7 +4981,25 @@
 						)
 					)
 				)
-				(number "1"
+				(number "A2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -12.7 5.08 0)
+				(length 5.08)
+				(name "SW"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "B1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -4577,7 +5008,7 @@
 				)
 			)
 			(pin power_out line
-				(at 12.7 0 180)
+				(at 12.7 5.08 180)
 				(length 5.08)
 				(name "VOUT"
 					(effects
@@ -4586,25 +5017,7 @@
 						)
 					)
 				)
-				(number "2"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin input line
-				(at 12.7 -5.08 180)
-				(length 5.08)
-				(name "FB"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "3"
+				(number "B2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -4622,7 +5035,7 @@
 						)
 					)
 				)
-				(number "4"
+				(number "C1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -4630,53 +5043,17 @@
 					)
 				)
 			)
-			(pin passive line
-				(at 12.7 5.08 180)
+			(pin input line
+				(at 12.7 -5.08 180)
 				(length 5.08)
-				(name "SW"
+				(name "FB"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "5"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin power_in line
-				(at -12.7 5.08 0)
-				(length 5.08)
-				(name "VIN"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "6"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin passive line
-				(at 2.54 -12.7 90)
-				(length 5.08)
-				(name "PAD"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "7"
+				(number "C2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -5682,7 +6059,7 @@
 		)
 		(symbol "nRF54LM20A-PAXX_1_0"
 			(pin power_in line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(name "VSS"
 					(effects
@@ -5773,7 +6150,7 @@
 				)
 			)
 			(pin passive line
-				(at 19.05 20.32 180)
+				(at 19.05 17.78 180)
 				(length 3.81)
 				(name "DECD"
 					(effects
@@ -5791,7 +6168,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -5810,7 +6187,7 @@
 				)
 			)
 			(pin passive line
-				(at 19.05 15.24 180)
+				(at 19.05 5.08 180)
 				(length 3.81)
 				(name "DECA"
 					(effects
@@ -5847,7 +6224,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -5884,7 +6261,7 @@
 				)
 			)
 			(pin passive line
-				(at 19.05 7.62 180)
+				(at 19.05 0 180)
 				(length 3.81)
 				(name "DECRF"
 					(effects
@@ -5940,7 +6317,7 @@
 				(alternate "XL2" output line)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -5959,7 +6336,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -5978,7 +6355,7 @@
 				)
 			)
 			(pin passive line
-				(at 19.05 -10.16 180)
+				(at 19.05 -15.24 180)
 				(length 3.81)
 				(name "ANT"
 					(effects
@@ -5996,7 +6373,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6015,7 +6392,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6034,7 +6411,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6053,7 +6430,7 @@
 				)
 			)
 			(pin input line
-				(at 19.05 -17.78 180)
+				(at 19.05 -21.59 180)
 				(length 3.81)
 				(name "~{RESET}"
 					(effects
@@ -6071,7 +6448,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6090,7 +6467,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6109,7 +6486,7 @@
 				)
 			)
 			(pin input line
-				(at 19.05 -22.86 180)
+				(at 19.05 -26.67 180)
 				(length 3.81)
 				(name "SWDCLK"
 					(effects
@@ -6127,7 +6504,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -25.4 180)
+				(at 19.05 -29.21 180)
 				(length 3.81)
 				(name "SWDIO"
 					(effects
@@ -6201,7 +6578,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6292,7 +6669,7 @@
 				)
 			)
 			(pin passive line
-				(at 0 -34.29 90)
+				(at 0 -36.83 90)
 				(length 3.81)
 				(hide yes)
 				(name "VSS"
@@ -6314,7 +6691,7 @@
 		(symbol "nRF54LM20A-PAXX_1_1"
 			(rectangle
 				(start -15.24 30.48)
-				(end 15.24 -30.48)
+				(end 15.24 -33.02)
 				(stroke
 					(width 0)
 					(type solid)
