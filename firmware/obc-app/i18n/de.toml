@@ -720,7 +720,7 @@ profile_blocked = "Radtyp gesperrt"
 blocked_route = "Route gesperrt"
 unmatched = "Abseits der Route"
 review_visit = "Route ansehen"
-current_visit = "Aktueller Besuch"
+current_visit = "Aktueller\nBesuch"
 current_leg = "Aktueller Weg"
 save_unknown = "Speicherstand offen"
 
