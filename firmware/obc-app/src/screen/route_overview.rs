@@ -206,13 +206,10 @@ impl RouteOverviewScreen {
             let rows_top = LIST_TOP + 34;
             ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
             // A computed route's points carry no elevation, so the model's ascent term is zero and
-            // this reads `distance / v_flat`. The BIKE TYPE row under it names the profile the
-            // figure is keyed to.
-            let est = est_time_value(total_m, route_ascent_m(rx, summary), rx.settings.bike_type);
+            // this reads `distance / v_flat`. The BIKE TYPE row under it names the type the figure
+            // is keyed to.
+            let est = est_time_value(total_m, route_ascent_m(rx, summary), route_bike_type(rx));
             ledger_row(cv, w, rows_top + ROW_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
-            // The profile the route was planned under, so the rider can tell a Road route from an
-            // MTB one. The name resolves against the loaded map for the current selection, which is
-            // the profile the just-finished plan used.
             draw_profile_label(cv, w, rx, rows_top + 2 * ROW_PITCH);
             // The shape preview fills the middle between the ledger and the START bar.
             draw_route_preview(cv, w, rows_top + 3 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
@@ -273,10 +270,10 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The gradient-aware estimate for the whole route, keyed to the current bike type.
+        // The gradient-aware estimate for the whole route, keyed to the route's own bike type.
         // Totals come from the opened route once it has streamed in, and from the catalog summary
         // before that, so the row never has to show a placeholder.
-        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), rx.settings.bike_type);
+        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), route_bike_type(rx));
 
         // The stats pair with their media: DISTANCE and EST TIME with the track shape, CLIMB and
         // DESCENT with the elevation band. The flip itself is the affordance, so there are no page
@@ -328,17 +325,23 @@ fn route_ascent_m(rx: &Render, summary: &RouteSummary) -> u32 {
     rx.route.map_or(summary.climb_m, |r| r.total_ascent_m)
 }
 
-/// The EST TIME ledger value: the whole route through the gradient-aware model
-/// ([`obc_route::eta`]) as `H:MM`, the same duration shape the RIDE tile and the ride ledger use.
-/// Not localised and not unit-dependent.
+/// The EST TIME ledger value: the whole route through
+/// [`BikeType::ride_time_s`](crate::settings::BikeType::ride_time_s) as `H:MM`, the same duration
+/// shape the RIDE tile and the ride ledger use. Not localised and not unit-dependent.
 fn est_time_value(total_m: u32, ascent_m: u32, bike: crate::settings::BikeType) -> heapless::String<8> {
     duration_hms(bike.ride_time_s(total_m, ascent_m) as f32)
+}
+
+/// The type the overview's route carries, which a start sets as the current type. Before the
+/// route streams open, the current type stands in.
+fn route_bike_type(rx: &Render) -> crate::settings::BikeType {
+    rx.route.map_or(rx.settings.bike_type, |r| r.bike_type())
 }
 
 /// The BIKE TYPE ledger row: the type the computed route was planned for, in the same
 /// caption-left, value-right shape as the rows above.
 fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render, y: i32) {
-    let name = crate::settings::bike_type_name(rx.settings.bike_type, rx.settings.language);
+    let name = crate::settings::bike_type_name(route_bike_type(rx), rx.settings.language);
     ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), name, "", None);
 }
 

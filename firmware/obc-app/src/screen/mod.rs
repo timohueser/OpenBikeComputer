@@ -1173,7 +1173,7 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
         return Transition::Pop;
     };
     let (lon, lat) = (route.start_lon, route.start_lat);
-    cx.navigator.set_active_route(Some(i));
+    cx.navigator.load_route(i);
     begin_riding_session(cx.state, cx.activity, cx.recorder, lon, lat)
 }
 

@@ -109,7 +109,7 @@ impl RouteSwapScreen {
         };
         cx.state.enter_riding_view(cx.routes[i].start_lon, cx.routes[i].start_lat);
         cx.activity.mode = Mode::Riding;
-        cx.navigator.set_active_route(Some(i));
+        cx.navigator.load_route(i);
         Transition::Root(Screen::Map(MapScreen::new()))
     }
 

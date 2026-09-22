@@ -276,6 +276,17 @@ impl LocationSource for NoFix {
     }
 }
 
+/// Tick once over the Grimsel route re-typed `bike`, as the host hands the active route's reader,
+/// and answer the settings' bike type after it.
+pub fn tick_typed_route(app: &mut App, bike: obc_app::settings::BikeType) -> obc_app::settings::BikeType {
+    let mut bytes = include_bytes!("../../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr").to_vec();
+    bytes[obc_formats::obcr::BIKE_TYPE_OFF] = bike as u8;
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).expect("the fixture route parses");
+    app.tick(RideClock(1_000), Sensors::new(&mut NoFix), Some(&RouteReader::new(&index, &src)));
+    app.settings().bike_type
+}
+
 /// Tick once with no fix and no sensors, then composite one frame of `app` over `bytes` into a
 /// 120×120 recording [`Buf`].
 pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
