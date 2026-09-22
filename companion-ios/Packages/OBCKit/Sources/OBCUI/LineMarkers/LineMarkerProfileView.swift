@@ -57,42 +57,12 @@ struct LineMarkerProfileView: View {
             MarkerHandleView(color: model.color(endingAt: marker.id), isActive: isActive)
                 .position(x: x, y: y - MarkerHandleView.size.height / 2)
                 .allowsHitTesting(false)
-            // The grab band: the full height, so the finger never has to find the knob.
-            Color.clear
-                .frame(width: 44, height: plot.height)
-                .contentShape(Rectangle())
+            ProfileGrabBand(model: model, marker: marker, plot: plot)
                 .position(x: x, y: plot.midY)
-                .gesture(drag(marker, plotWidth: plot.width))
-                .accessibilityElement()
-                .accessibilityLabel(marker.name)
-                .accessibilityValue("km \(OBCFormat.distanceValue(meters: marker.distance))")
-                .accessibilityAdjustableAction { direction in
-                    let step = LineMarkerEditorModel.nudgeMeters
-                    model.nudge(marker.id, by: direction == .increment ? step : -step)
-                }
         }
     }
 
-    private func drag(_ marker: LineMarker, plotWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if model.activeID != marker.id {
-                    model.begin(marker.id)
-                }
-                // Delta from the grab, so the marker never jumps to the finger.
-                let start = grabStart ?? marker.distance
-                if grabStart == nil { grabStart = start }
-                model.move(marker.id, to: start + Double(value.translation.width / max(plotWidth, 1)) * model.line.length)
-            }
-            .onEnded { _ in
-                model.end()
-                grabStart = nil
-            }
-    }
-
-    /// The marker's distance when the finger landed.
-    @State private var grabStart: Double?
-
+    // MARK: Drawing
     // MARK: Drawing
 
     private func x(_ distance: Double, plot: CGRect) -> CGFloat {
@@ -150,5 +120,70 @@ struct LineMarkerProfileView: View {
             line.addLines(points)
             context.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
         }
+    }
+}
+
+/// The 44 pt band a finger grabs, one per marker, the full height of the plot so the finger
+/// never has to find the pin. The band owns its gesture state, so a second finger on another
+/// band is refused by the model and ends nothing.
+private struct ProfileGrabBand: View {
+    let model: LineMarkerEditorModel
+    let marker: LineMarker
+    let plot: CGRect
+
+    /// Half the band: markers this close in x share the finger.
+    private static let reach: CGFloat = 22
+
+    /// The marker this band holds and its distance when the finger landed. `nil` until the
+    /// first movement, which picks between coincident markers by its direction.
+    @State private var grab: (id: LineMarker.ID, start: Double)?
+    /// Resets on cancel as well as on end, unlike `onEnded`; the reset is what ends the drag.
+    @GestureState private var isPressed = false
+
+    var body: some View {
+        Color.clear
+            .frame(width: Self.reach * 2, height: plot.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($isPressed) { _, pressed, _ in pressed = true }
+                    .onChanged(dragChanged)
+            )
+            .onChange(of: isPressed) { _, pressed in
+                if !pressed { release() }
+            }
+            .onDisappear(perform: release)
+            .accessibilityElement()
+            .accessibilityLabel(marker.name)
+            .accessibilityValue("km \(OBCFormat.distanceValue(meters: marker.distance))")
+            .accessibilityAdjustableAction { direction in
+                let step = LineMarkerEditorModel.nudgeMeters
+                model.nudge(marker.id, by: direction == .increment ? step : -step)
+            }
+    }
+
+    private func dragChanged(_ value: DragGesture.Value) {
+        if grab == nil {
+            guard value.translation.width != 0 else { return }
+            let metersPerPoint = model.line.length / Double(max(plot.width, 1))
+            let reach = Double(Self.reach) * metersPerPoint
+            let under = model.markers.filter { abs($0.distance - marker.distance) <= reach }.map(\.id)
+            guard
+                let id = model.grab(among: under, forward: value.translation.width > 0),
+                let start = model.marker(id)?.distance,
+                model.begin(id)
+            else { return }
+            grab = (id, start)
+        }
+        guard let grab else { return }
+        // Delta from the grab, so the marker never jumps to the finger.
+        let plotWidth = Double(max(plot.width, 1))
+        model.move(grab.id, to: grab.start + Double(value.translation.width) / plotWidth * model.line.length)
+    }
+
+    private func release() {
+        guard grab != nil else { return }
+        grab = nil
+        model.end()
     }
 }

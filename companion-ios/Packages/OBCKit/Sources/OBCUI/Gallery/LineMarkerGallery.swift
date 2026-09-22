@@ -34,7 +34,7 @@ private struct TripEditorSample: View {
                 LineMarker(id: 2, distance: line.length * 0.68, name: "Day 2 end"),
             ],
             segmentColors: (0..<3).map { OBCTheme.stageColor(index: $0) }
-        ))
+        )!)
     }
 
     var body: some View {
@@ -70,7 +70,7 @@ private struct TrimEditorSample: View {
             LineMarker(id: 2, distance: SampleLine.alps.length - 4_000, name: "Trim end"),
         ],
         segmentColors: [OBCTheme.inkFaint.opacity(0.55), OBCTheme.trackStroke, OBCTheme.inkFaint.opacity(0.55)]
-    )
+    )!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
