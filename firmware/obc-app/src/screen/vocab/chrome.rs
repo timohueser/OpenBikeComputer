@@ -125,14 +125,6 @@ fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
     }
 }
 
-/// The number of `font` lines `text` wraps into within `width_px`, for a caller that sizes a slot
-/// before it draws. At least 1.
-pub(crate) fn wrapped_lines(text: &str, width_px: i32, font: Font) -> i32 {
-    let mut lines = 0;
-    wrap(text, width_px, font, |_| lines += 1);
-    lines.max(1)
-}
-
 /// Draw `text` word-wrapped into centred `font` lines within `width_px`, the first line at
 /// `top_y`. Returns the `y` just past the last line, so a caller can stack more below it.
 pub(crate) fn wrapped(
@@ -241,8 +233,13 @@ mod tests {
     #[test]
     fn the_wrap_budget_counts_glyph_cells_not_bytes() {
         let copy = "Réessayez plus tôt"; // 18 chars, 20 bytes
-        assert_eq!(wrapped_lines(copy, 18 * Font::Label.char_width() as i32, Font::Label), 1);
-        assert_eq!(wrapped_lines(copy, 17 * Font::Label.char_width() as i32, Font::Label), 2);
+        let lines = |width_px| {
+            let mut n = 0;
+            wrap(copy, width_px, Font::Label, |_| n += 1);
+            n
+        };
+        assert_eq!(lines(18 * Font::Label.char_width() as i32), 1);
+        assert_eq!(lines(17 * Font::Label.char_width() as i32), 2);
     }
 
     #[test]

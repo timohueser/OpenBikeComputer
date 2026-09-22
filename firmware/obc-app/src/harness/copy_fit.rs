@@ -15,6 +15,7 @@ use crate::dfu::{DfuFailure, DfuScanError, DfuScanReport};
 use crate::host::DetourPreview;
 use crate::navigator::RouteState;
 use crate::screen::context_drawer::{self as ctx_menu, ContextAction};
+use crate::screen::settings::page;
 use crate::screen::*;
 use crate::settings::Language;
 use crate::{App, AppState, Gesture, Settings, WarningFlags};
@@ -55,7 +56,7 @@ fn press_row(row: usize, steps: usize) -> Vec<Gesture> {
 
 /// One seed per reachable screen state. A screen whose copy changes with its state is seeded once
 /// per state, because the gate measures what a screen draws, not what it could draw.
-fn seeds() -> Vec<Seed> {
+fn seeds(language: Language) -> Vec<Seed> {
     let mut v: Vec<Seed> = plain(vec![
         Screen::Home(HomeScreen::new()),
         Screen::Map(MapScreen::new()),
@@ -104,21 +105,19 @@ fn seeds() -> Vec<Seed> {
         Screen::Passkey(PasskeyScreen::new(123_456)),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
-        Screen::Settings(SettingsScreen::new()),
-        Screen::Ride(RideScreen::new()),
-        Screen::DateTime(DateTimeScreen::new()),
-        Screen::Units(UnitsScreen::new()),
+        Screen::Settings(SettingsPage::hub()),
+        Screen::Ride(SettingsPage::new(&page::RIDE)),
+        Screen::Display(SettingsPage::new(&page::DISPLAY)),
+        Screen::Connections(SettingsPage::new(&page::CONNECTIONS)),
+        Screen::Power(SettingsPage::new(&page::POWER)),
+        Screen::System(SettingsPage::new(&page::SYSTEM)),
+        Screen::DateTime(SettingsPage::new(&page::DATETIME)),
+        Screen::Firmware(SettingsPage::new(&page::FIRMWARE)),
         Screen::StatFields(StatFieldsScreen::new()),
         Screen::AddField(AddFieldScreen::new()),
-        Screen::Display(DisplayScreen::new()),
-        Screen::Connections(ConnectionsScreen::new()),
-        Screen::Power(PowerScreen::new()),
-        Screen::Bluetooth(BluetoothScreen::new()),
         Screen::Sensors(SensorsScreen::new()),
         Screen::SensorScan(SensorScanScreen::new(0)),
-        Screen::Language(LanguageScreen::new()),
-        Screen::System(SystemScreen::new()),
-        Screen::Firmware(FirmwareScreen::new()),
+        Screen::Language(LanguageScreen::new(language)),
         Screen::About(AboutScreen::new()),
         Screen::Reset(ResetScreen::new()),
         Screen::DfuCheck(DfuCheckScreen::new()),
@@ -186,12 +185,12 @@ fn seeds() -> Vec<Seed> {
     power.push(Gesture::Hold); // the completed hold, which is the powering-off frame
     v.push((Screen::QuickDrawer(QuickDrawerScreen::opening()), power));
     for menu in CONTEXT_MENUS {
-        v.push((Screen::ContextDrawer(ContextDrawerScreen::opening(menu)), Vec::new()));
+        v.push((Screen::ContextDrawer(ContextDrawerScreen::opening(menu, language)), Vec::new()));
         for (row, declared) in menu.rows.iter().enumerate() {
             // Only a value row opens an editor with choices to step through. A toggle draws one
             // more state, and a door row replaces the sheet with a screen seeded in its own right.
             let steps = if matches!(declared.action, ContextAction::Edit(_)) { CHOICES } else { 1 };
-            v.push((Screen::ContextDrawer(ContextDrawerScreen::opening(menu)), press_row(row, steps)));
+            v.push((Screen::ContextDrawer(ContextDrawerScreen::opening(menu, language)), press_row(row, steps)));
         }
     }
     v
@@ -298,7 +297,7 @@ fn complaint(name: &str, language: Language, drawn: &obc_render::text_tap::TextD
 
 #[test]
 fn every_screen_is_seeded() {
-    let seeded: Vec<&str> = seeds().iter().map(|(s, _)| s.name()).collect();
+    let seeded: Vec<&str> = seeds(Language::En).iter().map(|(s, _)| s.name()).collect();
     let missing: Vec<&&str> = Screen::NAMES.iter().filter(|n| !seeded.contains(n) && !NO_SEED.contains(n)).collect();
     assert!(missing.is_empty(), "a new screen needs a seed in the copy-fit gate: {missing:?}");
 }
@@ -310,7 +309,7 @@ fn every_string_fits_the_panel_in_every_language() {
     let bytes = build_min_obcm_profiles(0xF800, &["Road", "Gravel", "MTB", "Cicloturismo"]);
     let mut offenders: Vec<String> = Vec::new();
     for language in Language::ALL {
-        for seed in seeds() {
+        for seed in seeds(language) {
             for (name, drawn) in walk(seed, language, &bytes, |_| {}) {
                 offenders.extend(complaint(name, language, &drawn));
             }

@@ -378,6 +378,7 @@ mod tests {
                 ("FindPlace", RenderKeyKind::Map),
                 ("VisitReview", RenderKeyKind::Map),
                 ("Easier", RenderKeyKind::Map),
+                ("Connections", RenderKeyKind::SensorSettings),
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
                 ("QuickDrawer", RenderKeyKind::Drawer),
