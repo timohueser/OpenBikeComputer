@@ -208,6 +208,7 @@ impl Splicer {
                     Err(e) => return self.fail(e),
                 };
                 self.em.set_attribution_map(if original_map == detour_map { original_map } else { None });
+                self.em.set_bike_type(orig.bike_type());
                 self.em.set_flags(
                     if self.adds_avoidance || orig.has_unresolved_avoidance() || detour.has_unresolved_avoidance() {
                         obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE

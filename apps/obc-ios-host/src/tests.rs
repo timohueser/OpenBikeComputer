@@ -154,14 +154,19 @@ fn a_gpx_route_imports_as_the_shared_conversion_attributed_to_the_card_map() {
     let (card, directory) = card("gpx");
     let mut host = open(&card, &directory);
     let id = host.import_route(Path::new(GPX)).expect("the GPX converts and imports");
-    let expected = convert_gpx(Path::new(GPX), Some((&host.map.reader(), host.attribution_key())))
-        .expect("the same conversion outside the host")
-        .0;
+    let expected =
+        convert_gpx(Path::new(GPX), obc_route::BikeType::Road, Some((&host.map.reader(), host.attribution_key())))
+            .expect("the same conversion outside the host")
+            .0;
     let source = host.routes.source(id).unwrap();
     let mut stored = vec![0; source.len() as usize];
     source.read_at(0, &mut stored).unwrap();
     assert_eq!(stored, expected);
-    assert_ne!(expected, convert_gpx(Path::new(GPX), None).unwrap().0, "the map's attribution is in the bytes");
+    assert_ne!(
+        expected,
+        convert_gpx(Path::new(GPX), obc_route::BikeType::Road, None).unwrap().0,
+        "the map's attribution is in the bytes"
+    );
     drop(source);
     drop(host);
     std::fs::remove_dir_all(directory).unwrap();

@@ -373,6 +373,17 @@ impl NavigatorMachine {
         false
     }
 
+    /// The bike type of a route that just loaded, once per load. A rider change after the load
+    /// stays until another route loads; a catalog remap of the same route is not a load.
+    pub(crate) fn loaded_bike_type(&mut self, route: Option<&RouteReader>) -> Option<crate::settings::BikeType> {
+        if self.following.active_route == self.typed_route {
+            return None;
+        }
+        let loaded = self.following.active_route.zip(route);
+        self.typed_route = loaded.map(|(index, _)| index);
+        loaded.map(|(_, r)| r.bike_type())
+    }
+
     /// Build once per active route at render time. A missing reader clears stale geometry but
     /// leaves the build pending; an unloaded route has no profile.
     pub(crate) fn refresh_route_profile(&mut self, route: Option<&RouteReader>) {
@@ -395,6 +406,7 @@ impl NavigatorMachine {
         self.profile_route = None;
         self.climbs = Climbs::new();
         self.climbs_route = None;
+        self.typed_route = None;
         self.following.active_climb = None;
         self.waypoints = Waypoints::new();
         self.waypoints_route = None;
@@ -428,6 +440,7 @@ impl NavigatorMachine {
         }
         // Clearing the active-climb state with the cache keeps a stale "on climb" flag from
         // stranding the rider on a gone route.
+        self.typed_route = self.typed_route.and_then(remap);
         let old_climbs = self.climbs_route;
         self.climbs_route = old_climbs.and_then(remap);
         if old_climbs.is_some() && self.climbs_route.is_none() {

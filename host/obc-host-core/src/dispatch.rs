@@ -472,7 +472,7 @@ impl HostLoop {
                         })))
                         && app.assistant_review_context().is_none_or(|context| {
                             self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
-                                && context.profile == app.settings().bike_profile_idx
+                                && context.profile == app.settings().bike_type
                                 && context.map
                                     == (obc_formats::obcr::RouteSourceKey {
                                         store: current_map.store_id().0,
@@ -851,7 +851,7 @@ impl HostLoop {
         }
         let original = match work {
             PlannerWork::Route(request) => {
-                self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_profile_idx)));
+                self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_type)));
                 None
             }
             PlannerWork::AssistantRoute(_) | PlannerWork::RestoreReview(_) => {
@@ -877,7 +877,7 @@ impl HostLoop {
                     || context.map.object != source.id().0
                     || context.map.revision != source.revision().0
                     || routes.store_scope().map(|scope| scope.store) != Some(context.store)
-                    || context.profile != app.settings().bike_profile_idx
+                    || context.profile != app.settings().bike_type
                 {
                     return failed(NavigatorError::SourceChanged);
                 }
@@ -954,7 +954,7 @@ impl HostLoop {
                     return failed(NavigatorError::Workspace);
                 };
                 let orig = obc_route::RouteReader::new(&index, &source);
-                let Some(plan) = DetourPlan::start(&request, app.settings().bike_profile_idx, &orig) else {
+                let Some(plan) = DetourPlan::start(&request, app.settings().bike_type, &orig) else {
                     return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
                 };
                 self.plan = Some(InflightPlan::Detour(plan));
@@ -981,10 +981,7 @@ impl HostLoop {
         if source.store != context.store.bytes() {
             return failed(NavigatorError::SourceChanged);
         }
-        if app
-            .current_review_origin()
-            .is_none_or(|origin| !context.accepts_origin(app.settings().bike_profile_idx, origin))
-        {
+        if app.current_review_origin().is_none_or(|origin| !context.accepts_origin(app.settings().bike_type, origin)) {
             return failed(NavigatorError::Movement);
         }
         let Some(bytes) = routes.pin_review(source) else { return failed(NavigatorError::SourceChanged) };
@@ -1445,7 +1442,7 @@ mod tests {
             progress_m: 0,
             occurrence: 0,
             required_anchors_m: [0; 3],
-            profile: app.settings().bike_profile_idx,
+            profile: app.settings().bike_type,
             facts_policy: REVIEW_FACTS_POLICY,
             unresolved_avoidance: false,
         };
@@ -1670,7 +1667,7 @@ mod tests {
                 progress_m: 0,
                 occurrence: 0,
                 required_anchors_m: [0; 3],
-                profile: 0,
+                profile: obc_route::BikeType::Road,
                 facts_policy: REVIEW_FACTS_POLICY,
                 unresolved_avoidance: false,
             };

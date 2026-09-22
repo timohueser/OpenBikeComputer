@@ -35,8 +35,8 @@ pub struct Readout<'a> {
     pub now: DateTime,
     /// Boot-relative millis for this frame. The live sensor tiles use it as a staleness clock.
     pub now_ms: u32,
-    /// The rider's bike profile. An out-of-range index falls back to profile 0 in `obc_route`.
-    pub bike_profile_idx: u8,
+    /// The current bike type, which keys the time estimate.
+    pub bike_type: crate::settings::BikeType,
     pub language: Language,
     /// The per-category "next ahead" cache the six `Next: <category>` tiles read. It is empty on
     /// a host that never refreshes it, which makes those tiles waypoint-only.
@@ -343,7 +343,7 @@ fn ascent_to_go_m(r: &RouteReader, p: &Profile, navigation: &RouteState) -> u32 
 /// the duration and the arrival stamp are always the same estimate rendered two ways.
 fn time_to_go_s(cx: &Readout) -> Option<u32> {
     let (r, p) = (cx.route?, cx.profile?);
-    Some(obc_route::time_to_go_s(p, r.total_distance_m, cx.navigation.progress_m, cx.bike_profile_idx))
+    Some(obc_route::time_to_go_s(p, r.total_distance_m, cx.navigation.progress_m, cx.bike_type))
 }
 
 /// The fractional live position (`0.0`-`1.0`) along the route; `0.0` when no length is known.
@@ -499,7 +499,7 @@ mod tests {
             next_waypoint: None,
             now: DateTime::default(),
             now_ms: 0,
-            bike_profile_idx: 0,
+            bike_type: crate::settings::BikeType::Road,
             language: Language::En,
             next_ahead: EMPTY_CACHE,
         }
@@ -531,7 +531,7 @@ mod tests {
         f(&route, &profile)
     }
 
-    /// Pins the wiring (route + profile + bike profile in, the right two strings out), not the
+    /// Pins the wiring (route + profile + bike type in, the right two strings out), not the
     /// physics of the model itself.
     #[test]
     fn time_tiles_render_the_gradient_aware_estimate() {
@@ -548,7 +548,7 @@ mod tests {
             };
             assert_eq!(route.total_ascent_m, 300, "the fixture climbs 300 m");
 
-            let secs = obc_route::route_time_s(route.total_distance_m, route.total_ascent_m, 0);
+            let secs = crate::settings::BikeType::Road.ride_time_s(route.total_distance_m, route.total_ascent_m);
             assert_eq!(StatField::TimeToGo.cell(&cx).value.as_str(), fmt::duration_hms(secs as f32).as_str());
             let mins = (secs + 30) / 60;
             let mut want: heapless::String<8> = heapless::String::new();
@@ -557,7 +557,7 @@ mod tests {
             assert_eq!(StatField::Eta.cell(&cx).value.as_str(), want.as_str());
 
             // The climb term on the Road profile is 300 m x 1.6 s/m = 480 s.
-            let flat = obc_route::ride_time_s(route.total_distance_m, 0, 0);
+            let flat = crate::settings::BikeType::Road.ride_time_s(route.total_distance_m, 0);
             assert!((secs - flat).abs_diff(480) <= 2, "the climb term is {} s", secs - flat);
 
             let imperial = Readout {
@@ -576,17 +576,17 @@ mod tests {
             let mut navigation = RouteState::new();
             navigation.route_total_m = route.total_distance_m;
             let empty = Waypoints::new();
-            let secs = |idx: u8| {
+            let secs = |bike| {
                 let cx = Readout {
                     route: Some(route),
                     profile: Some(profile),
-                    bike_profile_idx: idx,
+                    bike_type: bike,
                     ..readout(&navigation, rec, Units::Metric, &empty)
                 };
                 time_to_go_s(&cx).unwrap()
             };
-            assert!(secs(2) > secs(0), "an MTB is slower than a road bike over the same pass");
-            assert_eq!(secs(99), secs(0), "a stale index falls back to profile 0");
+            use crate::settings::BikeType;
+            assert!(secs(BikeType::Mtb) > secs(BikeType::Road), "an MTB is slower than a road bike over the same pass");
         });
     }
 

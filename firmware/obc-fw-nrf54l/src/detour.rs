@@ -140,7 +140,7 @@ impl Executor {
         app: &App,
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
-        profile: u8,
+        profile: obc_route::BikeType,
     ) -> Option<NavigatorOutcome> {
         let token = effect.token();
         match effect {
@@ -217,7 +217,7 @@ impl Executor {
         }
     }
     #[inline(never)]
-    fn begin_plan(&self, guard: &mut NavGuard, request: DetourRequest, profile: u8) -> Result<(), ()> {
+    fn begin_plan(&self, guard: &mut NavGuard, request: DetourRequest, profile: obc_route::BikeType) -> Result<(), ()> {
         guard.begin_sources();
         let (index, _) = guard.sources();
         let original = self.original.as_ref().ok_or(())?;

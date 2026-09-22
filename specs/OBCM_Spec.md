@@ -726,7 +726,7 @@ Layout, in file order:
 ```
 [Nav Directory]     (40 bytes — the graph's resident header, §8.1)
 [Filler]            (0..U-1 bytes of 0xFF — the directory is 40 bytes, §1.2)
-[Profile Table]     (§8.6 — 1..=8 bike profiles, always present)
+[Profile Table]     (§8.6 — the four bike-type profiles, always present)
 [Filler]            (0..511 bytes of 0xFF in populated files — the producer's 512-byte alignment)
 [Node Quadtree]     (§4 encoding over the header global bbox)
 [Filler]            (0..U-1 bytes of 0xFF — align_up to the first node chunk, §8.1)
@@ -1032,7 +1032,7 @@ A minimal graph — two junctions `A`(lat 100, lon 200) and `B`(lat 900, lon 800
 joined by one 3-vertex edge of 1234 m and way-kind `0x2A` (tertiary/paved: highway
 class 10 `| (`surface class 1 `<< 5)`) that climbs 300 m from `A` to `B` and
 re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weight
-10), at the default `Offset Scale = 4` (`U = 16`), with the section at a 512-byte-aligned file
+10; a real producer writes four, one is enough to show the layout), at the default `Offset Scale = 4` (`U = 16`), with the section at a 512-byte-aligned file
 offset `S`. Directory fields are **units**, so each is a byte offset divided by 16; `S` is a multiple
 of 512 and therefore of 16, and `s = S / 16` is the section's own scaled address:
 
@@ -1106,15 +1106,17 @@ one ≤ 512-byte read.
 
 ### 8.6 Profile table (bike-type routing)
 
-`Profile Count` (1..=8) consecutive **56-byte** records at `Profile Table Offset`,
-one per selectable bike profile (Road / Gravel / MTB / Touring by default). The
-device picks one by index; A\* weights each edge by it. The table is **always
-present** — even an empty graph carries ≥ 1 profile — and the reader rejects a
-`Profile Count` of `0` or `> 8`.
+`Profile Count` consecutive **56-byte** records at `Profile Table Offset`, one per bike
+type. A producer writes **exactly four**, in the bike-type order of
+[`OBCR_Spec.md`](OBCR_Spec.md) §1.2: Road = 0, Gravel = 1, MTB = 2, Touring = 3. The count,
+the order and the meaning are fixed; only the weights are tunable. The device picks a record
+by bike-type value; A\* weights each edge by it. The table is **always present**, even for an
+empty graph. The reader rejects a `Profile Count` of `0` or `> 8`, and routes a bike type past
+the table under profile 0.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
-| 0 | Name | 12 | `char[12]` | UTF-8, `0xFF`-padded (the §7.3 POI-name convention) |
+| 0 | Name | 12 | `char[12]` | UTF-8, `0xFF`-padded (the §7.3 POI-name convention). A producer writes `Road`, `Gravel`, `MTB` or `Touring`. The device shows its own names, not this field |
 | 12 | Highway Multipliers | 32 | `uint8[32]` | Weight per **highway class**, `1/16` fixed-point; `16` = 1.0×, `0` = **forbidden** |
 | 44 | Surface Multipliers | 8 | `uint8[8]` | Weight per **surface class**, same encoding |
 | 52 | Climb Weight | 1 | `uint8` | Flat metres charged per metre of §8.3 `Ascent M`. `0` = climb-blind |

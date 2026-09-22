@@ -155,9 +155,9 @@
           "items": {
             "$ref": "#/$defs/profile"
           },
-          "description": "Bike profiles selectable by index; every non-forbidden multiplier is >= 1.0.",
-          "minItems": 1,
-          "maxItems": 8
+          "description": "Exactly the four bike types, in order: Road, Gravel, MTB, Touring (OBCM §8.6). Only the weights are tunable; every non-forbidden multiplier is >= 1.0.",
+          "minItems": 4,
+          "maxItems": 4
         }
       },
       "default": {
@@ -487,9 +487,13 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Display name shown on the device (UTF-8, at most 12 bytes on the wire).",
-          "maxLength": 12,
-          "x-maxUtf8Bytes": 12
+          "description": "The bike type this profile routes for. The order is fixed.",
+          "enum": [
+            "Road",
+            "Gravel",
+            "MTB",
+            "Touring"
+          ]
         },
         "default": {
           "anyOf": [
@@ -564,7 +568,7 @@
       "required": [
         "name"
       ],
-      "description": "One bike profile: a display name plus per-class edge-weight multipliers. Unlisted classes use `default`."
+      "description": "One bike type's routing weights: its name plus per-class edge-weight multipliers. Unlisted classes use `default`."
     },
     "multiplier": {
       "description": "One routing edge-weight multiplier: a number >= 1.0 or the string \"forbidden\". Values below 1.0 are rejected because the great-circle A* heuristic must stay admissible.",

@@ -402,7 +402,7 @@ mod tests {
             next_waypoint: None,
             now: crate::settings::DateTime::default(),
             now_ms: 0,
-            bike_profile_idx: 0,
+            bike_type: crate::settings::BikeType::Road,
             language: Language::De,
             next_ahead: &cache,
         };

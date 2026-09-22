@@ -260,8 +260,6 @@ impl App {
                     navigation: self.navigator.route_state(),
                     settings: self.settings(),
                     recording: self.recorder.recording(),
-
-                    nav_profiles: self.nav_profiles(),
                 });
                 Some(DrawerKey { page, selected, staged, committed, enabled })
             }
@@ -623,32 +621,19 @@ mod tests {
         assert_eq!(app.render_key(), quiet, "a moving base under an open editor asks for no repaint");
     }
 
-    /// The twin on the route-plan sheet, where the moving fact comes from outside the app: the
-    /// host loading a map changes how many routing profiles exist, and so whether the sheet's one
-    /// row is live and which profile it marks.
+    /// The twin on the route-plan sheet: a committed bike type moves the mark, and a moving base
+    /// under the sheet asks for nothing.
     #[test]
-    fn a_map_load_under_the_sheet_moves_the_row_and_nothing_else() {
+    fn a_new_bike_type_under_the_sheet_moves_the_mark_and_nothing_else() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
         let _ = app.ui.stack.push(crate::harness::support::selected_place());
         assert!(app.apply_chord(crate::input::Chord::Context), "the confirm card declares a context");
-
-        let inert = app.render_key();
-        assert_eq!(inert.drawer.map(|d| d.enabled), Some(0), "with no map the row has no choice to offer");
-        assert!(inert.map.is_none() && inert.home.is_none());
-
-        // The host loads a map under the open sheet, through the real parse path.
-        let bytes = crate::harness::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
-        let src = obc_reader::SliceSource(&bytes);
-        let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
-        app.set_nav_profiles(tables.nav_profiles());
         let live = app.render_key();
-        assert_ne!(live, inert, "the row went live — the sheet must redraw");
-        assert_eq!(live.drawer.map(|d| d.enabled), Some(1));
+        assert_eq!(live.drawer.map(|d| d.enabled), Some(1), "the bike-type row is live without a map");
 
-        // A stale index resolved to profile 0 while the map was empty and resolves to itself now.
-        app.set_settings(crate::settings::Settings { bike_profile_idx: 2, ..Default::default() });
+        app.set_settings(crate::settings::Settings { bike_type: crate::settings::BikeType::Mtb, ..Default::default() });
         let marked = app.render_key();
-        assert_ne!(marked, live, "the tick moved to the profile the router will use");
+        assert_ne!(marked, live, "the tick moved to the new type");
         assert_eq!(marked.drawer.map(|d| d.committed), Some(2));
 
         let quiet = app.render_key();

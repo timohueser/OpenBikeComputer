@@ -208,7 +208,7 @@ impl RouteOverviewScreen {
             // A computed route's points carry no elevation, so the model's ascent term is zero and
             // this reads `distance / v_flat`. The BIKE TYPE row under it names the profile the
             // figure is keyed to.
-            let est = est_time_value(total_m, route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
+            let est = est_time_value(total_m, route_ascent_m(rx, summary), rx.settings.bike_type);
             ledger_row(cv, w, rows_top + ROW_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
             // The profile the route was planned under, so the rider can tell a Road route from an
             // MTB one. The name resolves against the loaded map for the current selection, which is
@@ -273,10 +273,10 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The gradient-aware estimate for the whole route, keyed to the rider's bike profile.
+        // The gradient-aware estimate for the whole route, keyed to the current bike type.
         // Totals come from the opened route once it has streamed in, and from the catalog summary
         // before that, so the row never has to show a placeholder.
-        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
+        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), rx.settings.bike_type);
 
         // The stats pair with their media: DISTANCE and EST TIME with the track shape, CLIMB and
         // DESCENT with the elevation band. The flip itself is the affordance, so there are no page
@@ -331,17 +331,15 @@ fn route_ascent_m(rx: &Render, summary: &RouteSummary) -> u32 {
 /// The EST TIME ledger value: the whole route through the gradient-aware model
 /// ([`obc_route::eta`]) as `H:MM`, the same duration shape the RIDE tile and the ride ledger use.
 /// Not localised and not unit-dependent.
-fn est_time_value(total_m: u32, ascent_m: u32, bike_profile_idx: u8) -> heapless::String<8> {
-    duration_hms(obc_route::route_time_s(total_m, ascent_m, bike_profile_idx) as f32)
+fn est_time_value(total_m: u32, ascent_m: u32, bike: crate::settings::BikeType) -> heapless::String<8> {
+    duration_hms(bike.ride_time_s(total_m, ascent_m) as f32)
 }
 
-/// The BIKE TYPE ledger row: the profile name the computed route was planned under, in the same
-/// caption-left, value-right shape as the rows above. A stale index shows profile 0's name, which
-/// is the profile the router fell back to for this plan.
+/// The BIKE TYPE ledger row: the type the computed route was planned for, in the same
+/// caption-left, value-right shape as the rows above.
 fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render, y: i32) {
-    let mut name: heapless::String<20> = heapless::String::new();
-    rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);
-    ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), &name, "", None);
+    let name = crate::settings::bike_type_name(rx.settings.bike_type, rx.settings.language);
+    ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), name, "", None);
 }
 
 /// The track-shape preview's box size. Centred horizontally, and vertically inside whatever slot
@@ -563,21 +561,20 @@ mod tests {
         assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
     }
 
-    /// `H:MM` from the gradient-aware model, keyed by the rider's bike profile. A zero-ascent
+    /// `H:MM` from the gradient-aware model, keyed by the rider's bike type. A zero-ascent
     /// route degrades to plain `distance / v_flat`, so the row never needs a "no elevation" branch
     /// or a `--`.
     #[test]
     fn est_time_value_is_the_gradient_aware_estimate() {
+        use crate::settings::BikeType;
         // The road profile at 22 km/h flat: 44 km with no climbing is two hours.
-        assert_eq!(est_time_value(44_000, 0, 0).as_str(), "2:00", "a flat route is distance / v_flat");
+        assert_eq!(est_time_value(44_000, 0, BikeType::Road).as_str(), "2:00", "a flat route is distance / v_flat");
         // The same 44 km over a 1000 m col costs 1000 × 1.6 s more, so 2:26.
-        assert_eq!(est_time_value(44_000, 1_000, 0).as_str(), "2:26", "the col adds its climb term");
+        assert_eq!(est_time_value(44_000, 1_000, BikeType::Road).as_str(), "2:26", "the col adds its climb term");
         // The same route on the MTB profile, at 16 km/h and 2.3 s/m: 2:45 flat plus 38:20
         // climbing, so 3:23.
-        assert_eq!(est_time_value(44_000, 1_000, 2).as_str(), "3:23", "a slower bike, a longer day");
-        // A stale index falls back to profile 0, which is the router's own rule.
-        assert_eq!(est_time_value(44_000, 1_000, 99), est_time_value(44_000, 1_000, 0));
+        assert_eq!(est_time_value(44_000, 1_000, BikeType::Mtb).as_str(), "3:23", "a slower bike, a longer day");
         // Degenerate inputs read as zero rather than as a placeholder.
-        assert_eq!(est_time_value(0, 0, 0).as_str(), "0:00");
+        assert_eq!(est_time_value(0, 0, BikeType::Road).as_str(), "0:00");
     }
 }

@@ -776,9 +776,19 @@ fn route(map: &[u8], from: (i32, i32), to: (i32, i32)) -> Option<u32> {
     let mut scratch = NavScratch::<4096>::new_boxed();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    plan_route(&reader, from, to, "oracle", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink)
-        .ok()
-        .map(|stats| stats.total_distance_m)
+    plan_route(
+        &reader,
+        from,
+        to,
+        "oracle",
+        obc_route::BikeType::Road,
+        &mut scratch,
+        &mut tiles,
+        &mut NullElevation,
+        &mut sink,
+    )
+    .ok()
+    .map(|stats| stats.total_distance_m)
 }
 
 /// Route equivalence. Endpoint pairs whose straight line crosses one or two cell seams must route

@@ -84,6 +84,13 @@ off = "Off"
 manual = "Manual"
 auto = "Auto"
 
+# --- BikeType labels (the four fixed bike types) ---
+[bike_type]
+road = "Road"
+gravel = "Gravel"
+mtb = "MTB"
+touring = "Touring"
+
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
 off = "Off"
@@ -231,6 +238,7 @@ fields = "Data fields"
 pages = "Auto-flip"
 climb = "Climb panel"
 waypoints = "Waypoints"
+bike_type = "Bike type"
 
 # --- Display settings screen ---
 [display]

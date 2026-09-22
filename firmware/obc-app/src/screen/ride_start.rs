@@ -65,11 +65,9 @@ impl RideStartScreen {
 
         title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
 
-        // A device without a map has no profiles. `for_name("")` then gives the generic bike in
-        // plain ink, and the name draws empty.
-        let marked = rx.nav_profiles.effective(rx.settings.bike_profile_idx);
-        let name = rx.nav_profiles.name(marked).unwrap_or("");
-        bike_icons::draw(cv, bike_icons::for_name(name), w / 2, HERO_TOP, HERO_SCALE, bike_icons::color_for(name));
+        let bike = rx.settings.bike_type;
+        let name = crate::settings::bike_type_name(bike, rx.settings.language);
+        bike_icons::draw(cv, bike_icons::sprite(bike), w / 2, HERO_TOP, HERO_SCALE, bike_icons::color(bike));
         cv.text(name, Point::new(w / 2, NAME_TOP), Font::Label, TextAlign::Center, SUBTEXT);
 
         let mut batt: heapless::String<8> = heapless::String::new();

@@ -102,7 +102,7 @@ pub struct FindState {
     remaining_m: Option<u32>,
     remaining_ascent: Option<u32>,
     clock: (bool, i16),
-    profile: u8,
+    profile: crate::settings::BikeType,
     local: Option<(u8, u16)>,
     selected_review: bool,
     invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
@@ -135,7 +135,7 @@ impl FindState {
             remaining_m: None,
             remaining_ascent: None,
             clock: (false, 0),
-            profile: 0,
+            profile: crate::settings::BikeType::Road,
             local: None,
             selected_review: false,
             invalid_visit: None,
@@ -539,7 +539,7 @@ impl crate::App {
         }
         let local = self.place_local_time();
         if self.ui.find.map != self.place_map_key()
-            || self.ui.find.profile != self.settings().bike_profile_idx
+            || self.ui.find.profile != self.settings().bike_type
             || self.ui.find.clock != (local.is_some(), self.settings().utc_offset_min)
             || self.ui.find.route != self.active_route_index().and_then(|i| self.route_ids().get(i)).copied()
         {
@@ -572,7 +572,7 @@ impl crate::App {
                 context.required_anchors_m[2] = retained.rejoin_m;
                 if self
                     .current_review_origin()
-                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_profile_idx, origin))
+                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_type, origin))
                 {
                     Some(crate::navigator::VisitUnavailable::Unmatched)
                 } else if self.restore_visit(
@@ -742,7 +742,7 @@ impl crate::App {
                 .filter(|f| f.complete_elevation())
                 .map(|f| f.ascent_m);
             self.ui.find.clock = (local.is_some(), self.settings().utc_offset_min);
-            self.ui.find.profile = self.settings().bike_profile_idx;
+            self.ui.find.profile = self.settings().bike_type;
             self.ui.find.local = local;
             self.ui.find.limit = self.settings().find_results.limit();
             self.ui.find.hours_filter = self.settings().find_hours_filter();
@@ -766,7 +766,7 @@ impl crate::App {
             }
             self.ui.find.state = State::Querying;
         }
-        if self.ui.find.profile != self.settings().bike_profile_idx
+        if self.ui.find.profile != self.settings().bike_type
             || self.ui.find.clock != (local.is_some(), self.settings().utc_offset_min)
             || self.ui.find.route != self.active_route_index().and_then(|i| self.route_ids().get(i)).copied()
         {
@@ -777,7 +777,7 @@ impl crate::App {
         if self.ui.find.state == State::Ready && !self.ui.find.places.is_empty() {
             if self.ui.find.context.is_some_and(|context| {
                 self.current_review_origin()
-                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_profile_idx, origin))
+                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_type, origin))
             }) {
                 self.ui.find.state = State::Stale;
                 self.cancel_assistant();
@@ -871,7 +871,7 @@ impl crate::App {
         if let Some(context) = self.ui.find.context {
             if self
                 .current_review_origin()
-                .is_none_or(|origin| !context.accepts_origin(self.settings().bike_profile_idx, origin))
+                .is_none_or(|origin| !context.accepts_origin(self.settings().bike_type, origin))
             {
                 self.ui.find.state = State::Stale;
                 self.cancel_assistant();
@@ -1004,7 +1004,7 @@ fn corridor_candidates(
     places: &[obc_reader::CorridorPoi],
     progress_m: u32,
     map: RouteSourceKey,
-    profile: u8,
+    profile: crate::settings::BikeType,
 ) -> [u8; SOURCE_LIMIT] {
     let mut ranked = [(u32::MAX, u8::MAX); obc_reader::reader::places::PLACE_PAGE_SIZE];
     for (i, place) in places.iter().take(ranked.len()).enumerate() {
@@ -1119,12 +1119,21 @@ mod tests {
             .collect();
         // The first corridor hit is near the outbound pass, but the planner visits it on the return.
         assert!(obc_route::visit::visit_anchor(&route, 0, points[0]).unwrap() > 4000);
-        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [1, 2, 3, 4, 0, u8::MAX]);
+        assert_eq!(
+            corridor_candidates(&route, &places, 0, map, crate::settings::BikeType::Road),
+            [1, 2, 3, 4, 0, u8::MAX]
+        );
         assert_eq!(places.iter().map(|p| p.dist_along_m).collect::<std::vec::Vec<_>>(), [0, 1, 2, 3, 4]);
         places[1].poi.metadata.approach =
             Some(PoiApproach { source: SourceId::osm(1, 10), lon: 6000, lat: 0, profile_mask: 2 });
-        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [2, 3, 4, 0, u8::MAX, u8::MAX]);
-        assert_eq!(corridor_candidates(&route, &places, route.total_distance_m + 1, map, 0), [u8::MAX; SOURCE_LIMIT]);
+        assert_eq!(
+            corridor_candidates(&route, &places, 0, map, crate::settings::BikeType::Road),
+            [2, 3, 4, 0, u8::MAX, u8::MAX]
+        );
+        assert_eq!(
+            corridor_candidates(&route, &places, route.total_distance_m + 1, map, crate::settings::BikeType::Road),
+            [u8::MAX; SOURCE_LIMIT]
+        );
     }
 
     #[test]
@@ -1266,7 +1275,7 @@ mod tests {
         app.ui.find.retained_store = Some(crate::device_core::StoreIdentity::from_bytes(stored.store));
         app.ui.find.state = State::Ready;
         app.ui.find.clock = (false, app.settings().utc_offset_min);
-        app.ui.find.profile = app.settings().bike_profile_idx;
+        app.ui.find.profile = app.settings().bike_type;
         app.apply_gesture(crate::Gesture::Step(1));
         app.apply_gesture(crate::Gesture::Press);
         assert!(matches!(app.top_screen(), Screen::PoiList(_)));
@@ -1317,11 +1326,11 @@ mod tests {
                 app.ui.find.results.push(0).unwrap();
                 app.ui.find.state = State::Ready;
                 app.ui.find.map = Some(map);
-                app.ui.find.profile = app.settings().bike_profile_idx;
+                app.ui.find.profile = app.settings().bike_type;
                 app.ui.find.clock = (true, app.settings().utc_offset_min);
                 match invalid {
                     1 => app.ui.find.map = Some(RouteSourceKey { revision: 2, ..map }),
-                    2 => app.ui.find.profile = app.settings().bike_profile_idx.wrapping_add(1),
+                    2 => app.ui.find.profile = crate::settings::BikeType::Gravel,
                     3 => app.apply_gesture(crate::Gesture::Back),
                     _ => {}
                 }
@@ -1550,7 +1559,7 @@ mod tests {
         app.apply_gesture(crate::Gesture::Press);
         app.prepare_find(None, None);
         assert_eq!(app.find_place_state(), State::NoFix);
-        app.ui.find.profile = 1; // No request context was captured for this unavailable state.
+        app.ui.find.profile = crate::settings::BikeType::Gravel; // No request context was captured for this unavailable state.
         app.prepare_find(None, None);
         assert_eq!(app.find_place_state(), State::NoFix);
         let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };

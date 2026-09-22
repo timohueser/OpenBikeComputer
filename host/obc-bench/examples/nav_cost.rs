@@ -45,7 +45,7 @@ fn main() {
     let reader = Reader::new(&src, &tables, &map_cache);
     let from: (i32, i32) = (args[2].parse().unwrap(), args[3].parse().unwrap());
     let to = (args[4].parse().unwrap(), args[5].parse().unwrap());
-    let profile = args[6].parse().unwrap();
+    let profile = obc_route::BikeType::from_u8(args[6].parse().unwrap()).expect("bike type 0..=3");
     let mut planner = if let Some(path) = args.get(8) {
         let original = std::fs::read(path).unwrap();
         let source = SliceSource(&original);

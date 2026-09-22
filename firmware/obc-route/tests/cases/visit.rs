@@ -3,7 +3,7 @@ use obc_formats::io::SliceSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_formats::obcr::RouteSourceKey;
 use obc_route::visit::{visit_anchor, VisitBuilder, VisitChoice, VisitCosts, VisitTarget};
-use obc_route::{for_each_waypoint, RouteIndex, RouteReader};
+use obc_route::{for_each_waypoint, BikeType, RouteIndex, RouteReader};
 
 fn key(id: u64) -> RouteSourceKey {
     RouteSourceKey { store: [1; 16], object: id, revision: 1 }
@@ -203,21 +203,20 @@ fn coordinate_destinations_use_normal_snap_but_mapped_approaches_remain_exact() 
         display: (500, 500),
         metadata: PoiMetadata { source: SourceId::osm(1, 2), approach: None },
     };
-    assert_eq!(target.approach(key(1), 0), Some(target.display));
-    assert!(target.approach(key(2), 0).is_none());
-    assert!(target.approach(key(1), 8).is_none());
+    assert_eq!(target.approach(key(1), BikeType::Road), Some(target.display));
+    assert!(target.approach(key(2), BikeType::Road).is_none());
     let snapped = route(vec![(0, 0, 0), (0, 500, 0)], &[], 55);
-    assert_eq!(target.destination(&SliceSource(&snapped), 0).unwrap(), (0, 500));
+    assert_eq!(target.destination(&SliceSource(&snapped), BikeType::Road).unwrap(), (0, 500));
     let distant = route(vec![(0, 0, 0), (0, 2000, 0)], &[], 222);
-    assert!(target.validate_destination(&SliceSource(&distant), 0).is_err());
+    assert!(target.validate_destination(&SliceSource(&distant), BikeType::Road).is_err());
     target.metadata.approach = Some(PoiApproach { source: SourceId::osm(1, 3), lon: 0, lat: 0, profile_mask: 1 });
-    assert_eq!(target.approach(key(1), 0), Some((0, 0)));
-    assert!(target.approach(key(2), 0).is_none());
-    assert!(target.approach(key(1), 1).is_none());
+    assert_eq!(target.approach(key(1), BikeType::Road), Some((0, 0)));
+    assert!(target.approach(key(2), BikeType::Road).is_none());
+    assert!(target.approach(key(1), BikeType::Gravel).is_none());
     let nearby = route(vec![(0, 1000, 0), (100, 0, 0)], &[], 111);
-    assert!(target.validate_destination(&SliceSource(&nearby), 0).is_err());
+    assert!(target.validate_destination(&SliceSource(&nearby), BikeType::Road).is_err());
     let exact = route(vec![(0, 1000, 0), (0, 0, 0)], &[], 111);
-    assert!(target.validate_destination(&SliceSource(&exact), 0).is_ok());
+    assert!(target.validate_destination(&SliceSource(&exact), BikeType::Road).is_ok());
 }
 #[test]
 fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
@@ -233,8 +232,8 @@ fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
     let mut sink = VecSink::default();
     builder.begin(&mut sink).unwrap();
     let wrong = VisitTarget { metadata: PoiMetadata { source: SourceId::osm(1, 10), approach: None }, ..target };
-    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), 0).is_err());
-    builder.resolve_destination(target, &SliceSource(&outbound), 0).unwrap();
+    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), BikeType::Road).is_err());
+    builder.resolve_destination(target, &SliceSource(&outbound), BikeType::Road).unwrap();
     assert_eq!(builder.destination(), Some((0, 1000)));
     append(&mut builder, &outbound, &mut sink);
     append(&mut builder, &returning, &mut sink);

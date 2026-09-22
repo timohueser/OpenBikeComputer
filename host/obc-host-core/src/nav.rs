@@ -22,11 +22,11 @@ pub struct NavPlan {
 }
 
 impl NavPlan {
-    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) under bike profile
-    /// `profile_idx` (the rider's [`Settings::bike_profile_idx`](obc_app::Settings)).
-    pub fn start(req: &obc_app::NavRequest, profile_idx: u8) -> Self {
+    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) for `bike` (the rider's
+    /// [`Settings::bike_type`](obc_app::Settings)).
+    pub fn start(req: &obc_app::NavRequest, bike: obc_route::BikeType) -> Self {
         NavPlan {
-            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx)),
+            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), bike)),
             // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero is
             // `new()`" invariant; the host just asks for one.
             scratch: obc_route::nav::NavScratch::new_boxed(),
@@ -89,7 +89,11 @@ impl DetourPlan {
     /// rejoin coordinate at `target_m` on the resident active route and build the corridor over
     /// the skipped span. `None` when the route can't resolve the rejoin (vanished / unreadable) —
     /// the caller answers `DetourPlanned(Err)` immediately.
-    pub fn start(req: &obc_app::DetourRequest, profile_idx: u8, orig: &obc_route::RouteReader) -> Option<Self> {
+    pub fn start(
+        req: &obc_app::DetourRequest,
+        bike: obc_route::BikeType,
+        orig: &obc_route::RouteReader,
+    ) -> Option<Self> {
         let to = orig.position_at(req.target_m)?;
         let corridor = obc_route::Corridor::build(orig, req.progress_m, req.target_m);
         Some(DetourPlan {
@@ -97,7 +101,7 @@ impl DetourPlan {
                 req.from,
                 (to.lon, to.lat),
                 "Detour leg",
-                profile_idx,
+                bike,
                 corridor,
             )),
             scratch: obc_route::nav::NavScratch::new_boxed(),
