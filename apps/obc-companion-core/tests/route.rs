@@ -3,6 +3,7 @@
 //! Swift side against; `OBC_REGENERATE=1` rewrites it.
 
 use obc_companion_core::{assemble, CellMap, Job, RouteError};
+use obc_route::BikeType;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -45,7 +46,7 @@ fn a_route_across_the_seam_matches_the_vector() {
     let map = map();
     // Both endpoints are off the road, so both snap.
     let (from, to) = ((SEAM - 45_000, LAT + 300), (SEAM + 30_300, LAT + 59_000));
-    let leg = map.route(from, to, 0).unwrap();
+    let leg = map.route(from, to, BikeType::Road).unwrap();
     assert!(leg.points.first().unwrap().lon < SEAM && leg.points.last().unwrap().lon > SEAM);
     assert!(leg.points.iter().all(|p| p.ele.is_some()), "every point samples the fixture's terrain");
 
@@ -69,7 +70,7 @@ fn failures_are_typed() {
     let map = map();
     let road = (SEAM - 45_000, LAT);
     // Two kilometres from any way.
-    assert_eq!(map.route(road, (SEAM, LAT - 20_000), 0), Err(RouteError::NoRoad));
+    assert_eq!(map.route(road, (SEAM, LAT - 20_000), BikeType::Road), Err(RouteError::NoRoad));
     // The islet below the prune threshold is gone from the assembled graph.
-    assert_eq!(map.route(road, (SEAM, LAT - 40_000), 0), Err(RouteError::NoRoad));
+    assert_eq!(map.route(road, (SEAM, LAT - 40_000), BikeType::Road), Err(RouteError::NoRoad));
 }
