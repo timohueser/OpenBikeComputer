@@ -165,7 +165,10 @@ export type AssembleWorkerResponse =
     | { type: "writing"; mode: MapWriteMode }
     | ({ type: "stored-map" } & WorkerStoredMap)
     | ({ type: "file" } & WorkerFile)
-    | { type: "done"; warnings: string[]; summary: AssembleSummary; io?: IoStats }
+    /** `wasmMemoryBytes` is the instance's linear memory at the end of the run, which is its
+     *  peak: wasm memory only grows. Nothing on screen uses it; it is the seam a memory gate
+     *  holds against the projection the same run was admitted on. */
+    | { type: "done"; warnings: string[]; summary: AssembleSummary; wasmMemoryBytes: number; io?: IoStats }
     | { type: "estimate-result"; estimateId: number; onDisk: boolean; estimate: MemoryEstimate }
     | { type: "error"; code: AssembleErrorCode; message: string; estimateId?: number };
 
@@ -231,7 +234,12 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
         case "file":
             return isMapIdentity(m) && m.bytes instanceof Uint8Array;
         case "done":
-            return Array.isArray(m.warnings) && typeof m.summary === "object" && m.summary !== null;
+            return (
+                Array.isArray(m.warnings) &&
+                typeof m.summary === "object" &&
+                m.summary !== null &&
+                Number.isSafeInteger(m.wasmMemoryBytes)
+            );
         case "estimate-result":
             return Number.isSafeInteger(m.estimateId) && typeof m.onDisk === "boolean" && typeof m.estimate === "object" && m.estimate !== null;
         case "error":
