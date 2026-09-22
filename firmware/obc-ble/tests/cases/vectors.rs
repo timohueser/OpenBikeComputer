@@ -179,28 +179,18 @@ fn status_store_changed_vector() {
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
-/// The `ackRides` command and its `commandResult` answer, both round-tripped through the
-/// production codec.
+/// A `commandResult` that carries a `detail` byte. The fixture's command id is retired, so the
+/// vector pins the four-byte layout and the detail field rather than any live command.
 #[test]
-fn command_ack_rides_vector() {
-    use obc_ble::{AckRides, CommandResult, CommandStatus, CMD_ACK_RIDES};
+fn command_result_detail_vector() {
+    use obc_ble::{CommandResult, CommandStatus};
 
-    let bytes = fixture("command-ack-rides.bin");
-    let ack = AckRides::decode(&bytes).expect("valid ackRides");
-    assert_eq!(ack.count(), 3);
-    assert_eq!(ack.iter().collect::<Vec<_>>(), [3, 5, 9]);
-
-    let mut out = [0u8; AckRides::encoded_len(3)];
-    let len = AckRides::encode(&[3, 5, 9], &mut out).unwrap();
-    assert_eq!(&out[..len], &bytes[..], "re-encode");
-
-    // The answer: commandResult{cmd 2, ok, detail 3}; detail is the newly-flagged count.
     let result_bytes = fixture("status-command-result-ack.bin");
     let StatusMessage::CommandResult(r) = StatusMessage::decode(&result_bytes).unwrap().unwrap() else {
         panic!("expected commandResult")
     };
-    assert_eq!((r.command, r.status, r.detail), (CMD_ACK_RIDES, CommandStatus::Ok, 3));
-    let (buf, len) = Msg::CommandResult(CommandResult::with_detail(CMD_ACK_RIDES, CommandStatus::Ok, 3)).encode();
+    assert_eq!((r.command, r.status, r.detail), (2, CommandStatus::Ok, 3));
+    let (buf, len) = Msg::CommandResult(CommandResult::with_detail(2, CommandStatus::Ok, 3)).encode();
     assert_eq!(&buf[..len], &result_bytes[..]);
 }
 
@@ -280,18 +270,6 @@ fn valid_cmd(cmd: u8, utc: u32, offset_min: i16) -> [u8; 7] {
     b[5..7].copy_from_slice(&offset_min.to_le_bytes());
     b
 }
-#[test]
-fn ack_rides_decode_edges() {
-    use obc_ble::{AckRides, DescriptorError};
-
-    assert!(matches!(AckRides::decode(&[2, 3, 1, 0]), Err(DescriptorError::Truncated)), "short of its count");
-    assert!(matches!(AckRides::decode(&[2]), Err(DescriptorError::Truncated)), "no count byte");
-    assert!(matches!(AckRides::decode(&[1, 0]), Err(DescriptorError::UnknownOp(1))), "not ackRides");
-    assert_eq!(AckRides::decode(&[2, 0]).unwrap().count(), 0, "empty ack is well-formed");
-    let ack = AckRides::decode(&[2, 1, 7, 0, 0xEE]).unwrap();
-    assert_eq!(ack.iter().collect::<Vec<_>>(), [7], "trailing bytes past count are ignored");
-}
-
 #[test]
 fn config_vector() {
     let bytes = fixture("config-v1.bin");
