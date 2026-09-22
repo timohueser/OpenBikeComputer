@@ -562,6 +562,7 @@ mod tests {
             lat: 0,
             phase: JourneyPhase::Outbound,
             unresolved_avoidance: false,
+            selection: false,
             lower_m: 0,
             upper_m: 111,
         });
