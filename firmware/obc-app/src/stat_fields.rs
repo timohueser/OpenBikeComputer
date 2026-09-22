@@ -519,20 +519,9 @@ mod tests {
     /// Runs `f` with the converted route and its profile. A `RouteReader` borrows its source, so
     /// this takes a closure instead of returning the pair.
     fn with_pass_route<R>(f: impl FnOnce(&RouteReader, &Profile) -> R) -> R {
-        use obc_formats::io::{ByteSink, Error, SliceSource};
-        #[derive(Default)]
-        struct VecSink(std::vec::Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-                self.0.extend_from_slice(b);
-                Ok(())
-            }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-                let o = off as usize;
-                self.0[o..o + b.len()].copy_from_slice(b);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
+        use obc_formats::io::SliceSource;
+
         let mut sink = VecSink::default();
         obc_route::gpx_to_obcr(&SliceSource(PASS_GPX.as_bytes()), "Pass", &mut sink).unwrap();
         let src = SliceSource(&sink.0);

@@ -182,20 +182,9 @@ mod tests {
     /// Build a route profile through `eles` (metres) on the same GPX to OBCR to `Profile` path the
     /// app takes.
     fn profile(eles: &[i32]) -> Profile {
-        use obc_formats::io::{ByteSink, Error, SliceSource};
-        #[derive(Default)]
-        struct VecSink(Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-                self.0.extend_from_slice(b);
-                Ok(())
-            }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-                let o = off as usize;
-                self.0[o..o + b.len()].copy_from_slice(b);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
+        use obc_formats::io::SliceSource;
+
         let mut gpx = std::string::String::from("<gpx><trk><trkseg>");
         for (i, e) in eles.iter().enumerate() {
             let _ = write!(gpx, "<trkpt lat=\"47.0000\" lon=\"8.{:04}\"><ele>{e}</ele></trkpt>", i * 200);
