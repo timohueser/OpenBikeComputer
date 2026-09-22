@@ -140,8 +140,12 @@ def with_retry(attempt, what: str, absent=()):
         except urllib.error.HTTPError as error:
             if error.code in absent:
                 return None
-            body = error.read()[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-            if error.code != 429 and error.code < 500:
+            raw = error.read()
+            body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
+            # An OWS `NoApplicableCode` is the server's own fault whatever status it rides
+            # on; the LGL WCS sends it as a 404 while it is overloaded. So it is retried
+            # like a 5xx, and only a 4xx that names the request's fault is final.
+            if error.code != 429 and error.code < 500 and b"NoApplicableCode" not in raw:
                 raise Refuse(redact(f"{what}: HTTP {error.code} — {body}")) from error
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "

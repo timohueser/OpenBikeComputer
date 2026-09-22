@@ -710,6 +710,40 @@ class BulkArchives(unittest.TestCase):
 
 
 class Registry(unittest.TestCase):
+    def test_an_ows_no_applicable_code_is_retried_whatever_status_it_rides_on(self):
+        """`NoApplicableCode` is the server's own fault; the LGL WCS sends it as a 404 while
+        it is overloaded, and a country run must outlive that rather than refuse."""
+
+        calls = []
+
+        class Flaky(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                calls.append(1)
+                if len(calls) == 1:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b'<ows:ExceptionReport><ows:Exception exceptionCode='
+                                     b'"NoApplicableCode"/></ows:ExceptionReport>')
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"II*\x00ok")
+
+            def log_message(self, *args):
+                pass
+
+        flaky = ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
+        Thread(target=flaky.serve_forever, daemon=True).start()
+        self.addCleanup(flaky.server_close)
+        self.addCleanup(flaky.shutdown)
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = (0,)
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+
+        body = ingest.sources.base.http_get(f"http://127.0.0.1:{flaky.server_address[1]}/x", what="flaky")
+        self.assertEqual(body, b"II*\x00ok")
+        self.assertEqual(len(calls), 2)
+
     def test_a_service_that_answers_xml_instead_of_a_raster_is_refused_by_name(self):
         """Out of coverage, renamed, or down: every one of them arrives as a 200 and XML."""
 
