@@ -31,6 +31,8 @@ fn palette_quantizes_to_documented_device64() {
         ("CLIMB_TILE", CLIMB_TILE, (255, 170, 85)),
         ("ROUTE", ROUTE, (255, 0, 255)),
         ("BREADCRUMB", BREADCRUMB, (0, 0, 170)),
+        ("TRACK_START", TRACK_START, (0, 85, 0)),
+        ("TRACK_END", TRACK_END, (170, 0, 0)),
         ("CONTOUR", CONTOUR, (85, 85, 85)),
     ];
     for &(name, c, want) in cases {
