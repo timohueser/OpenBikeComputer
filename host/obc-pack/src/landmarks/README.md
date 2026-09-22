@@ -49,6 +49,15 @@ map-wide language argument.
 | Attribution | Article and photo source, revision, licence, the exact original notices and readable Sources pages. At most 8 KiB per asset, 256 pages per pair. |
 | Omissions | QID, asset and reason. A rejected photo leaves usable text available. |
 
+### In the bake tree
+
+| Path | What it is |
+| --- | --- |
+| `landmarks/<region id>/` | One compiled artifact per curated region, written by `obc bake landmarks`. |
+| `<region id>/content.json` + `<qid>.rgb222` | The artifact itself. The cell bake cuts every cell of every region whose coverage reaches it. |
+| `<region id>/landmarks.json` | The declaration: region, recipe version, the digests the capture ran under, and one digest over every other file of the directory. |
+| catalogue root, `landmarks` | Each artifact's counts, languages, digest and licence URLs (`OBCC_Spec.md` §14). `obc bake verify` re-computes the digest; `obc bake publish` refuses a directory with no declaration. |
+
 ### Local language fallback
 
 For a place's default language the compiler follows its best-rank P131 administrative chain and
