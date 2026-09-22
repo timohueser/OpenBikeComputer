@@ -6,10 +6,11 @@ import UIKit
 public struct RideShareMenu: View {
     private let gpx: RideGPXFile
     private let photos: [UIImage]
-    private let onSaveAsRoute: () -> Void
+    /// Nil when the ride cannot become a route; see `Ride.plannedRoute()`.
+    private let onSaveAsRoute: (() -> Void)?
     @State private var imageShown = false
 
-    public init(gpx: RideGPXFile, photos: [UIImage] = [], onSaveAsRoute: @escaping () -> Void) {
+    public init(gpx: RideGPXFile, photos: [UIImage] = [], onSaveAsRoute: (() -> Void)?) {
         self.gpx = gpx
         self.photos = photos
         self.onSaveAsRoute = onSaveAsRoute
@@ -25,9 +26,11 @@ public struct RideShareMenu: View {
                 Label("Image", systemImage: "photo")
             }
             .accessibilityIdentifier("rideShare.image")
-            Button(action: onSaveAsRoute) {
+            Button { onSaveAsRoute?() } label: {
                 Label("Save as route", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                if onSaveAsRoute == nil { Text("A gap in the ride is too long to join") }
             }
+            .disabled(onSaveAsRoute == nil)
             .accessibilityIdentifier("rideShare.saveAsRoute")
         } label: {
             Image(systemName: "square.and.arrow.up")

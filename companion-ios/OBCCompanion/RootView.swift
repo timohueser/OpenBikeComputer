@@ -435,15 +435,15 @@ struct RootView: View {
         }
     }
 
-    /// Share the ride as GPX or an image, or save it as a route and open that route.
+    /// Share the ride as GPX or an image, or save it as a route through the import landing, with
+    /// the import's name-collision rule.
     private func rideShareMenu(for ride: Ride) -> RideShareMenu {
         let exporter = rideExporter
+        let fileName = RideGPXFile.fileName(for: ride.summary.name)
         return RideShareMenu(
             gpx: RideGPXFile(ride: ride, encode: { try exporter.export($0).data }),
-            onSaveAsRoute: {
-                // The default GPX encoder is registered above, so the export cannot throw.
-                guard let gpx = try? exporter.export(ride).data else { return }
-                path.append(.route(id: mainModel.saveRideAsRoute(ride, gpx: gpx)))
+            onSaveAsRoute: ride.plannedRoute().map { route in
+                { importModel.open(route: route, fileName: fileName, fileData: Data()) }
             }
         )
     }

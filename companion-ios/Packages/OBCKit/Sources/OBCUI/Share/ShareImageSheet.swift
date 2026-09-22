@@ -122,14 +122,21 @@ public struct ShareImageSheet: View {
         .buttonStyle(.plain)
     }
 
+    /// Renders from the choices as they were at the start. `MKMapSnapshotter` ignores
+    /// cancellation, so a render whose choices changed during the snapshot drops its image and
+    /// leaves the frame to the newer render.
     private func render() async {
         let photo = photoIndex.map { photos[$0] }
+        let showsProfile = showsProfile
         let size = ShareCard.mapSize(hasPhoto: photo != nil, showsProfile: showsProfile)
         let key = "\(size.width)x\(size.height)"
-        if maps[key] == nil {
-            maps[key] = await ShareMapSnapshot.image(for: content.coordinates, size: size)
+        var map = maps[key]
+        if map == nil {
+            map = await ShareMapSnapshot.image(for: content.coordinates, size: size)
+            maps[key] = map
         }
-        image = ShareCard(content: content, map: maps[key], photo: photo, showsProfile: showsProfile).render()
+        guard !Task.isCancelled else { return }
+        image = ShareCard(content: content, map: map, photo: photo, showsProfile: showsProfile).render()
     }
 }
 #endif
