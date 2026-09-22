@@ -1,7 +1,8 @@
 import Foundation
 
 /// Verified catalog objects on disk, each named by its SHA-256. Past `capacity` bytes the least
-/// recently used go first, and a hit counts as a use. The last catalog root is kept beside them
+/// recently used go first, and a hit counts as a use. Eviction runs between requests and spares
+/// the objects a running request holds, so one request may take the cache past its capacity. The last catalog root is kept beside them
 /// and never evicted, so a rider with no signal can still route over the cells on the phone.
 public struct CellCache: Sendable {
     /// Chosen by the owner: room for the cells of a few days' riding.
@@ -31,12 +32,11 @@ public struct CellCache: Sendable {
         return url
     }
 
-    /// Store verified bytes under their digest, then evict down to the capacity.
+    /// Store verified bytes under their digest.
     func store(_ data: Data, sha256: String) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appending(path: sha256)
         try data.write(to: url, options: .atomic)
-        try evict()
         return url
     }
 
@@ -45,7 +45,9 @@ public struct CellCache: Sendable {
         try data.write(to: root, options: .atomic)
     }
 
-    private func evict() throws {
+    /// Remove the least recently used objects that are not `held` until the cache fits its capacity.
+    func evict(keeping held: Set<String>) throws {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
         let files = try FileManager.default
             .contentsOfDirectory(at: directory, includingPropertiesForKeys: keys)
@@ -56,7 +58,7 @@ public struct CellCache: Sendable {
             }
             .sorted { $0.used < $1.used }
         var total = files.reduce(0) { $0 + $1.size }
-        for file in files where total > capacity {
+        for file in files where total > capacity && !held.contains(file.url.lastPathComponent) {
             try FileManager.default.removeItem(at: file.url)
             total -= file.size
         }

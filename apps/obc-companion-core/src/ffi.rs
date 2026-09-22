@@ -5,11 +5,13 @@
 //! so any thread may call. A NULL map or route is a no-op, NULL or a failure code. Failures carry
 //! a message through [`obc_core_last_error`], which is thread-local.
 //!
-//! `extern "C"` turns an unwind into an abort, so a panic prints its message and ends the process.
+//! A panic in assembly or routing is caught and returned as a failure with its message, so a bug
+//! in the core fails one request instead of ending the app.
 
 use crate::{assemble, CellMap, Leg, RouteError};
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 thread_local! {
@@ -20,6 +22,18 @@ fn fail<T>(message: String, failure: T) -> T {
     let text = CString::new(message).unwrap_or_else(|_| c"the message contained a NUL".to_owned());
     LAST_ERROR.with(|slot| *slot.borrow_mut() = text);
     failure
+}
+
+/// Run `f`, turning a panic into `Err` with the panic's message.
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".into());
+        Err(format!("the core panicked: {message}"))
+    })
 }
 
 /// The C layout of one routed point.
@@ -43,6 +57,7 @@ const ROUTED: i32 = 0;
 const NO_ROAD: i32 = 1;
 const NO_PATH: i32 = 2;
 const EXHAUSTED: i32 = 3;
+const FAILED: i32 = 4;
 
 unsafe fn text<'a>(what: &str, s: *const c_char) -> Result<&'a str, String> {
     if s.is_null() {
@@ -66,7 +81,7 @@ pub unsafe extern "C" fn obc_core_assemble(catalog_json: *const c_char, job_json
         Ok(job) => job,
         Err(e) => return fail(format!("the job: {e}"), ptr::null_mut()),
     };
-    match assemble(catalog, job) {
+    match guarded(|| assemble(catalog, job)) {
         Ok(map) => Box::into_raw(Box::new(map)),
         Err(e) => fail(e, ptr::null_mut()),
     }
@@ -96,8 +111,9 @@ pub unsafe extern "C" fn obc_core_route(
     out: *mut *mut ObcCoreRoute,
 ) -> i32 {
     let Some(map) = map.as_ref() else { return NO_PATH };
-    match map.route((from_lon, from_lat), (to_lon, to_lat), profile) {
-        Ok(Leg { points, distance_m, ascent_m }) => {
+    match guarded(|| Ok(map.route((from_lon, from_lat), (to_lon, to_lat), profile))) {
+        Err(message) => fail(message, FAILED),
+        Ok(Ok(Leg { points, distance_m, ascent_m })) => {
             let points = points
                 .into_iter()
                 .map(|p| ObcCorePoint {
@@ -111,9 +127,9 @@ pub unsafe extern "C" fn obc_core_route(
             *out = Box::into_raw(Box::new(ObcCoreRoute { points, distance_m, ascent_m }));
             ROUTED
         }
-        Err(RouteError::NoRoad) => NO_ROAD,
-        Err(RouteError::NoPath) => NO_PATH,
-        Err(RouteError::Exhausted) => EXHAUSTED,
+        Ok(Err(RouteError::NoRoad)) => NO_ROAD,
+        Ok(Err(RouteError::NoPath)) => NO_PATH,
+        Ok(Err(RouteError::Exhausted)) => EXHAUSTED,
     }
 }
 

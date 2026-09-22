@@ -23,7 +23,6 @@ let package = Package(
         .library(name: "OBCFormats", targets: ["OBCFormats"]),
         .library(name: "OBCMock", targets: ["OBCMock"]),
         .library(name: "OBCUI", targets: ["OBCUI"]),
-        .library(name: "OBCRouting", targets: ["OBCRouting"]),
     ],
     targets: [
         .target(
@@ -61,17 +60,6 @@ let package = Package(
             dependencies: ["OBCDomain", "OBCTransport"],
             swiftSettings: languageMode
         ),
-        // The device's router, linked from Rust. `tools/build-companion-core.sh` packs the
-        // XCFramework; SwiftPM resolves it with the package, so every OBCKit build needs it first.
-        .binaryTarget(
-            name: "OBCCompanionCore",
-            path: "../../../target/OBCCompanionCore.xcframework"
-        ),
-        .target(
-            name: "OBCRouting",
-            dependencies: ["OBCDomain", "OBCCompanionCore"],
-            swiftSettings: languageMode
-        ),
         .testTarget(
             name: "OBCTransportTests",
             dependencies: ["OBCTransport", "OBCFormats"],
@@ -100,12 +88,6 @@ let package = Package(
         .testTarget(
             name: "OBCUITests",
             dependencies: ["OBCUI", "OBCMock"],
-            swiftSettings: languageMode
-        ),
-        // Reads the web builder's cell fixture and the Rust crate's route vector from `#filePath`.
-        .testTarget(
-            name: "OBCRoutingTests",
-            dependencies: ["OBCRouting"],
             swiftSettings: languageMode
         ),
     ]

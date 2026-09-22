@@ -38,6 +38,9 @@ settings:
 packages:
   OBCKit:
     path: Packages/OBCKit
+  # Links the Rust core; `obc companion-core` packs it before the package resolves.
+  OBCRouting:
+    path: Packages/OBCRouting
 
 targets:
   # ─────────────────────────────────────────────────────── app (composition root)
@@ -57,9 +60,8 @@ targets:
         product: OBCFormats
       - package: OBCKit
         product: OBCUI
-      # The device's router, linked from Rust. `obc companion-core` packs the XCFramework
-      # SwiftPM resolves with OBCKit; nothing here keeps it current after a Rust change.
-      - package: OBCKit
+      # The device's router, linked from Rust. Nothing here repacks it after a Rust change.
+      - package: OBCRouting
         product: OBCRouting
       # OBCMock is fully behind #if DEBUG → an empty module in Release, and the
       # app references it only inside #if DEBUG. Linking it is harmless; the seam

@@ -892,17 +892,6 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
-      # OBCKit's routing module links the companion core, and SwiftPM resolves its XCFramework
-      # with the package, so the Mac slice is packed before any OBCKit build.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
-          key: ios
-      - name: Pack the companion core (Mac slice)
-        run: tools/build-companion-core.sh aarch64-apple-darwin
       - name: OBCKit package tests (XCTest and Swift Testing, host)
         id: swift-tests
         working-directory: companion-ios/Packages/OBCKit
@@ -932,6 +921,16 @@ jobs:
             ${{ runner.temp }}/ios-unit.xcresult
             .artifacts/coverage/ios/
           if-no-files-found: error
+      # OBCRouting links the Rust companion core, so it is its own package with its own toolchain.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios
+      - name: OBCRouting package tests (Swift Testing, host)
+        run: tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test
 
   # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
   # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
@@ -974,8 +973,6 @@ jobs:
           key: ios-host
       - name: Pack the iOS host (simulator slice)
         run: tools/build-ios-host.sh --sim-only
-      - name: Pack the companion core (simulator slice)
-        run: tools/build-companion-core.sh aarch64-apple-ios-sim
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
@@ -984,6 +981,7 @@ jobs:
       - name: Build (Debug, simulator SDK)
         working-directory: companion-ios
         run: |
+          ../tools/build-companion-core.sh aarch64-apple-ios-sim
           xcodebuild build-for-testing -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
@@ -1016,7 +1014,7 @@ jobs:
   # The Release half of the mock-seam gate: mock and developer-panel code must never ship.
   # It shares no build output with `ios-app` — a different configuration writes a different
   # products directory — so it runs beside it instead of adding four minutes to the wall clock.
-  # The app links the companion core, so this job packs its simulator slice first.
+  # The app links the companion core, so the build packs its simulator slice first.
   ios-release:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-release')
@@ -1037,14 +1035,13 @@ jobs:
         with:
           workspaces: .
           key: ios
-      - name: Pack the companion core (simulator slice)
-        run: tools/build-companion-core.sh aarch64-apple-ios-sim
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
+          ../tools/build-companion-core.sh aarch64-apple-ios-sim
           xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Release -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO

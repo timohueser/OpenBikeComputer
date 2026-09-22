@@ -4,7 +4,7 @@
  *
  * A map is immutable, and every route builds its own working state, so any thread may call. A
  * NULL map or route is a no-op, 0, or a failure. obc_core_last_error() is thread-local: read it on
- * the thread that made the failing call. A panic prints to stderr and aborts the process. */
+ * the thread that made the failing call. A panic in the core is caught and returned as a failure. */
 #ifndef OBC_COMPANION_CORE_H
 #define OBC_COMPANION_CORE_H
 
@@ -34,6 +34,7 @@ enum {
     OBC_CORE_NO_ROAD = 1,      /* no road within 100 m of an endpoint */
     OBC_CORE_NO_PATH = 2,
     OBC_CORE_EXHAUSTED = 3,    /* the device's node table filled first: too far */
+    OBC_CORE_FAILED = 4,       /* the core panicked; obc_core_last_error() says why */
 };
 
 /* catalog_json is the catalog root (OBCC §3): its schema, first skin and terrain lattice.
