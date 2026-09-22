@@ -1106,7 +1106,7 @@ impl HostLoop {
     /// name, so a later route swap cannot rename a ride that is already recording.
     fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
         let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
-        if tracks.open(id, active_route_name(app).as_deref(), app.recorder.now_ms()) {
+        if tracks.open(id, app.ride_name(), app.recorder.now_ms()) {
             self.opened_session = Some(id);
         }
     }
@@ -1231,11 +1231,6 @@ fn serve_recorder(
 }
 
 /// The active route's catalog name (the ride-log save filename), or `None` when nothing is active.
-pub(crate) fn active_route_name(app: &App) -> Option<String> {
-    let i = app.active_route_index()?;
-    app.routes().get(i).map(|r| r.name.as_str().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

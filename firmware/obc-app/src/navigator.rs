@@ -293,6 +293,9 @@ pub struct NavigatorMachine {
     detour_commit: bool,
     /// The detour-family plan is Ride to start. It outlives the request, which leaves at Acquire.
     approach: bool,
+    /// The last adopted Ride-to-start splice and the route it leads to, by durable id. A ride on the
+    /// splice is saved under the route's name.
+    approach_route: Option<(crate::CatalogObjectId, crate::CatalogObjectId)>,
     following: RouteState,
     /// Resident per-route caches, each with its own build key.
     profile: Option<Profile>,
@@ -330,6 +333,7 @@ impl NavigatorMachine {
             cancel_mask: 0,
             detour_commit: false,
             approach: false,
+            approach_route: None,
             following: RouteState::new(),
             profile: None,
             profile_route: None,
@@ -595,6 +599,14 @@ impl NavigatorMachine {
         self.approach
     }
 
+    pub(crate) fn adopt_approach(&mut self, splice: crate::CatalogObjectId, route: crate::CatalogObjectId) {
+        self.approach_route = Some((splice, route));
+    }
+
+    pub(crate) fn approach_route(&self) -> Option<(crate::CatalogObjectId, crate::CatalogObjectId)> {
+        self.approach_route
+    }
+
     /// Whether the in-flight detour operation is the splice rather than the search — the two have
     /// the same family and different answers.
     pub(crate) fn detour_committing(&self) -> bool {
@@ -691,6 +703,7 @@ impl NavigatorMachine {
             cancel_mask,
             detour_commit,
             approach,
+            approach_route,
             following,
             profile,
             profile_route,
@@ -711,7 +724,7 @@ impl NavigatorMachine {
         assert!(*route == PlanPhase::Idle && *detour == PlanPhase::Idle, "neither family has been asked");
         assert!(route_request.is_none() && detour_request.is_none(), "no request waiting");
         assert!(*phase == OperationPhase::Idle && *cancel_mask == 0 && !*detour_commit, "no physical work pending");
-        assert!(!*approach, "no Ride to start is planned");
+        assert!(!*approach && approach_route.is_none(), "no Ride to start is planned or adopted");
         following.assert_boot_state();
         assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");

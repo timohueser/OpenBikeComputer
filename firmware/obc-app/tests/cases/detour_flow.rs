@@ -678,6 +678,7 @@ fn ride_to_start_splices_the_leg_and_starts_the_ride_on_it() {
     answer_commit(&mut app, &mut host, Ok(9));
 
     assert_eq!(app.active_route_index(), Some(1), "the ride follows the approach and the route");
+    assert_eq!(app.ride_name(), Some("Road"), "the ride is saved under the route's name");
     assert!(matches!(app.top_screen(), Screen::Map(_)));
     assert!(app.recording(), "the ride started");
     assert_eq!(host.retained_result(&mut app), Some(true), "the release keeps the spliced route");
