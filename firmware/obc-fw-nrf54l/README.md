@@ -268,6 +268,7 @@ is garbage. `cargo rtt` can rebuild before attaching but never programs the devi
 | VCOM stays unresponsive after those checks | Power-cycle the DK. A target reset does not reset the J-Link bridge. With both cables connected, unplugging one may leave the board powered. |
 | J3 absent from host USB enumeration | J3 is the separate native device cable, VID:PID `1209:0001`. Check the RTT VBUS lines, then reconnect J3. J4 serial ports do not prove J3 is working. |
 | J3 enumerates but the application cannot connect | Close the desktop or browser session that owns the interface, then reconnect J3. |
+| You need to restart a board and read its boot log | `obc board run ELF --preverify` reads the image back, programs nothing when the board already holds it, then resets and streams RTT. One session does both. An ELF that differs is programmed as usual. `--preverify` is for `run` and `download` only. |
 
 ## Driving it from a host (`debug-uart`)
 
