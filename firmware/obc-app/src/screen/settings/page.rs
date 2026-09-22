@@ -577,10 +577,11 @@ mod tests {
                     assert!(lw <= room, "{lang:?}: page label {label:?} ({lw} px) overruns {room} px even in Label");
                 }
             }
-            // The fixed second lines: the two info values that are copy rather than data.
-            for msg in [Msg::DatetimeSearching, Msg::SensorsNotSet] {
+            // The fixed second lines that are copy rather than data: the fix status on an info
+            // row, and the empty sensors hint under a door.
+            for (msg, room) in [(Msg::DatetimeSearching, area_w - 10), (Msg::SensorsNotSet, area_w - 10 - 28)] {
                 let lw = text_width(t(msg, lang), Font::Label) as i32;
-                assert!(lw <= area_w - 10, "{lang:?}: {:?} overruns the info row", t(msg, lang));
+                assert!(lw <= room, "{lang:?}: {:?} overruns its row", t(msg, lang));
             }
         }
     }
