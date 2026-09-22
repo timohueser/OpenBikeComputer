@@ -255,11 +255,11 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     renumbered[0].id = 200;
     assert!(matches!(
         emit::restamp_style_table(&mut bytes.clone(), &renumbered, 0),
-        Err(emit::RestampError::IdMismatch { .. })
+        Err(emit::RestampError::IdMismatch)
     ));
     assert!(matches!(
         emit::restamp_style_table(&mut bytes.clone(), &restyled[..1], 0),
-        Err(emit::RestampError::TooFewStyles { .. })
+        Err(emit::RestampError::TooFewStyles)
     ));
     assert!(matches!(
         emit::restamp_style_table(&mut bytes[..HEADER_LEN - 1].to_vec(), &restyled, 0),

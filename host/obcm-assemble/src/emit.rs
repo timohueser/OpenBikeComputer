@@ -565,12 +565,10 @@ pub enum RestampError {
     TableOverflows,
     /// The declared table runs past the end of the image.
     TableTruncated,
-    /// The image declares `count` styles but the skin resolved to only `resolved`.
-    TooFewStyles { count: usize, resolved: usize },
-    /// The `count`-style table in the image is not the `packed` bytes a fresh pack produces.
-    LengthMismatch { count: usize, packed: usize },
+    /// The skin resolves fewer styles than the image declares.
+    TooFewStyles,
     /// The image's style ids are not the skin's — the image belongs to another schema revision.
-    IdMismatch { have: Vec<u8>, want: Vec<u8> },
+    IdMismatch,
 }
 
 /// Stamp a resolved skin onto an OBCM image in place: its style table and the header's marker
@@ -648,17 +646,18 @@ fn validated_style_stamp(
     let end = offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
     let slot = map.get(offset..end).ok_or(RestampError::TableTruncated)?;
     if styles.len() < count {
-        return Err(RestampError::TooFewStyles { count, resolved: styles.len() });
+        return Err(RestampError::TooFewStyles);
     }
     let stamped = &styles[..count];
     let packed = pack_style_table(stamped);
-    if slot.len() != packed.len() {
-        return Err(RestampError::LengthMismatch { count, packed: packed.len() });
-    }
-    let have: Vec<u8> = slot[1..].as_chunks::<STYLE_RECORD_LEN>().0.iter().map(|record| record[0]).collect();
-    let want: Vec<u8> = stamped.iter().map(|style| style.id).collect();
-    if have != want {
-        return Err(RestampError::IdMismatch { have, want });
+    if !slot[1..]
+        .as_chunks::<STYLE_RECORD_LEN>()
+        .0
+        .iter()
+        .map(|record| record[0])
+        .eq(stamped.iter().map(|style| style.id))
+    {
+        return Err(RestampError::IdMismatch);
     }
     Ok((offset..end, packed))
 }
