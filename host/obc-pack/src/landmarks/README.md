@@ -24,8 +24,7 @@ Entity responses are `entities/QID.json`, parent classes are in `classes/`, loca
 `locales/`. The compiler verifies the registered bytes before it selects sites, and derives
 coordinates and types from the raw entities rather than the manifest's display data. A raw
 `wbgetentities` response can carry an explicit redirect; the compiler keeps the edge to the
-canonical class before it follows parents, so a redirected category or exclusion root keeps its
-meaning.
+canonical class before it follows parents.
 
 The boundary is a GeoJSON Polygon, MultiPolygon or FeatureCollection of those. Border points are
 included. **Country claims do not select sites**; `policy.json` owns the category roots and
@@ -71,14 +70,17 @@ merge order.
 
 ### Photos
 
-All variants of a site share one photo. P18 images come before the union of usable article lead
-images, in normalized filename order; selection never depends on device language. **Reject a photo
-if its credits cannot fit beside every retained article's credits**, and keep those articles.
+All variants of a site share one photo. The pools, best first, are `P18` claims, article leads,
+`P373` Commons category members, and the `P4291`, `P8592` and `P5252` view claims; captured bytes
+prove the pool, and a rejection moves to the next candidate. A `Views from <P373 category>` member
+is refused; a `Views of <P373 category>` member, a `depicts` (P180) statement naming the record,
+and, for a peak, a camera over 500 m from the summit each rank a file up. Ties keep the pool order,
+then the normalized filename; selection never depends on device language. **Reject a photo if its
+credits cannot fit beside every retained article's credits**, and keep those articles.
 
-CC BY and CC BY-SA photos need a nonempty captured Artist identity. A generic credit such as "Own
-work" does not identify the creator, and missing or empty Artist metadata gives
-`photo_creator_missing`: the compiler never infers an author from a filename or a linked page. CC0
-does not need the field.
+A CC BY or CC BY-SA photo needs a nonempty captured Artist identity. A generic credit such as "Own
+work" does not identify a creator, and empty Artist metadata gives `photo_creator_missing`: the
+compiler never infers an author. CC0 does not need the field.
 
 Each photo file is exactly 51,840 bytes, 216 columns by 240 rows, one RGB222 pixel per byte
 (`00RRGGBB`). The host applies orientation, a Lanczos3 fit, white padding and a fixed 4 × 4
@@ -108,6 +110,8 @@ explicit Wikipedia language links select the first available UI edition in UI or
 ID is the identity. A truncated language-link response, a failed resolution or a conflicting pair
 of explicit tags is an omission. **There are no inferred links and no generated translations.**
 
+The Commons category is read only for an entity with no `P18` claim, four members at most.
+
 `peaks.json` is schema 1, collection `peaks`. Each record has an `id` and the shared article
 fields but no landmark category; `associations` keeps every usable OSM node-to-article link with
 the summit's original coordinates. Records are stored once per canonical identity, and all
@@ -126,11 +130,6 @@ tools/obc fixtures sync peak-articles
 python3 fixtures/verify-peak-content.py
 ```
 
-The verifier rebuilds discovery from its small source PBF and compares two complete offline
-catalogue builds. It checks duplicate and direct-link associations, all UI languages, shared
-photos, and text and photo omissions.
-
-For the landmark compiler, rebuild the captured package into two empty directories and compare
-every output byte. The `obc-pack` and `obc-bake` package suites cover redirected QIDs, Wikipedia
-redirects and normalization, a direct article without Wikidata, unusable text, and independence
-from article-entity coordinates.
+The verifier rebuilds discovery from its source PBF and compares two complete offline catalogue
+builds. For the landmark compiler, rebuild the captured package into two empty directories and
+compare every output byte.

@@ -52,6 +52,15 @@ MAX_BACKOFF = 60.0
 QID = r"Q[1-9][0-9]*"
 # The one group whose places are often unmapped, so the class query stays available for it.
 SWEEP_GROUP = "Natural curiosities"
+# The photo candidate pools the compiler ranks, best first. `landmarks::PHOTO_SOURCES` is the same
+# list; a pool one side offers and the other refuses is a photo that can never be selected.
+PHOTO_SOURCES = ("P18", "wikipedia-lead", "commons-category", "P4291", "P8592", "P5252")
+# Image claims: the lead picture, then a panoramic, an aerial and a winter view.
+IMAGE_PROPERTIES = ("P18", "P4291", "P8592", "P5252")
+# The Commons category is the pool of last resort, read only for an entity with no P18 claim. Every
+# extra candidate is a full-size Commons original, so an unconditional read multiplies the
+# bandwidth of a country capture.
+MAX_CATEGORY_CANDIDATES = 4
 
 
 def digest(data: bytes) -> str:
@@ -390,11 +399,22 @@ def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict
     return record, parser.filename, "captured"
 
 
+def category_files(capture: Capture, category: str) -> tuple[str, list[str]]:
+    """The bounded file members of a Commons category. The compiler proves membership again from
+    each file's own captured categories, so this listing only decides what is acquired."""
+    path = f"categories/{digest(category.encode())}.json"
+    raw = capture.json(path, api("commons.wikimedia.org", action="query", list="categorymembers", cmtitle=category, cmtype="file", cmlimit=MAX_CATEGORY_CANDIDATES))
+    if raw is None:
+        return "acquisition-failed", []
+    members = [m["title"].split(":", 1)[1].replace("_", " ") for m in raw.get("query", {}).get("categorymembers", []) if m.get("title", "").startswith("File:")]
+    return ("captured" if members else "no-category-members"), members
+
+
 def photo(capture: Capture, filename: str) -> tuple[dict | None, str]:
     filename = filename.replace("_", " ")
     key = digest(filename.encode())
     metadata = f"images/{key}.json"
-    raw = capture.json(metadata, api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, uselang="en"))
+    raw = capture.json(metadata, api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo|categories", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, cllimit="max", uselang="en"))
     if not raw:
         return None, "metadata-acquisition-failed"
     pages = list(raw.get("query", {}).get("pages", {}).values())
@@ -410,7 +430,13 @@ def photo(capture: Capture, filename: str) -> tuple[dict | None, str]:
     result = capture.fetch(path, info["url"])
     if result["status"] != "ok":
         return None, result["status"]
-    return dict(path=path, metadata_path=metadata, filename=filename), "captured"
+    record = dict(path=path, metadata_path=metadata, filename=filename)
+    # Structured data lives in the file's own MediaInfo entity, which `imageinfo` never carries.
+    # A file without one simply has no depicts signal.
+    depicts = f"images/{key}-mediainfo.json"
+    if capture.json(depicts, api("commons.wikimedia.org", action="wbgetentities", ids="M%d" % pages[0]["pageid"], props="claims")):
+        record["depicts_path"] = depicts
+    return record, "captured"
 
 
 def capture_locales(capture: Capture, value: dict) -> None:
@@ -451,7 +477,8 @@ def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
         place["outcomes"].append(dict(asset="article", status="no-supported-sitelink"))
         return place
     capture_locales(capture, value)
-    candidates = {(name.replace("_", " "), "P18", None) for name in claim_values(value, "P18") if isinstance(name, str)}
+    candidates = {(name.replace("_", " "), prop, None)
+                  for prop in IMAGE_PROPERTIES for name in claim_values(value, prop) if isinstance(name, str)}
     for language in LANGUAGES:
         link = value.get("sitelinks", {}).get(language + "wiki")
         if not link:
@@ -465,9 +492,15 @@ def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
                 place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
         if lead:
             candidates.add((lead, "wikipedia-lead", language))
+    category = next((v for v in claim_values(value, "P373") if isinstance(v, str)), None)
+    if category and not any(source == "P18" for _, source, _ in candidates):
+        title = "Category:" + category.replace("_", " ")
+        status, members = category_files(capture, title)
+        place["outcomes"].append(dict(asset="photo", source="commons-category", filename=title, status=status))
+        candidates.update((name, "commons-category", None) for name in members)
     if not candidates:
         place["outcomes"].append(dict(asset="photo", status="no-supported-candidate"))
-    for name, source, language in sorted(candidates, key=lambda v: (v[1] != "P18", v[0], v[2] or "")):
+    for name, source, language in sorted(candidates, key=lambda v: (PHOTO_SOURCES.index(v[1]), v[0], v[2] or "")):
         image, status = photo(capture, name)
         place["outcomes"].append(dict(asset="photo", source=source, filename=name, language=language, status=status))
         if image:

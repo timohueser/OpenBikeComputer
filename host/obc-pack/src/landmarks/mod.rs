@@ -66,6 +66,20 @@ pub fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
 
 const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credits-8192;decode-32MiB-16384-128MiB";
 
+/// The photo candidate pools, best first. A pool also names the captured bytes that have to prove a
+/// candidate's origin, so a capture cannot hand the compiler an unrelated file.
+const PHOTO_SOURCES: [&str; 6] = ["P18", "wikipedia-lead", "commons-category", "P4291", "P8592", "P5252"];
+/// A camera this close to a summit looks out from it rather than at it. The radius is the owner's,
+/// taken from a sample of the photos the catalogue selects today.
+const CAMERA_METRES: f64 = 500.0;
+
+/// Equirectangular, which is exact enough well below a kilometre.
+fn metres(from: (f64, f64), to: (f64, f64)) -> f64 {
+    let east = (from.1 - to.1).to_radians() * ((from.0 + to.0) / 2.0).to_radians().cos();
+    let north = (from.0 - to.0).to_radians();
+    6_371_000.0 * east.hypot(north)
+}
+
 #[derive(Deserialize)]
 struct Source {
     path: String,
@@ -373,8 +387,14 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         };
         content.counts.candidates += 1;
         content.candidate_qids.push(qid.clone());
-        let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) =
-            prepare_article(root, &snapshot.sources, &place, entity, &locales, output, &mut content.omissions)?
+        // A landmark photo is taken at the landmark, so it has no camera-distance reference.
+        let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output },
+            &place,
+            entity,
+            &mut content.omissions,
+            None,
+        )?
         else {
             continue;
         };
@@ -476,15 +496,22 @@ pub struct PreparedArticle {
     pub photo: Option<Photo>,
 }
 
+/// The pinned capture one article preparation reads, and the directory it writes a photo to.
+struct Inputs<'a> {
+    root: &'a Path,
+    sources: &'a [Source],
+    locales: &'a BTreeMap<String, Value>,
+    output: &'a Path,
+}
+
 fn prepare_article(
-    root: &Path,
-    sources: &[Source],
+    inputs: &Inputs,
     place: &Value,
     entity: &Value,
-    locales: &BTreeMap<String, Value>,
-    output: &Path,
     omissions: &mut Vec<Omission>,
+    summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
+    let Inputs { root, sources, locales, output } = *inputs;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
         omissions.push(Omission { qid: qid.into(), asset: asset.into(), reason });
@@ -518,22 +545,47 @@ fn prepare_article(
         omit("site", "name_glyph".into());
         return Ok(None);
     }
-    let mut images: Vec<_> = place["images"].as_array().into_iter().flatten().collect();
-    images.sort_by_key(|image| (image["source"] != "P18", image["filename"].as_str().unwrap_or("").replace('_', " ")));
-    let mut photo = None;
-    let p18: BTreeSet<_> = claims(entity, "P18")
-        .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
-        .map(|file| file.replace('_', " "))
-        .collect();
-    for image in images {
-        let allowed = match image["source"].as_str() {
-            Some("P18") => &p18,
-            Some("wikipedia-lead") => &lead,
-            _ => {
-                omit("photo", "photo_source_kind".into());
+    let claim_files = |property: &str| -> BTreeSet<String> {
+        claims(entity, property)
+            .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
+            .map(|file| file.replace('_', " "))
+            .collect()
+    };
+    let category = claim_files("P373").into_iter().next().map(|name| format!("Category:{name}"));
+    let mut ranked = Vec::new();
+    for image in place["images"].as_array().into_iter().flatten() {
+        let Some(tier) = image["source"].as_str().and_then(|source| PHOTO_SOURCES.iter().position(|p| *p == source))
+        else {
+            omit("photo", "photo_source_kind".into());
+            continue;
+        };
+        let signals = match assets::signals(root, sources, image) {
+            Ok(signals) => signals,
+            Err(reason) => {
+                omit("photo", reason);
                 continue;
             }
         };
+        if category.as_deref().is_some_and(|name| signals.views(name, "Views from ")) {
+            omit("photo", "views_from_the_site".into());
+            continue;
+        }
+        let allowed = match PHOTO_SOURCES[tier] {
+            "wikipedia-lead" => lead.clone(),
+            "commons-category" => match category.as_deref().filter(|name| signals.categories.contains(*name)) {
+                Some(_) => BTreeSet::from([signals.filename.clone()]),
+                None => BTreeSet::new(),
+            },
+            property => claim_files(property),
+        };
+        let near = summit.zip(signals.camera).is_some_and(|(summit, camera)| metres(summit, camera) <= CAMERA_METRES);
+        let of = category.as_deref().is_some_and(|name| signals.views(name, "Views of "));
+        let depicts = signals.depicts.contains(qid);
+        ranked.push(((near, !of, !depicts, tier, signals.filename), image, allowed));
+    }
+    ranked.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut photo = None;
+    for (_, image, allowed) in &ranked {
         match assets::photo(root, sources, image, allowed, qid) {
             Ok((candidate, pixels))
                 if variants.iter().all(|v| {

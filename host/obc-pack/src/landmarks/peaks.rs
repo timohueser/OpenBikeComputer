@@ -331,9 +331,16 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
     for (id, entity) in entities {
         let place =
             snapshot.places.iter().find(|p| p["qid"] == id).ok_or_else(|| format!("missing peak capture {id}"))?;
-        if let Some(article) =
-            prepare_article(root, &snapshot.sources, place, &entity, &locales, output, &mut result.omissions)?
-        {
+        // The summit's own OSM coordinate, not the article entity's: a photo taken at the summit
+        // shows the view from the peak, which does not help a rider identify it.
+        let summit = associations.get(&id).and_then(|linked| linked.first()).map(|a| (a.latitude, a.longitude));
+        if let Some(article) = prepare_article(
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output },
+            place,
+            &entity,
+            &mut result.omissions,
+            summit,
+        )? {
             result.counts.texts += 1;
             if let Some(photo) = &article.photo {
                 result.counts.images += 1;
