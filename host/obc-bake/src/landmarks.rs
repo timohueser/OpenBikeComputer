@@ -70,9 +70,9 @@ pub const LANDMARK_RECIPE_VERSION: u32 = 2;
 /// The reserved directory name, in the cache and in the tree.
 pub const LANDMARKS_DIR: &str = "landmarks";
 /// The compiled artifact the packer reads.
-pub const CONTENT_DOC: &str = "content.json";
+pub use obc_pack::landmarks::CONTENT_DOC;
 /// The artifact's own declaration, beside it.
-pub const LANDMARK_DOC: &str = "landmarks.json";
+pub use obc_pack::landmarks::DECLARATION_DOC as LANDMARK_DOC;
 /// The QID list the capture is pinned to, beside the boundary in the region's cache. One file per
 /// extract, because that is what the list is a function of.
 const CANDIDATE_STEM: &str = "candidates";
@@ -415,7 +415,7 @@ impl LandmarkBakery<'_> {
                 candidates_sha256: recipe.candidates_sha256,
                 languages: content.languages.clone(),
                 compiler_policy_sha256: content.policy_sha256.clone(),
-                artifact_sha256: artifact_digest(&staging)?.0,
+                artifact_sha256: obc_pack::landmarks::artifact_digest(&staging)?.0,
                 built_at: obc_pack::catalog::now_timestamp(),
             },
         )?;
@@ -476,7 +476,8 @@ pub fn artifact_dir(tree: &Path, region: &Region) -> PathBuf {
 ///
 /// [`CONTENT_DOC`] alone is the contract, deliberately: the packer reads that document and the
 /// photos beside it, and nothing else. A directory a recipe fills by hand, with no [`LANDMARK_DOC`]
-/// declaration, is a complete input.
+/// declaration, is a complete input. Publishing one is not: the catalog refuses an artifact that
+/// cannot say what it was compiled from.
 pub fn in_tree(tree: &Path, region: &Region) -> Option<PathBuf> {
     let content = artifact_dir(tree, region).join(CONTENT_DOC);
     content.is_file().then_some(content)
@@ -591,28 +592,7 @@ fn read_current(artifact: &Path, fingerprint: &str) -> Result<bool, String> {
     if doc.fingerprint != fingerprint || !artifact.join(CONTENT_DOC).is_file() {
         return Ok(false);
     }
-    Ok(artifact_digest(artifact)?.0 == doc.artifact_sha256)
-}
-
-/// One digest over every file of the artifact but its own declaration, and their total size.
-///
-/// Name and digest per file, so a photo that is lost, renamed or swapped moves the result. The
-/// declaration is excluded because it carries this digest.
-fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
-    let mut files = BTreeMap::new();
-    let mut bytes = 0;
-    for entry in std::fs::read_dir(artifact).map_err(|e| format!("{}: {e}", artifact.display()))? {
-        let path = entry.map_err(|e| format!("{}: {e}", artifact.display()))?.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-        if name == LANDMARK_DOC || !path.is_file() {
-            continue;
-        }
-        let (size, sha256) = crate::hash::file(&path)?;
-        bytes += size;
-        files.insert(name, sha256);
-    }
-    let listing: String = files.iter().map(|(name, sha256)| format!("{name}={sha256}\n")).collect();
-    Ok((crate::hash::text(&listing), bytes))
+    Ok(obc_pack::landmarks::artifact_digest(artifact)?.0 == doc.artifact_sha256)
 }
 
 /// What an artifact holds: records, photos, and its size on disk.
@@ -621,7 +601,7 @@ fn measure(artifact: &Path) -> Result<(usize, usize, u64), String> {
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let content: obc_pack::landmarks::Content =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((content.records.len(), content.counts.images, artifact_digest(artifact)?.1))
+    Ok((content.records.len(), content.counts.images, obc_pack::landmarks::artifact_digest(artifact)?.1))
 }
 
 #[cfg(test)]

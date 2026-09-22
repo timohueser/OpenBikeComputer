@@ -27,6 +27,43 @@ use std::{
     path::{Component, Path},
 };
 
+/// The compiled artifact the packer and the device content come from.
+pub const CONTENT_DOC: &str = "content.json";
+/// The artifact's own declaration, written beside the content by the stage that compiled it. It
+/// carries the digest of everything else in the directory, so it is never part of that digest.
+pub const DECLARATION_DOC: &str = "landmarks.json";
+
+/// The credit the artifact class owes as a whole: the three projects every record is made of.
+/// Each record keeps its own licence and notices, because those differ per article and per photo.
+///
+/// It lives here, beside the compiler that writes those records, so the catalog publishes a credit
+/// it never retypes.
+pub const ATTRIBUTION: &str = "landmark text from Wikipedia and structured data from Wikidata, \u{00a9} the \
+contributors; photos from Wikimedia Commons, \u{00a9} the photographers. Each record states the licence and the \
+notices of its own text and photo.";
+
+/// One digest over every file of an artifact but its own declaration, and their total size.
+///
+/// Name and digest per file, so a photo that is lost, renamed or swapped moves the result. Both
+/// the stage that compiles an artifact and the catalog that publishes it state this digest, so the
+/// rule is here rather than in either of them.
+pub fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
+    let mut files = BTreeMap::new();
+    let mut bytes = 0;
+    for entry in fs::read_dir(artifact).map_err(|e| format!("{}: {e}", artifact.display()))? {
+        let path = entry.map_err(|e| format!("{}: {e}", artifact.display()))?.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if name == DECLARATION_DOC || !path.is_file() {
+            continue;
+        }
+        let file = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        bytes += file.len() as u64;
+        files.insert(name, hash(&file));
+    }
+    let listing: String = files.iter().map(|(name, sha256)| format!("{name}={sha256}\n")).collect();
+    Ok((hash(listing.as_bytes()), bytes))
+}
+
 const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credits-8192;decode-32MiB-16384-128MiB";
 
 #[derive(Deserialize)]
