@@ -5,8 +5,8 @@ square kilometre of the UTM grid, named after the square's south-west corner in 
 The tile a box needs is therefore arithmetic, and the adapter is a row.
 
 A square outside the state is not published and answers 404. That is a coverage edge, not
-a fault, so it is counted and skipped — the run refuses only when the box reaches no
-published square at all.
+a fault, so it is counted and skipped; a box that reaches no published square at all is
+empty, which a country-scale run meets at every corner of the state.
 """
 
 import math

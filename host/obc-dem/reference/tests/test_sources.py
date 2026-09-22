@@ -554,11 +554,10 @@ class RemoteWindows(TempCase):
                 self.assertGreaterEqual(bounds.right, hi_x)
 
     def test_a_square_that_is_not_published_is_a_coverage_edge(self):
-        """404 is the country's edge. The box is then covered by nothing, which is said."""
+        """404 is the country's edge. A box covered by nothing is empty, not a fault: a
+        per-tile run over the country's box meets one at every corner."""
 
-        with self.assertRaises(ingest.Refuse) as refusal:
-            self.source.fetch(self.BOX, self.root / "work")
-        self.assertIn("no published square", str(refusal.exception))
+        self.assertEqual(self.source.fetch(self.BOX, self.root / "work"), [])
 
     def test_a_server_fault_is_not_mistaken_for_a_coverage_edge(self):
         """A 500 or a reset must not become a silent hole in the archive."""
