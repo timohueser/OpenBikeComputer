@@ -289,7 +289,7 @@ fn coordinate(entity: &Value) -> Option<(f64, f64)> {
 }
 
 /// `boundary` is a GeoJSON Polygon/MultiPolygon, not a country-claim filter. All inputs are local.
-pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<Content, String> {
+pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_photos: bool) -> Result<Content, String> {
     let (snapshot, raw) = load_snapshot(snapshot_path)?;
     if snapshot.peaks.is_some() {
         return Err("peak capture requires the peak compiler".into());
@@ -413,7 +413,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         content.candidate_qids.push(qid.clone());
         // A landmark photo is taken at the landmark, so it has no camera-distance reference.
         let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
-            &Inputs { root, sources: &snapshot.sources, locales: &locales, output },
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos },
             &place,
             entity,
             &mut Found { omissions: &mut content.omissions, requests: &mut content.photo_requests },
@@ -526,6 +526,9 @@ struct Inputs<'a> {
     sources: &'a [Source],
     locales: &'a BTreeMap<String, Value>,
     output: &'a Path,
+    /// Only a compile a capture drives asks for originals. A production compile holds every
+    /// original it ranked, so a candidate with no bytes is one it cannot use, not one it waits for.
+    select_photos: bool,
 }
 
 /// The captured file members of the place's own Commons categories. The listing is a pinned source
@@ -565,7 +568,7 @@ fn prepare_article(
     found: &mut Found,
     summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
-    let Inputs { root, sources, locales, output } = *inputs;
+    let Inputs { root, sources, locales, output, select_photos } = *inputs;
     let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
@@ -649,7 +652,7 @@ fn prepare_article(
     for ((_, filename), image, allowed) in &ranked {
         // Metadata alone ranks a candidate. Bytes arrive only after the compiler has asked for them.
         if image.get("path").is_none() {
-            if asked < PHOTO_REQUESTS && allowed.contains(filename) {
+            if select_photos && asked < PHOTO_REQUESTS && allowed.contains(filename) {
                 asked += 1;
                 requests.push(PhotoRequest {
                     qid: qid.into(),

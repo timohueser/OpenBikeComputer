@@ -526,28 +526,36 @@ def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
 
 
 def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str, document: str, snapshot: Path, boundary: Path, places: list[dict], write_manifest) -> int:
-    """Ask the compiler which originals it would use and acquire exactly those.
+    """Ask the compiler which originals it would use, acquire exactly those, and ask again.
 
     Ranking is compiler policy and reads metadata alone, so acquisition never repeats it and never
-    downloads a candidate the compiler would not reach. Returns the number of originals acquired."""
-    write_manifest()
-    with tempfile.TemporaryDirectory(prefix="obc-photo-selection-") as temporary:
-        subprocess.run([str(executable.resolve()), subcommand, "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
-        # A compile that already holds every original it ranked leaves the field out.
-        requests = json.loads((Path(temporary) / document).read_text()).get("photo_requests", [])
+    downloads a candidate the compiler would not reach. A request whose download fails, and a
+    candidate the compiler rejects on its bytes, both put the next candidate in the following
+    answer, so the loop ends when the compiler names nothing it has not already been given. The
+    pool is finite and no candidate is tried twice, so the round bound is the largest pool.
+
+    Returns the number of originals acquired."""
     images = {(place["qid"], image["metadata_path"]): (place, image) for place in places for image in place["images"]}
-    acquired = 0
-    for request in requests:
-        found = images.get((request["qid"], request["metadata_path"]))
-        if found is None or "path" in found[1]:
-            continue
-        place, image = found
-        path, status = photo_bytes(capture, request["filename"])
-        place["outcomes"].append(dict(asset="photo", source=image["source"], filename=request["filename"], status=status))
-        if path:
-            image["path"] = path
-            acquired += 1
-    print(f"photo originals: {acquired} of {len(requests)} requested", flush=True)
+    tried, acquired, requested = set(), 0, 0
+    for _ in range(1 + max((len(place["images"]) for place in places), default=0)):
+        write_manifest()
+        with tempfile.TemporaryDirectory(prefix="obc-photo-selection-") as temporary:
+            subprocess.run([str(executable.resolve()), subcommand, "--photo-requests", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
+            requests = json.loads((Path(temporary) / document).read_text()).get("photo_requests", [])
+        fresh = [r for r in requests if (r["qid"], r["metadata_path"]) not in tried and (r["qid"], r["metadata_path"]) in images]
+        if not fresh:
+            break
+        requested += len(fresh)
+        for request in fresh:
+            key = (request["qid"], request["metadata_path"])
+            tried.add(key)
+            place, image = images[key]
+            path, status = photo_bytes(capture, request["filename"])
+            place["outcomes"].append(dict(asset="photo", source=image["source"], filename=request["filename"], status=status))
+            if path:
+                image["path"] = path
+                acquired += 1
+    print(f"photo originals: {acquired} of {requested} requested", flush=True)
     write_manifest()
     return acquired
 

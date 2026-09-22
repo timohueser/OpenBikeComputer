@@ -261,29 +261,34 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertIn("ids=M7", capture.json.call_args_list[1].args[1])
         self.assertEqual(record["depicts_path"], f"images/{digest(b'A.jpg')}-mediainfo.json")
 
-    def test_an_original_is_acquired_only_for_a_candidate_the_compiler_asks_for(self):
+    def test_acquisition_asks_again_until_the_compiler_needs_nothing_new(self):
         capture = Mock()
-        capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:B.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/b.jpg"}]}}}}
-        capture.fetch.return_value = {"status": "ok"}
+        capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:X.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/x.jpg"}]}}}}
+        # The first two originals fail to download; the third arrives.
+        capture.fetch.side_effect = [{"status": "http-error"}, {"status": "transport-error"}, {"status": "ok"}]
         places = [{"qid": "Q5", "outcomes": [], "images": [
-            {"filename": "A.jpg", "metadata_path": "images/a.json", "source": "P18"},
-            {"filename": "B.jpg", "metadata_path": "images/b.json", "source": "P18"},
-        ]}]
-        requested = [{"qid": "Q5", "filename": "B.jpg", "metadata_path": "images/b.json"}]
-        compiled = [{"photo_requests": requested}, {}]
+            {"filename": f"{name}.jpg", "metadata_path": f"images/{name}.json", "source": "P18"} for name in "abc"]}]
+        def request(name):
+            return {"qid": "Q5", "filename": f"{name}.jpg", "metadata_path": f"images/{name}.json"}
+        rounds = [{"photo_requests": [request("a"), request("b")]}, {"photo_requests": [request("c")]}, {}]
         def compile_once(command, **_kwargs):
-            Path(command[-1], "content.json").write_text(json.dumps(compiled.pop(0)))
+            self.assertIn("--photo-requests", command)
+            Path(command[-1], "content.json").write_text(json.dumps(rounds.pop(0)))
         written = []
         with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once) as compiler:
             acquired = acquire_requested_photos(capture, Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: written.append(True))
-        self.assertEqual((acquired, compiler.call_count), (1, 1))
-        self.assertEqual([image.get("path") for image in places[0]["images"]], [None, f"images/{digest(b'B.jpg')}.jpg"])
-        self.assertEqual(capture.fetch.call_count, 1, "one original, for the one candidate asked for")
-        self.assertEqual(len(written), 2, "the manifest is written before the compiler and after the bytes")
-        # A compiled catalogue that needs nothing leaves the field out, which is not an error.
+        self.assertEqual((acquired, compiler.call_count), (1, 3), "one more round after the failures, then done")
+        self.assertEqual([image.get("path") for image in places[0]["images"]], [None, None, f"images/{digest(b'c.jpg')}.jpg"])
+        self.assertEqual(capture.fetch.call_count, 3, "no candidate is downloaded twice")
+        self.assertEqual(len(written), 4, "the manifest is written before every compile and after the bytes")
+
+    def test_a_compiled_catalogue_that_needs_nothing_is_not_an_error(self):
+        places = [{"qid": "Q5", "outcomes": [], "images": []}]
+        def compile_once(command, **_kwargs):
+            Path(command[-1], "content.json").write_text(json.dumps({}))
         with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once):
-            again = acquire_requested_photos(capture, Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: None)
-        self.assertEqual(again, 0)
+            acquired = acquire_requested_photos(Mock(), Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: None)
+        self.assertEqual(acquired, 0)
 
     def test_candidate_pool_adds_view_claims_and_every_commons_category(self):
         def claims(**properties):

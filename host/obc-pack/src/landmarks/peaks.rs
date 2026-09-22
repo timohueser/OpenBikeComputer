@@ -212,7 +212,12 @@ fn identity(
 
 /// Compile peak records once per canonical identity, preserving every OSM association.
 /// This format cannot be passed to the landmark map serializer.
-pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<PeakContent, String> {
+pub fn compile(
+    snapshot_path: &Path,
+    boundary: &Path,
+    output: &Path,
+    select_photos: bool,
+) -> Result<PeakContent, String> {
     let (snapshot, mut input) = load_snapshot(snapshot_path)?;
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
     let capture = snapshot.peaks.as_ref().ok_or("snapshot has no peak collection")?;
@@ -340,7 +345,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         // shows the view from the peak, which does not help a rider identify it.
         let summit = associations.get(&id).and_then(|linked| linked.first()).map(|a| (a.latitude, a.longitude));
         if let Some(article) = prepare_article(
-            &Inputs { root, sources: &snapshot.sources, locales: &locales, output },
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos },
             place,
             &entity,
             &mut Found { omissions: &mut result.omissions, requests: &mut result.photo_requests },
