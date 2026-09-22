@@ -556,6 +556,7 @@ command = "python3 fixtures/verify-landmark-content.py"
 triggers = [
   "fixtures/verify-landmark-content.py",
   "host/obc-pack/src/landmarks/**",
+  "specs/photo-pools.json",
   "fixtures/sources/ride-assistant/assistant-wiki.json",
 ]
 
@@ -577,6 +578,7 @@ route = "manual"
 command = "python3 fixtures/verify-peak-content.py"
 triggers = [
   "fixtures/verify-peak-content.py",
+  "specs/photo-pools.json",
   "host/obc-pack/src/landmarks/**",
   "fixtures/sources/peak-view/peak-articles-source.json",
 ]

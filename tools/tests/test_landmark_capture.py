@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, Capture, Entities, LeadImage, batches, bbox, claim_values, class_parents, digest, entity, query, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, bbox, capture_assets, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, query, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -81,6 +81,22 @@ class LandmarkCaptureTests(unittest.TestCase):
     def test_maxlag_is_sent_on_every_action_api_request(self):
         from tools.landmark_capture import MAXLAG, api
         self.assertIn(f"maxlag={MAXLAG}", api("www.wikidata.org", action="wbgetentities", ids="Q1"))
+        self.assertIn(f"maxlag={MAXLAG}", image_metadata_url("A.jpg"))
+
+    def test_a_commons_category_listing_waits_like_every_other_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            error = HTTPError(Response.url, 429, "Too many requests", {"Retry-After": "9"}, None)
+            with patch("tools.landmark_capture.urlopen", side_effect=error) as request:
+                with patch("tools.landmark_capture.time.sleep") as sleep:
+                    path, status, members = category_files(capture, "Category:Alpspitz")
+            self.assertEqual((status, members), ("acquisition-failed", []))
+            self.assertEqual(request.call_count, BACKOFF_ATTEMPTS, "the back-off is bounded")
+            self.assertGreater(max(call.args[0] for call in sleep.call_args_list), 8)
+            self.assertTrue(path.startswith("categories/"))
+            asked = request.call_args.args[0].full_url
+            self.assertIn("list=categorymembers", asked)
+            self.assertIn("cmlimit=max", asked)
 
     def test_entities_are_fetched_fifty_at_a_time_and_read_back_by_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -230,6 +246,70 @@ class LandmarkCaptureTests(unittest.TestCase):
         parser.feed('<div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Local.jpg"><img src="//upload.wikimedia.org/wikipedia/en/a/a1/Local.jpg"></a><a class="mw-file-description" href="/wiki/File:Later.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/a/a1/Later.jpg"></a><h2>History</h2></div>')
         self.assertIsNone(parser.filename)
         self.assertEqual(parser.status, "unsupported-repository")
+
+    def test_photo_metadata_carries_categories_and_structured_data_but_no_original(self):
+        capture = Mock()
+        capture.json.side_effect = [
+            {"query": {"pages": {"7": {"pageid": 7, "title": "File:A.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/a.jpg"}]}}}},
+            {"entities": {"M7": {"statements": {"P180": []}}}},
+        ]
+        record, status = photo_metadata(capture, "A.jpg")
+        self.assertEqual(status, "captured")
+        self.assertNotIn("path", record, "an original costs megabytes and waits for the compiler")
+        capture.fetch.assert_not_called()
+        self.assertIn("prop=imageinfo%7Ccategories", capture.json.call_args_list[0].args[1])
+        self.assertIn("ids=M7", capture.json.call_args_list[1].args[1])
+        self.assertEqual(record["depicts_path"], f"images/{digest(b'A.jpg')}-mediainfo.json")
+
+    def test_acquisition_asks_again_until_the_compiler_needs_nothing_new(self):
+        capture = Mock()
+        capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:X.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/x.jpg"}]}}}}
+        # The first two originals fail to download; the third arrives.
+        capture.fetch.side_effect = [{"status": "http-error"}, {"status": "transport-error"}, {"status": "ok"}]
+        places = [{"qid": "Q5", "outcomes": [], "images": [
+            {"filename": f"{name}.jpg", "metadata_path": f"images/{name}.json", "source": "P18"} for name in "abc"]}]
+        def request(name):
+            return {"qid": "Q5", "filename": f"{name}.jpg", "metadata_path": f"images/{name}.json"}
+        rounds = [{"photo_requests": [request("a"), request("b")]}, {"photo_requests": [request("c")]}, {}]
+        def compile_once(command, **_kwargs):
+            self.assertIn("--photo-requests", command)
+            Path(command[-1], "content.json").write_text(json.dumps(rounds.pop(0)))
+        written = []
+        with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once) as compiler:
+            acquired = acquire_requested_photos(capture, Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: written.append(True))
+        self.assertEqual((acquired, compiler.call_count), (1, 3), "one more round after the failures, then done")
+        self.assertEqual([image.get("path") for image in places[0]["images"]], [None, None, f"images/{digest(b'c.jpg')}.jpg"])
+        self.assertEqual(capture.fetch.call_count, 3, "no candidate is downloaded twice")
+        self.assertEqual(len(written), 4, "the manifest is written before every compile and after the bytes")
+
+    def test_a_compiled_catalogue_that_needs_nothing_is_not_an_error(self):
+        places = [{"qid": "Q5", "outcomes": [], "images": []}]
+        def compile_once(command, **_kwargs):
+            Path(command[-1], "content.json").write_text(json.dumps({}))
+        with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once):
+            acquired = acquire_requested_photos(Mock(), Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: None)
+        self.assertEqual(acquired, 0)
+
+    def test_candidate_pool_adds_view_claims_and_every_commons_category(self):
+        def claims(**properties):
+            return {prop: [{"mainsnak": {"datavalue": {"value": name}}} for name in names] for prop, names in properties.items()}
+        value = {"sitelinks": {"enwiki": {"title": "Alpspitz"}},
+                 "claims": claims(P18=["Lead.jpg"], P4291=["Panorama.jpg"], P373=["Alpspitz", "Alpspitz massif"])}
+        capture = Mock()
+        capture.json.return_value = {"query": {"categorymembers": [{"title": "File:In_category.jpg"}, {"title": "Alpspitz"}]}}
+        for context in (patch("tools.landmark_capture.capture_locales"),
+                        patch("tools.landmark_capture.article", return_value=(None, None, "article-missing")),
+                        patch("tools.landmark_capture.photo_metadata", side_effect=lambda _, name: (dict(metadata_path="m", filename=name), "captured"))):
+            self.addCleanup(context.stop)
+            context.start()
+        place = capture_assets(capture, "Q5", value)
+        # A P18 claim no longer hides the category: ranking, not acquisition, decides between them.
+        self.assertEqual([(i["source"], i["filename"]) for i in place["images"]],
+                         [("P18", "Lead.jpg"), ("commons-category", "In category.jpg"), ("P4291", "Panorama.jpg")])
+        self.assertEqual([c["title"] for c in place["commons_categories"]],
+                         ["Category:Alpspitz", "Category:Alpspitz massif"])
+        self.assertEqual(capture.json.call_count, 2, "one listing per P373 claim")
+        self.assertEqual(PHOTO_SOURCES[0], "P18")
 
 
 if __name__ == "__main__":

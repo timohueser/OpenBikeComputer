@@ -788,14 +788,19 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
 }
 
 fn run_landmark_content(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out"])?;
+    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
     if !positional.is_empty() {
         return Err("landmark-content accepts named flags only".into());
     }
     let snapshot = flags.get("snapshot").ok_or("landmark-content requires --snapshot FILE")?;
     let boundary = flags.get("boundary").ok_or("landmark-content requires --boundary GEOJSON")?;
     let output = flags.get("out").ok_or("landmark-content requires --out DIR")?;
-    let content = obc_pack::landmarks::compile(Path::new(snapshot), Path::new(boundary), Path::new(output))?;
+    let content = obc_pack::landmarks::compile(
+        Path::new(snapshot),
+        Path::new(boundary),
+        Path::new(output),
+        flags.has("photo-requests"),
+    )?;
     println!(
         "{} candidates, {} texts, {} photos ({} RGB222 bytes); {} omissions",
         content.counts.candidates,
@@ -830,7 +835,7 @@ fn run_peak_candidates(args: &[String]) -> Result<(), String> {
     )
 }
 fn run_peaks(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out"])?;
+    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
     if !positional.is_empty() {
         return Err("peaks accepts named flags only".into());
     }
@@ -838,6 +843,7 @@ fn run_peaks(args: &[String]) -> Result<(), String> {
         Path::new(flags.get("snapshot").ok_or("peaks requires --snapshot FILE")?),
         Path::new(flags.get("boundary").ok_or("peaks requires --boundary GEOJSON")?),
         Path::new(flags.get("out").ok_or("peaks requires --out DIR")?),
+        flags.has("photo-requests"),
     )?;
     println!(
         "{} peak candidates, {} articles, {} photos, {} associations; {} omissions",

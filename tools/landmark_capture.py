@@ -52,6 +52,14 @@ MAX_BACKOFF = 60.0
 QID = r"Q[1-9][0-9]*"
 # The one group whose places are often unmapped, so the class query stays available for it.
 SWEEP_GROUP = "Natural curiosities"
+# The photo candidate pools the compiler ranks, best first, read from the file the compiler reads.
+# A pool one side offers and the other refuses is a photo that can never be selected.
+PHOTO_POOL_BYTES = (Path(__file__).resolve().parents[1] / "specs/photo-pools.json").read_bytes()
+PHOTO_SOURCES = tuple(json.loads(PHOTO_POOL_BYTES))
+# The pools that are image claims of the entity: the lead picture, then a panoramic, an aerial and
+# a winter view.
+IMAGE_PROPERTIES = tuple(pool for pool in PHOTO_SOURCES if re.fullmatch(r"P[0-9]+", pool))
+IMAGE_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png"}
 
 
 def digest(data: bytes) -> str:
@@ -390,27 +398,58 @@ def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict
     return record, parser.filename, "captured"
 
 
-def photo(capture: Capture, filename: str) -> tuple[dict | None, str]:
+def category_files(capture: Capture, category: str) -> tuple[str, str, list[str]]:
+    """The captured file members of a Commons category: the pinned listing the compiler reads, and
+    the names to take metadata for. One page of members, which a place category stays well inside."""
+    path = f"categories/{digest(category.encode())}.json"
+    raw = capture.json(path, api("commons.wikimedia.org", action="query", list="categorymembers", cmtitle=category, cmtype="file", cmlimit="max"))
+    if raw is None:
+        return path, "acquisition-failed", []
+    members = [m["title"].split(":", 1)[1].replace("_", " ") for m in raw.get("query", {}).get("categorymembers", []) if m.get("title", "").startswith("File:")]
+    return path, ("captured" if members else "no-category-members"), members
+
+
+def image_metadata_url(filename: str) -> str:
+    return api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo|categories", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, cllimit="max", uselang="en")
+
+
+def photo_metadata(capture: Capture, filename: str) -> tuple[dict | None, str]:
+    """Everything the compiler ranks a candidate by: licence, credits, dimensions, camera position,
+    categories and structured data. Kilobytes; the original is megabytes and is not acquired here."""
     filename = filename.replace("_", " ")
     key = digest(filename.encode())
     metadata = f"images/{key}.json"
-    raw = capture.json(metadata, api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, uselang="en"))
+    raw = capture.json(metadata, image_metadata_url(filename))
     if not raw:
         return None, "metadata-acquisition-failed"
     pages = list(raw.get("query", {}).get("pages", {}).values())
     if len(pages) != 1 or not pages[0].get("imageinfo"):
         return None, "not-on-commons"
     info = pages[0]["imageinfo"][0]
-    extension = {"image/jpeg": ".jpg", "image/png": ".png"}.get(info.get("mime"))
-    if not extension:
+    if info.get("mime") not in IMAGE_EXTENSIONS:
         return None, "unsupported-format"
     if info.get("size", 0) > MAX_SOURCE:
         return None, "oversized"
-    path = f"images/{key}{extension}"
+    record = dict(metadata_path=metadata, filename=filename)
+    # Structured data lives in the file's own MediaInfo entity, which `imageinfo` never carries.
+    # A file without one simply has no depicts signal.
+    depicts = f"images/{key}-mediainfo.json"
+    if capture.json(depicts, api("commons.wikimedia.org", action="wbgetentities", ids="M%d" % pages[0]["pageid"], props="claims")):
+        record["depicts_path"] = depicts
+    return record, "captured"
+
+
+def photo_bytes(capture: Capture, filename: str) -> tuple[str | None, str]:
+    """The original of a file whose metadata is already captured. The metadata request is cached,
+    so this costs one download and nothing else."""
+    key = digest(filename.encode())
+    raw = capture.json(f"images/{key}.json", image_metadata_url(filename))
+    if not raw:
+        return None, "metadata-acquisition-failed"
+    info = list(raw["query"]["pages"].values())[0]["imageinfo"][0]
+    path = f"images/{key}{IMAGE_EXTENSIONS[info['mime']]}"
     result = capture.fetch(path, info["url"])
-    if result["status"] != "ok":
-        return None, result["status"]
-    return dict(path=path, metadata_path=metadata, filename=filename), "captured"
+    return (path, "captured") if result["status"] == "ok" else (None, result["status"])
 
 
 def capture_locales(capture: Capture, value: dict) -> None:
@@ -451,7 +490,8 @@ def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
         place["outcomes"].append(dict(asset="article", status="no-supported-sitelink"))
         return place
     capture_locales(capture, value)
-    candidates = {(name.replace("_", " "), "P18", None) for name in claim_values(value, "P18") if isinstance(name, str)}
+    candidates = {(name.replace("_", " "), prop, None)
+                  for prop in IMAGE_PROPERTIES for name in claim_values(value, prop) if isinstance(name, str)}
     for language in LANGUAGES:
         link = value.get("sitelinks", {}).get(language + "wiki")
         if not link:
@@ -465,14 +505,59 @@ def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
                 place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
         if lead:
             candidates.add((lead, "wikipedia-lead", language))
+    place["commons_categories"] = []
+    for category in claim_values(value, "P373"):
+        if not isinstance(category, str):
+            continue
+        title = "Category:" + category.replace("_", " ")
+        path, status, members = category_files(capture, title)
+        place["outcomes"].append(dict(asset="photo", source="commons-category", filename=title, status=status))
+        if members:
+            place["commons_categories"].append(dict(title=title, path=path))
+        candidates.update((name, "commons-category", None) for name in members)
     if not candidates:
         place["outcomes"].append(dict(asset="photo", status="no-supported-candidate"))
-    for name, source, language in sorted(candidates, key=lambda v: (v[1] != "P18", v[0], v[2] or "")):
-        image, status = photo(capture, name)
+    for name, source, language in sorted(candidates, key=lambda v: (PHOTO_SOURCES.index(v[1]), v[0], v[2] or "")):
+        image, status = photo_metadata(capture, name)
         place["outcomes"].append(dict(asset="photo", source=source, filename=name, language=language, status=status))
         if image:
             place["images"].append(dict(image, source=source, language=language))
     return place
+
+
+def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str, document: str, snapshot: Path, boundary: Path, places: list[dict], write_manifest) -> int:
+    """Ask the compiler which originals it would use, acquire exactly those, and ask again.
+
+    Ranking is compiler policy and reads metadata alone, so acquisition never repeats it and never
+    downloads a candidate the compiler would not reach. A request whose download fails, and a
+    candidate the compiler rejects on its bytes, both put the next candidate in the following
+    answer, so the loop ends when the compiler names nothing it has not already been given. The
+    pool is finite and no candidate is tried twice, so the round bound is the largest pool.
+
+    Returns the number of originals acquired."""
+    images = {(place["qid"], image["metadata_path"]): (place, image) for place in places for image in place["images"]}
+    tried, acquired, requested = set(), 0, 0
+    for _ in range(1 + max((len(place["images"]) for place in places), default=0)):
+        write_manifest()
+        with tempfile.TemporaryDirectory(prefix="obc-photo-selection-") as temporary:
+            subprocess.run([str(executable.resolve()), subcommand, "--photo-requests", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
+            requests = json.loads((Path(temporary) / document).read_text()).get("photo_requests", [])
+        fresh = [r for r in requests if (r["qid"], r["metadata_path"]) not in tried and (r["qid"], r["metadata_path"]) in images]
+        if not fresh:
+            break
+        requested += len(fresh)
+        for request in fresh:
+            key = (request["qid"], request["metadata_path"])
+            tried.add(key)
+            place, image = images[key]
+            path, status = photo_bytes(capture, request["filename"])
+            place["outcomes"].append(dict(asset="photo", source=image["source"], filename=request["filename"], status=status))
+            if path:
+                image["path"] = path
+                acquired += 1
+    print(f"photo originals: {acquired} of {requested} requested", flush=True)
+    write_manifest()
+    return acquired
 
 
 def sweep(capture: Capture, policy: dict, boundary: dict) -> tuple[set[str], list[dict]]:
@@ -610,6 +695,7 @@ def run(args) -> int:
             captured[place["qid"]] = place
             print(f"place {len(captured)}/{len(selected)}: {place['qid']} articles={len(place['articles'])} images={len(place['images'])}", flush=True)
         places = [captured.get(p["qid"], dict(p, outcomes=[dict(asset="site", status="excluded-by-production-selection")])) for p in places]
+    acquire_requested_photos(capture, args.select_with, "landmark-content", "content.json", args.out / "manifest.json", args.boundary, places, lambda: manifest(True))
     coverage = manifest(True)
     print(json.dumps(coverage, indent=2), flush=True)
     return 0 if coverage["country_complete"] else 2

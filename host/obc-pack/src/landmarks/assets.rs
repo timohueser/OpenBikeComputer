@@ -156,6 +156,82 @@ pub(super) struct Article {
     pub(super) lead_image: Option<String>,
 }
 
+/// The ranking evidence of one captured photo. Every field comes from pinned bytes, so the policy
+/// digest covers the order the compiler picks in.
+pub(super) struct Signals {
+    pub(super) filename: String,
+    pub(super) categories: BTreeSet<String>,
+    pub(super) camera: Option<(f64, f64)>,
+    pub(super) depicts: BTreeSet<String>,
+}
+
+impl Signals {
+    /// Commons keeps views taken from a place, and views of it, in `<prefix><category>`
+    /// subcategories of the place's own Commons category. Those categories are the entity's own
+    /// P373 claims, so no other place can match. A qualifier follows the name over any
+    /// non-alphanumeric boundary, which is a space, a comma or a bracket on Commons.
+    pub(super) fn views(&self, categories: &[String], prefix: &str) -> bool {
+        let named = |rest: &str| {
+            categories.iter().filter_map(|category| category.strip_prefix("Category:")).any(|name| {
+                rest.strip_prefix(name).is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+            })
+        };
+        self.categories.iter().any(|title| {
+            title
+                .strip_prefix("Category:")
+                .and_then(|title| title.strip_prefix(prefix))
+                .map(|rest| rest.strip_prefix("the ").unwrap_or(rest))
+                .is_some_and(named)
+        })
+    }
+}
+
+/// Commons states a signed decimal, as a number or as a string.
+fn degrees(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.trim().parse().ok()).filter(|value: &f64| value.is_finite())
+}
+
+/// The one Commons file a metadata response describes, and its normalized name.
+fn described(metadata: &Value) -> Result<(&Value, String), String> {
+    let page = metadata["query"]["pages"]
+        .as_object()
+        .and_then(|pages| pages.values().next())
+        .ok_or("photo_metadata_missing")?;
+    let filename = string(page, "title")?.strip_prefix("File:").ok_or("photo_identity_mismatch")?.replace('_', " ");
+    Ok((page, filename))
+}
+
+/// The evidence is read apart from the photo itself: ranking has to order every candidate before
+/// the compiler asks any one of them for pixels.
+pub(super) fn signals(root: &Path, sources: &[Source], capture: &Value) -> Result<Signals, String> {
+    let metadata = json_pinned(root, sources, string(capture, "metadata_path")?)?;
+    let (page, filename) = described(&metadata)?;
+    let categories = page["categories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|category| category["title"].as_str())
+        .map(|title| title.replace('_', " "))
+        .collect();
+    let extended = &page["imageinfo"][0]["extmetadata"];
+    let camera = degrees(&extended["GPSLatitude"]["value"])
+        .zip(degrees(&extended["GPSLongitude"]["value"]))
+        .filter(|(lat, lon)| (-90.0..=90.0).contains(lat) && (-180.0..=180.0).contains(lon));
+    let mut depicts = BTreeSet::new();
+    if let Some(path) = capture.get("depicts_path").and_then(Value::as_str) {
+        let raw = json_pinned(root, sources, path)?;
+        for media in raw["entities"].as_object().into_iter().flatten().map(|(_, media)| media) {
+            for statement in media["statements"]["P180"].as_array().into_iter().flatten() {
+                let id = statement["mainsnak"]["datavalue"]["value"]["id"].as_str();
+                if let Some(id) = id.filter(|_| statement["rank"] != "deprecated") {
+                    depicts.insert(id.to_owned());
+                }
+            }
+        }
+    }
+    Ok(Signals { filename, categories, camera, depicts })
+}
+
 pub(super) fn photo(
     root: &Path,
     sources: &[Source],
@@ -164,11 +240,7 @@ pub(super) fn photo(
     qid: &str,
 ) -> Result<(Photo, Vec<u8>), String> {
     let metadata = json_pinned(root, sources, string(capture, "metadata_path")?)?;
-    let page = metadata["query"]["pages"]
-        .as_object()
-        .and_then(|pages| pages.values().next())
-        .ok_or("photo_metadata_missing")?;
-    let filename = string(page, "title")?.strip_prefix("File:").ok_or("photo_identity_mismatch")?.replace('_', " ");
+    let (page, filename) = described(&metadata)?;
     if !allowed.contains(&filename) {
         return Err("photo_identity_mismatch".into());
     }
@@ -250,6 +322,29 @@ mod tests {
         }});
         assert_eq!(resolved_page(&raw, "mount_Everest").unwrap()["title"], "Everest");
         assert!(resolved_page(&raw, "Different summit").is_err());
+    }
+
+    #[test]
+    fn a_views_subcategory_belongs_to_one_place_only() {
+        let signals = |title: &str| Signals {
+            filename: "File.png".into(),
+            categories: BTreeSet::from([title.to_owned()]),
+            camera: None,
+            depicts: BTreeSet::new(),
+        };
+        let claimed = ["Category:Alpspitz".to_owned(), "Category:Hochblassen".to_owned()];
+        for (title, expected) in [
+            ("Category:Views from Alpspitz", true),
+            ("Category:Views from the Alpspitz in winter", true),
+            ("Category:Views from Alpspitz, Bavaria", true),
+            ("Category:Views from Alpspitz (winter)", true),
+            ("Category:Views from Hochblassen", true),
+            ("Category:Views from Alpspitzli", false),
+            ("Category:Views of Alpspitz", false),
+            ("Category:Alpspitz", false),
+        ] {
+            assert_eq!(signals(title).views(&claimed, "Views from "), expected, "{title}");
+        }
     }
 
     #[test]

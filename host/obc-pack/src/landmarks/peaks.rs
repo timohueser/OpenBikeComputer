@@ -60,6 +60,9 @@ pub struct PeakContent {
     pub associations: Vec<Association>,
     pub records: Vec<PeakArticle>,
     pub omissions: Vec<Omission>,
+    /// Absent from a compiled catalogue: a production compile has every original it ranked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub photo_requests: Vec<PhotoRequest>,
 }
 
 pub(super) fn is_summit(tags: &BTreeMap<String, String>) -> bool {
@@ -209,7 +212,12 @@ fn identity(
 
 /// Compile peak records once per canonical identity, preserving every OSM association.
 /// This format cannot be passed to the landmark map serializer.
-pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<PeakContent, String> {
+pub fn compile(
+    snapshot_path: &Path,
+    boundary: &Path,
+    output: &Path,
+    select_photos: bool,
+) -> Result<PeakContent, String> {
     let (snapshot, mut input) = load_snapshot(snapshot_path)?;
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
     let capture = snapshot.peaks.as_ref().ok_or("snapshot has no peak collection")?;
@@ -232,6 +240,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         include_bytes!("../poi.rs"),
         include_bytes!("../../../../Cargo.lock"),
         locale::LANGUAGE_BYTES,
+        PHOTO_POOL_BYTES,
     ] {
         policy.extend(bytes);
     }
@@ -246,6 +255,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
         associations: Vec::new(),
         records: Vec::new(),
         omissions: Vec::new(),
+        photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
@@ -331,9 +341,16 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<P
     for (id, entity) in entities {
         let place =
             snapshot.places.iter().find(|p| p["qid"] == id).ok_or_else(|| format!("missing peak capture {id}"))?;
-        if let Some(article) =
-            prepare_article(root, &snapshot.sources, place, &entity, &locales, output, &mut result.omissions)?
-        {
+        // The summit's own OSM coordinate, not the article entity's: a photo taken at the summit
+        // shows the view from the peak, which does not help a rider identify it.
+        let summit = associations.get(&id).and_then(|linked| linked.first()).map(|a| (a.latitude, a.longitude));
+        if let Some(article) = prepare_article(
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos },
+            place,
+            &entity,
+            &mut Found { omissions: &mut result.omissions, requests: &mut result.photo_requests },
+            summit,
+        )? {
             result.counts.texts += 1;
             if let Some(photo) = &article.photo {
                 result.counts.images += 1;
