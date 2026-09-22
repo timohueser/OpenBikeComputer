@@ -27,17 +27,24 @@ pub(crate) fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, ri
 pub(crate) fn title_frame_ble(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str, ble_connected: bool) {
     use palette::*;
     cv.clear(PARCHMENT);
-    cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
-    cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
-    // The two y values differ because the Body and Label glyphs have different baselines.
-    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
+    title_chrome(cv, w, h, title);
     let right_x = if ble_connected {
         ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, PARCHMENT);
         w - 14 - BLE_GLYPH_W - 8
     } else {
         w - 14
     };
+    // The two y values differ because the Body and Label glyphs have different baselines.
     cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, PARCHMENT);
+}
+
+/// The outline and the titled wood bar of [`title_frame`], without its clear: for a page whose
+/// map band has already painted the background.
+pub(crate) fn title_chrome(cv: &mut impl Surface, w: i32, h: i32, title: &str) {
+    use palette::*;
+    cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
+    cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
+    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
 }
 
 /// Total width (px) the [`ble_glyph`] rune occupies, so callers can reserve its slot.
