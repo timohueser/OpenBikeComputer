@@ -17,7 +17,6 @@ use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use heapless::Deque;
 
 use obc_link::flat::{
     Ceilings, Engine, Link, Policy, Reaction, RequestId, Stall, StreamBuffers, UsbMapBatch, STALL_TIMEOUT_MS,
@@ -715,106 +714,30 @@ pub(crate) fn transfer_active() -> bool {
     LIVE_TRANSFER.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// One successful protocol-v4 route/trip upload waiting for the app's post-rescan event seam.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CatalogUpload {
-    id: [u8; 8],
-    flags: u8,
-}
+/// The ordered handoff of committed route/trip uploads, plus the one-bit conservative loss signal
+/// an over-capacity drop raises. The container is here because it must be interrupt-safe; what it
+/// keeps and what it drops is [`obc_app::UploadFacts`].
+static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<obc_app::UploadFacts>> =
+    Mutex::new(RefCell::new(obc_app::UploadFacts::new()));
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CatalogUploadKind {
-    Route,
-    Trip,
-}
+/// What that handoff costs the resident budget.
+pub(crate) const CATALOG_UPLOAD_BYTES: usize =
+    core::mem::size_of::<Mutex<CriticalSectionRawMutex, RefCell<obc_app::UploadFacts>>>();
 
-impl CatalogUpload {
-    fn new(kind: CatalogUploadKind, id: u64, replaced: bool) -> Self {
-        let flags = (kind == CatalogUploadKind::Trip) as u8 | ((replaced as u8) << 1);
-        Self { id: id.to_le_bytes(), flags }
-    }
-
-    pub(crate) const fn kind(self) -> CatalogUploadKind {
-        if self.flags & 1 == 0 {
-            CatalogUploadKind::Route
-        } else {
-            CatalogUploadKind::Trip
-        }
-    }
-
-    pub(crate) const fn id(self) -> u64 {
-        u64::from_le_bytes(self.id)
-    }
-
-    pub(crate) const fn replaced(self) -> bool {
-        self.flags & 2 != 0
-    }
-
-    fn same_object(self, other: Self) -> bool {
-        (self.flags & 1) == (other.flags & 1) && self.id == other.id
-    }
-}
-
-const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
-
-/// A complete UI catalog's worth of upload facts. The engine serializes transfers, and the ride
-/// task drains these after the catalog rescan the same commits caused. Bounding this to the menus'
-/// combined identity capacity keeps the resident cost explicit. Same-object commits coalesce, and
-/// churn beyond one full snapshot retains the newest facts and raises the conservative
-/// active-route refresh below.
-const UPLOAD_EVENTS_CAP: usize = obc_app::MAX_ROUTES + obc_app::MAX_TRIPS;
-static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>> =
-    Mutex::new(RefCell::new(Deque::new()));
-static UPLOAD_EVENTS_LOSS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-/// The bounded route/trip commit handoff plus its one-bit conservative loss signal.
-pub(crate) const CATALOG_UPLOAD_BYTES: usize = core::mem::size_of::<
-    Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>>,
->() + core::mem::size_of::<core::sync::atomic::AtomicBool>();
-
-/// Insert the latest fact for one object at the back of the queue. Repeated replaces must not spend
-/// another slot: remove the older fact, preserve every other fact's order, then append the final
-/// `replaced` value at its true commit position. Returns whether a distinct oldest fact had to be
-/// evicted because catalog churn left more queued identities than the UI can simultaneously hold.
-fn queue_catalog_upload(events: &mut Deque<CatalogUpload, UPLOAD_EVENTS_CAP>, upload: CatalogUpload) -> bool {
-    let queued = events.len();
-    let mut coalesced = false;
-    for _ in 0..queued {
-        if let Some(prior) = events.pop_front() {
-            if prior.same_object(upload) {
-                coalesced = true;
-            } else {
-                let _ = events.push_back(prior);
-            }
-        }
-    }
-    if coalesced {
-        let _ = events.push_back(upload);
-        return false;
-    }
-    if let Err(upload) = events.push_back(upload) {
-        let _ = events.pop_front();
-        let _ = events.push_back(upload);
-        return true;
-    }
-    false
-}
-
-fn note_catalog_upload(upload: CatalogUpload) {
+fn note_catalog_upload(upload: obc_app::CatalogUpload) {
     UPLOAD_EVENTS.lock(|events| {
-        if queue_catalog_upload(&mut events.borrow_mut(), upload) {
-            UPLOAD_EVENTS_LOSS.store(true, core::sync::atomic::Ordering::Relaxed);
+        if events.borrow_mut().note(upload) {
             defmt::warn!("flat: upload-event queue saturated — oldest fact replaced; forcing active-route refresh");
         }
     });
 }
 
-pub(crate) fn take_catalog_upload() -> Option<CatalogUpload> {
-    UPLOAD_EVENTS.lock(|events| events.borrow_mut().pop_front())
+pub(crate) fn take_catalog_upload() -> Option<obc_app::CatalogUpload> {
+    UPLOAD_EVENTS.lock(|events| events.borrow_mut().take())
 }
 
 pub(crate) fn take_catalog_upload_loss() -> bool {
-    UPLOAD_EVENTS_LOSS.swap(false, core::sync::atomic::Ordering::Relaxed)
+    UPLOAD_EVENTS.lock(|events| events.borrow_mut().take_loss())
 }
 
 fn note_catalog_commit() {
@@ -1217,10 +1140,10 @@ fn publish_upload(store: &'static FlatStore<FlatCard>, engine: &mut BoardEngine)
     if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
         match kind {
             obc_link::flat::ObjectKind::Route => {
-                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Route, id.0, replaced))
+                note_catalog_upload(obc_app::CatalogUpload::new(obc_app::CatalogUploadKind::Route, id.0, replaced))
             }
             obc_link::flat::ObjectKind::Trip => {
-                note_catalog_upload(CatalogUpload::new(CatalogUploadKind::Trip, id.0, replaced))
+                note_catalog_upload(obc_app::CatalogUpload::new(obc_app::CatalogUploadKind::Trip, id.0, replaced))
             }
             // The link and the store each name objects with their own newtype over the same u64;
             // the seam between them is this crate's job, as everywhere else here.
