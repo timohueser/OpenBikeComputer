@@ -726,9 +726,15 @@ stays live and the route progress stays where it was.
 ## Landmark and peak content
 
 The host compiles landmark text and photos from captured Wikidata, Wikipedia, and Commons
-responses into the map. Selection is deterministic: a fixed list of permitted types, matched
-through subclass steps, with excluded types winning. There is no popularity score and no per-place
-judgement, so the same snapshot always gives the same landmarks. Lakes, mountains, and glaciers are
+responses into the map. The candidates are the places the region's own OpenStreetMap extract tags
+with a Wikidata item: an explicit tag, never a name or a position match. So the search for them
+needs no network, it is bounded by the region instead of a box around it, and every landmark has a
+map object the rider can ride to. A class query over Wikidata stays available for natural
+curiosities, whose places are often unmapped, and it is off unless the operator asks for it.
+
+Selection is deterministic: a fixed list of permitted types, matched through subclass steps, with
+excluded types winning. There is no popularity score and no per-place judgement, so the same
+snapshot always gives the same landmarks. Lakes, mountains, and glaciers are
 excluded even where a permitted type also matches: lake names belong on the map and mountains
 belong in Peak View. Mountain passes are kept.
 
@@ -747,9 +753,9 @@ them per curated region: the region's own boundary polygon selects the sources, 
 raw capture, and the tree holds one compiled artifact for each region. The capture reads live
 sources, so it is the only step of a bake that two runs can disagree on. It is resumable, the run
 says when it starts one, and everything after it is a pure function of the bytes it wrote. Three
-documents decide what a region asks for: its boundary, the category policy, and the shared
-language set. A change in any of them is captured again, into its own directory, and a region is
-compiled again when its captured sources move.
+documents decide what a region asks for: its candidate list, its boundary, the category policy, and
+the shared language set. A change in any of them is captured again, into its own directory, and a
+region is compiled again when its captured sources move.
 
 The cell bake reads those artifacts from the tree; there is no landmark flag. Each cell is cut
 with the compiled content of every region in the run whose coverage selects it, and the packer
@@ -773,6 +779,7 @@ carries the [Copernicus attribution](../terrain/#attribution).
 - OSM ingest: [`ingest.rs`](src:host/obc-pack/src/ingest.rs)
 - POIs and opening hours: [`poi.rs`](src:host/obc-pack/src/poi.rs), [`hours.rs`](src:host/obc-pack/src/hours.rs)
 - Landmark preparation: [`landmarks`](src:host/obc-pack/src/landmarks/mod.rs)
+- Landmark discovery: [`discover.rs`](src:host/obc-pack/src/landmarks/discover.rs)
 - Landmark bake stage: [`landmarks.rs`](src:host/obc-bake/src/landmarks.rs)
 - Navigation graph: [`nav.rs`](src:host/obc-pack/src/nav.rs)
 - Quadtree: [`quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
