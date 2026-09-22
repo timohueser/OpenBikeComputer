@@ -468,6 +468,21 @@ pub fn read_rows<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Ro
     }
     Ok(())
 }
+/// Observe the durable proof exactly as the card holds it: the image's own [`StoreId`] and every
+/// row, with no reconcile and no barrier. Policy reads [`read_rows`]; this reads back what a
+/// receipt committed, so an observer sees the same identity and stamp a remount would.
+#[inline(never)]
+pub fn census<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<StoreId, Error> {
+    let mut bytes = [0u8; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let image = owner.load(store, &mut bytes)?;
+    let identity = image.store_id();
+    for row in image.rows() {
+        accept(row);
+    }
+    Ok(identity)
+}
+
 fn durable<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
     // A live-medium remount can read a gate whose previous final sync failed.
     if store.sync_media().is_err() {
