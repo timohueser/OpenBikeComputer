@@ -23,7 +23,8 @@ import OBCTransport
         flow.open(
             route: try #require(ride.plannedRoute()),
             fileName: RideGPXFile.fileName(for: ride.summary.name),
-            fileData: Data()
+            fileData: Data(),
+            source: .ride(ride.summary.date)
         )
     }
 
@@ -34,6 +35,7 @@ import OBCTransport
 
         #expect(flow.pendingImport?.route.name == "Lunch / Loop")
         #expect(flow.pendingImport?.fileName == "Lunch - Loop.gpx")
+        #expect(flow.pendingImport?.source == .ride(Self.ride.summary.date))
         #expect(flow.collision == nil)
     }
 

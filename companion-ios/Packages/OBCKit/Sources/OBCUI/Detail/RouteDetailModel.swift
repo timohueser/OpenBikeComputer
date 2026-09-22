@@ -16,7 +16,7 @@ public final class RouteDetailModel {
     public enum Dressing {
         case planned(RouteSummary)
         case tracked(RideSummary)
-        case imported(ImportedRoute, fileName: String)
+        case imported(ImportedRoute, fileName: String, source: ImportSource = .file)
     }
 
     public let dressing: Dressing
@@ -139,7 +139,7 @@ public final class RouteDetailModel {
         self.now = now
         self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
-        case .imported(let route, _): uploadGeometry = route
+        case .imported(let route, _, _): uploadGeometry = route
         default: uploadGeometry = plannedGeometry
         }
         // The interactive map draws this, never the downsampled `preview`. Full resolution is
@@ -169,10 +169,11 @@ public final class RouteDetailModel {
             distanceMeters = ride.distanceMeters
             climbMeters = ride.climbMeters
 
-        case .imported(let route, let fileName):
+        case .imported(let route, let fileName, let source):
             let stats = RouteStats.compute(from: route.points)
             name = route.name ?? fileName
-            subtitle = fileName
+            // A ride's file name is ours, not a file the rider picked.
+            subtitle = source == .file ? fileName : nil
             preview = TrackPreview.normalizing(route.points.map(\.coordinate))
             // The header figures, which are what the device shows for this route.
             if let totals = RouteObjectCodec.totals(points: route.points) {
@@ -228,9 +229,16 @@ public final class RouteDetailModel {
         }
     }
 
+    /// The landing's navigation title.
+    public var landingTitle: String {
+        guard case .imported(_, _, .ride) = dressing else { return "Imported route" }
+        return "New route"
+    }
+
     /// The import banner line; nil on the other dressings.
     public var importedFromLine: String? {
-        guard case .imported(let route, let fileName) = dressing else { return nil }
+        guard case .imported(let route, let fileName, let source) = dressing else { return nil }
+        if case .ride(let date) = source { return "From ride · \(OBCFormat.rideDay(date))" }
         let creator = route.creator?.lowercased() ?? ""
         if creator.contains("komoot") { return "Imported from Komoot" }
         if creator.contains("strava") { return "Imported from Strava" }
@@ -317,7 +325,7 @@ public final class RouteDetailModel {
     /// The summary an import's save or upload lands in the library: the stat strip's figures.
     public func makeSummary() -> RouteSummary {
         var source = RouteSource.gpx
-        if case .imported(_, let fileName) = dressing,
+        if case .imported(_, let fileName, _) = dressing,
             (fileName as NSString).pathExtension.lowercased() == "tcx" {
             source = .tcx
         }
@@ -370,4 +378,12 @@ public final class RouteDetailModel {
             maxGradePercent: maxGradePercent
         )
     }
+}
+
+/// Where a route on the import landing comes from, which picks the landing's copy.
+public enum ImportSource: Equatable, Sendable {
+    /// A route file the rider picked or shared.
+    case file
+    /// A tracked ride saved as a route, recorded on this date.
+    case ride(Date)
 }
