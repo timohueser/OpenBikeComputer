@@ -1,0 +1,14 @@
+planned max heading rate: 40 deg/s
+track: 5922 samples, 59210 m, duration 46.0 s, photos at [9.057210238170379, 24.78300060728287, 35.38859300891116]
+[cam] pitch=60.0 heading=76.0 dist=2500 center=48.12327,7.82008
+[cam] pitch=60.0 heading=76.0 dist=2500 center=48.12327,7.82008
+[cam] pitch=30.0 heading=76.0 dist=2500 center=48.12327,7.82008
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=off] t=5.0 ticks=295 fps=59.2 hitches=4 maxDt=52ms avgUpdate=0.01ms trailPts=0
+[cam] pitch=60.0 heading=125.8 dist=2500 center=48.09641,7.89868
+[pause test mode=keyframe] shown camera moved 72 m in the 2 s after pause()
+org.openbikecomputer.spike.flyover: 16997

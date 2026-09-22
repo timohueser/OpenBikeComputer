@@ -1,0 +1,34 @@
+planned max heading rate: 40 deg/s
+track: 5922 samples, 59210 m, duration 46.0 s, photos at [9.057210238170379, 24.78300060728287, 35.38859300891116]
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=10.0 ticks=302 fps=60.2 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+[stats mode=frame trail=off] t=15.0 ticks=300 fps=59.8 hitches=1 maxDt=36ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=20.1 ticks=301 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=25.1 ticks=301 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=30.1 ticks=300 fps=59.8 hitches=1 maxDt=35ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=35.1 ticks=299 fps=59.6 hitches=2 maxDt=33ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=40.1 ticks=301 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=45.1 ticks=301 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=46.0 ticks=51 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+org.openbikecomputer.spike.flyover: 22033

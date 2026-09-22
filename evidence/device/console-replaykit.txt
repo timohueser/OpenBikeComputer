@@ -1,0 +1,40 @@
+planned max heading rate: 40 deg/s
+track: 5922 samples, 59210 m, duration 46.0 s, photos at [9.057210238170379, 24.78300060728287, 35.38859300891116]
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[replaykit] isAvailable=true
+[replaykit] WAITING FOR RECORD PERMISSION (tap 'Record Screen' on the phone, up to 90 s)
+[replaykit] startRecording handler after 3.2s error=nil
+[stats mode=frame trail=off] t=19.0 ticks=301 fps=60.2 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+[stats mode=frame trail=off] t=24.0 ticks=300 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=29.0 ticks=300 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+[replaykit] stopRecording error=Optional(Error Domain=com.apple.ReplayKit.RPRecordingErrorDomain Code=-5835 "Aufgrund der Dateiberechtigung fehlgeschlagen" UserInfo={NSLocalizedDescription=Aufgrund der Dateiberechtigung fehlgeschlagen}) bytes=-1
+REPLAYKIT DONE
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=34.0 ticks=300 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+[stats mode=frame trail=off] t=39.0 ticks=300 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=frame trail=off] t=44.0 ticks=300 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+Invalid c3mm file!
+PACING engine=uikit pitchReq=60 pitchApplied(min/max)=60.0/60.0 dist=1500 frames=1919 wall=32.0s dropped=0 (0.0%) longFrames=0 p50=16.7ms p99=16.7ms max=16.8ms
+[stats mode=frame trail=off] t=46.0 ticks=118 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.01ms trailPts=0
+22:28:16  Acquired tunnel connection to device.
+22:28:16  Enabling developer disk image services.
+22:28:17  Acquired usage assertion.
+Launched application with org.openbikecomputer.spike.flyover bundle identifier.
+Waiting for the application to terminate...
+App terminated due to signal 15.

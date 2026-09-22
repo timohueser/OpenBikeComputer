@@ -1,0 +1,23 @@
+name: Flyover
+options:
+  bundleIdPrefix: org.openbikecomputer.spike
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  Flyover:
+    type: application
+    platform: iOS
+    sources:
+      - path: Flyover
+        excludes: ["Resources/*.gpx"]
+      - path: Flyover/Resources/kandel.gpx
+        buildPhase: resources
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        DEVELOPMENT_TEAM: "" # set your team id to build on a device
+        CODE_SIGN_STYLE: Automatic
+        PRODUCT_BUNDLE_IDENTIFIER: org.openbikecomputer.spike.flyover

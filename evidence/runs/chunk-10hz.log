@@ -1,0 +1,62 @@
+track: 5922 samples, 59210 m, duration 46.0 s, photos at [9.005824509606516, 24.90968469245541, 35.4461344183623]
+[cam] pitch=60.0 heading=105.3 dist=2500 center=48.09451,7.90451
+[cam] pitch=60.0 heading=105.3 dist=2500 center=48.09451,7.90451
+[cam] pitch=30.0 heading=105.3 dist=2500 center=48.09451,7.90451
+Invalid c3mm file!
+Invalid c3mm file!
+[cam] pitch=59.5 heading=107.9 dist=2500 center=48.09452,7.90459
+Invalid c3mm file!
+[cam] pitch=60.0 heading=137.1 dist=2500 center=48.08867,7.90895
+[cam] pitch=60.0 heading=110.2 dist=2500 center=48.08565,7.91793
+Invalid c3mm file!
+Invalid c3mm file!
+[cam] pitch=60.0 heading=77.3 dist=2500 center=48.08688,7.92849
+[cam] pitch=60.0 heading=91.0 dist=2500 center=48.08643,7.93623
+Invalid c3mm file!
+[cam] pitch=60.0 heading=60.2 dist=2500 center=48.09108,7.94450
+[cam] pitch=60.0 heading=50.3 dist=2500 center=48.09476,7.95301
+Invalid c3mm file!
+[cam] pitch=60.0 heading=107.3 dist=2500 center=48.09401,7.96209
+[stats mode=chunk trail=10hz] t=10.0 ticks=292 fps=58.2 hitches=9 maxDt=43ms avgUpdate=0.10ms trailPts=1482
+[cam] pitch=60.0 heading=108.7 dist=2500 center=48.09398,7.96227
+Invalid c3mm file!
+[cam] pitch=60.0 heading=111.2 dist=2500 center=48.09057,7.96962
+[cam] pitch=60.0 heading=71.8 dist=2500 center=48.09284,7.97720
+[cam] pitch=60.0 heading=91.2 dist=2500 center=48.09378,7.98427
+[cam] pitch=60.0 heading=96.5 dist=2500 center=48.09226,7.98976
+[cam] pitch=60.0 heading=154.9 dist=2500 center=48.08963,7.98944
+[cam] pitch=60.0 heading=174.2 dist=2500 center=48.08544,7.98788
+[cam] pitch=60.0 heading=162.7 dist=2500 center=48.08124,7.99031
+[cam] pitch=60.0 heading=165.3 dist=2500 center=48.07739,7.99214
+[stats mode=chunk trail=10hz] t=15.1 ticks=291 fps=58.0 hitches=10 maxDt=35ms avgUpdate=0.12ms trailPts=1918
+[cam] pitch=60.0 heading=154.4 dist=2500 center=48.07395,7.99428
+[cam] pitch=60.0 heading=43.7 dist=2500 center=48.07655,7.99862
+[cam] pitch=60.0 heading=13.4 dist=2500 center=48.08166,7.99715
+[cam] pitch=60.0 heading=10.4 dist=2500 center=48.08513,7.99787
+Invalid c3mm file!
+[cam] pitch=60.0 heading=113.6 dist=2500 center=48.08197,7.99965
+[cam] pitch=60.0 heading=164.6 dist=2500 center=48.07662,8.00043
+[cam] pitch=60.0 heading=150.7 dist=2500 center=48.07322,8.00279
+[cam] pitch=60.0 heading=142.4 dist=2500 center=48.07065,8.00723
+Invalid c3mm file!
+[cam] pitch=60.0 heading=164.1 dist=2500 center=48.06712,8.00853
+Invalid c3mm file!
+[cam] pitch=60.0 heading=188.3 dist=2500 center=48.06398,8.00758
+[stats mode=chunk trail=10hz] t=20.1 ticks=281 fps=56.0 hitches=20 maxDt=36ms avgUpdate=0.12ms trailPts=2376
+Invalid c3mm file!
+Invalid c3mm file!
+[cam] pitch=60.0 heading=53.0 dist=2500 center=48.06962,8.01238
+[cam] pitch=60.0 heading=350.0 dist=2500 center=48.07432,8.00931
+[cam] pitch=60.0 heading=27.4 dist=2500 center=48.07823,8.01074
+[cam] pitch=60.0 heading=128.8 dist=2500 center=48.07209,8.01400
+[cam] pitch=60.0 heading=128.8 dist=2500 center=48.06850,8.01771
+[cam] pitch=60.0 heading=162.2 dist=2500 center=48.06666,8.01599
+[cam] pitch=60.0 heading=162.6 dist=2500 center=48.06241,8.01760
+Invalid c3mm file!
+[cam] pitch=60.0 heading=107.3 dist=2500 center=48.05849,8.02603
+[cam] pitch=60.0 heading=99.3 dist=2500 center=48.05906,8.03735
+[cam] pitch=60.0 heading=94.4 dist=2500 center=48.05880,8.04479
+[stats mode=chunk trail=10hz] t=25.1 ticks=279 fps=55.6 hitches=22 maxDt=39ms avgUpdate=0.13ms trailPts=2962
+[cam] pitch=60.0 heading=124.4 dist=2500 center=48.05721,8.04696
+[cam] pitch=60.0 heading=147.5 dist=2500 center=48.04937,8.04835
+org.openbikecomputer.spike.flyover: 8690

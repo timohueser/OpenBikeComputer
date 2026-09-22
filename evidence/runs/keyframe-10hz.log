@@ -1,0 +1,42 @@
+track: 5922 samples, 59210 m, duration 46.0 s, photos at [9.005824509606516, 24.90968469245541, 35.4461344183623]
+[cam] pitch=60.0 heading=151.5 dist=2500 center=48.09466,7.89686
+[cam] pitch=60.0 heading=151.5 dist=2500 center=48.09466,7.89686
+[cam] pitch=30.0 heading=151.5 dist=2500 center=48.09466,7.89686
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=10.0 ticks=288 fps=57.4 hitches=12 maxDt=58ms avgUpdate=0.01ms trailPts=1482
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=15.1 ticks=291 fps=58.0 hitches=10 maxDt=38ms avgUpdate=0.01ms trailPts=1918
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=20.1 ticks=292 fps=58.2 hitches=9 maxDt=36ms avgUpdate=0.01ms trailPts=2376
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=25.1 ticks=294 fps=58.6 hitches=7 maxDt=34ms avgUpdate=0.01ms trailPts=2962
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=30.1 ticks=290 fps=57.8 hitches=11 maxDt=35ms avgUpdate=0.01ms trailPts=3497
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=35.1 ticks=286 fps=57.0 hitches=15 maxDt=36ms avgUpdate=0.01ms trailPts=4384
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=40.1 ticks=290 fps=57.8 hitches=11 maxDt=35ms avgUpdate=0.02ms trailPts=4905
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=45.2 ticks=288 fps=57.4 hitches=13 maxDt=40ms avgUpdate=0.02ms trailPts=5769
+Invalid c3mm file!
+Invalid c3mm file!
+[stats mode=keyframe trail=10hz] t=46.0 ticks=51 fps=60.0 hitches=0 maxDt=17ms avgUpdate=0.02ms trailPts=5923
+[cam] pitch=60.0 heading=226.7 dist=2500 center=48.11957,7.80980
+org.openbikecomputer.spike.flyover: 9368
