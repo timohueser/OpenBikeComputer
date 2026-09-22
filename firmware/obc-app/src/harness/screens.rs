@@ -1308,6 +1308,43 @@ fn laps_of_the_drawer_settings_row_stay_on_the_root() {
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host card still has room after the laps");
 }
 
+/// The Assistant chord answers from the root pair too, so the rider reaches the same place from
+/// any depth and Back leaves it for the view they ride on. The deepest page is the hard case: the
+/// chord used to spend a slot on it, and at the ceiling it had to fall back to the bare Home root.
+#[test]
+fn the_assistant_chord_lands_on_the_root_pair_from_a_deep_page() {
+    use crate::screen::MAX_DEPTH;
+
+    fn shape(app: &App) -> Vec<&'static str> {
+        app.ui.stack.iter().map(Screen::name).collect()
+    }
+
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    while app.ui.stack.len() < MAX_DEPTH {
+        let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+    }
+
+    assert!(app.apply_chord(crate::input::Chord::Assistant), "the hold opens the Assistant");
+    assert_eq!(shape(&app), ["Home", "Map", "Assistant"], "the descent the chord came from went with it");
+
+    // A question is a door, so the room for what it opens is part of the landing.
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::FindPlace(_)), "the first question still opens");
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "Back leaves the Assistant for the riding view");
+
+    // On the idle Home the Assistant is itself the screen the root pair keeps, so a repeat takes
+    // that slot instead of stacking a second copy the rider would have to Back out of twice.
+    let mut idle = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+    assert!(idle.apply_chord(crate::input::Chord::Quick), "the squeeze opens a sheet over the screensaver");
+    assert!(idle.apply_chord(crate::input::Chord::Assistant));
+    assert_eq!(shape(&idle), ["Home", "Assistant"], "the sheet went with the descent");
+    assert!(idle.apply_chord(crate::input::Chord::Assistant));
+    assert_eq!(shape(&idle), ["Home", "Assistant"], "the repeat stayed put");
+}
+
 /// A sheet needs a slot of its own, so at the ceiling the squeeze is refused and reports that
 /// nothing moved. The alternative is `apply` dropping the push behind a `debug_assert`: a rider
 /// squeezing at a full stack and getting silence.
@@ -1335,21 +1372,24 @@ fn a_squeeze_at_the_ceiling_is_refused() {
 /// the three device-wide chords, so this bounds every way down, including the ways a sheet opens.
 ///
 /// `MAX_DEPTH` is not a wall: `apply` drops an overflowing push behind a `debug_assert`, and a
-/// release build then loses the screen without a sound. So the walk has to reach the ceiling and
-/// stop there. It does: the last slot is reachable, one squeeze past it is refused by
-/// `toggle_drawer`, and a card that arrives at a full stack is deferred rather than dropped —
-/// `card_scheduler::land` reports `false` and the one-shot fact behind the card survives. A card
-/// is measured against the deepest stack with no sheet on it, because `land` takes any open
-/// drawer off before the card goes on.
+/// release build then loses the screen without a sound. So the reserve the ceiling leaves is
+/// pinned rather than assumed. Both doors that open over a descent — the drawer's settings row
+/// and the Assistant chord — land on the root pair, so no way down composes onto another one, and
+/// the walk stops short of the ceiling. A card is measured against the deepest stack with no
+/// sheet on it, because `card_scheduler::land` takes any open drawer off before the card goes on.
 #[test]
-fn the_deepest_descent_stops_at_max_depth() {
+fn the_deepest_descent_stops_short_of_max_depth() {
     use crate::input::Chord;
 
     /// Steps taken on a page before its gesture. The probe below proves one more step reaches no
     /// page the walk misses, so a list that outgrows this cannot go under-walked in silence.
     const ROWS: i32 = 16;
     /// A tree that outgrows this is no longer the one these numbers describe.
-    const VISITS: usize = 2_000;
+    const VISITS: usize = 500;
+    /// The deepest stack the walk reaches: seven pages with one sheet over them.
+    const DEEPEST: usize = 8;
+    /// The deepest stack a host card lands on — that descent with the sheet taken off.
+    const DEEPEST_FOR_A_CARD: usize = 7;
 
     /// One move: `k` steps then that gesture, or one device-wide chord.
     #[derive(Clone, Copy, Debug)]
@@ -1450,15 +1490,19 @@ fn the_deepest_descent_stops_at_max_depth() {
         }
     }
 
-    assert!(seen.len() >= 1_000, "the walk reached only {} stacks — it stopped early", seen.len());
+    assert!(seen.len() >= 300, "the walk reached only {} stacks — it stopped early", seen.len());
     assert!(
         seen.contains(&vec!["Home", "Map", "Menu", "Settings", "Ride", "StatFields", "AddField"]),
         "the walk missed the documented deepest rider path"
     );
-    assert_eq!(deepest.len(), crate::screen::MAX_DEPTH, "the deepest stack is now {deepest:?}");
-    // The ceiling is reached by ordinary pages, not by a sheet in the last slot, so the deepest a
-    // host card can find is the ceiling too: there it waits for the rider to climb back out.
-    assert_eq!(deepest_for_a_card, crate::screen::MAX_DEPTH, "the deepest stack with no sheet on it moved");
+    assert_eq!(deepest.len(), DEEPEST, "the deepest stack is now {deepest:?}");
+    assert_eq!(deepest_for_a_card, DEEPEST_FOR_A_CARD, "the deepest stack with no sheet on it moved");
+    // The reserve, stated as the property it protects: every reachable stack has a free slot, so
+    // no arrival is dropped behind the `debug_assert` and lost in a release build.
+    assert!(
+        deepest.len() < crate::screen::MAX_DEPTH,
+        "a descent reaches the ceiling, where the next arrival is dropped without a sound"
+    );
 }
 
 /// A shutdown in progress is not cancellable by either device-wide input. It cannot be expressed

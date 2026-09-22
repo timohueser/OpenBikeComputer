@@ -137,9 +137,9 @@ pub enum Transition {
     /// Drop the descent back to the root pair — the Home root and the view it stands on, what an
     /// escape leaves under its Menu — and push `screen` there.
     ///
-    /// It is the transition for a row on a sheet. A sheet opens over anything, the way down its
-    /// own row opens included, so a row that landed over the descent would lay one way down on
-    /// another and spend a slot every lap.
+    /// It is the transition for an arrival that is reached from anywhere — a row on a sheet, or a
+    /// device-wide chord. Both open over the way down they themselves open, so an arrival that
+    /// kept the descent would lay one way down on another and spend a slot every lap.
     OverRoot(Screen),
     /// Truncate to the Home root and push `screen`, landing on a clean `[Home, screen]` from any
     /// depth rather than leaving stale screens buried under the new one.
@@ -205,10 +205,19 @@ pub fn apply(stack: &mut Stack, t: Transition) {
             }
         }
         Transition::OverRoot(s) => {
-            // Keep the Home root and the view it stands on. The push that follows cannot
-            // overflow: that pair and one screen fit any MAX_DEPTH.
+            // Keep the Home root and the view it stands on. A sheet is not a view to come back
+            // to, and it is the way in to one of these arrivals, so it goes first. The landing
+            // cannot overflow: the pair and one screen fit any MAX_DEPTH.
+            close_drawers(stack);
             stack.truncate(2);
-            let _ = stack.push(s);
+            match stack.last_mut() {
+                // On the idle Home there is no view, so the arrival itself is what the pair keeps.
+                // It takes that slot rather than stacking a second copy of itself onto it.
+                Some(top) if top.row() == s.row() => *top = s,
+                _ => {
+                    let _ = stack.push(s);
+                }
+            }
         }
         Transition::Root(s) => {
             stack.truncate(1); // keep the Home root
