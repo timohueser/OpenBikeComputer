@@ -92,8 +92,16 @@ impl AddFieldScreen {
                     );
                 }
                 None => {
-                    super::row_label(cv, row.area, f.name(lang), None);
-                    super::span_badge(cv, row.area, f.span(), badge_color);
+                    let a = row.area;
+                    cv.text_vcentered(
+                        f.name(lang),
+                        a.top_left.x + 10,
+                        (a.top_left.y, a.size.height as i32),
+                        Font::Body,
+                        TextAlign::Left,
+                        INK,
+                    );
+                    super::span_badge(cv, a, f.span(), badge_color);
                 }
             }
         });

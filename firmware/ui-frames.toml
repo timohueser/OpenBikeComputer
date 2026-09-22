@@ -62,8 +62,9 @@ up_filter_water = "C p w d p w b f*8"
 # Both → Waypoints → Map POIs ring.
 up_scope_waypoints = "C d p w d p w b f*8"
 up_scope_pois = "C d p w d d p w b f*8"
-# Turn the Auto climb panel off, then climb back to Home.
-u5_climb_off = "B u p p d d p b b b"
+# Turn the Auto climb panel off (open the Climb row's editor, one step wraps Auto -> Off, commit),
+# then climb back to Home.
+u5_climb_off = "B u p p d d p d p b b b"
 
 [[frame]]
 name = "home"
@@ -477,12 +478,20 @@ map = "{grimsel}"
 script = "B u p w"
 expect = "Settings"
 
-# Ride settings: Data fields, Pages, Climb, and Waypoints.
+# Ride settings: the Data fields door and three value rows (Auto-flip, Climb panel, Waypoints),
+# each stating its value under the label.
 [[frame]]
 name = "ride-settings"
 map = "{grimsel}"
 script = "B u p p w"
 expect = "Ride"
+
+# A value row pressed: the drawer's editor rises as a sheet over the page, on the committed choice.
+[[frame]]
+name = "ride-climb-editor"
+map = "{grimsel}"
+script = "B u p p d d p w"
+expect = "ContextDrawer"
 
 # The Bike type row is **gone** from this group (#1515 D4d): it is the one row of the create-route
 # confirm card's own context sheet now — see the `route-plan-context` frame, its only home.
@@ -530,10 +539,10 @@ map = "{grimsel}"
 script = "B u p p d d d"
 expect = "Ride"
 
-# Display (group 1): the idle-return picker, alone. The three Map-overlay switches left this page in
-# #1515 D4c — they are rows of the map's own sheet now, see `map-display-sheet.png`, their only home
-# — so the picker is row 0 and one press opens it. (The old recipe walked two rows down first and
-# pressed *Contours*, which is not the state this filename has always claimed.)
+# Display (group 1): Brightness (the quick drawer's row, reachable here too) and the idle-return
+# timeout. The three Map-overlay switches left this page in #1515 D4c — they are rows of the map's
+# own sheet now, see `map-display-sheet.png`, their only home. The second frame opens the timeout's
+# editor: an axis, so the knob sits on the committed 30 s and the track ends clamp.
 [[frame]]
 name = "display"
 map = "{grimsel}"
@@ -541,54 +550,45 @@ script = "B u p d p"
 expect = "Display"
 
 [[frame]]
-name = "display-idle-return"
+name = "display-idle-editor"
 map = "{grimsel}"
-script = "B u p d p p"
-expect = "Display"
+script = "B u p d p d p w"
+expect = "ContextDrawer"
 
-# lost one `d` because the list is five rows.
-#
-# Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
+# Connections (group 2): the Bluetooth switch, the Sensors door, the phone's status line (read-only,
+# the cursor skips it) and the guarded Forget row — drawn only while there is a bond to drop.
+# Unpaired: no Forget row, one step lands on Sensors and the next wraps. Paired: two steps select
+# the Forget row (the shaded guarded base), and a partial hold fills it warning-red.
 [[frame]]
 name = "connections"
 map = "{grimsel}"
 script = "B u p d d p"
 expect = "Connections"
 
-# Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
-# the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
-# at the bottom anchor), the row selected (a step puts the shaded guarded base on it), the guarded
-# hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond, so the
-# Forget row isn't drawn at all (the round-1 only-when-possible grammar).
 [[frame]]
-name = "bluetooth"
+name = "connections-paired"
 map = "{grimsel}"
-script = "B u p d d p p"
-expect = "Bluetooth"
+script = "B u p d d p"
+expect = "Connections"
 args = ["--ble", "paired"]
 
 [[frame]]
-name = "bluetooth-forget-selected"
+name = "connections-forget-selected"
 map = "{grimsel}"
-script = "B u p d d p p d"
-expect = "Bluetooth"
+script = "B u p d d p d d"
+expect = "Connections"
 args = ["--ble", "paired"]
 
 [[frame]]
-name = "bluetooth-forget-hold"
+name = "connections-forget-hold"
 map = "{grimsel}"
-script = "B u p d d p p d H"
-expect = "Bluetooth"
+script = "B u p d d p d d H"
+expect = "Connections"
 args = ["--ble", "paired"]
 
-[[frame]]
-name = "bluetooth-unpaired"
-map = "{grimsel}"
-script = "B u p d d p p"
-expect = "Bluetooth"
-
-# Sensors screen (BLE sensors epic #707, SE7) — the group's second row, under Phone. `--sensors screen`
-# drives the sim's fake central manager: the three-row list (Heart rate Connected · 78 %, Power
+# Sensors screen (BLE sensors epic #707, SE7) — the Sensors door, one step under the switch.
+# `--sensors screen`
+# drives the sim's fake central manager: the three-row list (Heart rate Connected 78%, Power
 # Searching, Cadence Not set — the HR row selected, so its hold-to-forget footer shows), and the scan
 # list one press deeper (the HR-filtered discovered sensors, name/address + RSSI). A third run with no
 # fake manager pins the empty `Searching...` state while the scan finds nothing.
@@ -612,15 +612,23 @@ map = "{grimsel}"
 script = "B u p d d p d p p"
 expect = "SensorScan"
 
-# Power (group 3): the GPS fix-interval stepper + the power-saver toggle.
+# Power (group 3): the GPS fix-interval value row + the power-saver switch, then the interval's
+# editor: the 17-rung ladder, a rung per second up to ten and the long rests beyond.
 [[frame]]
 name = "power"
 map = "{grimsel}"
 script = "B u p d d d p"
 expect = "Power"
 
-# System (group 4) — the device drawer: Units, Date & Time, Language, Firmware, About, Reset. The
-# menu itself first, then each row's page.
+[[frame]]
+name = "power-gps-editor"
+map = "{grimsel}"
+script = "B u p d d d p p w"
+expect = "ContextDrawer"
+
+# System (group 4) — the device page: the Units value row, then the Date & Time, Language,
+# Firmware, About and Factory reset doors. Six rows, five on the panel, so the page scrolls. The
+# page itself first, then the Units editor (a two-choice ring), then each door's page.
 [[frame]]
 name = "system"
 map = "{grimsel}"
@@ -628,19 +636,28 @@ script = "B u p d*4 p"
 expect = "System"
 
 [[frame]]
-name = "units"
+name = "system-units-editor"
 map = "{grimsel}"
-script = "B u p d*4 p p"
-expect = "Units"
+script = "B u p d*4 p p w"
+expect = "ContextDrawer"
 
+# Date & Time: two read-only rows and the UTC offset value row, then the offset's editor — the one
+# dense axis, 105 quarter hours, so the track shows only its ends.
 [[frame]]
 name = "datetime"
 map = "{grimsel}"
 script = "B u p d*4 p d p"
 expect = "DateTime"
 
-# The Language screen (epic #602): the endonym value picker. The default (English), then two
-# steps cycling to Français — pinning the ç glyph the Latin font (#601) adds.
+[[frame]]
+name = "datetime-offset-editor"
+map = "{grimsel}"
+script = "B u p d*4 p d p p w"
+expect = "ContextDrawer"
+
+# The Language pick list (epic #602): the four languages by flag and endonym, the tick on the
+# committed one. The cursor opens on it; two steps down park it on Français — pinning the ç glyph
+# the Latin font (#601) adds.
 [[frame]]
 name = "language"
 map = "{grimsel}"
@@ -668,17 +685,17 @@ map = "{grimsel}"
 script = "B u p d*4 p d*5 p p H"
 expect = "Reset"
 
-# The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload door ("Install update from
-# card") over the read-only device-info ledger.
+# The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload action ("Install update")
+# over the read-only device-info rows.
 [[frame]]
 name = "firmware"
 map = "{grimsel}"
 script = "B u p d*4 p d d d p"
 expect = "Firmware"
 
-# The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
-# is live), out to the Menu with the global escape (`B`), then Settings -> System -> Firmware. The
-# row loses its amber box and shows the "Recording" cue.
+# The row inert while a ride records: ride route 0 (`p p p p`, GPX-driven so the session is live),
+# out to the Menu with the global escape (`B`), then Settings -> System -> Firmware. The row draws
+# recessed with the "Recording" cue under it.
 [[frame]]
 name = "firmware-recording"
 map = "{grimsel}"
@@ -1595,9 +1612,8 @@ script = "B u p w"
 expect = "Settings"
 langs = ["de", "fr", "es"]
 
-# The Ride group per-language — the longest settings screen there is: five two-line rows, each
-# with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
-# ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
+# The Ride group per-language: a door and three value rows, each value under its label. Eyeball
+# the labels against the chevron column (a label that would run into it drops to the Label cut).
 [[frame]]
 name = "ride-settings"
 map = "{grimsel}"
@@ -1606,10 +1622,10 @@ expect = "Ride"
 langs = ["de", "fr", "es"]
 
 [[frame]]
-name = "units"
+name = "system-units-editor"
 map = "{grimsel}"
-script = "B u p d*4 p p"
-expect = "Units"
+script = "B u p d*4 p p w"
+expect = "ContextDrawer"
 langs = ["de", "fr", "es"]
 
 # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
