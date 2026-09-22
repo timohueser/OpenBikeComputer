@@ -180,6 +180,15 @@ public struct OBCComponentGallery: View {
                     launchScreen { RadioBlockedView(block: .off, onBrowseLibrary: {}) }
                 }
 
+                #if os(iOS)
+                section("Share image (offline map fallback)") {
+                    ForEach([false, true], id: \.self) { showsProfile in
+                        ShareCard(content: Self.sampleShareContent, map: nil, photo: nil, showsProfile: showsProfile)
+                            .overlay(Rectangle().strokeBorder(OBCTheme.line))
+                    }
+                }
+                #endif
+
                 section("Empty / Error Layout") {
                     OBCEmptyStateView(
                         glyph: .trackTile,
@@ -224,6 +233,17 @@ public struct OBCComponentGallery: View {
             content()
         }
     }
+
+    #if os(iOS)
+    static let sampleShareContent = ShareCardContent(ride: Ride(
+        summary: RideSummary(
+            id: RideID("gallery"), name: "Kettle Moraine Loop", date: Date(timeIntervalSince1970: 1_790_000_000),
+            distanceMeters: 58_200, movingTime: 10_260, averageSpeedMps: 5.67, climbMeters: 812
+        ),
+        points: zip(TrackPreview.obcSample.coordinates, [260, 280, 310, 350, 330, 300, 290, 270, 265, 262, 260])
+            .map { RidePoint(timestamp: Date(), coordinate: $0, elevationMeters: $1) }
+    ))
+    #endif
 
     static let sampleWaypoints = [
         Waypoint(index: 0, name: "Ottawa Lake trailhead", note: "Start · parking & water", distanceAlongMeters: 0, coordinate: .init(latitude: 42.9, longitude: -88.6)),

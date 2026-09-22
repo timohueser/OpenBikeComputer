@@ -129,6 +129,16 @@ public struct Ride: Identifiable, Equatable, Sendable {
         self.summary = summary
         self.points = points
     }
+
+    /// This ride as a planned route under the ride's name: the tracked line with its elevation,
+    /// without time or sensors. It is not simplified here, because the route codec decimates
+    /// every route at upload, so a ride keeps the density of an imported GPX track.
+    public func plannedRoute() -> ImportedRoute {
+        ImportedRoute(
+            name: summary.name,
+            points: points.map { RoutePoint(coordinate: $0.coordinate, elevationMeters: $0.elevationMeters) }
+        )
+    }
 }
 
 /// Everything the ride-detail screen renders beyond the list summary.

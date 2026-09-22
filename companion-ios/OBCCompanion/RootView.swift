@@ -34,6 +34,7 @@ struct RootView: View {
     /// The registered import formats. One more format is one more decoder here; the picker filter
     /// and the share-sheet registration follow `supportedFileExtensions`.
     private let importer: RouteImporter
+    private let rideExporter = RideExporter(encoders: [GPXRideEncoder()], defaultFileExtension: "gpx")
     /// A route file handed in at launch, which opens the import landing once the main screen is up.
     private let importAtLaunch: (data: Data, fileName: String)?
     /// A pre-staged firmware update handed in at launch, which pushes the update screen straight
@@ -371,13 +372,14 @@ struct RootView: View {
             }
         case .ride(let id):
             if let ride = mainModel.rides.first(where: { $0.id == id }) {
+                let tracked = mainModel.ride(id)
                 RouteDetailScreen(
                     transport: transport,
                     activity: transferActivity,
                     dressing: .tracked(ride),
                     bikeType: ride.bikeType,
                     // The full tracklog: the interactive map draws this, never the preview.
-                    rideGeometry: mainModel.rideGeometry(for: id),
+                    rideGeometry: tracked?.points.map(\.coordinate),
                     deviceName: mainModel.deviceName,
                     // Phone-side only: the ride stays on the device's card and lands in Recently Deleted.
                     onDelete: {
@@ -385,7 +387,8 @@ struct RootView: View {
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRide(id, to: $0) },
-                    onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) }
+                    onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) },
+                    rideShareMenu: tracked.map(rideShareMenu(for:))
                 )
             }
         case .trip(let id):
@@ -430,6 +433,19 @@ struct RootView: View {
                 autoSend: firmwareDemoAtLaunch?.autoSend ?? false
             )
         }
+    }
+
+    /// Share the ride as GPX or an image, or save it as a route and open that route.
+    private func rideShareMenu(for ride: Ride) -> RideShareMenu {
+        let exporter = rideExporter
+        return RideShareMenu(
+            gpx: RideGPXFile(ride: ride, encode: { try exporter.export($0).data }),
+            onSaveAsRoute: {
+                // The default GPX encoder is registered above, so the export cannot throw.
+                guard let gpx = try? exporter.export(ride).data else { return }
+                path.append(.route(id: mainModel.saveRideAsRoute(ride, gpx: gpx)))
+            }
+        )
     }
 
     /// The hidden dev-panel entry Settings hosts: Debug-only, and only when the mock is driving.
