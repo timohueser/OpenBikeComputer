@@ -236,7 +236,7 @@ coarsest scale it serves, so the renderer opens one level and reads nothing else
 <text class="d-sub" x="184" y="226" text-anchor="middle">RGB565</text>
 <text class="d-sub" x="412" y="207" text-anchor="middle">s: offset scale</text>
 <path d="M412 213 V240" fill="none" stroke="#3c6b39" stroke-width="1.5" />
-<text class="d-sub" x="40" y="455" text-anchor="start">Rows: bytes 0–24, 25–48, then 49–64. All multi-byte values are little-endian.</text>
+<text class="d-sub" x="40" y="455" text-anchor="start">Rows: bytes 0–24, 25–48, then 49–70. All multi-byte values are little-endian.</text>
 <text class="d-sub" x="40" y="477" text-anchor="start">Section address = stored offset × 2ˢ. Region lengths use the same units; writers set s = 4.</text>
 <rect x="40" y="362" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
 <path d="M64 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
@@ -262,6 +262,14 @@ coarsest scale it serves, so the renderer opens one level and reads nothing else
 <path d="M400 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
 <text class="d-sub" x="376" y="385" text-anchor="middle">Peak len</text>
 <text class="d-sub" x="376" y="417" text-anchor="middle">61–64</text>
+<rect x="424" y="362" width="96" height="36" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M448 362 V398 M472 362 V398 M496 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="472" y="385" text-anchor="middle" style="font-size:12px">Dark style off</text>
+<text class="d-sub" x="472" y="417" text-anchor="middle">65–68</text>
+<rect x="520" y="362" width="48" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M544 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="544" y="385" text-anchor="middle" style="font-size:12px">Dark RGB</text>
+<text class="d-sub" x="544" y="417" text-anchor="middle">69–70</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
@@ -269,8 +277,8 @@ coarsest scale it serves, so the renderer opens one level and reads nothing else
 </figure>
 
 The header addresses the global sections. An absent section has a zero offset and length, which is
-how a map without terrain, landmarks, or peak articles says so. The style table applies to every
-level. [OBCM](src:specs/OBCM_Spec.md) defines each field.
+how a map without terrain, landmarks, or peak articles says so. The paired Light and Dark style
+tables apply to the same geometry at every level. [OBCM](src:specs/OBCM_Spec.md) defines each field.
 
 ### The quadtree index
 
@@ -1166,8 +1174,8 @@ copies geometry chunks without decoding them. It rebuilds only the global parts:
 tables, the POIs, the hours pool, the navigation graph, and the terrain container. Routing nodes on
 a seam merge when their coordinates are equal.
 
-All cells in one assembly share the schema revision and the map version, and the assembler replaces
-their presentation records with the selected skin. The output is one file. The browser runs the
+All cells in one assembly share the schema revision and the map version. The assembler writes the
+selected Light and Dark presentation records into one file. The browser runs the
 same engine as the command line, through [`obc-web-assemble`](src:apps/obc-web-assemble), and
 verifies the result with the production readers. See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md).
 
