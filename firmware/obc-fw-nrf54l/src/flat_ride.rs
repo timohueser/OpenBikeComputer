@@ -19,6 +19,8 @@ use obc_storage::flat::{
     Store as _, StoreError, RIDE_RESUME_LEN,
 };
 
+const _: () = assert!(obc_app::recorder::CHECKPOINT_RETRY_MS == obc_storage::health::Breaker::COOL_DOWN_MS);
+
 use obc_app::recorder::{CheckpointStatus, RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::RideDamage;
 

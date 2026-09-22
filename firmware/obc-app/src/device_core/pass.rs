@@ -295,7 +295,7 @@ impl App {
             // A committed ride tells the catalog later in this pass. A failure raises the recording
             // warning and changes nothing else: the ride is still on the store, so the close stays
             // pending and re-offers.
-            match self.recorder.apply_outcome(outcome) {
+            match self.recorder.apply_outcome_at(outcome, now_ms) {
                 crate::recorder::RecorderVerdict::Saved(ride) => {
                     let _ = self.pass.connections.ride_finalized.try_put(RideFinalized { ride });
                     self.end_ride_session();
