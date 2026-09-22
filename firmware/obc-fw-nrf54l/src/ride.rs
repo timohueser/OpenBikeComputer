@@ -2550,8 +2550,9 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // Feed the Select hold progress to the map render so the in-screen confirm bars track the
-            // hold. `App`'s own input plane is not driven here, so the render would otherwise read 0.
+            // Feed both hold charges: Select so the in-screen confirm bars track the hold, Back so a
+            // card defers while it charges. `App`'s own input plane is not driven here, so without
+            // this the render reads 0 and no hold is seen at all.
             let (hold_p, back_hold_p) = display.hold_progress();
             app.set_hold_progress(hold_p, back_hold_p);
 
