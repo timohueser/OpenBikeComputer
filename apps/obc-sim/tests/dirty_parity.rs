@@ -491,21 +491,19 @@ fn route_summary() -> RouteSummary {
         .clone()
 }
 
-/// The device both instances start from: the three live sensor tiles and the two altimeter tiles
-/// pinned to the grid, one page of them so the auto-cycle never fires. A value the rider chose to
-/// see must repaint when it moves.
+/// The device both instances start from: the three live sensor tiles and the climb tile pinned to
+/// the grid, one page of them so the auto-cycle never fires. A value the rider chose to see must
+/// repaint when it moves.
+///
+/// The elevation tile is deliberately absent, as it is from the default grid. It and the climb read
+/// the same altimeter sample, so a grid holding both can never show what the climb field alone
+/// carries; the pinned-elevation grid is [`tiles_replay`]'s device.
 fn riding_device(camera: AppState) -> App {
     use obc_app::{StatField, StatFieldList};
     let mut app = App::new(camera);
     let fields = StatFieldList::decode(
-        5,
-        &[
-            StatField::HeartRate as u8,
-            StatField::Power as u8,
-            StatField::Cadence as u8,
-            StatField::Climbed as u8,
-            StatField::Elevation as u8,
-        ],
+        4,
+        &[StatField::HeartRate as u8, StatField::Power as u8, StatField::Cadence as u8, StatField::Climbed as u8],
     );
     app.set_settings(obc_app::Settings { stat_fields: fields, ..*app.settings() });
     app
@@ -603,7 +601,8 @@ fn replay() -> Vec<Step> {
     steps.push(step("the sensor tiles go stale", 36_000));
     steps.push(step("still blank", 37_000));
     // Altitude between fixes: the first sample anchors the dead band, the second books 20 m of
-    // ascent, so the CLIMBED tile moves on a pass where nothing else did.
+    // ascent, so the CLIMBED tile moves on a pass where nothing else did. This grid has no
+    // elevation tile, so the climb is the only altimeter fact the key can carry here.
     steps.push(step("the altimeter anchors, no fix", 37_200).altitude(500.0).expect("Statistics"));
     steps.push(step("the rider climbs, no fix", 37_600).altitude(520.0).expect("Statistics").probe(|app| {
         assert!(app.recorder.climb_m() >= 20.0, "the dead band booked the ascent the tile draws");
@@ -866,6 +865,9 @@ fn tiles_replay() -> Vec<Step> {
         }),
         step("both tiles are settled", 2_900).expect("Statistics"),
         step("and stay settled", 3_100).expect("Statistics"),
+        // The pinned elevation tile fills from the first altimeter sample, with no fix under it.
+        step("the altimeter reads, no fix", 3_200).altitude(500.0).expect("Statistics"),
+        step("and the reading holds", 3_250).expect("Statistics"),
     ];
     // Riding on: each fountain is passed in turn, so the water tile's named entry changes under a
     // grid whose other figures move with it.
@@ -915,8 +917,13 @@ fn the_next_category_tiles_stay_in_parity() {
         || {
             let mut app = App::new(camera);
             // Two of the six tiles, which is what makes the round-robin visible: with one placed,
-            // the single request is armed by the same pass the screen transition dirtied.
-            let fields = StatFieldList::decode(2, &[StatField::NextWater as u8, StatField::NextBikeShop as u8]);
+            // the single request is armed by the same pass the screen transition dirtied. The
+            // elevation tile rides with them: this is the grid a rider who pinned it has, and the
+            // one place the elevation field of the Statistics key is on its own.
+            let fields = StatFieldList::decode(
+                3,
+                &[StatField::NextWater as u8, StatField::NextBikeShop as u8, StatField::Elevation as u8],
+            );
             app.set_settings(obc_app::Settings { stat_fields: fields, ..*app.settings() });
             app
         },
