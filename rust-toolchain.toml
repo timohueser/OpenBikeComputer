@@ -14,6 +14,6 @@ components = ["rustfmt", "clippy"]
 targets = [
     "thumbv8m.main-none-eabihf", # nRF54L device target (the shared no_std std-creep guard)
     "wasm32-unknown-unknown",    # obc-sim web build (Trunk)
-    "aarch64-apple-ios",         # iOS host staticlib, device slice (also the Linux portability gate)
-    "aarch64-apple-ios-sim",     # iOS host staticlib, simulator slice
+    "aarch64-apple-ios",         # iOS staticlibs, device slice (also the Linux portability gate)
+    "aarch64-apple-ios-sim",     # iOS staticlibs, simulator slice
 ]

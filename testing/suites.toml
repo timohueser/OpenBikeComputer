@@ -106,6 +106,11 @@ triggers = ["apps/obc-web-assemble/tests/fixture/**"]
 name = "obc-host-core"
 triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/flat_ride.rs"]
 
+# The phone's router test reads the web builder's fixture; no Cargo edge carries that.
+[[package]]
+name = "obc-companion-core"
+triggers = ["apps/obc-web-assemble/tests/fixture/**"]
+
 [[package]]
 name = "obc-ios-host"
 triggers = [
@@ -256,10 +261,27 @@ triggers = [
 ]
 sleep_exception = { reason = "Condition polling has a 30-second default deadline; negative observation windows and mock/model timing assertions use bounded real time.", issue = "#1788" }
 
+# The phone's router over the Rust core. Packing first keeps the core current, and cargo
+# is incremental, so an unchanged core packs quickly.
+[[suite]]
+id = "swift.obcrouting-host"
+route = "ordinary"
+command = "tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test"
+jobs = ["ios-unit"]
+platforms = ["macos"]
+triggers = [
+  "companion-ios/Packages/OBCRouting/**",
+  "companion-ios/Packages/OBCKit/Package.swift",
+  "companion-ios/Packages/OBCKit/Sources/OBCDomain/**",
+  "apps/obc-companion-core/**",
+  "apps/obc-web-assemble/tests/fixture/**",
+  "tools/build-companion-core.sh",
+]
+
 [[suite]]
 id = "ios.xcuitest"
 route = "ordinary"
-command = "companion-ios/scripts/capture-website-screenshots.sh --check"
+command = "tools/build-companion-core.sh aarch64-apple-ios-sim && companion-ios/scripts/capture-website-screenshots.sh --check"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -467,14 +489,14 @@ command = "python3 tools/check_retired_map_stack.py"
 jobs = ["guards"]
 triggers = ["tools/check_retired_map_stack.py"]
 
-# Only a Mac can link or run the iOS host, so Linux type-checks it instead. The host
-# composes nine crates and no build graph carries the iOS target edge, so it rides every
-# run of the `clippy` job rather than naming a few of them as triggers. No `obc check`
+# Only a Mac can link or run the iOS crates, so Linux type-checks them instead. They
+# compose many crates and no build graph carries the iOS target edge, so the check rides
+# every run of the `clippy` job rather than naming a few of them as triggers. No `obc check`
 # gate runs it, so a local run never claims it.
 [[suite]]
 id = "ci.ios-host-portability"
 route = "required"
-command = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked"
+command = "cargo check -p obc-ios-host -p obc-companion-core --target aarch64-apple-ios --locked"
 jobs = ["clippy"]
 ci_only = true
 
@@ -484,7 +506,7 @@ ci_only = true
 [[suite]]
 id = "ci.ios-app-build"
 route = "ordinary"
-command = "xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
+command = "tools/build-companion-core.sh aarch64-apple-ios-sim && xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -493,6 +515,9 @@ triggers = [
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
+  "companion-ios/Packages/OBCRouting/**",
+  "apps/obc-companion-core/**",
+  "tools/build-companion-core.sh",
 ]
 
 # Mock and developer-panel code must never ship. The Debug grep rides the build above and
@@ -501,7 +526,7 @@ triggers = [
 [[suite]]
 id = "ci.ios-release-build"
 route = "ordinary"
-command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
+command = "tools/build-companion-core.sh aarch64-apple-ios-sim && xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
 jobs = ["ios-release"]
 platforms = ["macos"]
 triggers = [
@@ -509,6 +534,9 @@ triggers = [
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
+  "companion-ios/Packages/OBCRouting/**",
+  "apps/obc-companion-core/**",
+  "tools/build-companion-core.sh",
 ]
 
 # The shell links the Rust host through an XCFramework and no Swift dependency graph

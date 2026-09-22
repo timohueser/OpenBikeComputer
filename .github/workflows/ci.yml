@@ -228,10 +228,10 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      # The iOS host's portability gate: the shared stack has to keep type-checking for the phone,
-      # and only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
-      - name: cargo check (iOS host, aarch64-apple-ios)
-        run: cargo check -p obc-ios-host --target aarch64-apple-ios --locked
+      # The iOS portability gate: the shared stack has to keep type-checking for the phone, and
+      # only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
+      - name: cargo check (iOS host and companion core, aarch64-apple-ios)
+        run: cargo check -p obc-ios-host -p obc-companion-core --target aarch64-apple-ios --locked
 
   test:
     env:
@@ -921,6 +921,16 @@ jobs:
             ${{ runner.temp }}/ios-unit.xcresult
             .artifacts/coverage/ios/
           if-no-files-found: error
+      # OBCRouting links the Rust companion core, so it is its own package with its own toolchain.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios
+      - name: OBCRouting package tests (Swift Testing, host)
+        run: tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test
 
   # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
   # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
@@ -951,9 +961,9 @@ jobs:
         run: brew install xcodegen webp
       - name: Start the screenshot simulator
         run: companion-ios/scripts/capture-website-screenshots.sh --boot
-      # The OBCDevice shell links the Rust host, so this job needs a Rust toolchain and the
-      # simulator slice packed before xcodebuild plans a build: Xcode resolves an XCFramework
-      # before any of the target's own script phases run.
+      # The OBCDevice shell links the Rust host and the app links the companion core, so this job
+      # needs a Rust toolchain and both simulator slices packed before xcodebuild plans a build:
+      # Xcode resolves an XCFramework before any of the target's own script phases run.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -971,6 +981,7 @@ jobs:
       - name: Build (Debug, simulator SDK)
         working-directory: companion-ios
         run: |
+          ../tools/build-companion-core.sh aarch64-apple-ios-sim
           xcodebuild build-for-testing -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
@@ -1003,7 +1014,7 @@ jobs:
   # The Release half of the mock-seam gate: mock and developer-panel code must never ship.
   # It shares no build output with `ios-app` — a different configuration writes a different
   # products directory — so it runs beside it instead of adding four minutes to the wall clock.
-  # The OBCCompanion scheme does not link the Rust host, so this job needs no toolchain.
+  # The app links the companion core, so the build packs its simulator slice first.
   ios-release:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-release')
@@ -1017,12 +1028,20 @@ jobs:
           persist-credentials: false
       - name: Install XcodeGen
         run: brew install xcodegen
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
+          ../tools/build-companion-core.sh aarch64-apple-ios-sim
           xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Release -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
