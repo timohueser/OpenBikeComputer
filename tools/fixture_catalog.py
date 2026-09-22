@@ -159,7 +159,7 @@ def web_assemble() -> dict[str, bytes]:
             "feature_type": feature_type,
             "color": color(style["color"]), "weight": style["weight"], "z_index": style["z_index"],
             "priority": style.get("priority", 1),
-            "line_style": style.get("line_style", style.get("dashed", "solid")),
+            "line_style": style.get("line_style", "solid"),
             "fixed_width": style.get("fixed_width", False),
             "terrain_layer": style.get("terrain_layer", False),
             "color2": color(style["color2"]) if style.get("color2") is not None else None,
