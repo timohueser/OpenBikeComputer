@@ -7,32 +7,16 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
-use obc_formats::io::{ByteSink, SliceSource};
+use obc_formats::io::SliceSource;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, PoiCategorySet, Reader};
 use obc_route::{RouteIndex, RouteReader};
 use obcm_testkit::{build_poi_map, PoiSpec};
 
-use crate::common::Buf;
+use crate::common::{Buf, VecSink};
 
 /// The map bbox the POI fixture packs into, and the packer's default POI chunk size.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 47_000_000, 9_000_000, 49_000_000);
 const CS: usize = 512;
-
-/// A `ByteSink` over a growable `Vec` — the host's "write the file to RAM" backing.
-#[derive(Default)]
-struct VecSink(Vec<u8>);
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-        self.0.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-        let o = off as usize;
-        self.0[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
 
 /// A due-east 30-point route along 48.0000° N from 7.8000° E, converted to `.obcr`.
 fn route_bytes() -> Vec<u8> {

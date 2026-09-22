@@ -14,7 +14,7 @@ use obc_ports::{Fix, LocationSource, RideClock, Sensors};
 use obc_reader::rgb565_to_rgb888;
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
 
-use crate::common::Planner;
+use crate::common::{Planner, VecSink};
 
 /// The straight test road: lat 43.5°, lon 7.50° → 7.54° (~3 230 m ground). One `<trkpt>` per
 /// 0.004° so the converter keeps real vertices along the way.
@@ -41,19 +41,6 @@ fn road_obcr_segs(segs: usize, wobble: f64) -> Vec<u8> {
 
 fn road_obcr() -> Vec<u8> {
     road_obcr_segs(10, 0.0)
-}
-
-#[derive(Default)]
-struct VecSink(Vec<u8>);
-impl obc_formats::io::ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-        self.0.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-        self.0[off as usize..off as usize + b.len()].copy_from_slice(b);
-        Ok(())
-    }
 }
 
 struct OneFix(Option<Fix>);
