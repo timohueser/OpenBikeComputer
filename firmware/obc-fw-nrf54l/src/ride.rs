@@ -112,10 +112,10 @@ fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFac
     }
     while let Some(upload) = crate::flat_store::take_catalog_upload() {
         match upload.kind() {
-            crate::flat_store::CatalogUploadKind::Route => {
+            obc_app::CatalogUploadKind::Route => {
                 facts.note_route_upload(RouteUpload { id: upload.id(), replaced: upload.replaced(), elevation: None })
             }
-            crate::flat_store::CatalogUploadKind::Trip => {
+            obc_app::CatalogUploadKind::Trip => {
                 facts.note_trip_upload(TripUpload { id: upload.id(), replaced: upload.replaced() })
             }
         }
