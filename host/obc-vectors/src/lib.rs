@@ -439,42 +439,6 @@ pub fn update_container_v2() -> Vec<u8> {
     v
 }
 
-/// A `transferControl` descriptor (spec §4.2): 12 bytes (protocol v2 — the `offset` field is gone).
-pub fn transfer_control(op: u8, ty: u8, object_id: u16, total_len: u32, crc: u32) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(op);
-    v.push(ty);
-    v.extend_from_slice(&le16(object_id));
-    v.extend_from_slice(&le32(total_len));
-    v.extend_from_slice(&le32(crc));
-    v
-}
-
-/// `status` message `transferResult` (spec §4.3, `msg = 1`): 8 bytes.
-pub fn status_transfer_result(object_id: u16, status: u8, committed_offset: u32) -> Vec<u8> {
-    let mut v = vec![1u8];
-    v.extend_from_slice(&le16(object_id));
-    v.push(status);
-    v.extend_from_slice(&le32(committed_offset));
-    v
-}
-
-/// `status` message `downloadAnnounce` (spec §4.3, `msg = 4`): the `msg` byte + the 12-byte
-/// `transferControl` descriptor with `total_len`/`crc32` filled in (protocol v2 folds the announce
-/// onto the `status` envelope). 13 bytes.
-pub fn status_download_announce(ty: u8, object_id: u16, total_len: u32, crc: u32) -> Vec<u8> {
-    let mut v = vec![4u8];
-    v.extend_from_slice(&transfer_control(2, ty, object_id, total_len, crc)); // op = 2 (download)
-    v
-}
-
-/// `status` message `storeChanged` (spec §4.3): 6 bytes.
-pub fn status_store_changed(ty: u8, revision: u32) -> Vec<u8> {
-    let mut v = vec![2u8, ty];
-    v.extend_from_slice(&le32(revision));
-    v
-}
-
 /// `status` message `commandResult` (spec §4.3): 4 bytes.
 pub fn status_command_result(cmd: u8, status: u8, detail: u8) -> Vec<u8> {
     vec![3u8, cmd, status, detail]
@@ -489,61 +453,14 @@ pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
     v
 }
 
-#[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
-pub fn route_list_entry(
-    object_id: u16,
-    byte_len: u32,
-    distance_m: u32,
-    ascent_m: u32,
-    point_count: u32,
-    waypoint_count: u16,
-    name: &str,
-    crc: u32,
-) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.extend_from_slice(&le16(object_id));
-    v.extend_from_slice(&le16(0)); // reserved
-    v.extend_from_slice(&le32(byte_len));
-    v.extend_from_slice(&le32(distance_m));
-    v.extend_from_slice(&le32(ascent_m));
-    v.extend_from_slice(&le32(point_count));
-    v.extend_from_slice(&le16(waypoint_count));
-    v.push(name.len() as u8);
-    let mut padded = [0u8; 48];
-    padded[..name.len()].copy_from_slice(name.as_bytes());
-    v.extend_from_slice(&padded);
-    v.push(0); // reserved
-    v.extend_from_slice(&le32(crc)); // whole-object content CRC-32 (offset 72)
-    assert_eq!(v.len(), 76);
-    v
-}
-
-/// A whole `routeList` object (spec §7.4): the **6-byte** v2 list header
-/// (`version 2 · entry_len 84 · count · total`) + packed 84-byte entries. `total` = the full catalog
-/// size before the `MAX_ROUTES` cap (equal to `count` when nothing was dropped).
-pub fn route_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
-    let mut v = vec![2u8, 76];
-    v.extend_from_slice(&le16(entries.len() as u16));
-    v.extend_from_slice(&le16(total));
-    for e in entries {
-        v.extend_from_slice(e);
-    }
-    v
-}
-
 /// Trip fixture name (also the trip object header name field).
 pub const TRIP_NAME: &str = "Alpen Traverse";
 
-/// The two resolvable stage route ids in `trip-v2.bin` — the ids of the two `route-list.bin`
-/// entries, so the `tripList` totals sum their distance/ascent.
+/// The two ordinary route ids in `trip-v2.bin`.
 pub const TRIP_STAGE_IDS: [u64; 2] = [7, 8];
 
-/// The deliberately **dangling** third stage id in `trip-v2.bin`: a route id no fixture holds, so the
-/// device tolerates it on read and the `tripList` totals skip it (spec §7.7 / §7.4).
+/// A deliberately wide third stage id that pins full-width read tolerance.
 pub const TRIP_DANGLING_STAGE: u64 = 0x1_0000_0063;
-
-/// The trip's own device-assigned object id (its counter is separate from routes/rides, §4.1).
-pub const TRIP_ID: u16 = 1;
 
 /// Trip object v2 (spec §7.7): a 56-byte header (`version 2 · stage_count u16 · name ≤ 48`) followed
 /// by `stage_count × u64` route object ids in ride order. Length = `56 + 8·stage_count`.
@@ -560,51 +477,6 @@ pub fn trip_v2(name: &str, stages: &[u64]) -> Vec<u8> {
     assert_eq!(v.len(), 56, "trip object header is 56 bytes");
     for &id in stages {
         v.extend_from_slice(&id.to_le_bytes()); // full-width flat-store ObjectId, ride order
-    }
-    v
-}
-
-/// One `tripList` entry (spec §7.4): **76 bytes**, mirroring `routeList` — name zero-padded to 48,
-/// trailing whole-object `crc32` of the stored trip bytes (`0` = unknown). `total_distance_m` /
-/// `total_ascent_m` are summed over the trip's **resolvable** stages; `stage_count` counts every
-/// stored stage (dangling refs included).
-#[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
-pub fn trip_list_entry(
-    object_id: u16,
-    byte_len: u32,
-    total_distance_m: u32,
-    total_ascent_m: u32,
-    stage_count: u16,
-    name: &str,
-    crc: u32,
-) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.extend_from_slice(&le16(object_id));
-    v.extend_from_slice(&le16(0)); // reserved
-    v.extend_from_slice(&le32(byte_len));
-    v.extend_from_slice(&le32(total_distance_m));
-    v.extend_from_slice(&le32(total_ascent_m));
-    v.extend_from_slice(&le16(stage_count));
-    v.extend_from_slice(&le16(0)); // reserved
-    v.push(name.len() as u8);
-    let mut padded = [0u8; 48];
-    padded[..name.len()].copy_from_slice(name.as_bytes());
-    v.extend_from_slice(&padded);
-    v.extend_from_slice(&[0u8; 3]); // reserved
-    v.extend_from_slice(&le32(crc)); // whole-object content CRC-32
-    assert_eq!(v.len(), 76);
-    v
-}
-
-/// A whole `tripList` object (spec §7.4): the **6-byte** v2 list header
-/// (`version 2 · entry_len 76 · count · total`) + packed 76-byte entries. `total` = the full trip
-/// catalog size before the `MAX_TRIPS` cap (equal to `count` when nothing was dropped).
-pub fn trip_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
-    let mut v = vec![2u8, 76];
-    v.extend_from_slice(&le16(entries.len() as u16));
-    v.extend_from_slice(&le16(total));
-    for e in entries {
-        v.extend_from_slice(e);
     }
     v
 }
@@ -651,16 +523,11 @@ fn visit_envelopes(plain: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
-/// Every fixture as `(file name, bytes)`. The transfer descriptors' `total_len`/
-/// `crc32` are the actual length and CRC of `route-waypoints.obcr`, tying the
-/// fixtures together end-to-end.
+/// Every fixture as `(file name, bytes)`.
 pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_wp = build_route(ROUTE_GPX);
     let route_plain = build_route(&route_gpx_plain());
-    let (len, crc) = (route_wp.len() as u32, crc32(&route_wp));
-    let (plain_len, plain_crc) = (route_plain.len() as u32, crc32(&route_plain));
     let trip = trip_v2(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
-    let (trip_len, trip_crc) = (trip.len() as u32, crc32(&trip));
     let terrain = terrain_shard();
     let envelopes = visit_envelopes(&route_plain);
     let mut fixtures = vec![
@@ -681,21 +548,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("place-train-v15.bin", place_record()),
         ("landmark-section-v16.bin", landmarks::section()),
         ("peak-section-v17.bin", peaks::section()),
-        // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
-        ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc)),
-        // op=2 download request: type=7 rideList, id 0, len/crc unknown.
-        ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0)),
-        // op=3 abort of the active route upload.
-        ("transfer-abort.bin", transfer_control(3, 1, 0xFFFF, 0, 0)),
-        // The download announce (status msg 4): a route download (id 7 — the waypoint route in
-        // route-list.bin), its size + CRC filled.
-        ("status-download-announce.bin", status_download_announce(1, 7, len, crc)),
-        // Closing result: committed, assigned id 7, all bytes durable.
-        ("status-transfer-result.bin", status_transfer_result(7, 0, len)),
-        // Reject: a new-route upload (id 0xFFFF) refused at descriptor-open time
-        // because the catalog is full. status=6 storageFull, nothing committed.
-        ("status-transfer-storage-full.bin", status_transfer_result(0xFFFF, 6, 0)),
-        ("status-store-changed.bin", status_store_changed(1, 42)),
         // The answer to an accepted installFw: ok, no detail. Pins the four-byte layout.
         ("status-command-result.bin", status_command_result(3, 0, 0)),
         // The phone's clock stamp (cmd 5): 2026-07-09T12:00:00Z (unix 1783598400),
@@ -708,27 +560,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // still what a fielded bootloader and the device's own rollback snapshot look like, and the pair
         // is what pins the offset-compatibility guarantee across implementations.
         ("update-container-v2.bin", update_container_v2()),
-        (
-            "route-list.bin",
-            route_list(
-                &[
-                    route_list_entry(7, len, 2207, 76, 9, 2, ROUTE_NAME, crc),
-                    route_list_entry(8, plain_len, 2207, 76, 9, 0, ROUTE_NAME, plain_crc),
-                    route_list_entry(9, plain_len, 2207, 76, 9, 0, ROUTE_NAME, plain_crc),
-                ],
-                3,
-            ),
-        ),
-        // A trip (§7.7): "Alpen Traverse", 3 stages referencing route ids 7 and 8 (both stored in
-        // route-list.bin) plus one deliberately dangling full-width id that pins read-tolerance.
+        // A trip (§7.7): two ordinary route ids plus one wide id that pins read tolerance.
         ("trip-v2.bin", trip),
-        // The catalog for that one trip (§7.4): byte_len = the trip file; totals summed over the two
-        // resolvable stages only (2×2207 m, 2×76 m); stage_count = 3 as stored (incl. the dangling
-        // ref); trailing crc32 = the trip file's whole-object CRC-32. total = count (nothing dropped).
-        (
-            "trip-list.bin",
-            trip_list(&[trip_list_entry(TRIP_ID, trip_len, 2 * 2207, 2 * 76, 3, TRIP_NAME, trip_crc)], 1),
-        ),
     ];
     fixtures.extend(envelopes);
     fixtures

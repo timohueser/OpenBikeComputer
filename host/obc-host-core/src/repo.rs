@@ -4,9 +4,8 @@
 //! in behind the same shape. Storage internals stay in the concrete stores; these traits carry no
 //! `std`-vs-`no_std` assumptions of their own.
 //!
-//! The board deliberately does not implement these, because its `ObjectStore` path stays async and
-//! board-specific and it owns its own loop; the command and event semantics it shares are pinned by
-//! protocol tests instead.
+//! The board deliberately does not implement these because it owns its own async loop. Protocol
+//! tests pin the command and event semantics that both implementations share.
 
 use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinuation};
