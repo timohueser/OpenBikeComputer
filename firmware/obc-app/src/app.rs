@@ -2290,7 +2290,10 @@ impl App {
         let stack_changed = match &t {
             screen::Transition::None => false,
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
-            screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
+            screen::Transition::Push(_)
+            | screen::Transition::Replace(_)
+            | screen::Transition::Resume(_)
+            | screen::Transition::Root(_) => true,
         };
         if let screen::Transition::Push(Screen::PeakView(screen)) = &mut t {
             *screen = screen::PeakViewScreen::new(self.fresh_position());

@@ -135,6 +135,12 @@ pub enum Transition {
     Pop,
     /// Swap this screen for `screen` without growing the stack.
     Replace(Screen),
+    /// Land on the screen of `screen`'s kind already on the stack, dropping everything above it,
+    /// and [`Replace`](Transition::Replace) when the stack has none.
+    ///
+    /// It is the transition for a row on a sheet, because a sheet opens over anything, including
+    /// the screen its own row opens: a plain arrival there would add a slot every lap.
+    Resume(Screen),
     /// Truncate to the Home root and push `screen`, landing on a clean `[Home, screen]` from any
     /// depth rather than leaving stale screens buried under the new one.
     Root(Screen),
@@ -198,6 +204,10 @@ pub fn apply(stack: &mut Stack, t: Transition) {
                 *top = s;
             }
         }
+        Transition::Resume(s) => match stack.iter().rposition(|it| it.row() == s.row()) {
+            Some(i) => stack.truncate(i + 1),
+            None => apply(stack, Transition::Replace(s)),
+        },
         Transition::Root(s) => {
             stack.truncate(1); // keep the Home root
             let r = stack.push(s);
