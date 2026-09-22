@@ -116,7 +116,11 @@ pub(crate) static RIDE: Menu = Menu {
 
 pub(crate) static DISPLAY: Menu = Menu {
     title: Msg::DisplayTitle,
-    rows: &[value(Msg::DisplayBrightness, ContextValue::Brightness), value(Msg::DisplayIdle, ContextValue::IdleReturn)],
+    rows: &[
+        value(Msg::DisplayBrightness, ContextValue::Brightness),
+        value(Msg::DisplayTheme, ContextValue::Theme),
+        value(Msg::DisplayIdle, ContextValue::IdleReturn),
+    ],
 };
 
 pub(crate) static CONNECTIONS: Menu = Menu {

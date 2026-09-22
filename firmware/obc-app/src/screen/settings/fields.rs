@@ -134,13 +134,17 @@ impl StatFieldsScreen {
                 let area = tile_rect(slot, f.span(), f.rows());
                 let is_sel = i == self.selected;
                 let bg = if is_sel { AMBER } else { PARCHMENT_SHADE };
+                let caption_color = if is_sel { SUBTEXT_ON_ACCENT } else { SUBTEXT };
+                let value_color = if is_sel { ON_ACCENT } else { SUBTEXT };
                 if f.rows() > 1 {
-                    waypoint_panel_ghost(cv, area, rdt.language, bg);
+                    waypoint_panel_ghost(cv, area, rdt.language, bg, caption_color);
                 } else {
                     let mut cell = f.cell(&rdt);
                     ghost_value(*f, &mut cell, rdt.language);
                     match f.category() {
-                        Some(cat) => category_tile(cv, area, cat, &cell.caption, &cell.value, bg, SUBTEXT),
+                        Some(cat) => {
+                            category_tile(cv, area, cat, &cell.caption, &cell.value, bg, caption_color, value_color)
+                        }
                         None => tile(
                             cv,
                             area,
@@ -150,7 +154,8 @@ impl StatFieldsScreen {
                             cell.arrow,
                             cell.value_align,
                             bg,
-                            SUBTEXT,
+                            caption_color,
+                            value_color,
                         ),
                     }
                 }
@@ -176,11 +181,12 @@ impl StatFieldsScreen {
                 Point::new(x + 5, y + ((row_h - 48) / 2).max(4)),
                 Font::Label,
                 TextAlign::Left,
-                SUBTEXT,
+                if is_sel { SUBTEXT_ON_ACCENT } else { SUBTEXT },
             );
             let (px, py) = (x + col_w / 2, y + row_h / 2 + 8);
-            cv.hline(px - 8, py, 17, INK);
-            cv.vline(px, py - 8, 17, 2, INK);
+            let ink = if is_sel { ON_ACCENT } else { INK };
+            cv.hline(px - 8, py, 17, ink);
+            cv.vline(px, py - 8, 17, 2, ink);
         }
 
         delete_footer(cv, w, h, self.selected < len, rx.hold_progress);
@@ -277,11 +283,11 @@ fn ghost_value(
 
 /// Draw the arrows that show a grabbed tile can be moved.
 fn move_arrows(cv: &mut impl Surface, area: Rectangle) {
-    use crate::screen::palette::INK;
+    use crate::screen::palette::ON_ACCENT;
     let x = area.top_left.x + area.size.width as i32 - 16;
     let midy = area.top_left.y + area.size.height as i32 / 2;
-    cv.triangle(Point::new(x - 7, midy - 3), Point::new(x + 7, midy - 3), Point::new(x, midy - 12), INK);
-    cv.triangle(Point::new(x - 7, midy + 3), Point::new(x + 7, midy + 3), Point::new(x, midy + 12), INK);
+    cv.triangle(Point::new(x - 7, midy - 3), Point::new(x + 7, midy - 3), Point::new(x, midy - 12), ON_ACCENT);
+    cv.triangle(Point::new(x - 7, midy + 3), Point::new(x + 7, midy + 3), Point::new(x, midy + 12), ON_ACCENT);
 }
 
 #[cfg(test)]

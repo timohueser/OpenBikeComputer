@@ -156,6 +156,7 @@ impl PoiDetailScreen {
                 (fix.lon, fix.lat),
                 (self.poi.lon, self.poi.lat),
                 heading,
+                WOOD,
             );
             dist_x = x + 2 * arrow_r + 8;
         }

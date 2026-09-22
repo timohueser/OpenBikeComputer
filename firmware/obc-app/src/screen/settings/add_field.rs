@@ -66,7 +66,7 @@ impl AddFieldScreen {
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let f = avail[row.index];
-            let badge_color = if row.selected { INK } else { SUBTEXT };
+            let badge_color = if row.selected { ON_ACCENT } else { SUBTEXT };
             match f.category() {
                 // A category field shows its own icon in a left gutter, and the row name stays the
                 // plain category word. The icon replaces the span badge, because all these rows are
@@ -88,7 +88,7 @@ impl AddFieldScreen {
                         (a.top_left.y, a.size.height as i32),
                         Font::Body,
                         TextAlign::Left,
-                        INK,
+                        if row.selected { ON_ACCENT } else { INK },
                     );
                 }
                 None => {
@@ -99,7 +99,7 @@ impl AddFieldScreen {
                         (a.top_left.y, a.size.height as i32),
                         Font::Body,
                         TextAlign::Left,
-                        INK,
+                        if row.selected { ON_ACCENT } else { INK },
                     );
                     super::span_badge(cv, a, f.span(), badge_color);
                 }

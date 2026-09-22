@@ -127,6 +127,7 @@ impl Runtime {
         reader: Option<&Reader<'_>>,
         target: &mut D,
         color: F,
+        policy_enabled: Option<&core::cell::Cell<bool>>,
         language: crate::settings::Language,
     ) where
         D: DrawTarget,
@@ -158,6 +159,9 @@ impl Runtime {
                 };
                 self.decoder
                     .step(source, |offset, bytes| {
+                        if let Some(enabled) = policy_enabled {
+                            enabled.set(false);
+                        }
                         let _ = target.draw_iter(bytes.iter().enumerate().map(|(i, &pixel)| {
                             let n = offset + i;
                             let rgb = Rgb565::from(Rgb888::new(
@@ -170,6 +174,9 @@ impl Runtime {
                                 color(RawU16::from(rgb).into_inner()),
                             )
                         }));
+                        if let Some(enabled) = policy_enabled {
+                            enabled.set(true);
+                        }
                     })
                     .map(|progress| match progress {
                         Progress::Pending => Status::Pending,

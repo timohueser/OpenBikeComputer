@@ -192,17 +192,17 @@ impl EasierScreen {
     }
 }
 fn header(cv: &mut impl Surface, title: &str, w: i32, count: Option<(u8, u8)>) {
-    cv.round(rect(4, 4, w - 8, 34), 6, INK);
-    cv.text(title, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+    cv.round(rect(4, 4, w - 8, 34), 6, HUD);
+    cv.text(title, Point::new(12, 9), Font::Label, TextAlign::Left, BAR_TEXT);
     if let Some((index, count)) = count {
         let mut s = heapless::String::<8>::new();
         let _ = write!(s, "{index}/{count}");
-        cv.text(&s, Point::new(w - 12, 9), Font::Label, TextAlign::Right, PARCHMENT);
+        cv.text(&s, Point::new(w - 12, 9), Font::Label, TextAlign::Right, BAR_TEXT);
     }
 }
 fn button(cv: &mut impl Surface, text: &str) {
     cv.round(rect(12, 280, 216, 32), 6, AMBER);
-    cv.text(text, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
+    cv.text(text, Point::new(120, 282), Font::Body, TextAlign::Center, ON_ACCENT);
 }
 fn fit(b: BBox, w: i32, h: i32) -> Viewport {
     let lat = b.min_lat + (b.max_lat - b.min_lat) / 2;
@@ -276,12 +276,12 @@ fn benefit(
     let mut top = area.top_left.y + (area.size.height as i32 - content_height) / 2;
     cv.round(area, 6, AMBER);
     if let Some(title) = title {
-        cv.text_vcentered(title, center, (top, label_height), Font::Label, TextAlign::Center, INK);
+        cv.text_vcentered(title, center, (top, label_height), Font::Label, TextAlign::Center, ON_ACCENT);
         top += heading_height;
     }
     let row_width = 20 + 8 + obc_render::text::text_width(&text, Font::Display) as i32;
     let left = center - row_width / 2;
-    cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, INK);
+    cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, ON_ACCENT);
     cv.text_vcentered(
         if new > old { rx.t(Msg::AssistantMoreThanNow) } else { label },
         center,

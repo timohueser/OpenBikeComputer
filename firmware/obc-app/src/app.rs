@@ -2767,7 +2767,12 @@ impl App {
         let covered = ui.base_frozen();
         let recessed = covered && ui.stack.get(base).is_none_or(|s| s.caps().recess);
         let recess = core::cell::Cell::new(recessed);
-        let policy = |c: u16| color_fn(if recess.get() { screen::dim_color(c) } else { c });
+        let theme = settings.theme;
+        let theme_policy_enabled = core::cell::Cell::new(true);
+        let policy = |c: u16| {
+            let themed = if theme_policy_enabled.get() { screen::palette::resolve(theme, c) } else { c };
+            color_fn(if recess.get() { screen::dim_color(theme, themed) } else { themed })
+        };
         // A drawer's render key already shadows the base's, so no fact the base draws can move
         // while a sheet is up: its rows on the panel are still right. On a resident target the
         // base's draw is therefore skipped, and an open step costs the sheet and nothing else.
@@ -2779,9 +2784,12 @@ impl App {
         // The one Canvas of the frame: every screen draws through it, and only the base screen
         // writes `rx.stats`. A drained region clip makes it reject whole out-of-region
         // primitives, which the target's pixel clip cannot do.
-        let mut cv = Canvas::new(target, &policy);
+        let mut cv = Canvas::with_policy_switch(target, &policy, &theme_policy_enabled);
         cv.set_clip(render_clip);
         for i in base..ui.stack.len() {
+            // Home is an intentionally dark screensaver. Its own layer stays identical in both
+            // themes, while a drawer drawn above it uses the selected theme.
+            cv.set_color_policy_enabled(!matches!(ui.stack[i], Screen::Home(_)));
             if !(i == base && sheet_only) {
                 if let Screen::LandmarkPhoto(page) = &mut ui.stack[i] {
                     page.invalidate(covered);
@@ -2791,9 +2799,9 @@ impl App {
             if i == base {
                 if let (Some(work), Screen::LandmarkPhoto(page)) = (photo.as_mut(), &mut ui.stack[i]) {
                     if !covered || page.covered_rebuild {
-                        let (target, color) = cv.split();
+                        let (target, color, policy_enabled) = cv.split_with_policy_switch();
                         for _ in 0..work.steps {
-                            work.runtime.step(page, reader, target, color, rx.settings.language);
+                            work.runtime.step(page, reader, target, color, policy_enabled, rx.settings.language);
                             if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
                                 page.covered_rebuild = false;
                                 break;
@@ -2835,7 +2843,8 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.ui.input.render_overlay(target, w, h, &color_fn);
+        let themed = |color| color_fn(crate::screen::palette::resolve(self.settings.theme, color));
+        self.ui.input.render_overlay(target, w, h, themed);
         self.render_planning_banner(target, w, h, color_fn);
     }
 
@@ -2847,9 +2856,10 @@ impl App {
     {
         if let Some(message) = self.planning_banner() {
             let text = crate::i18n::t(message, self.settings.language);
+            let themed = |color| color_fn(crate::screen::palette::resolve(self.settings.theme, color));
             crate::screen::vocab::chrome::recalculating_banner(
                 target,
-                &color_fn,
+                &themed,
                 w,
                 h,
                 text,

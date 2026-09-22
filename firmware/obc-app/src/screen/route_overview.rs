@@ -406,12 +406,12 @@ pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &s
     let bar = rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H);
     cv.round(bar, 8, AMBER);
     let tx = w / 2 + 8;
-    cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
+    cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, ON_ACCENT);
     // The play wedge sits left of the centred label, measured from its real half-width, so a
     // longer translation cannot run into it.
     let px = tx - label.chars().count() as i32 * Font::Body.char_width() as i32 / 2 - 16;
     let mid = by + BUTTON_H / 2;
-    cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
+    cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), ON_ACCENT);
 }
 
 #[cfg(test)]

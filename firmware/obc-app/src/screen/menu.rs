@@ -241,7 +241,7 @@ fn draw_compass(
             cv.disc(sc, 24, RULE);
             cv.disc(sc, 21, PARCHMENT);
         }
-        let (ink, bg) = if is_sel { (INK, AMBER) } else { (SUBTEXT, PARCHMENT) };
+        let (ink, bg) = if is_sel { (ON_ACCENT, AMBER) } else { (SUBTEXT, PARCHMENT) };
         draw_icon(cv, item, sc, 1.2, ink, bg);
     }
 
