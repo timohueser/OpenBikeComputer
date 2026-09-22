@@ -40,7 +40,6 @@ impl Preparer {
             None,
             target,
             reader,
-            reader,
             None,
             None,
             240.0,
@@ -59,7 +58,6 @@ impl Preparer {
         app.render_scene_map_photo_timed(
             None,
             target,
-            reader,
             reader,
             None,
             None,
@@ -288,7 +286,6 @@ mod tests {
         app.render_scene_map_photo_timed(
             None,
             &mut retained,
-            Some(&reader),
             Some(&reader),
             None,
             None,

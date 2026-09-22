@@ -327,6 +327,20 @@ pub fn wpts_from_obcr(bytes: &[u8]) -> Waypoints {
     wpts
 }
 
+/// A stored ride's header facts, named and otherwise nominal: enough for a list row and its detail
+/// page. The one builder every ride-list test seeds from.
+pub fn ride_summary(name: &str) -> obc_app::RideSummary {
+    obc_app::RideSummary {
+        name: heapless::String::try_from(name).unwrap(),
+        start_time: 1_720_000_000,
+        distance_m: 1_000,
+        moving_time_s: 600,
+        climb_m: 10,
+        synced: false,
+        synced_at_utc: 0,
+    }
+}
+
 /// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised.
 pub fn wpts(items: &[(u32, &str)]) -> Waypoints {
     let full: Vec<_> = items.iter().map(|&(d, n)| (d, n, None, 0)).collect();

@@ -74,11 +74,10 @@ impl LandmarksScreen {
         }
         Transition::None
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         if rx.landmarks.reading {
             reading(cv, rx, false);
@@ -172,11 +171,10 @@ impl LandmarkSourcesScreen {
         }
         Transition::None
     }
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         reading(cv, rx, true);
     }
@@ -201,11 +199,10 @@ pub(crate) fn detail(state: &crate::landmarks::Landmarks) -> Option<obc_reader::
         distance_m: state.selected()?.key.distance_m,
     })
 }
-pub(super) fn reading<D, F, S>(cv: &mut Canvas<D, F>, rx: &RenderFrame<'_, S>, sources: bool)
+pub(super) fn reading<D, F>(cv: &mut Canvas<D, F>, rx: &RenderFrame<'_, '_>, sources: bool)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
-    S: obc_map_scene::MapScene,
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;

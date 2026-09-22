@@ -242,11 +242,10 @@ impl DetourScreen {
         self.prepared = Some(PreparedDetour { target_m, candidate: (candidate.lon, candidate.lat), bounds });
     }
 
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         let selected = self.prepared.filter(|_| self.available(rx.navigation, rx.recording, rx.state.has_nav_graph));
         let vp = selected.map_or_else(
@@ -432,11 +431,10 @@ impl DetourPreviewScreen {
             Some(PreparedDetour { target_m: self.target_m, candidate: (candidate.lon, candidate.lat), bounds });
     }
 
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         let vp = self
             .prepared

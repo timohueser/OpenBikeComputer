@@ -199,11 +199,10 @@ impl MapScreen {
         }
     }
 
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
     {
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
         let panning = rx.state.pan.is_some();
@@ -319,9 +318,9 @@ pub(crate) struct DetourMapOverlay<'a> {
 /// `chrome` is what this screen will ink over the map — its header, its bottom panel or pill, and
 /// the scale bar ([`ScaleBar::ink`]) — so a settlement name keeps off it. A screen that draws no
 /// chrome passes an empty slice and the names get the whole panel.
-pub(crate) fn draw_map_scene<D, F, S>(
+pub(crate) fn draw_map_scene<D, F>(
     cv: &mut Canvas<D, F>,
-    rx: &mut RenderFrame<'_, S>,
+    rx: &mut RenderFrame<'_, '_>,
     vp: &Viewport,
     skip: Option<DetourMapOverlay<'_>>,
     chrome: &[Rectangle],
@@ -329,7 +328,6 @@ pub(crate) fn draw_map_scene<D, F, S>(
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
-    S: obc_map_scene::MapScene,
 {
     let scene = rx.scene?;
     let rx = &mut rx.render;
@@ -398,7 +396,7 @@ where
     crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
 
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
-    let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color() };
+    let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
         scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
