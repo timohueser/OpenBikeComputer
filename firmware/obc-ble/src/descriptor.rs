@@ -202,17 +202,6 @@ impl TransferStatus {
         None
     }
 
-    /// Refuse a `fwImage` upload larger than the update-slot ceiling, before any bytes stream.
-    /// `total_len` is the whole OBCU container, so the caller passes a container-sized ceiling; the
-    /// constant stays out of this crate so the wire codec never links the DFU crate.
-    pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
-        if total_len > max_len {
-            Some(Self::Error)
-        } else {
-            None
-        }
-    }
-
     /// Refuse a map upload before any byte streams, because a map that fails at byte 300,000,000
     /// has cost the rider minutes. A map is new-only: the device never replaces a stored map in
     /// place, so a named id gets `notFound`. `min_len` is the OBCM header length, `headroom` the
