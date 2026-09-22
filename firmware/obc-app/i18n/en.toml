@@ -73,14 +73,10 @@ both = "Both"
 waypoints = "Waypoints"
 map_pois = "Map POIs"
 
-# --- Units: the `Units` enum name + the Units settings screen ---
+# --- Units: the `Units` enum names ---
 [units]
 metric = "Metric"
 imperial = "Imperial"
-title = "UNITS"
-distance = "Distance"
-speed = "Speed"
-elevation = "Elevation"
 
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
@@ -223,31 +219,24 @@ system = "System"
 [datetime]
 title = "DATE & TIME"
 gps_fix = "GPS fix"
-searching = "Searching for fix"
+searching = "Looking for fix"
 local_time = "Local time"
-offset = "Offset"
+offset = "UTC offset"
 utc = "UTC "
 
 # --- Ride settings ---
 [ride]
 title = "RIDE"
 fields = "Data fields"
-fields_sub = "panels & order"
-pages = "Pages"
-pages_sub = "auto-flip"
-climb = "Climb"
-# "panel", not "climb panel": the mode value + its ◄ cue share this sub-caption line (owner
-# review round 1), and the longer caption can't clear the 7-char "Manuell"/"Desact." values
-# at 240 px - de/fr/es already say just "panel".
-climb_sub = "panel"
+pages = "Auto-flip"
+climb = "Climb panel"
 waypoints = "Waypoints"
-waypoints_sub = "chip"
 
 # --- Display settings screen ---
 [display]
 title = "DISPLAY"
-idle = "Idle"
-idle_sub = "timeout"
+idle = "Idle timeout"
+brightness = "Brightness"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
@@ -268,29 +257,23 @@ contours = "Contours"
 # --- Power settings screen ---
 [power]
 title = "POWER"
-gps_fix = "GPS Fix"
-gps_fix_sub = "interval"
+gps_fix = "GPS interval"
 power_save = "Power save"
-power_save_sub = "low power"
 
-# --- Connections settings menu (Phone / Sensors) ---
+# --- Connections page: the Bluetooth switch, the phone status and the sensors door ---
 [connections]
 title = "CONNECTIONS"
 phone = "Phone"
 sensors = "Sensors"
+not_paired = "Not paired"
+connected = "connected"
 
-# --- Bluetooth settings screen ---
+# --- The phone link: its status words and the Forget action ---
 [bluetooth]
 removing = "Removing..."
 remove_failed = "Could not remove"
 restart = "Restart to finish"
-title = "BLUETOOTH"
 radio = "Bluetooth"
-radio_sub = "radio"
-status = "Status"
-paired = "Paired"
-yes = "yes"
-no = "no"
 forget = "Forget phone"
 off = "Off"
 connected = "Connected"
@@ -512,7 +495,6 @@ datetime = "Date & Time"
 language = "Language"
 update = "Firmware"
 about = "About"
-reset = "Reset"
 
 # --- About page (issue #1149): the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---

@@ -207,8 +207,8 @@ pub(crate) fn duration_hms(secs: f32) -> heapless::String<8> {
     let _ = write!(s, "{}:{:02}", total_min / 60, total_min % 60);
     s
 }
-/// The 12 uppercase month-abbreviation catalog keys, in calendar order. The Date & Time stepper
-/// has its own mixed-case table.
+/// The 12 uppercase month-abbreviation catalog keys, in calendar order. The settings pages use
+/// the mixed-case table in `settings::month_name`.
 pub(crate) const DATE_MONTHS: [Msg; 12] = [
     Msg::DateJan,
     Msg::DateFeb,

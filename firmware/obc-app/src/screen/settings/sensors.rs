@@ -7,23 +7,17 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::prelude::Point;
-use obc_render::{
-    text::{Font, TextAlign},
-    Surface,
-};
+use obc_render::Surface;
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{empty_state, title_frame, LIST_TOP};
 use crate::screen::vocab::fmt::write_ble_address;
-use crate::screen::vocab::rows::{row_cursor, row_rect};
-use crate::screen::{palette, Ctx, Render, Screen, Transition};
+use crate::screen::vocab::rows::{self, row_rect, Line2, ROW_GAP, ROW_TWO};
+use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::sensors::{SensorPhase, SensorStatus};
 use crate::settings::{Language, SavedSensor, SENSOR_SLOTS};
 use crate::Msg;
 
-/// Two-line row height. It matches the Bluetooth toggle rows.
-const ROW_H: i32 = 58;
 /// The label key for a slot. The slot index is the sensor kind.
 fn kind_msg(slot: usize) -> Msg {
     match slot {
@@ -74,18 +68,17 @@ impl SensorsScreen {
         title_frame(cv, w, h, rx.t(Msg::SensorsTitle), "");
 
         for slot in 0..SENSOR_SLOTS {
-            let y = LIST_TOP + 8 + slot as i32 * ROW_H;
-            let row = row_rect(y, w, ROW_H);
-            row_cursor(cv, row, slot == self.selected, false);
+            let y = LIST_TOP + slot as i32 * (ROW_TWO + ROW_GAP);
+            let row = row_rect(y, w, ROW_TWO);
             let present = rx.settings.saved_sensors[slot].present;
             let status = rx.sensor_status.get(slot).copied().unwrap_or_default();
             let mut sub = heapless::String::<24>::new();
             status_line(&mut sub, present, status, rx.settings.language);
-            super::row_label(cv, row, rx.t(kind_msg(slot)), Some(&sub));
+            rows::nav_row(cv, row, rx.t(kind_msg(slot)), Some(Line2::text(&sub)), slot == self.selected, true, true);
         }
 
         if self.selection_is_guarded(rx.settings) {
-            super::forget_footer(cv, w, h, rx.t(Msg::SensorsForget), true, rx.hold_progress);
+            super::forget_footer(cv, w, h, rx.t(Msg::SensorsForget), rx.hold_progress);
         }
     }
 }
@@ -104,7 +97,7 @@ fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStat
         SensorPhase::Connected => {
             let _ = buf.push_str(crate::t(Msg::SensorsConnected, lang));
             if let Some(pct) = status.battery {
-                let _ = write!(buf, " \u{00b7} {pct}%");
+                let _ = write!(buf, " {pct}%");
             }
         }
         // A stale snapshot (`NotSet`) reads the same as `Searching`.
@@ -167,7 +160,6 @@ impl SensorScanScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(kind_msg(self.slot as usize)), "");
 
@@ -179,20 +171,16 @@ impl SensorScanScreen {
 
         let selected = self.selected.min(len - 1);
         for (i, hit) in self.hits(rx.sensor_scan_hits).enumerate() {
-            let y = LIST_TOP + 8 + i as i32 * ROW_H;
-            let row = row_rect(y, w, ROW_H);
-            row_cursor(cv, row, i == selected, false);
-            let x = row.top_left.x + 10;
+            let y = LIST_TOP + i as i32 * (ROW_TWO + ROW_GAP);
+            let row = row_rect(y, w, ROW_TWO);
+            let mut addr = heapless::String::<24>::new();
             if hit.name.is_empty() {
-                let mut addr = heapless::String::<24>::new();
                 write_ble_address(&mut addr, &hit.addr);
-                cv.text(&addr, Point::new(x, row.top_left.y + 5), Font::Body, TextAlign::Left, INK);
-            } else {
-                cv.text(&hit.name, Point::new(x, row.top_left.y + 5), Font::Body, TextAlign::Left, INK);
             }
+            let name = if hit.name.is_empty() { addr.as_str() } else { hit.name.as_str() };
             let mut rssi = heapless::String::<12>::new();
             let _ = write!(rssi, "{} dBm", hit.rssi);
-            cv.text(&rssi, Point::new(x, row.top_left.y + 30), Font::Label, TextAlign::Left, SUBTEXT);
+            rows::nav_row(cv, row, name, Some(Line2::text(&rssi)), i == selected, true, false);
         }
     }
 }
@@ -344,7 +332,7 @@ mod tests {
             SensorStatus { phase: SensorPhase::Connected, battery: Some(78), last_value_ms: 0 },
             en,
         );
-        assert_eq!(b.as_str(), "Connected \u{00b7} 78%");
+        assert_eq!(b.as_str(), "Connected 78%");
 
         b.clear();
         status_line(&mut b, true, SensorStatus { phase: SensorPhase::Connected, battery: None, last_value_ms: 0 }, en);

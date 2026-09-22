@@ -66,18 +66,17 @@ fn a_link_change_repaints_the_menu_title_bar() {
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "an unchanged status doesn't re-dirty the Menu");
 }
 
-/// The Bluetooth screen draws the status line and Paired row, so every seam change repaints it,
+/// The Connections page draws the phone's status line, so every seam change repaints it,
 /// including transitions the indicator ignores (Advertising ↔ Off, a paired flip).
 #[test]
-fn a_link_change_repaints_the_bluetooth_screen() {
+fn a_link_change_repaints_the_connections_page() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
     app.apply_gesture(obc_app::Gesture::Step(-1)); // compass: one ccw step to Settings
     app.apply_gesture(obc_app::Gesture::Press); // → Settings list
     app.apply_gesture(obc_app::Gesture::Step(2)); // → Connections row (Ride, Display, Connections)
-    app.apply_gesture(obc_app::Gesture::Press); // → Connections menu (Phone is the first row)
-    app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen (opened via the Phone row)
-    assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");
+    app.apply_gesture(obc_app::Gesture::Press); // → Connections page (the phone's status is a row of it)
+    assert!(matches!(app.top_screen(), obc_app::Screen::Connections(_)), "navigated to the Connections page");
     let _ = app.take_dirty();
 
     app.set_ble_status(connected());
