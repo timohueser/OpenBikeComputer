@@ -33,6 +33,7 @@
     "host": [
       "obc-bake",
       "obc-bench",
+      "obc-companion-core",
       "obc-dem",
       "obc-desktop",
       "obc-file-source",
