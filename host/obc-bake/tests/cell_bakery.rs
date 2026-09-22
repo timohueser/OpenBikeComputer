@@ -43,6 +43,9 @@ use obc_pack::poi::Poi;
 use obc_pack::progress::Progress;
 
 const SNAPSHOT: &str = "2026-07-28";
+/// The two licences the fixture's landmark artifact is under: one article, one photo.
+const ARTICLE_LICENSE: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
+const PHOTO_LICENSE: &str = "https://creativecommons.org/licenses/by/2.0/";
 const BASE_URL: &str = "https://maps.example/cells";
 const GENERATED_AT: &str = "2026-07-30T00:00:00Z";
 
@@ -324,10 +327,21 @@ impl Fixture {
         .expect("the run completes")
     }
 
-    /// Put a region's compiled landmark content into the tree, where `obc-bake landmarks` puts it.
+    /// Put a region's compiled landmark artifact into the tree, where `obc-bake landmarks` puts
+    /// it: one record with one photo, the content document, and the declaration beside them.
     fn write_landmarks(&self, region_id: &str, sources: &str) {
         let dir = self.tree.join("landmarks").join(region_id);
         std::fs::create_dir_all(&dir).expect("landmark artifact directory");
+        let pixels = vec![7u8; obc_formats::obcm::landmarks::PHOTO_PIXELS];
+        let photo_sha = obc_bake::hash::bytes(&pixels);
+        std::fs::write(dir.join("Q1.rgb222"), &pixels).expect("landmark photo");
+        let attribution = |url: &str| obc_pack::landmarks::Attribution {
+            source_url: format!("https://example.test/{region_id}"),
+            revision: "1".into(),
+            license_url: url.into(),
+            original_notices: String::new(),
+            display_pages: vec!["credit".into()],
+        };
         let content = obc_pack::landmarks::Content {
             schema: 2,
             input_sha256: sources.into(),
@@ -335,12 +349,50 @@ impl Fixture {
             category_policy_sha256: "categories".into(),
             languages: vec!["en".into(), "de".into(), "fr".into(), "es".into()],
             source_coverage: serde_json::json!({}),
-            counts: Default::default(),
+            counts: obc_pack::landmarks::Counts { images: 1, ..Default::default() },
             candidate_qids: vec![],
-            records: vec![],
+            records: vec![obc_pack::landmarks::Record {
+                qid: "Q1".into(),
+                name: "A place".into(),
+                category: 1,
+                latitude: 47.0,
+                longitude: 7.0,
+                default_language: "en".into(),
+                fallback_sources: vec![],
+                variants: vec![obc_pack::landmarks::TextVariant {
+                    language: "en".into(),
+                    text_pages: vec!["a page".into()],
+                    attribution: attribution(ARTICLE_LICENSE),
+                }],
+                photo: Some(obc_pack::landmarks::Photo {
+                    path: "Q1.rgb222".into(),
+                    sha256: photo_sha,
+                    bytes: pixels.len(),
+                    attribution: attribution(PHOTO_LICENSE),
+                }),
+            }],
             omissions: vec![],
         };
         std::fs::write(dir.join("content.json"), serde_json::to_vec(&content).unwrap()).expect("landmark content");
+        let (artifact_sha256, _) = obc_pack::landmarks::artifact_digest(&dir).expect("artifact digest");
+        std::fs::write(
+            dir.join("landmarks.json"),
+            serde_json::json!({
+                "region_id": region_id,
+                "recipe_version": obc_bake::landmarks::LANDMARK_RECIPE_VERSION,
+                "fingerprint": sources,
+                "policy_sha256": obc_bake::hash::bytes(obc_pack::landmarks::POLICY_BYTES),
+                "boundary_sha256": "boundary",
+                "language_sha256": obc_bake::hash::bytes(obc_pack::landmarks::LANGUAGE_BYTES),
+                "candidates_sha256": "candidates",
+                "languages": ["en", "de", "fr", "es"],
+                "compiler_policy_sha256": "compiler",
+                "artifact_sha256": artifact_sha256,
+                "built_at": GENERATED_AT,
+            })
+            .to_string(),
+        )
+        .expect("landmark declaration");
     }
 
     /// Bake the terrain artifact class into the same tree, at `revision`.
@@ -447,6 +499,77 @@ fn intersecting_landmark_artifacts_reach_the_cut_and_key_their_own_cells() {
     assert_eq!(status[&format!("{WEST_CORE} [coarse]")], CellStatus::Cut);
     assert_eq!(status[&format!("{SEAM_CELL} [coarse]")], CellStatus::Cut);
     assert_eq!(status[&format!("{EAST_CORE} [coarse]")], CellStatus::Unchanged, "east is out of that region's reach");
+}
+
+/// The landmark class through the catalog, the publish plan, and verify.
+///
+/// The three states an operator can be in: the artifact is the one the cells were cut from, a file
+/// beside the content document moved, and the artifact is gone. Only the first may publish.
+#[test]
+fn the_landmark_class_is_published_credited_and_verified() {
+    let f = fixture_dirs("landmark-publish");
+    f.write_landmarks("europe/west", "west sources");
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    let generated = f.catalog();
+
+    let landmarks = generated.root.landmarks.as_ref().expect("the catalog records the class");
+    assert_eq!(landmarks.attribution, obc_pack::landmarks::ATTRIBUTION, "the credit is the compiler's, not retyped");
+    let artifact = &landmarks.artifacts[0];
+    assert_eq!((artifact.region_id.as_str(), artifact.records, artifact.photos), ("europe/west", 1, 1));
+    assert_eq!(artifact.licenses, vec![ARTICLE_LICENSE.to_string(), PHOTO_LICENSE.to_string()]);
+    assert_eq!(artifact.url, format!("{BASE_URL}/landmarks/europe/west/content.json"));
+    assert_eq!(artifact.languages, ["en", "de", "fr", "es"]);
+
+    // The licence obligation reaches the document a person reads.
+    let license = obc_pack::catalog::license_txt(&generated.root);
+    assert!(license.contains(obc_pack::landmarks::ATTRIBUTION), "{license}");
+    assert!(license.contains(PHOTO_LICENSE), "every licence the artifact uses:\n{license}");
+
+    // Every file of the artifact is published, on a stable key: nothing pins them.
+    let keys: Vec<String> =
+        obc_bake::publish::plan(&f.tree, &generated).expect("plan").into_iter().map(|o| o.key).collect();
+    for want in [
+        "landmarks/europe/west/content.json",
+        "landmarks/europe/west/landmarks.json",
+        "landmarks/europe/west/Q1.rgb222",
+    ] {
+        assert!(keys.contains(&want.to_string()), "{want} is not in the plan: {keys:?}");
+    }
+
+    assert!(obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).unwrap().ok());
+
+    // An artifact compiled under an older recipe: the bytes are intact, but they are not what this
+    // build would compile.
+    let declaration = f.tree.join("landmarks/europe/west/landmarks.json");
+    let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&declaration).unwrap()).unwrap();
+    doc["recipe_version"] = serde_json::json!(obc_bake::landmarks::LANDMARK_RECIPE_VERSION - 1);
+    std::fs::write(&declaration, doc.to_string()).unwrap();
+    let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
+    assert!(!report.ok());
+    assert!(report.problems.iter().any(|p| p.contains("obc bake landmarks europe/west")), "{:?}", report.problems);
+    f.write_landmarks("europe/west", "west sources");
+
+    // A published artifact must say what it was compiled from, although a cut reads a directory
+    // that does not.
+    std::fs::remove_file(&declaration).unwrap();
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let error = obc_pack::catalog::generate(&f.tree, &opts).expect_err("no declaration, no publication");
+    assert!(error.contains("MUST declare what it was compiled from"), "{error}");
+    f.write_landmarks("europe/west", "west sources");
+    f.catalog();
+
+    // A photo that changed after the compile: the cells carry the old pixels, so the artifact is
+    // not the one they were cut from.
+    let photo = f.tree.join("landmarks/europe/west/Q1.rgb222");
+    std::fs::write(&photo, vec![9u8; obc_formats::obcm::landmarks::PHOTO_PIXELS]).unwrap();
+    let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
+    assert!(!report.ok());
+    assert!(report.problems.iter().any(|p| p.contains("lost, renamed or replaced")), "{:?}", report.problems);
+
+    // And an artifact the catalog publishes but the tree no longer holds.
+    std::fs::remove_dir_all(f.tree.join("landmarks/europe/west")).unwrap();
+    let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
+    assert!(report.problems.iter().any(|p| p.contains("landmarks/europe/west/content.json")), "{:?}", report.problems);
 }
 
 /// The fixture's terrain pairing. `2^19 / 2^15` makes a cell exactly one tile — a 512-byte block

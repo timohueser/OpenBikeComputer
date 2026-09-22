@@ -63,6 +63,17 @@
         }
       ]
     },
+    "landmarks": {
+      "description": "The landmark artifact class, when the tree holds one (§14). Absent is a complete, valid catalog. Nothing here is a download: the cells already carry the landmark sections cut from these artifacts, so the block is the provenance and the licence record behind that content.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LandmarkEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "network_terrain_revision": {
       "description": "**The one coupling between the two revision tracks** (§13.4). Network-band cells are baked sampling OBCT, so their `Ascent M` values are a function of a particular terrain revision; this records which one. `None` for a terrain-less bake, whose ascents are all zero and depend on nothing. It is at the root rather than in [`SchemaEntry`] on purpose: the schema is the identity of the OBCM store and must not acquire a terrain field, or a terrain re-bake would look like a schema change to every consumer that compares schemas.",
       "type": [
@@ -880,6 +891,90 @@
         "bytes",
         "sha256",
         "url"
+      ]
+    },
+    "LandmarkEntry": {
+      "description": "The catalog's landmark block: the class's credit, and one entry per compiled region (`OBCC_Spec.md` §14).",
+      "type": "object",
+      "properties": {
+        "attribution": {
+          "description": "The class's required credit, verbatim, for the same reason the terrain block carries one: a consumer that shows landmark content reads the credit from the catalog rather than hard-coding it. The producer stamps `obc_pack::landmarks::ATTRIBUTION` here.",
+          "type": "string"
+        },
+        "artifacts": {
+          "description": "One per region with a compiled artifact, sorted by `region_id`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LandmarkArtifactEntry"
+          }
+        }
+      },
+      "required": [
+        "attribution",
+        "artifacts"
+      ]
+    },
+    "LandmarkArtifactEntry": {
+      "description": "One region's compiled landmark artifact: `landmarks/<region_id>/`. No `known_empty` and no per-region footprint, unlike terrain: a region with no artifact simply has no entry, and no consumer prices or fetches one.",
+      "type": "object",
+      "properties": {
+        "region_id": {
+          "description": "The region whose boundary and extract the artifact was compiled from. It is the artifact's path under `landmarks/` as well.",
+          "type": "string"
+        },
+        "languages": {
+          "description": "The article languages the artifact stores.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "records": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "photos": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "description": "Every file of the artifact, `url`'s document and the photos beside it.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "description": "One digest over those files, name and content per file. It is what the cell bake keys on, so a lost or swapped photo moves it.",
+          "type": "string"
+        },
+        "licenses": {
+          "description": "Every licence the artifact's texts and photos are under, sorted and distinct. The per-record notices stay in the artifact; these are what the store as a whole owes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "url": {
+          "description": "The artifact's content document. A stable key: nothing pins it, because nothing downloads it.",
+          "type": "string"
+        },
+        "built_at": {
+          "description": "RFC 3339 UTC, recorded by the landmark stage.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region_id",
+        "languages",
+        "records",
+        "photos",
+        "bytes",
+        "sha256",
+        "licenses",
+        "url",
+        "built_at"
       ]
     },
     "CellEntry": {

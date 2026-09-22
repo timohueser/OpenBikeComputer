@@ -153,6 +153,9 @@ pub struct CellTreeReport {
     /// The terrain artifact class, counted separately because it is priced separately.
     pub terrain_cells: usize,
     pub terrain_bytes: u64,
+    /// The landmark artifact class: one artifact per region that has one.
+    pub landmark_artifacts: usize,
+    pub landmark_bytes: u64,
     /// Every failed check, in the order they were made. Empty means the tree is good.
     pub problems: Vec<String>,
 }
@@ -172,6 +175,9 @@ impl CellTreeReport {
         );
         if self.terrain_cells > 0 {
             let _ = writeln!(s, "terrain:   {} cell(s), {} bytes", self.terrain_cells, self.terrain_bytes);
+        }
+        if self.landmark_artifacts > 0 {
+            let _ = writeln!(s, "landmarks: {} artifact(s), {} bytes", self.landmark_artifacts, self.landmark_bytes);
         }
         if self.problems.is_empty() {
             let _ = writeln!(s, "verify: OK");
@@ -438,6 +444,13 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
         }
     }
 
+    // 1 + 2, for the landmark artifact class. It has no index and no cells: one directory per
+    // region, keyed by one digest over its files. So the checks are that digest, the recipe the
+    // artifact declares, and the photos the content document says are beside it — the same read
+    // the cell bake does, so an artifact that verifies here is one a re-bake would cut the same
+    // cells from.
+    verify_landmarks(tree, &root, &mut report);
+
     // 4, per region.
     for region in &root.regions {
         report.regions += 1;
@@ -494,6 +507,97 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
     }
 
     Ok(report)
+}
+
+/// Every landmark artifact the catalog publishes, against the tree it published from.
+fn verify_landmarks(tree: &Path, root: &obc_pack::catalog::Catalog, report: &mut CellTreeReport) {
+    use crate::landmarks::{LandmarkDoc, LANDMARK_DOC, LANDMARK_RECIPE_VERSION};
+
+    let published: std::collections::BTreeSet<&str> =
+        root.landmarks.iter().flat_map(|l| l.artifacts.iter().map(|a| a.region_id.as_str())).collect();
+    match obc_pack::catalog::landmark_artifact_dirs(tree) {
+        Ok(dirs) => {
+            for (id, dir) in dirs.iter().filter(|(id, _)| !published.contains(id.as_str())) {
+                report.problems.push(format!(
+                    "{}: a landmark artifact for `{id}` that the catalog does not publish — it arrived after the \
+                     catalog was generated, so no cell was cut from it",
+                    dir.display()
+                ));
+            }
+        }
+        Err(e) => report.problems.push(e),
+    }
+
+    let Some(landmarks) = &root.landmarks else { return };
+    for entry in &landmarks.artifacts {
+        report.landmark_artifacts += 1;
+        report.landmark_bytes += entry.bytes;
+        let dir = entry.region_id.split('/').fold(tree.join(obc_pack::catalog::LANDMARKS_DIR), |p, seg| p.join(seg));
+        let content = dir.join(obc_pack::landmarks::CONTENT_DOC);
+        if !content.is_file() {
+            report.problems.push(format!("{}: the catalog publishes this landmark artifact", content.display()));
+            continue;
+        }
+        // The artifact's own declaration: the recipe it was compiled under, and the digest it
+        // claims for its files.
+        let doc: LandmarkDoc = match std::fs::read_to_string(dir.join(LANDMARK_DOC))
+            .map_err(|e| e.to_string())
+            .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()))
+        {
+            Ok(doc) => doc,
+            Err(e) => {
+                report.problems.push(format!("{}: {e} — the catalog publishes it", dir.join(LANDMARK_DOC).display()));
+                continue;
+            }
+        };
+        let stale = [
+            (doc.recipe_version != LANDMARK_RECIPE_VERSION, format!("recipe v{}", doc.recipe_version)),
+            (
+                doc.policy_sha256 != crate::hash::bytes(obc_pack::landmarks::POLICY_BYTES),
+                "another category policy".to_string(),
+            ),
+            (
+                doc.language_sha256 != crate::hash::bytes(obc_pack::landmarks::LANGUAGE_BYTES),
+                "another UI language set".to_string(),
+            ),
+        ];
+        for (_, what) in stale.iter().filter(|(moved, _)| *moved) {
+            report.problems.push(format!(
+                "{}: compiled under {what}, but this build compiles landmarks at recipe v{LANDMARK_RECIPE_VERSION} \
+                 — re-run `obc bake landmarks {}`",
+                dir.display(),
+                entry.region_id
+            ));
+        }
+        match obc_pack::landmarks::artifact_digest(&dir) {
+            Ok((sha256, bytes)) => {
+                if sha256 != doc.artifact_sha256 || sha256 != entry.sha256 || bytes != entry.bytes {
+                    report.problems.push(format!(
+                        "{}: hashes to {sha256} over {bytes} bytes; its declaration says {} and the catalog says {} \
+                         over {} bytes — a file beside the content document was lost, renamed or replaced",
+                        dir.display(),
+                        doc.artifact_sha256,
+                        entry.sha256,
+                        entry.bytes
+                    ));
+                }
+            }
+            Err(e) => report.problems.push(e),
+        }
+        if doc.languages != entry.languages {
+            report.problems.push(format!(
+                "{}: stores {:?} but the catalog publishes {:?}",
+                dir.display(),
+                doc.languages,
+                entry.languages
+            ));
+        }
+        // The cell bake's own read: it parses the content and checks every declared photo's bytes
+        // and digest, so it fails exactly where a cut would have failed.
+        if let Err(e) = obc_pack::landmark_map::fingerprint(std::slice::from_ref(&content)) {
+            report.problems.push(format!("{}: {e}", content.display()));
+        }
+    }
 }
 
 /// Read a pinned satellite and check it is byte-for-byte the one the root named.

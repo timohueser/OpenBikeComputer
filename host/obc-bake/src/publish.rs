@@ -305,7 +305,9 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
         .map(|artifact| artifact.rel_path.clone())
         .chain(generated.satellites.iter().map(|satellite| satellite.rel_path.clone()))
         .collect();
-    for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR] {
+    // `landmarks/` rides with the rest: its objects are producer records on stable keys, because
+    // no root pins them and no consumer fetches one — a cell already carries its landmark sections.
+    for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR, obc_pack::catalog::LANDMARKS_DIR] {
         collect(tree, &tree.join(dir), ObjectKind::Mutable, &skipped, &mut objects)?;
     }
     for artifact in &generated.pinned_artifacts {
