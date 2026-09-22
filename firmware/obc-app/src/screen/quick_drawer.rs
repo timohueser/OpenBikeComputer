@@ -184,9 +184,11 @@ impl QuickDrawerScreen {
                     cx.settings.ble_enabled = !cx.settings.ble_enabled;
                     Transition::None
                 }
-                // Central settings replace the sheet, so Back out of settings lands on the base
-                // screen rather than on a drawer the rider has finished with.
-                Some(Control::Settings) => Transition::Replace(Screen::Settings(SettingsScreen::new())),
+                // Central settings start from the root, and the descent the squeeze came from
+                // goes: the sheet reaches this row from inside settings too, so a row that kept
+                // that descent would lay one way down on another. Back therefore leaves settings
+                // for the view the rider rides on, not for a drawer they have finished with.
+                Some(Control::Settings) => Transition::OverRoot(Screen::Settings(SettingsScreen::new())),
                 Some(Control::Power) => {
                     self.slide_to(Page::PowerConfirm, cx.now_ms);
                     Transition::None
@@ -571,15 +573,15 @@ mod tests {
         assert!(d.powering_off(), "only a completed hold gets there");
     }
 
-    /// The settings icon replaces the sheet, so Back out of central settings lands on the base
-    /// screen rather than back inside a drawer.
+    /// The settings icon asks for central settings on the root, so the descent the sheet opened
+    /// over goes with the sheet.
     #[test]
-    fn the_settings_icon_replaces_the_sheet() {
+    fn the_settings_icon_asks_for_settings_on_the_root() {
         let mut w = World::new();
         let mut d = settled(w.now_ms);
         w.press(&mut d, Gesture::Step(2)); // the settings control
         let t = w.press(&mut d, Gesture::Press);
-        assert!(matches!(t, Transition::Replace(Screen::Settings(_))));
+        assert!(matches!(t, Transition::OverRoot(Screen::Settings(_))));
     }
 
     #[test]

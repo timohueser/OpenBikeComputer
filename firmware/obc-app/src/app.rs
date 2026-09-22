@@ -1806,8 +1806,17 @@ impl App {
 
     /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
     /// same drawer therefore toggles it shut, and the other one swaps in rather than stacking.
+    ///
+    /// A sheet needs a slot of its own. At the ceiling the squeeze is refused, like the Assistant
+    /// chord beside it, rather than pushed into a full stack where the arrival would be dropped
+    /// without a sound.
     fn toggle_drawer(&mut self, drawer: Screen) -> bool {
         let opening = drawer.row();
+        // With a sheet already up its slot is reused, so only a full stack under no sheet refuses.
+        if self.ui.stack.len() == self.ui.stack.capacity() && !self.ui.stack.last().is_some_and(|top| top.is_overlay())
+        {
+            return false;
+        }
         let closed = match self.ui.stack.last() {
             Some(top) if top.is_overlay() => {
                 let row = top.row();
@@ -2290,7 +2299,10 @@ impl App {
         let stack_changed = match &t {
             screen::Transition::None => false,
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
-            screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
+            screen::Transition::Push(_)
+            | screen::Transition::Replace(_)
+            | screen::Transition::OverRoot(_)
+            | screen::Transition::Root(_) => true,
         };
         if let screen::Transition::Push(Screen::PeakView(screen)) = &mut t {
             *screen = screen::PeakViewScreen::new(self.fresh_position());
@@ -4025,8 +4037,8 @@ mod tests {
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
     /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
-    /// walks that one path with gestures; how deep a descent can get at all, and the reserve that
-    /// leaves, belong to `the_deepest_descent_leaves_the_host_card_slots_free`.
+    /// walks that one path with gestures; how deep a rider can get at all, and what that leaves,
+    /// belong to `the_deepest_descent_stops_at_max_depth`.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
