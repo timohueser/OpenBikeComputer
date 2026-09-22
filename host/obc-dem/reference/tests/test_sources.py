@@ -717,6 +717,8 @@ class BulkArchives(unittest.TestCase):
             archive = self.bundle(directory, {"readme.txt": b"licence only"})
             with self.assertRaises(ingest.Refuse):
                 ingest.sources.base.unpack(archive, Path(directory) / "unpacked")
+            # A grid of files publishes such a zip at the state's edge: paperwork, no heights.
+            self.assertEqual(ingest.sources.base.unpack(archive, Path(directory) / "edge", optional=True), [])
 
 
 class Registry(unittest.TestCase):
