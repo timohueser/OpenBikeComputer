@@ -1202,20 +1202,36 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// Cancel a detour the rider can no longer answer. The chooser and its preview are the only
-    /// place to drop or commit a plan, so a plan that outlives both would hold the planner and
-    /// draw a line over the active route for the rest of the ride. The splice is exempt: it
-    /// truncates its own screens off while it runs.
+    /// Cancel a plan the rider can no longer answer. A plan is a question, and the screens it is
+    /// asked from are the only place to drop it: the chooser and its preview for a detour, the
+    /// planning spinner for a route search. A question that outlives them holds the planner arena,
+    /// and its release keeps a result nobody accepted — a line drawn over the active route, or a
+    /// computed route left in the store.
     ///
     /// It reads the stack shape, because the transitions that drop a descent whole — `OverRoot`
-    /// under the Assistant chord and under the drawer's settings row — never reach the screen
-    /// they drop, so no screen can cancel on its own way out.
-    fn release_unreachable_detour(&mut self) {
-        if self.navigator.detour_planned()
-            && !self.navigator.detour_committing()
+    /// under the Assistant chord and under the drawer's settings row — never reach the screens in
+    /// it, so none of them can cancel on its own way out. An adopted result is not a question:
+    /// the splice truncates its own screens off once the rider has the spliced route.
+    ///
+    /// The route family's preview and failure phases are not read here. They belong to the
+    /// Assistant's review, whose own release is reconciled from the stack by
+    /// [`prepare_find`](App::prepare_find); cancelling the plan under it would leave the review
+    /// machine holding a checkpoint for a plan that no longer exists.
+    fn release_unreachable_plans(&mut self) {
+        use crate::navigator::PlanFamily;
+        if self.navigator.plan_awaits_rider(PlanFamily::Detour)
             && !self.ui.stack.iter().any(|s| matches!(s, Screen::Detour(_) | Screen::DetourPreview(_)))
         {
             self.admit_navigator_intent(NavigatorIntent::CancelDetour);
+        }
+        if self.navigator.route_search_running()
+            && !self
+                .ui
+                .stack
+                .iter()
+                .any(|s| matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Nav))
+        {
+            self.admit_navigator_intent(NavigatorIntent::CancelPlan);
         }
     }
 
@@ -1782,7 +1798,7 @@ impl App {
                 self.ui.idle_return_timing = true;
                 self.ui.cancel_holds();
                 self.ui.reconcile_corridor(self.up_ahead_scope());
-                self.release_unreachable_detour();
+                self.release_unreachable_plans();
                 true
             }
             // A base screen that declares no `ContextMenu` gets nothing, not an empty drawer.
@@ -2333,7 +2349,7 @@ impl App {
         self.sync_find_preferences();
         self.handle_find_action();
         self.sync_detour_preview(detour_planned_before);
-        self.release_unreachable_detour();
+        self.release_unreachable_plans();
         // Opening a POI list drops the previous snapshot so its first draw re-queries. Gated on
         // a fresh open, so a step within the list does not wipe the frozen snapshot.
         if self.ui.stack.len() > depth_before && matches!(self.ui.stack.last(), Some(Screen::PoiList(_))) {

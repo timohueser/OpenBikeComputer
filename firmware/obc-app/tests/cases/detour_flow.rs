@@ -590,3 +590,37 @@ fn request_shape_is_stable() {
     let copy = req;
     assert_eq!((copy.route, copy.from, copy.progress_m, copy.target_m), (1, (2, 3), 4, 5));
 }
+
+/// The flow truncates its own screens off as it adopts the splice, so an adopted detour looks
+/// exactly like an unreachable one: planned, not committing, no screen left to answer for it. A
+/// rider input on the pass that lands the splice must not read it that way. Cancelling there
+/// would make the release drop the publication, and the board then retracts the route the rider
+/// has just taken.
+#[test]
+fn input_on_the_committing_pass_keeps_the_spliced_route() {
+    riding!(app, _route, host);
+    let session = app.ride_session();
+    open_chooser(&mut app);
+    app.apply_gesture(Gesture::Press);
+    answer_plan(
+        &mut app,
+        &mut host,
+        Ok(DetourPreview { cost_delta_m: 420, total_distance_m: 1_220, rejoin_m: 2_000, ascent_m: None }),
+    );
+    app.apply_gesture(Gesture::Press); // commit
+    assert!(host.took_commit(&mut app), "Press asks the executor to splice");
+    app.set_routes_with_ids(&[summary("Road"), summary("Detour \u{b7} Road")], &[7, 9]);
+
+    // The rider steps on the very pass that reads the splice, before the release is computed.
+    host.press_on_the_next_pass(&[Gesture::Step(1)]);
+    answer_commit(&mut app, &mut host, Ok(9));
+
+    assert_eq!(app.active_route_index(), Some(1), "the spliced route stays adopted");
+    assert_eq!(app.ride_session(), session, "and the recording session is untouched");
+    assert_eq!(host.retained_result(&mut app), Some(true), "the release keeps the publication the rider rides");
+
+    // The chord is the same input on a later pass, and reads the adopted splice the same way.
+    assert!(app.apply_chord(obc_app::Chord::Assistant));
+    assert_eq!(app.active_route_index(), Some(1), "the chord leaves the adopted route alone");
+    assert_eq!(host.retained_result(&mut app), Some(true));
+}

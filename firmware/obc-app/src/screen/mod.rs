@@ -210,13 +210,11 @@ pub fn apply(stack: &mut Stack, t: Transition) {
             // cannot overflow: the pair and one screen fit any MAX_DEPTH.
             close_drawers(stack);
             stack.truncate(2);
-            match stack.last_mut() {
-                // On the idle Home there is no view, so the arrival itself is what the pair keeps.
-                // It takes that slot rather than stacking a second copy of itself onto it.
-                Some(top) if top.row() == s.row() => *top = s,
-                _ => {
-                    let _ = stack.push(s);
-                }
+            // On the idle Home there is no view, so the arrival itself is what the pair keeps. The
+            // rider is already there: they land on the screen they left, with its cursor and any
+            // message on it, rather than on a second fresh copy stacked over the first.
+            if !stack.last().is_some_and(|top| top.row() == s.row()) {
+                let _ = stack.push(s);
             }
         }
         Transition::Root(s) => {
