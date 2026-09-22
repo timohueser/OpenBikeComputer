@@ -62,6 +62,12 @@ pub struct Catalog {
     /// is exactly what a map with no terrain has always done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain: Option<TerrainEntry>,
+    /// The landmark artifact class, when the tree holds one (§14). Absent is a complete,
+    /// valid catalog. Nothing here is a download: the cells already carry the landmark
+    /// sections cut from these artifacts, so the block is the provenance and the licence
+    /// record behind that content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landmarks: Option<LandmarkEntry>,
     /// **The one coupling between the two revision tracks** (§13.4). Network-band cells
     /// are baked sampling OBCT, so their `Ascent M` values are a function of a
     /// particular terrain revision; this records which one. `None` for a terrain-less
@@ -528,4 +534,44 @@ pub struct RegionTerrain {
     pub known_empty_count: u32,
     /// Sum of the real bytes of this region's downloadable terrain cells.
     pub bytes: u64,
+}
+
+/// The catalog's landmark block: the class's credit, and one entry per compiled region
+/// (`OBCC_Spec.md` §14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LandmarkEntry {
+    /// The class's required credit, verbatim, for the same reason the terrain block carries
+    /// one: a consumer that shows landmark content reads the credit from the catalog rather
+    /// than hard-coding it. The producer stamps `obc_pack::landmarks::ATTRIBUTION` here.
+    pub attribution: String,
+    /// One per region with a compiled artifact, sorted by `region_id`.
+    pub artifacts: Vec<LandmarkArtifactEntry>,
+}
+
+/// One region's compiled landmark artifact: `landmarks/<region_id>/`.
+///
+/// No `known_empty` and no per-region footprint, unlike terrain: a region with no artifact
+/// simply has no entry, and no consumer prices or fetches one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LandmarkArtifactEntry {
+    /// The region whose boundary and extract the artifact was compiled from. It is the
+    /// artifact's path under `landmarks/` as well.
+    pub region_id: String,
+    /// The article languages the artifact stores.
+    pub languages: Vec<String>,
+    pub records: u32,
+    pub photos: u32,
+    /// Every file of the artifact, `url`'s document and the photos beside it.
+    pub bytes: u64,
+    /// One digest over those files, name and content per file. It is what the cell bake keys
+    /// on, so a lost or swapped photo moves it.
+    pub sha256: String,
+    /// Every licence the artifact's texts and photos are under, sorted and distinct. The
+    /// per-record notices stay in the artifact; these are what the store as a whole owes.
+    pub licenses: Vec<String>,
+    /// The artifact's content document. A stable key: nothing pins it, because nothing
+    /// downloads it.
+    pub url: String,
+    /// RFC 3339 UTC, recorded by the landmark stage.
+    pub built_at: String,
 }

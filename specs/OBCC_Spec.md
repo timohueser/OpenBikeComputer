@@ -33,6 +33,9 @@ cells/<band>/<i>/<j>.obcm.json
 cells/terrain/<i>/<j>.obcd.json
 regions/<region_id>/region.json
 regions/<region_id>/boundary.poly
+landmarks/<region_id>/content.json
+landmarks/<region_id>/landmarks.json
+landmarks/<region_id>/<qid>.rgb222
 cells/<band>/index.<sha256>.json
 cells/<band>/<i>/<j>.<sha256>.obcm
 cells/terrain/index.<sha256>.json
@@ -48,6 +51,10 @@ band rather than only by cell size because two semantic bands MAY use the same
 
 `terrain` is a **reserved** segment under `cells/`: it holds the terrain artifact
 class (§13), which is not a band. A schema MUST NOT declare a band with that id.
+
+`landmarks/` holds the landmark artifact class (§14), one directory per region.
+Nothing in it is fetched to build a map: the cells already carry the landmark
+content, and these objects are the provenance and the licence record behind it.
 
 `LICENSE.txt` is the store's human-readable provenance and licence statement,
 generated from the root's `source` block (§3.1); it keeps a stable key because a
@@ -75,6 +82,7 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
   "regions": [ /* RegionEntry, sorted by id */ ],
   "cell_index": [ /* CellIndexRef */ ],
   "terrain": { /* TerrainEntry, §13 — optional */ },
+  "landmarks": { /* LandmarkEntry, §14 — optional */ },
   "network_terrain_revision": 4
 }
 ```
@@ -89,9 +97,11 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 | `regions` | array | Named selections, sorted by `id`. |
 | `cell_index` | array | Exactly one pinned index per schema band. |
 | `terrain` | object | Optional. The terrain artifact class (§13). |
+| `landmarks` | object | Optional. The landmark artifact class (§14). |
 | `network_terrain_revision` | integer | Optional. The terrain revision the `core` band's nav ascents were integrated from (§13.4). |
 
-Every field but `source`, `terrain` and `network_terrain_revision` is required.
+Every field but `source`, `terrain`, `landmarks` and `network_terrain_revision`
+is required.
 `terrain` and `network_terrain_revision` are absent for a terrain-less catalog,
 which is complete and valid; `source` is required of every producer (§3.1) and
 absent only from catalogs published before it existed, which consumers MUST
@@ -609,3 +619,86 @@ inside a known-empty run.
 A known-empty terrain square is canonical coverage that happens to be void. A consumer
 MUST include it in selection coverage and hole detection and MUST NOT fetch an object
 for it — the same treatment §8 gives an empty band cell.
+
+## 14. Landmark artifacts
+
+Landmarks are compiled Wikipedia, Wikidata and Commons content, published as a
+**third artifact class with its own revision track**. It is not a band, not a
+section, and not covered by §10.
+
+**No consumer downloads one.** A cell carries the landmark sections it was cut
+from, so a map the assembler builds has landmarks with no extra object. This
+block exists for two other reasons: it is the provenance of content that is not
+OpenStreetMap, and it carries a licence obligation.
+
+A catalog with no `landmarks` block is complete and valid.
+
+### 14.1 The landmark block
+
+```jsonc
+"landmarks": {
+  "attribution": "landmark text from Wikipedia and structured data from Wikidata, …",
+  "artifacts": [
+    {
+      "region_id": "europe/switzerland",
+      "languages": ["en", "de", "fr", "es"],
+      "records": 2841,
+      "photos": 1502,
+      "bytes": 96237441,
+      "sha256": "…",
+      "licenses": ["https://creativecommons.org/licenses/by-sa/4.0/"],
+      "url": "https://maps.example/landmarks/europe/switzerland/content.json",
+      "built_at": "2026-09-20T02:11:00Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| :-- | :-- | :-- |
+| `attribution` | string | The class's required credit, verbatim. |
+| `artifacts` | array | One per region with a compiled artifact, sorted by `region_id`. |
+
+An artifact entry:
+
+| Field | Type | Meaning |
+| :-- | :-- | :-- |
+| `region_id` | string | The region the artifact was compiled for, and its path under `landmarks/`. |
+| `languages` | array | The article languages the artifact stores. |
+| `records` | integer | Places in the content document. |
+| `photos` | integer | Places with a photo. |
+| `bytes` | integer | Every file of the artifact together. |
+| `sha256` | string | One digest over those files, name and content per file. |
+| `licenses` | array | Sorted, distinct licence URLs of the artifact's texts and photos. |
+| `url` | string | The artifact's content document, at a stable key. |
+| `built_at` | string | RFC 3339 UTC, recorded by the landmark stage. |
+
+Every field is required. A `region_id` MUST be one of the catalog's own regions,
+and MUST NOT repeat.
+
+The objects keep stable keys, unlike a cell or a satellite: nothing pins them, so
+there is no mixed-generation fetch to protect. `sha256` is what the cell bake keys
+on, so a lost, renamed or swapped photo moves it and re-cuts the cells that region
+reaches.
+
+### 14.2 Attribution
+
+`attribution` carries the class's required credit verbatim, and §13.5's display
+rule applies to it word for word: a consumer that shows landmark content MUST take
+the string from the catalog rather than hard-code it. A producer MUST NOT publish
+a landmark block with an empty `attribution`.
+
+`licenses` is the licence obligation made checkable per artifact: every licence the
+artifact's texts and photos are under, so a store can be audited without fetching
+the content. Each record keeps its own notices and revision, because those differ
+per article and per photo; the device displays them beside the place.
+
+`LICENSE.txt` (§3.1) repeats both for a person.
+
+### 14.3 Declaration
+
+Every published artifact MUST carry `landmarks.json` beside its content document:
+the region, the recipe version, the digests of the boundary, the category policy,
+the UI language set and the candidate list it was captured under, and `sha256`.
+A producer MUST refuse to publish an artifact directory without one — an artifact
+that cannot say what it was compiled from is a licence statement no one can check.

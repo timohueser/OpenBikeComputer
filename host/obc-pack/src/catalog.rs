@@ -42,12 +42,14 @@ pub const DEFAULT_MANIFEST_NAME: &str = "catalog.json";
 
 mod cells;
 mod coverage;
+mod landmarks;
 mod model;
 mod regions;
 mod schema;
 mod terrain;
 mod validate;
 
+pub use landmarks::{artifact_dirs as landmark_artifact_dirs, LANDMARKS_DIR};
 pub use model::*;
 pub use schema::{
     catalog_schema, catalog_schema_json, CATALOG_EXAMPLE_JSON, CATALOG_SCHEMA_JSON, CELL_INDEX_EXAMPLE_JSON,
@@ -57,6 +59,7 @@ pub use validate::{format_timestamp, now_timestamp, parse_strict_id, validate_da
 
 use cells::{build_band_index, known_empty_count, read_cells, BandIndex};
 use coverage::inclusive_run_count;
+use landmarks::read_landmarks;
 use regions::read_regions;
 use schema::{read_schema_doc, read_skins};
 use terrain::{build_terrain_index, read_terrain};
@@ -285,6 +288,9 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         );
     }
 
+    // The third artifact class, after the regions because an artifact belongs to one of them.
+    let landmarks = read_landmarks(tree, &regions.iter().map(|r| r.id.as_str()).collect(), &base_url)?;
+
     let root = Catalog {
         schema_version: CATALOG_SCHEMA_VERSION,
         generated_at: opts.generated_at.clone(),
@@ -306,6 +312,10 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         regions,
         cell_index,
         terrain: terrain_entry,
+        landmarks: landmarks.map(|store| LandmarkEntry {
+            attribution: crate::landmarks::ATTRIBUTION.to_string(),
+            artifacts: store.artifacts,
+        }),
         network_terrain_revision: cells.terrain_revision,
     };
     pinned_artifacts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
@@ -342,6 +352,17 @@ pub fn license_txt(root: &Catalog) -> String {
         license = source.license,
         url = source.license_url,
     );
+    if let Some(landmarks) = &root.landmarks {
+        text.push_str(&format!(
+            "\nThe landmark content the cells carry is a separate artifact class,\n{attribution}\n",
+            attribution = landmarks.attribution,
+        ));
+        let licenses: std::collections::BTreeSet<&str> =
+            landmarks.artifacts.iter().flat_map(|a| a.licenses.iter().map(String::as_str)).collect();
+        for license in licenses {
+            text.push_str(&format!("  {license}\n"));
+        }
+    }
     if let Some(terrain) = &root.terrain {
         text.push_str(&format!(
             "\nThe terrain artifacts (*.obcd) are a separate artifact class,\n{attribution}.\n",
