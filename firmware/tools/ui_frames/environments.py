@@ -107,6 +107,26 @@ def trips(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
+def trip_week(stage: Stage) -> Staging:
+    """A seven-day trip, "Alpen Traverse Nord", on seven renamed copies of the plain vector route,
+    starting Monday 2025-09-29. Its day list scrolls, so the title bar shows the counter. The trip
+    object is written here as `specs/obc-ble-interface-spec.md` §7.7 lays it out; the simulator
+    maps each day's route index to the imported route.
+    """
+    where = stage.dir("trip-week")
+    towns = ["Andermatt", "Ulrichen", "Brig", "Visp", "Sierre", "Sion", "Martigny"]
+    for day, town in enumerate(towns, 1):
+        route = bytearray((stage.vectors / "route-plain.obcr").read_bytes())
+        _rename_route(route, f"Day {day} {town}")
+        (where / f"day-{day}.obcr").write_bytes(route)
+    name = "Alpen Traverse Nord".encode()
+    trip = struct.pack("<BBHB48sBHQ", 3, 0, len(towns), len(name), name, 0, 20_360, 2)
+    for index in range(len(towns)):
+        trip += struct.pack("<QII", index, 0, 0xFFFF_FFFF)
+    (where / "TP2.OBT").write_bytes(trip)
+    return Staging(("--routes-dir", str(where)))
+
+
 def eta_route(stage: Stage) -> Staging:
     """The real Grimsel climb route, alone."""
     where = stage.dir("eta-route")
@@ -204,6 +224,7 @@ ENVIRONMENTS = {
     "plain-route": plain_route,
     "tracks": tracks,
     "trips": trips,
+    "trip-week": trip_week,
     "eta-route": eta_route,
     "eta-flat": eta_flat,
     "day-route": day_route,

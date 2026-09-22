@@ -371,10 +371,11 @@ no_routes = "Aucun parcours"
 no_routes_sub = "Importez un GPX"
 folder_empty_sub = "Ce voyage n'a aucun parcours"
 day = "Jour"
-day_next = "à suivre"
+day_next = "à venir"
 trip_done = "Terminé"
-day_one = "jour"
-days = "jours"
+day_one = "j"
+days = "j"
+no_days = "Aucun jour"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]

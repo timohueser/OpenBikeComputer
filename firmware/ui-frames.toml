@@ -100,6 +100,14 @@ env = "trips"
 script = "p p p"
 expect = "RouteMenu"
 
+# A seven-day day list scrolls: the title bar cuts the trip name clear of the "1 / 7" counter.
+[[frame]]
+name = "trip-days-week"
+map = "{grimsel}"
+env = "trip-week"
+script = "p p p"
+expect = "RouteMenu"
+
 # The trip cascade-delete confirm (TR3): long-press the folder (`h` fires the completed hold) → the
 # warning-red hold-guarded "Delete all" + "Cancel" card, naming the trip. Entry selects Cancel.
 [[frame]]
