@@ -42,6 +42,14 @@ pub struct DetourRequest {
     pub target_m: u32,
 }
 
+impl DetourRequest {
+    /// Ride to start: the way from `from` to the start of `route`. A leg that rejoins at the start
+    /// has no corridor and no trim, and its splice puts it in front of the whole route.
+    pub fn approach(route: usize, from: (i32, i32)) -> Self {
+        DetourRequest { route, from, progress_m: 0, target_m: 0 }
+    }
+}
+
 /// Which phase of the firmware update [`DfuState`](crate::dfu::DfuState) asks the board
 /// to run. The two are separate so the UI can confirm before arming: [`Scan`](DfuAction::Scan) is
 /// read-only and answers a [`DfuScanReport`](crate::dfu::DfuScanReport), and

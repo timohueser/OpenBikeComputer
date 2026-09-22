@@ -98,6 +98,8 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Rides(RidesScreen::new()),
         Screen::RideDetail(RideDetailScreen::new(0)),
         Screen::RouteOverview(RouteOverviewScreen::new(0, None)),
+        Screen::StartAway(StartAwayScreen::sample(false)),
+        Screen::StartAway(StartAwayScreen::sample(true)),
         Screen::RouteSwap(RouteSwapScreen::new(0)),
         Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
         Screen::RouteUpdated(RouteUpdatedScreen::new(0, 0)),

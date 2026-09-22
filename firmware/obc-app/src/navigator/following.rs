@@ -203,10 +203,20 @@ impl NavigatorMachine {
         &self.waypoints
     }
 
+    /// Make the next fresh ride follow the active route from `progress_m`: a forward-only floor
+    /// there, as a seam gives.
+    pub(crate) fn join_at(&mut self, progress_m: u32) {
+        self.join_m = Some(progress_m);
+    }
+
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.
     pub(crate) fn reset_ride(&mut self) {
         self.route_match.reset();
-        self.following.seam_request = None;
+        self.following.seam_request = self
+            .join_m
+            .take()
+            .zip(self.following.active_route)
+            .map(|(anchor_m, route)| SeamRequest { route: RouteIndex::new(route), anchor_m });
         self.following.progress_m = 0;
         self.following.off_route = false;
         self.following.dist_to_route_m = 0;

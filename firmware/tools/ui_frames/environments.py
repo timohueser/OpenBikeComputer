@@ -117,6 +117,17 @@ def eta_flat(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
+def day_route(stage: Stage) -> Staging:
+    """The real Grimsel climb, imported under a trip-day name so the start-away frames carry it."""
+    where = stage.dir("day-route")
+    source = stage.fixtures / "sim-grimsel" / "tracks" / "grimsel-climb.gpx"
+    day = where / "Day 2 Ulrichen.gpx"
+    shutil.copy(source, day)
+    stage.run(["--import", str(day), "--routes-dir", str(where)])
+    day.unlink()
+    return Staging(("--routes-dir", str(where)))
+
+
 def monaco_route(stage: Stage) -> Staging:
     """The real Monaco loop, imported at run time so no second `.obcr` is committed to re-cut on a
     format bump: a ~2.7 km line across central Monaco whose 300 m corridor catches real Resupply,
@@ -183,6 +194,7 @@ ENVIRONMENTS = {
     "trips": trips,
     "eta-route": eta_route,
     "eta-flat": eta_flat,
+    "day-route": day_route,
     "monaco-route": monaco_route,
     "journey": journey,
     "elevation": elevation,

@@ -305,6 +305,8 @@ pub struct NavigatorMachine {
     /// The one route matcher and the active-route key it last locked to.
     route_match: RouteMatch,
     matched_route: Option<usize>,
+    /// Where the next fresh ride joins the active route, instead of where its first fix locks.
+    join_m: Option<u32>,
 }
 
 impl NavigatorMachine {
@@ -337,6 +339,7 @@ impl NavigatorMachine {
             climb_fill_count: 0,
             route_match: RouteMatch::new(),
             matched_route: None,
+            join_m: None,
         }
     );
 
@@ -646,6 +649,11 @@ impl NavigatorMachine {
     pub(crate) fn reset_detour(&mut self) {
         self.detour_request = None;
         self.detour_commit = false;
+        // An adopted splice is the route being ridden, and a ride can open while its release is
+        // still out. Cancelling that release would retract the route.
+        if self.detour == PlanPhase::Active {
+            return;
+        }
         self.supersede(PlanFamily::Detour);
         self.detour = PlanPhase::Idle;
     }
@@ -682,6 +690,7 @@ impl NavigatorMachine {
             climb_fill_count,
             route_match,
             matched_route,
+            join_m,
         } = self;
         assert_eq!(review.status, ReviewStatus::Idle);
         visit.assert_boot_state();
@@ -697,6 +706,7 @@ impl NavigatorMachine {
         assert!(climb_profile.cols().iter().all(|&column| column == 0), "the climb detail starts flat");
         assert_eq!(*climb_fill_count, 0, "the climb detail has not been filled");
         assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
+        assert!(join_m.is_none(), "no ride waits to join");
     }
 }
 
