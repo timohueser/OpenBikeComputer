@@ -915,8 +915,12 @@ mod tests {
 
         let mut now = 16.0;
         drive(&mut d, &mut now, "press", "RouteOverview");
+        // The replay stands mid-climb, far from the route's first point, so the ride asks first.
+        drive(&mut d, &mut now, "press", "StartAway");
+        drive(&mut d, &mut now, "step:1", "StartAway");
         drive(&mut d, &mut now, "press", "Map");
-        assert!(d.app.recording(), "Start ride begins the session before the next chapter");
+        assert!(d.app.recording(), "Join nearest begins the session before the next chapter");
+        assert!(d.app.progress_m() > 1_000, "the ride joins the route mid-climb");
     }
 
     #[test]
