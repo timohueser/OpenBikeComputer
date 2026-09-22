@@ -63,7 +63,7 @@ const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
 
 /// A complete UI catalog's worth of upload facts. Bounding this to the menus' combined identity
 /// capacity keeps the resident cost explicit.
-pub const UPLOAD_EVENTS_CAP: usize = MAX_ROUTES + MAX_TRIPS;
+const UPLOAD_EVENTS_CAP: usize = MAX_ROUTES + MAX_TRIPS;
 
 /// The queued facts and the one bit that says the queue could not hold them all.
 #[derive(Debug)]
