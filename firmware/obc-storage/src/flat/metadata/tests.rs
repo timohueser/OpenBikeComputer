@@ -461,6 +461,9 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
     assert_eq!(rows.len(), 1);
     assert!(store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED));
     assert_eq!(rows.iter().find(|r| r.id == ride.id).unwrap().timestamp, 0);
+    let mut observed = Vec::new();
+    assert_eq!(census(&store, |row| observed.push(row)), Ok(CARD), "the proof names the card it lives on");
+    assert_eq!(observed, rows, "observation and policy read the same durable rows");
     let changed = NavigatorCheckpoint { route: PayloadFingerprint { crc: cp.route.crc ^ 1, ..cp.route }, ..cp };
     assert_eq!(write_checkpoint(&store, CARD, store.sequence(), Some(cp), Some(changed)), Err(Error::Stale));
     write_checkpoint(&store, CARD, store.sequence(), Some(cp), None).unwrap();

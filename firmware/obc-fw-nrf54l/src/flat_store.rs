@@ -1342,9 +1342,10 @@ pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<
 }
 
 /// `debug-uart` only: print the whole catalog, one line per entry, plus the entry count, whether
-/// the listing ran to the end, and the free extents. Comparing two of these proves a repair removed
-/// exactly one object and left every other one byte-identical, because `EntryMeta` carries the
-/// per-object CRC.
+/// the listing ran to the end, the free extents, the commit sequence and every durable archive
+/// proof. Comparing two of these proves a repair removed exactly one object and left every other
+/// one byte-identical, because `EntryMeta` carries the per-object CRC; comparing the proof lines
+/// against the receipt a client got proves the same identity and stamp survived a remount.
 #[cfg(feature = "debug-uart")]
 pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
     for entry in store.entries() {
@@ -1360,11 +1361,27 @@ pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
         );
     }
     defmt::info!(
-        "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32}",
+        "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32} sequence={=u64}",
         store.entry_count(),
         store.entries_ok(),
-        store.free_extents()
+        store.free_extents(),
+        store.sequence()
     );
+    // The archive proof the card holds, not the resident overlay: a session compares this line
+    // with the receipt the client got, before and after a remount.
+    match obc_storage::flat::metadata::census(store, |row| {
+        defmt::info!(
+            "proof census: id={=u64} rev={=u64} len={=u64} crc={=u32} stamp={=u32}",
+            row.id.0,
+            row.revision.0,
+            row.payload_len,
+            row.payload_crc,
+            row.timestamp
+        );
+    }) {
+        Ok(identity) => defmt::info!("proof census: store={=[u8; 16]:x}", identity.0),
+        Err(_) => defmt::warn!("proof census: card metadata unreadable"),
+    }
 }
 
 /// The session-long source over the mounted card's map object.
