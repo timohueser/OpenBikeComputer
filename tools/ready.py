@@ -30,8 +30,24 @@ import docs_copy
 import docs_review
 import test_plan
 
-#: Cargo roots beside the root workspace. Each one formats and lints through its own manifest.
+#: Cargo roots beside the root workspace. Each one formats through its own manifest.
 STANDALONE_ROOTS = tuple(root for root in test_plan.PRODUCT_ROOTS if root != test_plan.ROOT_WORKSPACE)
+
+#: The clippy commands CI runs for each standalone root, copied from its job. They are quoted
+#: rather than composed: a root pins its target in its own `.cargo/config.toml`, which only a
+#: command started inside the root reads, and a root with no test harness cannot take
+#: `--all-targets`. A root that gains a feature leg in CI gains it here too.
+STANDALONE_CLIPPY: dict[str, tuple[str, ...]] = {
+    "firmware/obc-fw-nrf54l": (
+        "cargo clippy --locked -- -D warnings",
+        "cargo clippy --locked --features debug-uart -- -D warnings",
+    ),
+    "firmware/obc-boot": (
+        "cargo clippy --locked -- -D warnings",
+        "cargo clippy --locked --features rtt -- -D warnings",
+    ),
+    "apps/obc-desktop": ("cargo clippy --release --all-targets --locked -- -D warnings",),
+}
 
 #: Paths that make `obc suites check` necessary, beside the test policy `test_plan` already names.
 TEST_SOURCE_PATTERNS = (
@@ -111,18 +127,15 @@ def _clippy_gates(changed: Sequence[str], packages: Mapping[str, test_plan.Packa
         hit = next((path for path in sorted(changed) if owns(package, path)), "")
         if not hit:
             continue
-        scope = (
-            f"-p {name}"
-            if package.product_root == test_plan.ROOT_WORKSPACE
-            else f"--manifest-path {package.product_root}/Cargo.toml"
+        root = package.product_root
+        commands = (
+            [f"cargo clippy -p {name} --all-targets -- -D warnings"]
+            if root == test_plan.ROOT_WORKSPACE
+            else [f"cd {root} && {command}" for command in STANDALONE_CLIPPY[root]]
         )
-        gates.append(
-            Gate(
-                f"cargo clippy {scope} --all-targets -- -D warnings",
-                f"package {name} changed: {hit}",
-                True,
-                covered_by="ci.rust-clippy",
-            )
+        gates.extend(
+            Gate(command, f"package {name} changed: {hit}", True, covered_by="ci.rust-clippy")
+            for command in commands
         )
     if not gates:
         return [Gate("cargo clippy", "no Cargo package changed", False)]
