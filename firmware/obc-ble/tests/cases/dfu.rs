@@ -64,7 +64,9 @@ fn fwimage_crc_mismatch_leaves_nothing_to_commit() {
 
 #[test]
 fn oversize_fwimage_rejected_at_announce() {
-    const MAX: u32 = 1_480_000; // stands in for obc_dfu::MAX_IMAGE_LEN
+    // The ceiling is the caller's parameter, so any figure exercises the comparison; the board
+    // passes obc_dfu::MAX_CONTAINER_LEN.
+    const MAX: u32 = 1_000_000;
     assert_eq!(TransferStatus::fwimage_announce_reject(MAX, MAX), None);
     assert_eq!(TransferStatus::fwimage_announce_reject(1, MAX), None);
     assert_eq!(TransferStatus::fwimage_announce_reject(0, MAX), None);
@@ -77,7 +79,7 @@ fn oversize_fwimage_rejected_at_announce() {
 fn fwimage_announce_ceiling_is_container_sized_not_raw() {
     // `total_len` is the whole OBCU container, so the ceiling must be container-sized. A raw-image
     // ceiling would reject an image in the top 64 bytes of the range that the armer flashes fine.
-    const MAX_IMAGE_LEN: u32 = 1_480_000; // obc_dfu::MAX_IMAGE_LEN
+    const MAX_IMAGE_LEN: u32 = 1_000_000; // any raw-image cap: this crate cannot see obc_dfu's
     const HEADER_LEN: u32 = 64; // obc_dfu::HEADER_LEN
     const MAX_CONTAINER: u32 = MAX_IMAGE_LEN + HEADER_LEN;
     // A raw image at the cap: the container is 64 bytes larger.

@@ -8,6 +8,8 @@ mod blobstage;
 mod boot_state;
 #[path = "cases/engine.rs"]
 mod engine;
+#[path = "cases/layout.rs"]
+mod layout;
 #[path = "cases/signature.rs"]
 mod signature;
 #[path = "cases/vectors.rs"]

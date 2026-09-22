@@ -32,7 +32,8 @@ const OBCU_SIG_SCHEME_ED25519 = 1;
 /** Bytes of the Ed25519 signature trailer. */
 export const OBCU_SIG_LEN = 64;
 
-const OBCU_MAX_IMAGE_LEN = 1_480_000;
+/** The device's whole application slot (`obc_dfu::MAX_IMAGE_LEN`, `OBCU_Spec.md` 1.1). */
+const OBCU_MAX_IMAGE_LEN = 2_023_424;
 
 const MAGIC = 0x4f424355; // "OBCU"
 

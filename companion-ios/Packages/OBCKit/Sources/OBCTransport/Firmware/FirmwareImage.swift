@@ -32,9 +32,10 @@ public struct OBCUHeader: Equatable, Sendable {
     public static let fwVersionFieldLength = 32
     /// Bytes of the header covered by the header CRC, which is everything but the CRC.
     public static let headerCRCLength = 60
-    /// The largest raw image the device's slot can flash. An announced object past it is rejected
-    /// at announce, so the app refuses it here first.
-    public static let maxImageLength: UInt32 = 1_480_000
+    /// The device's whole application slot, and so the largest raw image it can flash
+    /// (`obc_dfu::MAX_IMAGE_LEN`, `OBCU_Spec.md` 1.1). An announced object past it is rejected at
+    /// announce, so the app refuses it here first.
+    public static let maxImageLength: UInt32 = 2_023_424
 
     /// Length of the raw image following the header, bytes.
     public let imageLength: UInt32
