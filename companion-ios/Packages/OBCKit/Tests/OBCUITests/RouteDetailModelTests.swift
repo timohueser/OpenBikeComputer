@@ -55,7 +55,7 @@ final class RouteDetailModelTests: XCTestCase {
         // Assert against the formatter, not an en-US literal: the numbers are locale-aware.
         XCTAssertEqual(model.stats[0].value, OBCFormat.distanceValue(meters: 62_400))
         XCTAssertEqual(model.stats[0].unit, "km")
-        XCTAssertEqual(model.stats[2].value, "3:20")
+        XCTAssertEqual(model.stats[2].value, "3:12")  // Road, 62.4 km and 840 m, floored to the minute
         // Max shows an em dash until the detail read lands the grade.
         XCTAssertEqual(model.stats[3].value, "—")
     }

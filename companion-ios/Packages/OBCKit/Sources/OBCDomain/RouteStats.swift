@@ -13,9 +13,6 @@ public struct RouteStats: Equatable, Sendable {
     /// Steepest sustained climb over a ~100 m window, in percent. `nil` when the
     /// source carried no elevation.
     public var maxGradePercent: Double?
-    /// Planned-ride estimate: 16 km/h on the flat plus a minute per 10 m of climb. A touring
-    /// rule of thumb, not a fitness model.
-    public var estimatedDuration: TimeInterval
 
     /// Elevation-noise hysteresis: climb only accumulates once the track has
     /// risen this far above its last confirmed elevation.
@@ -73,14 +70,12 @@ public struct RouteStats: Equatable, Sendable {
         }
 
         let elevations = points.allSatisfy { $0.elevationMeters != nil && !$0.elevationIncomplete } ? points.compactMap(\.elevationMeters) : []
-        let estimateMinutes = distance / 1000 / 16 * 60 + climb / 10
         return RouteStats(
             distanceMeters: distance,
             elevationGainMeters: climb,
             elevationLossMeters: descent,
             elevationProfile: downsample(elevations, to: profileSampleCount),
-            maxGradePercent: maxGrade,
-            estimatedDuration: estimateMinutes * 60
+            maxGradePercent: maxGrade
         )
     }
 
@@ -97,14 +92,12 @@ public struct RouteStats: Equatable, Sendable {
         elevationGainMeters: Double,
         elevationLossMeters: Double = 0,
         elevationProfile: [Double] = [],
-        maxGradePercent: Double? = nil,
-        estimatedDuration: TimeInterval = 0
+        maxGradePercent: Double? = nil
     ) {
         self.distanceMeters = distanceMeters
         self.elevationGainMeters = elevationGainMeters
         self.elevationLossMeters = elevationLossMeters
         self.elevationProfile = elevationProfile
         self.maxGradePercent = maxGradePercent
-        self.estimatedDuration = estimatedDuration
     }
 }

@@ -322,7 +322,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             name: decoded.name,
             distanceMeters: Double(decoded.totalDistanceMeters),
             elevationGainMeters: Double(decoded.totalAscentMeters),
-            estimatedDuration: geometry.estimatedDuration,
+            estimatedDuration: TimeInterval(decoded.bikeType.estimatedSeconds(
+                distanceMeters: decoded.totalDistanceMeters, ascentMeters: decoded.totalAscentMeters)),
             pointCount: decoded.points.count,
             trackPreview: TrackPreview.normalizing(decoded.points.map(\.coordinate))
         )

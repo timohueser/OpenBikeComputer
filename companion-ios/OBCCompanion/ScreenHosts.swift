@@ -97,6 +97,7 @@ struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    private let onBikeTypeChange: ((BikeType) -> Void)?
     /// Reverse the route, planned dressing only: it creates the flipped copy and navigates to it.
     /// Nil on rides and imports.
     private let onReverse: (() -> Void)?
@@ -116,12 +117,14 @@ struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
+        bikeType: BikeType = .road,
         rideGeometry: [Coordinate]? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onBikeTypeChange: ((BikeType) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
@@ -130,7 +133,7 @@ struct RouteDetailScreen: View {
         onRemoveFromTrip: (() -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
-            transport: transport, dressing: dressing,
+            transport: transport, dressing: dressing, bikeType: bikeType,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
             rideGeometry: rideGeometry
@@ -140,6 +143,7 @@ struct RouteDetailScreen: View {
         self.deviceName = deviceName
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onBikeTypeChange = onBikeTypeChange
         self.onReverse = onReverse
         self.onUploaded = onUploaded
         self.tripPickerItems = tripPickerItems
@@ -172,7 +176,8 @@ struct RouteDetailScreen: View {
             },
             onDelete: onDelete,
             onRename: onRename,
-            onReverse: onReverse
+            onReverse: onReverse,
+            onBikeTypeChange: onBikeTypeChange
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
@@ -257,6 +262,7 @@ struct ImportLandingHost: View {
         activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
+        bikeType: BikeType,
         deviceName: String,
         noDevicePaired: Bool,
         tripPickerItems: [TripPickerItem] = [],
@@ -279,6 +285,7 @@ struct ImportLandingHost: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
             dressing: .imported(route, fileName: fileName),
+            bikeType: bikeType,
             deviceObjectID: replacingDeviceObjectID,
             provenCommittedCRC: replacingProvenCRC,
             importedRouteID: replacing?.id

@@ -47,13 +47,4 @@ final class RouteStatsTests: XCTestCase {
         XCTAssertEqual(profile.first, 0)
         XCTAssertEqual(profile.last, 199)
     }
-
-    func testEstimateIsTouringPace() {
-        // A flat track: distance at 16 km/h, with no climb penalty.
-        let points = (0...29).map {  // 29 × ~1112 m ≈ 32.2 km
-            RoutePoint(coordinate: Coordinate(latitude: 47.0 + 0.01 * Double($0), longitude: 11.0))
-        }
-        let stats = RouteStats.compute(from: points)
-        XCTAssertEqual(stats.estimatedDuration, stats.distanceMeters / 1000 / 16 * 3600, accuracy: 1)
-    }
 }
