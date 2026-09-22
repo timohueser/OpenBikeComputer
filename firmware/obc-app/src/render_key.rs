@@ -98,6 +98,15 @@ pub(crate) struct StatsKey {
     /// The displayed heart-rate, power and cadence values, each `None` unless its field is on the
     /// grid, so an unconfigured sensor forces no render at its notification rate.
     live: (Option<u16>, Option<u16>, Option<u8>),
+    /// The two altimeter readouts as exact bit patterns: the climb done and the current elevation
+    /// (`u32::MAX` before the first sample, which no finite float shares). Metres, not the
+    /// displayed integer: a rounded field would hold still across a foot of imperial travel.
+    ///
+    /// Neither is gated on its tile being on the grid, as the live sensor values are. The board
+    /// reads the altimeter only on a valid fix, and that fix moves the key by itself, so the gate
+    /// would buy no render back.
+    climb_m: u32,
+    elevation_m: u32,
     /// The refresh the [`NextAhead`](crate::next_ahead::NextAhead) cache behind the six
     /// `Next: <category>` tiles asks for: which category is being re-taken, and the progress it is
     /// anchored at. `None` is the settled state.
@@ -308,6 +317,8 @@ impl App {
                 fields.contains(StatField::Power).then(|| self.recorder.live_power_display()).flatten(),
                 fields.contains(StatField::Cadence).then(|| self.recorder.live_cadence_display()).flatten(),
             ),
+            climb_m: self.recorder.climb_m().to_bits(),
+            elevation_m: self.recorder.current_elevation_m().map_or(u32::MAX, f32::to_bits),
             next_ahead: self.ui.next_ahead.pending_refresh(),
         }
     }
