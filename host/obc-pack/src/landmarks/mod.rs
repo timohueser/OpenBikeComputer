@@ -112,8 +112,20 @@ pub struct Omission {
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
+/// `Q` and a decimal with no leading zero and no sign — the rule the capture tool applies to a
+/// candidate list. The two must agree: a QID one side accepts and the other refuses is a region
+/// that cannot be captured.
 fn is_qid(id: &str) -> bool {
-    id.starts_with('Q') && id[1..].parse::<u64>().ok().is_some_and(|value| value > 0)
+    match id.strip_prefix('Q').map(str::as_bytes) {
+        Some([b'1'..=b'9', rest @ ..]) => rest.iter().all(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
+/// Numeric by QID, which is the order the capture asks for entities in.
+fn qid_order(qid: &str) -> (usize, &str) {
+    let digits = qid.strip_prefix('Q').unwrap_or(qid);
+    (digits.len(), digits)
 }
 fn file_digest(path: &Path) -> Result<String, String> {
     use std::io::Read as _;
@@ -158,8 +170,13 @@ fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Resul
     }
     Ok(bytes)
 }
+/// The largest pinned JSON response the compiler reads. The capture tool asks for a
+/// `wbgetentities` batch again in halves when its response passes this, so every response a
+/// capture keeps is one the compiler can read.
+const MAX_JSON_SOURCE: u64 = 16 * 1024 * 1024;
+
 fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, String> {
-    serde_json::from_slice(&read_pinned(root, sources, path, 16 * 1024 * 1024)?)
+    serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
         .map_err(|e| format!("invalid source {path}: {e}"))
 }
 fn claims<'a>(entity: &'a Value, property: &str) -> impl Iterator<Item = &'a Value> {
@@ -262,8 +279,14 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
         return Err("landmark output directory must be empty".into());
     }
+    // The capture batches entities in numeric QID order and a response holds fifty of them, so
+    // the compiler reads places in that same order. One loaded response then serves fifty places
+    // and is never returned to: the batch index of the places it visits never decreases.
     let mut places = snapshot.places;
-    places.sort_by_key(|place| place["qid"].as_str().unwrap_or("").to_owned());
+    places.sort_by_key(|place| {
+        let (length, digits) = qid_order(place["qid"].as_str().unwrap_or(""));
+        (length, digits.to_owned())
+    });
     let mut seen = BTreeSet::new();
     let mut loaded: Option<(String, Value)> = None;
     for place in places {
@@ -277,10 +300,8 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         let mut omit = |asset: &str, reason: String| {
             content.omissions.push(Omission { qid: qid.clone(), asset: asset.into(), reason })
         };
-        // A place names the response its entity arrived in. `wbgetentities` takes fifty ids per
-        // call, so one response usually holds many places; a capture that asked for the entity
-        // alone names none, and it is at the one-entity path. Places are read in the order they
-        // were captured in, so the response a place needs is the one already in hand.
+        // A place names the response its entity arrived in; a capture that asked for the entity
+        // alone names none, and it is at the one-entity path.
         let path = match place.get("entity_path").and_then(Value::as_str) {
             Some(path) => path.to_owned(),
             None => format!("entities/{qid}.json"),

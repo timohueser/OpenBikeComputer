@@ -29,13 +29,14 @@ python3 tools/landmark_capture.py \
 
 Candidates are the QIDs the extract's own objects carry in a `wikidata` tag. Nothing is matched by
 name or by coordinate, so discovery is offline and every landmark has a map object with an
-approach. `--sweep` adds a Wikidata class query for the natural-curiosities group, whose places are
+approach. A tag that is not a QID is listed in `rejected` and does not stop the run. `--sweep` adds a Wikidata class query for the natural-curiosities group, whose places are
 often unmapped; it is off by default.
 
 The command uses two workers and at most ten requests per second in total. It sends `maxlag=5` and
 a descriptive User-Agent, and it waits for the `Retry-After` of a `429` or a `503` before it asks
 again. It captures the entities fifty per request, their P279 class closure, the en/de/fr/es
-articles at exact revisions, and the P18 and lead-image candidates with their Commons metadata.
+articles at exact revisions, and the P18 and lead-image candidates with their Commons metadata. A
+batch whose response is larger than the compiler reads is asked for again in halves.
 Responses land in `entities/`, `classes/`, `locales/`, `articles/`, `images/` and, with `--sweep`,
 `queries/`, with `manifest.json` recording every URL, byte count, SHA-256 and outcome. The response
 limit is 32 MiB.
