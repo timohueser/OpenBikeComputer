@@ -43,7 +43,9 @@ READABLE = RASTER_SUFFIXES | GRID_SUFFIXES
 
 # How long to wait before each retry. A service drops the occasional request and one box
 # pulls hundreds, so the first failure is never the answer.
-RETRY_DELAYS = (2, 4, 8)
+# A country run is days of requests, and a public service that is restarted or briefly
+# overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
+RETRY_DELAYS = (5, 30, 120, 600)
 
 # The orthometric height systems the registry knows. A row has to name one of them: the
 # archive is orthometric metres and the bakery holds the reference against Copernicus on
