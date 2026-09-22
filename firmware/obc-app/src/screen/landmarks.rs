@@ -206,7 +206,9 @@ where
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;
-    let page = state.article.filter(|_| state.ready()).map(|_| {
+    // Sources stand on their own: a record with a photo and no text still credits that photo.
+    let content = state.ready() && (sources || state.article.is_some());
+    let page = content.then(|| {
         if sources {
             (state.source_page + 1, state.source_pages)
         } else {
@@ -219,7 +221,7 @@ where
         page,
         (!sources).then_some(&rx.marquee),
     );
-    if !state.ready() || state.article.is_none() {
+    if !content {
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
     }

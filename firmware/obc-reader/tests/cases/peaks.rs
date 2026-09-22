@@ -49,6 +49,32 @@ fn direct_multilingual_lookup_is_separate_and_generation_bound() {
     let changed = Reader::new(&src, &new_tables, &cache);
     assert!(text(&changed, first, *b"en").is_err());
 }
+/// Content is text or a photo: Peak View marks a summit for either, and for neither it marks none.
+#[test]
+fn a_record_with_a_photo_and_no_text_is_content_and_an_empty_record_is_not() {
+    let original = vector();
+    let records = HEADER_LEN + 3 * ASSOCIATION_LEN;
+    let mut section = original.clone();
+    // Move the first record's bundle, guard byte and all, into its photo slot, leaving no text.
+    let reference = original[records + 40..records + 48].to_vec();
+    let payload = u32::from_le_bytes(reference[..4].try_into().unwrap()) as usize;
+    section[payload + 32] = 2;
+    section[records + 40..records + 48].fill(0);
+    section[records + 48..records + 56].copy_from_slice(&reference);
+    let bytes = map(&section);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    assert!(reader.peak_article(SourceId::osm(1, 101)).unwrap().is_some());
+    assert!(text(&reader, reader.peak_article(SourceId::osm(1, 101)).unwrap().unwrap(), *b"en").is_err());
+    section[records + 48..records + 56].fill(0);
+    let bytes = map(&section);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let reader = Reader::new(&src, &tables, &cache);
+    assert!(reader.peak_article(SourceId::osm(1, 101)).is_err());
+}
 #[test]
 fn corrupt_index_and_in_bounds_payload_swaps_fail_closed() {
     let original = vector();

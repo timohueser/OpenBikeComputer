@@ -290,6 +290,21 @@ class LandmarkCaptureTests(unittest.TestCase):
             acquired = acquire_requested_photos(Mock(), Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: None)
         self.assertEqual(acquired, 0)
 
+    def test_a_peak_entity_with_no_supported_sitelink_still_reaches_its_photos(self):
+        value = {"labels": {"de": {"value": "Schafberg"}}, "sitelinks": {"cebwiki": {"title": "Schafberg"}},
+                 "claims": {"P18": [{"mainsnak": {"datavalue": {"value": "Peak.jpg"}}}]}}
+        metadata = json.dumps({"query": {"pages": {"1": {"pageid": 1, "title": "File:Peak.jpg", "imageinfo": [
+            {"mime": "image/jpeg", "size": 10, "url": "https://example.test/Peak.jpg", "sha1": "a", "extmetadata": {}}]}}}}).encode()
+        for photo_without_text, images in ((False, []), (True, ["Peak.jpg"])):
+            with tempfile.TemporaryDirectory() as directory:
+                capture = Capture(Path(directory), interval=0)
+                with patch("tools.landmark_capture.urlopen", return_value=Response(metadata)):
+                    place = capture_assets(capture, "Q5", value, photo_without_text)
+                self.assertEqual([image["filename"] for image in place["images"]], images)
+                self.assertEqual(place["articles"], [], "an unsupported edition is never an article")
+                self.assertIn(dict(asset="article", status="no-supported-sitelink"), place["outcomes"])
+                self.assertEqual(place["name"], "Schafberg")
+
     def test_candidate_pool_adds_view_claims_and_every_commons_category(self):
         def claims(**properties):
             return {prop: [{"mainsnak": {"datavalue": {"value": name}}} for name in names] for prop, names in properties.items()}

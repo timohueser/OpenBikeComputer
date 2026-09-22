@@ -1423,8 +1423,9 @@ can refer to the same article. Article Index MUST be in range, and the indexed a
 MUST equal the association's identity. A conflicting link for the same node is a producer error.
 
 The article table follows the association table. Each 64-byte record contains its 32-byte Article
-Identity, then four 8-byte references in this order: display name, multilingual article bundle,
-optional compressed photo, optional photo attribution. Each reference is `(offset u32, length u32)`.
+Identity, then four 8-byte references in this order: display name, optional multilingual article
+bundle, optional compressed photo, optional photo attribution. §10.2 says which are present. Each
+reference is `(offset u32, length u32)`.
 Records MUST be strictly ordered by identity. An article is stored once per canonical identity.
 A producer MUST reject different canonical strings with the same identity digest.
 
@@ -1437,14 +1438,17 @@ record and slot before it exposes the payload. A reference redirected to another
 different content slot of the same article, MUST fail. This is a reference-identity check; normal map
 object checksums protect the content bytes.
 
-The name and article bundle are required. Both photo references are `(0, 0)` when absent; otherwise
-both are present. A present reference MUST start at or after Payload Offset, contain more than
-33 bytes, and end at or before Section Length without integer overflow. Payload limits, excluding
-the guard, are the same as §9: name at most 256 bytes, article bundle at most the shared article
-limit, compressed photo at most 52,096 bytes, and photo attribution at most 65,535 bytes.
-The article bundle uses §9.2 unchanged. Its internal offsets are relative to the start of that
-bundle, after the guard. The photo stream uses §9.3 unchanged. One optional photo serves all text
-variants of an article. Name, text, attribution and photo use the existing bounded content readers.
+The name is required. Both photo references are `(0, 0)` when absent; otherwise both are present.
+The article bundle reference is `(0, 0)` when the record has no text; a record MUST carry the
+article bundle, the photo, or both. A present reference MUST start at or after Payload Offset,
+contain more than 33 bytes, and end at or before Section Length without integer overflow. Payload
+limits, excluding the guard, are the same as §9: name at most 256 bytes, article bundle at most the
+shared article limit, compressed photo at most 52,096 bytes, and photo attribution at most 65,535
+bytes. The article bundle uses §9.2 unchanged. Its internal offsets are relative to the start of
+that bundle, after the guard. The photo stream uses §9.3 unchanged. One optional photo serves all
+text variants of an article. A record with a photo and no bundle has no language: a consumer shows
+the photo and its attribution, and never an empty text page. Name, text, attribution and photo use
+the existing bounded content readers.
 
 ### 10.3 Direct access and map changes
 
