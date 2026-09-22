@@ -6,8 +6,10 @@ against a synthetic answer. The live probes are in `README.md`, with the summit 
 source was verified against.
 """
 
+import os
 import sys
 import unittest
+import unittest.mock
 import urllib.parse
 import zipfile
 from functools import partial
@@ -238,6 +240,20 @@ class Requests(unittest.TestCase):
             envelope_of(describe, ("x", "y"), "de-bw")
         with self.assertRaises(ingest.Refuse):
             envelope_of("<ExceptionReport/>", ("E", "N"), "de-bw")
+
+    def test_describe_coverage_carries_the_rows_credential(self):
+        """A keyed WCS answers `DescribeCoverage` only to the key, and `fetch` describes
+        before it asks for a raster, so a keyless describe blocks the whole run."""
+
+        source = ingest.SOURCES["fi"]
+        asked = []
+        protocols = ingest.sources.protocols
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda url, **kw: asked.append(url) or b"<ExceptionReport/>"
+        with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_FI_TOKEN": "a-key"}):
+            with self.assertRaises(ingest.Refuse):
+                source.describe()
+        self.assertIn("api-key=a-key", asked[0])
 
     def test_the_wcs_10_request_states_a_bbox_with_a_width_and_a_height(self):
         """Norway and Denmark answer WCS 1.0.0, which sizes its grid differently from

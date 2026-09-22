@@ -250,8 +250,10 @@ class Wcs20Source(TiledService):
         """The coverage's envelope, as `DescribeCoverage` states it, on the row's axes."""
 
         what = f"{self.key} DescribeCoverage"
+        credential = self.credential.query() if self.credential else ""
         body = http_get(f"{self.service}?service=WCS&version=2.0.1&request=DescribeCoverage"
-                        f"&coverageId={self.coverage}", what=what).decode("utf-8", "replace")
+                        f"&coverageId={self.coverage}{credential}",
+                        what=what).decode("utf-8", "replace")
         return envelope_of(body, self.axes, what)
 
     def url(self, box) -> str | None:
