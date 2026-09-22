@@ -35,10 +35,10 @@ pub(crate) const MAX_LABELS: usize = 6;
 const LABEL_FONT: Font = Font::Caption;
 /// Clear space around a label, in pixels: one glyph cell of [`LABEL_FONT`].
 const LABEL_MARGIN_PX: i32 = 10;
-/// Characters shown, cut with `..`. A pinned name is never refused for width, so this decides only
-/// how much of a long name reads. 14 at the 10 by 20 face is 140 pixels, so two names still cannot
-/// sit side by side on the 240 px panel.
-const MAX_LABEL_CHARS: usize = 14;
+/// Width shown, cut with `..`. A pinned name is never refused for width, so this decides only how
+/// much of a long name reads. 140 pixels is 14 characters at the 10 by 20 face, so two names still
+/// cannot sit side by side on the 240 px panel.
+const MAX_LABEL_PX: i32 = 140;
 /// Slack around the panel, so a small pan needs no new query.
 const CANDIDATE_PAD_PX: f32 = 48.0;
 /// The scale band, in metres per pixel, in which each class shows a name: the class, then `min`,
@@ -176,9 +176,9 @@ fn padded_bbox(vp: &Viewport) -> BBox {
     region
 }
 
-/// The name a label shows: [`MAX_LABEL_CHARS`] characters, cut with `..`.
+/// The name a label shows: [`MAX_LABEL_PX`] of [`LABEL_FONT`], cut with `..`.
 fn label_of(c: &Candidate) -> Fitted {
-    fit(c.name.as_str(), MAX_LABEL_CHARS)
+    fit(c.name.as_str(), MAX_LABEL_PX, LABEL_FONT)
 }
 
 /// Draw the settlement names, best first, into whatever space `place` still has. Text is drawn
