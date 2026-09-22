@@ -27,7 +27,7 @@
         "row_diff": 1284,
         "app": 57384,
         "map_cache": 37084,
-        "map_tables": 4440,
+        "map_tables": 7528,
         "route_cache": 9260,
         "route_index": 12400,
         "arena_total": 131072,
@@ -58,6 +58,12 @@
         "flat_route_read": 48,
         "flat_engine": 768,
         "ble_v4_adapter": 763
+      },
+      "_paired_map_styles_allocation_measurement": {
+        "source_commit": "49bc0e29a",
+        "build": "GitHub Actions run 35783440348, embedded job 106934698982, resource-report head build",
+        "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
+        "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
       },
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
