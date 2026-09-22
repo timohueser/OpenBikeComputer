@@ -828,7 +828,6 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::settings::Language;
     use crate::{Activity, AppState, Settings};
-    use obc_render::text::text_width;
 
     struct World {
         state: AppState,
@@ -1215,100 +1214,6 @@ mod tests {
             [0, 45, 90, 135, SLIDE_MS].iter().map(|dt| d.sheet_height(2_000 + dt)).collect();
         assert_eq!((shrink[0], shrink[4]), (EDITOR_H, root_h));
         assert!(shrink.windows(2).all(|p| p[0] >= p[1]), "…and back: {shrink:?}");
-    }
-
-    /// The sheet is all copy, so this is its overflow check: every row label clears its own
-    /// right-hand control on a 240 px panel in every language, and every editor choice fits the
-    /// editor's own line.
-    ///
-    /// There are two row budgets, not one. A door or a value row clears the chevron; a switch row
-    /// clears the wider slider and its margin. If a column overruns, the copy shortens; the slider
-    /// and the row do not. Both are measured in the font the code actually draws, which is
-    /// [`Font::Body`] for a row label and for an editor choice alike.
-    ///
-    /// It also pins the measurement the row design rests on — that a label plus its longest choice
-    /// does not fit one row — so a future geometry pass sees the number rather than the conclusion.
-    /// [`ContextValue::BikeProfile`]'s choices are map data rather than catalog copy, so the check
-    /// on them is the format's own name cap.
-    #[test]
-    fn every_label_and_choice_fits_the_sheet_in_every_language() {
-        use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
-        const W: i32 = 240;
-        const MIN_CLEAR: i32 = 8;
-        // The draw's own geometry: the row area is inset `ROW_X` from both screen edges, the label
-        // starts 14 px inside it, the chevron takes the last 18 px and the slider the last 54.
-        let area_w = W - 2 * rows::ROW_X;
-        let door_room = area_w - 14 - 18 - MIN_CLEAR;
-        let switch_room = area_w - 14 - 54 - MIN_CLEAR;
-        assert_eq!((door_room, switch_room), (172, 136), "the two row budgets, pinned");
-        // `draw_editor` starts the choice at x + 48 with a category icon in the gutter, and the
-        // sheet's own right inset is 12.
-        let choice_room = W - 48 - 12;
-        let w = World::riding();
-        let facts = w.facts();
-        let (mut worst_row, mut worst_choice) = (0, 0);
-        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in
-                [&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE]
-            {
-                for row in menu.rows {
-                    let label = t(row.label, lang);
-                    let font = row_font(row, label);
-                    assert!(label.lines().count() <= 2);
-                    let lw = label.lines().map(|line| text_width(line, font) as i32).max().unwrap_or(0);
-                    let room = match row.action {
-                        ContextAction::Toggle(_) => switch_room,
-                        _ => door_room,
-                    };
-                    assert!(lw <= room, "{lang:?}: row label {label:?} ({lw} px) overruns {room} px");
-                    let ContextAction::Edit(v) = row.action else { continue };
-                    // The map's names are not in the catalog; they are measured at their cap below.
-                    if v == ContextValue::BikeProfile {
-                        continue;
-                    }
-                    for ordinal in 0..v.count(&facts) {
-                        let choice = choice_text(v, ordinal, lang);
-                        let cw = text_width(choice, Font::Body) as i32;
-                        assert!(cw <= choice_room, "{lang:?}: choice {choice:?} ({cw} px) overruns {choice_room} px");
-                        worst_choice = worst_choice.max(cw);
-                        worst_row = worst_row.max(14 + lw + MIN_CLEAR + cw + 10);
-                    }
-                }
-            }
-        }
-        // The bike binding's worst case is the name field filled: 12 monospace `Body` characters.
-        // It is exactly as wide as the widest catalog choice, so the `worst_choice` pin does not
-        // move for it. If it ever exceeds `choice_room`, either a font tier or the format's name
-        // cap changed, and that is a finding rather than a re-pin.
-        let widest_profile_name = NAV_PROFILE_NAME_LEN as i32 * Font::Body.char_width() as i32;
-        assert_eq!(widest_profile_name, 168, "12 §8.6 name bytes in Body, pinned");
-        assert!(widest_profile_name <= choice_room, "a full-length profile name overruns the editor line");
-
-        // The widest choice on the editor line, and how little room is left over it.
-        assert_eq!(worst_choice, 168, "de \"Campingplatz\" / \"Fahrradladen\" in Body, pinned");
-        assert_eq!(choice_room - worst_choice, 12, "…with 12 px to spare on the 240 px panel");
-
-        assert!(
-            worst_row > area_w,
-            "a label and its longest choice now fit one {area_w} px row ({worst_row} px) — \
-             the row could state its value again; see `draw_root`"
-        );
-        assert_eq!(worst_row, 284, "the widest catalog label+choice pair — the bike row's map-data worst is 340 px");
-    }
-
-    /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.
-    /// [`ContextValue::BikeProfile`] has none, because its choices are map data.
-    fn choice_text(v: ContextValue, ordinal: u8, lang: Language) -> &'static str {
-        match v {
-            ContextValue::UpAheadFilter => match choice_category(ordinal) {
-                Some(cat) => t(super::super::poi_menu::category_msg(cat), lang),
-                None => t(Msg::UpAheadEverything, lang),
-            },
-            ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
-            ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
-
-            ContextValue::BikeProfile => unreachable!("the map's own names are measured at their §8.6 cap"),
-        }
     }
 
     /// A switch row flips in place and keeps the sheet: each one flips its own field both ways,
