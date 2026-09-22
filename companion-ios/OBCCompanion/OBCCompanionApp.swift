@@ -56,6 +56,7 @@ struct OBCCompanionApp: App {
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
+                lastBikeType: Self.makeLastBikeTypeStore(),
                 reachability: Self.makeReachability(),
                 updateSurface: Self.makeUpdateSurfaceStore(),
                 updateNotifier: SystemUpdateNotifier(),
@@ -86,6 +87,17 @@ struct OBCCompanionApp: App {
         .backgroundTask(.appRefresh(BackgroundUpdateRefresh.identifier)) {
             await BackgroundUpdateRefresh.run()
         }
+    }
+
+    /// Mock runs start from Road on every launch, like their in-memory library.
+    static func makeLastBikeTypeStore() -> LastBikeTypeStore {
+        #if DEBUG
+        if mockControl != nil, let defaults = UserDefaults(suiteName: "obc.mock") {
+            defaults.removePersistentDomain(forName: "obc.mock")
+            return LastBikeTypeStore(defaults: defaults)
+        }
+        #endif
+        return LastBikeTypeStore()
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {

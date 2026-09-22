@@ -37,15 +37,18 @@ public final class ImportFlowModel {
     /// Bond state at arrival picks the framing. A narrow closure, not the whole `BondStore`,
     /// because the launch flow owns the record itself.
     private let isBonded: () -> Bool
+    private let lastBikeType: LastBikeTypeStore
 
     public init(
         decode: @escaping (Data, String) throws -> ImportedRoute,
         library: any LibraryStore,
-        isBonded: @escaping () -> Bool
+        isBonded: @escaping () -> Bool,
+        lastBikeType: LastBikeTypeStore = LastBikeTypeStore()
     ) {
         self.decode = decode
         self.library = library
         self.isBonded = isBonded
+        self.lastBikeType = lastBikeType
     }
 
     // MARK: Opening a file
@@ -77,7 +80,8 @@ public final class ImportFlowModel {
                 route: route,
                 fileName: fileName,
                 fileData: data,
-                noDevicePaired: !isBonded()
+                noDevicePaired: !isBonded(),
+                bikeType: lastBikeType.value
             )
             // A route by this name is already saved, so offer update-in-place against new.
             if let existing = plannedRoute(named: route.name ?? fileName) {
@@ -171,6 +175,8 @@ public struct PendingImport: Identifiable, Sendable {
     public let fileData: Data
     /// Bond state at arrival, which picks the framing.
     public let noDevicePaired: Bool
+    /// The rider's last-used type at arrival.
+    public let bikeType: BikeType
     /// The existing route this import replaces, or nil for a fresh import. Its id and device
     /// object id carry through.
     public var replacing: PlannedRouteRecord? = nil
@@ -180,12 +186,14 @@ public struct PendingImport: Identifiable, Sendable {
         fileName: String,
         fileData: Data,
         noDevicePaired: Bool,
+        bikeType: BikeType = .road,
         replacing: PlannedRouteRecord? = nil
     ) {
         self.route = route
         self.fileName = fileName
         self.fileData = fileData
         self.noDevicePaired = noDevicePaired
+        self.bikeType = bikeType
         self.replacing = replacing
     }
 
@@ -214,6 +222,7 @@ public struct PendingImport: Identifiable, Sendable {
         PlannedRouteRecord(
             summary: detail.summary,
             route: route,
+            bikeType: bikeType,
             sourceFileName: fileName,
             sourceFileData: fileData,
             deviceLink: replacing?.deviceLink,

@@ -44,6 +44,7 @@ struct RootView: View {
         transport: any DeviceTransport,
         bondStore: any BondStore,
         library: any LibraryStore = InMemoryLibraryStore(),
+        lastBikeType: LastBikeTypeStore = LastBikeTypeStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
         updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
@@ -70,6 +71,7 @@ struct RootView: View {
         ))
         _mainModel = State(initialValue: MainScreenModel(
             transport: transport, library: library,
+            lastBikeType: lastBikeType,
             syncTiming: syncTiming,
             // Once per established connection, push the bond record's desired name if the device
             // config disagrees, which heals a rename whose write never landed.
@@ -83,7 +85,8 @@ struct RootView: View {
                 try importer.importRoute(from: data, fileExtension: (fileName as NSString).pathExtension)
             },
             library: library,
-            isBonded: { bondStore.load() != nil }
+            isBonded: { bondStore.load() != nil },
+            lastBikeType: lastBikeType
         ))
         _reachability = State(initialValue: ReachabilityStore(reachability))
         // The runner is the same type the background refresh runs, so the sheet and the
@@ -256,6 +259,7 @@ struct RootView: View {
             activity: transferActivity,
             route: pending.route,
             fileName: pending.fileName,
+            bikeType: pending.bikeType,
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
                     // A trip is app-local, so the picker works with no device paired just the same.
@@ -334,6 +338,7 @@ struct RootView: View {
                     preloadedDetail: mainModel.importedDetail(for: id),
                     // And their geometry, which an upload re-encodes.
                     plannedGeometry: mainModel.plannedGeometry(for: id),
+                    bikeType: mainModel.plannedBikeType(for: id),
                     // And the device link, so a re-upload replaces in place and the button knows
                     // whether the copy is current.
                     deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
@@ -344,6 +349,7 @@ struct RootView: View {
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
+                    onBikeTypeChange: { mainModel.setBikeType(id, to: $0) },
                     // Reverse lands a flipped copy alongside the original and opens it.
                     onReverse: {
                         if let reversedID = mainModel.reverseRoute(id) {

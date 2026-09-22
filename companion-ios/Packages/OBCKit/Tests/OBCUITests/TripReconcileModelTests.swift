@@ -70,7 +70,7 @@ struct TripReconcileModelTests {
         // and the badge reads current.
         let name = model.routes.first { $0.id == routeID }!.name
         let geometry = model.plannedGeometry(for: routeID)!
-        let payload = RouteObjectCodec.encode(points: geometry.points, waypoints: geometry.waypoints, name: name)
+        let payload = RouteObjectCodec.encode(points: geometry.points, waypoints: geometry.waypoints, name: name, bikeType: .road)
         let blob = RouteBlob(
             summary: RouteSummary(id: routeID, name: name, distanceMeters: 2000, elevationGainMeters: 40),
             waypoints: [], payload: payload,

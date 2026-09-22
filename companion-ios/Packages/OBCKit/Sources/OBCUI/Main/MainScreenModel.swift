@@ -77,6 +77,7 @@ public final class MainScreenModel {
 
     private let transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock
     private let library: any LibraryStore
+    private let lastBikeType: LastBikeTypeStore
     /// Runs once per established connection. Nil in tests and previews skips it.
     private let nameReconciler: DeviceNameReconciler?
     /// Device rides deleted on the phone. The merge hides them so a sync cannot restore them.
@@ -117,6 +118,7 @@ public final class MainScreenModel {
     public init(
         transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock,
         library: any LibraryStore = InMemoryLibraryStore(),
+        lastBikeType: LastBikeTypeStore = LastBikeTypeStore(),
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
         nameReconciler: DeviceNameReconciler? = nil,
         transferActivity: TransferActivity? = nil,
@@ -124,6 +126,7 @@ public final class MainScreenModel {
     ) {
         self.transport = transport
         self.library = library
+        self.lastBikeType = lastBikeType
         self.nameReconciler = nameReconciler
         self.transferActivity = transferActivity
         self.now = now
@@ -387,7 +390,8 @@ public final class MainScreenModel {
             .sorted { $0.id.rawValue < $1.id.rawValue }
         for record in candidates {
             let payload = RouteObjectCodec.encode(
-                points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name)
+                points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name,
+                bikeType: record.bikeType)
             let currentCRC = CRC32.checksum(payload)
             guard let entry = adoptable.first(where: { entry in
                 guard !claimed.contains(entry.id) else { return false }
@@ -671,7 +675,8 @@ public final class MainScreenModel {
     private func makeStageBlob(_ routeID: RouteID, target: DeviceObjectID?) -> RouteBlob? {
         guard let record = plannedRecords[routeID] else { return nil }
         let payload = RouteObjectCodec.encode(
-            points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name)
+            points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name,
+            bikeType: record.bikeType)
         guard !payload.isEmpty else { return nil }
         return RouteBlob(
             summary: record.summary, waypoints: record.route.waypoints,
@@ -894,6 +899,21 @@ public final class MainScreenModel {
         }
     }
 
+    /// Set a planned route's bike type, and make it the type the next import starts with. The type
+    /// rides in the payload, so the change out-dates the device copy until the next upload.
+    public func setBikeType(_ id: RouteID, to type: BikeType) {
+        lastBikeType.value = type
+        guard var record = plannedRecords[id] else { return }
+        record.bikeType = type
+        record.summary.estimatedDuration = type.estimatedDuration(
+            distanceMeters: record.summary.distanceMeters, ascentMeters: record.summary.elevationGainMeters)
+        plannedRecords[id] = record
+        library.savePlannedRoute(record)
+        if let index = routes.firstIndex(where: { $0.id == id }) { routes[index] = record.summary }
+        refreshOnDeviceStates()
+        rebuildPlannedItems()
+    }
+
     /// Rename a tracked ride, with the same phone-local rule. A summary-only write: the
     /// tracklog on disk is untouched.
     public func renameRide(_ id: RideID, to name: String) {
@@ -926,15 +946,18 @@ public final class MainScreenModel {
     public func reverseRoute(_ id: RouteID) -> RouteID? {
         guard let original = plannedRecords[id] else { return nil }
         let reversedRoute = original.route.reversed()
-        let stats = RouteStats.compute(from: reversedRoute.points)
+        // The header figures, as an import saves them.
+        let totals = RouteObjectCodec.totals(points: reversedRoute.points)
+        let distance = Double(totals?.distanceMeters ?? 0)
+        let climb = Double(totals?.ascentMeters ?? 0)
         let name = RouteReversal.reversedName(original.summary.name)
         let newID = RouteID("reversed-\(UUID().uuidString.lowercased())")
         let summary = RouteSummary(
             id: newID,
             name: name,
-            distanceMeters: stats.distanceMeters,
-            elevationGainMeters: stats.elevationGainMeters,
-            estimatedDuration: stats.estimatedDuration,
+            distanceMeters: distance,
+            elevationGainMeters: climb,
+            estimatedDuration: original.bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: climb),
             pointCount: reversedRoute.points.count,
             source: original.summary.source,
             trackPreview: TrackPreview.normalizing(reversedRoute.points.map(\.coordinate))
@@ -943,6 +966,7 @@ public final class MainScreenModel {
         let record = PlannedRouteRecord(
             summary: summary,
             route: reversedRoute,
+            bikeType: original.bikeType,
             sourceFileName: original.sourceFileName,
             sourceFileData: original.sourceFileData,
             addedAt: now()
@@ -973,6 +997,10 @@ public final class MainScreenModel {
     /// device-listed route the phone never imported.
     public func plannedGeometry(for id: RouteID) -> ImportedRoute? {
         plannedRecords[id]?.route
+    }
+
+    public func plannedBikeType(for id: RouteID) -> BikeType {
+        plannedRecords[id]?.bikeType ?? .road
     }
 
     /// A synced ride's full tracklog, read from the store on demand: the interactive map draws

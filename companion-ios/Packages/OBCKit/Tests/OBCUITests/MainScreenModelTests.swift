@@ -769,7 +769,7 @@ final class MainScreenModelTests: XCTestCase {
             summary: renamed.summary, waypoints: renamed.route.waypoints,
             payload: RouteObjectCodec.encode(
                 points: renamed.route.points, waypoints: renamed.route.waypoints,
-                name: renamed.summary.name),
+                name: renamed.summary.name, bikeType: renamed.bikeType),
             targetObjectID: model.plannedDeviceObjectID(for: renamed.id))
         _ = await MockTransport(control: control).uploadRoute(blob).outcome
         XCTAssertEqual(

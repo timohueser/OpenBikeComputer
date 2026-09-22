@@ -129,7 +129,7 @@ import OBCDomain
         let reversed = ImportedRoute(name: "Flat", points: points).reversed()
         #expect(reversed.points.map(\.elevationMeters) == [nil, nil, nil])
         // Encodes without an elevation-driven trap; ascent/descent both zero.
-        let decoded = try? RouteObjectCodec.decode(RouteObjectCodec.encode(reversed, name: "Flat"))
+        let decoded = try? RouteObjectCodec.decode(RouteObjectCodec.encode(reversed, name: "Flat", bikeType: .road))
         #expect(decoded?.totalAscentMeters == 0)
         #expect(decoded?.totalDescentMeters == 0)
     }
@@ -147,8 +147,8 @@ import OBCDomain
         let forward = ImportedRoute(name: "Climb", points: Self.climbingPoints, waypoints: waypoints)
         let reversed = forward.reversed()
 
-        let f = try RouteObjectCodec.decode(RouteObjectCodec.encode(forward, name: "Climb"))
-        let r = try RouteObjectCodec.decode(RouteObjectCodec.encode(reversed, name: "Climb"))
+        let f = try RouteObjectCodec.decode(RouteObjectCodec.encode(forward, name: "Climb", bikeType: .road))
+        let r = try RouteObjectCodec.decode(RouteObjectCodec.encode(reversed, name: "Climb", bikeType: .road))
 
         #expect(r.totalDistanceMeters == f.totalDistanceMeters)
         #expect(f.totalAscentMeters > 0)
