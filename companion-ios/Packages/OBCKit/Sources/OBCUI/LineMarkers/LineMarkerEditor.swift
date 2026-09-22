@@ -7,14 +7,12 @@ import OBCDomain
 /// drags.
 public struct LineMarkerEditor: View {
     let model: LineMarkerEditorModel
-    var handleStyle: MarkerHandleStyle
     var mapHeight: CGFloat
 
     @Environment(\.obcIsOnline) private var isOnline
 
-    public init(model: LineMarkerEditorModel, handleStyle: MarkerHandleStyle = .knob, mapHeight: CGFloat = 240) {
+    public init(model: LineMarkerEditorModel, mapHeight: CGFloat = 240) {
         self.model = model
-        self.handleStyle = handleStyle
         self.mapHeight = mapHeight
     }
 
@@ -24,7 +22,7 @@ public struct LineMarkerEditor: View {
                 .frame(height: mapHeight)
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
                 .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
-            LineMarkerProfileView(model: model, style: handleStyle)
+            LineMarkerProfileView(model: model)
         }
         // One tick on grab and one on release, from either view.
         .sensoryFeedback(.impact(weight: .light), trigger: model.activeID)
@@ -39,8 +37,7 @@ public struct LineMarkerEditor: View {
                 model: model,
                 markers: model.markers,
                 activeID: model.activeID,
-                segmentColors: model.segmentColors,
-                style: handleStyle
+                segmentColors: model.segmentColors
             )
         } else {
             grid
