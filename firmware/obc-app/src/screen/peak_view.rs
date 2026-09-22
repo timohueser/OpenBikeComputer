@@ -132,10 +132,16 @@ impl PeakViewScreen {
             }
             Gesture::Press => {
                 if self.selected_source().is_some_and(|source| cx.landmarks.peak_source == Some(source))
-                    && cx.landmarks.ready()
-                    && cx.landmarks.article.is_some()
+                    && cx.landmarks.has_content()
                 {
                     cx.landmarks.page = 0;
+                    // A record with no text has only its photo, so Select opens that page itself.
+                    if cx.landmarks.article.is_none() {
+                        let Some(selection) = cx.landmarks.selection() else { return Transition::None };
+                        return Transition::Push(super::Screen::LandmarkPhoto(
+                            super::LandmarkPhotoScreen::content(selection, &cx.landmarks.name).linked(),
+                        ));
+                    }
                     cx.landmarks.reading = true;
                     return Transition::Push(super::Screen::PeakArticle(super::PeakArticleScreen {
                         selection: cx.landmarks.peak.unwrap(),
@@ -374,7 +380,7 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
         return;
     };
 
-    let info = rx.landmarks.peak_source == Some(peak.source) && rx.landmarks.ready() && rx.landmarks.article.is_some();
+    let info = rx.landmarks.peak_source == Some(peak.source) && rx.landmarks.has_content();
     // The info disc takes two cells off the name.
     let name_budget = ledger_budget - if info { 2 * Font::Label.char_width() as i32 } else { 0 };
     if info {

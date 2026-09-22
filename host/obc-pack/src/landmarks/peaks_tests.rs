@@ -320,3 +320,44 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
     assert!(reasons.contains("unsupported_license"));
     fs::remove_dir_all(f.root).unwrap();
 }
+
+/// A linked summit with a photo and no article in any supported language.
+#[test]
+fn a_photo_alone_is_a_peak_record_and_never_a_landmark() {
+    let mut f = Fixture { root: obcm_testkit::scratch::scratch_dir("landmarks", "photo-only"), sources: vec![] };
+    let image = f.photo("s", 20, FREE, &[], None, None);
+    let entity = json!({"entities":{"Q4":{"id":"Q4","labels":{"de":{"value":"Schafberg"}},"sitelinks":{},"claims":{
+        "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.5,"longitude":0.5,"globe":"http://www.wikidata.org/entity/Q2"}}}}],
+        "P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}],
+        "P18":[{"mainsnak":{"datavalue":{"value":"s.png"}}}]}}}});
+    f.json("entities/Q4.json", entity);
+    f.json("links/Q4.json", json!({"entities":{"Q4":{"id":"Q4"}}}));
+    f.json("classes/Q23413.json", json!({"entities":{"Q23413":{"claims":{"P279":[]}}}}));
+    let mut place = json!({"qid":"Q4","name":"Schafberg","articles":[],"images":[image]});
+    place["images"][0]["source"] = json!("P18");
+    let summit = json!({"node_id":1,"latitude":0.5,"longitude":0.5,"tags":{"natural":"peak","name":"Schafberg","wikidata":"Q4"}});
+    f.json("summits.json", json!({"schema":1,"osm_sha256":"a".repeat(64),"summits":[summit]}));
+    let resolutions = json!([{"node_id":1,"kind":"wikidata","path":"links/Q4.json","status":"resolved"}]);
+    let boundary = f.root.join("boundary.json");
+    fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
+    let mut snapshot = json!({"schema":1,"sources":f.sources,"places":[place]});
+    let landmarks = f.root.join("landmarks.json");
+    fs::write(&landmarks, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    snapshot["peaks"] = json!({"summits_path":"summits.json","resolutions":resolutions});
+    let manifest = f.root.join("manifest.json");
+    fs::write(&manifest, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+    let peaks = peaks::compile(&manifest, &boundary, &f.root.join("peaks"), false).unwrap();
+    assert_eq!((peaks.counts.texts, peaks.counts.images), (0, 1));
+    let record = &peaks.records[0].article;
+    assert!(record.variants.is_empty() && record.default_language.is_empty() && record.fallback_sources.is_empty());
+    assert_eq!((record.name.as_str(), record.photo.is_some()), ("Schafberg", true));
+    assert_eq!(peaks.associations.iter().map(|a| a.node_id).collect::<Vec<_>>(), [1]);
+    assert!(peaks.omissions.iter().any(|o| o.qid == "Q4" && o.reason == "no_usable_captured_language"));
+
+    let sites = super::compile(&landmarks, &boundary, &f.root.join("sites"), false).unwrap();
+    assert!(sites.records.is_empty() && sites.counts.candidates == 1);
+    assert!(sites.omissions.iter().any(|o| o.qid == "Q4" && o.reason == "no_usable_captured_language"));
+    assert_eq!(fs::read_dir(f.root.join("sites")).unwrap().count(), 1, "a refused landmark writes no photo");
+    fs::remove_dir_all(f.root).unwrap();
+}

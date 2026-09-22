@@ -86,6 +86,9 @@ pub fn load(paths: &[PathBuf]) -> Result<Peaks, String> {
             let a = r.article;
             let mut blobs =
                 crate::landmark_map::encode_content(root, &a.name, &a.default_language, &a.variants, a.photo.as_ref())?;
+            if blobs[1].is_empty() && blobs[2].is_empty() {
+                return Err("peak article with neither text nor a photo".into());
+            }
             for (slot, blob) in blobs.iter_mut().enumerate() {
                 if !blob.is_empty() {
                     let mut guarded = id.to_vec();
@@ -228,5 +231,29 @@ mod tests {
     }
     fn digest_id(id: &str) -> ArticleId {
         Sha256::digest(id.as_bytes()).into()
+    }
+    #[test]
+    fn a_record_with_a_photo_and_no_text_writes_an_absent_bundle() {
+        let root = obcm_testkit::scratch::scratch_dir("peak-map", "photo-only");
+        let pixels = vec![9; PHOTO_PIXELS];
+        fs::write(root.join("photo.rgb222"), &pixels).unwrap();
+        let digest: String = Sha256::digest(&pixels).iter().map(|b| format!("{b:02x}")).collect();
+        let credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Peak.png","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":"Example","display_pages":["Example"]});
+        let mut catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":crate::landmarks::Counts::default(),"omissions":[],
+            "records":[{"id":"Q7","name":"Schafberg","default_language":"","fallback_sources":[],"variants":[],
+            "photo":{"path":"photo.rgb222","bytes":PHOTO_PIXELS,"sha256":digest,"attribution":credit}}],
+            "associations":[{"node_id":101,"article_id":"Q7","latitude":0,"longitude":0}]});
+        let path = root.join("photo-only.json");
+        fs::write(&path, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+        let bytes = serialize(&load(std::slice::from_ref(&path)).unwrap()).unwrap();
+        let src = SliceSource(&bytes);
+        let d = Directory::read(&src).unwrap();
+        let record = d.record(&src, 0).unwrap();
+        assert!(record.content[1].is_absent(), "no text means no article bundle");
+        assert!(d.content(&src, &record, 0, MAX_NAME_BYTES).is_ok());
+        assert!(d.content(&src, &record, 2, PHOTO_MAX_COMPRESSED as u32).is_ok());
+        catalogue["records"][0]["photo"] = json!(null);
+        fs::write(&path, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+        assert!(load(std::slice::from_ref(&path)).is_err(), "a record with neither text nor a photo is refused");
     }
 }
