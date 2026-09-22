@@ -72,9 +72,15 @@ triggers = [
 name = "obc-sim"
 triggers = ["fixtures/catalog.toml"]
 
+# Both compile the shipped preset in with `include_str!` and own the guard that fails when the
+# skin-preview fixture no longer matches it; no Cargo edge carries that.
 [[package]]
 name = "obc-bake"
-triggers = ["host/obc-bake/regions.toml"]
+triggers = ["builder/presets/**", "host/obc-bake/regions.toml"]
+
+[[package]]
+name = "obc-skin-preview"
+triggers = ["builder/presets/**"]
 
 [[package]]
 name = "obc-bench"
