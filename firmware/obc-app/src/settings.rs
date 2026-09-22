@@ -640,7 +640,7 @@ mod tests {
         let mut old = encode(&expected);
         old[0] = 22;
         let old_payload_len = off::theme;
-        let crc = crate::store_meta::crc16(&old[..old_payload_len]);
+        let crc = crate::crc16::crc16(&old[..old_payload_len]);
         old[old_payload_len..old_payload_len + 2].copy_from_slice(&crc.to_le_bytes());
 
         assert_eq!(decode(&old), Some(expected));
