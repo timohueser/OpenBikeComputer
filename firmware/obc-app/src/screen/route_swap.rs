@@ -126,9 +126,8 @@ impl RouteSwapScreen {
         if self.is_received() {
             match self.pending.and_then(|i| rx.routes.get(i)) {
                 Some(route) => {
-                    let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
                     let name_row = rect(12, TITLE_BAR_H + 16, w - 24, Font::Label.line_height() as i32);
-                    sub = rx.marquee.fit(&route.name, max, Some(name_row));
+                    sub = rx.marquee.fit(&route.name, w - 24, Font::Label, Some(name_row));
                 }
                 None => {
                     let _ = sub.push_str(rx.t(Msg::RouteSwapRouteRemoved));

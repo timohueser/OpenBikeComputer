@@ -183,7 +183,7 @@ impl FindPlaceScreen {
             poi.name.as_str()
         };
         let name_row = rect(18, 236, 15 * Font::Body.char_width() as i32, Font::Body.line_height() as i32);
-        let name = rx.marquee.fit(name, 15, Some(name_row));
+        let name = rx.marquee.fit(name, name_row.size.width as i32, Font::Body, Some(name_row));
         cv.text(&name, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
         if poi.opening == obc_reader::hours::OpeningStatus::Closed {
             cv.text(rx.t(Msg::AssistantClosed), Point::new(48, 212), Font::Label, TextAlign::Left, WARNING);
@@ -359,7 +359,8 @@ impl VisitReviewScreen {
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        let title = rx.marquee.fit(&self.name, 18, Some(rect(4, 4, rx.w - 8, 34)));
+        // The title is inset 14 px and clears the bar's right radius.
+        let title = rx.marquee.fit(&self.name, rx.w - 24, Font::Label, Some(rect(4, 4, rx.w - 8, 34)));
         cv.text(&title, Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
         cv.fill(panel(rx.w, rx.h, REVIEW_PANEL_TOP), PARCHMENT);
         if let Some(Costs { arrival_m, arrival_ascent_m, added_m, added_ascent_m }) = rx.find.review_costs {

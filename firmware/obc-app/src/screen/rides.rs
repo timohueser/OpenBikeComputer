@@ -90,8 +90,7 @@ impl RidesScreen {
             let text_x = bx + TEXT_INSET;
             let mark_cx = bx + row.area.size.width as i32 - MARK_RIGHT_GAP - MARK_HALF;
             let name_px = (mark_cx - MARK_HALF - 8) - text_x; // mark's left edge − gap − name start
-            let name_max = (name_px / Font::Body.char_width() as i32).max(6) as usize;
-            let name = rx.marquee.fit(&ride.name, name_max, row.scroll());
+            let name = rx.marquee.fit(&ride.name, name_px, Font::Body, row.scroll());
             cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, INK);
             if ride.synced {
                 let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_mid() as i32);

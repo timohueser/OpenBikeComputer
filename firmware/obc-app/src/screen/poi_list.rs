@@ -367,8 +367,8 @@ fn draw_poi_row(
 
     let name = if poi.name.is_empty() { poi_label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
     let name_top = top + 6;
-    let name_max = ((w - x - 12) / Font::Body.char_width() as i32).max(6) as usize;
-    cv.text(&marquee.fit(name, name_max, row.scroll()), Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
+    let name = marquee.fit(name, w - x - 12, Font::Body, row.scroll());
+    cv.text(&name, Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
 
     let line2_top = name_top + Font::Body.cap_bottom() as i32 + 4;
     if poi.opening == obc_reader::hours::OpeningStatus::Closed {
