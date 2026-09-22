@@ -2,6 +2,7 @@
 //! by the map serializer; this module emits bounded text, attribution and RGB222 assets.
 
 mod assets;
+pub mod discover;
 mod locale;
 pub mod peaks;
 mod photo;
@@ -111,6 +112,22 @@ pub struct Omission {
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
+fn is_qid(id: &str) -> bool {
+    id.starts_with('Q') && id[1..].parse::<u64>().ok().is_some_and(|value| value > 0)
+}
+fn file_digest(path: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if count == 0 {
+            return Ok(digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        digest.update(&buffer[..count]);
+    }
+}
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing {key}"))
 }
@@ -158,11 +175,7 @@ fn entity_ids(entity: &Value, property: &str) -> Vec<String> {
 fn class_ancestors(id: &str, entity: &Value) -> Result<Vec<String>, String> {
     if let Some(redirect) = entity.get("redirects") {
         let target = string(redirect, "to")?;
-        if redirect["from"] != id
-            || entity["id"] != target
-            || !target.starts_with('Q')
-            || target[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none()
-        {
+        if redirect["from"] != id || entity["id"] != target || !is_qid(target) {
             return Err(format!("invalid captured class redirect: {id}"));
         }
         return Ok(vec![target.to_owned()]);
@@ -252,9 +265,10 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
     let mut places = snapshot.places;
     places.sort_by_key(|place| place["qid"].as_str().unwrap_or("").to_owned());
     let mut seen = BTreeSet::new();
+    let mut loaded: Option<(String, Value)> = None;
     for place in places {
         let qid = string(&place, "qid")?.to_owned();
-        if !qid.starts_with('Q') || qid[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none() {
+        if !is_qid(&qid) {
             return Err("invalid QID".into());
         }
         if !seen.insert(qid.clone()) {
@@ -263,8 +277,19 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         let mut omit = |asset: &str, reason: String| {
             content.omissions.push(Omission { qid: qid.clone(), asset: asset.into(), reason })
         };
-        let raw_entity = json_pinned(root, &snapshot.sources, &format!("entities/{qid}.json"))?;
-        let entity = &raw_entity["entities"][&qid];
+        // A place names the response its entity arrived in. `wbgetentities` takes fifty ids per
+        // call, so one response usually holds many places; a capture that asked for the entity
+        // alone names none, and it is at the one-entity path. Places are read in the order they
+        // were captured in, so the response a place needs is the one already in hand.
+        let path = match place.get("entity_path").and_then(Value::as_str) {
+            Some(path) => path.to_owned(),
+            None => format!("entities/{qid}.json"),
+        };
+        if !matches!(&loaded, Some((held, _)) if *held == path) {
+            let raw = json_pinned(root, &snapshot.sources, &path)?;
+            loaded = Some((path, raw));
+        }
+        let entity = &loaded.as_ref().expect("the response just loaded").1["entities"][&qid];
         if entity["id"] != qid {
             omit("site", "entity_identity_mismatch".into());
             continue;

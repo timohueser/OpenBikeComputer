@@ -80,15 +80,18 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
     pin("locales/Q29.json", "https://www.wikidata.org/wiki/Special:EntityData/Q29.json",
         serde_json::to_vec(&json!({"entities":{"Q29":{"id":"Q29", "claims":{"P37":[{"mainsnak":{"datavalue":{"value":{"id":"Q1321"}}}}]}}}})).unwrap());
     let mut places = Vec::new();
+    // One `wbgetentities` response holds both places, the way the capture batches them.
+    let batch = "entities/batch-0.json";
+    let mut entities = serde_json::Map::new();
     for qid in ["Q1", "Q2"] {
-        let entity = json!({"entities":{qid:{"id":qid,"labels":{"de":{"value":"Burg"}, "es":{"value":"Castillo"}},
+        let entity = json!({"id":qid,"labels":{"de":{"value":"Burg"}, "es":{"value":"Castillo"}},
         "sitelinks":{"dewiki":{"title":"Burg"}, "enwiki":{"title":"Castle"}, "eswiki":{"title":"Castillo"}},"claims":{
             "P17":[{"mainsnak":{"datavalue":{"value":{"id":"Q29"}}}}],
             "P31":[{"rank":"preferred","mainsnak":{"datavalue":{"value":{"id":"Q999"}}}},
                 {"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q35666"}}}}],
             "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]
-        }}}});
-        pin(&format!("entities/{qid}.json"), "https://www.wikidata.org/", serde_json::to_vec(&entity).unwrap());
+        }});
+        entities.insert(qid.into(), entity);
         let query = json!({"query":{"pages":{"1":{"title":"Burg","revisions":[{"revid":42}]}}}});
         let path = format!("articles/{qid}.json");
         pin(&path, "https://de.wikipedia.org/w/api.php", serde_json::to_vec(&query).unwrap());
@@ -115,8 +118,9 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
                 json!({"language":language,"title":title,"revision":42,"url":url,"path":path,"html_path":html_path}),
             );
         }
-        places.push(json!({"qid":qid,"articles":articles,"images":[]}));
+        places.push(json!({"qid":qid,"entity_path":batch,"articles":articles,"images":[]}));
     }
+    pin(batch, "https://www.wikidata.org/", serde_json::to_vec(&json!({"entities":entities})).unwrap());
     let manifest = root.join("manifest.json");
     fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
     let boundary = root.join("boundary.json");
@@ -141,7 +145,7 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
         .all(|record| record.variants.iter().map(|v| v.language.as_str()).collect::<Vec<_>>() == ["de", "es"]));
     compile(&manifest, &boundary, &root.join("second")).unwrap();
     assert_eq!(fs::read(root.join("first/content.json")).unwrap(), fs::read(root.join("second/content.json")).unwrap());
-    fs::write(root.join("entities/Q1.json"), b"changed source").unwrap();
+    fs::write(root.join(batch), b"changed source").unwrap();
     assert!(compile(&manifest, &boundary, &root.join("changed")).unwrap_err().contains("source size changed"));
     fs::remove_dir_all(root).unwrap();
 }
