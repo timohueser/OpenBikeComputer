@@ -1,10 +1,9 @@
 //! Device identity and the small read-only blobs, as plain bytes.
 //!
-//! On BLE these are separately-addressed GATT attributes (three DIS strings, `config`,
-//! `protocolVersion`). Over USB the device strings are the payload of one EP0 vendor request and the
-//! rest is not carried at all: `config` keeps the BLE characteristic it always had, and the wire
-//! major is a descriptor fact rather than a read. Both links serve the same bytes, so the codecs
-//! live here and each transport decides only how to address and deliver them.
+//! On BLE these are separately-addressed GATT attributes (three DIS strings and `config`). Over USB
+//! the device strings are the payload of one EP0 vendor request and `config` is not carried. Both
+//! links serve the same identity bytes, so the codecs live here and each transport decides only how
+//! to address and deliver them.
 
 use core::cell::{Cell, RefCell};
 
@@ -13,8 +12,8 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use obc_ble::Config;
 use obc_dfu::{ImageHeader, FW_VERSION_LEN};
 
-use crate::object_store::ObjectStore;
-use crate::SharedStore;
+use crate::link_control::LinkControl;
+use crate::SharedSettings;
 
 /// `FICR.INFO.DEVICEID[0]`, the low word of the 64-bit factory device id. Read raw, because
 /// embassy-nrf's `pac` re-export does not expose FICR. [`serial_string`] builds the full
@@ -41,7 +40,7 @@ pub(crate) fn device_name() -> heapless::String<8> {
 /// The device's current name: the stored rename, or the factory `OBC-XXXX` when unset. The one
 /// source the advertised name and every `config` read resolve from, so the two cannot disagree about
 /// what the device is called.
-pub(crate) fn resolved_name(store: &ObjectStore) -> heapless::String<48> {
+pub(crate) fn resolved_name(store: &LinkControl) -> heapless::String<48> {
     let stored = store.settings().device_name;
     let mut s: heapless::String<48> = heapless::String::new();
     if stored.is_empty() {
@@ -123,7 +122,7 @@ pub(crate) const HARDWARE_REVISION: &str = "nrf54lm20-dk";
 
 /// The canonical Config blob from the persisted settings: the stored rename, or the factory name
 /// when unset, plus the units. Every caller copies out of the returned buffer immediately.
-pub(crate) fn config_bytes(store: &ObjectStore) -> ([u8; Config::MAX_ENCODED], usize) {
+pub(crate) fn config_bytes(store: &LinkControl) -> ([u8; Config::MAX_ENCODED], usize) {
     let name = resolved_name(store);
     let units = if store.settings().units.is_imperial() { 1 } else { 0 };
     let cfg = Config { name: name.as_bytes(), units };
@@ -135,7 +134,7 @@ pub(crate) fn config_bytes(store: &ObjectStore) -> ([u8; Config::MAX_ENCODED], u
 /// Validate and apply a `config` write: units and a rename persist to the RRAM settings. Returns
 /// whether the blob was accepted; a malformed blob or a non-UTF-8 name changes nothing, and the
 /// caller reports the rejection in its own transport's vocabulary.
-pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> bool {
+pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<LinkControl>, shared: &mut SharedSettings) -> bool {
     match Config::decode(data) {
         Some(cfg) => match core::str::from_utf8(cfg.name) {
             Ok(name) => {

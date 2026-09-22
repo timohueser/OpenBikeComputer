@@ -1,7 +1,6 @@
 //! The dismissable warning notice: the device runs, but something a rider must know is wrong — a
-//! sensor that did not answer the I²C probe, a map that reads slowly, a failed ride-log write, or
-//! a failed settings write. The device stays usable, so this card is advisory and any press
-//! dismisses it.
+//! sensor that did not answer the I²C probe, a failed ride-log write, or a failed settings write.
+//! The device stays usable, so this card is advisory and any press dismisses it.
 //!
 //! Warnings coalesce onto one card, and each flag shows once per boot: a dismissed notice does
 //! not nag, but a new flag re-opens the card.
@@ -29,8 +28,6 @@ impl WarningFlags {
     pub const NO_ALTIMETER: WarningFlags = WarningFlags(1 << 1);
     /// The compass / IMU didn't answer the boot I²C probe.
     pub const NO_COMPASS: WarningFlags = WarningFlags(1 << 2);
-    /// The map loaded, but its extent table was refused, so reads use the slow FAT-seek path.
-    pub const MAP_SLOW: WarningFlags = WarningFlags(1 << 3);
     /// A ride-log write did not happen mid-ride, so the log is incomplete or at risk of it.
     pub const REC_ERROR: WarningFlags = WarningFlags(1 << 4);
     /// A settings write did not reach the persistent store. The value stays live in RAM and the
@@ -157,13 +154,6 @@ impl WarningScreen {
             y += line + line / 2;
         }
 
-        if self.flags.contains(WarningFlags::MAP_SLOW) {
-            cv.text("Slow map reads", Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
-            y += line + 2;
-            cv.text("Re-copy the map.", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
-            y += line + line / 2;
-        }
-
         // The headline is in the warning colour: this is data loss, not only a slowdown.
         if self.flags.contains(WarningFlags::REC_ERROR) {
             cv.text("Recording error", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
@@ -218,10 +208,10 @@ mod tests {
         let mut f = WarningFlags::NONE;
         assert!(f.is_empty());
         f |= WarningFlags::NO_GPS;
-        f |= WarningFlags::MAP_SLOW;
+        f |= WarningFlags::STORAGE_ERROR;
         assert!(!f.is_empty());
         assert!(f.contains(WarningFlags::NO_GPS));
-        assert!(f.contains(WarningFlags::MAP_SLOW));
+        assert!(f.contains(WarningFlags::STORAGE_ERROR));
         assert!(!f.contains(WarningFlags::NO_COMPASS));
         assert!(f.any_sensor());
         // An empty flag never reports as present.
@@ -229,10 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn map_slow_alone_is_not_a_sensor_warning() {
-        let f = WarningFlags::MAP_SLOW;
+    fn storage_error_alone_is_not_a_sensor_warning() {
+        let f = WarningFlags::STORAGE_ERROR;
         assert!(!f.any_sensor());
-        assert!(f.contains(WarningFlags::MAP_SLOW));
+        assert!(f.contains(WarningFlags::STORAGE_ERROR));
     }
 
     #[test]
@@ -240,10 +230,10 @@ mod tests {
         let f = WarningFlags::REC_ERROR;
         assert!(!f.any_sensor());
         assert!(f.contains(WarningFlags::REC_ERROR));
-        assert!(!f.contains(WarningFlags::MAP_SLOW));
-        let both = WarningFlags::REC_ERROR | WarningFlags::MAP_SLOW;
+        assert!(!f.contains(WarningFlags::STORAGE_ERROR));
+        let both = WarningFlags::REC_ERROR | WarningFlags::STORAGE_ERROR;
         assert!(both.contains(WarningFlags::REC_ERROR));
-        assert!(both.contains(WarningFlags::MAP_SLOW));
+        assert!(both.contains(WarningFlags::STORAGE_ERROR));
     }
 
     #[test]

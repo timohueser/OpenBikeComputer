@@ -79,33 +79,25 @@ const BOOT_COUNT_OFFSET: u32 = 2048;
 /// The boot-counter line's tag; anything else there reads as count 0 rather than garbage.
 const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
 
-/// Byte offset of the durable object-id high-water line: one 16-byte line holding the next fresh
-/// route and ride object id, so an id is never reused after a delete.
-///
 /// The carve layout is: settings slot @0 (the low 2 KB stays reserved for its future two-slot
-/// upgrade), boot counter @2048, arm marker @2064 (48 B), id high-water @2560, @2576 retired, BLE
+/// upgrade), boot counter @2048, arm marker @2064 (48 B), @2560 and @2576 retired, BLE
 /// bond @3072 (64 B). A retired offset must not be reused without a fresh magic, because a device
 /// that carries the old bytes would decode them as the new record.
-const ID_MARKS_OFFSET: u32 = 2560;
-/// The id line is one RRAM write line by construction — pin it so a codec growth fails loud.
-const _: () = assert!(obc_app::store_meta::ID_MARKS_LEN == RRAM_WRITE_LINE);
+const RETIRED_ID_MARKS_OFFSET: u32 = 2560;
 
 /// Byte offset of the DFU arm-marker slot: the armer's breadcrumb, written right after the `Armed`
 /// boot-state write and consumed by the boot-outcome reconcile on the next boot. A torn slot reads
 /// as "no arm happened".
 const ARM_MARKER_OFFSET: u32 = 2064;
-/// The marker is whole RRAM write lines by construction, and must stay clear of the id high-water
-/// line.
+/// The marker is whole RRAM write lines by construction, and must stay clear of retired records.
 const _: () = assert!(obc_app::dfu::ARM_MARKER_LEN.is_multiple_of(RRAM_WRITE_LINE));
-const _: () = assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 <= ID_MARKS_OFFSET);
+const _: () = assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 <= RETIRED_ID_MARKS_OFFSET);
 
 /// Byte offset of the BLE bond slot: the one bonded peer's identity and keys (LTK and IRK),
 /// persisted so a power cycle or a firmware reflash lands straight back in the bonded and encrypted
 /// link. One slot: a fresh pairing replaces it.
 const BOND_OFFSET: u32 = 3072;
-/// The id high-water line must end at or before the bond slot. Asserted here, where `BOND_OFFSET`
-/// is in scope.
-const _: () = assert!(ID_MARKS_OFFSET + obc_app::store_meta::ID_MARKS_LEN as u32 <= BOND_OFFSET);
+const _: () = assert!(RETIRED_ID_MARKS_OFFSET + RRAM_WRITE_LINE as u32 <= BOND_OFFSET);
 /// The bond slot's tag; anything else there reads as "no bond" rather than garbage, and the device
 /// falls back to open pairing. `OBCP` is distinct from the boot-state page's `OBCB` and the boot
 /// counter's `OBCD`, so the magic discriminates these separate CRC-framed RRAM records.
@@ -270,30 +262,6 @@ impl RramSettingsStore {
         let off = region_offset() + ARM_MARKER_OFFSET;
         if let Err(e) = self.rram.write(off, &[0u8; obc_app::dfu::ARM_MARKER_LEN]) {
             defmt::warn!("dfu: arm-marker RRAM clear failed: {}", e);
-        }
-    }
-
-    /// Load the durable object-id high-water marks, or `None` when the line is blank, torn or a
-    /// foreign layout. No floor means allocation falls back to scan-max plus 1.
-    pub fn load_id_marks(&mut self) -> Option<obc_app::store_meta::IdMarks> {
-        let off = region_offset() + ID_MARKS_OFFSET;
-        let mut buf = [0u8; obc_app::store_meta::ID_MARKS_LEN];
-        match self.rram.read(off, &mut buf) {
-            Ok(()) => obc_app::store_meta::decode_id_marks(&buf),
-            Err(e) => {
-                defmt::warn!("settings: id-marks RRAM read failed: {} → no floor (scan-max+1)", e);
-                None
-            }
-        }
-    }
-
-    /// Persist the id high-water marks: one aligned 16-byte line write, no erase. Called once per
-    /// id assignment, so the write rate is negligible.
-    pub fn save_id_marks(&mut self, m: &obc_app::store_meta::IdMarks) {
-        let off = region_offset() + ID_MARKS_OFFSET;
-        let bytes = obc_app::store_meta::encode_id_marks(m);
-        if let Err(e) = self.rram.write(off, &bytes) {
-            defmt::warn!("settings: id-marks RRAM write failed: {}", e);
         }
     }
 

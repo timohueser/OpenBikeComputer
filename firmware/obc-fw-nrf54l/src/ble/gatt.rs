@@ -1,7 +1,7 @@
 use trouble_host::prelude::*;
 
 use crate::link::identity;
-use crate::object_store::ObjectStore;
+use crate::link_control::LinkControl;
 
 /// The dynamic L2CAP SPSM the CoC server listens on, published in the `psm` characteristic. A fixed
 /// value in the LE dynamic range (`0x0080..=0x00FF`): the app reads whatever we advertise, so a
@@ -94,7 +94,7 @@ const ADV_NAME_MAX: usize = 29;
 /// the next advertising start. The current connection's GAP name keeps the boot value, because the
 /// Config characteristic, not GAP, is authoritative. Truncated to the scan-response budget on a char
 /// boundary; the full name still serves on the `config` read.
-pub(crate) fn advertised_name(store: &ObjectStore) -> heapless::String<48> {
+pub(crate) fn advertised_name(store: &LinkControl) -> heapless::String<48> {
     let full = identity::resolved_name(store);
     let name = full.as_str();
     let mut end = name.len().min(ADV_NAME_MAX);
@@ -143,7 +143,7 @@ pub(crate) fn device_address() -> Address {
 
 /// The canonical Config blob as a GATT attribute value. Served on the `config` read and re-seeded
 /// after every accepted write, so reads always return canonical bytes.
-pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
+pub(crate) fn config_blob(store: &LinkControl) -> heapless09::Vec<u8, 128> {
     let (buf, len) = identity::config_bytes(store);
     gatt_vec(&buf[..len])
 }

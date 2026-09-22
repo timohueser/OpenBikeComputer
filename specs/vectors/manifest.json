@@ -1,6 +1,6 @@
 {
   "spec": "obc-ble-interface-spec.md",
-  "protocol_version": 2,
+  "protocol_version": 4,
   "crc32_check": {
     "input": "123456789",
     "value": "0xCBF43926"
@@ -10,9 +10,9 @@
     "command": "3C920001-9916-4EBA-ABC2-342FE08F6B10",
     "status": "3C920002-9916-4EBA-ABC2-342FE08F6B10",
     "config": "3C920004-9916-4EBA-ABC2-342FE08F6B10",
-    "transfer_control": "3C920005-9916-4EBA-ABC2-342FE08F6B10",
     "psm": "3C920007-9916-4EBA-ABC2-342FE08F6B10",
-    "protocol_version": "3C920008-9916-4EBA-ABC2-342FE08F6B10"
+    "protocol_version": "3C920008-9916-4EBA-ABC2-342FE08F6B10",
+    "object_control": "3C920009-9916-4EBA-ABC2-342FE08F6B10"
   },
   "fixtures": {
     "route-waypoints.obcr": {
@@ -254,50 +254,6 @@
       "name": "OBC Tourer",
       "units": "metric (0)"
     },
-    "transfer-upload-start.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
-      "op": 1,
-      "type": 1,
-      "object_id": 65535,
-      "total_len": 420,
-      "crc32": "0x75A4426E"
-    },
-    "transfer-download-request.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
-      "op": 2,
-      "type": 7,
-      "object_id": 0,
-      "total_len": 0,
-      "crc32": "0x0"
-    },
-    "transfer-abort.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
-      "op": 3,
-      "type": 1,
-      "object_id": 65535,
-      "total_len": 0,
-      "crc32": "0x0"
-    },
-    "status-transfer-result.bin": {
-      "format": "status msg 1 (spec 4.3)",
-      "msg": 1,
-      "object_id": 7,
-      "status": "committed (0)",
-      "committed_offset": 420
-    },
-    "status-transfer-storage-full.bin": {
-      "format": "status msg 1 (spec 4.3)",
-      "msg": 1,
-      "object_id": 65535,
-      "status": "storageFull (6)",
-      "committed_offset": 0
-    },
-    "status-store-changed.bin": {
-      "format": "status msg 2 (spec 4.3)",
-      "msg": 2,
-      "type": 1,
-      "revision": 42
-    },
     "status-command-result.bin": {
       "format": "status msg 3 (spec 4.3)",
       "msg": 3,
@@ -343,80 +299,6 @@
       "signature": "a9daca893a22b6e8b6a3d3390a40e240b506fb8bab5d936ca7511741cabb906e7545447724ea032524219f5f031e21124ab24e02ea827894c9b7c37444c56103",
       "object_id": 0
     },
-    "route-list.bin": {
-      "format": "routeList object (spec 7.4), 6-byte header and 76-byte entries",
-      "byte_len": 234,
-      "version": 2,
-      "entry_len": 76,
-      "count": 3,
-      "entries": [
-        {
-          "object_id": 7,
-          "byte_len": 420,
-          "distance_m": 2207,
-          "ascent_m": 76,
-          "point_count": 9,
-          "waypoint_count": 2,
-          "name": "Vector Loop",
-          "crc32": "0x75A4426E"
-        },
-        {
-          "object_id": 8,
-          "byte_len": 260,
-          "distance_m": 2207,
-          "ascent_m": 76,
-          "point_count": 9,
-          "waypoint_count": 0,
-          "name": "Vector Loop",
-          "crc32": "0x1B26FEAF"
-        },
-        {
-          "object_id": 9,
-          "byte_len": 260,
-          "distance_m": 2207,
-          "ascent_m": 76,
-          "point_count": 9,
-          "waypoint_count": 0,
-          "name": "Vector Loop",
-          "crc32": "0x1B26FEAF"
-        }
-      ],
-      "total": 3,
-      "crc32": "0x601F732E"
-    },
-    "version-read.bin": {
-      "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32 · obcm_version u8",
-      "byte_len": 7,
-      "version": 2,
-      "store_epoch": "0xA1B2C3D4",
-      "obcm_version": 18
-    },
-    "version-read-noobcm.bin": {
-      "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
-      "byte_len": 6,
-      "version": 2,
-      "store_epoch": "0xA1B2C3D4",
-      "obcm_version": null,
-      "_note": "A firmware that predates the obcm_version byte. Decoders take the absent field as unknown (null/nil/None), never as 0 — obcm_version 0 would read as 'supports OBCM v0' and refuse every real map."
-    },
-    "version-read-nostore.bin": {
-      "format": "protocolVersion read (spec 1), no mounted store — version u16 only",
-      "byte_len": 2,
-      "version": 2,
-      "store_epoch": null,
-      "obcm_version": null,
-      "_note": "No card ⇒ no era to name, and the fields are positional, so there is no room for the obcm byte after an epoch that is not there. A reader must fail its ack closed rather than read epoch 0, which is a legal era."
-    },
-    "status-download-announce.bin": {
-      "format": "status msg 4 downloadAnnounce (spec 4.3) — msg byte + 12-byte descriptor",
-      "byte_len": 13,
-      "msg": 4,
-      "op": 2,
-      "type": 1,
-      "object_id": 7,
-      "total_len": 420,
-      "crc32": "0x75A4426E"
-    },
     "trip-v2.bin": {
       "format": "trip object v2 (spec 7.7) — 56-byte header + 8 bytes/stage, references flat ObjectIds",
       "byte_len": 80,
@@ -428,33 +310,7 @@
         8,
         4294967395
       ],
-      "resolvable_stages": [
-        7,
-        8
-      ],
-      "dangling_stages": [
-        4294967395
-      ],
       "crc32": "0x5B1C1606"
-    },
-    "trip-list.bin": {
-      "format": "tripList object (spec 7.4) — 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
-      "byte_len": 82,
-      "version": 2,
-      "entry_len": 76,
-      "count": 1,
-      "entries": [
-        {
-          "object_id": 1,
-          "byte_len": 80,
-          "total_distance_m": 4414,
-          "total_ascent_m": 152,
-          "stage_count": 3,
-          "name": "Alpen Traverse",
-          "crc32": "0x5B1C1606"
-        }
-      ],
-      "total": 1
     },
     "place-train-v15.bin": {
       "format": "OBCM v15 service record, section 7.3",

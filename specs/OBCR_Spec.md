@@ -294,6 +294,5 @@ pub trait ByteSource {
 }
 ```
 
-The shared borrow lets the host impl copy from a `&[u8]` and the device impl wrap a FatFs
-file with interior mutability. `RouteReader` holds `&dyn ByteSource`, so it stays
-monomorphic.
+The shared borrow lets the host implementation copy from a `&[u8]` and the device implementation
+read a held flat-store object. `RouteReader` holds `&dyn ByteSource`, so it stays monomorphic.
