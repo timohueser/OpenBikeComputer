@@ -14,7 +14,7 @@ process.env.ORIGIN = 'https://verify.example.com';
 function request(path: string, method = 'GET', data?: unknown, actor?: Actor) {
   return api({ params: { path }, url: new URL(`${process.env.ORIGIN}/api/${path}`), request: new Request(`${process.env.ORIGIN}/api/${path}`, { method, headers: { 'content-type': 'application/json', origin: process.env.ORIGIN! }, body: data === undefined ? undefined : JSON.stringify(data) }), locals: { actor }, cookies: { get: () => undefined }, getClientAddress: () => '127.0.0.1' } as unknown as RequestEvent);
 }
-test('requirement suggestions are recorded, superseded, decided once, and never change a requirement', async () => {
+test('requirement suggestions are recorded, superseded, decided, put back, and never change a requirement', async () => {
   const owner: Actor = { name: 'owner', role: 'owner' };
   const agent: Actor = { name: 'agent', role: 'agent' };
   try {
@@ -46,6 +46,15 @@ test('requirement suggestions are recorded, superseded, decided once, and never 
     assert.equal(accepted.decidedBy, 'owner');
     assert.equal(JSON.stringify(store().latestRevision()), before, 'accepting writes no requirement and no revision');
     assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { accept: false }, owner)).status, 409);
+
+    // A tick taken back leaves the suggestion exactly as the agent wrote it, and it can be decided again.
+    assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { reopen: true }, agent)).status, 403);
+    const reopened = await (await request(`requirement-suggestions/${created.id}`, 'POST', { reopen: true }, owner)).json();
+    assert.equal(reopened.status, 'open');
+    assert.equal(reopened.decidedBy, undefined);
+    assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { reopen: true }, owner)).status, 409);
+    assert.equal((await request(`requirement-suggestions/${second.id}`, 'POST', { reopen: true }, owner)).status, 409, 'an open suggestion has no decision to take back');
+    assert.equal((await (await request(`requirement-suggestions/${created.id}`, 'POST', { accept: true }, owner)).json()).status, 'accepted');
 
     // An edit to the statement leaves the open change suggestion behind; the owner reads it before deciding.
     const edited = store().latestRevision();
