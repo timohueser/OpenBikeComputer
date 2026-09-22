@@ -6,8 +6,8 @@ use obc_host_core::RgbaFrame;
 use obc_map_scene::BBox;
 use obc_reader::{Error as ReadError, MapCache, MapStyleSet, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, RenderStats, Viewport};
-use obcm_assemble::emit::{restamp_style_tables, RestampError};
-use obcm_assemble::schema::{MapStyles, Schema};
+use obcm_assemble::emit::restamp_style_tables;
+use obcm_assemble::schema::{validate_style_pair, Schema, Skin};
 
 pub const FRAME_W: u32 = 240;
 pub const FRAME_H: u32 = 240;
@@ -81,20 +81,15 @@ impl PreviewFailure {
 }
 
 fn read_failure(err: ReadError) -> PreviewFailure {
-    match err {
+    let code = match err {
         ReadError::BadMagic
         | ReadError::BadVersion
         | ReadError::BadScale
         | ReadError::TooShort
-        | ReadError::BadOffset => PreviewFailure {
-            code: PreviewErrorCode::NotAMap,
-            message: "The Teningen preview map is missing, stale, or truncated.".into(),
-        },
-        ReadError::Source(_) | ReadError::CacheBusy => PreviewFailure {
-            code: PreviewErrorCode::Internal,
-            message: "The Teningen preview map could not be read.".into(),
-        },
-    }
+        | ReadError::BadOffset => PreviewErrorCode::NotAMap,
+        ReadError::Source(_) | ReadError::CacheBusy => PreviewErrorCode::Internal,
+    };
+    PreviewFailure { code, message: "The preview map could not be read.".into() }
 }
 
 pub struct MapPreview {
@@ -183,36 +178,16 @@ impl MapPreview {
     }
 
     pub fn set_styles(&mut self, light_skin_json: &str, dark_skin_json: &str) -> Result<(), PreviewFailure> {
-        let map_styles = MapStyles::parse(light_skin_json, dark_skin_json).map_err(PreviewFailure::input)?;
-        let (light, dark) = map_styles.resolve(&self.schema).map_err(PreviewFailure::input)?;
+        let light_skin = Skin::parse(light_skin_json).map_err(PreviewFailure::input)?;
+        let dark_skin = Skin::parse(dark_skin_json).map_err(PreviewFailure::input)?;
+        let light = light_skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
+        let dark = dark_skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
+        validate_style_pair(&light, &dark).map_err(PreviewFailure::input)?;
 
         // Style table and marker colour, in place. The assembler owns that algorithm, and the
         // published thumbnails go through the same function.
-        restamp_style_tables(
-            &mut self.bytes,
-            &light,
-            &dark,
-            map_styles.light.marker_color,
-            map_styles.dark.marker_color,
-        )
-        .map_err(|e| match e {
-            RestampError::ShorterThanHeader => {
-                PreviewFailure::input("The Teningen preview is shorter than the OBCM header.")
-            }
-            RestampError::WrongFormat => PreviewFailure::input("The Teningen preview is not the current OBCM format."),
-            RestampError::BadStyleOffset => PreviewFailure::input("The Teningen preview has a bad style offset."),
-            RestampError::TableOverflows => PreviewFailure::input("The Teningen preview style table overflows."),
-            RestampError::TableTruncated => PreviewFailure::input("The Teningen preview style table is truncated."),
-            RestampError::TooFewStyles { count, resolved } => PreviewFailure::input(format!(
-                "The preview has {count} styles, but this skin resolves to only {resolved}."
-            )),
-            RestampError::LengthMismatch { .. } => {
-                PreviewFailure::input("The Teningen preview style table is not the length it declares.")
-            }
-            RestampError::IdMismatch { .. } => PreviewFailure::input(
-                "The preview map belongs to a different schema revision; refresh the builder deployment.",
-            ),
-        })?;
+        restamp_style_tables(&mut self.bytes, &light, &dark, light_skin.marker_color, dark_skin.marker_color)
+            .map_err(|_| PreviewFailure::input("The preview map could not be restyled."))?;
         self.tables = MapTables::parse(&SliceSource(&self.bytes)).map_err(read_failure)?;
         self.dirty = true;
         Ok(())

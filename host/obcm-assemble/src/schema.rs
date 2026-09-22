@@ -315,12 +315,16 @@ impl MapStyles {
     pub fn resolve(&self, schema: &Schema) -> Result<(Vec<StyleRecord>, Vec<StyleRecord>), String> {
         let light = self.light.resolve(schema)?;
         let dark = self.dark.resolve(schema)?;
-        let light_ids: Vec<u8> = light.iter().map(|style| style.id).collect();
-        let dark_ids: Vec<u8> = dark.iter().map(|style| style.id).collect();
-        if light_ids != dark_ids {
-            return Err(format!("the light style ids {light_ids:?} differ from the dark style ids {dark_ids:?}"));
-        }
+        validate_style_pair(&light, &dark)?;
         Ok((light, dark))
+    }
+}
+
+pub fn validate_style_pair(light: &[StyleRecord], dark: &[StyleRecord]) -> Result<(), String> {
+    if light.iter().map(|style| style.id).eq(dark.iter().map(|style| style.id)) {
+        Ok(())
+    } else {
+        Err("the light and dark style ids differ".into())
     }
 }
 
