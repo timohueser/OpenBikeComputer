@@ -1306,6 +1306,26 @@ fn laps_of_the_drawer_settings_row_stay_on_the_root() {
 
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host card still has room after the laps");
+
+    // On the idle screensaver there is no view under the root, so settings is itself what the
+    // pair keeps: the lap lands on the settings the rider left, and Back reaches Home.
+    let mut idle = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+    idle.set_backlight_available(true);
+    let mut ms = 1_000;
+    for lap_no in 0..4 {
+        lap(&mut idle, &mut ms);
+        assert_eq!(shape(&idle), ["Home", "Settings"], "idle lap {lap_no} stacked a second settings");
+        if lap_no == 0 {
+            idle.apply_gesture(Gesture::Step(4)); // → System
+        }
+        // From lap 1 the row is still where the rider left it, because the lap lands on the
+        // settings screen they had rather than on a fresh one.
+        idle.apply_gesture(Gesture::Press);
+        assert_eq!(shape(&idle), ["Home", "Settings", "System"], "idle lap {lap_no} did not descend");
+    }
+    lap(&mut idle, &mut ms);
+    idle.apply_gesture(Gesture::Back);
+    assert!(matches!(idle.top_screen(), Screen::Home(_)), "Back out of settings reaches the screensaver");
 }
 
 /// The Assistant chord answers from the root pair too, so the rider reaches the same place from
@@ -1335,14 +1355,19 @@ fn the_assistant_chord_lands_on_the_root_pair_from_a_deep_page() {
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "Back leaves the Assistant for the riding view");
 
-    // On the idle Home the Assistant is itself the screen the root pair keeps, so a repeat takes
-    // that slot instead of stacking a second copy the rider would have to Back out of twice.
+    // On the idle Home the Assistant is itself the screen the root pair keeps, so a repeat lands
+    // on the one the rider left rather than stacking a second copy over it.
     let mut idle = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
     assert!(idle.apply_chord(crate::input::Chord::Quick), "the squeeze opens a sheet over the screensaver");
     assert!(idle.apply_chord(crate::input::Chord::Assistant));
     assert_eq!(shape(&idle), ["Home", "Assistant"], "the sheet went with the descent");
+    idle.apply_gesture(Gesture::Step(1)); // move the question cursor off the first row
     assert!(idle.apply_chord(crate::input::Chord::Assistant));
     assert_eq!(shape(&idle), ["Home", "Assistant"], "the repeat stayed put");
+    assert!(
+        matches!(idle.top_screen(), Screen::Assistant(s) if s.selected == 1),
+        "…on the question the rider was reading, not on a fresh page"
+    );
 }
 
 /// A sheet needs a slot of its own, so at the ceiling the squeeze is refused and reports that
