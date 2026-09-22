@@ -336,6 +336,13 @@ pub(crate) enum RecorderVerdict {
     RecoveryLatched,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointOwed {
+    No,
+    Immediate,
+    Backoff,
+}
+
 /// The one owner of the ride lifecycle: the session identity and its monotonic source, whether a
 /// ride is open, the rider's undelivered request, the checkpoint deadline, the boot-recovery
 /// decision, and the per-session buffers a new ride restarts.
@@ -371,11 +378,9 @@ pub struct RecorderMachine {
     /// the request stays pending, so without this the warning would re-raise for ever.
     /// [`request`](Self::request) clears it, so asking again is answered again.
     refusal_told: bool,
-    /// A blocked journal keeps its checkpoint owed until the exact same write lands.
-    checkpoint_owed: bool,
-    /// A media failure delays that owed checkpoint until the storage recovery probe is due. Other
-    /// reasons to owe a checkpoint are local refusals and retry at once.
-    checkpoint_backoff: bool,
+    /// A blocked journal keeps its checkpoint owed until the exact same write lands. A media
+    /// failure backs off until the storage recovery probe; local refusals retry at once.
+    checkpoint_owed: CheckpointOwed,
     /// Whether a boot-recovered ride has already been put to the rider. A recorder may report the
     /// same resumable object every pass; the rider sees one decision card.
     recovery_offered: bool,
@@ -477,8 +482,7 @@ impl RecorderMachine {
             resume_next: false,
             refusal_told: false,
             restart_after_close: false,
-            checkpoint_owed: false,
-            checkpoint_backoff: false,
+            checkpoint_owed: CheckpointOwed::No,
             recovery_offered: false,
             recovery: RideRecoveryState::None,
             breadcrumb: Breadcrumb::new() => Breadcrumb::init_in_place,
@@ -610,8 +614,7 @@ impl RecorderMachine {
         let resume = core::mem::take(&mut self.resume_next);
         self.seq = self.seq.wrapping_add(1);
         self.session = Some(self.seq);
-        self.checkpoint_owed = false;
-        self.checkpoint_backoff = false;
+        self.checkpoint_owed = CheckpointOwed::No;
         // Adopted by this session, or never there to begin with.
         self.recovery = RideRecoveryState::None;
         RecorderAdvance::Opened(if resume { SessionStart::Recovered } else { SessionStart::Fresh })
@@ -657,7 +660,7 @@ impl RecorderMachine {
             return None;
         }
         match self.pending {
-            Some(RecorderIntent::Save) if self.samples.is_empty() && !self.checkpoint_owed => {
+            Some(RecorderIntent::Save) if self.samples.is_empty() && self.checkpoint_owed == CheckpointOwed::No => {
                 self.inflight = Some(InFlight::Close);
                 return Some(RecorderEffect::Finalize { token: self.ops.issue() });
             }
@@ -676,12 +679,11 @@ impl RecorderMachine {
         self.session?;
         if self.checkpoint_due(now_ms) {
             self.last_checkpoint_ms = now_ms;
-            self.checkpoint_owed = false;
-            self.checkpoint_backoff = false;
+            self.checkpoint_owed = CheckpointOwed::No;
             self.inflight = Some(InFlight::Checkpoint);
             return Some(RecorderEffect::Checkpoint { token: self.ops.issue() });
         }
-        if self.checkpoint_owed {
+        if self.checkpoint_owed != CheckpointOwed::No {
             return None;
         }
         if self.samples.is_empty() {
@@ -741,13 +743,11 @@ impl RecorderMachine {
                 if error == RecorderError::Write {
                     match was {
                         Some(InFlight::Checkpoint) => {
-                            self.checkpoint_owed = true;
-                            self.checkpoint_backoff = true;
+                            self.checkpoint_owed = CheckpointOwed::Backoff;
                             self.last_checkpoint_ms = now_ms;
                         }
                         Some(InFlight::Append) => {
-                            self.checkpoint_owed = true;
-                            self.checkpoint_backoff = false;
+                            self.checkpoint_owed = CheckpointOwed::Immediate;
                         }
                         _ => {}
                     }
@@ -769,8 +769,7 @@ impl RecorderMachine {
             }
             RecorderOutcome::Cancelled { .. } => {
                 if was == Some(InFlight::Checkpoint) {
-                    self.checkpoint_owed = true;
-                    self.checkpoint_backoff = false;
+                    self.checkpoint_owed = CheckpointOwed::Immediate;
                 }
                 // Nothing was attempted, so nothing is latched, but the confirmation went with the
                 // abandoned operation.
@@ -790,16 +789,14 @@ impl RecorderMachine {
                 let keep = self.samples.len() - taken;
                 if keep != 0 {
                     // A full executor delta needs a checkpoint before it can accept the tail.
-                    self.checkpoint_owed = true;
-                    self.checkpoint_backoff = false;
+                    self.checkpoint_owed = CheckpointOwed::Immediate;
                 }
                 self.samples.as_mut_slice().copy_within(taken.., 0);
                 self.samples.truncate(keep);
                 RecorderVerdict::Nothing
             }
             RecorderOutcome::NeedsCheckpoint { .. } => {
-                self.checkpoint_owed = true;
-                self.checkpoint_backoff = false;
+                self.checkpoint_owed = CheckpointOwed::Immediate;
                 RecorderVerdict::Nothing
             }
             RecorderOutcome::Checkpointed { .. } => RecorderVerdict::Nothing,
@@ -815,10 +812,10 @@ impl RecorderMachine {
     /// Whether a journal checkpoint may leave now. Local refusals retry at once; a media failure
     /// waits for the transport recovery probe, and an ordinary checkpoint follows the cadence.
     fn checkpoint_due(&self, now_ms: u32) -> bool {
-        if self.checkpoint_owed {
-            !self.checkpoint_backoff || now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_RETRY_MS
-        } else {
-            now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_MS
+        match self.checkpoint_owed {
+            CheckpointOwed::No => now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_MS,
+            CheckpointOwed::Immediate => true,
+            CheckpointOwed::Backoff => now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_RETRY_MS,
         }
     }
 
@@ -826,8 +823,7 @@ impl RecorderMachine {
     fn close(&mut self) {
         self.session = None;
         self.samples.clear();
-        self.checkpoint_owed = false;
-        self.checkpoint_backoff = false;
+        self.checkpoint_owed = CheckpointOwed::No;
         // A committed removal is the repair: the object is gone, so the decision is over and the
         // next Start opens a fresh ride in this same boot.
         self.recovery = RideRecoveryState::None;
@@ -1216,7 +1212,6 @@ impl RecorderMachine {
             refusal_told,
             restart_after_close,
             checkpoint_owed,
-            checkpoint_backoff,
             recovery_offered,
             recovery,
             breadcrumb,
@@ -1252,7 +1247,7 @@ impl RecorderMachine {
         assert!(inflight.is_none() && pending.is_none(), "nothing requested, nothing in flight");
         assert!(!*resume_next && !*restart_after_close, "no continuation and no restart armed");
         assert!(!*refusal_told, "the rider has not been refused a ride");
-        assert!(!*checkpoint_owed && !*checkpoint_backoff, "no checkpoint owed");
+        assert_eq!(*checkpoint_owed, CheckpointOwed::No, "no checkpoint owed");
         assert!(!*recovery_offered && *recovery == RideRecoveryState::None, "no recovered ride offered this boot");
         assert!(breadcrumb.is_empty(), "no trail");
 
