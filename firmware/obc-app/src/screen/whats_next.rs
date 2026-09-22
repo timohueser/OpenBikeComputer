@@ -82,10 +82,10 @@ impl WhatsNextScreen {
             let _ = write!(title, "{caption} {range}");
             Font::Body
         } else {
-            let chars = (budget - obc_render::text::text_width(&range, Font::Label) as i32)
-                / Font::Label.char_width() as i32
-                - 1;
-            let caption = super::vocab::marquee::fit(caption, chars.max(0) as usize);
+            // One cell of the budget is the space between the caption and the range.
+            let room =
+                budget - obc_render::text::text_width(&range, Font::Label) as i32 - Font::Label.char_width() as i32;
+            let caption = super::vocab::marquee::fit(caption, room, Font::Label);
             let _ = write!(title, "{caption} {range}");
             Font::Label
         };
@@ -223,7 +223,8 @@ fn overview(cv: &mut impl Surface, rx: &Render) {
         let budget = 228 - obc_render::text::text_width(&distance, Font::Label) as i32 - 8 - 38;
         let name = super::vocab::marquee::fit(
             if wpt.name.is_empty() { rx.t(Msg::AheadWaypoint) } else { &wpt.name },
-            (budget / Font::Body.char_width() as i32).max(0) as usize,
+            budget,
+            Font::Body,
         );
         label(cv, &name, 38, 226, Font::Body, INK);
         cv.text(&distance, Point::new(228, 228), Font::Label, TextAlign::Right, INK);
@@ -299,7 +300,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         };
         icon(cv, category, 23, y + 19, bg);
         let name_row = selected.then(|| rect(40, y + 3, 184, Font::Body.line_height() as i32));
-        let name = rx.marquee.fit(row_name(row, rx), 184 / Font::Body.char_width() as usize, name_row);
+        let name = rx.marquee.fit(row_name(row, rx), 184, Font::Body, name_row);
         label(cv, &name, 40, y + 3, Font::Body, INK);
         if row.key.distance() < rx.navigation.progress_m {
             label(cv, rx.t(Msg::AheadPassed), 12, y + 33, Font::Label, SUBTEXT);

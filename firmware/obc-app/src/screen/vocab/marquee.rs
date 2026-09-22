@@ -1,6 +1,9 @@
 //! The one long name a frame scrolls, instead of cutting it with `..`. Every device font is
 //! monospace, so the name scrolls by whole characters: the draw shows
-//! `name[offset..offset + max_chars]`.
+//! `name[offset..offset + cells]`.
+//!
+//! A caller passes the pixel width of its slot, never a character count. The division into glyph
+//! cells lives here alone, so no screen re-derives it.
 //!
 //! The frame owns the request and the runtime owns the clock. A screen's `draw` calls
 //! [`MarqueeFrame::fit`] on the one name it wants scrolled and [`fit`] on every other; after the
@@ -13,6 +16,7 @@
 use core::cell::Cell;
 
 use embedded_graphics::primitives::Rectangle;
+use obc_render::text::Font;
 
 use crate::screen::ScreenTick;
 
@@ -23,9 +27,17 @@ pub(crate) const TAIL_REST_MS: u32 = 1_500;
 /// One fitted name. The widest field on the panel is 18 characters.
 pub(crate) type Fitted = heapless::String<64>;
 
-/// Fit `name` into `max_chars`: verbatim when it fits, else the leading characters plus `..`. A
-/// space before the dots is dropped, because `Fontaine du ..` reads as a word.
-pub(crate) fn fit(name: &str, max_chars: usize) -> Fitted {
+/// Glyph cells of `font` that fit `budget_px`. A slot narrower than one cell holds nothing, and a
+/// budget that a caller computed into the negative is a slot with no room, not a huge one.
+fn cells(budget_px: i32, font: Font) -> usize {
+    (budget_px / font.char_width() as i32).max(0) as usize
+}
+
+/// Fit `name` into a `budget_px` wide slot of `font`: verbatim when it fits, else the leading
+/// characters plus `..`. A space before the dots is dropped, because `Fontaine du ..` reads as a
+/// word.
+pub(crate) fn fit(name: &str, budget_px: i32, font: Font) -> Fitted {
+    let max_chars = cells(budget_px, font);
     if name.chars().count() <= max_chars {
         return window(name, 0, max_chars);
     }
@@ -77,22 +89,24 @@ pub(crate) struct MarqueeFrame {
 }
 
 impl MarqueeFrame {
-    /// Fit `name` into `max_chars` and scroll it inside `scroll` when it overflows. `None` is the
-    /// plain `..` cut. `scroll` is the text row the repaint clips to, in panel pixels.
-    pub(crate) fn fit(&self, name: &str, max_chars: usize, scroll: Option<Rectangle>) -> Fitted {
+    /// Fit `name` into a `budget_px` wide slot of `font` and scroll it inside `scroll` when it
+    /// overflows. `None` is the plain `..` cut. `scroll` is the text row the repaint clips to, in
+    /// panel pixels.
+    pub(crate) fn fit(&self, name: &str, budget_px: i32, font: Font, scroll: Option<Rectangle>) -> Fitted {
         match scroll {
-            Some(region) => self.scrolled(name, max_chars, region, false),
-            None => fit(name, max_chars),
+            Some(region) => self.scrolled(name, budget_px, font, region, false),
+            None => fit(name, budget_px, font),
         }
     }
 
     /// Like [`fit`](Self::fit), but the name scrolls once after it changes and then rests on the
     /// head.
-    pub(crate) fn fit_once(&self, name: &str, max_chars: usize, region: Rectangle) -> Fitted {
-        self.scrolled(name, max_chars, region, true)
+    pub(crate) fn fit_once(&self, name: &str, budget_px: i32, font: Font, region: Rectangle) -> Fitted {
+        self.scrolled(name, budget_px, font, region, true)
     }
 
-    fn scrolled(&self, name: &str, max_chars: usize, region: Rectangle, once: bool) -> Fitted {
+    fn scrolled(&self, name: &str, budget_px: i32, font: Font, region: Rectangle, once: bool) -> Fitted {
+        let max_chars = cells(budget_px, font);
         let len = name.chars().count();
         if len <= max_chars {
             return window(name, 0, max_chars);
@@ -181,13 +195,16 @@ mod tests {
     use obc_render::canvas::rect;
 
     const NAME: &str = "Fontaine du Mont Ventoux"; // 24 chars: 9 steps past a 15-char field
+    /// A 15-cell field at the Body face, the width every test below fits into.
+    const FIELD: i32 = 15 * 14;
     const ROW: Rectangle =
         Rectangle::new(embedded_graphics::prelude::Point::new(0, 100), embedded_graphics::prelude::Size::new(240, 28));
     const CYCLE: u32 = HEAD_REST_MS + 8 * STEP_MS + TAIL_REST_MS;
 
     fn frame(m: &mut Marquee, now_ms: u32, name: &str, once: bool) -> Fitted {
         let f = m.frame();
-        let shown = if once { f.fit_once(name, 15, ROW) } else { f.fit(name, 15, Some(ROW)) };
+        let shown =
+            if once { f.fit_once(name, FIELD, Font::Body, ROW) } else { f.fit(name, FIELD, Font::Body, Some(ROW)) };
         m.adopt(f.request(), now_ms);
         shown
     }
@@ -199,7 +216,7 @@ mod tests {
 
     #[test]
     fn a_name_that_fits_is_verbatim_and_never_scrolls() {
-        assert_eq!(fit("Brunnen", 10).as_str(), "Brunnen");
+        assert_eq!(fit("Brunnen", 10 * 14, Font::Body).as_str(), "Brunnen");
         let mut m = Marquee::default();
         assert_eq!(frame(&mut m, 0, "Brunnen", false).as_str(), "Brunnen");
         assert_eq!(m, Marquee::default(), "nothing to scroll, nothing adopted");
@@ -207,8 +224,18 @@ mod tests {
 
     #[test]
     fn the_cut_keeps_leading_chars_and_never_a_dangling_space() {
-        assert_eq!(fit("Pass Summit Overlook", 10).as_str(), "Pass Sum..");
-        assert_eq!(fit("Fontaine du Mont", 14).as_str(), "Fontaine du..", "the gap before the dots is dropped");
+        assert_eq!(fit("Pass Summit Overlook", 10 * 14, Font::Body).as_str(), "Pass Sum..");
+        assert_eq!(
+            fit("Fontaine du Mont", 14 * 14, Font::Body).as_str(),
+            "Fontaine du..",
+            "the gap before the dots is dropped"
+        );
+        assert_eq!(fit("Brunnen", 8, Font::Body).as_str(), "..", "a slot under one cell keeps only the dots");
+        assert_eq!(
+            fit("Brunnen", -40, Font::Body).as_str(),
+            "..",
+            "and a budget computed into the negative is that slot"
+        );
     }
 
     #[test]
@@ -264,7 +291,7 @@ mod tests {
         let (_, shown) = shown_at(&mut m, HEAD_REST_MS + STEP_MS);
         assert_eq!(shown.as_str(), "ntaine du Mont ");
         let f = m.frame();
-        let shown = f.fit("Refuge du Col des Tempetes", 15, Some(ROW));
+        let shown = f.fit("Refuge du Col des Tempetes", FIELD, Font::Body, Some(ROW));
         assert_eq!(shown.as_str(), "Refuge du Col d", "a different name draws its head at once");
         assert_eq!(m.adopt(f.request(), 5_000), Some(HEAD_REST_MS), "and the render arms its first step");
         assert!(!m.tick(5_000 + HEAD_REST_MS - 1).changed);
@@ -282,8 +309,8 @@ mod tests {
     #[test]
     fn the_last_request_of_a_frame_wins() {
         let f = Marquee::default().frame();
-        let _ = f.fit(NAME, 15, Some(ROW));
-        let _ = f.fit("Refuge du Col des Tempetes", 15, Some(rect(0, 50, 1, 1)));
+        let _ = f.fit(NAME, FIELD, Font::Body, Some(ROW));
+        let _ = f.fit("Refuge du Col des Tempetes", FIELD, Font::Body, Some(rect(0, 50, 1, 1)));
         assert_eq!(f.request().map(|r| r.region), Some(rect(0, 50, 1, 1)));
     }
 

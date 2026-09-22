@@ -116,9 +116,8 @@ impl RouteReceivedScreen {
         let mut drew_spark = false;
         match self.route.and_then(|i| rx.routes.get(i)) {
             Some(route) => {
-                let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
                 let name_row = rect(12, TITLE_BAR_H + 14, w - 24, Font::Body.line_height() as i32);
-                let name = rx.marquee.fit(&route.name, max, Some(name_row));
+                let name = rx.marquee.fit(&route.name, w - 24, Font::Body, Some(name_row));
                 cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
                 let stats = route_stats(route);
                 cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
@@ -223,9 +222,8 @@ impl TripReceivedScreen {
         title_frame(cv, w, h, rx.t(Msg::TripReceivedTitle), "");
         match rx.trips.iter().find(|t| t.id == self.trip_id) {
             Some(trip) => {
-                let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
                 let name_row = rect(12, TITLE_BAR_H + 14, w - 24, Font::Body.line_height() as i32);
-                let name = rx.marquee.fit(&trip.name, max, Some(name_row));
+                let name = rx.marquee.fit(&trip.name, w - 24, Font::Body, Some(name_row));
                 cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
                 let mut stats: heapless::String<24> = heapless::String::new();
                 let _ = write!(stats, "{} km, +{} m", trip.distance_km, trip.climb_m);
@@ -300,9 +298,8 @@ impl RouteUpdatedScreen {
         let name_top = h * 35 / 100;
         match self.route.and_then(|i| rx.routes.get(i)) {
             Some(route) => {
-                let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
                 let name_row = rect(12, name_top, w - 24, Font::Body.line_height() as i32);
-                let name = rx.marquee.fit(&route.name, max, Some(name_row));
+                let name = rx.marquee.fit(&route.name, w - 24, Font::Body, Some(name_row));
                 cv.text(&name, Point::new(w / 2, name_top), Font::Body, TextAlign::Center, INK);
             }
             None => {

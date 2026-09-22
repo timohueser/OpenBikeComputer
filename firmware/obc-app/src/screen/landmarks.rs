@@ -127,7 +127,7 @@ impl LandmarksScreen {
             let _ = write!(label, "{}  {}", letter(state.selected), rx.t(kind(record.category)));
             cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT);
             let name_row = rect(12, 238, 18 * Font::Label.char_width() as i32, Font::Label.line_height() as i32);
-            let name = rx.marquee.fit(&state.name, 18, Some(name_row));
+            let name = rx.marquee.fit(&state.name, name_row.size.width as i32, Font::Label, Some(name_row));
             cv.text(&name, Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             label.clear();
             super::vocab::fmt::write_distance_coarse(
@@ -285,10 +285,10 @@ pub(super) fn header(
         let _ = write!(count, "{current}/{total}");
     }
     let reserved = if count.is_empty() { 0 } else { text_width(&count, Font::Label) as usize + 12 };
-    let title_chars = (216 - reserved) / Font::Label.char_width() as usize;
+    let title_budget = 216 - reserved as i32;
     let title = match marquee {
-        Some(marquee) => marquee.fit(title, title_chars, Some(rect(4, 4, 232, 34))),
-        None => super::vocab::marquee::fit(title, title_chars),
+        Some(marquee) => marquee.fit(title, title_budget, Font::Label, Some(rect(4, 4, 232, 34))),
+        None => super::vocab::marquee::fit(title, title_budget, Font::Label),
     };
     cv.text(&title, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
     cv.text(&count, Point::new(228, 9), Font::Label, TextAlign::Right, PARCHMENT);
