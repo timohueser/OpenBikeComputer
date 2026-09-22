@@ -6,11 +6,17 @@
  * the USB-binding check, the two byte pipes and the EP0 read are all the ones the product uses.
  * This file is an adapter and nothing more.
  *
- * The one real difference is the timeout. WebUSB submits a transfer and waits for the device
+ * Two differences are real. The timeout: WebUSB submits a transfer and waits for the device
  * indefinitely, which is what the client's own deadlines are written against; `usb` defaults every
  * transfer to one second, and a one-second read would abandon the control channel between two of
  * the device's answers. Every call is therefore re-issued with a bound far above any phase deadline,
  * so the run's own clock is the only one that can fire.
+ *
+ * And concurrency: a browser queues any number of transfers on one endpoint, while `usb` holds one
+ * at a time and answers a second with "endpoint not found". An upload keeps several OUT transfers
+ * queued, so the OUT halves get a queue here. Submission order is what WebUSB promises and what the
+ * device's framing needs, and a queue preserves it. The IN halves need none: the link submits one
+ * read per pipe at a time by construction.
  */
 
 import { WebUSB } from "usb";
@@ -83,8 +89,21 @@ export async function connect(signal: AbortSignal, serial?: string): Promise<Dev
     }
 }
 
-/** The same device, with every transfer given the run's clock instead of the library's one second. */
+/**
+ * The same device, with every transfer given the run's clock instead of the library's one second,
+ * and a queue on each OUT endpoint so two transfers are never on one at once.
+ */
 function patient(device: NodeUsbDevice): UsbDeviceLike {
+    const queues = new Map<number, Promise<unknown>>();
+    /** Run `submit` after everything already queued on this endpoint has settled. */
+    const inOrder = <T>(endpoint: number, submit: () => Promise<T>): Promise<T> => {
+        const queued = (queues.get(endpoint) ?? Promise.resolve()).then(submit, submit);
+        queues.set(
+            endpoint,
+            queued.catch(() => undefined),
+        );
+        return queued;
+    };
     return {
         get vendorId() {
             return device.vendorId;
@@ -119,7 +138,8 @@ function patient(device: NodeUsbDevice): UsbDeviceLike {
         claimInterface: (number) => device.claimInterface(number),
         releaseInterface: (number) => device.releaseInterface(number),
         transferIn: (endpoint, length) => device.transferIn(endpoint, length, TRANSFER_TIMEOUT_MS),
-        transferOut: (endpoint, data) => device.transferOut(endpoint, data, TRANSFER_TIMEOUT_MS),
+        transferOut: (endpoint, data) =>
+            inOrder(endpoint, () => device.transferOut(endpoint, data, TRANSFER_TIMEOUT_MS)),
         controlTransferIn: (setup, length) => device.controlTransferIn(setup, length, TRANSFER_TIMEOUT_MS),
         clearHalt: (direction, endpoint) => device.clearHalt(direction, endpoint),
     };
