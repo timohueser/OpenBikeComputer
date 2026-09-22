@@ -2,6 +2,7 @@
 //! by the map serializer; this module emits bounded text, attribution and RGB222 assets.
 
 mod assets;
+pub mod discover;
 mod locale;
 pub mod peaks;
 mod photo;
@@ -111,6 +112,34 @@ pub struct Omission {
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
+/// `Q` and a decimal with no leading zero and no sign — the rule the capture tool applies to a
+/// candidate list. The two must agree: a QID one side accepts and the other refuses is a region
+/// that cannot be captured.
+fn is_qid(id: &str) -> bool {
+    match id.strip_prefix('Q').map(str::as_bytes) {
+        Some([b'1'..=b'9', rest @ ..]) => rest.iter().all(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
+/// Numeric by QID, which is the order the capture asks for entities in.
+fn qid_order(qid: &str) -> (usize, &str) {
+    let digits = qid.strip_prefix('Q').unwrap_or(qid);
+    (digits.len(), digits)
+}
+fn file_digest(path: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if count == 0 {
+            return Ok(digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        digest.update(&buffer[..count]);
+    }
+}
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing {key}"))
 }
@@ -141,8 +170,13 @@ fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Resul
     }
     Ok(bytes)
 }
+/// The largest pinned JSON response the compiler reads. The capture tool asks for a
+/// `wbgetentities` batch again in halves when its response passes this, so every response a
+/// capture keeps is one the compiler can read.
+const MAX_JSON_SOURCE: u64 = 16 * 1024 * 1024;
+
 fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, String> {
-    serde_json::from_slice(&read_pinned(root, sources, path, 16 * 1024 * 1024)?)
+    serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
         .map_err(|e| format!("invalid source {path}: {e}"))
 }
 fn claims<'a>(entity: &'a Value, property: &str) -> impl Iterator<Item = &'a Value> {
@@ -158,11 +192,7 @@ fn entity_ids(entity: &Value, property: &str) -> Vec<String> {
 fn class_ancestors(id: &str, entity: &Value) -> Result<Vec<String>, String> {
     if let Some(redirect) = entity.get("redirects") {
         let target = string(redirect, "to")?;
-        if redirect["from"] != id
-            || entity["id"] != target
-            || !target.starts_with('Q')
-            || target[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none()
-        {
+        if redirect["from"] != id || entity["id"] != target || !is_qid(target) {
             return Err(format!("invalid captured class redirect: {id}"));
         }
         return Ok(vec![target.to_owned()]);
@@ -249,12 +279,19 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
     if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
         return Err("landmark output directory must be empty".into());
     }
+    // The capture batches entities in numeric QID order and a response holds fifty of them, so
+    // the compiler reads places in that same order. One loaded response then serves fifty places
+    // and is never returned to: the batch index of the places it visits never decreases.
     let mut places = snapshot.places;
-    places.sort_by_key(|place| place["qid"].as_str().unwrap_or("").to_owned());
+    places.sort_by_key(|place| {
+        let (length, digits) = qid_order(place["qid"].as_str().unwrap_or(""));
+        (length, digits.to_owned())
+    });
     let mut seen = BTreeSet::new();
+    let mut loaded: Option<(String, Value)> = None;
     for place in places {
         let qid = string(&place, "qid")?.to_owned();
-        if !qid.starts_with('Q') || qid[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none() {
+        if !is_qid(&qid) {
             return Err("invalid QID".into());
         }
         if !seen.insert(qid.clone()) {
@@ -263,8 +300,17 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         let mut omit = |asset: &str, reason: String| {
             content.omissions.push(Omission { qid: qid.clone(), asset: asset.into(), reason })
         };
-        let raw_entity = json_pinned(root, &snapshot.sources, &format!("entities/{qid}.json"))?;
-        let entity = &raw_entity["entities"][&qid];
+        // A place names the response its entity arrived in; a capture that asked for the entity
+        // alone names none, and it is at the one-entity path.
+        let path = match place.get("entity_path").and_then(Value::as_str) {
+            Some(path) => path.to_owned(),
+            None => format!("entities/{qid}.json"),
+        };
+        if !matches!(&loaded, Some((held, _)) if *held == path) {
+            let raw = json_pinned(root, &snapshot.sources, &path)?;
+            loaded = Some((path, raw));
+        }
+        let entity = &loaded.as_ref().expect("the response just loaded").1["entities"][&qid];
         if entity["id"] != qid {
             omit("site", "entity_identity_mismatch".into());
             continue;

@@ -80,15 +80,18 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
     pin("locales/Q29.json", "https://www.wikidata.org/wiki/Special:EntityData/Q29.json",
         serde_json::to_vec(&json!({"entities":{"Q29":{"id":"Q29", "claims":{"P37":[{"mainsnak":{"datavalue":{"value":{"id":"Q1321"}}}}]}}}})).unwrap());
     let mut places = Vec::new();
+    // One `wbgetentities` response holds both places, the way the capture batches them.
+    let batch = "entities/batch-0.json";
+    let mut entities = serde_json::Map::new();
     for qid in ["Q1", "Q2"] {
-        let entity = json!({"entities":{qid:{"id":qid,"labels":{"de":{"value":"Burg"}, "es":{"value":"Castillo"}},
+        let entity = json!({"id":qid,"labels":{"de":{"value":"Burg"}, "es":{"value":"Castillo"}},
         "sitelinks":{"dewiki":{"title":"Burg"}, "enwiki":{"title":"Castle"}, "eswiki":{"title":"Castillo"}},"claims":{
             "P17":[{"mainsnak":{"datavalue":{"value":{"id":"Q29"}}}}],
             "P31":[{"rank":"preferred","mainsnak":{"datavalue":{"value":{"id":"Q999"}}}},
                 {"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q35666"}}}}],
             "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]
-        }}}});
-        pin(&format!("entities/{qid}.json"), "https://www.wikidata.org/", serde_json::to_vec(&entity).unwrap());
+        }});
+        entities.insert(qid.into(), entity);
         let query = json!({"query":{"pages":{"1":{"title":"Burg","revisions":[{"revid":42}]}}}});
         let path = format!("articles/{qid}.json");
         pin(&path, "https://de.wikipedia.org/w/api.php", serde_json::to_vec(&query).unwrap());
@@ -115,8 +118,9 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
                 json!({"language":language,"title":title,"revision":42,"url":url,"path":path,"html_path":html_path}),
             );
         }
-        places.push(json!({"qid":qid,"articles":articles,"images":[]}));
+        places.push(json!({"qid":qid,"entity_path":batch,"articles":articles,"images":[]}));
     }
+    pin(batch, "https://www.wikidata.org/", serde_json::to_vec(&json!({"entities":entities})).unwrap());
     let manifest = root.join("manifest.json");
     fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
     let boundary = root.join("boundary.json");
@@ -141,7 +145,50 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
         .all(|record| record.variants.iter().map(|v| v.language.as_str()).collect::<Vec<_>>() == ["de", "es"]));
     compile(&manifest, &boundary, &root.join("second")).unwrap();
     assert_eq!(fs::read(root.join("first/content.json")).unwrap(), fs::read(root.join("second/content.json")).unwrap());
-    fs::write(root.join("entities/Q1.json"), b"changed source").unwrap();
+    fs::write(root.join(batch), b"changed source").unwrap();
     assert!(compile(&manifest, &boundary, &root.join("changed")).unwrap_err().contains("source size changed"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// The compiler visits places in the order the capture asked for them, so the response it holds is
+/// the one the next place needs. Lexicographic order would put `Q10` and `Q100` before `Q2` and
+/// send it back to the first response, which costs a read, a digest and a parse of a whole batch.
+#[test]
+fn places_are_visited_in_the_order_the_capture_batched_them() {
+    let root = obcm_testkit::scratch::scratch_dir("landmarks", "batch-order");
+    let mut sources = Vec::new();
+    let mut pin = |path: &str, bytes: Vec<u8>| {
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), &bytes).unwrap();
+        sources.push(json!({"path":path,"url":"https://www.wikidata.org/","bytes":bytes.len(),"sha256":hash(&bytes)}));
+    };
+    pin("classes/Q23413.json", serde_json::to_vec(&json!({"entities":{"Q23413":{"claims":{"P279":[]}}}})).unwrap());
+    // Two responses, filled the way the capture fills them: numeric QID order, fifty at a time.
+    let batches: [(&str, &[&str]); 2] =
+        [("entities/batch-0.json", &["Q2", "Q10"]), ("entities/batch-1.json", &["Q100"])];
+    let mut places = Vec::new();
+    for (path, qids) in batches {
+        let qids = qids.to_vec();
+        let mut entities = serde_json::Map::new();
+        for qid in qids {
+            entities.insert(qid.into(), json!({"id":qid,"labels":{},"sitelinks":{},"claims":{
+                "P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}],
+                "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.5,"longitude":0.5,"globe":"http://www.wikidata.org/entity/Q2"}}}}]
+            }}));
+            places.push(json!({"qid":qid,"entity_path":path,"articles":[],"images":[]}));
+        }
+        pin(path, serde_json::to_vec(&json!({"entities":entities})).unwrap());
+    }
+    places.reverse();
+    let manifest = root.join("manifest.json");
+    fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
+    let boundary = root.join("boundary.json");
+    fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
+
+    let content = compile(&manifest, &boundary, &root.join("out")).unwrap();
+    assert_eq!(content.candidate_qids, ["Q2", "Q10", "Q100"], "numeric order, whatever order the manifest lists");
+    let batch_of = |qid: &str| batches.iter().position(|(_, qids)| qids.contains(&qid)).unwrap();
+    let visited: Vec<usize> = content.candidate_qids.iter().map(|qid| batch_of(qid)).collect();
+    assert!(visited.windows(2).all(|pair| pair[0] <= pair[1]), "a response is never returned to: {visited:?}");
     fs::remove_dir_all(root).unwrap();
 }

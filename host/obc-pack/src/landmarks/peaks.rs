@@ -114,27 +114,8 @@ pub fn discover(osm: &Path, boundary: &Path, output: &Path) -> Result<(), String
     if let Some(error) = error {
         return Err(error);
     }
-    let mut file = fs::File::open(osm).map_err(|e| e.to_string())?;
-    let mut digest = Sha256::new();
-    use std::io::Read as _;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    let source = SummitSource {
-        schema: 1,
-        osm_sha256: digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect(),
-        summits: summits.into_values().collect(),
-    };
+    let source = SummitSource { schema: 1, osm_sha256: file_digest(osm)?, summits: summits.into_values().collect() };
     fs::write(output, serde_json::to_vec_pretty(&source).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
-fn qid(id: &str) -> bool {
-    id.starts_with('Q') && id[1..].parse::<u64>().ok().is_some_and(|v| v > 0)
 }
 
 fn wikipedia(value: &str) -> Option<(&str, &str)> {
@@ -158,10 +139,10 @@ fn identity(
     let raw = json_pinned(root, sources, resolution.path.as_deref().ok_or("link_resolution_missing")?)?;
     match resolution.kind.as_str() {
         "wikidata" => {
-            let original = summit.tags.get("wikidata").filter(|id| qid(id)).ok_or("invalid_wikidata_link")?;
+            let original = summit.tags.get("wikidata").filter(|id| is_qid(id)).ok_or("invalid_wikidata_link")?;
             let value = &raw["entities"][original];
             let canonical = string(value, "id")?;
-            if !qid(canonical)
+            if !is_qid(canonical)
                 || value.get("missing").is_some()
                 || (canonical != original
                     && (value["redirects"]["from"] != *original || value["redirects"]["to"] != canonical))
@@ -174,7 +155,7 @@ fn identity(
             let (language, title) =
                 summit.tags.get("wikipedia").and_then(|v| wikipedia(v)).ok_or("invalid_wikipedia_link")?;
             let page = assets::resolved_page(&raw, title)?;
-            if let Some(id) = page["pageprops"]["wikibase_item"].as_str().filter(|id| qid(id)) {
+            if let Some(id) = page["pageprops"]["wikibase_item"].as_str().filter(|id| is_qid(id)) {
                 Ok((id.into(), None))
             } else {
                 if raw.get("continue").is_some() {
@@ -199,7 +180,7 @@ fn identity(
                     json_pinned(root, sources, resolution.canonical_path.as_deref().ok_or("canonical_page_missing")?)?
                 };
                 let canonical_page = assets::resolved_page(&canonical_raw, title)?;
-                if let Some(id) = canonical_page["pageprops"]["wikibase_item"].as_str().filter(|id| qid(id)) {
+                if let Some(id) = canonical_page["pageprops"]["wikibase_item"].as_str().filter(|id| is_qid(id)) {
                     return Ok((id.into(), None));
                 }
                 let page_id = canonical_page["pageid"].as_u64().filter(|id| *id > 0).ok_or("wikipedia_page_missing")?;
