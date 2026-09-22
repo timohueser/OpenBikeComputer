@@ -735,9 +735,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // because the catalog is full. status=6 storageFull, nothing committed.
         ("status-transfer-storage-full.bin", status_transfer_result(0xFFFF, 6, 0)),
         ("status-store-changed.bin", status_store_changed(1, 42)),
-        // A commandResult that carries a detail byte. Its command id is retired, so the vector
-        // pins the four-byte layout, not a live command.
-        ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
+        // The answer to an accepted installFw: ok, no detail. Pins the four-byte layout.
+        ("status-command-result.bin", status_command_result(3, 0, 0)),
         // The phone's clock stamp (cmd 5): 2026-07-09T12:00:00Z (unix 1783598400),
         // +02:00 (offset 120 min). 7 bytes.
         ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
