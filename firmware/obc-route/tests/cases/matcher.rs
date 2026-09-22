@@ -374,6 +374,11 @@ fn first_fix_far_off_route_reports_off_and_frozen() {
     assert!(res.off_route, "a first fix 500 m off the route must read off-route");
     assert_eq!(res.progress_m, 0, "an off-route first fix must not advance progress past 0");
     assert!((res.dist_m as i32 - 500).abs() <= 5, "live cross-track {} m ~ 500", res.dist_m);
+
+    // The same scan without a cursor names the point the frozen lock would not move to.
+    let near = RouteMatch::nearest(lon, lat, &r).unwrap();
+    assert!(near.off_route && near.dist_m == res.dist_m);
+    assert!(near.progress_m.abs_diff(r.total_distance_m / 2) <= 5, "nearest at mid-route, got {}", near.progress_m);
 }
 
 /// The hysteresis-hold band (`ON_M` 15 to `OFF_M` 25 m): a fix inside it keeps the state the rider
