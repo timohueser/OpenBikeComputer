@@ -193,7 +193,6 @@ pub struct CellBakeOptions {
     /// It is a terrain input to the cell bake and never the reverse: nothing in [`crate::terrain`]
     /// reads a schema fact, so a schema bump re-cuts cells and leaves every terrain object alone.
     pub terrain: Option<crate::terrain::TerrainInput>,
-    pub landmarks: Option<PathBuf>,
     pub peaks: Option<PathBuf>,
 }
 
@@ -394,6 +393,9 @@ struct Resolved {
     extract_sha: Option<String>,
     poly: String,
     coverage: Coverage,
+    /// This region's compiled landmark content in the tree, and its cell-cache key. `None` when
+    /// the landmark stage has not run for it.
+    landmarks: Option<(PathBuf, String)>,
     /// Per cell size: the cells this region selects.
     cells: BTreeMap<u32, BTreeSet<CellId>>,
 }
@@ -430,17 +432,7 @@ impl CellBakery<'_> {
             return Err("--schema-revision starts at 1 — a cell store has no revision zero".into());
         }
         self.check_skins()?;
-        let landmark_key = self
-            .opts
-            .landmarks
-            .as_deref()
-            .map(obc_pack::landmark_map::fingerprint)
-            .transpose()?
-            .unwrap_or_else(|| "none".into());
-        let landmark_key = format!(
-            "{landmark_key}\npeaks={}",
-            obc_pack::peak_map::fingerprint(&self.opts.peaks.clone().into_iter().collect::<Vec<_>>())?
-        );
+        let peak_key = obc_pack::peak_map::fingerprint(&self.opts.peaks.clone().into_iter().collect::<Vec<_>>())?;
         check_schema_id(self.schema, &self.opts)?;
         progress.log(format!("cell bakery: {} region(s), schema `{}`", self.regions.len(), self.opts.schema_id));
         progress.log(format!("  source:  {}", self.source.describe()));
@@ -448,9 +440,19 @@ impl CellBakery<'_> {
 
         let mut warnings = Vec::new();
         let mut uncovered = Vec::new();
-        let resolved = self.resolve(progress, &mut uncovered, &mut warnings);
+        let mut resolved = self.resolve(progress, &mut uncovered, &mut warnings);
         if resolved.is_empty() {
             return Err("no region resolved to an extract and a coverage polygon — nothing to cut".into());
+        }
+        // Keyed once per region rather than once per plan: the key reads the compiled content and
+        // verifies every photo it declares, and a country's artifact is asked for by every plan
+        // that touches it.
+        for region in &mut resolved {
+            if let Some(path) = crate::landmarks::in_tree(&self.opts.out, &region.region) {
+                let key = obc_pack::landmark_map::fingerprint(std::slice::from_ref(&path))?;
+                progress.log(format!("  landmarks: {} ({})", path.display(), region.region.id));
+                region.landmarks = Some((path, key));
+            }
         }
 
         let plans = build_plans(&resolved, &self.opts.bands);
@@ -462,7 +464,7 @@ impl CellBakery<'_> {
             let started = Instant::now();
             let names: Vec<String> = plan.sources.iter().map(|&k| resolved[k].region.id.clone()).collect();
             progress.log(format!("\n--- {} ({} cells) ---", names.join(" + "), plan.cells.len()));
-            let mut outcome = match self.run_plan(plan, &resolved, &mut known_empty, &landmark_key, progress) {
+            let mut outcome = match self.run_plan(plan, &resolved, &mut known_empty, &peak_key, progress) {
                 Ok(cells) => {
                     PlanOutcome { sources: names, cells_planned: plan.cells.len(), cells, seconds: 0.0, error: None }
                 }
@@ -594,7 +596,7 @@ impl CellBakery<'_> {
                 }
                 (None, None) => unreachable!("a region without an extract always has a parent"),
             }
-            out.push(Resolved { region: region.clone(), extract, extract_sha, poly, coverage, cells });
+            out.push(Resolved { region: region.clone(), extract, extract_sha, poly, coverage, landmarks: None, cells });
         }
         out
     }
@@ -605,10 +607,32 @@ impl CellBakery<'_> {
         plan: &Plan,
         resolved: &[Resolved],
         known_empty: &mut KnownEmptyIndex,
-        landmark_key: &str,
+        peak_key: &str,
         progress: &Progress,
     ) -> Result<Vec<CellOutcome>, String> {
         let sources: Vec<&Resolved> = plan.sources.iter().map(|&k| &resolved[k]).collect();
+        // Every region whose coverage selects one of these cells, and not only the regions that
+        // source them: a cell on a seam is ground in two regions, and a landmark is ground. A
+        // nested region is here too, although its data comes from its parent's extract.
+        let reaching: Vec<(&str, &PathBuf, &str)> = resolved
+            .iter()
+            .filter(|r| selects(r, &plan.cells))
+            .filter_map(|r| r.landmarks.as_ref().map(|(path, key)| (r.region.id.as_str(), path, key.as_str())))
+            .collect();
+        if !reaching.is_empty() {
+            let named: Vec<&str> = reaching.iter().map(|(id, _, _)| *id).collect();
+            progress.log(format!("    landmarks from {}", named.join(" + ")));
+        }
+        let mut landmarks: Vec<PathBuf> = reaching.iter().map(|(_, path, _)| (*path).clone()).collect();
+        landmarks.sort();
+        let mut landmark_keys: Vec<&str> = reaching.iter().map(|(_, _, key)| *key).collect();
+        landmark_keys.sort_unstable();
+        // The intersecting artifacts only, so a landmark change re-cuts the cells that region
+        // reaches and leaves every other cell alone.
+        let landmark_key = format!(
+            "{}\npeaks={peak_key}",
+            if landmark_keys.is_empty() { "none".to_string() } else { landmark_keys.join(",") }
+        );
         let coverage = Coverage::union(&sources.iter().map(|r| &r.coverage).collect::<Vec<_>>());
         // The edge set of the plan's combined coverage, once per cell size rather than once per
         // cell: it is one walk over every ring and thousands of cells ask.
@@ -632,7 +656,7 @@ impl CellBakery<'_> {
         // stale. Cropping to the cell union would re-cut a cell whenever the co-baked context
         // changed its plan's shape, which is exactly the incrementality the skip state promises.
         let crop = crop_box(&plan.cells)?;
-        let pack_key = self.pack_key(&sources, crop.as_deref(), landmark_key);
+        let pack_key = self.pack_key(&sources, crop.as_deref(), &landmark_key);
 
         // Which cells this plan still owes, and which only need a sidecar rewrite.
         let mut stale: Vec<CellId> = Vec::new();
@@ -680,7 +704,7 @@ impl CellBakery<'_> {
             // The terrain already published in this tree, or nothing. A tree with no terrain bakes
             // `Ascent M = 0` throughout, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
-            landmarks: self.opts.landmarks.clone(),
+            landmarks,
             peaks: self.opts.peaks.clone().into_iter().collect(),
             bbox: crop.as_deref().map(Bbox::parse).transpose()?,
             source_extent: None,
@@ -1102,6 +1126,11 @@ fn sourcing(r: &Resolved) -> &Extract {
     r.extract.as_ref().expect("a plan source region carries an extract")
 }
 
+/// Whether this region's coverage selects any of these cells.
+fn selects(region: &Resolved, cells: &BTreeSet<CellId>) -> bool {
+    cells.iter().any(|cell| region.cells.get(&cell.log2).is_some_and(|set| set.contains(cell)))
+}
+
 fn build_plans(resolved: &[Resolved], bands: &BandTable) -> Vec<Plan> {
     let sizes: BTreeSet<u32> = bands.bands.iter().map(|b| b.cell_log2).collect();
     let mut owners: BTreeMap<CellId, Vec<usize>> = BTreeMap::new();
@@ -1247,6 +1276,7 @@ mod tests {
             extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage: coverage(),
+            landmarks: None,
             cells: BTreeMap::from([(18, BTreeSet::from([shared]))]),
         };
         let child = Resolved {
@@ -1255,6 +1285,7 @@ mod tests {
             extract_sha: None,
             poly: poly.to_string(),
             coverage: coverage(),
+            landmarks: None,
             // `shared` is the parent's cell too; `sliver` is the boundary-jitter case only
             // the child's polygon touched.
             cells: BTreeMap::from([(18, BTreeSet::from([shared, sliver]))]),
@@ -1289,6 +1320,7 @@ mod tests {
             extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage,
+            landmarks: None,
             cells: BTreeMap::from([(18, BTreeSet::from([near_a, near_b, far]))]),
         }];
         let bands = BandTable::recommended();

@@ -58,7 +58,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--dump-pois" => opts.dump_pois = true,
             "--peaks" => opts.peaks.push(PathBuf::from(it.next().ok_or("--peaks needs peaks.json")?)),
-            "--landmarks" => opts.landmarks = Some(PathBuf::from(it.next().ok_or("--landmarks needs content.json")?)),
+            "--landmarks" => opts.landmarks.push(PathBuf::from(it.next().ok_or("--landmarks needs content.json")?)),
             "--dump-hours" => opts.dump_hours = true,
             "--allow-large" => allow_large = true,
             _ => positional.push(a),
@@ -67,7 +67,7 @@ fn parse_args() -> Result<Args, String> {
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
-                    [--terrain <path>] [--landmarks <content.json>] [--peaks <peaks.json>] [--dump-pois] [--dump-hours] \
+                    [--terrain <path>] [--landmarks <content.json>]… [--peaks <peaks.json>] [--dump-pois] [--dump-hours] \
                     [--allow-large]\n       \
                     obc-pack schema                                 (print the config JSON Schema envelope)\n       \
                     obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)\n       \
@@ -201,7 +201,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack cells <pbf...> <config.json> <out-dir> [--bands <bands.json>] \
                          [--band <id>]... [--cell <log2/i/j>]... \
                          [--source <id>[@<snapshot>][=W,S,E,N]]... \
-                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>] [--landmarks <content.json>] [--peaks <peaks.json>]";
+                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>] [--landmarks <content.json>]… [--peaks <peaks.json>]";
     let mut positional: Vec<String> = Vec::new();
     let mut opts = CutOptions::default();
     let mut it = args.iter();
@@ -219,7 +219,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
             "--no-land" => opts.no_land = true,
             "--terrain" => opts.terrain = Some(PathBuf::from(next("--terrain")?)),
             "--peaks" => opts.peaks.push(PathBuf::from(next("--peaks")?)),
-            "--landmarks" => opts.landmarks = Some(PathBuf::from(next("--landmarks")?)),
+            "--landmarks" => opts.landmarks.push(PathBuf::from(next("--landmarks")?)),
             other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
             other => positional.push(other.to_string()),
         }

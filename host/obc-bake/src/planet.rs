@@ -959,19 +959,31 @@ impl PlanetBake<'_> {
             self.leaves.len(),
             self.opts.schema_id
         ));
-        let landmark_key = self
-            .opts
-            .landmarks
-            .as_deref()
-            .map(obc_pack::landmark_map::fingerprint)
-            .transpose()?
-            .unwrap_or_else(|| "none".into());
-        let landmark_key = format!(
-            "{landmark_key}\npeaks={}",
-            obc_pack::peak_map::fingerprint(&self.opts.peaks.clone().into_iter().collect::<Vec<_>>())?
-        );
+        let peak_key = obc_pack::peak_map::fingerprint(&self.opts.peaks.clone().into_iter().collect::<Vec<_>>())?;
+        // Each region's compiled landmark content in this tree, keyed once: the key reads the
+        // content and verifies every photo it declares, and a leaf asks for it per cut.
+        let mut artifacts = Vec::new();
+        for preset in self.regions {
+            if let Some(path) = crate::landmarks::in_tree(&self.opts.out, &preset.region) {
+                let key = obc_pack::landmark_map::fingerprint(std::slice::from_ref(&path))?;
+                let selected: BTreeSet<&String> = preset.cells.values().flatten().collect();
+                artifacts.push((selected, path, key));
+            }
+        }
         for (number, leaf) in self.leaves.iter().enumerate() {
             let cells = leaf_cells(leaf.id, &self.opts.bands);
+            // The regions this leaf's ground lies in — a leaf that spans a border gets both.
+            let ids: BTreeSet<String> = cells.values().flatten().map(CellId::to_string).collect();
+            let reaching: Vec<_> =
+                artifacts.iter().filter(|(selected, _, _)| selected.iter().any(|c| ids.contains(*c))).collect();
+            let mut landmarks: Vec<PathBuf> = reaching.iter().map(|(_, path, _)| path.clone()).collect();
+            landmarks.sort();
+            let mut landmark_keys: Vec<&str> = reaching.iter().map(|(_, _, key)| key.as_str()).collect();
+            landmark_keys.sort_unstable();
+            let landmark_key = format!(
+                "{}\npeaks={peak_key}",
+                if landmark_keys.is_empty() { "none".to_string() } else { landmark_keys.join(",") }
+            );
             let pack_key = self.pack_key(leaf, &landmark_key);
             progress.log(format!(
                 "\n--- planet leaf {}/{} ({}/{}, {}, {} cell-band outputs) ---",
@@ -999,7 +1011,7 @@ impl PlanetBake<'_> {
                 Err(error) => progress.warn(format!("    cached leaf state is stale: {error}")),
             }
 
-            match self.cut_leaf(leaf, &cells, &pack_key, &mut empties, progress) {
+            match self.cut_leaf(leaf, &cells, &pack_key, &landmarks, &mut empties, progress) {
                 Ok(stats) => {
                     empties.write_all(&self.opts.out, self.opts.schema_revision)?;
                     self.write_leaf_state(leaf.id, &pack_key)?;
@@ -1175,6 +1187,7 @@ impl PlanetBake<'_> {
         leaf: &PlanetLeaf,
         cells: &BTreeMap<String, Vec<CellId>>,
         pack_key: &str,
+        landmarks: &[PathBuf],
         empties: &mut KnownEmptyIndex,
         progress: &Progress,
     ) -> Result<LeafStats, String> {
@@ -1198,7 +1211,7 @@ impl PlanetBake<'_> {
             // The terrain published in this tree, or nothing. A tree with no terrain writes
             // `Ascent M = 0`, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
-            landmarks: self.opts.landmarks.clone(),
+            landmarks: landmarks.to_vec(),
             peaks: self.opts.peaks.clone().into_iter().collect(),
             bbox: None,
             source_extent: Some(leaf.logical_bbox),
@@ -1817,7 +1830,6 @@ mod tests {
                 schema_id: "bikepacking".into(),
                 schema_revision: 1,
                 terrain: None,
-                landmarks: None,
                 peaks: None,
             },
         };
@@ -1857,7 +1869,6 @@ mod tests {
                 schema_id: "bikepacking".into(),
                 schema_revision: 1,
                 terrain: None,
-                landmarks: None,
                 peaks: None,
             },
         }
@@ -1949,7 +1960,6 @@ mod tests {
                 schema_id: "typo".into(),
                 schema_revision: 1,
                 terrain: None,
-                landmarks: None,
                 peaks: None,
             },
         }
