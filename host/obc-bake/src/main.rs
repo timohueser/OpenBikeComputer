@@ -48,7 +48,6 @@ usage:
         --summary-json FILE  write the machine-readable run summary
         --all                update/bake the whole planet through resumable source shards
         --no-terrain         skip the automatic terrain stage below
-        --landmarks FILE     embed compiled landmark content.json and its photos
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
         --reference DIR      reference archive mirror for the terrain stage's crest lifts
@@ -58,6 +57,10 @@ usage:
       nav graph's ascents integrated from the terrain in the tree, so a bake without
       it quietly produces a flatter map. Incremental like the cells — a tree whose
       terrain is current pays one skip-pass.
+
+      Landmarks are read from the tree the same way: every cell is cut with the
+      compiled content of each region whose coverage selects it, merged by QID, so a
+      cell on a border carries both sides. Run `obc-bake landmarks` to put them there.
 
   obc-bake terrain [REGION…] --sources DIR [flags]
       Bake the curated coverage's OBCT terrain cells into the tree's terrain band.
@@ -238,7 +241,6 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "base-url",
             "dem-sources",
             "reference",
-            "landmarks",
             "peaks",
         ],
     )?;
@@ -365,7 +367,6 @@ fn run_cell_bake(
             // than flagged: the terrain a cell samples must be the terrain the same catalog
             // publishes, and a flag would be a second place for the two to disagree.
             terrain: obc_bake::terrain::in_tree(&out)?,
-            landmarks: flags.get("landmarks").map(PathBuf::from),
             peaks: flags.get("peaks").map(PathBuf::from),
         },
     };
@@ -455,7 +456,6 @@ fn run_planet_bake(
             // than flagged: the terrain a cell samples must be the terrain the same catalog
             // publishes, and a flag would be a second place for the two to disagree.
             terrain: obc_bake::terrain::in_tree(&out)?,
-            landmarks: flags.get("landmarks").map(PathBuf::from),
             peaks: flags.get("peaks").map(PathBuf::from),
         },
     }
