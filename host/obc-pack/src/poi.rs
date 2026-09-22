@@ -343,41 +343,14 @@ pub fn ring_centroid(coords: &[(f64, f64)]) -> (f64, f64) {
 /// Extended-A for phone-supplied route and ride names, and only these fixed-width packed POI names
 /// fold.
 pub fn normalize_name(raw: &str) -> Option<String> {
-    let mut out = String::with_capacity(raw.len().min(28));
-    let mut pending_space = false;
-    let emit = |s: &str, out: &mut String, pending: &mut bool| {
-        if *pending && !out.is_empty() {
-            out.push(' ');
-        }
-        *pending = false;
-        out.push_str(s);
-    };
-    for c in raw.chars() {
-        match c {
-            // Printable ASCII minus space; 0x7F (DEL) has no glyph, so it falls
-            // through to the word-break arm with the controls.
-            '!'..='~' => {
-                let mut buf = [0u8; 1];
-                emit(c.encode_utf8(&mut buf), &mut out, &mut pending_space);
-            }
-            _ => match crate::name::to_ascii(c) {
-                Some(piece) => emit(&piece, &mut out, &mut pending_space),
-                // Space, controls, and unreachable scripts all become one break.
-                None => pending_space = true,
-            },
-        }
-    }
+    let mut out = crate::name::to_ascii_name(raw);
     // Byte cap: everything is ASCII by now, so bytes == chars; re-trim in case
     // the cut lands just after a space.
     out.truncate(24);
     while out.ends_with(' ') {
         out.pop();
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 pub fn dedupe(candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
