@@ -196,8 +196,8 @@ the short cells.
 `publish` never deletes. Anything leaves the bucket through `obc r2 rm`:
 
 ```sh
-obc r2 rm reference/v1/16/3410/2882.tif                  # the plan, then stop
-obc r2 rm <key> --apply --reason "a bad ingest" --confirm "1 <key>"
+obc r2 rm cell-catalog/reference/v1/16/3410/2882.tif     # the plan, then stop
+obc r2 rm <key> --apply --reason "a bad ingest" --confirm "<the plan's own string>"
 obc help r2                                              # the cap, the plan, the confirmation
 ```
 
@@ -205,5 +205,6 @@ obc help r2                                              # the cap, the plan, th
 | --- | --- |
 | Rewrites `index.json` without it, and sends that before the object goes | a crash then leaves a tile nobody can reach, never an index entry with no tile behind it |
 | Refuses `index.json` itself unless `--i-mean-it` names it | a tile the index does not name is not in the archive |
+| Refuses a catalogue it cannot read | it is how `rm` tells a live object from a stray one |
 | Appends to `removed.jsonl` at the bucket root | after the index goes up, the digest and the reason are the only record left |
 | Leaves a local archive alone | `mirror` the box again, or `ingest` it again |
