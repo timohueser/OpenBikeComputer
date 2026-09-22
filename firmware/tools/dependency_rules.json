@@ -5,6 +5,14 @@
     "firmware/obc-boot/Cargo.toml",
     "apps/obc-desktop/Cargo.toml"
   ],
+  "forbidden_features": [
+    {
+      "manifest": "firmware/obc-fw-nrf54l/Cargo.toml",
+      "package": "trouble-host",
+      "features": ["defmt", "log"],
+      "reason": "the BLE host formats bond keys and identities in its logs; the board owns connection diagnostics"
+    }
+  ],
   "groups": {
     "foundation": [
       "obc-crc",

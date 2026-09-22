@@ -510,7 +510,7 @@ async fn run_link(
 
     // What the SDC actually granted: the interval should read 30–60 ms in the fast connect phase,
     // then flip to the cruise or peer values in the params-updated event below.
-    info!("ble: [sensor] link up ({:?}), discovering", conn.raw().params());
+    info!("ble: [sensor] link up ({:?}), discovering", defmt::Debug2Format(&conn.raw().params()));
 
     serve_link(stack, &conn, quantity, kind, injector).await
     // `conn` drops on return → the sensor link is disconnected.

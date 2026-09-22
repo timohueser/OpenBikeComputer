@@ -59,7 +59,45 @@ def rules():
         ],
     }
 
+
+def resolved_metadata(package, features):
+    package_id = f"registry+example#{package}@1.0.0"
+    return {
+        "packages": [{"id": package_id, "name": package}],
+        "resolve": {"nodes": [{"id": package_id, "features": features}]},
+    }
+
+
 class DependencyTests(unittest.TestCase):
+
+    def test_forbidden_resolved_feature_is_rejected(self):
+        violations = check_dependencies.check_forbidden_features(
+            resolved_metadata("radio-host", ["security", "defmt"]),
+            [
+                {
+                    "package": "radio-host",
+                    "features": ["defmt", "log"],
+                    "reason": "host logs can expose keys",
+                }
+            ],
+        )
+        self.assertEqual(
+            violations,
+            ["forbidden dependency feature `radio-host/defmt` is enabled: host logs can expose keys"],
+        )
+
+    def test_allowed_resolved_features_pass(self):
+        violations = check_dependencies.check_forbidden_features(
+            resolved_metadata("radio-host", ["security"]),
+            [
+                {
+                    "package": "radio-host",
+                    "features": ["defmt", "log"],
+                    "reason": "host logs can expose keys",
+                }
+            ],
+        )
+        self.assertEqual(violations, [])
 
     def test_usb_transport_is_host_only(self):
         production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
