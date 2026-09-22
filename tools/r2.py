@@ -10,25 +10,29 @@ cannot disagree about where anything is.
 empties a folder on one click: it cannot tell a cell the live catalogue names from a stray
 upload, and it asks nothing before it acts. Every guard below answers that.
 
-    obc r2 rm cell-catalog/cells/fine/1204/1052.obcm
-    obc r2 rm --prefix reference/v1/16/3410
-    obc r2 rm <key> --apply --reason "bad ingest" --confirm "1 <key>"
+    obc r2 rm cell-catalog/cells/fine/1204/1052.<sha256>.obcm
+    obc r2 rm --prefix cell-catalog/reference/v1/16/3410
+    obc r2 rm <key> --apply --reason "bad ingest" --confirm "<the plan's own string>"
 
-A key is the object's full key inside the bucket, the way a listing prints it.
+A key is the object's full key inside the bucket, the way a listing prints it. A published
+cell, preview or index carries the digest of its bytes in its name.
 `run_rclone` is the one seam the tests replace, so every command reaches it through this
 module and not through a name bound at import time.
 """
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 #: The terrain reference archive, under the catalogue prefix inside the bucket.
@@ -48,6 +52,10 @@ CATALOG_ROOT = ("catalog.json", "schema.json", "terrain.json", "LICENSE.txt")
 
 #: The per-region cell indexes, by their folder inside the catalogue prefix.
 CATALOG_INDEXES = "regions/"
+
+#: A band's cell index, by its key under the catalogue prefix. The root names one per band
+#: and each one names that band's cells, so a cell is live only through this document.
+BAND_INDEX = re.compile(r"(?:\A|/)cells/[^/]+/index\.[^/]+\.json\Z")
 
 #: What the owner has to run after a catalogue object goes, before a rider downloads again.
 REPUBLISH = "obc bake publish --target r2"
@@ -182,9 +190,8 @@ def strings(document) -> set[str]:
     """Every string anywhere in a JSON document.
 
     The catalogue names its objects in several shapes and the shapes move with the schema.
-    What does not move is that a published key appears verbatim, so the test is membership
-    in every string the document holds. It protects more than it must, which is the safe
-    direction for a delete.
+    What does not move is that each object is named by its URL somewhere in the document,
+    so the walk collects every string and `key_of` decides which ones are keys.
     """
 
     found, stack = set(), [document]
@@ -197,6 +204,69 @@ def strings(document) -> set[str]:
         elif isinstance(item, list):
             stack.extend(item)
     return found
+
+
+def maps_base() -> str | None:
+    """The base URL the publisher writes into the catalogue, when the environment names it."""
+
+    base = os.environ.get("OBC_MAPS_BASE_URL", "")
+    if not base:
+        catalog = os.environ.get("OBC_CATALOG_URL", "")
+        base = catalog[: -len("/catalog.json")] if catalog.endswith("/catalog.json") else ""
+    return base.rstrip("/") or None
+
+
+def key_of(text: str, base: str | None) -> str | None:
+    """The bucket key a catalogue string names, or None when it names nothing in the bucket.
+
+    The publisher writes `<base>/<key under the catalogue prefix>`, and that base ends in
+    the bucket's catalogue prefix, so the key is the URL's path without its leading slash.
+    With no base in the environment every absolute URL is read that way, which protects
+    more than it must — the safe direction for a delete.
+    """
+
+    if "://" not in text:
+        inside = text.removeprefix("./").lstrip("/")
+        return catalog_key(inside) if inside and "." in inside.rpartition("/")[2] else None
+    if base:
+        return catalog_key(text[len(base) + 1:]) if text.startswith(f"{base}/") else None
+    return urlsplit(text).path.lstrip("/") or None
+
+
+def keys_in(key: str, path: Path, base: str | None) -> set[str]:
+    """Every bucket key one catalogue document names."""
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Refuse(f"{key} is not readable JSON, so `rm` cannot tell what a rider still "
+                     "downloads; fix it, or pass --no-catalog and name every key") from exc
+    return {found for found in (key_of(text, base) for text in strings(document)) if found}
+
+
+def fetch_catalogue(remote: Remote, key: str, into: Path) -> Path:
+    """One catalogue document, or a refusal. Protection never runs on a missing document."""
+
+    if fetch_optional(remote, key, into) is None:
+        raise Refuse(f"{key} is not in the bucket, and it is how `rm` knows which objects a "
+                     "rider still downloads; pass --no-catalog to delete without it, which "
+                     "then needs --i-mean-it on every key")
+    return into
+
+
+def named_objects(remote: Remote, staging: Path) -> set[str]:
+    """Every bucket key the live catalogue names: the root, and the cells behind it.
+
+    A cell is named only in its band's `cells/<band>/index.<sha>.json`; the root carries
+    the band indexes. Walking one level is what makes the guard reach a cell at all.
+    """
+
+    base = maps_base()
+    root = catalog_key()
+    named = keys_in(root, fetch_catalogue(remote, root, staging / "catalog.json"), base)
+    for index in sorted(key for key in named if BAND_INDEX.search(key)):
+        named |= keys_in(index, fetch_catalogue(remote, index, staging / "band.json"), base)
+    return named
 
 
 def inside_catalog(key: str) -> str | None:
@@ -213,15 +283,17 @@ def inside_catalog(key: str) -> str | None:
 def protection(key: str, named: set[str]) -> str | None:
     """Why this key needs `--i-mean-it`, or None if nothing downstream depends on it."""
 
+    if key == REMOVAL_LOG:
+        return "the bucket's removal history; nothing else records what went and why"
     if key == f"{archive_prefix()}/index.json":
         return "the reference archive index; a tile it does not name is not in the archive"
+    if key in named:
+        return f"the live catalogue names it; downloads of it fail until `{REPUBLISH}`"
     inside = inside_catalog(key)
     if inside is None:
         return None
     if inside in CATALOG_ROOT or inside.startswith(CATALOG_INDEXES):
         return "the catalogue root; every download reads it before it knows what exists"
-    if inside in named:
-        return f"the live catalogue names it; downloads of it fail until `{REPUBLISH}`"
     return None
 
 
@@ -253,14 +325,16 @@ def prune_index(index: dict, tiles: list[str]) -> dict:
 
 
 def confirmation(keys: list[str]) -> str:
-    """What `--confirm` must repeat: the count and the first key of *this* plan.
+    """What `--confirm` must repeat: this plan's size, and a digest of its whole key list.
 
-    Both halves come from the resolved plan and never from the command line, so a
-    confirmation carried over from an earlier run names a count or a key that no longer
-    matches, and the removal refuses.
+    A count and a first key cannot see a swap: under `--prefix`, one object replaced by
+    another between the plan and the apply leaves both halves equal. The digest covers
+    every key, and an apply lists the bucket again before it derives the string, so a plan
+    that is no longer the reviewed one refuses.
     """
 
-    return f"{len(keys)} {keys[0]}"
+    digest = hashlib.sha256("\n".join(sorted(keys)).encode("utf-8")).hexdigest()
+    return f"{len(keys)}-{digest[:10]}"
 
 
 def removal_lines(targets: list[Target], reason: str, who: str, when: str) -> str:
@@ -305,7 +379,12 @@ def unname_tiles(remote: Remote, staging: Path, tiles: list[str]) -> None:
 
 
 def append_log(remote: Remote, staging: Path, targets: list[Target], reason: str) -> None:
-    """Append this removal to the bucket's history, before the objects themselves go."""
+    """Append this removal to the bucket's history, before anything else changes.
+
+    It goes first because it is the only thing that survives every later step: once the
+    reference index is rewritten the digests are gone, and once an object is deleted its
+    size is. A line for a removal that then failed is a smaller loss than no line at all.
+    """
 
     log = staging / REMOVAL_LOG
     fetch_optional(remote, REMOVAL_LOG, log)
@@ -336,9 +415,7 @@ def command_rm(args) -> int:
         tiles = sorted(tile for tile in (reference_tile(key) for key in keys) if tile)
         catalogued = [key for key in keys if inside_catalog(key) is not None]
 
-        named = set()
-        if catalogued and fetch_optional(remote, catalog_key(), staging / "catalog.json"):
-            named = strings(json.loads((staging / "catalog.json").read_text(encoding="utf-8")))
+        named = named_objects(remote, staging) if catalogued and not args.no_catalog else set()
         blocked = {key: why for key in keys if (why := protection(key, named))}
 
         print(f"{remote.path}: {len(keys)} object(s) to delete — key, bytes, modified")
@@ -351,15 +428,19 @@ def command_rm(args) -> int:
             print(f"  {len(tiles)} reference tile(s): the archive index is rewritten first")
         if catalogued:
             print(f"  {len(catalogued)} catalogue object(s): republish after this with `{REPUBLISH}`")
+        if args.no_catalog:
+            print("  --no-catalog: nothing is read, so nothing but --i-mean-it protects a live cell")
 
-        stale = [key for key in args.i_mean_it if key not in blocked]
+        stale = [key for key in args.i_mean_it if key not in keys]
         if stale:
             raise Refuse(f"--i-mean-it names {', '.join(stale)}, which this plan does not "
-                         "protect; the confirmation belongs to another command line")
-        unapproved = [key for key in blocked if key not in args.i_mean_it]
+                         "delete; the confirmation belongs to another command line")
+        unapproved = [key for key in (keys if args.no_catalog else blocked)
+                      if key not in args.i_mean_it]
         if unapproved:
-            raise Refuse("something downstream depends on "
-                         f"{', '.join(unapproved)}; name each one in --i-mean-it to delete it")
+            depends = "may depend on" if args.no_catalog else "depends on"
+            raise Refuse(f"something downstream {depends} {', '.join(unapproved)}; "
+                         "name each one in --i-mean-it to delete it")
 
         expected = confirmation(keys)
         if not args.apply:
@@ -371,9 +452,9 @@ def command_rm(args) -> int:
             raise Refuse(f'--confirm must repeat this plan\'s "{expected}"; it says '
                          f'"{args.confirm or ""}", so the plan is not the one that was reviewed')
 
+        append_log(remote, staging, targets, args.reason)
         if tiles:
             unname_tiles(remote, staging, tiles)
-        append_log(remote, staging, targets, args.reason)
         for key in keys:
             run_rclone(["deletefile", f"{remote.path}/{key}"], remote.env)
 
@@ -401,6 +482,9 @@ def main(argv=None) -> int:
     remove.add_argument("--reason", help="why these objects go; it is kept in the removal log")
     remove.add_argument("--i-mean-it", action="append", default=[], metavar="KEY",
                         help="delete this protected key as well; repeat it for each one")
+    remove.add_argument("--no-catalog", action="store_true",
+                        help="delete without reading the catalogue, for a bucket that has "
+                             "none; every key then needs --i-mean-it")
     remove.set_defaults(run=command_rm)
 
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
