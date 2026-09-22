@@ -5,6 +5,13 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map rendering path using embedded-graphics"
 
+[features]
+# `text-tap` is the one host-only `std` edge this `no_std` crate has, and it exists for one
+# consumer: `obc-app`'s copy-fit gate, which asserts that every screen's copy fits the panel in
+# every language. It records each text draw as (box, font, string) in a thread-local, which needs
+# `std`. Only a dev-dependency turns it on, so no device build compiles any of it.
+text-tap = []
+
 [dependencies]
 obc-map-scene = { path = "../obc-map-scene" }
 embedded-graphics = "0.8"
