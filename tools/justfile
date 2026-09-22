@@ -686,7 +686,15 @@ test *args:
         # `--lib` is the library-only loop: nextest builds one target and doctests, which are a
         # separate Cargo run over the whole package, stay out of it. Cargo rejects `--lib` on a
         # package with no library, so an unbuildable scope fails before anything runs.
-        library_only "$@" || _run cargo test --locked --doc "$@"
+        if ! library_only "$@"; then
+          # A scope with no library is a hard error for `--doc`, not an empty run, so a
+          # binary-only package would fail the task after every one of its tests passed.
+          if python3 "$OBC_TOOLS/cargo_scope.py" has-library "$@"; then
+            _run cargo test --locked --doc "$@"
+          else
+            _hint "no library in this scope: no doctests to run"
+          fi
+        fi
         ;;
     esac
 
