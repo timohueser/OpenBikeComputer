@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ASSEMBLE_ERROR_CODES, AssembleError, assembleCells, estimateMemory, initAssemble } from "./bridge";
+import { ASSEMBLE_ERROR_CODES, AssembleError, assembleCells, estimateMemory, initAssemble, wasmMemoryBytes } from "./bridge";
 import type {
     AssembleCell,
     AssemblePhase,
@@ -442,6 +442,16 @@ describe("the wire contract with driver.rs", () => {
         expect(arms, "ErrorCode::as_str no longer looks the way this test reads it").toBeTruthy();
         const codes = arms!.map((a) => a.replace(/.*"([a-z-]+)"/, "$1"));
         expect(codes.slice().sort()).toEqual([...ASSEMBLE_ERROR_CODES].sort());
+    });
+});
+
+describe("wasmMemoryBytes", () => {
+    /** The seam the browser memory gate reads: what the worker reports at `done` has to be the
+     *  live instance's own linear memory, not a number this module keeps beside it. */
+    it("reports the instantiated module's linear memory", async () => {
+        const { memory } = await (await import("./pkg/obc_web_assemble.js")).default();
+        expect(wasmMemoryBytes()).toBe(memory.buffer.byteLength);
+        expect(wasmMemoryBytes()).toBeGreaterThan(0);
     });
 });
 

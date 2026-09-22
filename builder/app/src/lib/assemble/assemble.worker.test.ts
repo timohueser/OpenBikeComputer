@@ -3,9 +3,9 @@ import type { AssembleWorkerRequest, AssembleWorkerResponse } from "./workerProt
 
 const seams = vi.hoisted(() => ({
     assemble: vi.fn(), estimate: vi.fn(), sync: vi.fn(), reader: vi.fn(), sink: vi.fn(), scratch: vi.fn(),
-    readBytes: vi.fn(), io: vi.fn(),
+    readBytes: vi.fn(), io: vi.fn(), memory: vi.fn(),
 }));
-vi.mock("./bridge", async (original) => ({ ...await original<typeof import("./bridge")>(), assembleCells: seams.assemble, estimateMemory: seams.estimate }));
+vi.mock("./bridge", async (original) => ({ ...await original<typeof import("./bridge")>(), assembleCells: seams.assemble, estimateMemory: seams.estimate, wasmMemoryBytes: seams.memory }));
 vi.mock("../cells/store", () => ({
     openCellReader: seams.reader, openMapSink: seams.sink, openScratchStore: seams.scratch,
     readCellBytes: seams.readBytes, syncReadsAvailable: seams.sync, takeIoStats: seams.io,
@@ -39,6 +39,7 @@ describe("assembly worker storage admission", () => {
         seams.scratch.mockResolvedValue(scratch);
         seams.assemble.mockResolvedValue(result);
         seams.estimate.mockResolvedValue({ fits: true });
+        seams.memory.mockReturnValue(404_946_944);
         const worker = { onmessage: undefined, postMessage: (message: AssembleWorkerResponse) => messages.push(message) };
         vi.stubGlobal("self", worker);
         await import("./assemble.worker");
@@ -98,6 +99,14 @@ describe("assembly worker storage admission", () => {
         expect(seams.assemble.mock.calls[0][9]).toBeUndefined();
         expect(messages).toContainEqual({ type: "file", sha256: "abc", byteLength: 4, bytes: Uint8Array.of(1, 2, 3, 4) });
         expect(result.release).toHaveBeenCalledOnce();
+    });
+
+    /** The seam a memory gate reads. It is taken after the run, where linear memory is at its
+     *  peak, so a figure read any earlier would understate the assembly. */
+    it("reports the instance's linear memory when the run is done", async () => {
+        await send(request());
+        expect(messages.at(-1)).toMatchObject({ type: "done", wasmMemoryBytes: 404_946_944 });
+        expect(seams.memory.mock.invocationCallOrder[0]).toBeGreaterThan(seams.assemble.mock.invocationCallOrder[0]);
     });
 
     it("releases an assembled result when scratch cleanup rejects", async () => {

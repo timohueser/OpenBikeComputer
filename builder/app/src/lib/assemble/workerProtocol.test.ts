@@ -113,7 +113,7 @@ describe("isWorkerResponse", () => {
             // Past 2 GiB on purpose: a sunk map is the case this message exists for, and it is
             // routinely larger than anything that could have crossed the port.
             { type: "stored-map", sha256: "b".repeat(64), byteLength: 8_800_000_000 },
-            { type: "done", warnings: [], summary: summary() },
+            { type: "done", warnings: [], summary: summary(), wasmMemoryBytes: 404_946_944 },
             { type: "estimate-result", estimateId: 1, onDisk: true, estimate: est(true) },
             { type: "error", code: "capacity", message: "too big" },
         ];
@@ -142,6 +142,8 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse({ type: "estimate-result", estimate: null })).toBe(false);
         expect(isWorkerResponse({ type: "estimate-result", estimate: est(true) })).toBe(false);
         expect(isWorkerResponse({ type: "error", code: "not-a-code", message: "x" })).toBe(false);
+        // A `done` with no memory figure is a worker older than the gate that reads it.
+        expect(isWorkerResponse({ type: "done", warnings: [], summary: summary() })).toBe(false);
         // A `file` whose bytes are not bytes: the one field the download screen dereferences.
         expect(isWorkerResponse({ type: "file", sha256: "a".repeat(64), byteLength: 1, bytes: [1] })).toBe(false);
         // Message variants this protocol does not speak: a build still sending them must be
