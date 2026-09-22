@@ -100,7 +100,7 @@ pub use settings::{
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
-pub use upload_facts::{CatalogUpload, CatalogUploadKind, UploadFacts, UPLOAD_EVENTS_CAP};
+pub use upload_facts::{CatalogUpload, CatalogUploadKind, UploadFacts};
 
 /// Durable identity of a catalog object. This is the flat store's `ObjectId` width; UI code keeps
 /// the primitive alias so `obc-app` does not depend on a storage implementation.
