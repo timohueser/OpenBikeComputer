@@ -723,6 +723,18 @@ impl CatalogState {
         Some(effect)
     }
 
+    /// Whether the admitted intent would remove `object` — the route itself, or a trip folder's
+    /// member. Automatic cleanup is excluded: it skips a protected route on its own.
+    pub(crate) fn pending_removes(&self, object: CatalogObjectId) -> bool {
+        match self.pending {
+            Some(CatalogIntent::DeleteRoute { id }) | Some(CatalogIntent::DeleteRide { id }) => id == object,
+            Some(CatalogIntent::DeleteTrip { id }) => {
+                id == object || self.trips.iter().any(|trip| trip.id == id && trip.stage_ids.contains(&object))
+            }
+            _ => false,
+        }
+    }
+
     /// The member route id at stage `ordinal` of the resident trip `trip`, or `None` past its last
     /// stage. A trip that is not resident also answers `None`, which ends the walk at the folder.
     fn trip_member(&self, trip: CatalogObjectId, ordinal: u8) -> Option<CatalogObjectId> {

@@ -459,6 +459,14 @@ impl App {
                 let _ = self.pass.connections.ui_catalog.try_put(full.rejected);
             }
         }
+        // The store refuses a removal for an object the checkpoint names, and a refused removal is
+        // not retried, so the rider's confirmed delete would vanish. Give up the checkpoint first
+        // and leave the intent admitted: the admitted intent is what the domain would pull next, so
+        // holding the pull holds only this removal.
+        if self.checkpoint_blocks_removal() {
+            self.navigator.clear_checkpoint_for_removal();
+            return;
+        }
         if let Some(effect) = self.catalogs.next_effect_at(self.ui.now_ms) {
             let _ = effects.catalog.try_put(effect);
         }
@@ -537,8 +545,12 @@ impl App {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.navigator.reset_detour();
+            // Only a measured anchor re-joins the route. A plain route selection records no
+            // progress, so re-anchoring a fresh ride to it would drag the matcher back to the route
+            // start from wherever the rider actually is.
             if let Some(checkpoint) = self
                 .assistant_checkpoint()
+                .filter(|checkpoint| !checkpoint.selection)
                 .filter(|_| self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted)
             {
                 if let Some(index) = self

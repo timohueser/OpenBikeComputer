@@ -18,7 +18,7 @@ mod review;
 mod visit;
 use review::ReviewState;
 pub use review::{
-    CheckpointChange, ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, ReviewedRoute,
+    CheckpointChange, ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, ReviewedRoute, RouteCheckpointSource,
     REVIEW_ALONG_TOLERANCE_M, REVIEW_FACTS_POLICY, REVIEW_LATERAL_TOLERANCE_M,
 };
 pub use visit::VisitUnavailable;

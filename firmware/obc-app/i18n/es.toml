@@ -727,9 +727,9 @@ save_unknown = "Guardado incierto"
 cancel_visit = "Cancelar"
 arrival = "Has llegado"
 guidance_continues = "La guía continúa"
-resume_journey = "Reanudar ruta"
+resume_navigation = "Navegación"
 resume_route = "Reanudar"
-saved_journey = "Ruta guardada"
+saved_route = "Ruta guardada"
 
 [find_context]
 hide_closed = "Ocultar\ncerrados"

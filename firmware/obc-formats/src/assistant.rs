@@ -45,7 +45,7 @@ pub enum JourneyPhase {
     Returning = 3,
 }
 
-/// Recovery offer for an explicitly accepted Assistant route. It does not start navigation.
+/// Recovery offer for the route guidance was following. It does not start navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavigatorCheckpoint {
     pub route: PayloadFingerprint,
@@ -56,6 +56,9 @@ pub struct NavigatorCheckpoint {
     pub lat: i32,
     pub phase: JourneyPhase,
     pub unresolved_avoidance: bool,
+    /// The rider's plain route selection rather than a plan they accepted. Its progress is not a
+    /// measured anchor, so nothing may re-join the route at it.
+    pub selection: bool,
     pub lower_m: u32,
     pub upper_m: u32,
 }
@@ -65,6 +68,7 @@ impl NavigatorCheckpoint {
         self.route.valid()
             && self.original.is_none_or(PayloadFingerprint::valid)
             && (self.phase == JourneyPhase::Following || self.original.is_some())
+            && (!self.selection || (self.original.is_none() && self.phase == JourneyPhase::Following))
             && (-180_000_000..=180_000_000).contains(&self.lon)
             && (-90_000_000..=90_000_000).contains(&self.lat)
             && self.lower_m <= self.progress_m
@@ -86,13 +90,14 @@ impl NavigatorCheckpoint {
         put_i32(&mut bytes, 68, self.lat);
         bytes[72] = self.phase as u8;
         bytes[73] = u8::from(self.unresolved_avoidance);
+        bytes[74] = u8::from(self.selection);
         put_u32(&mut bytes, 76, self.lower_m);
         put_u32(&mut bytes, 80, self.upper_m);
         Some(bytes)
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != CHECKPOINT_LEN || bytes[73] > 1 || bytes[74..76] != [0; 2] || bytes[84..] != [0; 12] {
+        if bytes.len() != CHECKPOINT_LEN || bytes[73] > 1 || bytes[74] > 1 || bytes[75] != 0 || bytes[84..] != [0; 12] {
             return None;
         }
         let value = Self {
@@ -110,6 +115,7 @@ impl NavigatorCheckpoint {
                 _ => return None,
             },
             unresolved_avoidance: bytes[73] == 1,
+            selection: bytes[74] == 1,
             lower_m: rd_u32(bytes, 76),
             upper_m: rd_u32(bytes, 80),
         };

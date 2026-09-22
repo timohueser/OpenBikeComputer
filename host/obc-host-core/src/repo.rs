@@ -106,7 +106,9 @@ pub trait RouteRepository {
     fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
         None
     }
-    fn resume_map_matches(&self, _map: obc_formats::obcr::RouteSourceKey) -> bool {
+    /// Whether the stored checkpoint's route still accepts `map` as its attribution — the current
+    /// map key, or `None` when no current map is open. An imported route attributes no map.
+    fn resume_map_matches(&self, _map: Option<obc_formats::obcr::RouteSourceKey>) -> bool {
         false
     }
     fn read_checkpoint(

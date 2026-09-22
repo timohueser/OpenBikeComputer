@@ -5,6 +5,14 @@ use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_ports::{Fix, InputClock, LocationSource, RideClock};
 
+/// No Assistant review is in progress. A selected ordinary route's own checkpoint still stands.
+fn settled(app: &App) -> bool {
+    matches!(
+        app.assistant_review_status(),
+        obc_app::navigator::ReviewStatus::Idle | obc_app::navigator::ReviewStatus::Accepted
+    ) && app.assistant_preview().is_none()
+}
+
 struct Position;
 impl LocationSource for Position {
     fn poll(&mut self) -> Option<Fix> {
@@ -302,16 +310,19 @@ fn run_find(scenario: Scenario) {
                     assert!(routes.ids().contains(&checkpoint.route.object));
                     assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::ResumeAvailable);
                 } else {
-                    assert!(routes.read_checkpoint().unwrap().is_none());
+                    assert!(
+                        routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
+                        "only the selected ordinary route is checkpointed, never a candidate"
+                    );
                 }
                 phase = 15;
                 break;
             }
-            8 if app.assistant_planner_released()
-                && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Idle
-                && routes.ids() == [original] =>
-            {
-                assert!(routes.read_checkpoint().unwrap().is_none());
+            8 if app.assistant_planner_released() && settled(&app) && routes.ids() == [original] => {
+                assert!(
+                    routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
+                    "only the selected ordinary route is checkpointed, never a candidate"
+                );
                 assert!(app.assistant_preview_shape().is_empty());
                 assert!(releases >= acquisitions + restores, "all planner owners receive release ACKs");
                 if free_ride && !reentered {
@@ -336,7 +347,10 @@ fn run_find(scenario: Scenario) {
                 assert!(releases >= acquisitions);
                 assert!(app.assistant_planner_released());
                 assert_eq!(app.find_place_result_count(), 4, "previews={previews}, failures={failures:?}");
-                assert!(routes.read_checkpoint().unwrap().is_none());
+                assert!(
+                    routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
+                    "only the selected ordinary route is checkpointed, never a candidate"
+                );
                 if let Ok(path) = std::env::var("OBC_FIND_FRAME") {
                     std::fs::write(path, frame.as_rgba()).unwrap();
                 }
@@ -355,7 +369,10 @@ fn run_find(scenario: Scenario) {
                 let preview = app.assistant_preview().unwrap();
                 assert!(calculated.contains(&preview.source), "selection reuses a measured candidate");
                 assert!(!app.assistant_preview_shape().is_empty(), "published shape is token-bound and readable");
-                assert!(routes.read_checkpoint().unwrap().is_none());
+                assert!(
+                    routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
+                    "only the selected ordinary route is checkpointed, never a candidate"
+                );
                 selected_preview = Some(preview);
                 selected_shape = app.assistant_preview_shape().to_vec();
                 if scenario == Scenario::ModeCycle {
@@ -413,7 +430,7 @@ fn run_find(scenario: Scenario) {
                 }
             }
             10 if app.assistant_planner_released() => {
-                assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Idle);
+                assert!(settled(&app), "no review is in progress: {:?}", app.assistant_review_status());
                 assert!(app.assistant_preview_shape().is_empty());
                 if free_ride {
                     assert_eq!(
@@ -503,13 +520,16 @@ fn run_find(scenario: Scenario) {
                 assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Preview);
                 assert_eq!(app.assistant_preview(), selected_preview, "closing hours preserve the reviewed route");
                 assert_eq!(app.assistant_preview_shape(), selected_shape);
-                assert!(routes.read_checkpoint().unwrap().is_none());
+                assert!(
+                    routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
+                    "only the selected ordinary route is checkpointed, never a candidate"
+                );
                 app.apply_gesture(Gesture::Back);
                 phase = 3;
             }
             3 if app.assistant_planner_released() => {
                 app.stamp_clock_ble(1_727_000_000, 0);
-                assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Idle);
+                assert!(settled(&app), "no review is in progress: {:?}", app.assistant_review_status());
                 assert!(app.assistant_preview_shape().is_empty());
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::FindPlace(_)));
                 app.apply_gesture(Gesture::Step(4));

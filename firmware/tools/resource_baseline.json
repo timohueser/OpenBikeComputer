@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 57376,
+        "app": 57384,
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -84,6 +84,12 @@
         "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
         "changes": "App +2272 B for bounded icon candidates, incremental query cursors and cache identity. BLE settings cache +4 B, also counted in ble_total. All other named allocations and ceilings are unchanged.",
         "verification": "Final diagnostic head compared with the recorded baseline; no base rebuild. Board and init_idle frame guards pass. Resident 312488 B; residual stack 46936 B; margin above recorded deep-ride high-water 9920 B versus 8704 B floor (1216 B spare). Shipping ELF verification remains in CI. One earlier diagnostic build preceded the review fixes."
+      },
+      "_navigation_resume_allocation_measurement": {
+        "source_commit": "5db59821 on claude/closeout-nav-resume, rebased on 425dbcf7",
+        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
+        "changes": "App +8 B: the Resume offer keeps the catalog row the standing checkpoint names, so the card can say which route it would resume, and Navigator keeps two flags for what the selection still owes the card. All other named allocations and resource ceilings are unchanged.",
+        "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF: 313,096 B linked resident inside the band, residual main stack 46,328 B, poll frame 9,776 B, init_idle frame 1,720 B. Shipping ELF verification remains in CI. No base rebuild and no device flash."
       },
       "_find_place_allocation_measurement": {
         "source_commit": "45e463b67b2ac69626b1f65ef29b7f74e0e604c7",
