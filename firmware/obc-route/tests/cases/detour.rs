@@ -703,9 +703,13 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         "…then descends the tail to land at the exact requested projection near node9"
     );
 
+    let mut detour = detour;
+    detour[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Gravel as u8;
     let (out, trimmed) = trim_run(&obcr, &detour, target, dstats.has_elevation);
     let out = out.expect("the retrace is trimmed");
     assert!(out.rejoin_m > target + 500, "rejoin advances toward the road end (got {})", out.rejoin_m);
+    let tsrc = SliceSource(&trimmed[..]);
+    assert_eq!(RouteIndex::read(&tsrc).unwrap().bike_type(), BikeType::Gravel, "the trim keeps the detour's type");
 
     let tpts = route_points(&trimmed);
     assert_eq!(

@@ -1511,4 +1511,32 @@ mod tests {
         assert_eq!(nav.review.change, Some(Some(checkpoint)));
         assert!(nav.following.active_route.is_none());
     }
+
+    /// An accepted visit and a resume activate a route that changes or continues the loaded one,
+    /// so the rider's own type stays.
+    #[test]
+    fn an_accepted_visit_and_a_resume_keep_the_rider_type() {
+        use crate::harness::support::tick_typed_route;
+        use crate::settings::BikeType::{Gravel, Mtb};
+        let summary = obc_route::RouteSummary {
+            name: heapless::String::new(),
+            distance_km: 1,
+            climb_m: 0,
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+            start_lon: 0,
+            start_lat: 0,
+        };
+        for after in [
+            AfterCheckpoint::Activate { route: 5, record: true },
+            AfterCheckpoint::Activate { route: 5, record: false },
+            AfterCheckpoint::Restore { route: 5, progress_m: 0 },
+        ] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            app.set_routes_with_ids(&[summary.clone(), summary.clone()], &[4, 5]);
+            app.set_settings(crate::Settings { bike_type: Gravel, ..Default::default() });
+            app.apply_assistant_checkpoint_action(Some(after));
+            assert_eq!(app.active_route_index(), Some(1));
+            assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "{after:?}");
+        }
+    }
 }

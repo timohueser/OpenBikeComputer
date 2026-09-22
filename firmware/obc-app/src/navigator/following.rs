@@ -373,15 +373,26 @@ impl NavigatorMachine {
         false
     }
 
-    /// The bike type of a route that just loaded, once per load. A rider change after the load
-    /// stays until another route loads; a catalog remap of the same route is not a load.
-    pub(crate) fn loaded_bike_type(&mut self, route: Option<&RouteReader>) -> Option<crate::settings::BikeType> {
-        if self.following.active_route == self.typed_route {
-            return None;
-        }
-        let loaded = self.following.active_route.zip(route);
-        self.typed_route = loaded.map(|(index, _)| index);
-        loaded.map(|(_, r)| r.bike_type())
+    /// Load catalog route `route`: activate it, and owe the settings its bike type. Only a rider's
+    /// start or swap, and a phone replace of the active route, are loads. A browse preview, a
+    /// detour, a visit and a resume change the active route without changing the rider's type.
+    pub(crate) fn load_route(&mut self, route: usize) {
+        self.set_active_route(Some(route));
+        self.bike_type_owed = Some(route);
+    }
+
+    /// The active route's bytes were replaced, which is a load of the new bytes.
+    pub(crate) fn owe_bike_type(&mut self) {
+        self.bike_type_owed = self.following.active_route;
+    }
+
+    /// The loaded route's bike type, once per load, as soon as it is active and its reader open.
+    /// The index is kept, because a selection can wait behind an Assistant checkpoint.
+    pub(crate) fn take_loaded_bike_type(&mut self, route: Option<&RouteReader>) -> Option<crate::settings::BikeType> {
+        let route =
+            route.filter(|_| self.bike_type_owed.is_some() && self.bike_type_owed == self.following.active_route)?;
+        self.bike_type_owed = None;
+        Some(route.bike_type())
     }
 
     /// Build once per active route at render time. A missing reader clears stale geometry but
@@ -406,7 +417,6 @@ impl NavigatorMachine {
         self.profile_route = None;
         self.climbs = Climbs::new();
         self.climbs_route = None;
-        self.typed_route = None;
         self.following.active_climb = None;
         self.waypoints = Waypoints::new();
         self.waypoints_route = None;
@@ -433,6 +443,7 @@ impl NavigatorMachine {
             self.route_match.reset();
         }
         self.matched_route = self.matched_route.and_then(remap);
+        self.bike_type_owed = self.bike_type_owed.and_then(remap);
         let old_profile = self.profile_route;
         self.profile_route = old_profile.and_then(remap);
         if old_profile.is_some() && self.profile_route.is_none() {
@@ -440,7 +451,6 @@ impl NavigatorMachine {
         }
         // Clearing the active-climb state with the cache keeps a stale "on climb" flag from
         // stranding the rider on a gone route.
-        self.typed_route = self.typed_route.and_then(remap);
         let old_climbs = self.climbs_route;
         self.climbs_route = old_climbs.and_then(remap);
         if old_climbs.is_some() && self.climbs_route.is_none() {

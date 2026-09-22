@@ -595,7 +595,7 @@ impl App {
         if self.navigator.sync_route_state(route) {
             self.ui.map_dirty = true;
         }
-        if let Some(bike) = self.navigator.loaded_bike_type(route).filter(|b| *b != self.settings.bike_type) {
+        if let Some(bike) = self.navigator.take_loaded_bike_type(route).filter(|b| *b != self.settings.bike_type) {
             self.settings.bike_type = bike;
             self.settings_ops.note_edited();
         }
@@ -1672,6 +1672,7 @@ impl App {
             // Same index and id, but new bytes. The remap preserves same-id state, and a
             // replace is the one case where that would carry stale state onto new geometry.
             self.drop_route_derived_state();
+            self.navigator.owe_bike_type();
             self.ui.map_dirty = true; // the drawn route line + progress changed under the rider
         }
         self.ui.cards.post_upload(PendingUpload::Route(UploadEvent { id, active_replace, elevation }));
@@ -4639,33 +4640,6 @@ mod tests {
         RouteIndex::read(&src).unwrap()
     }
 
-    /// Loading a route sets the current bike type once. A rider change after the load stays, and
-    /// the next route load sets it again.
-    #[test]
-    fn a_route_load_sets_the_bike_type_once() {
-        use crate::settings::BikeType;
-        let mut bytes = GRIMSEL.to_vec();
-        bytes[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Mtb as u8;
-        let src = SliceSource(&bytes);
-        let idx = RouteIndex::read(&src).unwrap();
-        let route = RouteReader::new(&idx, &src);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let mut loc = OneFix(None);
-
-        app.navigator.route_state_mut().active_route = Some(0);
-        app.tick(RideClock(1_000), Sensors::new(&mut loc), Some(&route));
-        assert_eq!(app.settings().bike_type, BikeType::Mtb, "the load set the route's type");
-        assert!(settings_dirty(&mut app), "…and saves it");
-
-        app.settings.bike_type = BikeType::Road;
-        app.tick(RideClock(2_000), Sensors::new(&mut loc), Some(&route));
-        assert_eq!(app.settings().bike_type, BikeType::Road, "a rider change outlives the loaded route");
-
-        app.navigator.route_state_mut().active_route = Some(1);
-        app.tick(RideClock(3_000), Sensors::new(&mut loc), Some(&route));
-        assert_eq!(app.settings().bike_type, BikeType::Mtb, "another route load sets it again");
-    }
-
     /// Pin the composed route-following result through the App tick. The in-RAM route carries
     /// elevation for one climb, named waypoints, an off-route excursion, and a fix at the end.
     #[test]
@@ -5867,6 +5841,71 @@ mod tests {
         assert!(!app.take_dirty().map);
         app.set_trips(&[]);
         assert!(app.take_dirty().map);
+    }
+
+    /// A rider on Gravel, and two catalog routes the host would read as MTB.
+    fn gravel_rider() -> App {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("A"), summary("B")], &[10, 20]);
+        app.settings.bike_type = crate::settings::BikeType::Gravel;
+        app
+    }
+
+    /// Each rider load sets the current type from the loaded route, once: a start from the
+    /// overview, a swap mid-ride, the received-route prompt, and a phone replace of the active
+    /// route.
+    #[test]
+    fn a_route_load_sets_the_bike_type_once() {
+        use crate::harness::support::tick_typed_route;
+        use crate::settings::BikeType::{Mtb, Road};
+        type Load = fn(&mut App);
+        let loads: [(&str, Load); 4] = [
+            ("start from the overview", |app| {
+                app.navigator.route_state_mut().active_route = Some(0);
+                let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
+                app.apply_gesture(Gesture::Press);
+            }),
+            ("swap mid-ride", |app| {
+                app.test_start_ride();
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::new(1)));
+                app.apply_gesture(Gesture::Press);
+            }),
+            ("received mid-ride", |app| {
+                app.test_start_ride();
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::received(1, 0)));
+                app.apply_gesture(Gesture::Press);
+            }),
+            ("phone replace of the active route", |app| {
+                app.navigator.route_state_mut().active_route = Some(0);
+                app.on_route_uploaded(10, true, None);
+            }),
+        ];
+        for (what, load) in loads {
+            let mut app = gravel_rider();
+            load(&mut app);
+            assert_eq!(tick_typed_route(&mut app, Mtb), Mtb, "{what} sets the route's type");
+            assert!(settings_dirty(&mut app), "{what}: …and saves it");
+            app.settings.bike_type = Road;
+            assert_eq!(tick_typed_route(&mut app, Mtb), Road, "{what}: a rider change after the load stays");
+        }
+    }
+
+    /// Changing the active route without a rider load keeps the rider's type: Back out of a browse
+    /// preview, and a detour commit that splices the loaded route.
+    #[test]
+    fn an_active_route_change_that_is_not_a_load_keeps_the_rider_type() {
+        use crate::harness::support::tick_typed_route;
+        use crate::settings::BikeType::{Gravel, Mtb};
+        let mut app = gravel_rider();
+        app.navigator.route_state_mut().active_route = Some(1); // browsing B over the loaded A
+        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(1, Some(0))));
+        assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "a browse preview is not a load");
+        app.apply_gesture(Gesture::Back);
+        assert_eq!(app.active_route_index(), Some(0));
+        assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "…and neither is Back to the loaded route");
+
+        app.land_detour_commit(Ok(10));
+        assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "a detour splice keeps the rider's type");
     }
 
     /// The one thing identity cannot catch: an upload that replaces a stored route keeps the

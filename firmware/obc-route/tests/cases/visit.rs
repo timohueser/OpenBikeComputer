@@ -32,7 +32,8 @@ fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut VecSink) {
 fn composition_preserves_all_waypoints_and_measures_both_directions() {
     let wps: Vec<WpRec<'_>> =
         (0..48).map(|i| (10 + i * 4, 100 + i as i32 * 40, 100, 30, 1, 4, 11, b"same" as &[u8])).collect();
-    let original = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let mut original = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    original[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Mtb as u8;
     let outbound = route(vec![(0, 0, 10), (0, 1000, 30)], &[], 111);
     let returning = route(vec![(0, 1000, 30), (0, 0, 10)], &[], 111);
     let mut builder = VisitBuilder::new(key(2), key(3), 0, 0, SourceId::osm(1, 99), (0, 1000)).unwrap();
@@ -53,6 +54,7 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!((stats.total_ascent_m, stats.total_descent_m), (40, 20));
     let emitted = SliceSource(&sink.buf);
     let index = RouteIndex::read(&emitted).unwrap();
+    assert_eq!(index.bike_type(), BikeType::Mtb, "the visit keeps the original route's type");
     let visit = RouteReader::new(&index, &emitted).visit_descriptor().unwrap().unwrap();
     assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
     let reader = RouteReader::new(&index, &emitted);
