@@ -36,8 +36,6 @@ A drift on any side fails that side's tests — the files are the contract.
 | `track-log.obct` | sample-codec vector (five complete 20-byte records, no header) | shaped for sensor/signed-coordinate coverage only; it is not accepted as a ride or recovery input |
 | `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of finished `ride-v3.bin` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
 | `ride-v3.bin` | ride object v3 (spec §7.2) | "Sensor Ride": three exact 20-byte recorded samples (including segment flags and mixed sensor presence), followed by the fixed 84-byte summary footer |
-| `version-read-noobcm.bin` | `protocolVersion` read §1 | the **6-byte** read a firmware predating `obcm_version` serves. The epoch is present (the ack gate is open); the trailing field must decode to *unknown*, never `0` — `obcm_version` 0 would read as "supports OBCM v0" and refuse every real map |
-| `version-read-nostore.bin` | `protocolVersion` read §1 | the **2-byte** read a device with no mounted card serves: `version u16` = 2 and nothing else. A reader must take it as "no epoch" — never epoch `0`, which is a legal era — and fail its ack closed. No epoch also means no room for the `obcm_version` after it |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); **12-byte v2 descriptor** (no `offset`); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object (12 bytes) |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload (12 bytes) |
@@ -75,11 +73,6 @@ of them pin the same bytes.
 Two builder inputs are **not** literals. `update-container-v2.bin`'s 64-byte trailer comes
 from `obc_dfu::sign_image`; that signer is deterministic, so the fixture is a fixed file
 rather than one that re-cuts on every regeneration.
-
-`version-read.bin`'s `obcm_version` comes from `obc_formats::obcm::VERSION`, so the fixture
-is always the bytes a current device serves. An OBCM format bump therefore fails
-`cargo test -p obc-vectors`, and the regeneration walks past the Swift and TS assertions on
-that number.
 
 `peak-section-v17.bin` is an authored OBCM §10 section with three summit SourceIds and two
 article identities. Two summits share one English/German article; the third has French text only.

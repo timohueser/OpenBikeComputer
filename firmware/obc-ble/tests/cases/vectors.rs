@@ -3,7 +3,7 @@
 //! shipped codecs decode and re-encode those bytes exactly.
 
 use obc_ble::descriptor::{ObjectType, Op, StatusMessage, TransferStatus};
-use obc_ble::{Config, StoreChanged, TransferControl, TransferResult, VersionRead};
+use obc_ble::{Config, StoreChanged, TransferControl, TransferResult};
 use obc_ble::{Crc32, StatusMessage as Msg};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -39,58 +39,6 @@ fn transfer_control_vectors_round_trip() {
         assert_eq!(desc.object_id, id, "{name} id");
         assert_eq!(&desc.encode()[..], &bytes[..], "{name} re-encode");
     }
-}
-
-#[test]
-fn version_read_vector() {
-    let bytes = fixture("version-read.bin");
-    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN);
-    let vr = VersionRead::decode(&bytes).unwrap();
-    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "the fixture pins protocol version 2");
-    assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
-    assert_eq!(
-        vr.obcm_version,
-        Some(obc_formats::obcm::VERSION),
-        "the fixture is what a current device serves — the map version its reader reads, not a literal"
-    );
-
-    let (enc, len) = vr.encode();
-    assert_eq!(&enc[..len], &bytes[..], "re-encode");
-}
-
-/// A read without `obcm_version`: it decodes with `obcm_version = None` and re-encodes to the same
-/// 6 bytes. `None`, not `Some(0)`, which would read as OBCM v0 and refuse every real map.
-#[test]
-fn version_read_noobcm_vector() {
-    let bytes = fixture("version-read-noobcm.bin");
-    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN_NO_OBCM);
-    let vr = VersionRead::decode(&bytes).unwrap();
-    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION);
-    assert_eq!(vr.store_epoch, 0xA1B2_C3D4, "the epoch is present — this read is not a failed one");
-    assert_eq!(vr.obcm_version, None, "an absent trailing field is unknown, never a fabricated default");
-    let (enc, len) = vr.encode();
-    assert_eq!(&enc[..len], &bytes[..], "re-encode stays 6 bytes — the encoder does not invent the byte either");
-}
-
-/// A device with no mounted store serves only the 2-byte version. A full [`VersionRead`] decode
-/// rejects that as truncated, which is the app's fail-closed ack gate.
-#[test]
-fn version_read_nostore_vector() {
-    let bytes = fixture("version-read-nostore.bin");
-    assert_eq!(bytes.len(), 2, "version-only: just the u16 version, no epoch");
-    assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), obc_ble::PROTOCOL_VERSION, "pins protocol version 2");
-    assert!(VersionRead::decode(&bytes).is_err(), "a short read is not a full VersionRead — the app fail-closes");
-}
-
-/// The append-only rule: a decoder takes the fields it knows and ignores the bytes past them.
-#[test]
-fn version_read_ignores_unknown_trailing_bytes() {
-    let mut bytes = fixture("version-read.bin");
-    bytes.extend_from_slice(&[0xEE, 0xEE, 0xEE]);
-    let vr = VersionRead::decode(&bytes).unwrap();
-    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION);
-    assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
-    assert_eq!(vr.obcm_version, Some(obc_formats::obcm::VERSION));
 }
 
 /// The download announce (`msg = 4`): the `msg` byte and the 12-byte descriptor.

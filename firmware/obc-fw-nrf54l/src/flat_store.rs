@@ -3,12 +3,8 @@
 //! Reads go direct, through `&'static FlatStore` and `StoreSource`. Writes serialize through
 //! [`storage_task`]: callers send async messages and block only while they await confirmation.
 //!
-//! A card is a flat store or a filesystem, never both. The flat store owns the raw card from LBA 0,
-//! so there is no layout in which the two could sit side by side. `FlatStore::mount` is the probe —
-//! it never fails, it classifies — so the board runs no second superblock reader that could
-//! disagree with it. The two classifiers are disjoint by construction: a flat card's block 0 is
-//! deliberately not an MBR, so the FAT reader refuses it at the first block, and a FAT card carries
-//! neither superblock magic nor CRC, so `mount` returns [`Mode::Unformatted`].
+//! The flat store owns the raw card from LBA 0. `FlatStore::mount` is the one format probe: it
+//! classifies cards with no valid superblock as [`Mode::Unformatted`].
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
@@ -28,6 +24,40 @@ use obc_storage::flat::{
 };
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
+
+/// Bring the card host up before the flat store reads its first block.
+///
+/// Card identification is bounded at 1.5 seconds. The call is synchronous so its transient state
+/// does not become a permanent slot in the boot task's poll frame.
+pub(crate) fn bring_up_card() -> Result<(), obc_app::BootFault> {
+    let info = crate::flpr_mux::bring_up_storage().map_err(bring_up_fault)?;
+    defmt::info!(
+        "SD: card up over sEMMC — {=u32} MB, 4-bit, {=u32} MHz reads (high-speed {=bool}), RCA 0x{=u16:04x}; FLPR mode: {=str}",
+        (info.blocks >> 11),
+        info.read_clk_hz / 1_000_000,
+        info.high_speed,
+        info.rca,
+        crate::flpr_mux::mode_name()
+    );
+    Ok(())
+}
+
+fn bring_up_fault(error: SemmcError) -> obc_app::BootFault {
+    match error {
+        SemmcError::NoCard => {
+            defmt::warn!("SD: card identification found no card — NO SD CARD");
+            obc_app::BootFault::NoCard
+        }
+        SemmcError::UnsupportedCard => {
+            defmt::error!("SD: card is SDSC (CSD v1, <=2 GB) — rejected; CARD UNSUPPORTED");
+            obc_app::BootFault::CardUnsupported
+        }
+        other => {
+            defmt::error!("SD: the sEMMC host did not come up ({}) — STORAGE FAULT, not a missing card", other);
+            obc_app::BootFault::StorageFault
+        }
+    }
+}
 
 // The flat binding places no alignment buffer of its own, and that is a stack decision. The sEMMC
 // firmware's DMA wants 32-bit alignment, and the store hands the device frame locals and streaming
@@ -190,7 +220,7 @@ const _: () = assert!(core::mem::size_of::<FlatStore<FlatCard>>() > 8 * 1_024);
 /// re-enters and overwrites in place; `FlatStore` has no `Drop`, which is the `init_static`
 /// contract.
 ///
-/// The card must already be up — [`crate::sd::bring_up_card`] first — or every probe read is
+/// The card must already be up — [`bring_up_card`] first — or every probe read is
 /// `SemmcError::NoBoot` and the store classifies a good card as unformatted.
 #[inline(never)]
 pub(crate) fn mount_at_boot() -> &'static FlatStore<FlatCard> {
@@ -211,13 +241,11 @@ pub(crate) enum Card {
     NotFlat,
     /// A card that is a flat store and will not serve one: no well-formed gate and no validated
     /// candidate body, which is media damage, or a card smaller than the superblock on it describes.
-    /// This is not a fall-through to FAT: the superblock says a flat store was written here, so a
-    /// FAT mount would report the failure of a stack that was never on this card.
+    /// The superblock says a flat store was written here, but no catalog is safe to serve.
     FlatBroken(obc_app::BootFault),
 }
 
-/// Collapse the classification onto the three cards above, and log the reason for the one that is
-/// neither a working store nor a plain FAT card.
+/// Collapse the classification onto the three cards above.
 pub(crate) fn classify(store: &FlatStore<FlatCard>) -> Card {
     let mode = store.mode();
     if mode.readable() {
@@ -227,7 +255,7 @@ pub(crate) fn classify(store: &FlatStore<FlatCard>) -> Card {
         return Card::NotFlat;
     }
     defmt::error!(
-        "flat: the card carries a flat store that will not serve ({}) — STORAGE FAULT, and no FAT fall-through: a superblock is on this card",
+        "flat: the card carries a flat store that will not serve ({}) — STORAGE FAULT",
         defmt::Debug2Format(&mode)
     );
     Card::FlatBroken(obc_app::BootFault::StorageFault)

@@ -354,7 +354,7 @@ macro_rules! settings_table {
                     &mut b[off::$name..off::$name + <$ty as $crate::settings_table::SettingCodec>::LEN],
                 );
             )+
-            let crc = $crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+            let crc = $crate::crc16::crc16(&b[0..PAYLOAD_LEN]);
             b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
             b
         }
@@ -374,7 +374,7 @@ macro_rules! settings_table {
             }
             let b = &bytes[..plen + 2];
             let crc = u16::from_le_bytes([b[plen], b[plen + 1]]);
-            if crc != $crate::store_meta::crc16(&b[0..plen]) {
+            if crc != $crate::crc16::crc16(&b[0..plen]) {
                 return None;
             }
             let mut s = $S {

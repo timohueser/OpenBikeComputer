@@ -23,8 +23,8 @@ pub mod transfer;
 pub use crc32::Crc32;
 pub use descriptor::{
     install_fw_reply, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, SetClock, StatusMessage,
-    StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead, CMD_DELETE_OBJECT, CMD_FORGET_BOND,
-    CMD_INSTALL_FW, CMD_SET_CLOCK, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC,
+    StoreChanged, TransferControl, TransferResult, TransferStatus, CMD_DELETE_OBJECT, CMD_FORGET_BOND, CMD_INSTALL_FW,
+    CMD_SET_CLOCK, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, TripListEntry};
 pub use sensors::{
@@ -34,10 +34,3 @@ pub use sensors::{
     UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
 };
 pub use transfer::{HeldMagic, Receiver, StreamSender, TransferError, MAGIC_LEN};
-
-/// The protocol version this crate implements. The app reads it on connect as part of a
-/// [`VersionRead`] and stops on a mismatch; the device never serves two versions. This is the wire
-/// contract, not the map-format version: [`VersionRead::obcm_version`] carries that, because
-/// neither number can be derived from the other. The identity read decodes by length, so a
-/// trailing field is additive and does not bump this.
-pub const PROTOCOL_VERSION: u16 = 2;

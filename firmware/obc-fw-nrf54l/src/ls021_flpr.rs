@@ -205,8 +205,7 @@ pub fn scan_in_flight() -> bool {
 /// Returns whether the scan settled.
 ///
 /// It spins rather than yields on purpose: it is reached from synchronous storage code, and the task
-/// it waits on cannot make progress by being polled anyway. Async callers should wait through
-/// [`crate::flpr_mux::storage_session`] instead, which yields.
+/// it waits on cannot make progress by being polled anyway.
 pub fn wait_scan_settled() -> bool {
     let deadline = Instant::now() + FRAME_DEADLINE;
     while scan_in_flight() {

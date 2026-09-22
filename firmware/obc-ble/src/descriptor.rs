@@ -469,57 +469,6 @@ impl StatusMessage {
     }
 }
 
-/// The `protocolVersion` characteristic read. Readable without encryption.
-///
-/// ```text
-///   version      u16   the protocol version
-///   store_epoch  u32   the device's store-epoch nonce    — absent on a store-less device
-///   obcm_version u8    the OBCM version the reader reads — absent on older firmware
-/// ```
-///
-/// The read is length-driven: 7 bytes is the full read, 6 leaves `obcm_version` `None`, and 2 is a
-/// device with no mounted store. An absent trailing field decodes to `None`, never to `0`: epoch
-/// `0` names a legal id era and OBCM `0` would refuse every real map.
-///
-/// The store epoch names the store's id era. It lives on the card, so a card swap transplants the
-/// era and a card from a different device presents its own. The app scopes all id-keyed state to
-/// `(device serial, store epoch)`. The caller supplies the epoch and the OBCM version, so this
-/// crate links neither the store nor the format crate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VersionRead {
-    pub version: u16,
-    pub store_epoch: u32,
-    pub obcm_version: Option<u8>,
-}
-
-impl VersionRead {
-    pub const ENCODED_LEN: usize = 7;
-    pub const ENCODED_LEN_NO_OBCM: usize = 6;
-
-    pub fn encode(&self) -> ([u8; Self::ENCODED_LEN], usize) {
-        let mut b = [0u8; Self::ENCODED_LEN];
-        b[0..2].copy_from_slice(&self.version.to_le_bytes());
-        b[2..6].copy_from_slice(&self.store_epoch.to_le_bytes());
-        let Some(obcm) = self.obcm_version else {
-            return (b, Self::ENCODED_LEN_NO_OBCM);
-        };
-        b[6] = obcm;
-        (b, Self::ENCODED_LEN)
-    }
-
-    /// A read without a store epoch is truncated.
-    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        if data.len() < Self::ENCODED_LEN_NO_OBCM {
-            return Err(DescriptorError::Truncated);
-        }
-        Ok(Self {
-            version: u16::from_le_bytes([data[0], data[1]]),
-            store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
-            obcm_version: data.get(6).copied(),
-        })
-    }
-}
-
 /// The Config object, the one object small enough to cross GATT whole-blob instead of the CoC. A
 /// rename is a Config write with a changed `name`. Append-only: readers ignore unknown trailing
 /// bytes and an absent trailing field means the device default. `name` borrows the wire buffer.
