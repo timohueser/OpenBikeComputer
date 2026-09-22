@@ -307,15 +307,16 @@ forest, grass, and the land base, and stays out of the warm group that tracks an
 <figcaption>The packer classifies, normalizes, and deduplicates POIs before it builds the POI index.</figcaption>
 </figure>
 
-A fixed table maps tags to the service categories the device browses, and the first matching row
-wins. The packer keeps the source identity of each place, removes repeated copies of the same
-object, and builds one index per category.
+A fixed table maps tags to the categories the device browses, and the first matching row wins.
 
 A place gets a route approach only when one of its source nodes belongs to a routable way, or, for
-an area, one of its own boundary nodes. A road that merely passes nearby does not establish access:
-the device must not plan a route to a gate that does not exist.
+an area, one of its own boundary nodes. A road that merely passes nearby is not access: the device
+must not route to a gate that does not exist.
 
-Named summits go into their own category for Peak View, with elevation in place of opening hours.
+Named summits get their own category for Peak View, with elevation in place of opening hours.
+
+The device font holds only ASCII, Latin-1 and Latin Extended-A, so the packer spells every other
+character in Latin, or takes `name:en`, rather than store question marks.
 
 ### Parsing opening hours
 
