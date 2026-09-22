@@ -403,6 +403,10 @@ pub fn artifact_dir(tree: &Path, region: &Region) -> PathBuf {
 /// Discovered rather than flagged, for the reason the terrain a cell samples is discovered: the
 /// landmarks a cell carries must be the landmarks the same catalog publishes, and a flag would be
 /// a second place for the two to disagree.
+///
+/// [`CONTENT_DOC`] alone is the contract, deliberately: the packer reads that document and the
+/// photos beside it, and nothing else. A directory a recipe fills by hand, with no [`LANDMARK_DOC`]
+/// declaration, is a complete input.
 pub fn in_tree(tree: &Path, region: &Region) -> Option<PathBuf> {
     let content = artifact_dir(tree, region).join(CONTENT_DOC);
     content.is_file().then_some(content)
