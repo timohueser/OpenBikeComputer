@@ -163,7 +163,7 @@ impl NavigatorMachine {
     /// Select or clear the active catalog route. Route-keyed caches reconcile on the next tick.
     pub(crate) fn set_active_route(&mut self, route: Option<usize>) {
         if self.select_after_checkpoint(route) {
-            self.following.active_route = route;
+            self.select_now(route);
         }
     }
 

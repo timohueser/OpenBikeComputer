@@ -728,9 +728,9 @@ save_unknown = "Speicherstand offen"
 cancel_visit = "Abbrechen"
 arrival = "Ziel erreicht"
 guidance_continues = "Navigation geht weiter"
-resume_journey = "Tour fortsetzen"
+resume_navigation = "Navigation"
 resume_route = "Fortsetzen"
-saved_journey = "Gespeicherte Route"
+saved_route = "Gespeicherte Route"
 
 [find_context]
 hide_closed = "Geschlossen\nausblenden"

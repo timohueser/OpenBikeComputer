@@ -122,6 +122,14 @@ impl ReviewedRoute {
     }
 }
 
+/// Exact identity and shape of the selected ordinary route, read from the bytes the executor holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteCheckpointSource {
+    pub route: PayloadFingerprint,
+    pub distance_m: u32,
+    pub unresolved_avoidance: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewStatus {
     Idle,
@@ -140,12 +148,16 @@ pub struct CheckpointChange {
     pub next: Option<NavigatorCheckpoint>,
 }
 
+/// What follows a committed checkpoint write. `Activate` records a ride only for an accepted plan,
+/// because recovery restores guidance and never a recording, and `Selected` follows the rider's own
+/// route selection, which is already active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AfterCheckpoint {
-    Activate(u64),
+    Activate { route: u64, record: bool },
     Select(Option<usize>),
     Restore { route: u64, progress_m: u32 },
     Phase,
+    Selected,
 }
 
 pub(super) struct ReviewState {
@@ -164,6 +176,9 @@ pub(super) struct ReviewState {
     pub status: ReviewStatus,
     pub after: AfterCheckpoint,
     pub recovery_seen: bool,
+    pub owed: bool,
+    /// The standing checkpoint is this session's plain route selection, not an accepted plan.
+    pub selection: bool,
     pub latest_origin: Option<ReviewOrigin>,
 }
 impl ReviewState {
@@ -184,6 +199,8 @@ impl ReviewState {
             status: ReviewStatus::Idle,
             after: AfterCheckpoint::Phase,
             recovery_seen: false,
+            owed: false,
+            selection: false,
             latest_origin: None,
         }
     }
@@ -236,6 +253,12 @@ impl NavigatorMachine {
     pub(crate) fn review_index(&mut self, index: Option<usize>) {
         self.review.preview_index = index;
     }
+    /// Take the selection the rider made. An ordinary route then owes a checkpoint of its own, so
+    /// a restart can offer Resume for it exactly as it does for an accepted Assistant plan.
+    pub(super) fn select_now(&mut self, index: Option<usize>) {
+        self.following.active_route = index;
+        self.review.owed = index.is_some();
+    }
     pub(crate) fn select_after_checkpoint(&mut self, index: Option<usize>) -> bool {
         if self.review.status == ReviewStatus::Unresolved {
             if self.review.change.is_some() {
@@ -255,6 +278,15 @@ impl NavigatorMachine {
             return false;
         }
         if self.review.checkpoint.is_some() {
+            if self.review.selection {
+                // A plain selection is replaced by the next one, or cleared behind it. Only an
+                // accepted plan holds guidance up until the card says it is no longer accepted.
+                if index.is_none() {
+                    self.review.change = Some(None);
+                    self.review.after = AfterCheckpoint::Phase;
+                }
+                return true;
+            }
             self.review.change = Some(None);
             self.review.after = AfterCheckpoint::Select(index);
             return false;
@@ -355,7 +387,7 @@ impl NavigatorMachine {
             return;
         }
         self.review.change = Some(Some(next));
-        self.review.after = AfterCheckpoint::Activate(preview.source.object);
+        self.review.after = AfterCheckpoint::Activate { route: preview.source.object, record: true };
         self.review.latest_origin = Some(origin);
         self.review.status = ReviewStatus::Saving;
     }
@@ -430,7 +462,12 @@ impl NavigatorMachine {
         self.review.recovery_seen = true;
         self.review.checkpoint = checkpoint;
         if checkpoint.is_some() {
-            self.review.status = ReviewStatus::ResumeAvailable;
+            // Guidance that is already following a route has nothing to resume.
+            self.review.status = if self.following.active_route.is_some() {
+                ReviewStatus::Accepted
+            } else {
+                ReviewStatus::ResumeAvailable
+            };
         }
     }
 
@@ -457,7 +494,7 @@ impl NavigatorMachine {
             lat: origin.fix.1,
             ..checkpoint
         }));
-        self.review.after = AfterCheckpoint::Activate(checkpoint.route.object);
+        self.review.after = AfterCheckpoint::Activate { route: checkpoint.route.object, record: false };
         self.review.latest_origin = Some(origin);
         self.review.status = ReviewStatus::Saving;
     }
@@ -503,10 +540,13 @@ impl NavigatorMachine {
             return Some(self.review.after);
         }
         self.review.status = ReviewStatus::Accepted;
+        self.review.selection = self.review.after == AfterCheckpoint::Selected;
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
-        self.route = PlanPhase::Active;
+        if !self.review.selection {
+            self.route = PlanPhase::Active;
+        }
         Some(self.review.after)
     }
 
@@ -544,6 +584,9 @@ impl NavigatorMachine {
             } else {
                 ReviewStatus::ResumeAvailable
             }
+        } else if self.review.after == AfterCheckpoint::Selected {
+            // A refused selection checkpoint leaves the selection alone; nothing is owed again.
+            ReviewStatus::Idle
         } else {
             ReviewStatus::Failed(NavigatorError::Store)
         };
@@ -605,6 +648,55 @@ impl crate::App {
     }
     pub fn resume_assistant(&mut self, origin: ReviewOrigin) {
         self.admit_navigator_intent(super::NavigatorIntent::ResumeAssistant { origin });
+    }
+
+    /// The active ordinary route that still owes a durable checkpoint, so a restart can offer
+    /// Resume for it. An executor answers it once per selection with
+    /// [`offer_route_checkpoint`](App::offer_route_checkpoint), because reading the exact payload
+    /// identity walks the card's entry table.
+    pub fn requested_route_checkpoint(&self) -> Option<crate::CatalogObjectId> {
+        let review = &self.navigator.review;
+        if !review.owed
+            || !review.recovery_seen
+            || review.change.is_some()
+            || review.token.is_some()
+            || !matches!(review.status, ReviewStatus::Idle | ReviewStatus::Accepted)
+        {
+            return None;
+        }
+        let id = self.route_ids().get(self.active_route_index()?).copied()?;
+        (review.checkpoint.is_none_or(|standing| standing.route.object != id)).then_some(id)
+    }
+
+    /// Stage the selected route's checkpoint from the exact bytes the executor holds. An ordinary
+    /// route has no phase, so its window is the whole route and recovery derives progress from a
+    /// fresh fix. A source the executor cannot name leaves the selection without an offer.
+    pub fn offer_route_checkpoint(&mut self, id: crate::CatalogObjectId, source: Option<RouteCheckpointSource>) {
+        if self.requested_route_checkpoint() != Some(id) {
+            return;
+        }
+        self.navigator.review.owed = false;
+        let (Some(source), Some(summary)) = (source, self.active_route_index().and_then(|i| self.routes().get(i)))
+        else {
+            return;
+        };
+        let next = NavigatorCheckpoint {
+            route: source.route,
+            original: None,
+            progress_m: 0,
+            occurrence: 0,
+            lon: summary.start_lon,
+            lat: summary.start_lat,
+            phase: JourneyPhase::Following,
+            unresolved_avoidance: source.unresolved_avoidance,
+            lower_m: 0,
+            upper_m: source.distance_m,
+        };
+        if !next.valid() {
+            return;
+        }
+        self.navigator.review.change = Some(Some(next));
+        self.navigator.review.after = AfterCheckpoint::Selected;
     }
 
     /// A rider-requested recovery read. Executors reuse their existing route index for this read.
@@ -734,8 +826,8 @@ impl crate::App {
             }
         } else {
             let first = !self.navigator.review.recovery_seen;
-            let offer = first && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            let offer = first && self.assistant_review_status() == ReviewStatus::ResumeAvailable;
             if first && self.navigator.review.recovery_seen {
                 self.catalogs.note_store_moved();
             }
@@ -771,14 +863,14 @@ impl crate::App {
     }
     fn apply_assistant_checkpoint_action(&mut self, after: Option<AfterCheckpoint>) {
         match after {
-            Some(AfterCheckpoint::Activate(id)) => {
+            Some(AfterCheckpoint::Activate { route: id, record }) => {
                 if let Some(index) = self.route_ids().iter().position(|&candidate| candidate == id) {
                     self.navigator.review.unaccepted &= !(1u64 << index);
                     self.navigator.following.active_route = Some(index);
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
                         self.navigator.request_seam(index, checkpoint.progress_m);
                     }
-                    if self.recorder.session().is_none() {
+                    if record && self.recorder.session().is_none() {
                         self.recorder.request(crate::RecorderIntent::Start);
                         self.activity.mode = crate::activity::Mode::Riding;
                         let position = self.state.user_fix.map(|fix| (fix.lon, fix.lat));
@@ -801,7 +893,7 @@ impl crate::App {
                 }
             }
             Some(AfterCheckpoint::Select(index)) => {
-                self.navigator.following.active_route = index;
+                self.navigator.select_now(index);
                 self.ui.map_dirty = true;
             }
             _ => {}
@@ -957,7 +1049,7 @@ mod tests {
                 let after = app.navigator.recover_checkpoint(context().store, checkpoint).unwrap();
                 assert!(app.navigator.review.change.is_none(), "recovery must not schedule a clear");
                 if committed {
-                    assert_eq!(after, Some(AfterCheckpoint::Activate(5)));
+                    assert_eq!(after, Some(AfterCheckpoint::Activate { route: 5, record: true }));
                     assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
                     app.advance_easier();
                     assert!(app.easier.phase == Phase::Idle);
@@ -1036,7 +1128,7 @@ mod tests {
         assert_eq!(nav.following.active_route, Some(0));
         assert_eq!(
             nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }),
-            Some(AfterCheckpoint::Activate(5))
+            Some(AfterCheckpoint::Activate { route: 5, record: true })
         );
         assert_eq!(nav.review.checkpoint.unwrap().route, source(5));
         assert_eq!(nav.review.checkpoint.unwrap().original, None, "a destination replaces the previous goal");
@@ -1161,6 +1253,160 @@ mod tests {
                     assert_eq!(app.active_route_index(), Some(1));
                 }
             }
+        }
+    }
+
+    /// An imported route bytes, plus the exact fingerprint an executor would report for it.
+    fn ordinary_route() -> (std::vec::Vec<u8>, PayloadFingerprint) {
+        use obc_formats::io::{ByteSink, SliceSource};
+        #[derive(Default)]
+        struct Sink(std::vec::Vec<u8>);
+        impl ByteSink for Sink {
+            fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
+                self.0.extend_from_slice(b);
+                Ok(())
+            }
+            fn patch_at(&mut self, at: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
+                self.0[at as usize..at as usize + b.len()].copy_from_slice(b);
+                Ok(())
+            }
+        }
+        let gpx = br#"<gpx><trk><trkseg><trkpt lon="0" lat="0"/><trkpt lon="0" lat="0.02"/><trkpt lon="0.02" lat="0.02"/></trkseg></trk></gpx>"#;
+        let mut sink = Sink::default();
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "Imported", &mut sink).unwrap();
+        let source = PayloadFingerprint { object: 7, revision: 3, length: sink.0.len() as u64, crc: 0x1234 };
+        (sink.0, source)
+    }
+    fn mounted(summary: &obc_route::RouteSummary, id: u64) -> crate::App {
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        app.test_mount_store();
+        app.set_routes_with_ids(core::slice::from_ref(summary), &[id]);
+        app
+    }
+    fn ordinary_store() -> StoreIdentity {
+        StoreIdentity::new(1)
+    }
+    fn ack_checkpoint(app: &mut crate::App) {
+        let token = app.metadata.next_checkpoint_effect().expect("one bounded metadata operation").token();
+        app.navigator.checkpoint_issued(token);
+        assert!(app.assistant_checkpoint_submission(token));
+        let outcome = MetadataOutcome::CheckpointWritten { token };
+        assert!(app.metadata.apply_outcome(outcome));
+        app.assistant_checkpoint_answer(outcome);
+    }
+    fn fix_at(app: &mut crate::App, lon: i32, lat: i32) {
+        struct Location(Option<obc_ports::Fix>);
+        impl obc_ports::LocationSource for Location {
+            fn poll(&mut self) -> Option<obc_ports::Fix> {
+                self.0.take()
+            }
+        }
+        app.tick(
+            obc_ports::RideClock(0),
+            obc_ports::Sensors::new(&mut Location(Some(obc_ports::Fix::at(lat, lon)))),
+            None,
+        );
+    }
+
+    /// Selecting an ordinary route owes exactly one checkpoint, keyed by the exact payload the
+    /// executor names. A source the executor cannot name leaves the selection without an offer,
+    /// and the refusal is not asked again.
+    #[test]
+    fn an_ordinary_selection_owes_one_checkpoint_and_an_unnamed_source_leaves_none() {
+        use obc_formats::io::SliceSource;
+        let (bytes, source) = ordinary_route();
+        let held = SliceSource(&bytes);
+        let index = obc_route::RouteIndex::read(&held).unwrap();
+        let route = obc_route::RouteReader::new(&index, &held);
+        for named in [false, true] {
+            let mut app = mounted(&route.summary(), source.object);
+            app.activate_route(0);
+            assert!(app.requested_route_checkpoint().is_none(), "the card's own checkpoint is not read yet");
+            app.offer_assistant_checkpoint(ordinary_store(), None);
+            assert_eq!(app.requested_route_checkpoint(), Some(source.object));
+            app.offer_route_checkpoint(
+                source.object,
+                named.then_some(RouteCheckpointSource {
+                    route: source,
+                    distance_m: route.total_distance_m,
+                    unresolved_avoidance: false,
+                }),
+            );
+            assert!(app.requested_route_checkpoint().is_none(), "answered once per selection");
+            if !named {
+                assert!(app.navigator.checkpoint_change().is_none(), "nothing is owed to the card");
+                assert_eq!(app.active_route_index(), Some(0), "a refused offer keeps the selection");
+                continue;
+            }
+            ack_checkpoint(&mut app);
+            let checkpoint = app.assistant_checkpoint().expect("the selection is durable");
+            assert_eq!(checkpoint.route, source);
+            assert_eq!((checkpoint.original, checkpoint.phase), (None, JourneyPhase::Following));
+            assert_eq!((checkpoint.lower_m, checkpoint.upper_m), (0, route.total_distance_m));
+            assert!(!app.recording(), "selecting a route is not starting a ride");
+            assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+            // Stopping guidance clears it again, so a restart offers nothing.
+            app.activate_route(usize::MAX);
+            ack_checkpoint(&mut app);
+            assert!(app.assistant_checkpoint().is_none());
+            assert_eq!(app.active_route_index(), None);
+        }
+    }
+
+    /// The restart offer for an ordinary route: an explicit press, a fresh position on the saved
+    /// bytes, and no recording. Declining leaves guidance inactive and the checkpoint standing.
+    #[test]
+    fn an_ordinary_route_resumes_only_on_an_explicit_press_and_never_starts_a_recording() {
+        use crate::{screen::Screen, Gesture};
+        use obc_formats::io::SliceSource;
+        let (bytes, source) = ordinary_route();
+        let held = SliceSource(&bytes);
+        let index = obc_route::RouteIndex::read(&held).unwrap();
+        let route = obc_route::RouteReader::new(&index, &held);
+        let checkpoint = NavigatorCheckpoint {
+            route: source,
+            original: None,
+            progress_m: 0,
+            occurrence: 0,
+            lon: 0,
+            lat: 0,
+            phase: JourneyPhase::Following,
+            unresolved_avoidance: false,
+            lower_m: 0,
+            upper_m: route.total_distance_m,
+        };
+        for accept in [false, true] {
+            let mut app = mounted(&route.summary(), source.object);
+            app.offer_assistant_checkpoint(ordinary_store(), Some(checkpoint));
+            assert_eq!(app.assistant_review_status(), ReviewStatus::ResumeAvailable);
+            assert!(app.active_route_index().is_none(), "a restart never restores guidance by itself");
+            app.advance_animations(obc_ports::InputClock(0));
+            app.prepare_find(None, None);
+            assert!(matches!(app.top_screen(), Screen::Journey(s) if s.resume));
+            if !accept {
+                app.apply_gesture(Gesture::Back);
+                app.prepare_find(None, None);
+                assert!(app.active_route_index().is_none(), "declining leaves guidance inactive");
+                assert_eq!(app.assistant_checkpoint(), Some(checkpoint), "and keeps the saved route");
+                continue;
+            }
+            fix_at(&mut app, 0, 10_000);
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.requested_assistant_resume(), Some(source));
+            app.prepare_assistant_resume(None);
+            assert!(
+                matches!(app.top_screen(), Screen::Journey(s) if s.error == Some(crate::screen::JourneyError::SourceChanged))
+            );
+            assert!(app.navigator.review.change.is_none(), "a source the card cannot produce restores nothing");
+            app.apply_gesture(Gesture::Press);
+            app.prepare_assistant_resume(Some(&route));
+            assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+            ack_checkpoint(&mut app);
+            assert_eq!(app.active_route_index(), Some(0), "the exact saved route is what guidance returns to");
+            assert_eq!(app.assistant_checkpoint().map(|c| c.route), Some(source));
+            assert!(app.navigator.pending_seam(), "guidance rejoins at the recovered progress");
+            assert!(!app.recording(), "navigation recovery is not recording recovery");
+            assert_eq!(app.mode(), crate::activity::Mode::Idle);
         }
     }
 
