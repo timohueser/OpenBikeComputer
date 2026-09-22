@@ -16,6 +16,8 @@ public struct MeasuredLine: Equatable, Sendable {
         public let elevation: Double
         /// Cumulative climb in metres, with the same hysteresis as `RouteStats`.
         public let climb: Double
+        /// Cumulative descent in metres, with the same hysteresis.
+        public let descent: Double
     }
 
     public let vertices: [Vertex]
@@ -33,6 +35,7 @@ public struct MeasuredLine: Equatable, Sendable {
         vertices.reserveCapacity(coordinates.count)
         var distance = 0.0
         var climb = 0.0
+        var descent = 0.0
         var confirmed: Double?
         var elevation = elevations.lazy.compactMap { $0 }.first ?? 0
         for (index, coordinate) in coordinates.enumerated() {
@@ -45,12 +48,15 @@ public struct MeasuredLine: Equatable, Sendable {
                     climb += elevation - last
                     confirmed = elevation
                 } else if elevation <= last - RouteStats.climbHysteresisMeters {
+                    descent += last - elevation
                     confirmed = elevation
                 }
             } else {
                 confirmed = elevation
             }
-            vertices.append(Vertex(coordinate: coordinate, distance: distance, elevation: elevation, climb: climb))
+            vertices.append(Vertex(
+                coordinate: coordinate, distance: distance, elevation: elevation, climb: climb, descent: descent
+            ))
         }
         self.vertices = vertices
         self.pieceStarts = starts.sorted()
@@ -105,14 +111,18 @@ public struct MeasuredLine: Equatable, Sendable {
         interpolate(at: distance) { a, b, t in a.elevation + (b.elevation - a.elevation) * t }
     }
 
-    /// Climb between two distances, from the cumulative climb: O(log n), so it can run on
+    /// Climb between two distances, from the cumulative walk: O(log n), so it can run on
     /// every drag frame.
     public func climb(from: Double, to: Double) -> Double {
-        max(0, climbValue(at: to) - climbValue(at: from))
+        max(0, cumulative(\.climb, at: to) - cumulative(\.climb, at: from))
     }
 
-    private func climbValue(at distance: Double) -> Double {
-        interpolate(at: distance) { a, b, t in a.climb + (b.climb - a.climb) * t }
+    public func descent(from: Double, to: Double) -> Double {
+        max(0, cumulative(\.descent, at: to) - cumulative(\.descent, at: from))
+    }
+
+    private func cumulative(_ key: KeyPath<Vertex, Double>, at distance: Double) -> Double {
+        interpolate(at: distance) { a, b, t in a[keyPath: key] + (b[keyPath: key] - a[keyPath: key]) * t }
     }
 
     private func interpolate<T>(at distance: Double, _ mix: (Vertex, Vertex, Double) -> T) -> T {

@@ -11,7 +11,6 @@ struct LineMarkerMapView: UIViewRepresentable {
     let markers: [LineMarker]
     let activeID: LineMarker.ID?
     let segmentColors: [Color]
-    let style: MarkerHandleStyle
 
     /// The projection window, in screen points along the line: a finger can move the marker
     /// at most this far per frame, so a sweep across a switchback never steals it.
@@ -99,7 +98,6 @@ struct LineMarkerMapView: UIViewRepresentable {
         func configure(_ view: MarkerAnnotationView, for annotation: MarkerAnnotation) {
             let isActive = parent.activeID == annotation.id
             view.configure(
-                style: parent.style,
                 color: parent.model.color(endingAt: annotation.id),
                 isActive: isActive,
                 label: isActive ? parent.model.label(for: annotation.id) : nil
@@ -164,8 +162,6 @@ final class MarkerAnnotation: NSObject, MKAnnotation {
 final class MarkerAnnotationView: MKAnnotationView {
     /// Wide enough for the label, tall enough for the label over the pin.
     private static let hostSize = CGSize(width: 180, height: 64)
-    /// The handle lifts this far while it is held, so the finger does not cover it.
-    private static let lift: CGFloat = 28
 
     enum DragPhase { case began, moved, ended }
 
@@ -190,26 +186,23 @@ final class MarkerAnnotationView: MKAnnotationView {
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(style: MarkerHandleStyle, color: Color, isActive: Bool, label: String?) {
+    func configure(color: Color, isActive: Bool, label: String?) {
         host.rootView = AnyView(
             VStack(spacing: 4) {
-                if let label { MarkerLabel(style: style, text: label).fixedSize() }
-                MarkerHandleView(style: style, color: color, isActive: isActive)
+                if let label { MarkerLabel(text: label).fixedSize() }
+                MarkerHandleView(color: color, isActive: isActive)
             }
             .frame(width: Self.hostSize.width, height: Self.hostSize.height, alignment: .bottom)
         )
-        let size = MarkerHandleView.size(style)
-        anchor = CGPoint(
-            x: Self.hostSize.width / 2,
-            y: Self.hostSize.height - size.height + size.height * MarkerHandleView.anchor(style).y
-        )
+        // The pin's tip is the bottom centre of the hosted view.
+        anchor = CGPoint(x: Self.hostSize.width / 2, y: Self.hostSize.height)
         centerOffset = CGPoint(x: 0, y: Self.hostSize.height / 2 - anchor.y)
         zPriority = isActive ? .max : .defaultSelected
     }
 
     func setLifted(_ lifted: Bool) {
         UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseOut]) {
-            self.transform = lifted ? CGAffineTransform(translationX: 0, y: -Self.lift) : .identity
+            self.transform = lifted ? CGAffineTransform(translationX: 0, y: -MarkerHandleView.dragLift) : .identity
         }
     }
 

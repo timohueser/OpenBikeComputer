@@ -57,6 +57,7 @@ struct MeasuredLineTests {
         #expect(abs(line.climb(from: 0, to: line.length) - 10) < 0.01, "jitter inside the 3 m band is ignored")
         #expect(abs(line.climb(from: 3000, to: 5000) - 5) < 0.01)
         #expect(line.climb(from: 5000, to: 3000) == 0)
+        #expect(line.descent(from: 0, to: line.length) == 0, "the 2 m dip stays inside the band")
     }
 
     @Test

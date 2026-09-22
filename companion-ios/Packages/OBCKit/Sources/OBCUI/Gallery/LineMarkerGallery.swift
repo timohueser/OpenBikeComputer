@@ -3,38 +3,29 @@ import SwiftUI
 import OBCDomain
 
 /// The marker-on-line editor with sample data: a three-day trip line and a ride with trim
-/// handles. The handle style picker and the dense-line toggle are review aids.
+/// handles. The dense-line toggle is the load for the frame-rate check.
 struct LineMarkerGallerySection: View {
-    @State private var style = MarkerHandleStyle.knob
     @State private var dense = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Handle", selection: $style) {
-                ForEach(MarkerHandleStyle.allCases, id: \.self) { style in
-                    Text(style.rawValue.capitalized).tag(style)
-                }
-            }
-            .pickerStyle(.segmented)
             Toggle("50,000 points", isOn: $dense)
                 .font(.obcMono(size: 12))
                 .foregroundStyle(OBCTheme.inkSoft)
                 .tint(OBCTheme.forest)
 
-            TripEditorSample(style: style, dense: dense)
+            TripEditorSample(dense: dense)
                 .id(dense)
             OBCEyebrow("Ride trim")
-            TrimEditorSample(style: style)
+            TrimEditorSample()
         }
     }
 }
 
 private struct TripEditorSample: View {
-    let style: MarkerHandleStyle
     @State private var model: LineMarkerEditorModel
 
-    init(style: MarkerHandleStyle, dense: Bool) {
-        self.style = style
+    init(dense: Bool) {
         let line = dense ? SampleLine.alpsDense : SampleLine.alps
         _model = State(initialValue: LineMarkerEditorModel(
             line: line,
@@ -48,9 +39,10 @@ private struct TripEditorSample: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            LineMarkerEditor(model: model, handleStyle: style)
+            LineMarkerEditor(model: model)
             let bounds = [0] + model.markers.map(\.distance) + [model.line.length]
             ForEach(0..<3, id: \.self) { day in
+                let from = bounds[day], to = bounds[day + 1]
                 HStack(spacing: 8) {
                     Circle().fill(model.segmentColors[day]).frame(width: 9, height: 9)
                     Text("Day \(day + 1)")
@@ -58,8 +50,9 @@ private struct TripEditorSample: View {
                         .foregroundStyle(OBCTheme.ink)
                     Spacer()
                     Text(
-                        OBCFormat.distance(meters: bounds[day + 1] - bounds[day]) + " · "
-                            + OBCFormat.climb(meters: model.line.climb(from: bounds[day], to: bounds[day + 1]))
+                        OBCFormat.distance(meters: to - from) + " · "
+                            + OBCFormat.climb(meters: model.line.climb(from: from, to: to)) + " · "
+                            + OBCFormat.climbValue(meters: model.line.descent(from: from, to: to)) + " m ↓"
                     )
                     .font(.obcMono(size: 12))
                     .foregroundStyle(OBCTheme.inkFaint)
@@ -70,7 +63,6 @@ private struct TripEditorSample: View {
 }
 
 private struct TrimEditorSample: View {
-    let style: MarkerHandleStyle
     @State private var model = LineMarkerEditorModel(
         line: SampleLine.alps,
         markers: [
@@ -82,7 +74,7 @@ private struct TrimEditorSample: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            LineMarkerEditor(model: model, handleStyle: style, mapHeight: 180)
+            LineMarkerEditor(model: model, mapHeight: 180)
             let kept = model.markers[1].distance - model.markers[0].distance
             Text("Keeps \(OBCFormat.distance(meters: kept)) of \(OBCFormat.distance(meters: model.line.length))")
                 .font(.obcMono(size: 12))

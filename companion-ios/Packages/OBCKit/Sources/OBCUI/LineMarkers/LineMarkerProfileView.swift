@@ -6,7 +6,6 @@ import OBCDomain
 /// marker, a drag anywhere else scrolls the page.
 struct LineMarkerProfileView: View {
     let model: LineMarkerEditorModel
-    let style: MarkerHandleStyle
     var height: CGFloat = 132
 
     /// Room above the curve for a handle and its label.
@@ -28,7 +27,7 @@ struct LineMarkerProfileView: View {
                     handle(marker, plot: plot)
                 }
                 if let id = model.activeID, let marker = model.marker(id) {
-                    MarkerLabel(style: style, text: model.label(for: id))
+                    MarkerLabel(text: model.label(for: id))
                         .fixedSize()
                         .position(labelCenter(for: marker, plot: plot))
                         .allowsHitTesting(false)
@@ -47,8 +46,6 @@ struct LineMarkerProfileView: View {
         let x = x(marker.distance, plot: plot)
         let y = y(model.line.elevation(at: marker.distance), plot: plot)
         let isActive = model.activeID == marker.id
-        let size = MarkerHandleView.size(style)
-        let anchorOffset = size.height * (0.5 - MarkerHandleView.anchor(style).y)
         return ZStack {
             // From the floor up to the handle, which caps it; the label above stays clear.
             Path { path in
@@ -57,8 +54,8 @@ struct LineMarkerProfileView: View {
             }
             .stroke(isActive ? OBCTheme.forest : OBCTheme.ink, lineWidth: isActive ? 1.5 : 1)
             .allowsHitTesting(false)
-            MarkerHandleView(style: style, color: model.color(endingAt: marker.id), isActive: isActive)
-                .position(x: x, y: y + anchorOffset)
+            MarkerHandleView(color: model.color(endingAt: marker.id), isActive: isActive)
+                .position(x: x, y: y - MarkerHandleView.size.height / 2)
                 .allowsHitTesting(false)
             // The grab band: the full height, so the finger never has to find the knob.
             Color.clear
@@ -110,8 +107,7 @@ struct LineMarkerProfileView: View {
 
     /// Above the handle, as on the map, and held inside the card.
     private func labelCenter(for marker: LineMarker, plot: CGRect) -> CGPoint {
-        let size = MarkerHandleView.size(style)
-        let handleTop = y(model.line.elevation(at: marker.distance), plot: plot) - size.height * MarkerHandleView.anchor(style).y
+        let handleTop = y(model.line.elevation(at: marker.distance), plot: plot) - MarkerHandleView.size.height
         return CGPoint(
             x: min(max(x(marker.distance, plot: plot), plot.minX + 40), plot.maxX - 40),
             y: max(handleTop - 8, 14)
