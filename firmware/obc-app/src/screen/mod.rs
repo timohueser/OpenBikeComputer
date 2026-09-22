@@ -149,6 +149,13 @@ pub(crate) fn powering_off(stack: &Stack) -> bool {
     matches!(stack.last(), Some(Screen::QuickDrawer(d)) if d.powering_off())
 }
 
+/// The index of the lowest opaque screen: where the frame starts, because everything under it is
+/// covered. Drawing, ticking, the pre-draw acquisition and the render key all begin there, so they
+/// cannot disagree about which screen is the base. `0` when nothing on the stack is opaque.
+pub(crate) fn base_index(stack: &Stack) -> usize {
+    stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0)
+}
+
 /// Nothing lands on top of a drawer: take any open sheet off the top of `stack`, and report whether
 /// one was there. Called wherever an ordinary screen arrives. A host card burying a sheet would
 /// strand it, so every arrival passes through here.

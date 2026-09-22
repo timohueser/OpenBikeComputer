@@ -1518,7 +1518,7 @@ impl App {
             &mut self.ui.stack,
             screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
         );
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         self.ui.map_dirty = true;
     }
 
@@ -1659,8 +1659,7 @@ impl App {
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new(mode))),
         );
         self.ui.map_dirty = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         true
     }
 
@@ -1766,8 +1765,7 @@ impl App {
                 self.ui.map_dirty = true;
                 self.ui.last_input_ms = self.ui.now_ms;
                 self.ui.idle_return_timing = true;
-                self.ui.input.cancel_holds();
-                self.ui.hold_cancel_pending = true;
+                self.ui.cancel_holds();
                 self.ui.reconcile_corridor(self.up_ahead_scope());
                 true
             }
@@ -1832,8 +1830,7 @@ impl App {
         self.ui.map_dirty = true;
         self.ui.last_input_ms = self.ui.now_ms;
         self.ui.idle_return_timing = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
+        self.ui.cancel_holds();
         true
     }
 
@@ -2206,8 +2203,7 @@ impl App {
         // query exactly as a Back would.
         self.ui.reconcile_corridor(self.up_ahead_scope());
         if changed {
-            self.ui.input.cancel_holds();
-            self.ui.hold_cancel_pending = true;
+            self.ui.cancel_holds();
         }
         changed
     }
@@ -2325,8 +2321,7 @@ impl App {
         // The top screen changed under the rider's finger, so cancel any hold charging now: a
         // long-press aimed at the old top must not complete onto the new one.
         if stack_changed {
-            self.ui.input.cancel_holds();
-            self.ui.hold_cancel_pending = true;
+            self.ui.cancel_holds();
         }
         if self.settings != settings_before {
             // A rider edit: bump the revision and re-arm the save, superseding an older one.
@@ -2604,7 +2599,7 @@ impl App {
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
         let place_local = self.place_local_time();
-        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        let base = screen::base_index(&self.ui.stack);
 
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
