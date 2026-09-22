@@ -40,6 +40,9 @@ use obc_reader::{MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 pub struct Verified {
     pub obcm_version: u8,
     pub bbox: BBox,
+    /// Whether the cell carries a landmark section. The credit for what is in it lives in the
+    /// catalog, not in the cell, so a store that has one and no catalog block is unlicensed.
+    pub landmarks: bool,
 }
 
 /// The full walk for one cell artifact, plus the one check that makes it a cell: its header bbox
@@ -112,17 +115,26 @@ fn walk(path: &Path) -> Result<Verified, String> {
         }
     }
 
-    Ok(Verified { obcm_version: reader.version, bbox })
+    Ok(Verified { obcm_version: reader.version, bbox, landmarks: landmark_section(path, &src)? })
 }
 
-/// The header a cell states about itself: its OBCM version and its bbox, and nothing else read.
-/// Forty bytes, so a whole cell store can be checked against its ids without decoding a chunk.
-pub fn header_of(path: &Path) -> Result<(u8, BBox), String> {
+/// What a cell states about itself in its header: version, bbox, and whether it carries a landmark
+/// section. Sixty-five bytes, so a whole cell store can be checked against its ids and against the
+/// catalog's landmark block without decoding a chunk.
+pub fn header_of(path: &Path) -> Result<Verified, String> {
     let src = open_map(path)?;
     let tables = MapTables::parse(&src).map_err(|e| format!("{}: not a readable OBCM map: {e:?}", path.display()))?;
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
-    Ok((reader.version, reader.bbox))
+    Ok(Verified { obcm_version: reader.version, bbox: reader.bbox, landmarks: landmark_section(path, &src)? })
+}
+
+/// Whether the cell carries a landmark section, read through the device's own accessor so a
+/// nonsense offset fails here rather than on a rider's card.
+fn landmark_section(path: &Path, src: &FileSource) -> Result<bool, String> {
+    obc_reader::landmarks::map_section(src)
+        .map(|section| section.is_some())
+        .map_err(|e| format!("{}: unreadable landmark section: {e:?}", path.display()))
 }
 
 /// How much of a cell store to open.
@@ -325,17 +337,35 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             // Every cell: the header must be exactly the square its id names.
             let (sq_min_lon, sq_min_lat, sq_max_lon, sq_max_lat) = id.square();
             match header_of(&path) {
-                Ok((version, bbox)) => {
-                    if version != root.schema.obcm_version {
+                Ok(header) => {
+                    if header.obcm_version != root.schema.obcm_version {
                         problem(
                             format!(
-                                "{}: OBCM v{version}, but the catalog says v{}",
+                                "{}: OBCM v{}, but the catalog says v{}",
                                 path.display(),
+                                header.obcm_version,
                                 root.schema.obcm_version
                             ),
                             &mut report.problems,
                         );
                     }
+                    // The licence-breaking direction, and the reason the header read reports the
+                    // section at all: a cell's landmark bytes are Wikipedia text and Commons
+                    // photos, and the only place their credit is published is the catalog's
+                    // landmark block. Deleting the artifact from the tree and regenerating is all
+                    // it takes to ship one without the other. Every cell, not a sample: one cell
+                    // out of thousands can be the only one with a section.
+                    if header.landmarks && root.landmarks.is_none() {
+                        problem(
+                            format!(
+                                "{}: carries a landmark section, but the catalog publishes no landmark block — the \
+                                 credit for that text and those photos is nowhere in the store (OBCC_Spec.md §14.2)",
+                                path.display()
+                            ),
+                            &mut report.problems,
+                        );
+                    }
+                    let bbox = header.bbox;
                     let got = (
                         i64::from(bbox.min_lat),
                         i64::from(bbox.min_lon),
@@ -519,8 +549,8 @@ fn verify_landmarks(tree: &Path, root: &obc_pack::catalog::Catalog, report: &mut
         Ok(dirs) => {
             for (id, dir) in dirs.iter().filter(|(id, _)| !published.contains(id.as_str())) {
                 report.problems.push(format!(
-                    "{}: a landmark artifact for `{id}` that the catalog does not publish — it arrived after the \
-                     catalog was generated, so no cell was cut from it",
+                    "{}: a landmark artifact for `{id}` that the catalog does not record — re-generate the catalog \
+                     with `obc-pack catalog`, or take the directory out of the tree",
                     dir.display()
                 ));
             }

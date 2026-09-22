@@ -303,9 +303,10 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
                     Some(_) => {}
                 }
                 match crate::verify::header_of(&path) {
-                    Ok((version, _)) if version != obc_formats::obcm::VERSION => out.problems.push(format!(
-                        "{}: OBCM v{version}, this build writes v{}",
+                    Ok(header) if header.obcm_version != obc_formats::obcm::VERSION => out.problems.push(format!(
+                        "{}: OBCM v{}, this build writes v{}",
                         path.display(),
+                        header.obcm_version,
                         obc_formats::obcm::VERSION
                     )),
                     Ok(_) => {}

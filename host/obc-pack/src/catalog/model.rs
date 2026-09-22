@@ -561,10 +561,16 @@ pub struct LandmarkArtifactEntry {
     pub languages: Vec<String>,
     pub records: u32,
     pub photos: u32,
-    /// Every file of the artifact, `url`'s document and the photos beside it.
+    /// Every file of the artifact but the declaration: `url`'s document and the photos
+    /// beside it.
     pub bytes: u64,
-    /// One digest over those files, name and content per file. It is what the cell bake keys
-    /// on, so a lost or swapped photo moves it.
+    /// One digest over those same files, name and content per file — what a verifier
+    /// re-computes to find a file that moved.
+    ///
+    /// **Not the cell bake's cut key.** That key is over the content document and the photo
+    /// digests inside it, so a swapped photo does not move it and re-cuts nothing; it makes
+    /// the next cut of those cells fail when the loader checks the photo against its
+    /// declared digest.
     pub sha256: String,
     /// Every licence the artifact's texts and photos are under, sorted and distinct. The
     /// per-record notices stay in the artifact; these are what the store as a whole owes.

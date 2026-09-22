@@ -355,8 +355,8 @@ impl Fixture {
                 qid: "Q1".into(),
                 name: "A place".into(),
                 category: 1,
-                latitude: 47.0,
-                longitude: 7.0,
+                latitude: 47.3,
+                longitude: 7.2,
                 default_language: "en".into(),
                 fallback_sources: vec![],
                 variants: vec![obc_pack::landmarks::TextVariant {
@@ -570,6 +570,16 @@ fn the_landmark_class_is_published_credited_and_verified() {
     std::fs::remove_dir_all(f.tree.join("landmarks/europe/west")).unwrap();
     let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
     assert!(report.problems.iter().any(|p| p.contains("landmarks/europe/west/content.json")), "{:?}", report.problems);
+
+    // The direction that breaks the licence: regenerating drops the block and the credit, while
+    // the cells keep the sections they were cut from. At the default sampling, too — exactly one
+    // of these thirty cells holds the section, so a sampled check would pass the store.
+    let regenerated = f.catalog();
+    assert!(regenerated.root.landmarks.is_none());
+    assert!(!obc_pack::catalog::license_txt(&regenerated.root).contains(obc_pack::landmarks::ATTRIBUTION));
+    let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
+    let named: Vec<&String> = report.problems.iter().filter(|p| p.contains("carries a landmark section")).collect();
+    assert_eq!(named.len(), 1, "a cell's landmark bytes with no catalog credit: {:?}", report.problems);
 }
 
 /// The fixture's terrain pairing. `2^19 / 2^15` makes a cell exactly one tile — a 512-byte block
@@ -1455,7 +1465,7 @@ fn the_tree_generates_a_catalog_that_verifies() {
             let mut p = id.split('/');
             let (_, i, j) = (p.next(), p.next().unwrap(), p.next().unwrap());
             let path = f.tree.join("cells").join(band).join(i).join(format!("{j}.obcm"));
-            let (_, bbox) = obc_bake::verify::header_of(&path).expect("header");
+            let bbox = obc_bake::verify::header_of(&path).expect("header").bbox;
             let sq = cell.square();
             assert_eq!(
                 (bbox.min_lon as i64, bbox.min_lat as i64, bbox.max_lon as i64, bbox.max_lat as i64),
