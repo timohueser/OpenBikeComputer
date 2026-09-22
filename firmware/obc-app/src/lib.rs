@@ -99,7 +99,7 @@ pub use settings::{
     DATETIME_MIN_YEAR, SENSOR_SLOTS,
 };
 pub use stat_fields::{StatField, StatFieldList};
-pub use trip::{TripInput, TripProgress, TripSummary, Trips, MAX_TRIPS};
+pub use trip::{RouteVersion, TripInput, TripProgress, TripSummary, Trips, MAX_TRIPS};
 pub use upload_facts::{CatalogUpload, CatalogUploadKind, UploadFacts};
 
 /// Durable identity of a catalog object. This is the flat store's `ObjectId` width; UI code keeps
