@@ -458,10 +458,9 @@ def chain_cost(parsed: Disassembly, root: str) -> tuple[int, tuple[str, ...]]:
     """Deepest statically-reachable `bl` chain from `root`, as (bytes, path).
 
     **A conservative ceiling, not the true peak.** Every direct call edge is followed whether or
-    not the path is feasible: a read-only `open_file_in_dir` monomorphization still references
-    `alloc_cluster`/`update_fat`, so the reported chain includes FAT-write frames a rescan can
-    never execute. That is why the boot-chain figure is gated against a baselined ceiling (drift
-    detection) and the on-glass stack high-water stays the authority for real headroom.
+    not the path is feasible. That is why the boot-chain figure is gated against a baselined
+    ceiling (drift detection) and the on-glass stack high-water stays the authority for real
+    headroom.
 
     Indirect calls (`blx`, dyn dispatch) are invisible to it, so it is not a lower bound either.
     """

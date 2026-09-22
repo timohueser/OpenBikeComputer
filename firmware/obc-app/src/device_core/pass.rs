@@ -968,13 +968,13 @@ mod tests {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         let mut facts = ExternalFacts::NONE;
         facts.raise_warnings(WarningFlags::NO_GPS);
-        facts.raise_warnings(WarningFlags::MAP_SLOW);
+        facts.raise_warnings(WarningFlags::STORAGE_ERROR);
 
         pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
         assert!(app.pass.connections.faults.take().is_empty(), "delivered, not left pending");
         assert!(
             matches!(app.top_screen(), crate::Screen::Warning(w) if w.flags().contains(WarningFlags::NO_GPS)
-                && w.flags().contains(WarningFlags::MAP_SLOW)),
+                && w.flags().contains(WarningFlags::STORAGE_ERROR)),
             "both notices reached one card"
         );
     }

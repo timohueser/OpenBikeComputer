@@ -113,13 +113,6 @@ const VRI_SPSYNC_AUX: usize = 0x74; // [6]; barrier: host counter in [0], firmwa
 /// `INTEN` mask: XFERCOMPLETE | ABORTED | READYTOTRANSFER → VEVIF event 20.
 const VRI_INTEN_ALL: u32 = 0x7;
 
-// `STATUS.STATUS` bit positions, which are the diagnosis carried out of an abort.
-const STATUS_CMDTIMEOUT: u32 = 1 << 0;
-const STATUS_CMDCRCERROR: u32 = 1 << 1;
-const STATUS_DATACRCERROR: u32 = 1 << 2;
-const STATUS_RETRYEXCEEDED: u32 = 1 << 3;
-const STATUS_PROTOCOLERR: u32 = 1 << 4;
-
 // Response types (`SP_EMMC_COMMAND_CMD_RESPTYPE_*`). SD's R6 and R7 are R1-shaped on the wire, so
 // they ride `RESP_R1`.
 const RESP_NONE: u32 = 0;
@@ -261,8 +254,7 @@ pub fn on_vpr00_irq() {
 
 /// Why a storage operation failed. Every variant is returned, never panicked or hung on.
 ///
-/// `Debug` is not decoration: `embedded_sdmmc::BlockDevice::Error` requires it. The real
-/// diagnostics stay `defmt::Format`.
+/// The real diagnostics stay `defmt::Format`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 pub enum SemmcError {
     /// A second command tried to start while a deferred write still owned the peripheral.
@@ -321,23 +313,6 @@ impl SemmcError {
             | SemmcError::CardBusy
             | SemmcError::NoCard
             | SemmcError::UnsupportedCard => true,
-        }
-    }
-
-    /// Decode an [`Aborted`](Self::Aborted) status word for the log.
-    pub fn abort_reason(status: u32) -> &'static str {
-        if status & STATUS_CMDTIMEOUT != 0 {
-            "command timeout (card silent)"
-        } else if status & STATUS_CMDCRCERROR != 0 {
-            "command CRC"
-        } else if status & STATUS_DATACRCERROR != 0 {
-            "data CRC (clock too high for the wiring?)"
-        } else if status & STATUS_RETRYEXCEEDED != 0 {
-            "retries exceeded"
-        } else if status & STATUS_PROTOCOLERR != 0 {
-            "protocol error"
-        } else {
-            "unclassified"
         }
     }
 }
@@ -509,7 +484,7 @@ impl Semmc {
         self.card
     }
 
-    /// Capacity in 512 B blocks — what `embedded_sdmmc::BlockDevice::num_blocks` reports.
+    /// Capacity in 512 B blocks.
     pub fn num_blocks(&self) -> Result<u32, SemmcError> {
         self.card.map(|c| c.blocks).ok_or(SemmcError::NotInitialised)
     }
@@ -1080,9 +1055,8 @@ impl Semmc {
     /// [`SemmcError::CardStatus`].
     ///
     /// `buf` must be a non-empty whole number of 512 B blocks and 32-bit aligned, which is the
-    /// firmware's DMA requirement; otherwise [`SemmcError::BadBuffer`]. `embedded_sdmmc::Block`
-    /// carries no alignment attribute and cannot gain one, so `sd::SemmcCard` meets the requirement
-    /// by bouncing through the aligned `sd::BOUNCE` in 4-block batches.
+    /// firmware's DMA requirement; otherwise [`SemmcError::BadBuffer`]. The flat-store binding
+    /// meets the requirement by bouncing unaligned buffers through [`crate::card_io`].
     ///
     /// Blocking, and it holds the core while the transfer runs. See
     /// [`wait_completion`](Self::wait_completion) for why the wait is a bounded poll. Read and

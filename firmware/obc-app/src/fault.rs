@@ -1,5 +1,5 @@
 //! Full-screen boot faults — the unrecoverable bring-up failures that leave nothing else to draw:
-//! no SD card, no map file on the card, or a map the reader cannot parse. Unlike the dismissable
+//! no SD card, no map object on the card, or a map the reader cannot parse. Unlike the dismissable
 //! [warnings](crate::screen::WarningScreen), these are drawn without an [`App`], because there is no
 //! map to build one around, and they never dismiss.
 //!
@@ -23,7 +23,7 @@ use crate::settings::Language;
 use crate::{t, Msg};
 
 /// An unrecoverable storage fault at boot, before the app exists. Each maps to one of the fatal
-/// `idle` sites in the board's `main` — a card that won't mount, no `.obcm` in the root, or a map
+/// `idle` sites in the board's `main` — a card that will not mount, no map object, or a map
 /// that fails [`obc_reader`]'s header parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootFault {
@@ -37,12 +37,11 @@ pub enum BootFault {
     /// [`NoCard`](Self::NoCard) because the card is present and working, just too small.
     CardUnsupported,
     /// The storage subsystem itself failed: the sEMMC soft peripheral would not boot, a barrier
-    /// never echoed, or the volume would not mount. The superset for "something below the filesystem
-    /// broke, and it was not the card's absence".
+    /// never echoed, or the flat store would not mount.
     StorageFault,
-    /// The card mounted but holds no `.obcm` map file.
+    /// The card mounted but holds no map object.
     NoMap,
-    /// A map file is present but is not valid OBCM.
+    /// A map object is present but is not valid OBCM.
     BadMap,
 }
 

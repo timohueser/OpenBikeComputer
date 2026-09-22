@@ -1,7 +1,7 @@
 //! Board firmware for the nRF54LM20 — the shipping hardware target. It ports the shared
 //! `obc-app` onto the board: the nRF HAL wiring and the LS021 display backend. One image carries
 //! the ride loop, the BLE stack and the USB device plane; `ble::run` and `usb::run` are spawned
-//! beside the ride loop and share the SD + settings store ([`SharedStore`]).
+//! beside the ride loop and share RRAM settings through [`SharedSettings`].
 //!
 //! `--no-default-features` is mandatory: it swaps the critical-section implementation to MPSL's.
 //! embassy-time runs on the GRTC (`time-driver-grtc`) because the nRF54L has no legacy RTC time
@@ -18,8 +18,7 @@
 #![no_main]
 
 mod board;
-mod sd;
-// A card is a flat store or a FAT volume, never both, and boot classifies it.
+// The raw-card flat store and the board adapter that binds it to sEMMC.
 mod flat_ride;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR: native 4-bit SD mode,
@@ -68,12 +67,11 @@ mod ble;
 // as the radio.
 mod usb;
 // The transport-free companion-link core: the command handler, descriptor classification, the
-// identity blobs, and the one shared `ObjectStore`. The radio and the USB plane both call into
+// identity blobs, and the one shared `LinkControl`. The radio and the USB plane both call into
 // it, which is what keeps USB a second transport and not a second protocol.
 mod link;
-// The device object store: object ids, revision and upload state over the catalog, plus the
-// Config-to-RRAM-settings bridge.
-mod object_store;
+// The link-control cache and RRAM hand-offs for Config, bonding, clock and DFU requests.
+mod link_control;
 
 // The radio is not optional: MPSL provides the critical-section implementation, its radio timing
 // forbids the interrupt-disable kind, and two implementations give duplicate link symbols. The
@@ -295,9 +293,9 @@ static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, built in place like [`MAP_CACHE`]. It spares the render and
 /// the matcher from re-reading route geometry off the card every frame.
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
-/// The SD/settings mutex is initialized on exactly one boot path: the normal ride application or
-/// the USB recovery plane used when the selected map is structurally unreadable.
-static mut SHARED_STORE_SLOT: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
+/// The shared RRAM settings mutex is initialized on exactly one boot path: the normal ride
+/// application or the USB recovery plane used when the selected map is structurally unreadable.
+static mut SHARED_SETTINGS_SLOT: MaybeUninit<SharedSettingsMutex> = MaybeUninit::uninit();
 /// The mounted map's terrain: the OBCT reader plus its four-tile cache, about 2.1 KB. It is
 /// `.bss` because `TerrainElevation` embeds the cache and a stack copy inside the emit path would
 /// be a fat local. Written once at boot, and only when the map carries a terrain region.
@@ -398,56 +396,11 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
     &mut *ptr
 }
 
-/// The two persistent resources both thread-mode planes drive: the mounted card and the RRAM
-/// settings store. The async [`Mutex`] lets a locker hold the guard across an `.await`, which the
-/// BLE object plane needs for its per-chunk operations. The ride loop holds it across the render
-/// but never across the display present, so store operations interleave with the FLPR scan.
-/// `NoopRawMutex` is enough: both planes are cooperative futures on one executor and no ISR
-/// touches storage.
-pub(crate) struct SharedStore {
-    pub(crate) storage: Option<sd::Storage>,
+/// The RRAM settings store shared by the ride loop and both link planes.
+pub(crate) struct SharedSettings {
     pub(crate) settings: settings::RramSettingsStore,
 }
-/// The shared-store handle threaded into [`ride::run_app`] and the BLE object plane.
-///
-/// It is a newtype and not an alias because taking the card means two things: getting the
-/// `Storage` value and getting the FLPR into storage mode. The wrapper makes every `.lock().await`
-/// site acquire both. See [`flpr_mux::storage_session`](crate::flpr_mux::storage_session): it
-/// waits out a live panel scan by yielding, and is deliberately not a second lock, so it can be
-/// held across an `await` and cannot deadlock against a frame push.
-pub(crate) struct SharedStoreMutex(Mutex<NoopRawMutex, SharedStore>);
-
-impl SharedStoreMutex {
-    pub(crate) const fn new(store: SharedStore) -> Self {
-        Self(Mutex::new(store))
-    }
-
-    /// Take the card: the store value, plus the FLPR in storage mode.
-    pub(crate) async fn lock(&self) -> StoreGuard<'_> {
-        let inner = self.0.lock().await;
-        StoreGuard { inner, _flpr: flpr_mux::storage_session().await }
-    }
-}
-
-/// The mutex guard with the storage session riding along, so the mode is held for exactly the
-/// scope the store is held. It derefs to [`SharedStore`].
-pub(crate) struct StoreGuard<'a> {
-    inner: embassy_sync::mutex::MutexGuard<'a, NoopRawMutex, SharedStore>,
-    _flpr: flpr_mux::StorageSession,
-}
-
-impl core::ops::Deref for StoreGuard<'_> {
-    type Target = SharedStore;
-    fn deref(&self) -> &SharedStore {
-        &self.inner
-    }
-}
-
-impl core::ops::DerefMut for StoreGuard<'_> {
-    fn deref_mut(&mut self) -> &mut SharedStore {
-        &mut self.inner
-    }
-}
+pub(crate) type SharedSettingsMutex = Mutex<NoopRawMutex, SharedSettings>;
 
 /// Spawn-trampoline for the BLE stack. Constructing [`ble::run`]'s spawn token materializes its
 /// future as a stack temporary in the constructing function's poll frame, and a poll frame's full
@@ -459,10 +412,10 @@ async fn spawn_ble_stack(
     mpsl_p: nrf_sdc::mpsl::Peripherals<'static>,
     sdc_p: nrf_sdc::Peripherals<'static>,
     cracen_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::CRACEN>,
-    stores: link::LinkStores,
+    state: link::LinkState,
     sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) {
-    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, stores, sensor_injector)));
+    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, state, sensor_injector)));
 }
 
 /// Spawn-trampoline for the USB device plane, for the same reason as [`spawn_ble_stack`]:
@@ -477,7 +430,7 @@ async fn spawn_usb_stack(spawner: Spawner, usb_p: embassy_nrf::Peri<'static, emb
 /// The ordinary composition point sits after map parsing, because the ride loop needs the parsed
 /// tables. A damaged map must not make the cable that replaces it disappear. This reduced boot
 /// path starts only USB; the storage task, with the protocol-v4 engine, is already spawned on
-/// every card. It needs no `Storage`, no object store and no shared mutex. On an unformatted card
+/// every card. It needs no app state and no settings mutex. On an unformatted card
 /// the engine answers ordinary operations with `readOnly/unformatted`, and an explicit `FORMAT`
 /// can still initialize it over this link.
 ///
@@ -886,7 +839,7 @@ async fn main(_spawner: Spawner) {
         // up, so paint an undismissable fault screen, then heartbeat-idle. The reason travels with
         // the failure: a reader that never booted and a card that is merely too small get their own
         // screen, because "NO SD CARD" would send the rider to the wrong fix.
-        if let Err(fault) = sd::bring_up_card() {
+        if let Err(fault) = flat_store::bring_up_card() {
             defmt::error!(
                 "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
                 fault.copy().0
@@ -999,8 +952,6 @@ async fn main(_spawner: Spawner) {
             App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
-        // Ride objects are flat-store native. This optional FAT seam is only for the staged updater.
-        let storage: Option<sd::Storage> = None;
         {
             // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
             // first, so a fresh upload stays visible on a card with more than the UI cap. The ride
@@ -1068,110 +1019,40 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // The shared store: the mounted card and the RRAM settings move behind one async mutex, so
-        // the ride loop and the BLE object plane can each lock it per pass. Built in place, like the
-        // caches above. The `Option` on `storage` is the seam a future card-less variant would use.
-        let shared_store: &'static SharedStoreMutex = unsafe {
+        // The settings store moves behind one async mutex, so the ride loop and both link planes can
+        // lock it per operation. The flat store owns the card through its separate command seam.
+        let shared_settings: &'static SharedSettingsMutex = unsafe {
             init_static(
-                core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
-                SharedStoreMutex::new(SharedStore { storage, settings: settings_store }),
+                core::ptr::addr_of_mut!(SHARED_SETTINGS_SLOT),
+                SharedSettingsMutex::new(SharedSettings { settings: settings_store }),
             )
         };
 
-        // (The companion-link object store is built after the store-epoch mint below: the catalog
-        // scan must see the settled id-era.)
+        let cracen_p = p.CRACEN;
 
-        // Mint and persist the store's id-era nonce. The epoch lives on the card, so the card
-        // carries its own era name and a swap transplants the store identity; the id-marks floor
-        // stays in RRAM. It runs in every build flavor, because the era invariant — any boot that
-        // could allocate ids under a lost floor declares a new era — must hold across mixed-flavor
-        // bench flashing. A build that did not mint could boot on a torn id-marks line, rewrite it
-        // valid over a ride, and a later flash would then see a valid epoch and a valid floor and
-        // never mint, which is permanent undetected aliasing.
-        //
-        // It sits here because this is the earliest point at which both the card and the RRAM lines
-        // are readable, and it must come before anything can allocate an object id. The read epoch is
-        // what the pre-pairing `protocolVersion` read serves, and it is threaded into `ble::run` so
-        // that path never re-reads the card. The TRNG word comes from a throwaway CRACEN reborrow:
-        // `Cracen` construction has no side effects, each operation self-enables and self-disables the
-        // RNG, and `Drop` is a no-op, so the peripheral is pristine when it moves into the link
-        // layer.
-        let mut cracen_p = p.CRACEN;
-        let store_epoch: Option<u32> = {
-            let mut guard = shared_store.lock().await;
-            if guard.storage.is_none() {
-                defmt::info!("store-epoch: no mounted store — no epoch to mint or serve");
-                None
-            } else {
-                // Read the card epoch (an immutable storage borrow), then the RRAM floor (a mutable
-                // settings borrow): sequential, non-overlapping field borrows.
-                let card_epoch = guard.storage.as_ref().unwrap().load_card_epoch();
-                let marks = guard.settings.load_id_marks();
-                // One TRNG word. Only the mint path consumes it.
-                let fresh = {
-                    let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
-                    cracen.blocking_next_u32()
-                };
-                match obc_app::store_meta::store_epoch_mint(card_epoch, marks, fresh) {
-                    Some((new_epoch, new_marks)) => {
-                        // ORDERING: the card epoch first, the id-marks only after it succeeds.
-                        // Writing the marks under a failed epoch write is fatal: the card keeps the
-                        // old valid epoch, the fresh floor reads valid, and the next boot sees
-                        // steady state, so the era reset goes undetected — the exact aliasing this
-                        // mechanism exists to catch. Skipping the marks write makes the mint retry
-                        // next boot. One window stays open: if the epoch write fails here but a
-                        // later ride-finish marks write succeeds, the next boot is steady under the
-                        // old epoch.
-                        if guard.storage.as_mut().unwrap().save_card_epoch(new_epoch) {
-                            guard.settings.save_id_marks(&new_marks);
-                            defmt::info!(
-                                "store-epoch: minted id-era nonce {=u32:#010x} to card (+ id-marks re-seeded)",
-                                new_epoch
-                            );
-                            Some(new_epoch)
-                        } else {
-                            defmt::error!(
-                                "store-epoch: card epoch persist FAILED — id-marks left untouched so the \
-                                 mint retries next boot; serving no epoch this session (app acks fail-closed)"
-                            );
-                            None
-                        }
-                    }
-                    None => {
-                        // `store_epoch_mint` returns `None` only when the card epoch was `Some`.
-                        defmt::info!("store-epoch: kept card id-era nonce");
-                        card_epoch
-                    }
-                }
-            }
-        };
-
-        // The one companion-link object store, and the handles every link plane is composed with.
+        // The one companion-link control state, and the handles every link plane is composed with.
         // It is built here and not inside `ble::run`, because with USB as a second transport two
-        // independently-constructed stores would each keep their own catalog, id allocator and
-        // upload temp over the same card. It is built after the epoch mint above, because the
-        // catalog scan must see the settled id-era.
+        // independently-constructed states would each keep a stale settings cache.
         //
-        // `link::init_store` is `#[inline(never)]`, so its ~13.5 KB construction temporary lives in
+        // `link::init_control` is `#[inline(never)]`, so its construction temporary lives in
         // that transient frame and `main`'s frame pays only the reference.
-        let link_stores = {
-            let objects = {
-                let mut guard = shared_store.lock().await;
-                link::init_store(&mut guard)
+        let link_state = {
+            let control = {
+                let mut guard = shared_settings.lock().await;
+                link::init_control(&mut guard)
             };
-            link::LinkStores { shared: shared_store, objects, epoch: store_epoch }
+            link::LinkState { shared: shared_settings, control }
         };
 
         {
             let (mpsl_p, sdc_p) = board::radio_hardware!(p);
-            // CRACEN goes to the link layer's crypto RNG. The store-epoch pass above only
-            // reborrowed it. `store_epoch` is threaded through so `ble::run` never re-reads the card.
+            // CRACEN goes to the link layer's crypto RNG.
             _spawner.spawn(defmt::unwrap!(spawn_ble_stack(
                 _spawner,
                 mpsl_p,
                 sdc_p,
                 cracen_p,
-                link_stores,
+                link_state,
                 SENSOR_HUB.injector()
             )));
         }
@@ -1188,7 +1069,7 @@ async fn main(_spawner: Spawner) {
         let app_fut = ride::run_app(
             display,
             app,
-            shared_store,
+            shared_settings,
             map_tables,
             map_cache,
             flat_map,
@@ -1207,7 +1088,7 @@ async fn main(_spawner: Spawner) {
         let app_fut = ride::run_app(
             display,
             app,
-            shared_store,
+            shared_settings,
             map_tables,
             map_cache,
             flat_map,

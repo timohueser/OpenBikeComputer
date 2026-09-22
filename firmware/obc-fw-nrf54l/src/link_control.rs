@@ -1,4 +1,4 @@
-//! The control-plane state that does not live in the flat store: RRAM-backed settings, and the
+//! Link-control state that does not live in the flat store: RRAM-backed settings, and the
 //! bond and config hand-off.
 //!
 //! Route, trip, ride, transfer and catalog ownership all live in [`crate::flat_store`]. This module
@@ -13,16 +13,15 @@ use obc_app::settings::DeviceName;
 use obc_app::Settings;
 use obc_ports::SettingsStore;
 
-use crate::SharedStore;
+use crate::SharedSettings;
 
 /// Wakes the event-driven ride loop for the remaining BLE control-plane hand-offs. Catalog movement
 /// has its own flat-store commit edge.
-static STORE_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static CONTROL_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The ride loop's store-movement wake arm: it resolves when a commit or delete lands after the
-/// last pass.
-pub(crate) async fn wait_store_changed() {
-    STORE_WAKE.wait().await
+/// The ride loop's wake arm for a posted DFU request or clock update.
+pub(crate) async fn wait_control_event() {
+    CONTROL_WAKE.wait().await
 }
 
 // The BLE-to-ride-loop half of the DFU seam. The `installFw` command handler posts an install
@@ -38,11 +37,11 @@ pub(crate) async fn wait_store_changed() {
 /// A BLE `installFw` request, posted but not yet drained by the ride loop.
 static DFU_INSTALL_REQ: AtomicBool = AtomicBool::new(false);
 
-/// Post a BLE-initiated install request. It wakes a parked ride loop through [`STORE_WAKE`], so the
+/// Post a BLE-initiated install request. It wakes a parked ride loop through [`CONTROL_WAKE`], so the
 /// check and confirm flow appears without waiting for an unrelated event.
 pub(crate) fn request_dfu_install_ble() {
     DFU_INSTALL_REQ.store(true, Ordering::Relaxed);
-    STORE_WAKE.signal(());
+    CONTROL_WAKE.signal(());
 }
 
 /// Whether a BLE install request is posted but undrained: the `installFw` busy gate's "an install
@@ -59,20 +58,20 @@ pub(crate) fn take_dfu_install_ble() -> bool {
 }
 
 // Settings are the one thing both thread-mode planes edit: the ride loop, through the on-device
-// Settings screens, and the BLE Config write. The RRAM blob behind `SharedStore.settings` is the
+// Settings screens, and the BLE Config write. The RRAM blob behind `SharedSettings.settings` is the
 // single source of truth, and these two flags carry a change across the plane boundary so neither
 // cache goes stale, and so the ride loop's change-detection save cannot clobber a BLE write.
 //
 // `Relaxed` is enough: both planes are cooperative futures on the one executor, and a settings
 // change is idempotent, so the worst case is a flag observed one pass late.
 
-/// Raised by a BLE Config write ([`ObjectStore::apply_config`]); the ride loop drains it and
+/// Raised by a BLE Config write ([`LinkControl::apply_config`]); the ride loop drains it and
 /// reloads the BLE-owned fields (units + name) into the live `App` settings before its next
 /// change-detection save, so the phone's write reaches the UI same-session and is never clobbered.
 static BLE_CONFIG_WRITTEN: AtomicBool = AtomicBool::new(false);
 
 /// Raised by the ride loop after it persists an on-device settings change; the BLE plane drains it
-/// and refreshes the [`ObjectStore`] config cache from RRAM before serving a Config read (or the
+/// and refreshes the [`LinkControl`] config cache from RRAM before serving a Config read (or the
 /// advertised name), so a read after an on-device units change is fresh without a reboot.
 static DEVICE_SETTINGS_CHANGED: AtomicBool = AtomicBool::new(false);
 
@@ -99,11 +98,11 @@ pub(crate) fn mark_device_settings_changed() {
 /// coalesces: a second connect's clock supersedes an undrained one.
 static BLE_CLOCK_SET: Signal<CriticalSectionRawMutex, (u32, i16)> = Signal::new();
 
-/// Post a validated `setClock`. It wakes a parked ride loop through [`STORE_WAKE`], so the home
+/// Post a validated `setClock`. It wakes a parked ride loop through [`CONTROL_WAKE`], so the home
 /// screen's clock jumps promptly.
 pub(crate) fn post_ble_clock(utc: u32, offset_min: i16) {
     BLE_CLOCK_SET.signal((utc, offset_min));
-    STORE_WAKE.signal(());
+    CONTROL_WAKE.signal(());
 }
 
 /// The ride loop's cue to stamp the wall clock from a BLE `setClock`, or `None` when none is pending
@@ -112,22 +111,22 @@ pub(crate) fn take_ble_clock() -> Option<(u32, i16)> {
     BLE_CLOCK_SET.try_take()
 }
 
-pub struct ObjectStore {
+pub struct LinkControl {
     /// The persisted settings, loaded once at boot: the config plane's read and modify cache. The
-    /// card and the RRAM store are not owned here — they live in the shared [`SharedStore`] both
-    /// planes lock, which each method takes as a parameter. Keeping only this cache here lets the
+    /// RRAM store is not owned here — it lives in the shared [`SharedSettings`] both planes lock,
+    /// which each method takes as a parameter. Keeping only this cache here lets the
     /// BLE planes hold it through a `RefCell`, never across an `await`, while the card is locked
     /// separately per call.
     settings: Settings,
 }
 
-impl ObjectStore {
+impl LinkControl {
     /// The empty control-plane cache, with no settings read; [`hydrate`](Self::hydrate) fills it in
     /// place. A const initializer keeps the boot path allocation-free.
-    pub const EMPTY: ObjectStore = ObjectStore { settings: Settings::DEFAULT };
+    pub const EMPTY: LinkControl = LinkControl { settings: Settings::DEFAULT };
 
     /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, in place: load settings only.
-    pub fn hydrate(&mut self, shared: &mut SharedStore) {
+    pub fn hydrate(&mut self, shared: &mut SharedSettings) {
         self.settings = shared.settings.load().unwrap_or_default();
     }
 
@@ -143,7 +142,7 @@ impl ObjectStore {
     /// an on-device change may have landed since this cache was last synced. Then
     /// [`BLE_CONFIG_WRITTEN`] is raised, so the ride loop reloads the units and name into the live
     /// `App` copy before its next save and the phone's write cannot be clobbered.
-    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8) {
+    pub fn apply_config(&mut self, shared: &mut SharedSettings, name: &str, units: u8) {
         // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
         self.settings = shared.settings.load().unwrap_or_default();
         self.settings.device_name = DeviceName::from_str_lossy(name);
@@ -160,28 +159,28 @@ impl ObjectStore {
     /// the device-to-phone half of coherence. The BLE plane calls it before it reads the config
     /// cache, so a read after an on-device change serves fresh values without a reboot. It is one
     /// relaxed load when nothing changed.
-    pub fn refresh_settings_if_changed(&mut self, shared: &mut SharedStore) {
+    pub fn refresh_settings_if_changed(&mut self, shared: &mut SharedSettings) {
         if DEVICE_SETTINGS_CHANGED.swap(false, Ordering::Relaxed) {
             self.settings = shared.settings.load().unwrap_or_default();
         }
     }
 
     // The single bonded peer lives in the same RRAM settings carve as the config. These delegate to
-    // the store, so the BLE plane reaches the bond through the one `RefCell<ObjectStore>` it holds.
+    // the RRAM store, so the BLE plane reaches the bond through its one `RefCell<LinkControl>`.
 
     /// The stored bond (LTK + peer identity/IRK), or `None` for open pairing.
-    pub fn load_bond(&mut self, shared: &mut SharedStore) -> Option<trouble_host::prelude::BondInformation> {
+    pub fn load_bond(&mut self, shared: &mut SharedSettings) -> Option<trouble_host::prelude::BondInformation> {
         shared.settings.load_bond()
     }
 
     /// Persist the single bond — a fresh pairing replaces it (single-peer policy).
-    pub fn save_bond(&mut self, shared: &mut SharedStore, bond: &trouble_host::prelude::BondInformation) {
+    pub fn save_bond(&mut self, shared: &mut SharedSettings, bond: &trouble_host::prelude::BondInformation) {
         shared.settings.save_bond(bond);
     }
 
     /// Forget the stored bond, because the peer signalled it lost its keys, so the next contact
     /// re-pairs.
-    pub fn clear_bond(&mut self, shared: &mut SharedStore) -> Result<(), obc_app::ble::BondError> {
+    pub fn clear_bond(&mut self, shared: &mut SharedSettings) -> Result<(), obc_app::ble::BondError> {
         shared.settings.clear_bond()
     }
 }

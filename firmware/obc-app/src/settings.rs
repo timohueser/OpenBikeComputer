@@ -622,7 +622,7 @@ mod tests {
     /// Re-stamp the CRC over a doctored blob, so [`decode`] sees a valid blob whose payload is
     /// wrong.
     fn re_stamp_crc(b: &mut [u8; ENCODED_LEN]) {
-        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::crc16::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     }
 
@@ -923,7 +923,7 @@ mod tests {
         /// Stamp the CRC of a hand-written blob over its own `plen` bytes. A hand-computed CRC
         /// would test arithmetic, not framing.
         pub fn stamped<const N: usize>(mut b: [u8; N], plen: usize) -> [u8; N] {
-            let crc = crate::store_meta::crc16(&b[0..plen]);
+            let crc = crate::crc16::crc16(&b[0..plen]);
             b[plen..plen + 2].copy_from_slice(&crc.to_le_bytes());
             b
         }
@@ -1186,11 +1186,9 @@ mod tests {
         assert_eq!(Units::Imperial.cycled(), Units::Metric);
     }
 
-    // The board firmware double-caches settings: the ride loop holds the live `App` copy, the BLE
-    // `ObjectStore` holds a Config-read cache, and the RRAM blob is the source of truth behind
-    // both. These tests model that store with the codec's own byte buffer and exercise the
-    // coherence operations: a BLE write persists to RRAM, the ride loop reloads BLE fields before
-    // its save, and the object store refreshes its cache from RRAM before a Config read.
+    // The board firmware keeps a live `App` copy while the RRAM blob remains the source of truth.
+    // These tests model that store with the codec's own byte buffer and exercise the coherence
+    // operations around BLE writes and ride-loop saves.
 
     /// A minimal stand-in for the persistent RRAM/file store: the one canonical settings blob.
     struct FakeStore {

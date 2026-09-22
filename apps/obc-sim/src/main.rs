@@ -375,9 +375,9 @@ fn parse_warning(s: &str) -> Result<obc_app::WarningFlags, String> {
             "gps" => obc_app::WarningFlags::NO_GPS,
             "altimeter" | "baro" => obc_app::WarningFlags::NO_ALTIMETER,
             "compass" | "imu" => obc_app::WarningFlags::NO_COMPASS,
-            "map" => obc_app::WarningFlags::MAP_SLOW,
+            "storage" => obc_app::WarningFlags::STORAGE_ERROR,
             "rec" | "record" => obc_app::WarningFlags::REC_ERROR,
-            _ => return Err("--inject warning tokens: gps|altimeter|compass|map|rec".into()),
+            _ => return Err("--inject warning tokens: gps|altimeter|compass|storage|rec".into()),
         };
     }
     Ok(warnings)

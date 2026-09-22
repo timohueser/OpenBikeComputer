@@ -1725,11 +1725,11 @@ fn blank_state() -> VisibleState {
 fn a_fact_raised_this_pass_reaches_the_rider_in_it() {
     let mut harness = typed();
     harness.state.facts.raise_warnings(WarningFlags::NO_GPS);
-    harness.state.facts.raise_warnings(WarningFlags::MAP_SLOW);
+    harness.state.facts.raise_warnings(WarningFlags::STORAGE_ERROR);
     harness.pass();
     assert!(
         matches!(harness.state.app.top_screen(), Screen::Warning(card)
-            if card.flags().contains(WarningFlags::NO_GPS) && card.flags().contains(WarningFlags::MAP_SLOW)),
+            if card.flags().contains(WarningFlags::NO_GPS) && card.flags().contains(WarningFlags::STORAGE_ERROR)),
         "both notices reached one card"
     );
 }
