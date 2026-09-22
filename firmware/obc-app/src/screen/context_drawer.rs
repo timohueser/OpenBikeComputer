@@ -1405,9 +1405,19 @@ mod tests {
         let facts = w.facts();
         let mut buf = heapless::String::<24>::new();
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in
-                [&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE]
-            {
+            for menu in [
+                &RIDE,
+                &MAP,
+                &MAP_DISPLAY,
+                &MAP_ICONS,
+                &MAP_POI_CATEGORIES,
+                &UP_AHEAD,
+                &ROUTE_PLAN,
+                &FIND_PLACE,
+                &ASSISTANT_RESUME,
+                &ASSISTANT_VISIT,
+                &LANDMARK_CONTENT,
+            ] {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     let room = match row.action {

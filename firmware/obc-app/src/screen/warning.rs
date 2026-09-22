@@ -147,7 +147,7 @@ impl WarningScreen {
             y += line / 2;
         }
 
-        // Keep these lines short: 18 characters at Font::Body clip the panel.
+        // Keep these lines short: the copy-fit gate holds a centred Body line to 16 characters.
         // The most severe line first: with storage latched off, every other advisory is downstream
         // of it.
         if self.flags.contains(WarningFlags::STORAGE_ERROR) {
@@ -173,7 +173,7 @@ impl WarningScreen {
         }
 
         if self.flags.contains(WarningFlags::SETTINGS_ERROR) {
-            cv.text("Settings not saved", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
+            cv.text("Settings unsaved", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
             y += line + 2;
             cv.text("Retrying write", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
         }
