@@ -36,14 +36,19 @@ MAX_MEMBER_BYTES = 16 << 30
 
 # What the tail can open. A GeoTIFF carries its own CRS; an ESRI ASCII grid states its
 # origin and its step and never its CRS, so a row published or delivered as one names the
-# grid in `grid_epsg` and `placed` writes the `.prj` that format keeps a CRS in.
+# grid in `grid_epsg` and `placed` writes the `.prj` that format keeps a CRS in. An XYZ
+# grid carries none either and GDAL reads no sidecar for it, so the tail takes the row's
+# grid as its CRS directly.
 RASTER_SUFFIXES = {".tif", ".tiff"}
 GRID_SUFFIXES = {".asc"}
-READABLE = RASTER_SUFFIXES | GRID_SUFFIXES
+XYZ_SUFFIXES = {".xyz"}
+READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 
 # How long to wait before each retry. A service drops the occasional request and one box
 # pulls hundreds, so the first failure is never the answer.
-RETRY_DELAYS = (2, 4, 8)
+# A country run is days of requests, and a public service that is restarted or briefly
+# overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
+RETRY_DELAYS = (5, 30, 120, 600)
 
 # The orthometric height systems the registry knows. A row has to name one of them: the
 # archive is orthometric metres and the bakery holds the reference against Copernicus on
@@ -138,8 +143,14 @@ def with_retry(attempt, what: str, absent=()):
         except urllib.error.HTTPError as error:
             if error.code in absent:
                 return None
-            body = error.read()[:400].decode("utf-8", "replace").replace("\n", " ").strip()
-            if error.code != 429 and error.code < 500:
+            # Far enough for the quoted head and for an OWS exception code, which stands
+            # at the top of the report; the rest of a server-controlled body is not read.
+            raw = error.read(64 * 1024)
+            body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
+            # An OWS `NoApplicableCode` is the server's own fault whatever status it rides
+            # on; the LGL WCS sends it as a 404 while it is overloaded. So it is retried
+            # like a 5xx, and only a 4xx that names the request's fault is final.
+            if error.code != 429 and error.code < 500 and b"NoApplicableCode" not in raw:
                 raise Refuse(redact(f"{what}: HTTP {error.code} — {body}")) from error
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "
@@ -244,7 +255,8 @@ def extract(bundle, member: str, target: Path, archive: Path) -> None:
         part.unlink(missing_ok=True)
 
 
-def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj",)) -> list[Path]:
+def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj",),
+           optional: bool = False) -> list[Path]:
     """The rasters inside a downloaded or delivered archive, extracted once.
 
     A bulk product and a portal order both arrive as a zip of tiles. Only the rasters and
@@ -256,6 +268,10 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
     A zip inside the zip is only a problem when this level holds no raster of its own: an
     order that ships its documents as `metadata/docs.zip` beside the DEM is an ordinary
     delivery, and refusing it would be refusing the data over the paperwork.
+
+    `optional` is for a grid of files at a state's edge: Baden-Württemberg publishes a zip
+    for a square it has no heights for, holding the paperwork alone, and that is a coverage
+    edge rather than a delivery that went wrong.
     """
 
     rasters, nested = [], []
@@ -277,7 +293,7 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
         raise Refuse(f"{archive}: it holds no raster of its own, only another archive, "
                      f"`{nested[0]}`. Unpack that one yourself and pass the directory it is "
                      "in: a zip inside a zip is not a delivery shape the registry reads")
-    if not rasters:
+    if not rasters and not optional:
         raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
     return sorted(rasters)
 
@@ -396,6 +412,11 @@ class Source:
         self.grid_epsg = grid_epsg
         self.confirm_datum = confirm_datum
         self.steps = steps
+
+    def grid_crs(self):
+        """The CRS of a grid that carries none, from the row, or `None`."""
+
+        return CRS.from_epsg(self.grid_epsg) if self.grid_epsg else None
 
     def check_credential(self, key: str, credential, hosts) -> None:
         """Whether this adapter can honour the credential the row states.

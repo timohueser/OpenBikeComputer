@@ -318,7 +318,7 @@ class Deliveries(unittest.TestCase):
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.local_rasters(ingest.SOURCES["dk"], inputs, (9.0, 55.0, 9.1, 55.1),
                                  self.root / "work")
-        self.assertIn(".tif, .asc or .zip", str(refusal.exception))
+        self.assertIn(".tif, .asc, .xyz or .zip", str(refusal.exception))
 
 
 class Credentials(unittest.TestCase):

@@ -23,7 +23,7 @@ from .archive import (PRIORITY, best_contributor, contributors, cut_tile, ingest
 from .cli import command_wizard, main, parse_bbox
 from .lattice import (DEGREE, GRID_ORIGIN, NODATA, Refuse, SNAP, STEP, TILE, TILE_PX, WGS84,
                       WORLD, Window, box_tiles, check_world, covering_window, pixel_index,
-                      tile_id, tile_index, tile_path, tile_window, udeg_ceil, udeg_floor)
+                      tile_bounds, tile_id, tile_index, tile_path, tile_window, udeg_ceil, udeg_floor)
 from .pool import (PLAUSIBLE_M, VOID, lattice_indices, open_raster, pool_onto_lattice,
                    read_source, source_envelope, source_xy, to_int16)
 from .publish import (ARCHIVE_PREFIX, Remote, merge_index, mirror_plan, publish_plan,
@@ -41,6 +41,6 @@ __all__ = [
     "open_raster", "parse_bbox", "pixel_index", "pool_onto_lattice", "priority_rank",
     "publish", "publish_plan", "r2_remote", "read_index", "read_source", "rebuild_index",
     "run_rclone", "source_envelope", "source_facts", "source_xy", "tile_digest", "tile_id",
-    "tile_index", "tile_path", "tile_problems", "tile_window", "to_int16", "udeg_ceil",
+    "tile_bounds", "tile_index", "tile_path", "tile_problems", "tile_window", "to_int16", "udeg_ceil",
     "udeg_floor", "wizard", "write_manifest", "write_tile"
 ]

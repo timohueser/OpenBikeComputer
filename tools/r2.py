@@ -11,7 +11,7 @@ empties a folder on one click: it cannot tell a cell the live catalogue names fr
 upload, and it asks nothing before it acts. Every guard below answers that.
 
     obc r2 rm cell-catalog/cells/fine/1204/1052.<sha256>.obcm
-    obc r2 rm --prefix cell-catalog/reference/v1/16/3410
+    obc r2 rm --prefix reference/v1/16/3410
     obc r2 rm <key> --apply --reason "bad ingest" --confirm "<the plan's own string>"
 
 A key is the object's full key inside the bucket, the way a listing prints it. A published
@@ -35,7 +35,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-#: The terrain reference archive, under the catalogue prefix inside the bucket.
+#: The terrain reference archive, beside the catalogue prefix and never under it: a purge
+#: before a fresh catalogue publish must not take days of ingest with it.
 ARCHIVE_PREFIX = "reference/v1"
 
 #: The bucket's removal history, at the bucket root so that no publish or purge sweeps it.
@@ -118,7 +119,7 @@ def catalog_prefix() -> str:
 def archive_prefix() -> str:
     """The reference archive's key prefix inside the bucket."""
 
-    return "/".join(part for part in (catalog_prefix(), ARCHIVE_PREFIX) if part)
+    return ARCHIVE_PREFIX
 
 
 def catalog_key(name: str = "catalog.json") -> str:

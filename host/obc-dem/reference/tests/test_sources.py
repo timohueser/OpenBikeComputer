@@ -6,8 +6,10 @@ against a synthetic answer. The live probes are in `README.md`, with the summit 
 source was verified against.
 """
 
+import os
 import sys
 import unittest
+import unittest.mock
 import urllib.parse
 import zipfile
 from functools import partial
@@ -189,6 +191,70 @@ class Requests(unittest.TestCase):
             self.assertLessEqual(float(subsets["y"][0]), y)
             self.assertGreaterEqual(float(subsets["y"][1]), y)
 
+    def test_a_wcs_20_request_is_clipped_to_the_coverage_envelope(self):
+        """A subset outside the envelope is an `InvalidSubsetting` refusal, so a box that
+        runs past the state's edge is clipped, and one wholly outside is not asked for."""
+
+        source = ingest.SOURCES["de-he"]
+        box = split("de-he")[0]
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(box, source.epsg)
+        self.addCleanup(setattr, source, "envelope", None)
+
+        source.envelope = (hi_x + 1000, lo_y, hi_x + 2000, hi_y)
+        self.assertIsNone(source.url(box))
+
+        mid_x = (lo_x + hi_x) / 2
+        source.envelope = (mid_x, lo_y - 1000, hi_x + 1000, hi_y + 1000)
+        _, values = query(source.url(box))
+        subsets = {part.split("(")[0]: [float(v) for v in part.split("(")[1].rstrip(")").split(",")]
+                   for part in values["subset"]}
+        self.assertEqual(subsets["E"], [mid_x, hi_x])
+        self.assertEqual(subsets["N"], [lo_y, hi_y])
+
+    def test_fetch_keeps_the_boxes_in_order_and_skips_the_ones_outside(self):
+        """The requests of one box run in a pool; what comes back is still one file per
+        sub-box in the split's order, with nothing for a box the service holds nothing of."""
+
+        class Fake(ingest.sources.protocols.TiledService):
+            def request(self, box):
+                return None if box[0] < BOX[0] + 0.012 else b"II*\x00" + repr(box).encode()
+
+        fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "© fake", "EGM2008", (-180, -90, 180, 90))
+        boxes = list(request_boxes(BOX, 0.5))
+        self.assertGreater(len(boxes), 2)
+        with TemporaryDirectory() as directory:
+            paths = fake.fetch(BOX, Path(directory))
+            kept = [box for box in boxes if box[0] >= BOX[0] + 0.012]
+            self.assertEqual(len(paths), len(kept))
+            for path, box in zip(paths, kept):
+                self.assertEqual(path.read_bytes(), b"II*\x00" + repr(box).encode())
+            self.assertEqual(fake.fetch(BOX, Path(directory)), paths)  # cached, in the same order
+
+    def test_the_envelope_is_read_on_the_rows_axes_whatever_order_the_server_states(self):
+        describe = ('<gml:Envelope srsName="…" axisLabels="N E"><gml:lowerCorner>5263999.5 387999.5'
+                    '</gml:lowerCorner><gml:upperCorner>5520000.5 611000.5</gml:upperCorner>')
+        envelope_of = ingest.sources.protocols.envelope_of
+        self.assertEqual(envelope_of(describe, ("E", "N"), "de-bw"),
+                         (387999.5, 5263999.5, 611000.5, 5520000.5))
+        with self.assertRaises(ingest.Refuse):
+            envelope_of(describe, ("x", "y"), "de-bw")
+        with self.assertRaises(ingest.Refuse):
+            envelope_of("<ExceptionReport/>", ("E", "N"), "de-bw")
+
+    def test_describe_coverage_carries_the_rows_credential(self):
+        """A keyed WCS answers `DescribeCoverage` only to the key, and `fetch` describes
+        before it asks for a raster, so a keyless describe blocks the whole run."""
+
+        source = ingest.SOURCES["fi"]
+        asked = []
+        protocols = ingest.sources.protocols
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda url, **kw: asked.append(url) or b"<ExceptionReport/>"
+        with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_FI_TOKEN": "a-key"}):
+            with self.assertRaises(ingest.Refuse):
+                source.describe()
+        self.assertIn("api-key=a-key", asked[0])
+
     def test_the_wcs_10_request_states_a_bbox_with_a_width_and_a_height(self):
         """Norway and Denmark answer WCS 1.0.0, which sizes its grid differently from
         2.0.1 and names a format with the server's own word rather than a media type."""
@@ -211,7 +277,7 @@ class Requests(unittest.TestCase):
         """Several servers answer `ScaleAxisUndefined` however the axes are named, so those
         rows take the coverage's native step instead."""
 
-        for key in ("de-bw", "uk", "it-bz"):
+        for key in ("uk", "it-bz"):
             with self.subTest(key):
                 _, values = query(ingest.SOURCES[key].url(split(key)[0]))
                 self.assertNotIn("scalesize", values)
@@ -277,6 +343,17 @@ class NamedGrids(unittest.TestCase):
             parts = name.split("_")
             east, north = int(parts[1][2:]), int(parts[2])
             self.assertEqual((east % 2, north % 2), (0, 0), name)
+
+    def test_baden_wuerttembergs_squares_start_on_an_odd_kilometre_of_easting(self):
+        """The published names run 457, 459, … east and 5268, 5270, … north, and the
+        Feldberg box is inside `dgm1_32_425_5302_2_bw.zip`."""
+
+        names = [name for name, _ in ingest.SOURCES["de-bw"].files(BOXES["de-bw"])]
+        for name in names:
+            parts = name.split("_")
+            east, north = int(parts[2]), int(parts[3])
+            self.assertEqual((east % 2, north % 2), (1, 0), name)
+        self.assertIn("dgm1_32_425_5302_2_bw.zip", names)
 
     def test_the_nztopo50_sheet_of_a_box_is_the_one_linz_publishes(self):
         """New Zealand's index is arithmetic, so these constants are the whole adapter.
@@ -493,11 +570,10 @@ class RemoteWindows(TempCase):
                 self.assertGreaterEqual(bounds.right, hi_x)
 
     def test_a_square_that_is_not_published_is_a_coverage_edge(self):
-        """404 is the country's edge. The box is then covered by nothing, which is said."""
+        """404 is the country's edge. A box covered by nothing is empty, not a fault: a
+        per-tile run over the country's box meets one at every corner."""
 
-        with self.assertRaises(ingest.Refuse) as refusal:
-            self.source.fetch(self.BOX, self.root / "work")
-        self.assertIn("no published square", str(refusal.exception))
+        self.assertEqual(self.source.fetch(self.BOX, self.root / "work"), [])
 
     def test_a_server_fault_is_not_mistaken_for_a_coverage_edge(self):
         """A 500 or a reset must not become a silent hole in the archive."""
@@ -515,8 +591,9 @@ class RemoteWindows(TempCase):
         self.addCleanup(broken.shutdown)
         self.source.base = f"http://127.0.0.1:{broken.server_address[1]}/"
 
+        real = ingest.sources.base.RETRY_DELAYS
         ingest.sources.base.RETRY_DELAYS = ()
-        self.addCleanup(lambda: setattr(ingest.sources.base, "RETRY_DELAYS", (2, 4, 8)))
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
         with self.assertRaises(ingest.Refuse) as refusal:
             self.source.fetch(self.BOX, self.root / "work")
         self.assertIn("500", str(refusal.exception))
@@ -656,9 +733,45 @@ class BulkArchives(unittest.TestCase):
             archive = self.bundle(directory, {"readme.txt": b"licence only"})
             with self.assertRaises(ingest.Refuse):
                 ingest.sources.base.unpack(archive, Path(directory) / "unpacked")
+            # A grid of files publishes such a zip at the state's edge: paperwork, no heights.
+            self.assertEqual(ingest.sources.base.unpack(archive, Path(directory) / "edge", optional=True), [])
 
 
 class Registry(unittest.TestCase):
+    def test_an_ows_no_applicable_code_is_retried_whatever_status_it_rides_on(self):
+        """`NoApplicableCode` is the server's own fault; the LGL WCS sends it as a 404 while
+        it is overloaded, and a country run must outlive that rather than refuse."""
+
+        calls = []
+
+        class Flaky(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                calls.append(1)
+                if len(calls) == 1:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b'<ows:ExceptionReport><ows:Exception exceptionCode='
+                                     b'"NoApplicableCode"/></ows:ExceptionReport>')
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"II*\x00ok")
+
+            def log_message(self, *args):
+                pass
+
+        flaky = ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
+        Thread(target=flaky.serve_forever, daemon=True).start()
+        self.addCleanup(flaky.server_close)
+        self.addCleanup(flaky.shutdown)
+        real = ingest.sources.base.RETRY_DELAYS
+        ingest.sources.base.RETRY_DELAYS = (0,)
+        self.addCleanup(setattr, ingest.sources.base, "RETRY_DELAYS", real)
+
+        body = ingest.sources.base.http_get(f"http://127.0.0.1:{flaky.server_address[1]}/x", what="flaky")
+        self.assertEqual(body, b"II*\x00ok")
+        self.assertEqual(len(calls), 2)
+
     def test_a_service_that_answers_xml_instead_of_a_raster_is_refused_by_name(self):
         """Out of coverage, renamed, or down: every one of them arrives as a 200 and XML."""
 

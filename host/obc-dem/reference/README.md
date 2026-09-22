@@ -5,7 +5,8 @@ holds finer national DTM heights on the OBCT lattice, and the bakery lifts a cre
 `specs/OBCT_Spec.md` §9 for the lift rule.
 
 `ingest.py` fills the archive from a national DTM. It runs once per source release, never during
-a bake. The archive lives on R2 under `reference/v1/`; a bakery run mirrors the tiles it needs.
+a bake. The archive lives on R2 at `<bucket>/reference/v1/`, beside the catalog prefix; a bakery
+run mirrors the tiles it needs.
 
 ## Run it
 
@@ -14,6 +15,7 @@ Needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`).
 ```sh
 cd host/obc-dem/reference
 python3 ingest.py ingest ch --bbox 8.30,46.75,8.60,46.95 --archive ref/ --work /tmp/ch
+python3 ingest.py ingest ch --bbox 5.9,45.8,10.5,47.9 --archive ref/ --work /tmp/ch --per-tile
 python3 ingest.py wizard se --bbox 18.48,67.89,18.51,67.91 --archive ref/
 python3 ingest.py index   --archive ref/
 python3 ingest.py check   --archive ref/
@@ -27,8 +29,10 @@ account and download steps of a source behind a login, then runs the ingest. `ch
 tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
 adds, and it merges its index with the one already on R2.
 
-**A country-scale ingest is an owner-run job.** It moves hundreds of gigabytes and takes days per
-country. Run one source at a time, and `check` before `publish`.
+**A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
+time, the work wiped after each and the finished tile marked done in the source manifest, so disk
+holds one tile's rasters and a stopped run resumes. The index is rebuilt at the end. It still
+moves hundreds of gigabytes and takes days: run one source at a time, `check` before `publish`.
 
 ## The tile contract
 
@@ -76,19 +80,16 @@ the first of them. `index` rebuilds all of this from the manifests in `sources/<
 | `cli.py` | The subcommands. |
 
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and any dtype.
-Everything after that is shared: voids and heights outside −500 m to 9 000 m become absence,
-pixel centres are transformed to WGS84 and max-pooled onto the lattice, heights become `int16`
-metres, and the window is cut into whole tiles. Adding a country is a module in `sources/` and a
-row in the registry.
+The shared tail turns voids and heights outside −500 m to 9 000 m into absence, max-pools pixel
+centres onto the lattice as `int16` metres, and cuts the window into whole tiles.
 
 `PRIORITY` in `ingest/archive.py` orders the sources, finest and best-maintained first. The merge
 is per pixel, because coverage stops at borders: a better source keeps its own pixels and leaves
 the others' pixels in its gaps.
 
-Refusals a new adapter will meet: a box at the antimeridian or outside the world box, a band with
-a scale or offset, an ESRI ASCII grid whose row names no `grid_epsg`, and a vertical datum that
-`ORTHOMETRIC` in `sources/base.py` does not recognise. An ellipsoidal product must be converted to
-orthometric before ingest; nothing here does that conversion.
+Refused by name: a box at the antimeridian or outside the world box, a scaled band, an ESRI ASCII
+or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
+not recognise. An ellipsoidal product must be converted to orthometric first; nothing here does.
 
 Memory is one source raster plus the tiles it touches. A **monolithic** raster, such as a
 whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
@@ -101,22 +102,21 @@ environment — never out of argv, which every process on the box can read.
 
 Three rules keep it there, and each one is a test:
 
-- **A refusal never quotes it.** A keyed request is labelled `<key> <box>` and not by its URL, and
-  every message and error body goes through `redact`, which removes every value in the
-  `OBC_REFERENCE_*` namespace and every form it travels in, including percent-escaped.
-- **It goes to the row's own hosts only, and only over https.** `credential_hosts` on the row is
-  the allowed suffix. A `href` in a downloaded index that points elsewhere is refused by name, not
-  fetched unsigned.
+- **A refusal never quotes it.** A keyed request is labelled `<key> <box>`, and every message and
+  error body goes through `redact`, which removes every `OBC_REFERENCE_*` value in every form,
+  including percent-escaped.
+- **It goes to the row's own hosts only, over https.** `credential_hosts` on the row is the allowed
+  suffix; a `href` elsewhere is refused by name.
 - **A redirect does not carry it.** `DropAuthOnRedirect` removes `Authorization` on any host
-  change, including one inside the row's own domain. The fix for a portal that redirects is to
-  name the real download host in its index.
+  change. A portal that redirects needs its real download host named in its index.
 
-`credential_style` on the adapter and the row's credential shape are checked where the row is
-written, so a credential the fetch path would drop is refused before any request.
+`credential_style` on the adapter and the row's credential shape are checked at the row.
 
 Every request goes through `with_retry` in `sources/base.py`: a dropped connection, a 429 and a
-5xx are retried three times; every other 4xx is refused at once with its body. A 404 is absence
-only where the registry says a name is arithmetic, such as a grid square outside its state.
+5xx, and an OWS `NoApplicableCode` on any status, are retried for up to twelve minutes; every
+other 4xx is refused at once with its body. A 404 is absence
+only where the registry says a name is arithmetic, such as a grid square outside its state. A WCS
+2.0.1 request is clipped to the envelope `DescribeCoverage` states; a subset outside it is refused.
 
 ## Sources
 
@@ -133,19 +133,15 @@ credential and `ingest <key>` fetches live; without it, `ingest <key> --input <d
 portal delivered. `wizard <key>` holds the account and download steps, and asks for the credential
 in its own process so it never reaches a command line.
 
-Two obligations that the rows cannot settle by themselves:
+`de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:
 
-- **`de-sn` and `de-th`** carry the shortest Quellenvermerk their services state, because neither
-  agency publishes a full attribution sentence. The owner must confirm both with GeoSN and GDI-Th
-  before a published map carries them.
 - **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal. No row can tell which an
   order held, so `ingest au --input` refuses until `--datum AHD` is passed, and `wizard au` asks.
   `au` also states no step: the step of an order is the step of whichever survey it covered.
 
 `ingest --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory and **writes
-nothing into it**. Everything the tool writes goes into the work directory, keyed on the digest of
-the bytes, so a re-issued delivery of the same file name is a different directory. `--work` inside
-`--input` is refused.
+nothing into it**; unpacked members go into the work directory under the digest of their bytes,
+so a re-issued delivery of the same name is a different directory.
 
 ## Attribution
 
@@ -161,8 +157,7 @@ same way `host/obc-bake/src/publish.rs` does. The variables come from `tools/obc
 
 ```
 OBC_R2_ACCOUNT_ID        Cloudflare account id (builds the endpoint)
-OBC_R2_BUCKET            bucket name
-OBC_R2_PREFIX            optional key prefix inside the bucket
+OBC_R2_BUCKET            bucket name; the archive is at <bucket>/reference/v1/
 OBC_R2_ACCESS_KEY_ID     R2 API token id
 OBC_R2_SECRET_ACCESS_KEY
 OBC_R2_ENDPOINT          optional, overrides the derived endpoint
@@ -173,7 +168,10 @@ set -a; . tools/obc.local; set +a
 python3 host/obc-dem/reference/ingest.py publish --archive /tmp/cp4-work/archive
 ```
 
-A bakery run mirrors before it bakes:
+The archive sits beside the catalog prefix, which `obc bake clean-r2` purges. The bakery reads a
+local archive, named as `OBC_REFERENCE_ARCHIVE` in `tools/obc.local` so that every `obc bake`
+passes `--reference`; a bake that forgets it re-bakes every lifted cell without lifts. Another
+machine mirrors the box it bakes first:
 
 ```sh
 python3 host/obc-dem/reference/ingest.py mirror --archive ref/ --bbox 8.30,46.75,8.60,46.95
@@ -181,9 +179,9 @@ obc-dem bake --reference ref/ …          # one box, straight to containers
 obc-bake terrain --reference ref/ …      # the curated coverage, into a published tree
 ```
 
-Mirror the box the *cells* cover, not the box a rider rides: a published terrain cell overhangs a
-coverage polygon by up to its own side. `mirror` pads the box by one tile on every side for the
-baker's node halo, and names the tiles the archive does not hold.
+Mirror the box the *cells* cover, not the rider's box: a terrain cell overhangs a coverage
+polygon by up to its own side. `mirror` pads the box by one tile for the baker's node halo, and
+names the tiles the archive does not hold.
 
 The two bakers answer a short mirror differently. `obc-dem bake` warns and names the tiles.
 `obc-bake terrain` refuses the run, names how many cells are short and prints a copy-pasteable
@@ -196,7 +194,7 @@ the short cells.
 `publish` never deletes. Anything leaves the bucket through `obc r2 rm`:
 
 ```sh
-obc r2 rm cell-catalog/reference/v1/16/3410/2882.tif     # the plan, then stop
+obc r2 rm reference/v1/16/3410/2882.tif                  # the plan, then stop
 obc r2 rm <key> --apply --reason "a bad ingest" --confirm "<the plan's own string>"
 obc help r2                                              # the cap, the plan, the confirmation
 ```
