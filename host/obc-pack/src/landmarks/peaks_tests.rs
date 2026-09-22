@@ -152,7 +152,7 @@ fn peak_catalogue_keeps_explicit_associations_and_shared_assets_independent_of_e
     fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
-    let first = peaks::compile(&manifest, &boundary, &f.root.join("first")).unwrap();
+    let first = peaks::compile(&manifest, &boundary, &f.root.join("first"), false).unwrap();
     assert_eq!((first.counts.captured, first.counts.candidates, first.counts.texts, first.counts.images), (6, 5, 3, 1));
     assert_eq!(
         first.associations.iter().map(|a| (a.node_id, a.article_id.as_str())).collect::<Vec<_>>(),
@@ -164,9 +164,11 @@ fn peak_catalogue_keeps_explicit_associations_and_shared_assets_independent_of_e
     assert!(first.omissions.iter().any(|o| o.qid == "Q2" && o.reason == "no_usable_captured_language"));
     assert!(first.omissions.iter().any(|o| o.qid == "Q3" && o.reason == "unsupported_license"));
     assert_eq!(fs::read_dir(f.root.join("first")).unwrap().count(), 2);
-    assert!(super::compile(&manifest, &boundary, &f.root.join("landmarks")).unwrap_err().contains("peak compiler"));
+    assert!(super::compile(&manifest, &boundary, &f.root.join("landmarks"), false)
+        .unwrap_err()
+        .contains("peak compiler"));
     assert!(serde_json::from_slice::<Content>(&fs::read(f.root.join("first/peaks.json")).unwrap()).is_err());
-    peaks::compile(&manifest, &boundary, &f.root.join("second")).unwrap();
+    peaks::compile(&manifest, &boundary, &f.root.join("second"), false).unwrap();
     for file in fs::read_dir(f.root.join("first")).unwrap() {
         let file = file.unwrap();
         assert_eq!(fs::read(file.path()).unwrap(), fs::read(f.root.join("second").join(file.file_name())).unwrap());
@@ -293,7 +295,7 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
     fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
-    let result = peaks::compile(&manifest, &boundary, &f.root.join("out")).unwrap();
+    let result = peaks::compile(&manifest, &boundary, &f.root.join("out"), true).unwrap();
     let chosen =
         |name: &str| hash(&photo::prepare(&fs::read(f.root.join(format!("photos/{name}.png"))).unwrap()).unwrap());
     let selected: Vec<_> =
@@ -306,6 +308,12 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
         [("Q9", "r.png"), ("Q9", "s.png")]
     );
     assert!(result.omissions.iter().all(|o| o.qid != "Q9"));
+    // A compile no capture drives asks for nothing and says why the record has no photo.
+    let shipped = peaks::compile(&manifest, &boundary, &f.root.join("shipped"), false).unwrap();
+    assert!(shipped.photo_requests.is_empty());
+    assert!(shipped.omissions.iter().any(|o| o.qid == "Q9" && o.reason == "no_usable_captured_image"));
+    let document = fs::read_to_string(f.root.join("shipped/peaks.json")).unwrap();
+    assert!(!document.contains("photo_requests"), "a shipped catalogue carries no request list");
     let reasons: BTreeSet<_> = result.omissions.iter().map(|o| o.reason.as_str()).collect();
     assert!(reasons.contains("views_from_the_site"), "a view from the summit is refused");
     assert!(reasons.contains("photo_identity_mismatch"), "a category member proves its own membership");

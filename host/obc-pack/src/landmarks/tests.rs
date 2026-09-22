@@ -125,7 +125,7 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
     fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
     let boundary = root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
-    let first = compile(&manifest, &boundary, &root.join("first")).unwrap();
+    let first = compile(&manifest, &boundary, &root.join("first"), false).unwrap();
     assert_eq!(first.counts.candidates, 2);
     assert_eq!(first.counts.texts, 2);
     assert_eq!(first.counts.images, 0);
@@ -143,10 +143,10 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
         .records
         .iter()
         .all(|record| record.variants.iter().map(|v| v.language.as_str()).collect::<Vec<_>>() == ["de", "es"]));
-    compile(&manifest, &boundary, &root.join("second")).unwrap();
+    compile(&manifest, &boundary, &root.join("second"), false).unwrap();
     assert_eq!(fs::read(root.join("first/content.json")).unwrap(), fs::read(root.join("second/content.json")).unwrap());
     fs::write(root.join(batch), b"changed source").unwrap();
-    assert!(compile(&manifest, &boundary, &root.join("changed")).unwrap_err().contains("source size changed"));
+    assert!(compile(&manifest, &boundary, &root.join("changed"), false).unwrap_err().contains("source size changed"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -185,7 +185,7 @@ fn places_are_visited_in_the_order_the_capture_batched_them() {
     let boundary = root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
 
-    let content = compile(&manifest, &boundary, &root.join("out")).unwrap();
+    let content = compile(&manifest, &boundary, &root.join("out"), false).unwrap();
     assert_eq!(content.candidate_qids, ["Q2", "Q10", "Q100"], "numeric order, whatever order the manifest lists");
     let batch_of = |qid: &str| batches.iter().position(|(_, qids)| qids.contains(&qid)).unwrap();
     let visited: Vec<usize> = content.candidate_qids.iter().map(|qid| batch_of(qid)).collect();

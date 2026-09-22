@@ -43,7 +43,7 @@ map-wide language argument.
 | --- | --- |
 | Identity | Input digests (source manifest, boundary) and policy digests (category file, extraction code, dependency lock, image recipe, language mapping, locale rules). A separate category-policy digest lets acquisition check its own discovery roots. |
 | Candidates | The QIDs before article selection, so the same compiler chooses which assets to acquire. |
-| Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no originals. This names the two the compiler would use: the second covers a rejection only the bytes can prove. Absent once every original is there. |
+| Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no originals. `--photo-requests` names the two the compiler would use: the second covers a rejection only the bytes can prove. Without that flag the field is never written, and a candidate with no bytes is one the compiler cannot use. |
 | Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
 | Records | Sorted by QID: category 1–6, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
 | Attribution | Article and photo source, revision, licence, the exact original notices and readable Sources pages. At most 8 KiB per asset, 256 pages per pair. |
