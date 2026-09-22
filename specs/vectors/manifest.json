@@ -299,18 +299,32 @@
       "signature": "a9daca893a22b6e8b6a3d3390a40e240b506fb8bab5d936ca7511741cabb906e7545447724ea032524219f5f031e21124ab24e02ea827894c9b7c37444c56103",
       "object_id": 0
     },
-    "trip-v2.bin": {
-      "format": "trip object v2 (spec 7.7) — 56-byte header + 8 bytes/stage, references flat ObjectIds",
-      "byte_len": 80,
-      "version": 2,
+    "trip-v3.bin": {
+      "format": "trip object v3 (spec 7.7) — 64-byte header + 16 bytes/day, references flat ObjectIds",
+      "byte_len": 112,
+      "version": 3,
       "name": "Alpen Traverse",
-      "stage_count": 3,
-      "stages": [
-        7,
-        8,
-        4294967395
+      "trip_key": "0x0123456789ABCDEF",
+      "start_date": 20360,
+      "day_count": 3,
+      "days": [
+        {
+          "route": 7,
+          "join_m": 0,
+          "leave_m": 82000
+        },
+        {
+          "route": 8,
+          "join_m": 0,
+          "leave_m": 73600
+        },
+        {
+          "route": 4294967395,
+          "join_m": 400,
+          "leave_m": 4294967295
+        }
       ],
-      "crc32": "0x5B1C1606"
+      "crc32": "0x965F55AF"
     },
     "place-train-v15.bin": {
       "format": "OBCM v15 service record, section 7.3",

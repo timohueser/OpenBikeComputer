@@ -1912,7 +1912,7 @@ mod tests {
         let mut routes = crate::FlatRouteStore::new(owner.clone(), &[]).unwrap();
         let mut trips = crate::FlatTripStore::new(owner.clone()).unwrap();
         let mut sink = crate::VecSink::default();
-        obc_route::write_trip("Kept", &[], &mut sink).unwrap();
+        obc_route::write_trip(1, "Kept", 0, &[], &mut sink).unwrap();
         let trip = trips.import(sink.bytes()).unwrap();
         let mut app = App::new_idle(obc_app::AppState::new(0, 0, 1.0));
         let mut host = HostLoop::new();

@@ -83,7 +83,7 @@
 
     /** Stages, from the trip object. Null where the object could not be read — the band then says
      *  so in the rows' place rather than reporting a count of zero. */
-    const stageCount = $derived(trip.detail?.stages.length ?? null);
+    const stageCount = $derived(trip.detail?.days.length ?? null);
 </script>
 
 <div class="tripband">

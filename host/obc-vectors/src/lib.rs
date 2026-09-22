@@ -456,27 +456,37 @@ pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
 /// Trip fixture name (also the trip object header name field).
 pub const TRIP_NAME: &str = "Alpen Traverse";
 
-/// The two ordinary route ids in `trip-v2.bin`.
-pub const TRIP_STAGE_IDS: [u64; 2] = [7, 8];
+/// The full-width trip key in `trip-v3.bin`; every byte differs, so a swapped byte order shows.
+pub const TRIP_KEY: u64 = 0x0123_4567_89AB_CDEF;
 
-/// A deliberately wide third stage id that pins full-width read tolerance.
-pub const TRIP_DANGLING_STAGE: u64 = 0x1_0000_0063;
+/// The start date in `trip-v3.bin`: 2025-09-29, a Monday, in days since 1970-01-01.
+pub const TRIP_START_DATE: u16 = 20_360;
 
-/// Trip object v2 (spec §7.7): a 56-byte header (`version 2 · stage_count u16 · name ≤ 48`) followed
-/// by `stage_count × u64` route object ids in ride order. Length = `56 + 8·stage_count`.
-pub fn trip_v2(name: &str, stages: &[u64]) -> Vec<u8> {
+/// The days in `trip-v3.bin` as `(route, join_m, leave_m)`: a day that ends on the line at its
+/// route end, a day that leaves the line 400 m before its stop, and a day that joins the line
+/// after 400 m and ends on it (`leave_m` past the route end). The third route id is full width.
+pub const TRIP_DAYS: [(u64, u32, u32); 3] = [(7, 0, 82_000), (8, 0, 73_600), (0x1_0000_0063, 400, u32::MAX)];
+
+/// Trip object v3 (spec §7.7): a 64-byte header (`version 3 · day_count u16 · name ≤ 48 ·
+/// start_date u16 · trip_key u64`) followed by `day_count` 16-byte day records
+/// (`route u64 · join_m u32 · leave_m u32`). Length = `64 + 16·day_count`.
+pub fn trip_v3(key: u64, name: &str, start_date: u16, days: &[(u64, u32, u32)]) -> Vec<u8> {
     let mut v = Vec::new();
-    v.push(2); // version
+    v.push(3); // version
     v.push(0); // reserved
-    v.extend_from_slice(&le16(stages.len() as u16)); // stage_count
+    v.extend_from_slice(&le16(days.len() as u16)); // day_count
     v.push(name.len() as u8); // name_len
     let mut padded = [0u8; 48];
     padded[..name.len()].copy_from_slice(name.as_bytes());
     v.extend_from_slice(&padded); // name, zero-padded to 48
-    v.extend_from_slice(&[0u8; 3]); // reserved
-    assert_eq!(v.len(), 56, "trip object header is 56 bytes");
-    for &id in stages {
-        v.extend_from_slice(&id.to_le_bytes()); // full-width flat-store ObjectId, ride order
+    v.push(0); // reserved
+    v.extend_from_slice(&le16(start_date));
+    v.extend_from_slice(&key.to_le_bytes());
+    assert_eq!(v.len(), 64, "trip object header is 64 bytes");
+    for &(route, join_m, leave_m) in days {
+        v.extend_from_slice(&route.to_le_bytes()); // full-width flat-store ObjectId, ride order
+        v.extend_from_slice(&le32(join_m));
+        v.extend_from_slice(&le32(leave_m));
     }
     v
 }
@@ -527,7 +537,7 @@ fn visit_envelopes(plain: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
 pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_wp = build_route(ROUTE_GPX);
     let route_plain = build_route(&route_gpx_plain());
-    let trip = trip_v2(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
+    let trip = trip_v3(TRIP_KEY, TRIP_NAME, TRIP_START_DATE, &TRIP_DAYS);
     let terrain = terrain_shard();
     let envelopes = visit_envelopes(&route_plain);
     let mut fixtures = vec![
@@ -560,8 +570,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // still what a fielded bootloader and the device's own rollback snapshot look like, and the pair
         // is what pins the offset-compatibility guarantee across implementations.
         ("update-container-v2.bin", update_container_v2()),
-        // A trip (§7.7): two ordinary route ids plus one wide id that pins read tolerance.
-        ("trip-v2.bin", trip),
+        // A trip (§7.7): three days that pin every header and day field.
+        ("trip-v3.bin", trip),
     ];
     fixtures.extend(envelopes);
     fixtures

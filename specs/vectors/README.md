@@ -9,7 +9,7 @@ object, and the OBCT terrain raster ([`OBCT_Spec.md`](../OBCT_Spec.md)), consume
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
   file byte-for-byte against builders written straight from the spec text, and
   loads the route vectors through the production `obc-route` reader.
-- **App**: the `OBCKit` Swift tests pin the config, command, route, ride and update
+- **App**: the `OBCKit` Swift tests pin the config, command, route, ride, trip and update
   codecs to the same files.
 - **Browser**: two consumers.
   - The wasm conversion bridge (`apps/obc-web-convert`) must reproduce the route and
@@ -36,7 +36,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. It is the shape of a fielded container and of the device-written rollback snapshot, and pairing it with the v2 file below pins the offset-compatibility guarantee across implementations |
 | `update-container-v2.bin` | OBCU container (§1), **Ed25519-signed/v2** | the *same* header table and the *same* 128-byte image as v1 — `header_version` still `1` (§1.2) — with `sig_scheme`/`sig_len` in v1's reserved bytes `48..52` and a 64-byte signature trailer after the image. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic, so this is a stable file. A decoder must read every v1 field from it byte-identically |
-| `trip-v2.bin` | trip object v2 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 and 8 plus one full-width id (`0x1_0000_0063`); 56-byte header + 8 bytes/stage |
+| `trip-v3.bin` | trip object v3 (spec §7.7) | "Alpen Traverse", key `0x0123_4567_89AB_CDEF`, start date 20360 (Monday 2025-09-29), 3 days: route 7 ending on the line at 82,000 m, route 8 leaving the line at 73,600 m, and full-width route `0x1_0000_0063` joining at 400 m with `leave_m` `0xFFFF_FFFF`; 64-byte header + 16 bytes/day |
 | `terrain-shard.obcd` | OBCT container ([`OBCT_Spec.md`](../OBCT_Spec.md) §4) | a 2 × 2 cell rectangle at ≈ 46.97°N / 7.98°E over a **plane** (`100 + 3·di + 5·dj` m), with the far cell **absent** (the `0` directory sentinel) and one `NODATA` sample. Posting is the v1 `2^9`; the cell is `2^14`, not the v1 `2^19`, because both are header data. A plane is an *oracle*: bilinear interpolation over one has a closed form, so a second implementation checks itself against arithmetic, and the differing coefficients (3 vs 5) catch a transposed lat/lon |
 
 The `place-train-v15.bin` record pins the OBCM v15 service metadata: Train subtype 20,

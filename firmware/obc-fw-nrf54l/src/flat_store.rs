@@ -1661,7 +1661,13 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     }
     let mut inputs: heapless::Vec<obc_app::TripInput<'_>, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
     for (id, meta) in ids.iter().copied().zip(metas.iter()) {
-        let _ = inputs.push(obc_app::TripInput { id, name: meta.name.as_str(), stage_ids: &meta.stage_ids });
+        let _ = inputs.push(obc_app::TripInput {
+            id,
+            key: meta.key,
+            name: meta.name.as_str(),
+            start_date: meta.start_date,
+            stage_ids: &meta.day_routes,
+        });
     }
     app.set_trips(&inputs);
     defmt::info!("flat: Route menu loaded {=usize} trip folder(s)", inputs.len());

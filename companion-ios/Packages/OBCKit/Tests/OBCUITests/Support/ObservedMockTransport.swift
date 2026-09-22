@@ -66,7 +66,7 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func listTrips() async throws -> [TripCatalogEntry] { try await base.listTrips() }
-    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         try await base.downloadTrip(id)
     }
     func uploadTrip(_ trip: TripBlob) -> TransferHandle { base.uploadTrip(trip) }

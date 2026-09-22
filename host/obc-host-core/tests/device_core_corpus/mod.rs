@@ -310,7 +310,7 @@ impl CorpusState {
         let mut app = App::new_idle(AppState::new(8_330_000, 46_570_000, 1.0));
         app.set_routes_with_ids(&routes, &route_ids);
         app.set_rides(&rides);
-        app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &trip_stage_ids }]);
+        app.set_trips(&[TripInput { id: TRIP, key: 1, name: "Alps", start_date: 0, stage_ids: &trip_stage_ids }]);
         Self {
             app,
             routes,
@@ -371,7 +371,13 @@ impl CorpusState {
 
     pub fn feed_trips(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
         if self.trip_present {
-            self.app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &self.trip_stage_ids }]);
+            self.app.set_trips(&[TripInput {
+                id: TRIP,
+                key: 1,
+                name: "Alps",
+                start_date: 0,
+                stage_ids: &self.trip_stage_ids,
+            }]);
         } else {
             self.app.set_trips(&[]);
         }
@@ -834,7 +840,7 @@ impl TripCatalog for BorrowedTrips<'_> {
 
     fn refeed(&self, app: &mut App) {
         if *self.present {
-            app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: self.stage_ids }]);
+            app.set_trips(&[TripInput { id: TRIP, key: 1, name: "Alps", start_date: 0, stage_ids: self.stage_ids }]);
         } else {
             app.set_trips(&[]);
         }

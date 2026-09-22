@@ -928,7 +928,7 @@ mod tests {
         let mut catalogs = CatalogState::new();
         let summaries: heapless::Vec<RouteSummary, MAX_ROUTES> = route_ids.iter().map(|_| summary()).collect();
         catalogs.replace_routes(&summaries, route_ids);
-        catalogs.set_trips(&[TripInput { id, name: "Alps", stage_ids }]);
+        catalogs.set_trips(&[TripInput { id, key: 1, name: "Alps", start_date: 0, stage_ids }]);
         catalogs
     }
 
@@ -1040,7 +1040,7 @@ mod tests {
         // and the trip is re-fed from the untouched `.obt` — dangling stage ref and all.
         let summaries: heapless::Vec<RouteSummary, MAX_ROUTES> = (0..2).map(|_| summary()).collect();
         catalogs.replace_routes(&summaries, &[20, 30]);
-        catalogs.set_trips(&[TripInput { id: 50, name: "Alps", stage_ids: &[10, 20, 30] }]);
+        catalogs.set_trips(&[TripInput { id: 50, key: 1, name: "Alps", start_date: 0, stage_ids: &[10, 20, 30] }]);
 
         assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 30, 50], "the walk resumes where it was");
     }

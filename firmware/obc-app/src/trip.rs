@@ -1,9 +1,12 @@
 //! Trips — the grouped-route folders shown above the loose routes in the Route menu.
 //!
 //! A trip is a small metadata object ([`obc_route::TripMeta`], `TP{id}.OBT` on the device) that
-//! references route object ids in ride order. The app resolves those ids against its resident route
-//! [`Catalog`](crate::route::Catalog) into a [`TripSummary`]: the stage indices into the catalog, in
-//! ride order, plus the summed distance and climb over the resolvable stages.
+//! references one route object id per day, in ride order. The app resolves those ids against its
+//! resident route [`Catalog`](crate::route::Catalog) into a [`TripSummary`]: the stage indices into
+//! the catalog, in ride order, plus the summed distance and climb over the resolvable stages.
+//!
+//! A stage is a day: day `k` is `stage_ids[k]`. The day rules of `obc-ble-interface-spec.md` §7.7
+//! (next day, ticks, dates) read a [`TripSummary`] and the device's [`TripProgress`] for it.
 //!
 //! A route a stored trip references is filed and shows only inside its folder. A dangling ref
 //! resolves to nothing and drops from `stage_indices`, but a trip whose every ref dangles still
@@ -12,7 +15,7 @@
 use heapless::{String, Vec};
 
 use obc_formats::obcr::NAME_CAP;
-use obc_route::MAX_TRIP_STAGES;
+use obc_route::MAX_TRIP_DAYS;
 
 use crate::route::RouteSummary;
 use crate::CatalogObjectId;
@@ -25,12 +28,15 @@ pub const MAX_TRIPS: usize = 16;
 pub type Trips = heapless::Vec<TripSummary, MAX_TRIPS>;
 
 /// A host-scanned trip handed to [`App::set_trips`](crate::App::set_trips): the trip's durable
-/// object id, its name, and its stage route ids in ride order, as stored. The host owns only the raw
-/// metadata; the app resolves the ids against the live route catalog.
+/// object id, its key, name and start date, and its day route ids in ride order, as stored. The host
+/// owns only the raw metadata; the app resolves the ids against the live route catalog.
 #[derive(Debug, Clone, Copy)]
 pub struct TripInput<'a> {
     pub id: CatalogObjectId,
+    pub key: u64,
     pub name: &'a str,
+    /// Days since 1970-01-01; 0 = no start date.
+    pub start_date: u16,
     pub stage_ids: &'a [CatalogObjectId],
 }
 
@@ -40,13 +46,17 @@ pub struct TripInput<'a> {
 pub struct TripSummary {
     /// The trip's durable object id (its own device counter, separate from routes/rides).
     pub id: CatalogObjectId,
+    /// The phone's stable trip key. It survives a re-upload, so progress and rides key on it.
+    pub key: u64,
     pub name: String<NAME_CAP>,
+    /// Days since 1970-01-01; 0 = no start date.
+    pub start_date: u16,
     /// The stage route ids as stored, in ride order. They are the resolution source of truth on a
     /// catalog rescan, and for a fully-dangling trip the only thing left to key a delete on.
-    pub stage_ids: Vec<CatalogObjectId, MAX_TRIP_STAGES>,
+    pub stage_ids: Vec<CatalogObjectId, MAX_TRIP_DAYS>,
     /// The resolved catalog indices, ride order — one per resolvable stage, so a dangling id makes
     /// this shorter than [`stage_ids`](TripSummary::stage_ids).
-    pub stage_indices: Vec<u16, MAX_TRIP_STAGES>,
+    pub stage_indices: Vec<u16, MAX_TRIP_DAYS>,
     /// Summed distance over the resolvable stages, km — the catalog's display unit.
     pub distance_km: u32,
     pub climb_m: u32,
@@ -70,7 +80,7 @@ impl TripSummary {
         let mut stage_indices = Vec::new();
         let mut distance_km = 0u32;
         let mut climb_m = 0u32;
-        for &sid in input.stage_ids.iter().take(MAX_TRIP_STAGES) {
+        for &sid in input.stage_ids.iter().take(MAX_TRIP_DAYS) {
             let _ = stage_ids.push(sid);
             if let Some(idx) = catalog_ids.iter().position(|&x| x == sid) {
                 let _ = stage_indices.push(idx as u16);
@@ -80,7 +90,16 @@ impl TripSummary {
                 }
             }
         }
-        TripSummary { id: input.id, name, stage_ids, stage_indices, distance_km, climb_m }
+        TripSummary {
+            id: input.id,
+            key: input.key,
+            name,
+            start_date: input.start_date,
+            stage_ids,
+            stage_indices,
+            distance_km,
+            climb_m,
+        }
     }
 
     /// Re-resolve this trip's [`stage_indices`](TripSummary::stage_indices) and stats from
@@ -102,6 +121,61 @@ impl TripSummary {
     }
 }
 
+/// The device's own progress through one trip: the device writes it at Finish and the phone never
+/// sees it. It is keyed on the trip key, so it survives a re-upload of the same trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TripProgress {
+    pub key: u64,
+    /// The day that contains the position.
+    pub day: u16,
+    /// That day's route id when the record was written.
+    pub day_route: CatalogObjectId,
+    /// Metres into that day's route.
+    pub metres: u32,
+    /// The last finished day; `None` before the first Finish.
+    pub last_finished: Option<u16>,
+    /// The date each day was finished, in days since 1970-01-01; 0 = none. A finish without a
+    /// trusted clock records no date.
+    pub dates: [u16; MAX_TRIP_DAYS],
+}
+
+impl TripSummary {
+    fn own<'p>(&self, progress: Option<&'p TripProgress>) -> Option<&'p TripProgress> {
+        progress.filter(|p| p.key == self.key)
+    }
+
+    /// The day to ride next: `max(last finished + 1, day of the position)`. `None` when no day is
+    /// left.
+    pub fn next_day(&self, progress: Option<&TripProgress>) -> Option<u16> {
+        let next = self.own(progress).map_or(0, |p| p.last_finished.map_or(0, |d| d.saturating_add(1)).max(p.day));
+        (usize::from(next) < self.stage_ids.len()).then_some(next)
+    }
+
+    /// Metres into the position's day. A re-upload that changed that day's route resets them to 0.
+    pub fn position_m(&self, progress: Option<&TripProgress>) -> u32 {
+        match self.own(progress) {
+            Some(p) if self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route) => p.metres,
+            _ => 0,
+        }
+    }
+
+    /// Whether day `k` is ticked: it is finished, or its end is behind the position.
+    pub fn is_ticked(&self, k: u16, progress: Option<&TripProgress>) -> bool {
+        self.own(progress).is_some_and(|p| k < p.day || p.last_finished.is_some_and(|d| k <= d))
+    }
+
+    /// The date of day `k`, in days since 1970-01-01. Dates follow the rides: the latest dated day
+    /// `j ≤ k` gives `date(j) + (k − j)`. Before any dated ride, it is `start date + k`. `None`
+    /// when neither exists.
+    pub fn day_date(&self, k: u16, progress: Option<&TripProgress>) -> Option<u16> {
+        let ridden = self.own(progress).and_then(|p| {
+            let last = usize::from(k).min(MAX_TRIP_DAYS - 1);
+            (0..=last).rev().find(|&j| p.dates[j] != 0).map(|j| p.dates[j].saturating_add(k - j as u16))
+        });
+        ridden.or((self.start_date != 0).then(|| self.start_date.saturating_add(k)))
+    }
+}
+
 /// The longest prefix of `s` that fits in `cap` bytes without splitting a multi-byte char.
 fn truncate_on_char_boundary(s: &str, cap: usize) -> &str {
     let mut end = s.len().min(cap);
@@ -109,4 +183,82 @@ fn truncate_on_char_boundary(s: &str, cap: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: u64 = 0xA1;
+    /// 2025-09-29, a Monday.
+    const MON: u16 = 20_360;
+
+    /// Three days on routes 10, 20 and 30.
+    fn trip(start_date: u16) -> TripSummary {
+        let input = TripInput { id: 1, key: KEY, name: "Alps", start_date, stage_ids: &[10, 20, 30] };
+        TripSummary::resolve(&input, &[], &[])
+    }
+
+    fn progress(day: u16, last_finished: Option<u16>, dates: &[u16]) -> TripProgress {
+        let mut all = [0; MAX_TRIP_DAYS];
+        all[..dates.len()].copy_from_slice(dates);
+        TripProgress {
+            key: KEY,
+            day,
+            day_route: [10, 20, 30][usize::from(day)],
+            metres: 54_000,
+            last_finished,
+            dates: all,
+        }
+    }
+
+    #[test]
+    fn next_day_is_the_later_of_the_day_after_the_last_finish_and_the_position() {
+        let t = trip(0);
+        assert_eq!(t.next_day(None), Some(0));
+        // Stopped short of the end of Day 2 and finished: Day 3 is next.
+        assert_eq!(t.next_day(Some(&progress(1, Some(1), &[]))), Some(2));
+        // Rode on into Day 3 before the finish of Day 2: still Day 3.
+        assert_eq!(t.next_day(Some(&progress(2, Some(1), &[]))), Some(2));
+        // The position is in Day 2, and nothing is finished yet.
+        assert_eq!(t.next_day(Some(&progress(1, None, &[]))), Some(1));
+        assert_eq!(t.next_day(Some(&progress(2, Some(2), &[]))), None, "the trip is done");
+        let other = TripProgress { key: KEY + 1, ..progress(2, Some(1), &[]) };
+        assert_eq!(t.next_day(Some(&other)), Some(0), "another trip's progress does not count");
+    }
+
+    #[test]
+    fn a_day_is_ticked_when_finished_or_when_its_end_is_behind_the_position() {
+        let t = trip(0);
+        assert!(!t.is_ticked(0, None));
+        // Rode into Day 3 without a finish: Days 1 and 2 are behind the position.
+        let p = progress(2, None, &[]);
+        assert_eq!([0, 1, 2].map(|k| t.is_ticked(k, Some(&p))), [true, true, false]);
+        // Stopped inside Day 2 and finished: Day 2 is ticked, though its end is ahead.
+        let p = progress(1, Some(1), &[]);
+        assert_eq!([0, 1, 2].map(|k| t.is_ticked(k, Some(&p))), [true, true, false]);
+    }
+
+    #[test]
+    fn dates_follow_the_rides() {
+        assert_eq!(trip(0).day_date(1, None), None, "no start date and no ride: no weekday");
+        let t = trip(MON);
+        assert_eq!([0, 1, 2].map(|k| t.day_date(k, None)), [Some(MON), Some(MON + 1), Some(MON + 2)]);
+        // Day 2 was ridden on Wednesday, not Tuesday, so Day 3 is Thursday.
+        let p = progress(1, Some(1), &[MON, MON + 2]);
+        assert_eq!([0, 1, 2].map(|k| t.day_date(k, Some(&p))), [Some(MON), Some(MON + 2), Some(MON + 3)]);
+        // A finish without a trusted clock carries the last dated day forward.
+        let p = progress(2, Some(1), &[MON + 1]);
+        assert_eq!(trip(0).day_date(2, Some(&p)), Some(MON + 3));
+    }
+
+    #[test]
+    fn a_changed_day_route_resets_the_position_to_the_day_start() {
+        let p = progress(1, Some(0), &[]);
+        assert_eq!(trip(0).position_m(Some(&p)), 54_000);
+        let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 21, 30] };
+        let reuploaded = TripSummary::resolve(&input, &[], &[]);
+        assert_eq!(reuploaded.position_m(Some(&p)), 0);
+        assert_eq!(reuploaded.next_day(Some(&p)), Some(1), "the last finished day stays");
+    }
 }

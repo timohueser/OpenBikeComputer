@@ -40,6 +40,12 @@ public struct TripRecord: Identifiable, Equatable, Sendable {
     /// When the trip entered the library, which is the newest-first list order.
     public var addedAt: Date
 
+    /// The trip key the device stores progress and rides under. It is derived from ``id`` with
+    /// 64-bit FNV-1a, so it is stable for the life of the trip and needs no stored field.
+    public var key: UInt64 {
+        id.rawValue.utf8.reduce(0xCBF2_9CE4_8422_2325) { ($0 ^ UInt64($1)) &* 0x0000_0100_0000_01B3 }
+    }
+
     /// Whether some device holds a copy, derived from ``deviceLink``.
     public var uploadedToDevice: Bool { deviceLink != nil }
 

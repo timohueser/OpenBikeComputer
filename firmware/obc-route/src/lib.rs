@@ -66,4 +66,7 @@ pub use ride::{encode_summary_footer, RideInfo, RideStats};
 pub use splice::{splice_detour, SpliceStep, Splicer};
 pub use track::track_to_gpx;
 pub use trim::{trim_detour_to_tail, TrimOutcome, TrimStep, Trimmer};
-pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
+pub use trip::{
+    read_trip_day, trip_object_len, write_trip, TripDay, TripMeta, TripSummary, MAX_TRIP_DAYS, TRIP_DAY_LEN,
+    TRIP_HEADER_LEN, TRIP_VERSION,
+};
