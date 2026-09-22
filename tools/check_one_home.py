@@ -33,10 +33,11 @@ PAGES = SETTINGS / "page.rs"
 # Bluetooth radio on Connections.
 ALLOWED_SHARED_FIELDS: set[str] = {"brightness", "ble_enabled"}
 
-# Update these floors when controls are added or removed. A parser change must not lower them.
-MIN_ROW_LABELS = 11
-MIN_SHEET_BINDINGS = 7
-MIN_PAGE_BINDINGS = 10
+# The census, pinned at the declared controls. Update these when controls are added or removed;
+# a parser change must not lower them.
+ROW_LABELS = 26
+SHEET_BINDINGS = 12
+PAGE_BINDINGS = 10
 
 # `cx.settings.<field> = …`, or `s.<field> = …` after `let s = &mut *cx.settings` — the production
 # write paths a screen has into the persisted record. `=(?!=)` so an equality test is not read as
@@ -53,6 +54,9 @@ MSG_KEY = re.compile(r"\bMsg::([A-Za-z0-9_]+)")
 BINDING = re.compile(r"\bContext(?:Value|Toggle)::([A-Za-z0-9_]+)")
 # The page tables: `static NAME: Menu = Menu { … };`.
 PAGE_TABLE = re.compile(r"static [A-Z_]+: Menu = Menu \{.*?\n\};", re.S)
+# A binding's commit or flip arm and the first settings field it writes:
+# `ContextValue::X => s.field = …` or `ContextToggle::X => { s.field = …`.
+BINDING_FIELD = re.compile(r"Context(?:Value|Toggle)::([A-Za-z0-9_]+)(?:\([^)]*\))?\s*=>\s*\{?\s*s\.([a-z_][a-z0-9_]*)\s*[\^!]?=")
 
 
 def rust_sources(root: Path) -> list[Path]:
@@ -105,38 +109,48 @@ def main() -> int:
             f"{PAGES.relative_to(ROOT)}. Delete the page row in the same push that moves the editor."
         )
 
-    # The direct writes: the quick drawer's own controls against the settings screens' own edits.
-    settings_files = [p for p in rust_sources(SETTINGS) if p != PAGES]
-    settings_fields = fields_written(settings_files)
-    drawer_fields = fields_written([QUICK])
-    for field, drawer_paths in sorted(drawer_fields.items()):
-        if field not in settings_fields or field in ALLOWED_SHARED_FIELDS:
+    # Every field a page binding writes, from the bindings' own commit and flip arms, plus the
+    # settings screens' direct edits; against the quick drawer's direct writes. A page binding
+    # whose write the guard cannot read is a home it cannot check.
+    binding_field = dict(BINDING_FIELD.findall(context_text))
+    page_fields: dict[str, str] = {}
+    for binding in sorted(page_bindings):
+        field = binding_field.get(binding)
+        if field is None:
+            failures.append(
+                f"`{binding}` sits on a page row but the guard finds no `s.<field> =` in its commit or "
+                f"flip arm in {CONTEXT.relative_to(ROOT)} — teach `BINDING_FIELD` the new shape."
+            )
             continue
+        page_fields[field] = f"{PAGES.relative_to(ROOT)} ({binding})"
+    settings_files = [p for p in rust_sources(SETTINGS) if p != PAGES]
+    settings_fields = {f: ", ".join(sorted(paths)) for f, paths in fields_written(settings_files).items()}
+    settings_fields.update(page_fields)
+    drawer_fields = fields_written([QUICK])
+    shared = {f for f in drawer_fields if f in settings_fields}
+    for field in sorted(shared - ALLOWED_SHARED_FIELDS):
         failures.append(
-            f"`Settings::{field}` has two homes: written by {', '.join(sorted(drawer_paths))} "
-            f"and by {', '.join(sorted(settings_fields[field]))}. Delete the central row in the "
-            f"same push that moves the editor, or record the exception in ALLOWED_SHARED_FIELDS."
+            f"`Settings::{field}` has two homes: written by {', '.join(sorted(drawer_fields[field]))} "
+            f"and by {settings_fields[field]}. Delete the central row in the same push that moves the "
+            f"editor, or record the exception in ALLOWED_SHARED_FIELDS."
+        )
+    for field in sorted(ALLOWED_SHARED_FIELDS - shared):
+        failures.append(
+            f"ALLOWED_SHARED_FIELDS names `{field}`, but it is not written by both the quick drawer and "
+            f"a settings page — a vacuous exception hides a blind parser; drop it or fix the parser."
         )
 
-    # The census floors catch an incomplete parser or a changed set of controls.
-    if len(row_labels) < MIN_ROW_LABELS:
-        failures.append(
-            f"only {len(row_labels)} context row label(s) parsed, below the pinned floor of "
-            f"{MIN_ROW_LABELS} ({rows_seen} `ContextRow` literal(s) seen). Update MIN_ROW_LABELS "
-            f"deliberately when controls change; never lower it to hide a parser failure."
-        )
-    if len(sheet_bindings) < MIN_SHEET_BINDINGS:
-        failures.append(
-            f"only {len(sheet_bindings)} sheet binding(s) found, below the pinned floor of "
-            f"{MIN_SHEET_BINDINGS}. Either a binding left the sheets, or `BINDING` no longer matches."
-        )
-    if len(page_bindings) < MIN_PAGE_BINDINGS:
-        failures.append(
-            f"only {len(page_bindings)} page binding(s) found, below the pinned floor of "
-            f"{MIN_PAGE_BINDINGS}. Either a binding left the pages, or `PAGE_TABLE` no longer matches."
-        )
-    if "commit" not in context_text or not FIELD_WRITE.search(context_text):
-        failures.append("the bindings' commit path in context_drawer.rs no longer writes a settings field the guard can read")
+    # The census is pinned, so an incomplete parser or a changed set of controls is a finding.
+    for what, found, pinned in [
+        ("context row label", len(row_labels), ROW_LABELS),
+        ("sheet binding", len(sheet_bindings), SHEET_BINDINGS),
+        ("page binding", len(page_bindings), PAGE_BINDINGS),
+    ]:
+        if found != pinned:
+            failures.append(
+                f"{found} {what}(s) found, {pinned} pinned ({rows_seen} `ContextRow` literal(s) seen). "
+                f"Re-pin deliberately when controls change; never to hide a parser failure."
+            )
 
     for path in rust_sources(SETTINGS):
         drawn = set(MSG_KEY.findall(path.read_text()))
@@ -153,10 +167,9 @@ def main() -> int:
         return 1
 
     print(
-        f"one-home guard: {len(sheet_bindings)} sheet binding(s) (floor {MIN_SHEET_BINDINGS}), "
-        f"{len(page_bindings)} page binding(s) (floor {MIN_PAGE_BINDINGS}), "
-        f"{len(row_labels)} context row label(s) from {rows_seen} row literal(s) "
-        f"(floor {MIN_ROW_LABELS}) — no unapproved shared setting"
+        f"one-home guard: {len(sheet_bindings)} sheet binding(s), {len(page_bindings)} page binding(s) "
+        f"over {len(page_fields)} field(s), {len(row_labels)} context row label(s) from {rows_seen} row "
+        f"literal(s), shared with the quick drawer: {', '.join(sorted(shared)) or 'none'} — one home each"
     )
     return 0
 

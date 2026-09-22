@@ -641,6 +641,13 @@ map = "{grimsel}"
 script = "B u p d*4 p p w"
 expect = "ContextDrawer"
 
+# The page scrolled to its last row: the Factory reset door, a door in warning red, on the cursor.
+[[frame]]
+name = "system-reset-row"
+map = "{grimsel}"
+script = "B u p d*4 p d*5"
+expect = "System"
+
 # Date & Time: two read-only rows and the UTC offset value row, then the offset's editor — the one
 # dense axis, 105 quarter hours, so the track shows only its ends.
 [[frame]]
@@ -1646,9 +1653,8 @@ script = "B u p p p d*6 p d*10"
 expect = "AddField"
 langs = ["de", "fr", "es"]
 
-# Date & Time is the tightest screen per-language: the localized month name fills the fixed
-# month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
-# month glyphs against the active cell's amber border.
+# Date & Time per-language: the two info rows and the UTC offset value row. Eyeball the status
+# copy against the row's right edge (the info row has no chevron column, so it is the full row).
 [[frame]]
 name = "datetime"
 map = "{grimsel}"
