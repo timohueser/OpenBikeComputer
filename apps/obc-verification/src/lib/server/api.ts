@@ -285,6 +285,7 @@ async function requirementSuggestions(event: RequestEvent, parts: string[]): Pro
     return json(suggestion, { status: 201 });
   }
   assert(parts.length === 2 && actor.role === 'owner', 'Only an owner may decide a suggestion.', 403);
+  if (data.reopen === true) return json(store().reopenRequirementSuggestion(identifier(parts[1])));
   assert(typeof data.accept === 'boolean', 'Accept must be boolean.');
   const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Feedback', 5000);
   return json(store().decideRequirementSuggestion(identifier(parts[1]), actor.name, data.accept, feedback));

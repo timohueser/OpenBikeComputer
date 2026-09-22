@@ -8,8 +8,8 @@
   export let busy = false;
   export let onselect: (requirementId: string) => void;
   export let onclose: () => void;
-  /** Resolves true once the console has recorded the decision. */
-  export let ondecide: (id: string, accept: boolean, feedback?: string) => Promise<boolean>;
+  /** Resolves true once the console has recorded the answer. 'reopen' takes a decision back. */
+  export let ondecide: (id: string, answer: boolean | 'reopen', feedback?: string) => Promise<boolean>;
   /** The item whose body is open. Bound by the parent so a requirement can point at its own suggestion. */
   export let expanded = '';
   /** Ticked in this session. The item sinks to the end of its list, struck through, to stay readable. */
@@ -46,9 +46,11 @@
     if (suggestion.requirementId) parts.push(`against r${suggestion.baseRevision}`);
     return (suggestion.requirementId ? ' · ' : '') + parts.join(' · ');
   }
-  async function accept(suggestion: RequirementSuggestionReview) {
-    if (busy || done[suggestion.id]) return;
-    if (await ondecide(suggestion.id, true)) done = { ...done, [suggestion.id]: true };
+  /** Ticking acknowledges the item. Unticking puts it back, so a wrong tick costs nothing. */
+  async function tick(suggestion: RequirementSuggestionReview, box: HTMLInputElement) {
+    const undo = !!done[suggestion.id];
+    if (busy || !await ondecide(suggestion.id, undo ? 'reopen' : true)) { box.checked = undo; return; }
+    done = { ...done, [suggestion.id]: !undo };
   }
   /** Escape closes the feedback box of this panel, and nothing else on the page. */
   function panelKeys(event: KeyboardEvent) {
@@ -80,7 +82,7 @@
         {#each group.items as s (s.id)}
           {@const current = subject(s)}
           <div class="item" class:open={expanded === s.id} class:done={done[s.id]}>
-            <input type="checkbox" checked={!!done[s.id]} disabled={busy || done[s.id] || s.missing} aria-label={`Done: ${s.title}`} on:change={() => accept(s)} />
+            <input type="checkbox" checked={!!done[s.id]} disabled={busy || s.missing} aria-label={done[s.id] ? `Put back: ${s.title}` : `Done: ${s.title}`} on:change={(event) => tick(s, event.currentTarget)} />
             <div>
               <button class="title" on:click={() => toggle(s.id)} aria-expanded={expanded === s.id}>{s.title}</button>
               <div class="sub">{#if s.missing}{s.requirementId}{:else if s.requirementId}<a href="#requirement" on:click|preventDefault={() => onselect(s.requirementId ?? '')}>{s.requirementId}{current ? ` · ${current.title}` : ''}</a>{/if}{meta(s)}{#if s.sourceSha}{' · commit '}<code>{s.sourceSha.slice(0, 10)}</code>{/if}</div>
