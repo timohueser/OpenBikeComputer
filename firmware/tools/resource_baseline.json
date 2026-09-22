@@ -92,6 +92,12 @@
         "changes": "App +8 B: the Resume offer keeps the catalog row the standing checkpoint names, so the card can say which route it would resume, and Navigator keeps two flags for what the selection still owes the card. All other named allocations and resource ceilings are unchanged.",
         "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF: 313,096 B linked resident inside the band, residual main stack 46,328 B, poll frame 9,776 B, init_idle frame 1,720 B. Shipping ELF verification remains in CI. No base rebuild and no device flash."
       },
+      "_start_away_allocation_measurement": {
+        "source_commit": "ec5ff53fe on claude/rtr-start-away",
+        "build": "the embedded CI job's resource-report build",
+        "changes": "App +8 B: Navigator keeps the join point Join nearest gives the next fresh ride. All other named allocations and ceilings are unchanged.",
+        "verification": "One CI head build compared with the recorded baseline. Board and init_idle frame guards passed on the shipping ELF. No base rebuild or device flash."
+      },
       "_find_place_allocation_measurement": {
         "source_commit": "45e463b67b2ac69626b1f65ef29b7f74e0e604c7",
         "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
