@@ -4192,25 +4192,13 @@ mod tests {
     fn the_next_category_cache_fills_from_a_real_frame_and_then_goes_quiet() {
         use crate::stat_fields::{StatField, StatFieldList};
         use embedded_graphics::pixelcolor::Rgb888;
-        use obc_formats::io::{ByteSink, SliceSource};
+        use obc_formats::io::SliceSource;
         use obc_reader::{MapCache, MapTables, PoiCategory, Reader};
         use obc_route::{RouteIndex, RouteReader};
         use obcm_testkit::{build_poi_map, PoiSpec};
 
-        /// A `ByteSink` over a growable `Vec`.
-        #[derive(Default)]
-        struct VecSink(std::vec::Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-                self.0.extend_from_slice(b);
-                Ok(())
-            }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-                let o = off as usize;
-                self.0[o..o + b.len()].copy_from_slice(b);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
+
         /// A `DrawTarget` that keeps nothing — these frames are run for their `prepare` pass.
         struct Sink;
         impl embedded_graphics::prelude::Dimensions for Sink {
@@ -4529,22 +4517,7 @@ mod tests {
     /// elevation for one climb, named waypoints, an off-route excursion, and a fix at the end.
     #[test]
     fn composed_guidance_trace_is_stable() {
-        use obc_formats::io::{ByteSink, Error};
-
-        #[derive(Default)]
-        struct VecSink(std::vec::Vec<u8>);
-        impl ByteSink for VecSink {
-            fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
-                self.0.extend_from_slice(bytes);
-                Ok(())
-            }
-
-            fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
-                let offset = offset as usize;
-                self.0[offset..offset + bytes.len()].copy_from_slice(bytes);
-                Ok(())
-            }
-        }
+        use crate::harness::support::VecSink;
 
         const LAT: f64 = 48.0;
         const LON: f64 = 7.8;
