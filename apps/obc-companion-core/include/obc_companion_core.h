@@ -44,10 +44,10 @@ enum {
 ObcCoreMap *obc_core_assemble(const char *catalog_json, const char *job_json);
 void obc_core_map_free(ObcCoreMap *map);
 
-/* Coordinates are microdegrees; profile is the map's nav profile index. On OBC_CORE_ROUTED,
+/* Coordinates are microdegrees; bike is the bike type (OBCR §1.2, 0..=3). On OBC_CORE_ROUTED,
    *out is a route the caller frees. */
 int32_t obc_core_route(const ObcCoreMap *map, int32_t from_lon, int32_t from_lat, int32_t to_lon,
-                       int32_t to_lat, uint8_t profile, ObcCoreRoute **out);
+                       int32_t to_lat, uint8_t bike, ObcCoreRoute **out);
 const ObcCorePoint *obc_core_route_points(const ObcCoreRoute *route, size_t *count); /* valid while the route lives */
 uint32_t obc_core_route_distance_m(const ObcCoreRoute *route);
 uint32_t obc_core_route_ascent_m(const ObcCoreRoute *route);

@@ -168,9 +168,9 @@ pub enum RouteError {
 }
 
 impl CellMap {
-    /// Plan from `from` to `to`, both `(lon, lat)` microdegrees, under the map's nav profile
-    /// `profile`, exactly as the device plans a route.
-    pub fn route(&self, from: (i32, i32), to: (i32, i32), profile: u8) -> Result<Leg, RouteError> {
+    /// Plan from `from` to `to`, both `(lon, lat)` microdegrees, for `bike`, exactly as the device
+    /// plans a route.
+    pub fn route(&self, from: (i32, i32), to: (i32, i32), bike: obc_route::BikeType) -> Result<Leg, RouteError> {
         let src = SliceSource(&self.bytes);
         let cache = MapCache::new_boxed();
         let reader = Reader::new(&src, &self.tables, &cache);
@@ -180,7 +180,7 @@ impl CellMap {
             Some(t) => t,
             None => &mut NullElevation,
         };
-        let mut planner = Box::new(NavPlanner::new(from, to, "", profile));
+        let mut planner = Box::new(NavPlanner::new(from, to, "", bike));
         let mut scratch = NavScratch::<NAV_MAX_NODES>::new_boxed();
         let mut tiles = NavTileCache::new();
         let mut sink = VecSink::default();

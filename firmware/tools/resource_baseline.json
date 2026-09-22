@@ -33,7 +33,7 @@
         "arena_total": 131072,
         "arena_usb": 131072,
         "arena_render": 126888,
-        "arena_nav": 97440,
+        "arena_nav": 97448,
         "terrain": 2152,
         "terrain_window": 24,
         "stack_reserve": 65536,

@@ -96,7 +96,7 @@ pub unsafe extern "C" fn obc_core_map_free(map: *mut CellMap) {
     }
 }
 
-/// Route over `map` under nav profile `profile`. On success `*out` holds a route the caller frees.
+/// Route over `map` for bike type `bike` (0..=3). On success `*out` holds a route the caller frees.
 ///
 /// # Safety
 /// `map` is NULL or a live handle from [`obc_core_assemble`]; `out` is a valid pointer.
@@ -107,11 +107,14 @@ pub unsafe extern "C" fn obc_core_route(
     from_lat: i32,
     to_lon: i32,
     to_lat: i32,
-    profile: u8,
+    bike: u8,
     out: *mut *mut ObcCoreRoute,
 ) -> i32 {
     let Some(map) = map.as_ref() else { return NO_PATH };
-    match guarded(|| Ok(map.route((from_lon, from_lat), (to_lon, to_lat), profile))) {
+    let Some(bike) = obc_route::BikeType::from_u8(bike) else {
+        return fail(format!("bike type {bike} is not 0..=3"), FAILED);
+    };
+    match guarded(|| Ok(map.route((from_lon, from_lat), (to_lon, to_lat), bike))) {
         Err(message) => fail(message, FAILED),
         Ok(Ok(Leg { points, distance_m, ascent_m })) => {
             let points = points
