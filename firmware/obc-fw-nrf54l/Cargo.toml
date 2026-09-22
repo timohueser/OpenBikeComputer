@@ -228,10 +228,8 @@ heapless09 = { package = "heapless", version = "0.9" }
 # a hard requirement of trouble-host's codegen, not our statics (this crate's own runtime statics
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
 static_cell = "2"
-# The host-tested S0 data-plane core (A5, issue #273): the transferControl / status descriptor
-# codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / StreamSender). no_std,
-# no-alloc, radio-free — this crate drives the CoC bytes through it; the shared specs/vectors/
-# fixtures pin it to the Swift side. A workspace member built here for the M33 target.
+# Radio-free BLE config, command/status and sensor codecs. The board also uses its CRC-32 seam for
+# persisted link settings. A workspace member built here for the M33 target.
 obc-ble = { path = "../obc-ble" }
 
 # --- The USB device stack (issue #889) — in **every** build; the device plane is not optional ---
