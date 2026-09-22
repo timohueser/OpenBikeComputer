@@ -53,7 +53,7 @@ sha2 = "0.11"
 heapless = "0.8"
 # The schema (OBCC §4) and skin (§5) documents the assembler is driven by.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
 # The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.

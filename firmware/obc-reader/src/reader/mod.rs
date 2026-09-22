@@ -40,8 +40,8 @@ use heapless::Vec;
 use crate::Error;
 use obc_formats::io::{rd_i32, rd_u16, rd_u32, ByteSource};
 use obc_formats::obcm::{
-    OffsetScale, ScaledOffset, HEADER_LEN, HEADER_OFFSET_SCALE_OFF, HEADER_TERRAIN_LENGTH_OFF,
-    HEADER_TERRAIN_OFFSET_OFF, LOD_ENTRY_LEN, NAV_MAX_PROFILES,
+    OffsetScale, ScaledOffset, HEADER_DARK_MARKER_COLOR_OFF, HEADER_DARK_STYLE_OFFSET_OFF, HEADER_LEN,
+    HEADER_OFFSET_SCALE_OFF, HEADER_TERRAIN_LENGTH_OFF, HEADER_TERRAIN_OFFSET_OFF, LOD_ENTRY_LEN, NAV_MAX_PROFILES,
 };
 use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
@@ -111,7 +111,7 @@ pub(crate) struct MapHeader {
     pub version: u8,
     pub bbox: BBox,
     /// User-position marker color (RGB565).
-    pub marker_color: u16,
+    pub marker_colors: [u16; 2],
     /// The file's offset unit. Every scaled field in the file resolves against this value.
     pub scale: OffsetScale,
     pub terrain: Option<TerrainRegion>,
@@ -149,7 +149,7 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     let min_lon = rd_i32(h, 9);
     let max_lat = rd_i32(h, 13);
     let max_lon = rd_i32(h, 17);
-    let marker_color = rd_u16(h, 30);
+    let marker_colors = [rd_u16(h, 30), rd_u16(h, HEADER_DARK_MARKER_COLOR_OFF)];
     let scale = OffsetScale::new(h[HEADER_OFFSET_SCALE_OFF]).map_err(|_| Error::BadScale)?;
     // `0` means no elevation, and `Terrain Length` must then be `0` too.
     let terrain_offset = scale.offset(rd_u32(h, HEADER_TERRAIN_OFFSET_OFF));
@@ -162,7 +162,22 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     } else {
         Some(TerrainRegion { offset: resolve(terrain_offset), len: resolve(terrain_len) })
     };
-    Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color, scale, terrain })
+    Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_colors, scale, terrain })
+}
+
+/// An authored presentation carried by every map.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MapStyleSet {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl MapStyleSet {
+    #[inline]
+    const fn index(self) -> usize {
+        self as usize
+    }
 }
 
 /// The prefix every OBCM parse begins with, decoded and bounds-checked once: the fixed header plus
@@ -220,7 +235,7 @@ pub struct MapTables {
     pub version: u8,
     pub bbox: BBox,
     /// User-position marker color (RGB565).
-    pub marker_color: u16,
+    marker_colors: [u16; 2],
     /// The file's offset unit, so a lazily-read offset-table entry resolves against this file.
     scale: OffsetScale,
     /// The embedded terrain region, or `None` for a map with no elevation.
@@ -235,9 +250,9 @@ pub struct MapTables {
     /// The parsed routing profiles (1..=8, always present): at most 8 × 56 B resident.
     profiles: heapless::Vec<MapProfile, NAV_MAX_PROFILES>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
-    styles: [Option<Style>; 256],
+    styles: [[Option<Style>; 256]; 2],
     /// The backdrop style, resolved at parse so the per-frame lookup is a field read.
-    backdrop: Option<Style>,
+    backdrops: [Option<Style>; 2],
     /// Session-unique parse identity, never 0. The cache self-clears when it last served a
     /// different parse, so a map switch cannot cross-serve stale chunks.
     generation: u32,
@@ -248,8 +263,9 @@ impl MapTables {
     /// so do it once per map and hand the result to [`Reader::new`] each frame.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
-        let MapHeader { version, bbox, marker_color, scale, terrain } = map;
+        let MapHeader { version, bbox, marker_colors, scale, terrain } = map;
         let style_offset = resolve(scale.offset(rd_u32(&header, 21)));
+        let dark_style_offset = resolve(scale.offset(rd_u32(&header, HEADER_DARK_STYLE_OFFSET_OFF)));
         let poi_section_offset = resolve(scale.offset(rd_u32(&header, 32)));
         let nav_section_offset = resolve(scale.offset(rd_u32(&header, 36)));
 
@@ -259,15 +275,31 @@ impl MapTables {
         if style_offset < style_floor || style_offset > total {
             return Err(Error::BadOffset);
         }
+        if dark_style_offset < style_floor || dark_style_offset > total || dark_style_offset == style_offset {
+            return Err(Error::BadOffset);
+        }
 
-        let mut styles = [None; 256];
-        parse_styles(src, style_offset, total, &mut styles)?;
+        let mut styles = [[None; 256]; 2];
+        let light_range = parse_styles(src, style_offset, total, &mut styles[0])?;
+        let dark_range = parse_styles(src, dark_style_offset, total, &mut styles[1])?;
+        if light_range.0 < dark_range.1 && dark_range.0 < light_range.1 {
+            return Err(Error::BadOffset);
+        }
+        if styles[0].iter().zip(styles[1].iter()).any(|(light, dark)| light.is_some() != dark.is_some()) {
+            return Err(Error::BadOffset);
+        }
         let lods = parse_lod_table(src, scale, lod_table_offset, lod_count, total)?;
         let pois = parse_poi_directory(src, scale, poi_section_offset, total)?;
         let nav = parse_nav_directory(src, scale, nav_section_offset, total)?;
         let profiles = parse_nav_profiles(src, &nav)?;
         // Resolve the backdrop once; the table is immutable after parse.
-        let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
+        let backdrops = core::array::from_fn(|index| {
+            styles[index]
+                .iter()
+                .filter_map(|style| style.as_ref())
+                .min_by_key(|style| (style.z_index, style.id))
+                .copied()
+        });
         // `fetch_add + 1` starts the first parse at 1, so 0 is never live and a zero-initialized
         // cache always reads as unowned. `Relaxed` suffices: only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
@@ -275,7 +307,7 @@ impl MapTables {
         Ok(MapTables {
             version,
             bbox,
-            marker_color,
+            marker_colors,
             scale,
             terrain,
             lods,
@@ -283,7 +315,7 @@ impl MapTables {
             nav,
             profiles,
             styles,
-            backdrop,
+            backdrops,
             generation,
         })
     }
@@ -315,7 +347,13 @@ impl MapTables {
 
     #[inline]
     pub fn styles(&self) -> &[Option<Style>; 256] {
-        &self.styles
+        &self.styles[MapStyleSet::Light.index()]
+    }
+
+    /// User-position marker color for one authored presentation (RGB565).
+    #[inline]
+    pub fn marker_color(&self, style_set: MapStyleSet) -> u16 {
+        self.marker_colors[style_set.index()]
     }
 
     /// The map's routing profiles, so a host can mirror their names into the UI straight off the
@@ -326,7 +364,7 @@ impl MapTables {
 
     #[inline]
     pub fn backdrop_style(&self) -> Option<&Style> {
-        self.backdrop.as_ref()
+        self.backdrops[MapStyleSet::Light.index()].as_ref()
     }
 
     /// Whether the map carries a non-empty nav graph.
@@ -335,6 +373,7 @@ impl MapTables {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Reader<'a> {
     /// The byte source the index and geometry chunks stream from. `&dyn`, so a `&Reader` needs no `<S>`.
     src: &'a dyn ByteSource,
@@ -342,6 +381,7 @@ pub struct Reader<'a> {
     pub version: u8,
     pub bbox: BBox,
     pub marker_color: u16,
+    style_set: MapStyleSet,
     /// The session-resident immutable tables, parsed once and borrowed here.
     tables: &'a MapTables,
     /// Borrowed lazy-read cache for the streamed index and geometry. It keeps its own `RefCell`
@@ -373,11 +413,20 @@ impl<'a> Reader<'a> {
             src,
             version: tables.version,
             bbox: tables.bbox,
-            marker_color: tables.marker_color,
+            marker_color: tables.marker_color(MapStyleSet::Light),
+            style_set: MapStyleSet::Light,
             tables,
             cache,
             cache_ready,
         }
+    }
+
+    /// Select one authored presentation without reparsing the map or clearing streamed geometry.
+    pub fn with_style_set(&self, style_set: MapStyleSet) -> Self {
+        let mut selected = *self;
+        selected.style_set = style_set;
+        selected.marker_color = self.tables.marker_color(style_set);
+        selected
     }
 
     /// Snapshot of the cache and streaming counters, cumulative over the cache's life.
@@ -397,13 +446,13 @@ impl<'a> Reader<'a> {
 
     #[inline]
     pub fn style(&self, id: u8) -> Option<&Style> {
-        self.tables.styles.get(id as usize).and_then(|s| s.as_ref())
+        self.tables.styles[self.style_set.index()][id as usize].as_ref()
     }
 
     /// The backdrop style, at the bottom of the paint order. Its color fills the screen before any
     /// geometry. `None` only for an empty style table.
     pub fn backdrop_style(&self) -> Option<&Style> {
-        self.tables.backdrop.as_ref()
+        self.tables.backdrops[self.style_set.index()].as_ref()
     }
 
     /// Read node `idx` of a [`QuadIndex`] through the index block cache. `None` on a read failure,
@@ -470,10 +519,8 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Parse the style table into the caller's `styles`, cleared first. A truncated table is
-/// tolerated, stopping at the last whole record, but a failed read or a `style_offset` at or past
-/// EOF is [`Error::BadOffset`], because an all-`None` table would let the map load and render
-/// nothing.
+/// Parse one complete style table into the caller's `styles`, cleared first. A truncated table,
+/// duplicate or reserved-zero id, failed read, or offset at or past EOF is [`Error::BadOffset`].
 ///
 /// The out-param and `inline(never)` keep the several KB of scratch out of the device `main`'s
 /// permanent frame, where the ride path overflows the stack.
@@ -483,7 +530,7 @@ fn parse_styles(
     style_offset: u64,
     total: u64,
     styles: &mut [Option<Style>; 256],
-) -> Result<(), Error> {
+) -> Result<(u64, u64), Error> {
     styles.fill(None);
     // The header guard admits `style_offset == total`, where there is no count byte, so treat it
     // as the corrupt header it is.
@@ -493,43 +540,47 @@ fn parse_styles(
     let mut cb = [0u8; 1];
     src.read_at(style_offset, &mut cb).map_err(Error::Source)?;
     let count = cb[0] as usize;
-    // `count*8` record bytes follow the count, clamped to what the file holds. `count` is one
-    // byte, so the product fits `usize` everywhere and the `min` can only shrink it.
-    let avail = total - (style_offset + 1);
-    let want = ((count * STYLE_RECORD_LEN) as u64).min(avail) as usize;
+    let want = count * STYLE_RECORD_LEN;
+    let end = style_offset + 1 + want as u64;
+    if end > total {
+        return Err(Error::BadOffset);
+    }
     let mut buf = [0u8; 256 * STYLE_RECORD_LEN];
     if want > 0 {
         src.read_at(style_offset + 1, &mut buf[..want]).map_err(Error::Source)?;
     }
-    let mut o = 0usize;
-    for _ in 0..count {
-        if o + STYLE_RECORD_LEN > want {
-            break;
-        }
+    for index in 0..count {
+        let o = index * STYLE_RECORD_LEN;
         let id = buf[o];
-        let z_index = buf[o + 1] as i8;
-        let color = rd_u16(&buf, o + 2);
-        let weight = buf[o + 4];
-        let flags = buf[o + 5];
-        let priority = (flags & STYLE_PRIORITY_MASK) + 1;
-        // The two color2 bytes are always present; the flag bit, not a `0x0000` sentinel, decides
-        // whether they carry a colour.
-        let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
-        // Bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer, and
-        // bit 6 makes the line ticked. Bit 7 is reserved and ignored. Ticked wins over dashed.
-        let line = if flags & STYLE_TICKED_BIT != 0 {
-            LineStyle::Ticked
-        } else if flags & STYLE_DASHED_BIT != 0 {
-            LineStyle::Dashed
-        } else {
-            LineStyle::Solid
-        };
-        let style_flags =
-            StyleFlags::new(line, flags & STYLE_FIXED_WIDTH_BIT != 0, flags & STYLE_TERRAIN_LAYER_BIT != 0);
-        styles[id as usize] = Some(Style { id, z_index, color, weight, priority, flags: style_flags, color2 });
-        o += STYLE_RECORD_LEN;
+        if id == 0 || id == u8::MAX || styles[id as usize].is_some() {
+            return Err(Error::BadOffset);
+        }
+        styles[id as usize] = Some(parse_style_record(&buf, o));
     }
-    Ok(())
+    Ok((style_offset, end))
+}
+
+fn parse_style_record(buf: &[u8], o: usize) -> Style {
+    let id = buf[o];
+    let z_index = buf[o + 1] as i8;
+    let color = rd_u16(buf, o + 2);
+    let weight = buf[o + 4];
+    let flags = buf[o + 5];
+    let priority = (flags & STYLE_PRIORITY_MASK) + 1;
+    // The two color2 bytes are always present; the flag bit, not a `0x0000` sentinel, decides
+    // whether they carry a colour.
+    let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(buf, o + 6)) } else { None };
+    // Bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer, and
+    // bit 6 makes the line ticked. Bit 7 is reserved and ignored. Ticked wins over dashed.
+    let line = if flags & STYLE_TICKED_BIT != 0 {
+        LineStyle::Ticked
+    } else if flags & STYLE_DASHED_BIT != 0 {
+        LineStyle::Dashed
+    } else {
+        LineStyle::Solid
+    };
+    let style_flags = StyleFlags::new(line, flags & STYLE_FIXED_WIDTH_BIT != 0, flags & STYLE_TERRAIN_LAYER_BIT != 0);
+    Style { id, z_index, color, weight, priority, flags: style_flags, color2 }
 }
 
 fn intersect_bbox(a: &BBox, b: &BBox) -> Option<BBox> {

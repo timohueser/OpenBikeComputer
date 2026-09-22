@@ -102,7 +102,7 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
 pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     // Every offset a header or directory carries is a count of `U = 16`-byte units, so every
     // structure one reaches starts on a unit boundary and the bytes between them are `0xFF` filler.
-    // The 57-byte header is not a unit multiple, so the style table begins at 64.
+    // The header is not a unit multiple, so the style table begins at the next boundary.
     use obc_formats::obcm::{OffsetScale, FILLER};
     const SCALE: OffsetScale = OffsetScale::DEFAULT;
     let unit = SCALE.unit() as usize;
@@ -183,6 +183,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
         profile_table.resize(base + 56, 0); // three reserved bytes, zero
     }
     let after_nav = align_up(profile_table_off + profile_table.len());
+    let dark_style_off = after_nav;
     let mut nav_dir = Vec::new();
     nav_dir.extend_from_slice(&scaled(after_nav).to_le_bytes()); // index_offset (zero-length)
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // index_node_count
@@ -216,6 +217,8 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     f.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — this fixture has no raster
     f.extend_from_slice(&0u32.to_le_bytes()); // …and its length is `0` exactly when the offset is
     f.extend_from_slice(&[0; 16]); // no landmark or peak section
+    f.extend_from_slice(&scaled(dark_style_off).to_le_bytes());
+    f.extend_from_slice(&marker.to_le_bytes());
     debug_assert_eq!(f.len(), obc_formats::obcm::HEADER_LEN);
     f.resize(style_off, FILLER);
     f.extend_from_slice(&styles);
@@ -225,6 +228,8 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     f.extend_from_slice(&index);
     f.extend_from_slice(&poi_dir);
     f.extend_from_slice(&nav_dir);
+    debug_assert_eq!(f.len(), dark_style_off);
+    f.extend_from_slice(&styles);
     f
 }
 

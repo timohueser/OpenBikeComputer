@@ -1,0 +1,101 @@
+{
+  "schema": 3,
+  "package": "sim-assistant-meiringen",
+  "archive": {
+    "bytes": 33485003,
+    "sha256": "1f0c14a671302a5639dc9e4b07b63209cff2aae89489b198da70923f017847bb"
+  },
+  "base_artifact_producer": {
+    "source_commit": "3d835f672",
+    "executables_sha256": {
+      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
+      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
+      "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
+      "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
+    }
+  },
+  "bounds_lon_lat": [
+    8.1,
+    46.5,
+    8.4,
+    46.8
+  ],
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-terrain": "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+    "assistant-replays": "3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+  },
+  "source_pbf": {
+    "path": "switzerland.osm.pbf",
+    "bytes": 545916978,
+    "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
+  },
+  "map": {
+    "bytes": 48740873,
+    "sha256": "5d840eaff1f6abefd581212fbb9a4da234a025a491d61739cd891c533951a056",
+    "obcm_version": 19,
+    "format_upgrade": {
+      "input_sha256": "232d44072991da3470ea29e48bf44a30fbd81de8d80d56465dcf9e10cee01e48",
+      "input_obcm_version": 18,
+      "dark_skin": {
+        "path": "builder/presets/skins/dusk.json",
+        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+      },
+      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
+      "transformer": {
+        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
+        "name": "upgrade_obcm_v18_to_v19.py"
+      }
+    }
+  },
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
+  "recipe": "python3 fixtures/build-assistant-package.py meiringen",
+  "packaged_build": {
+    "bytes": 13898,
+    "sha256": "2edd5d07f60eab0154b38b497b280089f531051704d8ee000b060b54a5878dd6",
+    "note": "The packaged build.json holds the bake commands, executable digests and content counts."
+  },
+  "terrain": {
+    "bytes": 8388704,
+    "sha256": "91bc764ce3bd7ad774e1c0bb899c9f32245247d5e248332546e1230af811fa49",
+    "policy": "Byte-identical embedded terrain to the prior registered map."
+  }
+}

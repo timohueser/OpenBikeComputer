@@ -60,6 +60,22 @@ const CHEVRON_MAX_MPP: f32 = 4.0;
 /// the two coincide.
 const BREADCRUMB_WEIGHT: u32 = 3;
 
+/// The recorded track stays blue in both map presentations, but the dark map uses the bright
+/// device-blue step so it remains distinct from the black backdrop and the magenta route.
+fn breadcrumb_color(theme: crate::settings::Theme) -> u16 {
+    match theme {
+        crate::settings::Theme::Light => super::palette::BREADCRUMB,
+        crate::settings::Theme::Dark => super::palette::rgb565(0, 170, 255),
+    }
+}
+
+fn waypoint_color(theme: crate::settings::Theme) -> u16 {
+    match theme {
+        crate::settings::Theme::Light => super::palette::INK,
+        crate::settings::Theme::Dark => super::palette::PARCHMENT,
+    }
+}
+
 /// Half-diagonal (px) of a waypoint diamond. No zoom gate, unlike the chevrons: the resident table
 /// is at most `MAX_WAYPOINTS`, so even a wide overview shows only a handful of anchors.
 const WAYPOINT_DIAMOND_R: i32 = 4;
@@ -391,7 +407,7 @@ where
     }
 
     if !rx.breadcrumb.is_empty() {
-        let trail = color_fn(super::palette::BREADCRUMB);
+        let trail = color_fn(breadcrumb_color(rx.settings.theme));
         scratch.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
     }
     rx.stats = stats;
@@ -399,7 +415,7 @@ where
     // Settlement names: over the terrain and the route ink, under the waypoints and the rider.
     crate::settlements::draw_labels(cv, vp, rx.settlements, &mut place);
 
-    draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
+    draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h, waypoint_color(rx.settings.theme));
     let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
@@ -483,12 +499,12 @@ fn waypoint_diamond(cx: i32, cy: i32, w: i32, h: i32) -> Option<(Point, Point, P
 /// Draw the route's named waypoints as small filled diamonds at each entry's own (`lon`, `lat`).
 /// That is the stored coordinate, not snapped to the polyline, so a diamond may sit slightly off
 /// it. The table is empty with no route loaded, so this is then a no-op.
-fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry], w: i32, h: i32) {
+fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry], w: i32, h: i32, color: u16) {
     for wp in wpts {
         let (sx, sy) = vp.to_screen(wp.lon, wp.lat);
         if let Some((top, bottom, left, right)) = waypoint_diamond(sx, sy, w, h) {
-            cv.triangle(top, left, right, super::palette::INK);
-            cv.triangle(bottom, left, right, super::palette::INK);
+            cv.triangle(top, left, right, color);
+            cv.triangle(bottom, left, right, color);
         }
     }
 }
@@ -1627,7 +1643,7 @@ mod tests {
         let reserved = label_reserved(&vp, None, &[on.clone(), off], &[]);
         assert_eq!(reserved.len(), 1, "only a diamond the frame draws reserves a box");
         let mut buf = Buf::new(240, 320);
-        draw_waypoint_diamonds(&mut Canvas::new(&mut buf, &shade), &vp, &[on], 240, 320);
+        draw_waypoint_diamonds(&mut Canvas::new(&mut buf, &shade), &vp, &[on], 240, 320, crate::screen::palette::INK);
         assert_inside(drawn_box(&buf), reserved[0], "the waypoint diamond");
 
         // A mark may sit flush against reserved chrome, so the box alone decides.

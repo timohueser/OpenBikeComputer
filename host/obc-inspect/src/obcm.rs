@@ -8,7 +8,7 @@
 
 use obc_formats::io::ByteSource;
 use obc_formats::obcm::PoiCategory;
-use obc_reader::{landmarks, peaks, MapCache, MapTables, Reader};
+use obc_reader::{landmarks, peaks, MapCache, MapStyleSet, MapTables, Reader};
 use serde_json::Value;
 
 use crate::obct;
@@ -22,7 +22,8 @@ pub fn report(source: &dyn ByteSource) -> Result<Report, String> {
     let mut out = Report::new();
     out.put("version", tables.version).put("bytes", bytes(source.len()));
     out.put("offset_unit", tables.scale().unit());
-    out.put("marker_color", format!("0x{:04x}", tables.marker_color));
+    out.put("light_marker_color", format!("0x{:04x}", tables.marker_color(MapStyleSet::Light)));
+    out.put("dark_marker_color", format!("0x{:04x}", tables.marker_color(MapStyleSet::Dark)));
 
     let mut bbox = Report::new();
     bbox.put("min_lat", degrees(tables.bbox.min_lat as i64))

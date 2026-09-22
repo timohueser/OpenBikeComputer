@@ -10,7 +10,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ASSEMBLE_ERROR_CODES, AssembleError, assembleCells, estimateMemory, initAssemble, wasmMemoryBytes } from "./bridge";
+import {
+    ASSEMBLE_ERROR_CODES,
+    AssembleError,
+    assembleCells as assemblePairedCells,
+    estimateMemory,
+    initAssemble,
+    wasmMemoryBytes,
+} from "./bridge";
 import type {
     AssembleCell,
     AssemblePhase,
@@ -18,6 +25,23 @@ import type {
     AssembleTerrain,
     AssembleTerrainCell,
 } from "./bridge";
+
+function assembleCells(
+    cells: Parameters<typeof assemblePairedCells>[0],
+    schemaJson: string,
+    skinJson: string,
+    options?: Parameters<typeof assemblePairedCells>[4],
+    ...rest: [
+        Parameters<typeof assemblePairedCells>[5]?,
+        Parameters<typeof assemblePairedCells>[6]?,
+        Parameters<typeof assemblePairedCells>[7]?,
+        Parameters<typeof assemblePairedCells>[8]?,
+        Parameters<typeof assemblePairedCells>[9]?,
+        Parameters<typeof assemblePairedCells>[10]?,
+    ]
+) {
+    return assemblePairedCells(cells, schemaJson, skinJson, darkSkin, options, ...rest);
+}
 
 /** Walk up from this file to the repo root (the directory holding the fixture). */
 function repoRoot(): string {
@@ -34,6 +58,7 @@ const FIXTURE = join(repoRoot(), "apps/obc-web-assemble/tests/fixture");
 /** The cutter's provenance sidecar, verbatim. It is also the schema document the engine parses. */
 const sidecar = readFileSync(join(FIXTURE, "cells.json"), "utf8");
 const skin = readFileSync(join(FIXTURE, "skin.json"), "utf8");
+const darkSkin = readFileSync(join(FIXTURE, "dark-skin.json"), "utf8");
 
 /** Every cell the sidecar lists, in the order it lists them. */
 function cells(): AssembleCell[] {
@@ -289,8 +314,12 @@ describe("assembleCells", () => {
         const flatBytes = flat.take();
         flat.release();
         expect(bytes.length - flatBytes.length).toBeGreaterThanOrEqual(t.bytes);
-        const tail = new TextDecoder("latin1").decode(bytes.subarray(flatBytes.length - 1));
-        expect(tail).toContain("OBCT");
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const unit = 2 ** bytes[40];
+        const terrainOffset = view.getUint32(41, true) * unit;
+        const terrainLength = view.getUint32(45, true) * unit;
+        expect(new TextDecoder("latin1").decode(bytes.subarray(terrainOffset, terrainOffset + 4))).toBe("OBCT");
+        expect(terrainLength).toBeGreaterThanOrEqual(t.bytes);
     });
 
     it("writes an empty terrain region when the catalog publishes no raster", async () => {

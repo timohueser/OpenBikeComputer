@@ -28,6 +28,11 @@ fn skin() -> String {
     std::fs::read_to_string(fixture_dir().join("skin.json")).expect("tests/fixture/skin.json — see tests/fixture.rs")
 }
 
+fn dark_skin() -> String {
+    std::fs::read_to_string(fixture_dir().join("dark-skin.json"))
+        .expect("tests/fixture/dark-skin.json — see examples/fixture.rs")
+}
+
 /// Load every cell the sidecar lists, in the order it lists them. The builder's downloads finish in
 /// a different order, and the output must not depend on either.
 fn cells() -> Vec<CellBytes> {
@@ -83,8 +88,18 @@ fn terrain_cells() -> Vec<TerrainCellBytes> {
 /// The whole fixture assembly, cells and raster, which is what the CLI wrote `expected/map.obcm`
 /// from.
 fn assemble_fixture(opts: &BridgeOptions, hooks: &mut dyn Hooks) -> obc_web_assemble::Outcome {
-    assemble_everything(cells(), Vec::new(), Some(terrain_lattice()), terrain_cells(), &sidecar(), &skin(), opts, hooks)
-        .expect("the assembly runs")
+    assemble_everything(
+        cells(),
+        Vec::new(),
+        Some(terrain_lattice()),
+        terrain_cells(),
+        &sidecar(),
+        &skin(),
+        &dark_skin(),
+        opts,
+        hooks,
+    )
+    .expect("the assembly runs")
 }
 
 /// The options the fixture's `expected/` was produced with. The coarse cell is necessarily partial
@@ -196,7 +211,8 @@ fn the_terrain_region_places_every_published_cell_and_leaves_the_void_absent() {
 /// is `(0, 0)`.
 #[test]
 fn a_selection_with_no_terrain_is_the_map_it_always_was() {
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
+        .expect("the assembly runs");
     let map = taken(&out);
     assert_same_bytes(map, &expected("flat.obcm"), "flat.obcm");
     assert_eq!(&map[HEADER_TERRAIN_OFFSET_AT..HEADER_TERRAIN_OFFSET_AT + 8], &[0u8; 8], "§1.3's pair is (0, 0)");
@@ -217,6 +233,7 @@ fn a_terrain_cell_that_fails_its_catalog_digest_aborts_the_assembly() {
         cells,
         &sidecar(),
         &skin(),
+        &dark_skin(),
         &options(),
         &mut NoHooks,
     )
@@ -227,15 +244,24 @@ fn a_terrain_cell_that_fails_its_catalog_digest_aborts_the_assembly() {
 
 #[test]
 fn known_empty_cells_expand_coverage_without_payloads() {
-    let base = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("base assembly");
+    let base =
+        assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks).expect("base assembly");
     let base_json: serde_json::Value = serde_json::from_str(&base.summary_json).expect("base summary");
     let known_empty = vec![
         KnownEmptyCell { id: "20/0301/0264".into(), band: "coarse".into() },
         KnownEmptyCell { id: "18/1204/1056".into(), band: "fine".into() },
         KnownEmptyCell { id: "18/1204/1056".into(), band: "network".into() },
     ];
-    let out = assemble_cells_with_known_empty(cells(), known_empty, &sidecar(), &skin(), &options(), &mut NoHooks)
-        .expect("known-empty coverage assembles");
+    let out = assemble_cells_with_known_empty(
+        cells(),
+        known_empty,
+        &sidecar(),
+        &skin(),
+        &dark_skin(),
+        &options(),
+        &mut NoHooks,
+    )
+    .expect("known-empty coverage assembles");
     let json: serde_json::Value = serde_json::from_str(&out.summary_json).expect("summary");
     assert!(json["assembly_bbox_udeg"]["span_log2"].as_u64() > base_json["assembly_bbox_udeg"]["span_log2"].as_u64());
     assert_eq!(json["cells"].as_u64(), base_json["cells"].as_u64().map(|n| n + 3));
@@ -245,8 +271,8 @@ fn known_empty_cells_expand_coverage_without_payloads() {
 /// either would produce two different files from one fixture.
 #[test]
 fn two_runs_produce_identical_bytes() {
-    let a = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("run one");
-    let b = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("run two");
+    let a = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks).expect("run one");
+    let b = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks).expect("run two");
     assert_same_bytes(taken(&a), taken(&b), "the map across two runs");
     assert_eq!(a.sha256, b.sha256);
 }
@@ -295,12 +321,12 @@ fn assert_section_gaps(map: &[u8]) -> (usize, usize) {
         gaps += (to > from) as usize;
     };
 
-    // The 65-byte header, then the run to the style table's boundary.
+    // The header, then the run to the style table's boundary.
     assert_eq!(map[4], obc_formats::obcm::VERSION, "the version byte this walk is written against");
     assert_eq!(map[40], 4, "`Offset Scale`, so U = 16");
     let style_at = offset(map, 21);
-    assert_eq!(style_at, 80, "the style table starts at align_up(65)");
-    gap(65, style_at, "header → style table");
+    assert_eq!(style_at, 80, "the style table starts at the first aligned boundary after the header");
+    gap(obc_formats::obcm::HEADER_LEN, style_at, "header → style table");
 
     // The style table's own tail, and the LOD table's.
     let lod_table_at = offset(map, 26);
@@ -389,7 +415,8 @@ fn assert_section_gaps(map: &[u8]) -> (usize, usize) {
 
 #[test]
 fn every_section_boundary_of_the_assembled_map_is_filler() {
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
+        .expect("the assembly runs");
     let (gaps, padded_chunks) = assert_section_gaps(taken(&out));
     // The fixture must have gaps, or the walk above asserts nothing. The two counters are the
     // per-region cost and the per-chunk cost.
@@ -398,7 +425,7 @@ fn every_section_boundary_of_the_assembled_map_is_filler() {
 }
 
 /// The same walk over the map the raster was spliced into must find the same gaps: the terrain
-/// region rides in the tail, so splicing it must not move a byte of the layout in front of it.
+/// region precedes the final Dark style table, so splicing it must not move an earlier section.
 #[test]
 fn splicing_the_raster_moves_none_of_the_gaps_in_front_of_it() {
     let out = assemble_fixture(&options(), &mut NoHooks);
@@ -406,18 +433,21 @@ fn splicing_the_raster_moves_none_of_the_gaps_in_front_of_it() {
     let spliced = assert_section_gaps(map);
     let flat = assert_section_gaps(&expected("flat.obcm"));
     assert_eq!(spliced, flat, "the raster changed the §1.2 gap structure of the map in front of it");
-    // It sits behind the last thing the walk reached, on a unit boundary, as anything a scaled
-    // offset names must.
+    // It sits on a unit boundary and ends before the final Dark style table.
     let at = offset(map, HEADER_TERRAIN_OFFSET_AT);
     assert_eq!(at % UNIT, 0);
-    assert_eq!(at + terrain_window(map).expect("a raster").len(), map.len(), "the raster is the tail");
+    let terrain_end = at + terrain_window(map).expect("a raster").len();
+    let dark_style_at = offset(map, obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF);
+    assert_eq!(align_up(terrain_end), dark_style_at, "the Dark style table follows the raster");
+    assert_filler(map, terrain_end, dark_style_at, "terrain → Dark style table");
 }
 
 /// `Edge Id` is a `(chunk, ordinal)` pair, not a byte offset. The two agree on the first record of
 /// the first chunk and nowhere else, so a fixture with several edges in one chunk tells them apart.
 #[test]
 fn the_edge_ids_the_merge_mints_are_chunks_and_ordinals() {
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
+        .expect("the assembly runs");
     let map = taken(&out);
     let nav_at = offset(map, 36);
     assert_eq!(le32(map, nav_at + 16), 1, "the fixture's whole edge pool is one 512-byte chunk");
@@ -453,10 +483,12 @@ fn the_edge_ids_the_merge_mints_are_chunks_and_ordinals() {
 /// the order they are handed over is whatever the network decided.
 #[test]
 fn the_order_cells_arrive_in_does_not_reach_the_output() {
-    let want = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("in sidecar order");
+    let want =
+        assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks).expect("in sidecar order");
     let mut shuffled = cells();
     shuffled.reverse();
-    let got = assemble_cells(shuffled, &sidecar(), &skin(), &options(), &mut NoHooks).expect("in reverse order");
+    let got = assemble_cells(shuffled, &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
+        .expect("in reverse order");
     assert_same_bytes(taken(&got), taken(&want), "the map with the cells reversed");
 }
 
@@ -501,7 +533,7 @@ impl Hooks for Recorder {
 #[test]
 fn the_phase_sequence_is_the_one_the_engine_calls() {
     let mut rec = Recorder::default();
-    assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect("the assembly runs");
+    assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut rec).expect("the assembly runs");
 
     let mut order: Vec<Phase> = Vec::new();
     for (p, _) in &rec.seen {
@@ -532,7 +564,8 @@ fn the_phase_sequence_is_the_one_the_engine_calls() {
 #[test]
 fn the_clock_is_read_exactly_once_per_phase_boundary() {
     let mut rec = Recorder::default();
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect("the assembly runs");
+    let out =
+        assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut rec).expect("the assembly runs");
     let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
     let us = &s["phases_us"];
     // Each of these is `t_next - t_this` over a clock that advances by exactly 1 per read. A 2
@@ -551,7 +584,7 @@ fn the_clock_is_read_exactly_once_per_phase_boundary() {
 #[test]
 fn the_verify_pass_reports_its_own_progress_instead_of_freezing_the_bar() {
     let mut rec = Recorder::default();
-    assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect("the assembly runs");
+    assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut rec).expect("the assembly runs");
 
     // Nothing before the read-back may claim the run is nearly done. By construction the write
     // phase runs from 0.167 to at most 0.203 + 0.363 = 0.566 of the bar.
@@ -586,7 +619,7 @@ fn the_verify_pass_reports_its_own_progress_instead_of_freezing_the_bar() {
 #[test]
 fn a_progress_callback_can_abort_the_run() {
     let mut rec = Recorder::aborting_at(Phase::Write);
-    let e = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect_err("aborted");
+    let e = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut rec).expect_err("aborted");
     assert_eq!(e.code, ErrorCode::Aborted);
     assert!(e.message.contains("partial file"), "{}", e.message);
     // Nothing past the write was reported: the abort is honoured at the next store call.
@@ -602,7 +635,7 @@ fn a_progress_callback_can_abort_the_run() {
 fn an_abort_armed_inside_the_verify_pass_stops_the_run() {
     for n in [1, 4] {
         let mut rec = Recorder { abort_at: Some((Phase::Verify, n)), ..Default::default() };
-        let e = match assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec) {
+        let e = match assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut rec) {
             // Without the read-loop poll, a cancel here produces the whole map anyway.
             Ok(out) => panic!("cancelled at verify callback {n}, and it still produced {out:?}"),
             Err(e) => e,
@@ -621,7 +654,8 @@ fn an_abort_armed_inside_the_verify_pass_stops_the_run() {
 #[test]
 fn an_unaccepted_partial_cell_is_an_input_refusal() {
     let opts = BridgeOptions { accept_partial: false, ..options() };
-    let e = assemble_cells(cells(), &sidecar(), &skin(), &opts, &mut NoHooks).expect_err("the coarse cell is partial");
+    let e = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &opts, &mut NoHooks)
+        .expect_err("the coarse cell is partial");
     assert_eq!(e.code, ErrorCode::Input);
     assert!(e.message.contains("partial"), "{}", e.message);
 }
@@ -631,7 +665,7 @@ fn an_unaccepted_partial_cell_is_an_input_refusal() {
 fn a_corrupt_cell_is_a_format_refusal() {
     let mut cells = cells();
     cells[0].bytes[0] ^= 0xFF; // the OBCM magic
-    let e = assemble_cells(cells, &sidecar(), &skin(), &options(), &mut NoHooks).expect_err("bad magic");
+    let e = assemble_cells(cells, &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks).expect_err("bad magic");
     assert_eq!(e.code, ErrorCode::Format);
     assert!(e.message.contains("readable OBCM"), "{}", e.message);
 }
@@ -640,7 +674,8 @@ fn a_corrupt_cell_is_a_format_refusal() {
 /// operator read one thing.
 #[test]
 fn the_summary_is_the_clis_json() {
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
+        .expect("the assembly runs");
     let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
     assert_eq!(s["cells"], 5);
     assert_eq!(s["bytes"].as_u64(), Some(taken(&out).len() as u64));
@@ -724,7 +759,8 @@ impl CellReads for Stored {
 #[test]
 fn cells_read_through_the_host_produce_the_native_clis_bytes() {
     let store = Stored::new();
-    let out = assemble(store.wiring(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble(store.wiring(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
+        .expect("the assembly runs");
     assert_same_bytes(taken(&out), &expected("map.obcm"), "map.obcm from host reads");
     // Every cell came through the seam. A path that found the bytes elsewhere would pass the
     // comparison above and prove nothing.
@@ -747,7 +783,8 @@ fn the_read_block_size_changes_the_call_count_and_not_the_bytes() {
     let run = |block: usize| {
         let store = Stored::new();
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
-        let out = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
+        let out = assemble(store.wiring(), &sidecar(), &skin(), &dark_skin(), &opts, &mut NoHooks)
+            .expect("the assembly runs");
         let reads = store.reads.borrow().len();
         (out.bytes.expect("buffered"), reads)
     };
@@ -773,7 +810,8 @@ fn a_cell_the_host_cannot_read_fails_as_io_naming_the_cell() {
         let store = Stored::failing_at(1, at);
         let named = store.source_cells()[1].id.clone();
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
-        let e = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect_err("slot 1 is unreadable");
+        let e = assemble(store.wiring(), &sidecar(), &skin(), &dark_skin(), &opts, &mut NoHooks)
+            .expect_err("slot 1 is unreadable");
         assert_eq!(e.code, ErrorCode::Io, "blocks of {block}, failing at {at}: {}", e.message);
         assert!(e.message.contains(&named), "the message must name the cell: {}", e.message);
         assert!(e.message.contains("the storage handle is closed"), "the host's own words: {}", e.message);
@@ -789,6 +827,7 @@ fn cells_handed_over_by_key_without_a_reader_are_refused() {
         Wiring { source_cells: store.source_cells(), reads: None, ..Wiring::default() },
         &sidecar(),
         &skin(),
+        &dark_skin(),
         &options(),
         &mut NoHooks,
     )
@@ -897,6 +936,7 @@ fn assemble_to_disk(
         },
         &sidecar(),
         &skin(),
+        &dark_skin(),
         opts,
         hooks,
     )
@@ -1037,6 +1077,7 @@ fn landmarks_survive_the_normal_bridge_with_and_without_terrain() {
             with_terrain.then(terrain_lattice),
             if with_terrain { terrain_cells() } else { Vec::new() },
             &sidecar(),
+            &skin(),
             &skin(),
             &options(),
             &mut NoHooks,

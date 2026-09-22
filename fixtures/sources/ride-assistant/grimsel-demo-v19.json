@@ -1,13 +1,24 @@
 {
   "schema": 1,
   "artifact": "apps/obc-sim/assets/grimsel-demo.obcm",
-  "obcm_version": 18,
+  "obcm_version": 19,
   "map": {
-    "bytes": 10093056,
-    "sha256": "6a59043ab2d4de002c6e9fd5e7dcc88259ef6f7e9548f0c1ba91a8ae183de47f"
+    "bytes": 10094080,
+    "sha256": "badf628fa123331ad5f045bacd704605fff9d4001566bee651a616ed515b6b6e",
+    "format_upgrade": {
+      "input_sha256": "6a59043ab2d4de002c6e9fd5e7dcc88259ef6f7e9548f0c1ba91a8ae183de47f",
+      "input_obcm_version": 18,
+      "dark_skin": {
+        "path": "builder/presets/skins/dusk.json",
+        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+      },
+      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer. The demo recipe pads the result to a 512-byte boundary.",
+      "transformer": {
+        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
+        "name": "upgrade_obcm_v18_to_v19.py"
+      }
+    }
   },
-  "producer_commit": "3d835f672",
-  "obc_pack_sha256": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
   "source_packages": {
     "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
     "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
@@ -47,5 +58,11 @@
   "settlement_records": 3,
   "command": "target/release/obc-pack PINNED/switzerland.osm.pbf builder/presets/schema.json OUTPUT.obcm --bbox 8.26,46.54,8.37,46.67 --terrain EXISTING-SURFACE.obcd --landmarks LANDMARKS/content.json --peaks PEAKS/peaks.json",
   "embedding": "Terrain embedding uses the alignment and header writer from fixtures/build-map-package.sh grimsel-demo.",
-  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches."
+  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
+  "base_artifact_producer": {
+    "source_commit": "3d835f672",
+    "executables_sha256": {
+      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d"
+    }
+  }
 }
