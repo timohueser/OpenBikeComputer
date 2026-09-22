@@ -1,4 +1,4 @@
-//! Informational arrival and explicit recovery of an accepted Assistant journey.
+//! Informational arrival and explicit recovery of the saved route, ordinary or Assistant.
 use super::{
     palette::*,
     vocab::{
@@ -58,13 +58,13 @@ impl JourneyScreen {
             cv,
             rx.w,
             rx.h,
-            rx.t(if self.resume { Msg::AssistantResumeJourney } else { Msg::AssistantArrival }),
+            rx.t(if self.resume { Msg::AssistantResumeNavigation } else { Msg::AssistantArrival }),
             "",
         );
         wrapped(
             cv,
             rx.t(self.error.map(JourneyError::message).unwrap_or(if self.resume {
-                Msg::AssistantSavedJourney
+                Msg::AssistantSavedRoute
             } else {
                 Msg::AssistantGuidanceContinues
             })),

@@ -859,6 +859,20 @@ impl CoreHarness {
         outcome
     }
 
+    /// The next checkpoint effect, running passes until one appears.
+    fn next_checkpoint_effect(&mut self) -> obc_app::metadata::MetadataEffect {
+        for _ in 0..8 {
+            let mut plan = self.pass();
+            if let Some(effect) = plan.effects.catalog.take() {
+                self.answer_catalog(effect);
+            }
+            if let Some(effect) = plan.effects.metadata.take() {
+                return effect;
+            }
+        }
+        panic!("no metadata effect within eight passes")
+    }
+
     /// The next catalog effect, running passes until one appears.
     fn next_catalog_effect(&mut self) -> CatalogEffect {
         for _ in 0..8 {
@@ -1500,6 +1514,44 @@ fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
         heavy_operations: true,
     };
     assert!(!Capabilities::calculate(NO_DETOUR, facts).navigator.plan_detour);
+}
+
+/// Selecting an ordinary route owes its checkpoint through the one Metadata seam the Assistant
+/// already uses: one operation in flight, a cancelled answer retried, and the selection untouched
+/// until the write is acknowledged.
+#[test]
+fn selecting_a_route_owes_one_bounded_checkpoint_operation() {
+    use obc_app::metadata::{MetadataEffect, MetadataOutcome};
+    use obc_app::navigator::{ReviewStatus, RouteCheckpointSource};
+    use obc_formats::assistant::PayloadFingerprint;
+
+    let mut harness = recording_harness();
+    // The boot checkpoint read, which is what makes a selection owe one of its own.
+    harness.app().offer_assistant_checkpoint(StoreIdentity::new(1), None);
+    harness.app().activate_route(0);
+    let id = harness.app().route_ids()[0];
+    assert_eq!(harness.app().requested_route_checkpoint(), Some(id), "the selection owes a checkpoint");
+    let route = PayloadFingerprint { object: id, revision: 1, length: 4096, crc: 7 };
+    harness.app().offer_route_checkpoint(
+        id,
+        Some(RouteCheckpointSource { route, distance_m: 12_000, unresolved_avoidance: false }),
+    );
+    assert!(harness.app().requested_route_checkpoint().is_none(), "an executor answers it once per selection");
+
+    let MetadataEffect::WriteCheckpoint { token, .. } = harness.next_checkpoint_effect();
+    assert!(harness.pass().effects.metadata.is_empty(), "one metadata operation at a time");
+    harness.state.outcomes.metadata.try_put(MetadataOutcome::Cancelled { token }).unwrap();
+    let MetadataEffect::WriteCheckpoint { token, .. } = harness.next_checkpoint_effect();
+    assert_eq!(harness.app().active_route_index(), Some(0), "and the rider keeps the route they chose");
+    assert!(harness.app().assistant_checkpoint().is_none(), "nothing is durable before the answer");
+
+    assert!(harness.app().assistant_checkpoint_submission(token));
+    harness.state.outcomes.metadata.try_put(MetadataOutcome::CheckpointWritten { token }).unwrap();
+    harness.pass();
+    assert_eq!(harness.app().assistant_checkpoint().map(|saved| saved.route), Some(route));
+    assert_eq!(harness.app().assistant_review_status(), ReviewStatus::Accepted);
+    assert_eq!(harness.app().active_route_index(), Some(0));
+    assert!(!harness.state.app.recording(), "selecting a route is not starting a ride");
 }
 
 /// Deleting the active route, with same-pass Navigator delivery. The rider is not left being guided

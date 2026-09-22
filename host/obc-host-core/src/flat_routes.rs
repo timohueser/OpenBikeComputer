@@ -284,14 +284,15 @@ impl RouteRepository for FlatRouteStore {
             .find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id)
             .map(obc_storage::flat::metadata::fingerprint)
     }
-    fn resume_map_matches(&self, map: obc_formats::obcr::RouteSourceKey) -> bool {
+    fn resume_map_matches(&self, map: Option<obc_formats::obcr::RouteSourceKey>) -> bool {
         let Ok(Some(checkpoint)) = self.read_checkpoint() else {
             return false;
         };
         let Ok(source) = self.owner.open(ObjectId(checkpoint.route.object), Revision(checkpoint.route.revision)) else {
             return false;
         };
-        obc_route::RouteObjectInfo::read(&source).is_ok_and(|info| info.attribution_map == Some(map))
+        obc_route::RouteObjectInfo::read(&source)
+            .is_ok_and(|info| info.attribution_map.is_none_or(|attribution| Some(attribution) == map))
     }
     fn read_checkpoint(
         &self,
