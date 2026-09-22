@@ -634,6 +634,36 @@ command = "cargo test -p obc-dem --locked --test decode --test real_tile -- --ig
 package = "obc-dem"
 targets = ["decode", "real_tile"]
 
+# The empirical half of the memory projection. `estimateMemory` prices a selection before the
+# download and the preflight refuses on it, but arithmetic cannot fail when the assembler buffers
+# a whole map anyway. This suite assembles the published catalogue's largest region in Chromium
+# and holds the whole linear memory the worker reports against that estimate's `peakBytes`, the
+# bottom line `fits` is decided on. Both sides are whole-memory figures, so the gate needs no
+# margin: a measured country-scale run lands at 0.877 of the projection, and what the gate exists
+# to catch is a buffered map or a buffered selection, hundreds of megabytes either way. The
+# published objects are the only input big enough for it to be able to fail, so it contacts the
+# live CDN. It reads a figure and does not re-fit one: an earlier measurement of the same selection
+# on a differently staged page read less, and nothing here isolates the engine term, so that
+# difference stays unattributed.
+#
+# Run it by hand before a release, and after a change to the assembler or to the estimator. It
+# moves about 890 MB over the network, needs about 3 GB of free disk and takes minutes. Needs
+# `npm install` in its own directory and `npx playwright install chromium`.
+[[suite]]
+id = "live.builder-memory"
+route = "live"
+command = "npm run test:live --prefix builder/app/tests/browser"
+platforms = ["linux", "macos"]
+triggers = [
+  "builder/app/tests/browser/live-memory.test.ts",
+  "builder/app/tests/browser/playwright.live.config.js",
+  "builder/app/tests/browser/package.json",
+  "builder/app/src/lib/assemble/**",
+  "builder/app/src/lib/cells/store.ts",
+  "builder/app/src/components/coverage/DownloadStep.svelte",
+  "apps/obc-web-assemble/**",
+]
+
 # `test-weekly.yml` invokes this each Monday, and a maintainer can invoke it by hand. The
 # schedule belongs to that workflow; this row owns the XCUITest classes and the command.
 [[suite]]

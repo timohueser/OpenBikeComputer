@@ -26,7 +26,7 @@
 // is `worker.terminate()`. A sync access handle's lock belongs to the agent that opened
 // it, so terminating this one releases them.
 
-import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources, type AssembleResult } from "./bridge";
+import { AssembleError, assembleCells, estimateMemory, wasmMemoryBytes, type AssembleCell, type AssembleSources, type AssembleResult } from "./bridge";
 import {
     openCellReader,
     openMapSink,
@@ -197,7 +197,7 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             } else {
                 post({ type: "stored-map", sha256: result.sha256, byteLength: result.byteLength });
             }
-            post({ type: "done", warnings: [...result.warnings], summary: result.summary, io });
+            post({ type: "done", warnings: [...result.warnings], summary: result.summary, wasmMemoryBytes: wasmMemoryBytes(), io });
         } finally {
             result?.release();
         }
