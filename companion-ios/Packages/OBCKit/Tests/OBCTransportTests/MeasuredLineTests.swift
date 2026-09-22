@@ -80,6 +80,10 @@ struct MeasuredLineTests {
         let finger = point(500, 5)
         #expect(abs(line.project(finger, near: 400, window: 300) - 500) < 2)
         #expect(abs(line.project(finger, near: 3400, window: 300) - 3500) < 2, "the return leg passes the same place at 3,500 m")
+        // Exactly on the shared lane, with the whole line in the window, the leg nearer the
+        // marker wins the tie.
+        #expect(abs(line.project(point(500, 0), near: 3400, window: line.length) - 3500) < 2)
+        #expect(abs(line.project(point(500, 0), near: 400, window: line.length) - 500) < 2)
     }
 
     @Test

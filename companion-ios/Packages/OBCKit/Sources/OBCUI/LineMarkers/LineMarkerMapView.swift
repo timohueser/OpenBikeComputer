@@ -8,13 +8,10 @@ import OBCDomain
 /// annotation along a line at frame rate.
 struct LineMarkerMapView: UIViewRepresentable {
     let model: LineMarkerEditorModel
+    let lineVersion: Int
     let markers: [LineMarker]
     let activeID: LineMarker.ID?
     let segmentColors: [Color]
-
-    /// The projection window, in screen points along the line: a finger can move the marker
-    /// at most this far per frame, so a sweep across a switchback never steals it.
-    private static let windowPoints = 200.0
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -25,37 +22,50 @@ struct LineMarkerMapView: UIViewRepresentable {
         mapView.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
         // Light tiles always: the palette is light throughout.
         mapView.overrideUserInterfaceStyle = .light
-
-        let overlay = SegmentedLineOverlay(line: model.line)
-        mapView.addOverlay(overlay, level: .aboveRoads)
-        // A padded rect, not edge padding: the view has no size yet, and MapKit fits a rect
-        // to the final bounds on its own.
-        let bounds = overlay.boundingMapRect
-        mapView.setVisibleMapRect(bounds.insetBy(dx: -bounds.width * 0.18, dy: -bounds.height * 0.3), animated: false)
-        mapView.addAnnotations(markers.map { marker in
-            MarkerAnnotation(id: marker.id, distance: marker.distance, coordinate: model.line.coordinate(at: marker.distance))
-        })
         context.coordinator.mapView = mapView
+        context.coordinator.install(line: model.line, version: lineVersion, in: mapView, fit: true)
+        updateUIView(mapView, context: context)
         return mapView
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        if coordinator.lineVersion != lineVersion {
+            coordinator.install(line: model.line, version: lineVersion, in: mapView, fit: false)
+        }
         coordinator.renderer?.set(
             splits: markers.map(\.distance),
             colors: segmentColors.map { UIColor($0).cgColor }
         )
+        // Diff the annotations by marker id: a marker added, removed or replaced from outside
+        // gets its handle without touching the others.
+        var present: [LineMarker.ID: MarkerAnnotation] = [:]
         for case let annotation as MarkerAnnotation in mapView.annotations {
-            guard let marker = markers.first(where: { $0.id == annotation.id }) else { continue }
-            if annotation.distance != marker.distance {
-                annotation.distance = marker.distance
-                annotation.coordinate = clLocation(model.line.coordinate(at: marker.distance))
-            }
-            if let view = mapView.view(for: annotation) as? MarkerAnnotationView {
-                coordinator.configure(view, for: annotation)
+            present[annotation.id] = annotation
+        }
+        let wanted = Set(markers.map(\.id))
+        mapView.removeAnnotations(present.values.filter { !wanted.contains($0.id) })
+        for marker in markers {
+            if let annotation = present[marker.id] {
+                if annotation.distance != marker.distance {
+                    annotation.distance = marker.distance
+                    annotation.coordinate = clLocation(model.line.coordinate(at: marker.distance))
+                }
+                if let view = mapView.view(for: annotation) as? MarkerAnnotationView {
+                    coordinator.configure(view, for: annotation)
+                }
+            } else {
+                mapView.addAnnotation(MarkerAnnotation(
+                    id: marker.id, distance: marker.distance, coordinate: model.line.coordinate(at: marker.distance)
+                ))
             }
         }
+    }
+
+    /// The map going away mid-drag (an offline flip) ends the drag like a lifted finger.
+    static func dismantleUIView(_ mapView: MKMapView, coordinator: Coordinator) {
+        coordinator.releaseDrag()
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -65,12 +75,41 @@ struct LineMarkerMapView: UIViewRepresentable {
         var parent: LineMarkerMapView
         weak var mapView: MKMapView?
         var renderer: SegmentedLineRenderer?
-        /// Where the finger landed relative to the handle's point on the line, so the marker
-        /// follows the finger's movement and does not jump under it.
-        private var grabOffset = CGPoint.zero
+        private(set) var lineVersion = -1
+        /// The finger on the map, or none: a second finger is ignored until this one lets go.
+        private var drag: Drag?
+
+        private struct Drag {
+            let annotation: MarkerAnnotation
+            /// Set on the first movement, which picks between coincident handles.
+            var id: LineMarker.ID?
+            /// Where the finger landed relative to the handle's point on the line, so the marker
+            /// follows the finger's movement and does not jump under it.
+            let grabOffset: CGPoint
+            var lastFinger: CGPoint
+        }
 
         init(parent: LineMarkerMapView) {
             self.parent = parent
+        }
+
+        /// A new overlay for a new line; the handles are re-added by the annotation diff.
+        func install(line: MeasuredLine, version: Int, in mapView: MKMapView, fit: Bool) {
+            releaseDrag()
+            mapView.removeOverlays(mapView.overlays)
+            mapView.removeAnnotations(mapView.annotations)
+            renderer = nil
+            let overlay = SegmentedLineOverlay(line: line)
+            mapView.addOverlay(overlay, level: .aboveRoads)
+            lineVersion = version
+            if fit {
+                // A padded rect, not edge padding: the view has no size yet, and MapKit fits a
+                // rect to the final bounds on its own.
+                let bounds = overlay.boundingMapRect
+                mapView.setVisibleMapRect(
+                    bounds.insetBy(dx: -bounds.width * 0.18, dy: -bounds.height * 0.3), animated: false
+                )
+            }
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: any MKOverlay) -> MKOverlayRenderer {
@@ -105,36 +144,76 @@ struct LineMarkerMapView: UIViewRepresentable {
         }
 
         private func drag(_ phase: MarkerAnnotationView.DragPhase, touch: UITouch, annotation: MarkerAnnotation) {
-            guard let mapView, let view = mapView.view(for: annotation) as? MarkerAnnotationView else { return }
-            let model = parent.model
+            guard let mapView else { return }
             let finger = touch.location(in: mapView)
             switch phase {
             case .began:
+                guard drag == nil, parent.model.activeID == nil else { return }
                 let anchor = mapView.convert(annotation.coordinate, toPointTo: mapView)
-                grabOffset = CGPoint(x: finger.x - anchor.x, y: finger.y - anchor.y)
+                drag = Drag(
+                    annotation: annotation, id: nil,
+                    grabOffset: CGPoint(x: finger.x - anchor.x, y: finger.y - anchor.y), lastFinger: finger
+                )
                 mapView.isScrollEnabled = false
                 mapView.isZoomEnabled = false
-                view.setLifted(true)
-                model.begin(annotation.id)
             case .moved:
-                let point = CGPoint(x: finger.x - grabOffset.x, y: finger.y - grabOffset.y)
-                let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+                guard var current = drag, current.annotation === annotation else { return }
                 let metersPerPoint = mapView.region.span.latitudeDelta * 111_320 / Double(mapView.bounds.height)
-                model.move(
-                    annotation.id,
-                    toward: Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
-                    window: LineMarkerMapView.windowPoints * metersPerPoint
-                )
-                if let distance = model.marker(annotation.id)?.distance, distance != annotation.distance {
-                    annotation.distance = distance
-                    annotation.coordinate = clLocation(model.line.coordinate(at: distance))
+                let travel = hypot(finger.x - current.lastFinger.x, finger.y - current.lastFinger.y) * metersPerPoint
+                let window = LineMarkerEditorModel.mapWindow(travelMeters: travel)
+                current.lastFinger = finger
+                let point = CGPoint(x: finger.x - current.grabOffset.x, y: finger.y - current.grabOffset.y)
+                let target = mapView.convert(point, toCoordinateFrom: mapView)
+                let coordinate = Coordinate(latitude: target.latitude, longitude: target.longitude)
+                if current.id == nil {
+                    guard let id = pick(under: annotation, in: mapView, toward: coordinate, window: window),
+                        parent.model.begin(id)
+                    else { return }
+                    current.id = id
+                    (mapView.view(for: held(id, in: mapView) ?? annotation) as? MarkerAnnotationView)?.setLifted(true)
+                }
+                drag = current
+                guard let id = current.id, let held = held(id, in: mapView) else { return }
+                parent.model.move(id, toward: coordinate, window: window)
+                if let distance = parent.model.marker(id)?.distance, distance != held.distance {
+                    held.distance = distance
+                    held.coordinate = clLocation(parent.model.line.coordinate(at: distance))
                 }
             case .ended:
+                guard let current = drag, current.annotation === annotation else { return }
+                releaseDrag()
+            }
+        }
+
+        /// The marker under the finger among handles that share this handle's map point.
+        private func pick(
+            under annotation: MarkerAnnotation, in mapView: MKMapView, toward coordinate: Coordinate, window: Double
+        ) -> LineMarker.ID? {
+            let anchor = mapView.convert(annotation.coordinate, toPointTo: mapView)
+            let coincident = mapView.annotations.compactMap { candidate -> LineMarker.ID? in
+                guard let candidate = candidate as? MarkerAnnotation else { return nil }
+                let point = mapView.convert(candidate.coordinate, toPointTo: mapView)
+                return hypot(point.x - anchor.x, point.y - anchor.y) <= MarkerAnnotationView.reach ? candidate.id : nil
+            }
+            return parent.model.grab(among: coincident, toward: coordinate, window: window)
+        }
+
+        private func held(_ id: LineMarker.ID, in mapView: MKMapView) -> MarkerAnnotation? {
+            mapView.annotations.first { ($0 as? MarkerAnnotation)?.id == id } as? MarkerAnnotation
+        }
+
+        /// Let go, whether the finger lifted, the touch was cancelled or the map is going away.
+        func releaseDrag() {
+            guard let current = drag else { return }
+            drag = nil
+            if let mapView {
                 mapView.isScrollEnabled = true
                 mapView.isZoomEnabled = true
-                view.setLifted(false)
-                model.end()
+                if let id = current.id, let held = held(id, in: mapView) {
+                    (mapView.view(for: held) as? MarkerAnnotationView)?.setLifted(false)
+                }
             }
+            if current.id != nil { parent.model.end() }
         }
     }
 }
@@ -162,6 +241,8 @@ final class MarkerAnnotation: NSObject, MKAnnotation {
 final class MarkerAnnotationView: MKAnnotationView {
     /// Wide enough for the label, tall enough for the label over the pin.
     private static let hostSize = CGSize(width: 180, height: 64)
+    /// Half the grab area around the pin's tip.
+    static let reach: CGFloat = 22
 
     enum DragPhase { case began, moved, ended }
 
@@ -175,7 +256,7 @@ final class MarkerAnnotationView: MKAnnotationView {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
         bounds = CGRect(origin: .zero, size: Self.hostSize)
         host.view.backgroundColor = .clear
-        // The hosted view only draws; touches reach this view and its pan recognizer.
+        // The hosted view only draws; touches reach this view's `touches*` overrides.
         host.view.isUserInteractionEnabled = false
         host.view.frame = bounds
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -207,7 +288,7 @@ final class MarkerAnnotationView: MKAnnotationView {
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        hypot(point.x - anchor.x, point.y - anchor.y) <= 22
+        hypot(point.x - anchor.x, point.y - anchor.y) <= Self.reach
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -232,20 +313,38 @@ final class MarkerAnnotationView: MKAnnotationView {
 /// The whole line as one overlay. The renderer splits it at the marker distances, so a
 /// drag changes two colour runs and never rebuilds a polyline.
 final class SegmentedLineOverlay: NSObject, MKOverlay {
+    /// Vertices per chunk of the bounds index.
+    static let chunkSize = 256
+
     let line: MeasuredLine
     let mapPoints: [MKMapPoint]
     let pieceStarts: Set<Int>
     let boundingMapRect: MKMapRect
+    /// The bounds of each chunk of `chunkSize` segments, so a tile walks only the chunks it
+    /// touches. Chunk `k` covers the segments from vertex `k * chunkSize` to the next chunk's
+    /// first vertex.
+    let chunkRects: [MKMapRect]
 
     init(line: MeasuredLine) {
         self.line = line
         let points = line.vertices.map { MKMapPoint(clLocation($0.coordinate)) }
         mapPoints = points
-        pieceStarts = Set(line.pieceStarts)
+        pieceStarts = line.pieceStarts
         var rect = MKMapRect.null
-        for point in points {
-            rect = rect.union(MKMapRect(origin: point, size: MKMapSize(width: 0, height: 0)))
+        var chunks: [MKMapRect] = []
+        var chunk = MKMapRect.null
+        for (i, point) in points.enumerated() {
+            let dot = MKMapRect(origin: point, size: MKMapSize(width: 0, height: 0))
+            rect = rect.union(dot)
+            chunk = chunk.union(dot)
+            if (i + 1) % Self.chunkSize == 0 {
+                chunks.append(chunk)
+                // The chunk's last vertex also starts the next chunk's first segment.
+                chunk = dot
+            }
         }
+        if !chunk.isNull { chunks.append(chunk) }
+        chunkRects = chunks
         boundingMapRect = rect.isNull ? MKMapRect.world : rect
     }
 
@@ -376,10 +475,19 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
             emitted = point
         }
 
-        if first + 1 <= last {
-            for i in (first + 1)...last {
-                visit(overlay.mapPoints[i], gapBefore: overlay.pieceStarts.contains(i), isLast: false)
+        var i = first + 1
+        while i <= last {
+            let chunk = (i - 1) / SegmentedLineOverlay.chunkSize
+            let chunkLast = min((chunk + 1) * SegmentedLineOverlay.chunkSize, last)
+            if !overlay.chunkRects[chunk].intersects(clip) {
+                // Nothing of this chunk shows: lift the pen and skip to its last vertex.
+                penDown = false
+                previous = overlay.mapPoints[chunkLast]
+                i = chunkLast + 1
+                continue
             }
+            visit(overlay.mapPoints[i], gapBefore: overlay.pieceStarts.contains(i), isLast: false)
+            i += 1
         }
         visit(overlay.mapPoint(at: to), gapBefore: false, isLast: true)
         return path

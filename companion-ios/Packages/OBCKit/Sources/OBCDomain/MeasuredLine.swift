@@ -21,8 +21,8 @@ public struct MeasuredLine: Equatable, Sendable {
     }
 
     public let vertices: [Vertex]
-    /// Vertex indices that start a new piece. Sorted; never contains 0.
-    public let pieceStarts: [Int]
+    /// Vertex indices that start a new piece. Never contains 0.
+    public let pieceStarts: Set<Int>
 
     /// The line's length in metres.
     public var length: Double { vertices.last?.distance ?? 0 }
@@ -59,7 +59,7 @@ public struct MeasuredLine: Equatable, Sendable {
             ))
         }
         self.vertices = vertices
-        self.pieceStarts = starts.sorted()
+        self.pieceStarts = starts
     }
 
     public init(routePoints: [RoutePoint]) {
@@ -143,7 +143,16 @@ public struct MeasuredLine: Equatable, Sendable {
     /// of an out-and-back or a switchback: the finger over the other leg is not "near".
     /// Gap segments are skipped, so a result never lies inside a gap.
     public func project(_ point: Coordinate, near: Double, window: Double) -> Double {
-        guard vertices.count > 1 else { return 0 }
+        projection(of: point, near: near, window: window).distance
+    }
+
+    /// `project` with how far the point is from the line at that distance, in metres. Two
+    /// candidates within `tieMeters` of each other count as a tie, and the one nearer `near`
+    /// wins it: a finger on the lane between the legs of an out-and-back stays on its leg.
+    public func projection(
+        of point: Coordinate, near: Double, window: Double
+    ) -> (distance: Double, error: Double) {
+        guard vertices.count > 1 else { return (0, 0) }
         let first = index(at: max(near - window, 0))
         let last = min(index(at: min(near + window, length)) + 1, vertices.count - 1)
         // Planar metres around the search centre; the window is small next to the Earth.
@@ -154,6 +163,7 @@ public struct MeasuredLine: Equatable, Sendable {
         }
         let p = planar(point)
         var best = (distance: near, error: Double.infinity)
+        let tie = Self.tieMeters * Self.tieMeters
         for i in first..<last where !pieceStarts.contains(i + 1) {
             let a = planar(vertices[i].coordinate), b = planar(vertices[i + 1].coordinate)
             let ab = (x: b.x - a.x, y: b.y - a.y)
@@ -163,11 +173,17 @@ public struct MeasuredLine: Equatable, Sendable {
                 : 0
             let dx = a.x + t * ab.x - p.x, dy = a.y + t * ab.y - p.y
             let error = dx * dx + dy * dy
-            if error < best.error {
-                let segment = vertices[i + 1].distance - vertices[i].distance
-                best = (vertices[i].distance + t * segment, error)
+            let segment = vertices[i + 1].distance - vertices[i].distance
+            let candidate = vertices[i].distance + t * segment
+            let closer = error < best.error - tie
+            let tied = abs(error - best.error) <= tie && abs(candidate - near) < abs(best.distance - near)
+            if closer || tied {
+                best = (candidate, error)
             }
         }
-        return min(max(best.distance, near - window), near + window)
+        return (min(max(best.distance, near - window), near + window), best.error.squareRoot())
     }
+
+    /// Projection candidates closer to each other than this are one place.
+    public static let tieMeters = 1.0
 }
