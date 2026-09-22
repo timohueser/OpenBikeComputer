@@ -25,12 +25,10 @@ const GREEK: [&str; 25] = [
 /// flatten to a bare vowel.
 ///
 /// Letters are listed in lowercase. An uppercase letter is looked up in lowercase and capitalized
-/// again afterwards, so a digraph keeps its second letter small: `Жуков` is `Zhukov`. The two
-/// uppercase ligatures below are the exception, spelled in full capitals as they always were.
+/// again afterwards, so a digraph keeps its second letter small: `Жуков` is `Zhukov`, and a
+/// shouted word gets its capitals from [`upper_word_mask`] rather than from this table.
 fn spelling(c: char) -> Option<&'static str> {
     Some(match c {
-        'Æ' => "AE",
-        'Œ' => "OE",
         '\u{2010}'..='\u{2015}' | '\u{2212}' => "-",
         '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{2032}' => "'",
         '\u{201c}' | '\u{201d}' | '\u{201e}' => "\"",
@@ -268,9 +266,9 @@ mod tests {
         })
     }
 
-    /// The one character whose spelling deliberately differs from the table above: long s is one
-    /// `s`, the letter it stands for, not the `ss` the table gave it.
-    const IMPROVED: [(char, &str); 1] = [('\u{17f}', "s")];
+    /// The spellings that deliberately differ from the table above: long s is one `s`, the letter
+    /// it stands for, and a ligature takes its case from its word instead of always shouting.
+    const IMPROVED: [(char, &str); 3] = [('\u{17f}', "s"), ('\u{c6}', "Ae"), ('\u{152}', "Oe")];
 
     /// Every character the deleted table spelled is spelled the same way now, so replacing it with
     /// decomposition lost no letter. It reaches past Latin Extended-B into the punctuation block.
@@ -332,7 +330,8 @@ mod tests {
     fn the_ascii_fold_spells_out_what_the_font_would_still_draw() {
         assert_eq!(to_ascii_name("Bäckerei Müller"), "Baeckerei Mueller");
         assert_eq!(to_ascii_name("Straße"), "Strasse");
-        assert_eq!(to_ascii_name("Ærøskøbing"), "AEroskobing", "the ligature keeps its capitals");
+        assert_eq!(to_ascii_name("Ærøskøbing"), "Aeroskobing", "a ligature takes the case of its word");
+        assert_eq!(to_ascii_name("ÆRØSKØBING"), "AEROSKOBING");
         assert_eq!(to_ascii_name("Paral·lel"), "Paral lel", "a middle dot of its own is a word break");
         assert_eq!(to_ascii_name("Paraŀlel"), "Parallel", "but the ligature keeps the letter beside it");
         assert_eq!(to_ascii_name("北京烤鸭"), "", "an unreachable script leaves nothing");
