@@ -940,13 +940,13 @@
           "minimum": 0
         },
         "bytes": {
-          "description": "Every file of the artifact, `url`'s document and the photos beside it.",
+          "description": "Every file of the artifact but the declaration: `url`'s document and the photos beside it.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
         "sha256": {
-          "description": "One digest over those files, name and content per file. It is what the cell bake keys on, so a lost or swapped photo moves it.",
+          "description": "One digest over those same files, name and content per file — what a verifier re-computes to find a file that moved. **Not the cell bake's cut key.** That key is over the content document and the photo digests inside it, so a swapped photo does not move it and re-cuts nothing; it makes the next cut of those cells fail when the loader checks the photo against its declared digest.",
           "type": "string"
         },
         "licenses": {

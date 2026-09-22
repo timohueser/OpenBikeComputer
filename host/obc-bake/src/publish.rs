@@ -292,7 +292,7 @@ fn duration(value: std::time::Duration) -> String {
 /// Every object of a generated cell catalog, root last.
 ///
 /// Deliberately a whole-tree walk: a cell tree's publishable set is `cells/`, `regions/`, `skins/`,
-/// `previews/` and `schema.json` — the last of which is not optional, because it is the document
+/// `previews/`, `landmarks/` and `schema.json` — the last of which is not optional, because it is the document
 /// the generator reads the style-id assignment out of and the one a re-generation on another
 /// machine needs. Walking the tree means a future producer document cannot be forgotten here.
 /// Root-referenced cells, previews and satellites are replaced in that walk by the digest-addressed

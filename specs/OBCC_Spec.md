@@ -667,8 +667,8 @@ An artifact entry:
 | `languages` | array | The article languages the artifact stores. |
 | `records` | integer | Places in the content document. |
 | `photos` | integer | Places with a photo. |
-| `bytes` | integer | Every file of the artifact together. |
-| `sha256` | string | One digest over those files, name and content per file. |
+| `bytes` | integer | Every file of the artifact but the declaration. |
+| `sha256` | string | One digest over those same files, name and content per file. |
 | `licenses` | array | Sorted, distinct licence URLs of the artifact's texts and photos. |
 | `url` | string | The artifact's content document, at a stable key. |
 | `built_at` | string | RFC 3339 UTC, recorded by the landmark stage. |
@@ -677,9 +677,14 @@ Every field is required. A `region_id` MUST be one of the catalog's own regions,
 and MUST NOT repeat.
 
 The objects keep stable keys, unlike a cell or a satellite: nothing pins them, so
-there is no mixed-generation fetch to protect. `sha256` is what the cell bake keys
-on, so a lost, renamed or swapped photo moves it and re-cuts the cells that region
-reaches.
+there is no mixed-generation fetch to protect.
+
+`sha256` is a listing digest: every file's name and content, the declaration
+excluded. It is what a verifier re-computes to find a file that moved. **It is not
+the key a cell bake cuts on.** That key is over the content document and the photo
+digests inside it, so a swapped photo does not move it and re-cuts nothing; it
+makes the next cut of those cells fail, because the loader checks each photo
+against the digest the content document declares for it.
 
 ### 14.2 Attribution
 
@@ -694,6 +699,10 @@ the content. Each record keeps its own notices and revision, because those diffe
 per article and per photo; the device displays them beside the place.
 
 `LICENSE.txt` (§3.1) repeats both for a person.
+
+**A producer MUST NOT publish a store whose cells carry a landmark section with no
+`landmarks` block.** The section is the text and the photos; the block is the only
+place their credit is published. The two travel together or neither is publishable.
 
 ### 14.3 Declaration
 
