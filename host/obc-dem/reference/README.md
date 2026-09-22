@@ -28,8 +28,7 @@ tile against the contract below. `publish` and `mirror` are `rclone copy`; a pub
 adds, and it merges its index with the one already on R2.
 
 **A country-scale ingest is an owner-run job.** It moves hundreds of gigabytes and takes days per
-country. Run one source at a time, and `check` before `publish`. To remove a tile from R2, delete
-the object by hand and publish a full archive again.
+country. Run one source at a time, and `check` before `publish`.
 
 ## The tile contract
 
@@ -191,3 +190,21 @@ The two bakers answer a short mirror differently. `obc-dem bake` warns and names
 `mirror --bbox` that covers them; `--allow-short-reference` publishes anyway. Either way the
 cell's skip key records the tiles the bake could read, so completing the mirror re-bakes exactly
 the short cells.
+
+### Removing a tile
+
+`publish` never deletes. Anything leaves the bucket through `obc r2 rm`:
+
+```sh
+obc r2 rm cell-catalog/reference/v1/16/3410/2882.tif     # the plan, then stop
+obc r2 rm <key> --apply --reason "a bad ingest" --confirm "<the plan's own string>"
+obc help r2                                              # the cap, the plan, the confirmation
+```
+
+| what it does for a tile | why |
+| --- | --- |
+| Rewrites `index.json` without it, and sends that before the object goes | a crash then leaves a tile nobody can reach, never an index entry with no tile behind it |
+| Refuses `index.json` itself unless `--i-mean-it` names it | a tile the index does not name is not in the archive |
+| Refuses a catalogue it cannot read | it is how `rm` tells a live object from a stray one |
+| Appends to `removed.jsonl` at the bucket root | after the index goes up, the digest and the reason are the only record left |
+| Leaves a local archive alone | `mirror` the box again, or `ingest` it again |
