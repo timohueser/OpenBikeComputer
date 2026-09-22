@@ -425,6 +425,18 @@ too_far_hint = "Prueba un destino más cercano."
 not_found = "No se encontró la ruta."
 not_found_hint = "No hay camino cerca - prueba desde una carretera."
 
+# --- Start away from the route start: Ride to start or Join nearest ---
+[start_away]
+title = "IR AL INICIO"
+you_are = "Estás a "
+from_start = " del inicio."
+no_route = "No hay ruta al inicio desde aquí."
+ride_to_start = "Ir al inicio"
+then_route = ", luego la ruta"
+join_nearest = "Punto más cercano"
+away_at = " lejos, en "
+cancel = "Cancelar"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSA"

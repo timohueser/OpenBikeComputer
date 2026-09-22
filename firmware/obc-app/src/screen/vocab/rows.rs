@@ -1,5 +1,5 @@
 //! The shared row vocabulary: the settings grammar's rows (a door, a value, a switch, an action,
-//! an info line), the stat-ledger row, and the guarded-action option rows.
+//! an info line), the stat-ledger row, the guarded-action option rows, and the prompt options.
 //!
 //! One grammar for the settings pages and both drawers. A row is one line, or a label with a line
 //! under it. Every text starts at the same x, and every chevron is one size in one column, so a
@@ -347,5 +347,45 @@ pub(crate) fn draw_guarded_rows(
             TextAlign::Left,
             palette::INK,
         );
+    }
+}
+
+/// One answer to a prompt: a label and, under it, the olive hint that says what it does.
+pub(crate) struct PromptOption<'a> {
+    pub label: &'a str,
+    pub hint: Option<&'a str>,
+}
+
+/// The question's left edge, first line and line pitch.
+const PROMPT_X: i32 = 10;
+const PROMPT_TOP: i32 = 40;
+const PROMPT_PITCH: i32 = 22;
+/// The option slots' tops, one per option in order.
+const OPTION_TOPS: [i32; 3] = [92, 148, 208];
+const OPTION_H: i32 = 55;
+const OPTION_X: i32 = 6;
+const OPTION_TEXT_X: i32 = 12;
+
+/// Draw a prompt below the title: the question in olive, then up to three options with the amber
+/// cursor on `selected`. A question the rider must answer before a ride reads the same on every
+/// screen that asks one.
+pub(crate) fn draw_prompt(cv: &mut impl Surface, w: i32, question: &str, options: &[PromptOption], selected: usize) {
+    use palette::*;
+    let mut y = PROMPT_TOP;
+    super::chrome::wrap(question, w - 2 * PROMPT_X, Font::Caption, |line| {
+        cv.text(line, Point::new(PROMPT_X, y), Font::Caption, TextAlign::Left, SUBTEXT);
+        y += PROMPT_PITCH;
+    });
+    for (i, (option, top)) in options.iter().zip(OPTION_TOPS).enumerate() {
+        if i == selected {
+            cv.round(rect(OPTION_X, top, w - 2 * OPTION_X, OPTION_H), 5, AMBER);
+        }
+        let room = w - OPTION_TEXT_X - OPTION_X;
+        let label = super::marquee::fit(option.label, room, Font::Label);
+        cv.text(&label, Point::new(OPTION_TEXT_X, top + 4), Font::Label, TextAlign::Left, INK);
+        if let Some(hint) = option.hint {
+            let hint = super::marquee::fit(hint, room, Font::Caption);
+            cv.text(&hint, Point::new(OPTION_TEXT_X, top + 30), Font::Caption, TextAlign::Left, SUBTEXT);
+        }
     }
 }

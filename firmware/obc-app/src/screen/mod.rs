@@ -55,6 +55,7 @@ mod route_overview;
 mod route_received;
 mod route_swap;
 pub(crate) mod settings;
+mod start_away;
 mod statistics;
 mod trip_delete;
 pub(crate) mod vocab;
@@ -107,6 +108,7 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
+pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 mod whats_next;
@@ -915,6 +917,8 @@ screens! {
     /// ledger, and the guarded Delete-ride row.
     RideDetail(RideDetailScreen) => Caps::nav(),
     RouteOverview(RouteOverviewScreen) => Caps::nav(),
+    /// START RIDE away from the route start: Ride to start, Join nearest, or Cancel.
+    StartAway(StartAwayScreen) => Caps::nav(),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt(),
     /// The idle route-upload prompt: Start navigation or Dismiss. Host-pushed, and auto-closes
     /// after [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory: the route is already committed.
@@ -1060,6 +1064,7 @@ impl Screen {
             Screen::PoiDetail(s) => s.prepare(px),
             Screen::Detour(s) => s.prepare(px),
             Screen::DetourPreview(s) => s.prepare(px),
+            Screen::StartAway(s) => s.prepare(px),
             _ => {}
         }
     }
@@ -1181,7 +1186,7 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
     };
     let (lon, lat) = (route.start_lon, route.start_lat);
     cx.navigator.set_active_route(Some(i));
-    begin_riding_session(cx, lon, lat)
+    begin_riding_session(cx.state, cx.activity, cx.recorder, lon, lat)
 }
 
 /// Start a route-less tracking session from a non-tracking state. Identical to [`start_ride`]
@@ -1191,15 +1196,21 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
 pub(crate) fn start_ride_routeless(cx: &mut Ctx) -> Transition {
     let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
     cx.navigator.set_active_route(None);
-    begin_riding_session(cx, lon, lat)
+    begin_riding_session(cx.state, cx.activity, cx.recorder, lon, lat)
 }
 
-/// The session-begin shared by [`start_ride`] and [`start_ride_routeless`]. The caller sets
-/// `active_route` first — the one thing that differs between the two starts.
-fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
-    cx.state.enter_riding_view(lon, lat);
-    cx.activity.mode = Mode::Riding;
-    cx.recorder.request(crate::RecorderIntent::Start);
+/// The session-begin shared by [`start_ride`], [`start_ride_routeless`] and the landing of Ride to
+/// start. The caller sets `active_route` first — the one thing that differs between the starts.
+pub(crate) fn begin_riding_session(
+    state: &mut AppState,
+    activity: &mut Activity,
+    recorder: &mut crate::RecorderMachine,
+    lon: i32,
+    lat: i32,
+) -> Transition {
+    state.enter_riding_view(lon, lat);
+    activity.mode = Mode::Riding;
+    recorder.request(crate::RecorderIntent::Start);
     Transition::Root(Screen::Map(MapScreen::new()))
 }
 
