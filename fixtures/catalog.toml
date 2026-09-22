@@ -68,7 +68,7 @@ tracked_sources = { "photos/hahnen.json" = "sources/peak-view/photos/hahnen.json
 [profiles.test]
 summary = "All external fixture packages exercised by the full repository test suite"
 scenarios = ["grimsel", "monaco-upahead"]
-packages = ["peak-view-photos"]
+packages = ["peak-view-photos", "sim-freiburg"]
 
 [packages.assistant-osm]
 summary = "Pinned OSM sources for Ride Assistant: Switzerland, Monaco and regional West Cork"
