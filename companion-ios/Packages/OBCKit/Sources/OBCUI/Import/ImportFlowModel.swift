@@ -83,11 +83,12 @@ public final class ImportFlowModel {
 
     /// A route already in hand, such as a ride saved as a route: the same landing and the same
     /// name-collision rule as a decoded file.
-    public func open(route: ImportedRoute, fileName: String, fileData: Data) {
+    public func open(route: ImportedRoute, fileName: String, fileData: Data, source: ImportSource = .file) {
         let pending = PendingImport(
             route: route,
             fileName: fileName,
             fileData: fileData,
+            source: source,
             noDevicePaired: !isBonded(),
             bikeType: lastBikeType.value
         )
@@ -178,6 +179,7 @@ public struct PendingImport: Identifiable, Sendable {
     public let fileName: String
     /// The original bytes, kept for the library record.
     public let fileData: Data
+    public let source: ImportSource
     /// Bond state at arrival, which picks the framing.
     public let noDevicePaired: Bool
     /// The rider's last-used type at arrival.
@@ -190,6 +192,7 @@ public struct PendingImport: Identifiable, Sendable {
         route: ImportedRoute,
         fileName: String,
         fileData: Data,
+        source: ImportSource = .file,
         noDevicePaired: Bool,
         bikeType: BikeType = .road,
         replacing: PlannedRouteRecord? = nil
@@ -197,6 +200,7 @@ public struct PendingImport: Identifiable, Sendable {
         self.route = route
         self.fileName = fileName
         self.fileData = fileData
+        self.source = source
         self.noDevicePaired = noDevicePaired
         self.bikeType = bikeType
         self.replacing = replacing

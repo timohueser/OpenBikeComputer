@@ -269,6 +269,7 @@ struct ImportLandingHost: View {
         activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
+        source: ImportSource,
         bikeType: BikeType,
         deviceName: String,
         noDevicePaired: Bool,
@@ -291,7 +292,7 @@ struct ImportLandingHost: View {
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
-            dressing: .imported(route, fileName: fileName),
+            dressing: .imported(route, fileName: fileName, source: source),
             bikeType: bikeType,
             deviceObjectID: replacingDeviceObjectID,
             provenCommittedCRC: replacingProvenCRC,

@@ -260,6 +260,7 @@ struct RootView: View {
             activity: transferActivity,
             route: pending.route,
             fileName: pending.fileName,
+            source: pending.source,
             bikeType: pending.bikeType,
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
@@ -443,7 +444,7 @@ struct RootView: View {
         return RideShareMenu(
             gpx: RideGPXFile(ride: ride, encode: { try exporter.export($0).data }),
             onSaveAsRoute: ride.plannedRoute().map { route in
-                { importModel.open(route: route, fileName: fileName, fileData: Data()) }
+                { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date)) }
             }
         )
     }
