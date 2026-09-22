@@ -634,6 +634,24 @@ command = "cargo test -p obc-dem --locked --test decode --test real_tile -- --ig
 package = "obc-dem"
 targets = ["decode", "real_tile"]
 
+# The empirical half of the memory projection. `estimateMemory` prices a selection before the
+# download and the preflight refuses on it, but arithmetic cannot fail when the assembler buffers
+# a whole map anyway. This suite assembles the published catalogue's largest region in Chromium
+# and holds the linear memory the worker reports against that estimate's engine term. The margin
+# is 1.10, for the wasm allocator rounding a run's arenas up rather than for growth: a measured
+# country-scale run lands at 1.062 of the engine term, and a run that buffers what it says it
+# streams misses by hundreds of megabytes, not by ten percent. The published objects are the only
+# input big enough for the gate to be able to fail, so it contacts the live CDN.
+#
+# Run it by hand before a release, and after a change to the assembler or to the estimator. It
+# moves about 890 MB over the network, needs about 3 GB of free disk and takes tens of minutes.
+# Needs `npm install` in its own directory and `npx playwright install chromium`.
+[[suite]]
+id = "live.builder-memory"
+route = "live"
+command = "npm run test:live --prefix builder/app/tests/browser"
+platforms = ["linux", "macos"]
+
 # `test-weekly.yml` invokes this each Monday, and a maintainer can invoke it by hand. The
 # schedule belongs to that workflow; this row owns the XCUITest classes and the command.
 [[suite]]
