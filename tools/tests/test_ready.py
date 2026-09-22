@@ -28,6 +28,7 @@ PACKAGES = {
     "obc-app": package("obc-app", "firmware/obc-app"),
     "obc-render": package("obc-render", "firmware/obc-render"),
     "obc-boot": package("obc-boot", "firmware/obc-boot", "firmware/obc-boot"),
+    "obc-fw-nrf54l": package("obc-fw-nrf54l", "firmware/obc-fw-nrf54l", "firmware/obc-fw-nrf54l"),
 }
 
 
@@ -81,14 +82,30 @@ class ReadyPlanTests(unittest.TestCase):
         self.assertIn("cargo fmt --all", running)
         self.assertIn("obc test affected --base origin/develop", running)
 
-    def test_a_standalone_cargo_root_formats_and_lints_through_its_manifest(self):
+    def test_a_standalone_cargo_root_formats_through_its_manifest_and_lints_from_inside(self):
         running = self.running("firmware/obc-boot/src/main.rs", suites={"rust.obc-boot"})
         self.assertIn("cargo fmt --manifest-path firmware/obc-boot/Cargo.toml", running)
+        self.assertIn("cd firmware/obc-boot && cargo clippy --locked -- -D warnings", running)
         self.assertIn(
-            "cargo clippy --manifest-path firmware/obc-boot/Cargo.toml --all-targets -- -D warnings",
-            running,
+            "cd firmware/obc-boot && cargo clippy --locked --features rtt -- -D warnings", running
         )
         self.assertNotIn("cargo fmt --all", running)
+
+    def test_a_board_change_lints_the_ci_form(self):
+        running = self.running("firmware/obc-fw-nrf54l/src/lib.rs", suites={"rust.obc-fw-nrf54l"})
+        self.assertIn(
+            "cd firmware/obc-fw-nrf54l && cargo clippy --locked -- -D warnings", running
+        )
+        self.assertIn(
+            "cd firmware/obc-fw-nrf54l && cargo clippy --locked --features debug-uart -- -D warnings",
+            running,
+        )
+        # The board crate pins thumbv8m and has no test harness, so neither form may appear.
+        self.assertFalse([command for command in running if "--all-targets" in command])
+        self.assertFalse([command for command in running if "--manifest-path" in command and "clippy" in command])
+
+    def test_every_standalone_root_has_a_ci_clippy_command(self):
+        self.assertEqual(set(ready.STANDALONE_CLIPPY), set(ready.STANDALONE_ROOTS))
 
     def test_test_policy_and_test_sources_select_the_suites_check(self):
         for path in ("testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
