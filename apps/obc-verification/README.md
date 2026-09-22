@@ -91,7 +91,7 @@ administrator's current access on every request. **Revoke token** ends access at
 | `/api/coverage-proposals` | GET, POST | Read decisions and feedback; submit a plan |
 | `/api/coverage-proposals/ID` | POST | `{ "accept": false, "feedback": "…" }` — rejection only |
 | `/api/requirement-suggestions` | GET, POST | Read decisions; suggest a requirement or a change |
-| `/api/requirement-suggestions/ID` | POST | The owner's decision |
+| `/api/requirement-suggestions/ID` | POST | The owner's decision, or `{ "reopen": true }` to take it back |
 | `/api/requirements` | PUT | Owner write: draft, plans and `accept` of proposal IDs |
 | `/api/admin/agent-tokens`, `/api/admin/agent-tokens/ID` | GET, POST, DELETE | Token management |
 

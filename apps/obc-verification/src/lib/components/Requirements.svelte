@@ -247,10 +247,11 @@
   }
   onMount(() => { Promise.all([loadProposals(), loadSuggestions()]).catch(e => { error = message(e); }); });
   /** Accepting is the owner's acknowledgment that the requirement is written; neither answer touches the draft. */
-  async function decideSuggestion(id: string, accept: boolean, feedback = '') {
+  async function decideSuggestion(id: string, answer: boolean | 'reopen', feedback = '') {
     if (busy) return false;
     busy = true; error = '';
-    try { await api(`/api/requirement-suggestions/${id}`, 'POST', { accept, ...(feedback ? { feedback } : {}) }); return true; }
+    const body = answer === 'reopen' ? { reopen: true } : { accept: answer, ...(feedback ? { feedback } : {}) };
+    try { await api(`/api/requirement-suggestions/${id}`, 'POST', body); return true; }
     catch (e) { fail(e); return false; }
     finally { busy = false; await loadSuggestions().catch(() => { /* Keep the decision error. */ }); }
   }
