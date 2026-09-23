@@ -38,7 +38,9 @@ public final class MainScreenModel {
     /// The Planned tab rows: trip cards and loose route cards, newest first. A route filed in
     /// a trip shows only inside that trip; `routes` keeps every planned summary.
     public private(set) var plannedItems: [PlannedItem] = []
-    public private(set) var rides: [RideSummary] = []
+    public private(set) var rides: [RideSummary] = [] {
+        didSet { rideLibrary.rides = rides }
+    }
     /// Trashed rides, most recently trashed first.
     public private(set) var trashedRides: [RideSummary] = []
     public var tab: Tab = .planned
@@ -52,6 +54,7 @@ public final class MainScreenModel {
     @ObservationIgnored private var identityChecked = false
 
     public let sync: RideSyncCoordinator
+    public let rideLibrary: RideLibraryModel
 
     // MARK: Derived
 
@@ -69,8 +72,9 @@ public final class MainScreenModel {
         filtered(plannedItems, by: \.name)
     }
 
+    /// The Tracked rows: the library's year and bike-type filter, then the search.
     public var filteredRides: [RideSummary] {
-        filtered(rides, by: \.name)
+        filtered(rideLibrary.filteredRides, by: \.name)
     }
 
     // MARK: Wiring
@@ -130,6 +134,7 @@ public final class MainScreenModel {
         self.nameReconciler = nameReconciler
         self.transferActivity = transferActivity
         self.now = now
+        self.rideLibrary = RideLibraryModel(library: library, now: now)
         self.sync = RideSyncCoordinator(
             transport: transport, library: library, timing: syncTiming,
             activity: transferActivity
