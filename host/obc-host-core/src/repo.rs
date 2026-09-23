@@ -123,6 +123,10 @@ pub trait RouteRepository {
     fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {
         Err(CatalogError::Unsupported)
     }
+    /// Remove as many of these unaccepted candidates as one commit carries.
+    fn retract_reviews(&mut self, _ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
     /// Make the active route match `want`, (re)reading its bytes only on a change. **Returns whether
     /// the active bytes were (re)loaded this call** — the signal [`ActiveRouteSession`](crate::ActiveRouteSession)
     /// gates its index reparse on, so a settled view never reparses.
@@ -131,9 +135,6 @@ pub trait RouteRepository {
     fn active_source(&self) -> Option<&dyn ByteSource>;
     /// Retain the exact active snapshot. Repositories without leases cannot plan detours.
     fn pin_active(&self) -> Option<RouteLease> {
-        None
-    }
-    fn pin_review(&self, _source: obc_formats::obcr::RouteSourceKey) -> Option<RouteLease> {
         None
     }
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)

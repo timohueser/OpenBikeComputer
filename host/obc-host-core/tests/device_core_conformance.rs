@@ -393,10 +393,12 @@ impl CoreHarness {
             CatalogEffect::RemoveObject { kind, .. } => Some(kind),
             CatalogEffect::ReadCatalog { .. }
             | CatalogEffect::CleanupRoute { .. }
-            | CatalogEffect::RemoveReview { .. } => None,
+            | CatalogEffect::RemoveOrphanReviews { .. } => None,
         };
         match effect {
-            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
+            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                panic!("unexpected cleanup")
+            }
             CatalogEffect::ReadCatalog { token } => {
                 // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
                 // a refresh re-feeds exactly what the store now holds, and the outcome reports only
@@ -888,7 +890,9 @@ impl CoreHarness {
         for _ in 0..4 {
             let effect = self.next_catalog_effect();
             match effect {
-                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                    panic!("unexpected cleanup")
+                }
                 CatalogEffect::RemoveObject { .. } => return effect,
                 CatalogEffect::ReadCatalog { .. } => {
                     self.answer_catalog(effect);
@@ -1801,8 +1805,9 @@ fn the_pass_protocol_stays_within_its_budget() {
 
     assert!(size_of::<EffectSlots>() <= 216, "eight bounded effects: {}", size_of::<EffectSlots>());
     assert!(size_of::<OutcomeSlots>() <= 248, "eight bounded outcomes: {}", size_of::<OutcomeSlots>());
-    assert!(size_of::<DerivedNeeds>() <= 64);
-    assert!(size_of::<DerivedInputs>() <= 80);
+    // Three keyed needs: the ride track, the route shape and the day-done card's day profile.
+    assert!(size_of::<DerivedNeeds>() <= 120);
+    assert!(size_of::<DerivedInputs>() <= 136);
 
     // The largest single message per direction — what a payload creeping into the protocol would
     // show up as first.

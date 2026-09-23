@@ -55,7 +55,7 @@ final class ImportTests: XCTestCase {
     func testTCXImportSavesToPlanned() {
         let app = launch(importSample: "tcx")
 
-        let save = app.buttons["detail.saveToPlanned"]
+        let save = app.buttons["import.newRoute"]
         XCTAssertTrue(save.waitForExistence(timeout: 10))
         save.tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
@@ -84,8 +84,8 @@ final class ImportTests: XCTestCase {
     // MARK: Import with no device paired
 
     /// A share arriving before pairing presents the landing over the pairing intro with the
-    /// no-device framing: a banner, Save to Planned, Pair a device, and no Upload, because there is
-    /// nothing to upload to.
+    /// no-device framing: a banner, the New route row, Pair a device, and no Upload, because there
+    /// is nothing to upload to.
     @MainActor
     func testImportWithNoDeviceShowsH4Framing() {
         let app = launch(scenario: "noDevice", importSample: "gpx")
@@ -95,13 +95,13 @@ final class ImportTests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'No device paired yet'"))
                           .firstMatch.waitForExistence(timeout: 5),
                       "H4 banner missing")
-        XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
+        XCTAssertTrue(app.buttons["import.newRoute"].exists)
         XCTAssertTrue(app.buttons["detail.pairDevice"].exists)
         XCTAssertFalse(app.buttons["detail.upload"].exists, "H4 must not offer Upload")
         snap(app, "H4-import-no-device")
 
         // Save returns to where the share interrupted: the pairing intro.
-        app.buttons["detail.saveToPlanned"].tap()
+        app.buttons["import.newRoute"].tap()
         XCTAssertTrue(app.staticTexts["pair.introTitle"].firstMatch.waitForExistence(timeout: 5)
                       || app.buttons["pair.start"].waitForExistence(timeout: 5),
                       "saving without a device should land back on D1")

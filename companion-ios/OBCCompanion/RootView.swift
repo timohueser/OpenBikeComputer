@@ -54,7 +54,8 @@ struct RootView: View {
         firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil,
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
-        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -77,7 +78,8 @@ struct RootView: View {
             // Once per established connection, push the bond record's desired name if the device
             // config disagrees, which heals a rename whose write never landed.
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
-            transferActivity: transferActivity
+            transferActivity: transferActivity,
+            placeName: placeName
         ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
@@ -106,8 +108,8 @@ struct RootView: View {
                 MainScreenView(
                     model: mainModel,
                     importFileExtensions: importer.supportedFileExtensions,
-                    onImportFile: { url in
-                        Task { await importModel.openFile(at: url) }
+                    onImportFile: { urls in
+                        Task { await importModel.openFiles(at: urls) }
                     },
                     onSelectRoute: { route in
                         path.append(.route(id: route.id))
@@ -137,11 +139,23 @@ struct RootView: View {
         .fullScreenCover(item: $importModel.pendingImport) { pending in
             importLanding(for: pending)
         }
+        .fullScreenCover(item: $importModel.pendingJoin) { join in
+            joinSheet(for: join)
+        }
         // The share sheet can hand over anything; say what we accept.
         .alert("Couldn't read that file", isPresented: $importModel.importFailed) {
             Button("OK", role: .cancel) {}
         } message: {
             Text("OBC imports GPX and TCX route files. That one looked like something else.")
+        }
+        // A trip change that did not go as asked says so, in one line, where the rider made it.
+        .alert(
+            mainModel.tripNotice ?? "",
+            isPresented: Binding(
+                get: { mainModel.tripNotice != nil },
+                set: { if !$0 { mainModel.tripNotice = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
         }
         // A re-import whose name matches a saved route, such as an edited tour: update that route
         // in place, or keep both.
@@ -202,7 +216,8 @@ struct RootView: View {
         }
         // Share-sheet delivery: iOS hands route files here, the same path as a Files pick.
         .onOpenURL { url in
-            Task { await importModel.openFile(at: url) }
+            // A share of several files arrives one URL at a time; the model batches them.
+            importModel.receive(url)
         }
         // One shared online and offline signal for every basemap preview.
         .environment(\.obcIsOnline, reachability.isOnline)
@@ -257,49 +272,64 @@ struct RootView: View {
     private func importLanding(for pending: PendingImport) -> some View {
         ImportLandingHost(
             transport: transport,
-            activity: transferActivity,
             route: pending.route,
             fileName: pending.fileName,
             source: pending.source,
             bikeType: pending.bikeType,
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
-                    // A trip is app-local, so the picker works with no device paired just the same.
-            tripPickerItems: mainModel.tripPickerItems,
+            // A trip is app-local, so the trip rows work with no device paired just the same.
+            trips: mainModel.tripPickerItems,
             replacing: pending.replacing,
-                    // Replace by id only when the replaced route's link is valid for this device.
-            replacingDeviceObjectID: pending.replacing.flatMap {
-                mainModel.plannedDeviceObjectID(for: $0.id)
-            },
-            replacingProvenCRC: pending.replacing.flatMap {
-                mainModel.plannedProvenCommittedCRC(for: $0.id)
-            },
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
-                    // File into the chosen trip as its last stage; `.none` leaves it loose.
-                mainModel.fileRoute(detail.summary.id, into: tripSelection)
+                // A trip choice moves the route into the trip and opens the trip page.
+                if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
+                    path = [.trip(id: tripID)]
+                }
                 importModel.closeImport()
             },
-                    // Uploading saves it too: the route lands in Planned the moment the upload
-                    // completes, under the id the device assigned, and the cover closes after it.
-                    // The model scopes the recorded link to the connected device's identity.
-            onUploaded: { detail, tripSelection, objectID, crc in
+            // Save first, so a pairing detour does not cost the import, then start the scan.
+            onPair: { detail in
                 mainModel.addImportedRoute(pending.record(for: detail))
-                mainModel.fileRoute(detail.summary.id, into: tripSelection)
-                if let objectID {
-                    mainModel.markRouteUploaded(
-                        detail.summary.id, objectID: objectID, crc32: crc)
-                }
-            },
-                    // Save first, so a pairing detour does not cost the import, then start the scan.
-            onPair: { detail, tripSelection in
-                mainModel.addImportedRoute(pending.record(for: detail))
-                mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 importModel.closeImport()
                 launchModel.startPairing()
             },
             onCancel: { importModel.closeImport() }
         )
+    }
+
+    /// Several files at once: one trip with a day per file, or each file as a route.
+    private func joinSheet(for join: PendingJoin) -> some View {
+        TripJoinSheet(
+            files: join.files.enumerated().map { index, file in
+                TripJoinSheet.File(id: index, fileName: file.fileName, points: file.route.points)
+            },
+            onMakeTrip: { ordered in
+                // A file too short to be a day stays a route, and the rider is told.
+                let short = ordered.filter { !Trip.isDay($0.points) }
+                for file in short { saveAsRoute(join.files[file.id]) }
+                mainModel.noteTooShort(short.map(\.fileName))
+                let tripID = mainModel.createTrip(
+                    name: "New trip", files: ordered.map(\.points),
+                    dayNames: ordered.map { ($0.fileName as NSString).deletingPathExtension })
+                importModel.closeJoin()
+                if let tripID { path = [.trip(id: tripID)] }
+            },
+            onNotNow: {
+                join.files.forEach(saveAsRoute)
+                importModel.closeJoin()
+            }
+        )
+    }
+
+    /// Save one file of a join as a route, with the summary the import landing would make.
+    private func saveAsRoute(_ file: PendingImport) {
+        let detail = RouteDetailModel(
+            transport: transport, dressing: .imported(file.route, fileName: file.fileName),
+            bikeType: file.bikeType
+        ).makeDetail()
+        mainModel.addImportedRoute(file.record(for: detail))
     }
 
     /// The collision dialog's title: the imported route's name, or the file name, quoted.
@@ -364,11 +394,13 @@ struct RootView: View {
                                 id, objectID: objectID, crc32: crc)
                         }
                     },
-                    // Add to trip on a loose route; Move to trip and Remove from trip on a filed one.
+                    // The route moves into the trip, so the trip page replaces the route page.
                     tripPickerItems: mainModel.tripPickerItems,
-                    currentTripID: mainModel.tripContaining(id),
-                    onAddToTrip: { mainModel.fileRoute(id, into: $0) },
-                    onRemoveFromTrip: { mainModel.removeRouteFromTrip(id) }
+                    onAddToTrip: { selection in
+                        guard let tripID = mainModel.fileRoute(id, into: selection) else { return }
+                        path.removeLast()
+                        path.append(.trip(id: tripID))
+                    }
                 )
             }
         case .ride(let id):
@@ -397,9 +429,7 @@ struct RootView: View {
             TripDetailView(
                 model: mainModel,
                 tripID: id,
-                // A stage opens the ordinary route detail, as a top-level route card does.
-                onSelectRoute: { route in path.append(.route(id: route.id)) },
-                // The trip dissolved or was deleted: pop back and drop anything pushed above it.
+                // The trip was deleted: pop back and drop anything pushed above it.
                 onClose: {
                     if let index = path.firstIndex(of: .trip(id: id)) {
                         path.removeSubrange(index...)

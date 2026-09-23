@@ -294,3 +294,26 @@ fn sparkline_refuses_incomplete_segments_and_unreadable_chunks() {
     malformed[count_at..count_at + 2].copy_from_slice(&0u16.to_le_bytes());
     assert!(obc_route::elevation_sparkline(&SliceSource(&malformed)).is_none());
 }
+
+/// A day of stretches climbs what each route's own profile says between the stretch's ends: the
+/// rest of one route up to its peak, then a whole route, which climbs its header figure.
+#[test]
+fn a_day_of_stretches_climbs_what_each_route_profile_says() {
+    let bytes = convert("Peaked Ridge", PEAKED);
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let whole = r.elevation_profile();
+    let (total, half) = (r.total_distance_m, r.total_distance_m / 2);
+
+    let mut out = obc_route::Profile::EMPTY;
+    let mut day = obc_route::DayProfile::start(half + total, &mut out);
+    day.stretch(&src, 0, half, &mut out).unwrap();
+    day.stretch(&src, 0, u32::MAX, &mut out).unwrap();
+    let climb = day.finish(&mut out);
+
+    assert_eq!(climb, whole.ascent_between_m(0, half, total) + r.total_ascent_m);
+    assert_eq!(out.ascent_to(1.0), climb);
+    assert_eq!((out.min_ele_m, out.max_ele_m), (200, 300));
+    assert!(out.cols().iter().all(|&(mn, mx)| mn <= mx), "a gap-free band");
+}

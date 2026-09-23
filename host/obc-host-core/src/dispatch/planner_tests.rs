@@ -348,7 +348,7 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     let offset_reader = obc_route::RouteReader::new(&offset_index, &offset_visit);
     assert_eq!(offset_reader.preview_polyline::<64>().last(), Some(&(530_000, 500_100)));
     let stop = offset_reader.visit_descriptor().unwrap().unwrap().accepted_anchors_m[1];
-    assert!(!VisitCosts::read(&offset_visit, [0, stop]).unwrap().complete_elevation);
+    assert!(!VisitCosts::read(&offset_visit, [0, stop], None).unwrap().complete_elevation);
     let mut visit = crate::nav_visit::VisitPlan::start(context, Some(target), &original).unwrap();
     let stats = run(&mut visit, &original);
     assert_eq!(visit.searches(), 2);
@@ -357,7 +357,7 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     let index = obc_route::RouteIndex::read(&source).unwrap();
     let route = obc_route::RouteReader::new(&index, &source);
     let descriptor = route.visit_descriptor().unwrap().unwrap();
-    let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+    let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]], None).unwrap();
     assert!(!costs.complete_elevation && !costs.arrival_elevation_complete);
     assert_eq!(route.total_distance_m, stats.total_distance_m);
     assert!(stats.total_distance_m > original.total_distance_m);
@@ -440,8 +440,8 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
         bonding: false,
         storage_space_report: false,
     };
-    let mut acquisitions = 0;
-    let mut opened = false;
+    let (mut trials, mut rebuilds) = (0, 0);
+    let mut opened = None;
     let mut reviewed = false;
     let mut pressed = false;
     for now in 1..10_000 {
@@ -454,8 +454,10 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
             support,
         );
         if let Some(effect) = plan.effects.navigator.take() {
-            if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. }) {
-                acquisitions += 1;
+            match effect {
+                NavigatorEffect::Acquire { work: PlannerWork::MeasureRoute(_), .. } => trials += 1,
+                NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. } => rebuilds += 1,
+                _ => {}
             }
             plan.effects.navigator.try_put(effect).unwrap();
         }
@@ -471,11 +473,13 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
             &mut Flat,
             &mut (),
         );
-        if !opened && now > 2 {
+        if opened.is_none() && now > 2 {
             p.app.open_easier_routes(key).unwrap();
-            opened = true;
+            opened = p.routes.store_scope();
         }
-        if acquisitions == 5 && p.app.assistant_review_status() == ReviewStatus::Preview {
+        if rebuilds == 1 && p.app.assistant_review_status() == ReviewStatus::Preview {
+            let commits = p.routes.store_scope().unwrap().revision.raw() - opened.unwrap().revision.raw();
+            assert_eq!(commits, 1, "only the selected candidate is published");
             assert_eq!(p.app.route_ids()[p.app.active_route_index().unwrap()], original_id);
             assert!(!p.app.assistant_preview_shape().is_empty());
             if !reviewed {
@@ -493,9 +497,10 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
             assert!(!checkpoint.unresolved_avoidance);
             assert_ne!(checkpoint.route.object, original_id);
             assert!(checkpoint.route.length > 0);
-            // Profile, both strong trials, the milder Shorter twin, and the exact selected rebuild. The
-            // imported original has no surface, and no climb trial saves enough to run its twin.
-            assert_eq!(acquisitions, 5);
+            // Profile, both strong trials and the milder Shorter twin are measured, and only the
+            // selected one is rebuilt. The imported original has no surface, and no climb trial
+            // saves enough to run its twin.
+            assert_eq!((trials, rebuilds), (4, 1));
             let source = p.routes.source(checkpoint.route.object).unwrap();
             let accepted = obc_route::RouteIndex::read(&source).unwrap();
             assert!(accepted.total_distance_m + 500 <= original.total_distance_m);
@@ -531,5 +536,5 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
             return;
         }
     }
-    panic!("batch did not finish: acquisitions={acquisitions}, status={:?}", p.app.assistant_review_status());
+    panic!("batch did not finish: trials={trials}, rebuilds={rebuilds}, status={:?}", p.app.assistant_review_status());
 }

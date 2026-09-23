@@ -217,6 +217,7 @@ mod tests {
             bike_type: crate::settings::BikeType::Road,
             language: crate::settings::Language::En,
             next_ahead: EMPTY_CACHE,
+            trip_later_m: None,
         }
     }
 

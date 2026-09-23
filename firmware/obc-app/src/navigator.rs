@@ -13,6 +13,7 @@
 //! never ride an effect or an outcome. What crosses is an identity, a bounded request, and the
 //! preview figures the HUD prints.
 
+mod arrival;
 mod following;
 mod review;
 mod visit;
@@ -23,6 +24,7 @@ pub use review::{
 };
 pub use visit::VisitUnavailable;
 
+pub(crate) use arrival::Arrival;
 pub use following::RouteState;
 
 use obc_route::nav::NavError;
@@ -71,7 +73,10 @@ pub enum NavigatorIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerWork {
     AssistantRoute(NavRequest),
-    RestoreReview(obc_formats::obcr::RouteSourceKey),
+    /// Plan the request as a leg and, for a visit, the leg back; report the figures, keep nothing.
+    MeasureLegs(NavRequest),
+    /// Compose the easier route into a measuring sink; report its costs and checksum, keep nothing.
+    MeasureRoute(NavRequest),
     Route(NavRequest),
     Detour(DetourRequest),
 }
@@ -350,6 +355,9 @@ pub struct NavigatorMachine {
     matched_route: Option<usize>,
     /// Where the next fresh ride joins the active route, instead of where its first fix locks.
     join_m: Option<u32>,
+    /// Where the rider stood on the route at Finish, which unloads it before the store confirms the
+    /// save.
+    ride_end: Option<following::RideEnd>,
 }
 
 impl NavigatorMachine {
@@ -386,6 +394,7 @@ impl NavigatorMachine {
             route_match: RouteMatch::new(),
             matched_route: None,
             join_m: None,
+            ride_end: None,
         }
     );
 
@@ -528,8 +537,12 @@ impl NavigatorMachine {
                     return None;
                 }
                 let request = self.route_request.take()?;
-                if let Some(source) = self.review.restore {
-                    PlannerWork::RestoreReview(source)
+                if self.review.measure {
+                    if self.review.context.is_some_and(|c| matches!(c.purpose, ReviewPurpose::Easier(_))) {
+                        PlannerWork::MeasureRoute(request)
+                    } else {
+                        PlannerWork::MeasureLegs(request)
+                    }
                 } else if self.review.status == ReviewStatus::Planning {
                     PlannerWork::AssistantRoute(request)
                 } else {
@@ -572,7 +585,7 @@ impl NavigatorMachine {
             }
             NavigatorOutcome::ReviewReady { .. } => {
                 (self.phase == OperationPhase::Committing
-                    || self.phase == OperationPhase::Acquiring && self.review.restore.is_some())
+                    || self.phase == OperationPhase::Stepping && self.review.measure)
                     && self.live == Some(PlanFamily::Route)
                     && self.review.context.is_some()
             }
@@ -779,6 +792,7 @@ impl NavigatorMachine {
             route_match,
             matched_route,
             join_m,
+            ride_end,
         } = self;
         assert_eq!(review.status, ReviewStatus::Idle);
         visit.assert_boot_state();
@@ -796,7 +810,7 @@ impl NavigatorMachine {
         assert!(climb_profile.cols().iter().all(|&column| column == 0), "the climb detail starts flat");
         assert_eq!(*climb_fill_count, 0, "the climb detail has not been filled");
         assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
-        assert!(join_m.is_none(), "no ride waits to join");
+        assert!(join_m.is_none() && ride_end.is_none(), "no ride waits to join or has ended");
     }
 }
 

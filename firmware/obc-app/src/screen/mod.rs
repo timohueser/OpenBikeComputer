@@ -22,9 +22,11 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
+mod arrival;
 pub(crate) mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
+mod day_done;
 mod detour;
 mod dfu;
 mod find_place;
@@ -61,10 +63,14 @@ mod trip_delete;
 pub(crate) mod vocab;
 mod warning;
 
+pub use arrival::ArrivalScreen;
+pub(crate) use arrival::ArrivalView;
 pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
+pub use day_done::DayDoneScreen;
+pub(crate) use day_done::RideTotals;
 pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
@@ -367,6 +373,9 @@ pub struct Render<'a> {
     pub trip_progress: &'a [crate::trip::TripProgress],
     /// Where the active trip's next day meets the day before; `None` loads the day as it is.
     pub day_join: Option<crate::trip::DayJoin>,
+    /// The length of the loaded trip day's later days, or `None` when the loaded route is not a
+    /// trip day.
+    pub trip_later_m: Option<u32>,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -376,6 +385,8 @@ pub struct Render<'a> {
     /// The viewed ride's recorded-track elevation profile, host-filled on detail entry and
     /// invalidated on exit. `None` while the fill still streams and on every other screen.
     pub ride_profile: Option<&'a Profile>,
+    /// Tomorrow's profile on the day-done card, host-filled into the ride profile's buffer.
+    pub day_profile: Option<&'a Profile>,
     /// The climb the rider is currently on, or `None` between climbs. A `Some` means a climb is
     /// tracked and both halves are valid, so a screen never reads a stale detail buffer.
     pub climb: Option<ActiveClimb<'a>>,
@@ -495,6 +506,7 @@ impl Render<'_> {
             bike_type: self.settings.bike_type,
             language: self.settings.language,
             next_ahead: self.next_ahead,
+            trip_later_m: self.trip_later_m,
         }
     }
 }
@@ -885,6 +897,9 @@ screens! {
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
+    /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
+    /// totals. OK returns Home.
+    DayDone(DayDoneScreen) => Caps::modal(),
     Menu(MenuScreen) => Caps::nav(),
     /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
     /// platform-fed, so the screen is unreachable when no panorama data is installed.
@@ -926,6 +941,10 @@ screens! {
     RouteOverview(RouteOverviewScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
     /// START RIDE away from the route start: Ride to start, Join nearest, or Cancel.
     StartAway(StartAwayScreen) => Caps::nav(),
+    /// The end of the loaded route during a ride: Finish ride, Ride on to the next trip day, or
+    /// Keep riding. Only the card scheduler opens it, and it waits until the rider has closed
+    /// everything over the riding page.
+    Arrival(ArrivalScreen) => Caps::modal(),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt(),
     /// The idle route-upload prompt: Start navigation or Dismiss. Host-pushed, and auto-closes
     /// after [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory: the route is already committed.
@@ -1102,6 +1121,7 @@ impl Screen {
             Screen::RideControl(s) => s.selection_is_guarded(),
             Screen::RideRecovery(s) => s.selection_is_guarded(),
             Screen::RouteSwap(s) => s.selection_is_guarded(),
+            Screen::Arrival(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Connections(s) => s.selection_is_guarded(state),
@@ -1154,6 +1174,7 @@ impl Screen {
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
             Screen::RideDetail(s) => s.tick_timers(now_ms),
+            Screen::DayDone(s) => s.tick_timers(now_ms),
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
             Screen::PeakView(s) => s.tick_timers(now_ms, w, h),
             Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),

@@ -13,9 +13,9 @@ import OBCTransport
 public struct MainScreenView: View {
     @Bindable private var model: MainScreenModel
     private let importFileExtensions: Set<String>
-    private let onImportFile: (URL) -> Void
+    private let onImportFile: ([URL]) -> Void
     private let onSelectRoute: (RouteSummary) -> Void
-    private let onSelectTrip: (TripRecord) -> Void
+    private let onSelectTrip: (Trip) -> Void
     private let onSelectRide: (RideSummary) -> Void
     private let onSettings: () -> Void
     private let onOpenTrash: () -> Void
@@ -28,8 +28,6 @@ public struct MainScreenView: View {
     @State private var selectedRouteIDs: Set<RouteID> = []
     @State private var groupPromptShown = false
     @State private var groupName = "New trip"
-    /// The loose route whose "Add to trip" menu is opening the shared picker; nil when none is up.
-    @State private var pickerRequest: RouteTripPickerRequest?
     // Pull-to-reveal search, Mail-style: hidden until the list is tugged down past the threshold,
     // and hidden again on scroll-up once the query is cleared. `scrollBaseline` is the sentinel
     // row's resting position.
@@ -39,9 +37,9 @@ public struct MainScreenView: View {
     public init(
         model: MainScreenModel,
         importFileExtensions: Set<String> = ["gpx", "tcx"],
-        onImportFile: @escaping (URL) -> Void = { _ in },
+        onImportFile: @escaping ([URL]) -> Void = { _ in },
         onSelectRoute: @escaping (RouteSummary) -> Void = { _ in },
-        onSelectTrip: @escaping (TripRecord) -> Void = { _ in },
+        onSelectTrip: @escaping (Trip) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
         onSettings: @escaping () -> Void = {},
         onOpenTrash: @escaping () -> Void = {}
@@ -143,14 +141,6 @@ public struct MainScreenView: View {
         #else
         .sheet(isPresented: $libraryMapShown) { libraryMap }
         #endif
-        // The shared trip picker for a loose route's "Add to trip" menu.
-        .sheet(item: $pickerRequest) { request in
-            TripPickerSheet(
-                title: "Add to trip",
-                trips: model.tripPickerItems,
-                onPick: { model.fileRoute(request.id, into: $0) }
-            )
-        }
         #if os(iOS)
         // The screen draws its own chrome: top bar and large-title row.
         .toolbar(.hidden, for: .navigationBar)
@@ -414,14 +404,14 @@ public struct MainScreenView: View {
                 isPresented: $emptyStatePickerShown,
                 allowedContentTypes: importFileExtensions.sorted().compactMap {
                     UTType(filenameExtension: $0)
-                }
+                },
+                allowsMultipleSelection: true
             ) { result in
-                if case .success(let url) = result { onImportFile(url) }
+                if case .success(let urls) = result, !urls.isEmpty { onImportFile(urls) }
             }
         } else {
-            // Trip cards and loose route cards, interleaved by `addedAt`. While selecting, route
-            // cards toggle instead of navigating and trips dim out, because a trip is not a
-            // groupable stage.
+            // Trip cards and route cards, interleaved by `addedAt`. While selecting, route cards
+            // toggle instead of navigating and trips dim out: only routes join into a trip.
             ForEach(model.filteredPlannedItems) { item in
                 switch item {
                 case .trip(let trip):
@@ -431,7 +421,8 @@ public struct MainScreenView: View {
                         TripCard(
                             name: trip.name,
                             stats: model.tripStats(trip.id),
-                            stageSummaries: model.tripStages(trip.id),
+                            daySummaries: model.tripDays(trip.id).map { $0.summary(tripID: trip.id) },
+                            dateLine: model.tripDateLine(trip.id),
                             onDevice: model.tripOnDeviceState(trip.id)
                         )
                     }
@@ -469,22 +460,6 @@ public struct MainScreenView: View {
                         .accessibilityIdentifier("main.card.\(route.id.rawValue)")
                         .obcSwipeToDelete {
                             model.deleteRoute(route.id)
-                        }
-                        // Clip the long-press lift preview to the card's own rounded shape, or the
-                        // system snapshots the whole rectangular row and the card floats on a stark
-                        // white slab. iOS-only kind; macOS is the test host.
-                        #if os(iOS)
-                        .contentShape(
-                            .contextMenuPreview,
-                            RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
-                        )
-                        #endif
-                        .contextMenu {
-                            Button {
-                                pickerRequest = RouteTripPickerRequest(id: route.id)
-                            } label: {
-                                Label("Add to trip…", systemImage: "folder.badge.plus")
-                            }
                         }
                     }
                 }
@@ -585,12 +560,6 @@ public struct MainScreenView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 40)
     }
-}
-
-/// A loose route whose "Add to trip" menu is presenting the shared picker: the `Identifiable`
-/// handle a `.sheet(item:)` needs.
-private struct RouteTripPickerRequest: Identifiable {
-    let id: RouteID
 }
 
 #if DEBUG

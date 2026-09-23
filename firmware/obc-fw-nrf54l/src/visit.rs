@@ -12,12 +12,12 @@ use obc_app::{
     App,
 };
 use obc_formats::{
-    io::ByteSource,
+    io::{ByteSink, ByteSource},
     obcr::{CHUNK_META_LEN, HEADER_FULL_LEN, POINT_RECORD_LEN, VISIT_DESCRIPTOR_LEN, WAYPOINT_LEN},
 };
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_route::{
-    visit::{visit_anchor, VisitChoice},
+    visit::{visit_anchor, LegCost, VisitChoice, VisitLegs},
     RouteReader, RouteStats, Step,
 };
 use obc_storage::flat::{Allocation, FlatStore, ObjectId, Revision, SealedAllocation, StoreError, StoreSource};
@@ -33,6 +33,19 @@ enum Work {
     Leg,
     Append,
     Finish,
+    /// A leg search whose bytes go nowhere; only its figures are kept.
+    Measure,
+}
+
+/// A measured leg is never stored, so its stream has no sink to fill.
+struct Discard;
+impl ByteSink for Discard {
+    fn write(&mut self, _: &[u8]) -> Result<(), obc_formats::io::Error> {
+        Ok(())
+    }
+    fn patch_at(&mut self, _: u32, _: &[u8]) -> Result<(), obc_formats::io::Error> {
+        Ok(())
+    }
 }
 #[derive(Clone, Copy)]
 enum Done {
@@ -83,6 +96,10 @@ pub(crate) struct Executor {
     rejoin: u32,
     return_to: (i32, i32),
     returning: bool,
+    /// The measured outbound leg, while the leg back is searched.
+    outbound: Option<LegCost>,
+    /// An easier trial: the composition goes to the arena's measure, never to the card.
+    measuring: bool,
     published: Option<(ObjectId, Revision)>,
     uncertain: bool,
     validated: Option<(u64, u32)>,
@@ -101,6 +118,8 @@ impl Executor {
             rejoin: 0,
             return_to: (0, 0),
             returning: false,
+            outbound: None,
+            measuring: false,
             published: None,
             uncertain: false,
             validated: None,
@@ -117,11 +136,13 @@ impl Executor {
                     | NavigatorEffect::CommitRoute { .. }
                     | NavigatorEffect::Release { family: PlanFamily::Route, .. }
             ))
-            || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::RestoreReview(_), .. })
-            || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                && app.assistant_review_context().is_some_and(|c| {
-                    matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
-                })
+            || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::MeasureLegs(_), .. })
+            || matches!(
+                effect,
+                NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_), .. }
+            ) && app.assistant_review_context().is_some_and(|c| {
+                matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
+            })
     }
     pub(crate) fn original_current(&self) -> bool {
         self.original.as_ref().is_some_and(StoreSource::is_current)
@@ -190,10 +211,40 @@ impl Executor {
                 self.validated = None;
                 None
             }
-            NavigatorEffect::Acquire { work: PlannerWork::RestoreReview(source), .. } => {
-                self.restore(source, token, app, store, guard, elev)
+            NavigatorEffect::Acquire { work: PlannerWork::MeasureLegs(request), .. } => {
+                self.validated = None;
+                self.token = Some(token);
+                if !matches!(self.phase, Phase::Empty) || guard.is_some() {
+                    return self.fail(NavigatorError::Workspace);
+                }
+                let Some(context) = app.assistant_review_context() else {
+                    return self.fail(NavigatorError::Unavailable);
+                };
+                if !store.mode().readable()
+                    || context.map != crate::flat_store::planner_map_key(store)
+                    || context.store.bytes() != store.store_id().0
+                    || context.profile != app.settings().bike_type
+                    || !crate::flat_store::planner_map_current()
+                {
+                    return self.fail(NavigatorError::SourceChanged);
+                }
+                let Some(quiesced) = app.nav_arena_precondition() else { return self.fail(NavigatorError::Workspace) };
+                *guard = match crate::arena::claim_nav(quiesced) {
+                    Ok(g) => Some(g),
+                    Err(_) => return self.fail(NavigatorError::Workspace),
+                };
+                let g = guard.as_mut()?;
+                g.visit_begin_sources();
+                g.visit_begin_plan(request.from, request.to, context);
+                self.return_to = request.from;
+                self.outbound = None;
+                self.phase = Phase::Ready(Work::Measure);
+                self.token.take().map(|token| NavigatorOutcome::Acquired { token })
             }
-            NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. } => {
+            NavigatorEffect::Acquire {
+                work: work @ (PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_)),
+                ..
+            } => {
                 self.validated = None;
                 self.token = Some(token);
                 if !matches!(self.phase, Phase::Empty) || guard.is_some() {
@@ -231,20 +282,18 @@ impl Executor {
                     return self.fail(NavigatorError::Unavailable);
                 }
                 self.choice = VisitChoice::new();
-                self.phase = Phase::AllocateA;
+                self.measuring = matches!(work, PlannerWork::MeasureRoute(_));
+                self.phase = if self.measuring { Phase::Step(Work::Begin) } else { Phase::AllocateA };
                 None
             }
             NavigatorEffect::Step { .. } => {
                 self.token = Some(token);
-                if !self.current(app, store) {
+                let Phase::Ready(work) = self.phase else { return self.fail(NavigatorError::Workspace) };
+                if work != Work::Measure && !self.current(app, store) {
                     return self.fail(NavigatorError::SourceChanged);
                 }
-                if let Phase::Ready(work) = self.phase {
-                    self.phase = Phase::Step(work);
-                    None
-                } else {
-                    self.fail(NavigatorError::Workspace)
-                }
+                self.phase = Phase::Step(work);
+                None
             }
             NavigatorEffect::CommitRoute { .. } => {
                 self.token = Some(token);
@@ -260,96 +309,6 @@ impl Executor {
             _ => Some(NavigatorOutcome::Failed { token, error: NavigatorError::Workspace }),
         }
     }
-    #[inline(never)]
-    fn restore(
-        &mut self,
-        source: obc_formats::obcr::RouteSourceKey,
-        token: OperationToken<NavigatorTag>,
-        app: &mut App,
-        store: &'static FlatStore<FlatCard>,
-        guard: &mut Option<NavGuard>,
-        elev: &mut dyn obc_route::ElevationSource,
-    ) -> Option<NavigatorOutcome> {
-        self.validated = None;
-        self.token = Some(token);
-        if !matches!(self.phase, Phase::Empty) || guard.is_some() {
-            return self.fail(NavigatorError::Workspace);
-        }
-        let Some(context) = app.assistant_review_context() else {
-            return self.fail(NavigatorError::SourceChanged);
-        };
-        let active = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
-        if app.requested_assistant_restore() != Some(source)
-            || source.store != store.store_id().0
-            || context.store.bytes() != source.store
-            || context.map != crate::flat_store::planner_map_key(store)
-            || !crate::flat_store::planner_map_current()
-            || app
-                .current_review_origin()
-                .is_none_or(|origin| !context.accepts_origin(app.settings().bike_type, origin))
-            || !crate::assistant::original_allowed(store, context, active)
-        {
-            return self.fail(NavigatorError::SourceChanged);
-        }
-        let Some(fingerprint) = crate::flat_store::route_fingerprint(store, source.object)
-            .filter(|fingerprint| fingerprint.revision == source.revision)
-        else {
-            return self.fail(NavigatorError::SourceChanged);
-        };
-        if let Some(original) = context.original {
-            self.original = match crate::flat_store::planner_original(store, ObjectId(original.object)) {
-                Ok(source) => Some(source),
-                Err(_) => return self.fail(NavigatorError::SourceChanged),
-            };
-        }
-        let Some(quiesced) = app.nav_arena_precondition() else { return self.fail(NavigatorError::Workspace) };
-        *guard = match crate::arena::claim_nav(quiesced) {
-            Ok(g) => Some(g),
-            Err(_) => return self.fail(NavigatorError::Workspace),
-        };
-        let g = guard.as_mut()?;
-        g.begin_sources();
-        self.published = Some((ObjectId(source.object), Revision(source.revision)));
-        self.phase = Phase::Stopped;
-        crate::flat_store::load_routes(store, app);
-        let restored = store.with_source(ObjectId(source.object), Some(Revision(source.revision)), |bytes| {
-            let target = app.assistant_visit_target().ok_or(NavigatorError::Unavailable)?;
-            if context.purpose == ReviewPurpose::Destination {
-                target.validate_destination(bytes, context.profile).map_err(|_| NavigatorError::SourceChanged)?;
-            } else if context.purpose == ReviewPurpose::Visit {
-                let descriptor = obc_route::RouteObjectInfo::read(bytes)
-                    .map_err(|_| NavigatorError::SourceChanged)?
-                    .visit
-                    .ok_or(NavigatorError::SourceChanged)?;
-                if descriptor.target_kind != (target.metadata.source.0 >> 62) as u8
-                    || descriptor.target_id != target.metadata.source.0 & ((1 << 62) - 1)
-                {
-                    return Err(NavigatorError::SourceChanged);
-                }
-            } else {
-                return Err(NavigatorError::Unavailable);
-            }
-            let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, bytes, context, elev)?;
-            let shape = crate::assistant::preview_shape(g.sources().1, bytes).map_err(|_| NavigatorError::Store)?;
-            Ok::<_, NavigatorError>((preview, shape))
-        });
-        let outcome = match restored {
-            Ok(Ok((preview, shape))) => {
-                let outcome = app.assistant_preview_outcome(token, preview);
-                if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
-                    && !app.set_assistant_preview_shape(token, preview.source, &shape)
-                {
-                    NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
-                } else {
-                    outcome
-                }
-            }
-            _ => NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged },
-        };
-        self.token = None;
-        Some(outcome)
-    }
-
     #[inline(never)]
     fn begin_route(
         &mut self,
@@ -432,11 +391,35 @@ impl Executor {
         if matches!(self.phase, Phase::Empty | Phase::Ready(_) | Phase::Preview | Phase::Stopped) {
             return None;
         }
-        if !self.current(app, store) {
+        if !matches!(self.phase, Phase::Step(Work::Measure)) && !self.current(app, store) {
             return self.fail(NavigatorError::SourceChanged);
         }
         let Some(g) = guard.as_mut() else { return self.fail(NavigatorError::Workspace) };
         match self.phase {
+            Phase::Step(Work::Measure) => {
+                let (planner, scratch, tiles, _) = g.visit_plan_parts();
+                let leg = match planner.step(&Reader::new(map, tables, cache), scratch, tiles, elev, &mut Discard) {
+                    Step::Running => return self.ready(Work::Measure),
+                    Step::Failed(error) => return self.fail(NavigatorError::Plan(error)),
+                    Step::Done(stats) => LegCost::from(stats),
+                };
+                let (start, goal) = (planner.snapped_start(), planner.snapped_goal());
+                let Some(context) = app.assistant_review_context() else {
+                    return self.fail(NavigatorError::Unavailable);
+                };
+                if self.outbound.is_none() && context.purpose == ReviewPurpose::Visit {
+                    self.outbound = Some(leg.joined_at(self.return_to, start));
+                    g.visit_begin_plan(goal, self.return_to, context);
+                    return self.ready(Work::Measure);
+                }
+                let legs = match self.outbound.take() {
+                    Some(outbound) => VisitLegs { outbound, back: Some(leg.joined_at(self.return_to, goal)) },
+                    None => VisitLegs { outbound: leg, back: None },
+                };
+                let token = self.token.take()?;
+                self.phase = Phase::Stopped;
+                return Some(app.assistant_measured_outcome(token, legs));
+            }
             Phase::AllocateA | Phase::AllocateB => {
                 let after = if matches!(self.phase, Phase::AllocateA) { After::AllocateA } else { After::AllocateB };
                 if let Ok(t) = writer.try_call(Request::Allocate { bytes: RESERVE }, reply) {
@@ -455,38 +438,44 @@ impl Executor {
                         }
                     };
                     (done, sink.appended, sink.patch_len)
+                } else if self.measuring {
+                    let (builder, original, leg, measure) = g.visit_measure_parts();
+                    let mut sink = obc_route::easier::MeasureSink::new(measure, &mut *elev);
+                    // The pace of a staged flush, with nothing to flush.
+                    let done = loop {
+                        let done = match self.compose(work, builder, original, leg, store, &mut sink) {
+                            Ok(done) => done,
+                            Err(error) => return self.fail(error),
+                        };
+                        if !matches!(done, Done::Running)
+                            || sink.appended + builder.step_bound()
+                                > crate::arena::NAV_OUTPUT_STAGE_BYTES - HEADER_FULL_LEN
+                        {
+                            break done;
+                        }
+                    };
+                    (done, 0, 0)
                 } else {
                     let (builder, original, leg, output) = g.visit_parts();
                     let mut sink = crate::ride::NavStageSink { stage: output, appended: 0, patch_len: 0 };
-                    let result = match work {
-                        Work::Begin => builder.begin(&mut sink).map(|_| Done::Begin),
-                        Work::Prefix => builder
-                            .append_prefix_step(&RouteReader::new(original, self.original.as_ref().unwrap()), &mut sink)
-                            .map(|done| if done { Done::Prefix } else { Done::Running }),
-                        Work::Append => {
-                            let Some(sealed) = self.leg.as_ref() else { return self.fail(NavigatorError::Store) };
-                            let source = store.sealed_source(sealed);
-                            builder.append_leg_step(&RouteReader::new(leg, &source), &mut sink).map(|done| {
-                                if done {
-                                    Done::Append
-                                } else {
-                                    Done::Running
-                                }
-                            })
+                    // Copy steps fill the stage before one flush; a header patch ends the batch.
+                    let done = loop {
+                        let done = match self.compose(work, builder, original, leg, store, &mut sink) {
+                            Ok(done) => done,
+                            Err(error) => return self.fail(error),
+                        };
+                        if !matches!(done, Done::Running)
+                            || sink.patch_len != 0
+                            || sink.appended + builder.step_bound()
+                                > crate::arena::NAV_OUTPUT_STAGE_BYTES - HEADER_FULL_LEN
+                        {
+                            break done;
                         }
-                        Work::Finish => builder
-                            .finish_step(&RouteReader::new(original, self.original.as_ref().unwrap()), &mut sink)
-                            .map(|done| done.map_or(Done::Running, Done::Finish)),
-                        Work::Leg => unreachable!(),
-                    };
-                    let done = match result {
-                        Ok(done) => done,
-                        Err(_) => return self.fail(NavigatorError::Unavailable),
                     };
                     (done, sink.appended, sink.patch_len)
                 };
                 if appended == 0 && patch == 0 {
-                    return self.after_flush(work, done, app, g);
+                    return self.after_flush(work, done, app, g, elev);
                 }
                 self.phase = Phase::Flush(work, done, appended, patch);
             }
@@ -540,7 +529,45 @@ impl Executor {
         }
         None
     }
-    fn after_flush(&mut self, work: Work, done: Done, app: &mut App, guard: &mut NavGuard) -> Option<NavigatorOutcome> {
+    /// One composition step of `work` into `sink`.
+    fn compose(
+        &self,
+        work: Work,
+        builder: &mut obc_route::visit::VisitBuilder,
+        original: &obc_route::RouteIndex,
+        leg: &obc_route::RouteIndex,
+        store: &'static FlatStore<FlatCard>,
+        sink: &mut dyn ByteSink,
+    ) -> Result<Done, NavigatorError> {
+        let original = RouteReader::new(original, self.original.as_ref().ok_or(NavigatorError::Store)?);
+        match work {
+            Work::Begin => builder.begin(sink).map(|_| Done::Begin),
+            Work::Prefix => {
+                builder.append_prefix_step(&original, sink).map(|done| if done { Done::Prefix } else { Done::Running })
+            }
+            Work::Append => {
+                let source = store.sealed_source(self.leg.as_ref().ok_or(NavigatorError::Store)?);
+                builder.append_leg_step(&RouteReader::new(leg, &source), sink).map(|done| {
+                    if done {
+                        Done::Append
+                    } else {
+                        Done::Running
+                    }
+                })
+            }
+            Work::Finish => builder.finish_step(&original, sink).map(|done| done.map_or(Done::Running, Done::Finish)),
+            Work::Leg | Work::Measure => unreachable!(),
+        }
+        .map_err(|_| NavigatorError::Unavailable)
+    }
+    fn after_flush(
+        &mut self,
+        work: Work,
+        done: Done,
+        app: &mut App,
+        guard: &mut NavGuard,
+        elev: &mut dyn obc_route::ElevationSource,
+    ) -> Option<NavigatorOutcome> {
         match done {
             Done::Begin => {
                 self.phase = Phase::Step(Work::Prefix);
@@ -581,14 +608,19 @@ impl Executor {
                 let token = self.token.take()?;
                 self.phase = Phase::Stopped;
                 Some(
-                    if app.assistant_review_context().is_some_and(|c| {
+                    if !(app.assistant_review_context().is_some_and(|c| {
                         matches!(c.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
                             && c.required_anchors_m == anchors
-                    }) || app.assistant_visit_variant(token, anchors)
+                    }) || app.assistant_visit_variant(token, anchors))
                     {
-                        NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
-                    } else {
                         NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
+                    } else if self.measuring {
+                        match core::mem::take(guard.visit_measure_parts().3).finish(elev) {
+                            Ok((costs, crc)) => app.assistant_easier_measured(token, costs, crc),
+                            Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Unavailable },
+                        }
+                    } else {
+                        NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
                     },
                 )
             }
@@ -645,7 +677,7 @@ impl Executor {
                 }
                 self.phase = Phase::Stopped;
                 if !releasing {
-                    return self.after_flush(work, done, app, guard.as_mut()?);
+                    return self.after_flush(work, done, app, guard.as_mut()?, elev);
                 }
             }
             (After::Seal, Ok(Outcome::Done)) => {
@@ -702,11 +734,7 @@ impl Executor {
                 self.published = Some((id, Revision(1)));
                 self.phase = Phase::Stopped;
                 if !releasing {
-                    // Ranked candidates use the catalog owner's refresh; selecting one restores its binding.
-                    let ranked = app.find_place_state() == obc_app::find_place::State::Planning;
-                    if !ranked {
-                        crate::flat_store::load_routes(store, app);
-                    }
+                    crate::flat_store::load_routes(store, app);
                     let context = app.assistant_review_context()?;
                     let Some(fingerprint) = crate::flat_store::route_fingerprint(store, id.0) else {
                         self.uncertain = true;
@@ -714,30 +742,20 @@ impl Executor {
                     };
                     let preview = store.with_source(id, Some(Revision(1)), |source| {
                         let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context, elev)?;
-                        let display = if ranked {
-                            None
-                        } else {
-                            let index = guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2;
-                            let shape =
-                                crate::assistant::preview_shape(index, source).map_err(|_| NavigatorError::Store)?;
-                            Some((shape, index.bbox))
-                        };
-                        Ok::<_, NavigatorError>((preview, display))
+                        let index = guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2;
+                        let shape =
+                            crate::assistant::preview_shape(index, source).map_err(|_| NavigatorError::Store)?;
+                        Ok::<_, NavigatorError>((preview, shape, index.bbox))
                     });
                     let token = self.token.take()?;
                     return Some(match preview {
-                        Ok(Ok((preview, display))) => {
+                        Ok(Ok((preview, shape, bounds))) => {
                             let outcome = app.assistant_preview_outcome(token, preview);
-                            if let Some((shape, bounds)) = display {
-                                app.assistant_easier_bounds(preview.source, bounds);
-                                if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
-                                    && !app.set_assistant_preview_shape(token, preview.source, &shape)
-                                {
-                                    return Some(NavigatorOutcome::Failed {
-                                        token,
-                                        error: NavigatorError::SourceChanged,
-                                    });
-                                }
+                            app.assistant_easier_bounds(preview.source, bounds);
+                            if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                && !app.set_assistant_preview_shape(token, preview.source, &shape)
+                            {
+                                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged });
                             }
                             outcome
                         }
@@ -815,13 +833,6 @@ impl Executor {
             return None;
         }
         let retain = self.release.unwrap_or(false);
-        let find_owned = self.published.is_some_and(|(id, revision)| {
-            app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                store: store.store_id().0,
-                object: id.0,
-                revision: revision.0,
-            })
-        });
         let keep = self.uncertain || retain && app.assistant_preview().is_some();
         if !keep {
             if let Some(source) = self.original.take() {
@@ -833,14 +844,11 @@ impl Executor {
                 return None;
             }
         }
-        if let Some((id, revision)) = self.published.filter(|_| !retain && !find_owned && !self.uncertain) {
+        if let Some((id, revision)) = self.published.filter(|_| !retain && !self.uncertain) {
             if let Ok(t) = writer.try_call(Request::RemoveComputedRoute { id, revision }, reply) {
                 self.phase = Phase::Await(t, After::Remove);
             }
             return None;
-        }
-        if !keep && find_owned {
-            self.published = None;
         }
         *guard = None;
         self.release = None;
