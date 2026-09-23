@@ -40,13 +40,21 @@ pub struct Dirty {
     /// its change lies inside `r`; any other source folds the region away. A host may clip the
     /// repaint to `r`, but ignoring it and repainting fully is always correct.
     pub region: Option<Rectangle>,
+    /// The [`region`](Dirty::region) is opaque chrome the screen redraws whole, so a host may
+    /// repaint it without rendering the map under it. Always `false` without a region.
+    pub opaque: bool,
 }
 
 impl Dirty {
     /// Nothing changed — render neither plane.
-    pub const CLEAN: Dirty = Dirty { map: false, overlay: false, region: None };
+    pub const CLEAN: Dirty = Dirty { map: false, overlay: false, region: None, opaque: false };
 
     pub fn any(self) -> bool {
         self.map || self.overlay
+    }
+
+    /// The region this frame repaints with no map under it, or `None` when the map must render.
+    pub fn map_free_region(self) -> Option<Rectangle> {
+        self.region.filter(|_| self.map && self.opaque)
     }
 }

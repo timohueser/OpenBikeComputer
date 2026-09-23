@@ -170,16 +170,12 @@ final class ImportFlowModelTests: XCTestCase {
         model.open(data: Data("<gpx/>".utf8), fileName: "tag2.gpx")
         model.chooseAddAsNew()
 
-        model.newRouteName = "   "
-        XCTAssertFalse(model.isNewRouteNameValid)
-        model.newRouteName = "  schwarzwald tour · TAG 2  "
-        XCTAssertFalse(model.isNewRouteNameValid, "case/whitespace variants still collide")
-        model.newRouteName = "Schwarzwald Tour · Tag 3"
-        XCTAssertTrue(model.isNewRouteNameValid)
+        XCTAssertFalse(model.isValidNewRouteName("   "))
+        XCTAssertFalse(model.isValidNewRouteName("  schwarzwald tour · TAG 2  "), "case/whitespace variants still collide")
+        XCTAssertTrue(model.isValidNewRouteName("Schwarzwald Tour · Tag 3"))
 
         // An invalid name never opens E1, even if confirm is forced.
-        model.newRouteName = " "
-        model.confirmNewName()
+        model.confirmNewName(" ")
         XCTAssertNil(model.pendingImport)
         XCTAssertNotNil(model.addAsNewPrompt)
     }
@@ -191,8 +187,7 @@ final class ImportFlowModelTests: XCTestCase {
 
         model.open(data: Data("<gpx/>".utf8), fileName: "tag2.gpx")
         model.chooseAddAsNew()
-        model.newRouteName = "  Schwarzwald Tour · Tag 3  "
-        model.confirmNewName()
+        model.confirmNewName("  Schwarzwald Tour · Tag 3  ")
 
         XCTAssertNil(model.addAsNewPrompt)
         let pending = model.pendingImport

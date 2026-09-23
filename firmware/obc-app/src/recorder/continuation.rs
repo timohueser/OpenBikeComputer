@@ -5,7 +5,7 @@ use obc_formats::ride::TripRef;
 
 pub const RIDE_RESUME_LEN: usize = 96;
 const RESUME_MAGIC: [u8; 4] = *b"OBRC";
-const RESUME_VERSION: u16 = 2;
+const RESUME_VERSION: u16 = 3;
 
 pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; RIDE_RESUME_LEN] {
     const _: () = assert!(RIDE_RESUME_LEN == 96);
@@ -34,6 +34,10 @@ pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; R
         out[89] = trip.day_count();
     }
     out[90] = state.origin.bike as u8;
+    if let Some(joules) = state.energy_j {
+        out[91] = 1;
+        out[92..96].copy_from_slice(&joules.to_le_bytes());
+    }
     out
 }
 
@@ -45,7 +49,8 @@ pub fn decode(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(super::RideContinuation,
         || bytes[62..64].iter().any(|byte| *byte != 0)
         || bytes[76] > 1
         || bytes[77..80].iter().any(|byte| *byte != 0)
-        || bytes[91..].iter().any(|byte| *byte != 0)
+        || bytes[91] > 1
+        || (bytes[91] == 0 && bytes[92..].iter().any(|byte| *byte != 0))
     {
         return None;
     }
@@ -75,6 +80,7 @@ pub fn decode(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(super::RideContinuation,
         max_power: u16::from_le_bytes(bytes[60..62].try_into().ok()?),
         cadence_ms_sum: u64::from_le_bytes(bytes[64..72].try_into().ok()?),
         cadence_ms: u32::from_le_bytes(bytes[72..76].try_into().ok()?),
+        energy_j: (bytes[91] == 1).then(|| u32::from_le_bytes([bytes[92], bytes[93], bytes[94], bytes[95]])),
     };
     let finite_nonnegative = [state.ridden_m, state.moving_m, state.moving_s, state.climb_m, state.descent_m]
         .iter()
@@ -108,24 +114,30 @@ mod tests {
             max_power: 11,
             cadence_ms_sum: 12,
             cadence_ms: 13,
+            energy_j: Some(14),
         };
         let bytes = encode(state, Some(0x01020304));
-        assert_eq!(&bytes[..16], &[79, 66, 82, 67, 2, 0, 96, 0, 4, 3, 2, 1, 0, 0, 128, 63]);
+        assert_eq!(&bytes[..16], &[79, 66, 82, 67, 3, 0, 96, 0, 4, 3, 2, 1, 0, 0, 128, 63]);
         assert_eq!(&bytes[32..48], &[6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0]);
         assert_eq!(&bytes[48..64], &[9, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0]);
         assert_eq!(&bytes[64..77], &[12, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 1]);
-        assert_eq!(&bytes[80..91], &[8, 7, 6, 5, 4, 3, 2, 1, 2, 5, 3]);
+        assert_eq!(&bytes[80..96], &[8, 7, 6, 5, 4, 3, 2, 1, 2, 5, 3, 1, 14, 0, 0, 0]);
         assert_eq!(decode(&bytes), Some((state, Some(0x01020304))));
         assert_eq!(decode(&encode(state, None)), Some((state, None)));
-        let no_trip = super::super::RideContinuation { origin: super::super::RideOrigin::default(), ..state };
+        let no_trip =
+            super::super::RideContinuation { origin: super::super::RideOrigin::default(), energy_j: None, ..state };
         assert_eq!(decode(&encode(no_trip, None)), Some((no_trip, None)));
-        for at in [0, 4, 6, 46, 62, 77, 91, 95] {
+        for at in [0, 4, 6, 46, 62, 77] {
             let mut invalid = bytes;
             invalid[at] ^= 1;
             assert!(decode(&invalid).is_none());
         }
         // A start flag past 1, a day past the count, and a bike type past the four.
-        for (at, value) in [(76, 2), (88, 5), (90, 4)] {
+        // …and an energy flag past 1, or energy bytes without the flag.
+        let mut no_flag = encode(no_trip, None);
+        no_flag[95] = 1;
+        assert!(decode(&no_flag).is_none());
+        for (at, value) in [(76, 2), (88, 5), (90, 4), (91, 2)] {
             let mut invalid = bytes;
             invalid[at] = value;
             assert!(decode(&invalid).is_none());

@@ -84,7 +84,7 @@ pub use journey::JourneyScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
 pub(crate) use landmarks::source_layout;
 pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
-pub(crate) use map::low_battery_cue;
+pub(crate) use map::{gauge_cue, gauge_region, low_battery_cue};
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
