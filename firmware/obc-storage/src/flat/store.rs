@@ -238,7 +238,7 @@ struct SlotWrite<'a> {
 struct Served {
     mode: Mode,
     /// The copy the store is serving. A commit targets the other one.
-    copy: usize,
+    copy: u8,
     sequence: u64,
     /// The greatest commit sequence any well-formed gate carried, which is what a commit
     /// continues from — not the sequence of the copy that happened to validate.
@@ -733,7 +733,7 @@ impl<D: BlockDevice> FlatStore<D> {
             extent_size: self.geometry.extent_size(),
             extent_count: self.extents,
             served: super::CatalogGateIdentity {
-                copy: served.copy as u8,
+                copy: served.copy,
                 sequence: served.sequence,
                 entry_count: served.entry_count,
                 body_crc: served.body_crc,
@@ -785,7 +785,7 @@ impl<D: BlockDevice> FlatStore<D> {
     /// The copy the store is serving. A card-layout fact with no caller above the seam.
     #[cfg(any(test, feature = "std"))]
     pub fn serving_copy(&self) -> usize {
-        self.served.get().copy
+        self.served.get().copy as usize
     }
 
     /// The mark the next commit continues from, which a fallback mount leaves above the served
@@ -1036,7 +1036,7 @@ impl<D: BlockDevice> FlatStore<D> {
         for copy in order {
             let Some(gate) = gates[copy] else { continue };
             if let Ok(loaded) = self.load(copy, &gate) {
-                served.copy = copy;
+                served.copy = copy as u8;
                 served.sequence = gate.sequence;
                 served.next_object = loaded.next_object;
                 served.entry_count = gate.entry_count;
@@ -1270,7 +1270,7 @@ impl<D: BlockDevice> FlatStore<D> {
     fn find(&self, id: ObjectId) -> Result<(Option<Entry>, Option<Entry>), StoreError> {
         // One block, not a window: a binary search's probes are scattered.
         let served = self.served.get();
-        let mut cursor = EntryCursor::new(served.copy, self.extents, served.entry_count);
+        let mut cursor = EntryCursor::new(served.copy as usize, self.extents, served.entry_count);
         let mut probe = [0u8; BLOCK];
         let mut low = 0u16;
         let mut high = served.entry_count;
@@ -1610,7 +1610,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         let mut structure = Structure::new(self.geometry);
         // The commit's two windows, owned here and lent out: see [`EntryCursor`].
         let mut scan = [0u8; STREAM_WINDOW];
-        let mut cursor = EntryCursor::new(served.copy, self.extents, served.entry_count);
+        let mut cursor = EntryCursor::new(served.copy as usize, self.extents, served.entry_count);
         let written =
             self.merge(&mut cursor, &mut scan, plan, |entry| structure.accept(entry).map_err(|_| StoreError::Invalid))?;
         structure.finish(&header).map_err(|_| StoreError::Invalid)?;
@@ -1655,7 +1655,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             sync(&self.dev)?;
         }
 
-        let target = 1 - served.copy;
+        let target = 1 - served.copy as usize;
         write_blocks(&self.dev, catalog_gate(target), &INVALIDATED)?;
         sync(&self.dev)?;
 
@@ -1689,7 +1689,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         // sequence for the next commit, so this is the last one this card accepts.
         self.served.set(Served {
             mode: if header.sequence == u64::MAX { Mode::SequenceSpaceExhausted } else { served.mode },
-            copy: target,
+            copy: target as u8,
             sequence: header.sequence,
             high_water: header.sequence,
             next_object: header.next_object,
@@ -1770,7 +1770,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         self.listing_failed.set(!served.mode.readable());
         Entries {
             dev: &self.dev,
-            cursor: EntryCursor::new(served.copy, self.extents, served.entry_count),
+            cursor: EntryCursor::new(served.copy as usize, self.extents, served.entry_count),
             buf: [0; BLOCK],
             index: 0,
             count: served.entry_count,
