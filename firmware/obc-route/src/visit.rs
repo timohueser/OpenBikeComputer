@@ -110,21 +110,23 @@ pub struct VisitCosts {
 }
 impl VisitCosts {
     /// `arrival` is the span to the stop; `legs` the span the excursion adds to the original.
-    ///
-    /// Must stay `#[inline(never)]`: the bounded chunk buffer lives in this popped frame.
-    #[inline(never)]
     pub fn read(
         src: &dyn obc_formats::io::ByteSource,
         arrival: [u32; 2],
         legs: Option<[u32; 2]>,
     ) -> Result<Self, Error> {
+        Self::read_with(src, arrival, legs, |_| {})
+    }
+    /// The same walk, also handing each stored point to `visit`.
+    pub(crate) fn read_with(
+        src: &dyn obc_formats::io::ByteSource,
+        arrival: [u32; 2],
+        legs: Option<[u32; 2]>,
+        mut visit: impl FnMut(crate::RoutePoint),
+    ) -> Result<Self, Error> {
         use crate::facts::FactsAccumulator;
-        use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
-        use obc_formats::obcr::CHUNK_META_LEN;
-        let h = read_header(src)?;
-        if h.chunk_count == 0
-            || h.chunk_count as usize > crate::MAX_ROUTE_CHUNKS
-            || arrival[0] > arrival[1]
+        let h = crate::reader::read_header(src)?;
+        if arrival[0] > arrival[1]
             || arrival[1] > h.total_distance_m
             || legs.is_some_and(|l| l[0] > l[1] || l[1] > h.total_distance_m)
         {
@@ -133,42 +135,18 @@ impl VisitCosts {
         let mut full = FactsAccumulator::new(0, None, 0, h.total_distance_m);
         let mut to_stop = FactsAccumulator::new(0, None, arrival[0], arrival[1]);
         let mut excursion = legs.map(|l| FactsAccumulator::new(0, None, l[0], l[1]));
-        let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        let mut previous = None;
-        let mut count = 0u32;
-        for k in 0..h.chunk_count {
-            let offset = k
-                .checked_mul(CHUNK_META_LEN as u32)
-                .and_then(|n| h.index_offset.checked_add(n))
-                .ok_or(Error::BadOffset)?;
-            let mut bytes = [0; CHUNK_META_LEN];
-            src.read_at(u64::from(offset), &mut bytes)?;
-            let meta = parse_chunk_meta(&bytes, src.len())?;
-            if meta.point_count == 0 {
-                return Err(Error::BadOffset);
+        crate::reader::for_each_stored_point(src, &h, |point| {
+            full.push(point, &mut |_| {});
+            to_stop.push(point, &mut |_| {});
+            if let Some(excursion) = excursion.as_mut() {
+                excursion.push(point, &mut |_| {});
             }
-            points.clear();
-            decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
-            if let Some(last) = previous {
-                let first = points[0];
-                if last != (first.lon, first.lat, first.ele) {
-                    return Err(Error::BadOffset);
-                }
-            }
-            for &point in points.iter().skip(usize::from(k > 0)) {
-                full.push(point, &mut |_| {});
-                to_stop.push(point, &mut |_| {});
-                if let Some(excursion) = excursion.as_mut() {
-                    excursion.push(point, &mut |_| {});
-                }
-                count += 1;
-                previous = Some((point.lon, point.lat, point.ele));
-            }
-        }
+            visit(point);
+        })?;
         let full = full.finish(h.total_distance_m)?;
         let to_stop = to_stop.finish(h.total_distance_m)?;
         let excursion = excursion.map(|e| e.finish(h.total_distance_m)).transpose()?;
-        if count != h.point_count || full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
+        if full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
             return Err(Error::BadOffset);
         }
         Ok(Self {
@@ -234,7 +212,8 @@ pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32))
     Ok(best.1)
 }
 
-/// The same bounded search counter serves visits and constrained replacements.
+/// Counts the searches of one operation and bounds a visit's. An easier replacement is bounded by
+/// its anchors instead: each leg reaches at least one of them.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VisitChoice {
     searches: u8,
@@ -243,14 +222,8 @@ impl VisitChoice {
     pub fn new() -> Self {
         Self { searches: 0 }
     }
-    pub fn search(&mut self) -> Result<(), Error> {
-        self.search_with_limit(MAX_VISIT_SEARCHES)
-    }
-    pub fn search_easier(&mut self) -> Result<(), Error> {
-        self.search_with_limit(crate::MAX_WAYPOINTS as u8 + 1)
-    }
-    fn search_with_limit(&mut self, limit: u8) -> Result<(), Error> {
-        if self.searches >= limit {
+    pub fn search(&mut self, visit: bool) -> Result<(), Error> {
+        if visit && self.searches >= MAX_VISIT_SEARCHES {
             return Err(Error::TooLarge);
         }
         self.searches += 1;
@@ -549,11 +522,16 @@ impl VisitBuilder {
             return Ok(false);
         }
         if let Some(anchors) = &mut self.easier {
-            if self.last.is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > APPROACH_TOLERANCE_M) {
+            // The planner ends a leg where it snaps the anchor onto the graph. An imported route can
+            // lie beside the road, so the anchor counts as reached there, and no connector with
+            // unknown height and surface is added.
+            if self
+                .last
+                .is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > crate::nav::SNAP_RADIUS_M)
+            {
                 self.phase = Phase::RejectedGeometry;
                 return Err(Error::BadOffset);
             }
-            // The destination is the original route's terminal anchor.
             self.chunk = 0;
             self.segment_started = false;
             return Ok(true);

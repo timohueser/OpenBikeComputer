@@ -238,13 +238,15 @@ struct SlotWrite<'a> {
 struct Served {
     mode: Mode,
     /// The copy the store is serving. A commit targets the other one.
-    copy: usize,
+    copy: u8,
     sequence: u64,
     /// The greatest commit sequence any well-formed gate carried, which is what a commit
     /// continues from — not the sequence of the copy that happened to validate.
     high_water: u64,
     next_object: u64,
     entry_count: u16,
+    /// Body fingerprint from the gate that selected this retained catalog.
+    body_crc: u32,
 }
 
 pub struct FlatStore<D> {
@@ -636,6 +638,7 @@ impl<D: BlockDevice> FlatStore<D> {
                 high_water: 0,
                 next_object: 0,
                 entry_count: 0,
+                body_crc: 0,
             }),
             free: const { RefCell::new(FreeMap::BLANK) },
             holds: const { RefCell::new([None; MAX_OPEN_OBJECTS]) },
@@ -722,6 +725,23 @@ impl<D: BlockDevice> FlatStore<D> {
         self.store
     }
 
+    /// The identity and catalog marks that make this retained mount safe to reuse.
+    pub fn mounted_media_state(&self) -> super::MountedMediaState {
+        let served = self.served.get();
+        super::MountedMediaState {
+            store: self.store,
+            extent_size: self.geometry.extent_size(),
+            extent_count: self.extents,
+            served: super::CatalogGateIdentity {
+                copy: served.copy,
+                sequence: served.sequence,
+                entry_count: served.entry_count,
+                body_crc: served.body_crc,
+            },
+            high_water: served.high_water,
+        }
+    }
+
     /// The catalog commit sequence — the staleness hint a client compares its listing against.
     pub fn sequence(&self) -> u64 {
         self.served.get().sequence
@@ -765,7 +785,7 @@ impl<D: BlockDevice> FlatStore<D> {
     /// The copy the store is serving. A card-layout fact with no caller above the seam.
     #[cfg(any(test, feature = "std"))]
     pub fn serving_copy(&self) -> usize {
-        self.served.get().copy
+        self.served.get().copy as usize
     }
 
     /// The mark the next commit continues from, which a fallback mount leaves above the served
@@ -1016,10 +1036,11 @@ impl<D: BlockDevice> FlatStore<D> {
         for copy in order {
             let Some(gate) = gates[copy] else { continue };
             if let Ok(loaded) = self.load(copy, &gate) {
-                served.copy = copy;
+                served.copy = copy as u8;
                 served.sequence = gate.sequence;
                 served.next_object = loaded.next_object;
                 served.entry_count = gate.entry_count;
+                served.body_crc = gate.body_crc;
                 // A counter that has run out mounts read-only rather than wrapping.
                 served.mode = if loaded.exhausted {
                     Mode::RevisionSpaceExhausted
@@ -1249,7 +1270,7 @@ impl<D: BlockDevice> FlatStore<D> {
     fn find(&self, id: ObjectId) -> Result<(Option<Entry>, Option<Entry>), StoreError> {
         // One block, not a window: a binary search's probes are scattered.
         let served = self.served.get();
-        let mut cursor = EntryCursor::new(served.copy, self.extents, served.entry_count);
+        let mut cursor = EntryCursor::new(served.copy as usize, self.extents, served.entry_count);
         let mut probe = [0u8; BLOCK];
         let mut low = 0u16;
         let mut high = served.entry_count;
@@ -1589,7 +1610,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         let mut structure = Structure::new(self.geometry);
         // The commit's two windows, owned here and lent out: see [`EntryCursor`].
         let mut scan = [0u8; STREAM_WINDOW];
-        let mut cursor = EntryCursor::new(served.copy, self.extents, served.entry_count);
+        let mut cursor = EntryCursor::new(served.copy as usize, self.extents, served.entry_count);
         let written =
             self.merge(&mut cursor, &mut scan, plan, |entry| structure.accept(entry).map_err(|_| StoreError::Invalid))?;
         structure.finish(&header).map_err(|_| StoreError::Invalid)?;
@@ -1634,7 +1655,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             sync(&self.dev)?;
         }
 
-        let target = 1 - served.copy;
+        let target = 1 - served.copy as usize;
         write_blocks(&self.dev, catalog_gate(target), &INVALIDATED)?;
         sync(&self.dev)?;
 
@@ -1668,11 +1689,12 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         // sequence for the next commit, so this is the last one this card accepts.
         self.served.set(Served {
             mode: if header.sequence == u64::MAX { Mode::SequenceSpaceExhausted } else { served.mode },
-            copy: target,
+            copy: target as u8,
             sequence: header.sequence,
             high_water: header.sequence,
             next_object: header.next_object,
             entry_count: header.entry_count,
+            body_crc,
         });
         self.release(plan);
         {
@@ -1748,7 +1770,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         self.listing_failed.set(!served.mode.readable());
         Entries {
             dev: &self.dev,
-            cursor: EntryCursor::new(served.copy, self.extents, served.entry_count),
+            cursor: EntryCursor::new(served.copy as usize, self.extents, served.entry_count),
             buf: [0; BLOCK],
             index: 0,
             count: served.entry_count,

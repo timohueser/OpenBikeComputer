@@ -840,6 +840,7 @@ pub(crate) async fn run_app(
         }
         // Feed the watchdog, gated on the input plane's heartbeat: this pass proves thread mode
         // alive and the stamp proves the recognizer alive, so either plane wedging stops the feed.
+        let mut watchdog_fed = false;
         if let Some(h) = wdt.as_mut() {
             // The input plane stamps from its own `Instant::now()`, which can be a hair newer than
             // this loop's `now`, and the subtraction then wraps. A wrapped age means the heartbeat is
@@ -847,9 +848,19 @@ pub(crate) async fn run_app(
             let age = now.wrapping_sub(INPUT_HB_MS.load(Ordering::Relaxed));
             if age <= INPUT_HB_STALE_MS || age > u32::MAX / 2 {
                 h.pet();
+                watchdog_fed = true;
             } else {
                 defmt::error!("WDT: input-plane heartbeat {=u32} ms stale — withholding the feed", age);
             }
+        }
+
+        // A half-open probe owns this whole watchdog-fed pass. Ending it here keeps re-identification
+        // and mount validation separate from every retained write, map read and deferred operation.
+        if crate::flpr_mux::storage_recovery_due(watchdog_fed) {
+            if crate::flat_store::recover_media(flat).is_ok() {
+                pending_map_redraw = true;
+            }
+            continue;
         }
 
         // Feed the live hold progress before anything below consults it: every hold-deferral rule
@@ -1437,7 +1448,7 @@ pub(crate) async fn run_app(
                 let visit_effect = false;
                 #[cfg(has_nav)]
                 if visit_effect {
-                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard) {
+                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard, &mut *nav.elev) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
@@ -1938,8 +1949,13 @@ pub(crate) async fn run_app(
                                                                                     NavigatorError::Unavailable
                                                                                 })?;
                                                                         }
+                                                                        // An easier review never
+                                                                        // plans here, so no terrain.
                                                                         obc_app::navigator::ReviewedRoute::read(
-                                                                            source, bytes, context,
+                                                                            source,
+                                                                            bytes,
+                                                                            context,
+                                                                            &mut obc_route::NullElevation,
                                                                         )
                                                                     },
                                                                 )
@@ -2393,7 +2409,9 @@ pub(crate) async fn run_app(
                 // revision and the recorder's finalized fact across two passes and makes the domain
                 // read the store twice for one save.
                 exec.facts.note_store_revision(crate::flat_store::catalog_scope(flat));
-                peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
+                if crate::flpr_mux::storage_admitted() {
+                    peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
+                }
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources are call-expression temporaries: they are stateless one-pointer
                 // drains, and binding them for the loop's lifetime would park one hub pointer per
@@ -2567,7 +2585,7 @@ pub(crate) async fn run_app(
             #[cfg(not(has_nav))]
             let find_can_prepare = true;
             let review_pending = app.assistant_route_pending();
-            if (find_loading_painted || review_pending) && find_can_prepare {
+            if (find_loading_painted || review_pending) && find_can_prepare && crate::flpr_mux::storage_admitted() {
                 let reader = Reader::new(flat_map, map_tables, map_cache);
                 app.prepare_find(Some(&reader), route.as_ref());
                 if (find_loading_painted && !app.find_preparing()) || (review_pending && !app.assistant_route_pending())
@@ -2690,15 +2708,18 @@ pub(crate) async fn run_app(
                 // its own draw and the push. `sources.map` is the pass's own answer to "the base
                 // screen draws the map", so the reader this frame opens is the one the pass planned
                 // for rather than a second derivation of the same predicate.
-                let needs_map = sources.map && !hold_only;
+                let map_blocked = sources.map && !hold_only && !crate::flpr_mux::storage_admitted();
+                let needs_map = sources.map && !hold_only && !map_blocked;
                 // The flat map source is resolved once at boot and skipped on chrome-only frames,
                 // which keeps menu redraws free of map I/O.
                 let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
-                if needs_map && reader.is_none() {
+                if map_blocked || (needs_map && reader.is_none()) {
                     pending_map_redraw = true;
-                    defmt::warn!(
-                        "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
-                    );
+                    if needs_map {
+                        defmt::warn!(
+                            "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
+                        );
+                    }
                     None
                 } else {
                     // A base that draws the map claims the arena's render arm for the render span and
@@ -2788,7 +2809,7 @@ pub(crate) async fn run_app(
                         }
                     }
                 }
-            } else if app.photo_pending() {
+            } else if app.photo_pending() && crate::flpr_mux::storage_admitted() {
                 if let Some(mut photo) = crate::arena::claim_photo() {
                     let reader = Reader::new(flat_map, map_tables, map_cache);
                     let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {

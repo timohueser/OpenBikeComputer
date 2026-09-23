@@ -475,7 +475,7 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
             p.app.open_easier_routes(key).unwrap();
             opened = true;
         }
-        if acquisitions == 8 && p.app.assistant_review_status() == ReviewStatus::Preview {
+        if acquisitions == 5 && p.app.assistant_review_status() == ReviewStatus::Preview {
             assert_eq!(p.app.route_ids()[p.app.active_route_index().unwrap()], original_id);
             assert!(!p.app.assistant_preview_shape().is_empty());
             if !reviewed {
@@ -493,7 +493,9 @@ fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_
             assert!(!checkpoint.unresolved_avoidance);
             assert_ne!(checkpoint.route.object, original_id);
             assert!(checkpoint.route.length > 0);
-            assert_eq!(acquisitions, 8); // Seven complete probes and one exact selected reconstruction.
+            // Profile, both strong trials, the milder Shorter twin, and the exact selected rebuild. The
+            // imported original has no surface, and no climb trial saves enough to run its twin.
+            assert_eq!(acquisitions, 5);
             let source = p.routes.source(checkpoint.route.object).unwrap();
             let accepted = obc_route::RouteIndex::read(&source).unwrap();
             assert!(accepted.total_distance_m + 500 <= original.total_distance_m);

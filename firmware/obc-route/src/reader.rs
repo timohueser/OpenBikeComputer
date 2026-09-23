@@ -1202,6 +1202,48 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     })
 }
 
+/// Stream every stored point of a complete route once, in order, without a route index. Each chunk
+/// must repeat the previous chunk's last point, and the header's point count must match.
+///
+/// Must stay `#[inline(never)]`: the bounded chunk buffer lives in this popped frame.
+#[inline(never)]
+pub(crate) fn for_each_stored_point(
+    src: &dyn ByteSource,
+    h: &Header,
+    mut visit: impl FnMut(RoutePoint),
+) -> Result<(), Error> {
+    if h.chunk_count == 0 || h.chunk_count as usize > crate::MAX_ROUTE_CHUNKS {
+        return Err(Error::BadOffset);
+    }
+    let mut points = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+    let mut previous = None;
+    let mut count = 0u32;
+    for k in 0..h.chunk_count {
+        let offset =
+            k.checked_mul(CHUNK_META_LEN as u32).and_then(|n| h.index_offset.checked_add(n)).ok_or(Error::BadOffset)?;
+        let mut bytes = [0; CHUNK_META_LEN];
+        src.read_at(u64::from(offset), &mut bytes)?;
+        let meta = parse_chunk_meta(&bytes, src.len())?;
+        if meta.point_count == 0 {
+            return Err(Error::BadOffset);
+        }
+        points.clear();
+        decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
+        if previous.is_some_and(|last| last != (points[0].lon, points[0].lat, points[0].ele)) {
+            return Err(Error::BadOffset);
+        }
+        for &point in points.iter().skip(usize::from(k > 0)) {
+            visit(point);
+            count += 1;
+            previous = Some((point.lon, point.lat, point.ele));
+        }
+    }
+    if count != h.point_count {
+        return Err(Error::BadOffset);
+    }
+    Ok(())
+}
+
 /// One stored route waypoint as it sits on disk, every field included. The ride geometry path
 /// skips the section; [`RouteReader::load_waypoints`] distils the named ones into the resident
 /// [`Waypoints`] table the UI reads. See `OBCR_Spec.md`.

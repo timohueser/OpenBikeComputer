@@ -189,14 +189,15 @@ pub enum Objective {
     Shortest,
 }
 impl Objective {
+    /// Each strong trial runs directly before its milder twin, so the owner can skip the twin.
     pub const TRIALS: [Self; 7] = [
         Self::Profile,
-        Self::LessClimb,
         Self::LeastClimb,
-        Self::Smoother,
+        Self::LessClimb,
         Self::Smoothest,
-        Self::Shorter,
+        Self::Smoother,
         Self::Shortest,
+        Self::Shorter,
     ];
 }
 

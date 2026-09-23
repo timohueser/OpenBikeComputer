@@ -193,6 +193,7 @@ impl Executor {
         app: &mut App,
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let token = effect.token();
         if matches!(self.phase, Phase::Await(..)) && !matches!(effect, NavigatorEffect::Release { .. }) {
@@ -269,7 +270,7 @@ impl Executor {
                 } else {
                     context.progress_m
                 };
-                if self.begin_route(app, guard.as_mut().unwrap()).is_err() {
+                if self.begin_route(app, guard.as_mut().unwrap(), elev).is_err() {
                     return self.fail(NavigatorError::Unavailable);
                 }
                 self.choice = VisitChoice::new();
@@ -300,14 +301,19 @@ impl Executor {
         }
     }
     #[inline(never)]
-    fn begin_route(&mut self, app: &mut App, guard: &mut NavGuard) -> Result<(), ()> {
+    fn begin_route(
+        &mut self,
+        app: &mut App,
+        guard: &mut NavGuard,
+        elev: &mut dyn obc_route::ElevationSource,
+    ) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
         let target = app.assistant_visit_target();
         guard.begin_visit(c, target, self.rejoin).map_err(|_| ())?;
         let (builder, original, _, _) = guard.visit_parts();
         original.read_into(self.original.as_ref().ok_or(())?).map_err(|_| ())?;
         let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
-        if !app.assistant_easier_original(c, &route) {
+        if !app.assistant_easier_original(c, &route, elev) {
             return Err(());
         }
         if matches!(c.purpose, ReviewPurpose::Easier(_)) {
@@ -349,8 +355,7 @@ impl Executor {
                 (self.return_to, approach)
             }
         };
-        if matches!(c.purpose, ReviewPurpose::Easier(_)) { self.choice.search_easier() } else { self.choice.search() }
-            .map_err(|_| ())?;
+        self.choice.search(!matches!(c.purpose, ReviewPurpose::Easier(_))).map_err(|_| ())?;
         guard.visit_begin_plan(from, to, c);
         Ok(true)
     }
@@ -369,7 +374,7 @@ impl Executor {
     ) -> Option<NavigatorOutcome> {
         if let Phase::Await(ticket, after) = self.phase {
             let answer = writer.try_result(ticket, reply)?;
-            return self.answered(after, answer, app, store, guard);
+            return self.answered(after, answer, app, store, guard, elev);
         }
         if self.release.is_some() {
             return self.cleanup(app, store, writer, guard, reply);
@@ -588,6 +593,7 @@ impl Executor {
         app: &mut App,
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let releasing = self.release.is_some();
         match (after, answer) {
@@ -690,7 +696,7 @@ impl Executor {
                         return self.fail(NavigatorError::DurabilityUnknown);
                     };
                     let preview = store.with_source(id, Some(Revision(1)), |source| {
-                        let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context)?;
+                        let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context, elev)?;
                         let index = guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2;
                         let shape =
                             crate::assistant::preview_shape(index, source).map_err(|_| NavigatorError::Store)?;

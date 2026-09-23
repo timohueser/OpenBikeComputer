@@ -21,6 +21,7 @@ public struct MainScreenView: View {
     private let onOpenTrash: () -> Void
 
     @State private var emptyStatePickerShown = false
+    @State private var libraryMapShown = false
     // Multi-select grouping: enter Select from the title bar, tap loose route cards, then group
     // them into a trip. Selection is Planned-only, and entering it swaps the card taps for toggles.
     @State private var isSelecting = false
@@ -137,6 +138,11 @@ public struct MainScreenView: View {
                 exitSelection()
             }
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $libraryMapShown) { libraryMap }
+        #else
+        .sheet(isPresented: $libraryMapShown) { libraryMap }
+        #endif
         // The shared trip picker for a loose route's "Add to trip" menu.
         .sheet(item: $pickerRequest) { request in
             TripPickerSheet(
@@ -504,6 +510,10 @@ public struct MainScreenView: View {
             )
             .padding(.top, 40)
         } else {
+            if model.searchText.isEmpty {
+                RideLibraryHeader(model: model.rideLibrary) { libraryMapShown = true }
+                    .task(id: model.rides.map(\.id)) { await model.rideLibrary.loadMapLines() }
+            }
             ForEach(model.filteredRides) { ride in
                 Button {
                     onSelectRide(ride)
@@ -517,6 +527,17 @@ public struct MainScreenView: View {
                 }
             }
         }
+    }
+
+    private var libraryMap: some View {
+        RideLibraryMapView(
+            model: model.rideLibrary,
+            onOpenRide: { ride in
+                libraryMapShown = false
+                onSelectRide(ride)
+            },
+            onClose: { libraryMapShown = false }
+        )
     }
 
     // MARK: Shared states
