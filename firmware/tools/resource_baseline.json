@@ -26,7 +26,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 58096,
+        "app": 58032,
         "map_cache": 37084,
         "map_tables": 7528,
         "route_cache": 9260,
@@ -66,7 +66,7 @@
         "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
         "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
       },
-      "_app_note": "58,096 B on head c29bb6d21, measured with the resource-report build on rustc 1.96.0, aarch64-apple-darwin. The ride detail keeps the viewed ride's descent and its 60-bucket HR and power series beside the ride profile, 184 B. RAM, stack and flash ceilings stay unchanged.",
+      "_app_note": "58,032 B on head 21c6f2ecd, measured with the resource-report build on rustc 1.96.0, aarch64-apple-darwin. The ride detail keeps the viewed ride's descent and its 60-bucket HR and power series beside the ride profile, 124 B, power in 4 W steps. RAM, stack and flash ceilings stay unchanged.",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,
