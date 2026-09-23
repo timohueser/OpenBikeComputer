@@ -559,18 +559,7 @@ fn category_members(
             return Err(format!("unclaimed commons category: {title}"));
         }
         if snapshot_schema == 1 {
-            let raw = json_pinned(root, sources, string(listing, "path")?)?;
-            if raw.get("continue").is_some() {
-                return Err(format!("legacy commons category is truncated: {title}"));
-            }
-            let page = raw["query"]["categorymembers"].as_array().ok_or("invalid category members")?;
-            for member in page {
-                let file = string(member, "title")?
-                    .strip_prefix("File:")
-                    .ok_or_else(|| format!("invalid category member: {title}"))?;
-                members.insert(file.replace('_', " "));
-            }
-            continue;
+            return Err(format!("schema 1 cannot prove complete commons category coverage: {title}"));
         }
         let complete = listing["complete"].as_bool().ok_or("missing category completeness")?;
         if !complete {
@@ -582,7 +571,10 @@ fn category_members(
         }
         let mut expected = Value::Null;
         let mut paths = BTreeSet::new();
-        for page in pages {
+        for (index, page) in pages.iter().enumerate() {
+            if index > 0 && expected == Value::Null {
+                return Err(format!("commons category page follows a terminal response: {title}"));
+            }
             if page.get("continuation").unwrap_or(&Value::Null) != &expected {
                 return Err(format!("commons category page identity mismatch: {title}"));
             }
