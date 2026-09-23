@@ -12,6 +12,7 @@
 //! re-run, or done on a different machine from the one holding the credentials. The tree in between
 //! is the interface, and it is exactly the tree `obc-pack catalog` walks.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -22,6 +23,7 @@ const USAGE: &str = "\
 usage:
   obc-bake landmark-candidates --osm FILE --out FILE
   obc-bake landmark-content --snapshot FILE --boundary GEOJSON --out DIR
+  obc-bake landmark-photo-requests --snapshot FILE --boundary GEOJSON --out DIR [--qids FILE]
   obc-bake peak-candidates --osm FILE --boundary GEOJSON --out FILE
   obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
       Compile pinned article and image captures offline for the map content stage.
@@ -130,6 +132,7 @@ fn main() -> ExitCode {
     let result = match command {
         "landmark-candidates" => run_landmark_candidates(rest),
         "landmark-content" => run_landmark_content(rest),
+        "landmark-photo-requests" => run_landmark_photo_requests(rest),
         "landmarks" => run_landmark_stage(rest),
         "peaks" => run_peaks(rest),
         "peak-candidates" => run_peak_candidates(rest),
@@ -809,6 +812,35 @@ fn run_landmark_content(args: &[String]) -> Result<(), String> {
         content.counts.photo_bytes,
         content.omissions.len()
     );
+    Ok(())
+}
+
+fn run_landmark_photo_requests(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out", "qids"])?;
+    if !positional.is_empty() {
+        return Err("landmark-photo-requests accepts named flags only".into());
+    }
+    let qids = flags
+        .get("qids")
+        .map(|path| {
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let values: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+            let qids: BTreeSet<_> = values.iter().cloned().collect();
+            if qids.len() != values.len()
+                || qids
+                    .iter()
+                    .any(|qid| qid.len() < 2 || !qid.starts_with('Q') || !qid[1..].chars().all(|c| c.is_ascii_digit()))
+            {
+                return Err(String::from("photo request QIDs must be unique Q followed by digits"));
+            }
+            Ok(qids)
+        })
+        .transpose()?;
+    let snapshot = Path::new(flags.get("snapshot").ok_or("landmark-photo-requests requires --snapshot FILE")?);
+    let boundary = Path::new(flags.get("boundary").ok_or("landmark-photo-requests requires --boundary GEOJSON")?);
+    let output = Path::new(flags.get("out").ok_or("landmark-photo-requests requires --out DIR")?);
+    let result = obc_pack::landmarks::photo_requests(snapshot, boundary, output, qids.as_ref())?;
+    println!("{} photo request(s)", result.requests.len());
     Ok(())
 }
 
