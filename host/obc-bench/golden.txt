@@ -12,6 +12,6 @@ corridor/thin/water/full-walk rows=1 map_reads=6 map_bytes=3072 route_reads=6 ro
 corridor/dense/all/cold rows=16 map_reads=87 map_bytes=44544 route_reads=2 route_bytes=3570
 corridor/dense/all/warm rows=16 map_reads=86 map_bytes=44211 route_reads=0 route_bytes=0
 corridor/dense/water/warm rows=16 map_reads=12 map_bytes=6144 route_reads=0 route_bytes=0
-corridor/dense/all/mid-ride rows=16 map_reads=138 map_bytes=70681 route_reads=0 route_bytes=0
+corridor/dense/all/mid-ride rows=16 map_reads=74 map_bytes=37913 route_reads=0 route_bytes=0
 corridor/sparse/all/warm rows=16 map_reads=32 map_bytes=16384 route_reads=5 route_bytes=8925
 corridor/sparse/water/warm rows=4 map_reads=6 map_bytes=3072 route_reads=6 route_bytes=9219

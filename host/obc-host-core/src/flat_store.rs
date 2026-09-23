@@ -491,10 +491,15 @@ impl HostStore {
         self.import_with_capacity(kind, previous, input, len, name, 1)
     }
 
-    pub(crate) fn import_computed_route(&self, bytes: &[u8]) -> Result<EntryMeta, ImportError> {
+    /// `previous` is the exact head a computed route replaces in place.
+    pub(crate) fn import_computed_route(
+        &self,
+        bytes: &[u8],
+        previous: Option<(ObjectId, Revision)>,
+    ) -> Result<EntryMeta, ImportError> {
         self.import_with_capacity(
             ObjectKind::Route,
-            None,
+            previous,
             &mut &bytes[..],
             bytes.len() as u64,
             DisplayName::default(),

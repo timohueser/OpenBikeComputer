@@ -29,12 +29,7 @@ impl WhatsNextScreen {
             }
             (Page::Overview, Gesture::Press) => a.explore(),
             (Page::Overview, Gesture::Back) => return Transition::Pop,
-            (Page::Timeline, Gesture::Back) => {
-                a.page = Page::Overview;
-                if !a.stale {
-                    a.refresh(a.window.map_or(0, |w| w.start_m));
-                }
-            }
+            (Page::Timeline, Gesture::Back) => a.back(),
             (Page::Detail, Gesture::Back) => a.page = Page::Timeline,
             (Page::Timeline, Gesture::Step(n)) if !a.pending() && n != 0 => {
                 if n > 0 && a.selected + 1 >= a.rows.len() {

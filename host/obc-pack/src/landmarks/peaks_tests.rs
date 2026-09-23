@@ -277,7 +277,11 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
         if let Some(member) = place["images"].as_array().unwrap().iter().find(|i| i["source"] == "commons-category") {
             let listing = format!("categories/{id}.json");
             f.json(&listing,json!({"query":{"categorymembers":[{"title":format!("File:{}", member["filename"].as_str().unwrap())}]}}));
-            place["commons_categories"] = json!([{"title": format!("Category:{name}"), "path": listing}]);
+            place["commons_categories"] = json!([{
+                "title": format!("Category:{name}"),
+                "complete": true,
+                "pages": [{"path": listing, "continuation": null}]
+            }]);
         }
         places.push(place);
         f.json(&format!("links/{id}.json"), json!({"entities":{id:{"id":id}}}));
@@ -292,7 +296,7 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
         .map(|(id, qid)| json!({"node_id":id,"kind":"wikidata","path":format!("links/{qid}.json"),"status":"resolved"}))
         .collect();
     let manifest = f.root.join("manifest.json");
-    fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
+    fs::write(&manifest,serde_json::to_vec(&json!({"schema":2,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
     let result = peaks::compile(&manifest, &boundary, &f.root.join("out"), true).unwrap();

@@ -105,6 +105,10 @@ pub trait RouteRepository {
     fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
         None
     }
+    /// The current bytes of stored route `id`.
+    fn route_bytes(&self, _id: CatalogObjectId) -> Option<Vec<u8>> {
+        None
+    }
     /// Whether the stored checkpoint's route still accepts `map` as its attribution — the current
     /// map key, or `None` when no current map is open. An imported route attributes no map.
     fn resume_map_matches(&self, _map: Option<obc_formats::obcr::RouteSourceKey>) -> bool {
@@ -260,10 +264,24 @@ pub trait TripCatalog {
     fn rescan(&mut self) -> Result<(), CatalogError> {
         Ok(())
     }
-    /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) — call **after** the
-    /// route catalog is re-fed so the stage ids resolve.
+    /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) and progress
+    /// records — call **after** the route catalog is re-fed so the stage ids resolve.
     fn refeed(&self, app: &mut App) {
         let _ = app;
+    }
+    /// Day `k` of the stored trip with key `key`.
+    fn day(&self, key: u64, k: u16) -> Option<obc_route::TripDay> {
+        let _ = (key, k);
+        None
+    }
+    /// Write one trip progress record by the bound rules; `keys` are the stored trips' keys.
+    fn write_progress(
+        &mut self,
+        record: obc_app::trip::TripProgress,
+        keys: &[u64],
+    ) -> Result<(), obc_app::metadata::MetadataError> {
+        let _ = (record, keys);
+        Err(obc_app::metadata::MetadataError::Unsupported)
     }
 }
 

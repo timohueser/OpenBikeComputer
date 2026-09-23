@@ -413,7 +413,15 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_phot
         content.candidate_qids.push(qid.clone());
         // A landmark photo is taken at the landmark, so it has no camera-distance reference.
         let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
-            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos, text_required: true },
+            &Inputs {
+                root,
+                sources: &snapshot.sources,
+                locales: &locales,
+                output,
+                select_photos,
+                text_required: true,
+                snapshot_schema: snapshot.schema,
+            },
             &place,
             entity,
             &mut Found { omissions: &mut content.omissions, requests: &mut content.photo_requests },
@@ -532,6 +540,7 @@ struct Inputs<'a> {
     /// A landmark answers "what is this place", which needs text. A peak is identified by sight,
     /// so a photo alone is a record there.
     text_required: bool,
+    snapshot_schema: u32,
 }
 
 /// The captured file members of the place's own Commons categories. The listing is a pinned source
@@ -541,6 +550,7 @@ fn category_members(
     sources: &[Source],
     place: &Value,
     categories: &[String],
+    snapshot_schema: u32,
 ) -> Result<BTreeSet<String>, String> {
     let mut members = BTreeSet::new();
     for listing in place["commons_categories"].as_array().into_iter().flatten() {
@@ -548,11 +558,45 @@ fn category_members(
         if !categories.iter().any(|name| name == title) {
             return Err(format!("unclaimed commons category: {title}"));
         }
-        let raw = json_pinned(root, sources, string(listing, "path")?)?;
-        for member in raw["query"]["categorymembers"].as_array().into_iter().flatten() {
-            if let Some(file) = string(member, "title")?.strip_prefix("File:") {
+        if snapshot_schema == 1 {
+            return Err(format!("schema 1 cannot prove complete commons category coverage: {title}"));
+        }
+        let complete = listing["complete"].as_bool().ok_or("missing category completeness")?;
+        if !complete {
+            continue;
+        }
+        let pages = listing["pages"].as_array().ok_or("missing category pages")?;
+        if pages.is_empty() {
+            return Err(format!("empty commons category page set: {title}"));
+        }
+        let mut expected = Value::Null;
+        let mut paths = BTreeSet::new();
+        for (index, page) in pages.iter().enumerate() {
+            if index > 0 && expected == Value::Null {
+                return Err(format!("commons category page follows a terminal response: {title}"));
+            }
+            if page.get("continuation").unwrap_or(&Value::Null) != &expected {
+                return Err(format!("commons category page identity mismatch: {title}"));
+            }
+            let path = string(page, "path")?;
+            if !paths.insert(path) {
+                return Err(format!("duplicate commons category page: {path}"));
+            }
+            let raw = json_pinned(root, sources, path)?;
+            let listed = raw["query"]["categorymembers"].as_array().ok_or("invalid category members")?;
+            for member in listed {
+                let file = string(member, "title")?
+                    .strip_prefix("File:")
+                    .ok_or_else(|| format!("invalid category member: {title}"))?;
                 members.insert(file.replace('_', " "));
             }
+            expected = raw.get("continue").cloned().unwrap_or(Value::Null);
+            if expected != Value::Null && (!expected.is_object() || expected["cmcontinue"].as_str().is_none()) {
+                return Err(format!("invalid commons category continuation: {title}"));
+            }
+        }
+        if expected != Value::Null {
+            return Err(format!("unconsumed commons category continuation: {title}"));
         }
     }
     Ok(members)
@@ -571,7 +615,7 @@ fn prepare_article(
     found: &mut Found,
     summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
-    let Inputs { root, sources, locales, output, select_photos, text_required } = *inputs;
+    let Inputs { root, sources, locales, output, select_photos, text_required, snapshot_schema } = *inputs;
     let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
@@ -625,7 +669,7 @@ fn prepare_article(
     };
     // Every P373 claim, so the compiler and the capture cannot name different categories.
     let categories: Vec<String> = claim_files("P373").into_iter().map(|name| format!("Category:{name}")).collect();
-    let members = category_members(root, sources, place, &categories)?;
+    let members = category_members(root, sources, place, &categories, snapshot_schema)?;
     let pools = photo_pools();
     let mut ranked = Vec::new();
     for image in place["images"].as_array().into_iter().flatten() {
@@ -700,7 +744,7 @@ fn prepare_article(
 fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Vec<u8>), String> {
     let raw = fs::read(snapshot_path).map_err(|e| e.to_string())?;
     let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    if snapshot.schema != 1 {
+    if !matches!(snapshot.schema, 1 | 2) {
         return Err("unsupported source snapshot schema".into());
     }
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;

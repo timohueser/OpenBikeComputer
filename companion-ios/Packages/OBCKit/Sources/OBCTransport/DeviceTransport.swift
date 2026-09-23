@@ -112,8 +112,6 @@ public protocol DeviceObjects: Sendable {
     func deleteTrip(_ id: DeviceObjectID) async throws
     /// Enumerate tracked rides on the device, including the bounded-catalog truncation signal.
     func listRides() async throws -> RideCatalog
-    /// Full detail for one tracked ride.
-    func rideDetail(_ id: RideID) async throws -> RideDetail
     /// Download tracked rides. `rides` yields each ride's payload as it lands; `handle` carries
     /// batch progress, cancel and restart, and whole rides are the resume granularity.
     func downloadRides(_ ids: [RideID]) -> RideDownload

@@ -39,6 +39,20 @@ final class TrackGeometryTests: XCTestCase {
         XCTAssertEqual(topLeft.y, 10, accuracy: 0.001)
     }
 
+    func testATopInsetFitsTheTrackBelowTheTag() {
+        // Aspect 0.5 into 100x100 with a 10pt inset and a 20pt band: 30x60, centred below the band.
+        let preview = TrackPreview(
+            points: [.init(x: 0, y: 0), .init(x: 1, y: 1)],
+            aspectRatio: 0.5
+        )
+        let transform = TrackPreviewView.fittingTransform(
+            for: preview, in: CGSize(width: 100, height: 100), inset: 10, topInset: 20
+        )
+        XCTAssertEqual(transform(.init(x: 0, y: 0)).y, 30, accuracy: 0.001)
+        XCTAssertEqual(transform(.init(x: 1, y: 1)).y, 90, accuracy: 0.001)
+        XCTAssertEqual(transform(.init(x: 0, y: 0)).x, 35, accuracy: 0.001)
+    }
+
     func testCenterPointStaysCentered() {
         let preview = TrackPreview(points: [.init(x: 0.5, y: 0.5)], aspectRatio: 1.7)
         let transform = TrackPreviewView.fittingTransform(

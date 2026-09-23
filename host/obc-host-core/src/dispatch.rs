@@ -60,6 +60,8 @@ fn remove_object(
 pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
+    /// The rest of the day before a trip day: nothing to search, so it is ready at once.
+    Rest(DetourReady),
     Ready(NavPlan, obc_route::RouteStats),
     Visit(Box<crate::nav_visit::VisitPlan>),
     VisitReady(Box<crate::nav_visit::VisitPlan>, obc_route::RouteStats),
@@ -434,7 +436,9 @@ impl HostLoop {
             );
             app.offer_route_checkpoint(id, source);
         }
-        if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
+        if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) =
+            plan.effects.metadata.take_if(|effect| matches!(effect, MetadataEffect::WriteCheckpoint { .. }))
+        {
             let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
                 && app.assistant_preview().is_none();
             let current_map = map.source();
@@ -504,6 +508,21 @@ impl HostLoop {
         if let Some(effect) = plan.effects.catalog.take() {
             let outcome = self.serve_catalog(app, effect, routes, rides, trips);
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
+        }
+        if let Some(MetadataEffect::WriteProgress { token, scope }) =
+            plan.effects.metadata.take_if(|effect| matches!(effect, MetadataEffect::WriteProgress { .. }))
+        {
+            let outcome = match app.trip_progress_payload(token) {
+                Some(record) if scope.is_some() && scope.map(|s| s.store) == routes.store_scope().map(|s| s.store) => {
+                    let keys: Vec<u64> = app.trips().iter().map(|t| t.key).collect();
+                    match trips.write_progress(record.clone(), &keys) {
+                        Ok(()) => MetadataOutcome::ProgressWritten { token },
+                        Err(error) => MetadataOutcome::Failed { token, error },
+                    }
+                }
+                _ => MetadataOutcome::Cancelled { token },
+            };
+            deliver(&mut self.inbox.outcomes.metadata, outcome, "metadata");
         }
         if let Some(MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
             let outcome = match scope.zip(app.assistant_checkpoint_payload(token)) {
@@ -631,6 +650,8 @@ impl HostLoop {
                 feed_routes(app, routes, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
+                let join = crate::nav::day_join(app, routes, trips);
+                app.set_day_join(join);
                 feed_rides(app, rides, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                 CatalogOutcome::CatalogRead { token, scope }
             }
@@ -931,10 +952,17 @@ impl HostLoop {
                     return failed(NavigatorError::Workspace);
                 };
                 let orig = obc_route::RouteReader::new(&index, &source);
-                let Some(plan) = DetourPlan::start(&request, app.settings().bike_type, &orig) else {
-                    return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
-                };
-                self.plan = Some(InflightPlan::Detour(plan));
+                self.plan = Some(if matches!(request.leg, obc_route::Leg::Rest { .. }) {
+                    let Some(ready) = crate::nav::rest_ready(app, &request, routes) else {
+                        return failed(NavigatorError::SourceChanged);
+                    };
+                    InflightPlan::Rest(ready)
+                } else {
+                    let Some(plan) = DetourPlan::start(&request, app.settings().bike_type, &orig) else {
+                        return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
+                    };
+                    InflightPlan::Detour(plan)
+                });
                 Some((source, Box::new(index)))
             }
         };
@@ -981,6 +1009,12 @@ impl HostLoop {
             self.plan = Some(InflightPlan::VisitReady(plan, stats));
             return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached });
         }
+        if let Some(InflightPlan::Rest(_)) = self.plan {
+            let Some(InflightPlan::Rest(ready)) = self.plan.take() else { unreachable!() };
+            let preview = ready.lead_preview();
+            self.detour_ready = Some(Preview { ready, sources: self.sources.take().expect("admitted sources") });
+            return Some(NavigatorOutcome::DetourFinished { token, preview });
+        }
         let outcome = match self.plan.as_mut() {
             Some(InflightPlan::Nav(plan)) => plan.step(&map.reader(), elev),
             Some(InflightPlan::Detour(plan)) => plan.step(&map.reader(), elev),
@@ -1018,7 +1052,8 @@ impl HostLoop {
             InflightPlan::Ready(..)
             | InflightPlan::Visit(..)
             | InflightPlan::VisitReady(..)
-            | InflightPlan::Measure(..) => {
+            | InflightPlan::Measure(..)
+            | InflightPlan::Rest(..) => {
                 unreachable!("only an unfinished plan steps")
             }
         })
