@@ -1,13 +1,9 @@
-//! Forward-biased route matcher: snap a live position onto the loaded route.
+//! Route matching with a bounded, bidirectional search around the last matched occurrence.
 //!
-//! [`RouteMatch`] keeps a cursor `(chunk, segment, progress)` and, for each fix, searches a
-//! bounded forward window around it for the nearest route segment, so the cost is O(window), not
-//! O(route). Past a distance threshold it flags off-route, with hysteresis so the flag does not
-//! flap on GPS jitter, and freezes progress so a far fix cannot drag the route position. It
-//! widens the search at the same time, so a rejoin is still found. The forward bias stops a
-//! loop's second pass from snapping back to the first.
-//!
-//! Cached chunks are borrowed for each scan. A cache miss uses bounded reader scratch.
+//! Near overlapping sections, along-route continuity distinguishes repeated passes. Progress can
+//! decrease when the rider turns back. Off-route fixes freeze the cursor and widen the search;
+//! the first search covers the whole route, then keeps a search anchor even before an on-route
+//! lock. Cached chunks are borrowed for each scan. A cache miss uses bounded reader scratch.
 
 use crate::geo::project_to_segment;
 use crate::reader::RouteReader;
@@ -18,19 +14,13 @@ const OFF_M: f32 = 25.0;
 /// Cross-track distance (m) below which the rider is back on-route. The gap to [`OFF_M`] is the
 /// hysteresis band that keeps the flag from flapping on GPS noise.
 const ON_M: f32 = 15.0;
-/// Segments of backward slack in the on-route search window. It absorbs a little GPS jitter
-/// without losing the forward bias.
-const BACK_SEGS: i64 = 3;
-/// Forward search window (segments) while on-route. One fix's travel is far less than this
-/// at any cycling speed, so the nearest segment is well inside it.
-const FWD_SEGS_ON: i64 = 64;
-/// Wider forward window while off-route, so a rejoin further along the route is found
-/// without an unbounded full scan.
-const FWD_SEGS_OFF: i64 = 320;
-/// Tie-break margin (m) for the first lock only. The initial scan runs front-to-back, so this
-/// margin keeps the earliest of several near-equal matches. On an out-and-back a few metres of
-/// cross-track offset would otherwise latch the cursor onto the finish, and the forward bias
-/// could never follow the outbound leg.
+/// Search radius in segments on either side of the cursor. This bounds per-fix decoding while
+/// allowing several fixes of travel in either direction, even on densely sampled routes.
+const WINDOW_SEGS_ON: i64 = 64;
+/// Wider radius for a rejoin or a known gap in matching.
+const WINDOW_SEGS_OFF: i64 = 320;
+/// GPS tolerance (m) for continuity and earliest-occurrence ties on first lock. This keeps a small
+/// cross-track offset from selecting the finish of an out-and-back instead of its outbound leg.
 const TIE_EPS_M: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,22 +43,24 @@ enum RecoveryScan {
     Check { progress_m: u32, dist_m: u32 },
 }
 
-/// A forward-biased cursor that snaps fixes to a route. One per active route, reset on route
+/// A cursor that follows either direction on a route. One per active route, reset on route
 /// load or change.
 pub struct RouteMatch {
     chunk: usize,
     seg: usize,
     progress_m: u32,
+    last_fix: Option<(i32, i32)>,
+    /// A search cursor exists even when progress has never locked onto the route.
+    anchored: bool,
     /// Durable lower bound installed by a skip-ahead commit. It survives off-route fixes and
     /// stops the backward slack from re-entering the skipped stretch.
     floor_progress_m: u32,
     /// Global segment containing `floor_progress_m`; segments before it are not candidates.
     floor_global_seg: u32,
     off_route: bool,
-    /// `false` until the first fix has been matched. That first match scans the whole route, to
-    /// lock on from anywhere.
+    /// `false` until an on-route fix establishes progress.
     started: bool,
-    /// Widen the next match's forward window to the rejoin window, then clear. Set when the
+    /// Widen the next match's search window to the rejoin window, then clear. Set when the
     /// caller knows fixes went unmatched, so the cursor is stale by more than one fix's travel.
     wide_next: bool,
 }
@@ -85,6 +77,8 @@ impl RouteMatch {
             chunk: 0,
             seg: 0,
             progress_m: 0,
+            last_fix: None,
+            anchored: false,
             floor_progress_m: 0,
             floor_global_seg: 0,
             off_route: false,
@@ -98,6 +92,8 @@ impl RouteMatch {
         self.chunk = 0;
         self.seg = 0;
         self.progress_m = 0;
+        self.last_fix = None;
+        self.anchored = false;
         self.floor_progress_m = 0;
         self.floor_global_seg = 0;
         self.off_route = false;
@@ -114,6 +110,8 @@ impl RouteMatch {
         self.chunk = pos.chunk;
         self.seg = pos.seg;
         self.progress_m = pos.progress_m;
+        self.last_fix = Some((pos.lon, pos.lat));
+        self.anchored = true;
         self.floor_progress_m = pos.progress_m;
         self.floor_global_seg = route.global_seg_index(pos.chunk, pos.seg) as u32;
         self.off_route = false;
@@ -216,10 +214,16 @@ impl RouteMatch {
             self.off_route
         };
         self.off_route = now_off;
-        self.started = true;
-
-        // Advance only when on-route, so a far fix cannot drag progress.
+        self.anchored = true;
+        // Before progress locks, follow the nearest search window without publishing progress.
+        if !self.started {
+            self.chunk = bc;
+            self.seg = bs;
+        }
+        // Move progress only when on-route, so a far fix cannot drag it.
         if !now_off {
+            self.started = true;
+            self.last_fix = Some((lon, lat));
             self.chunk = bc;
             self.seg = bs;
             self.progress_m = bprog;
@@ -245,12 +249,26 @@ impl RouteMatch {
         // The first lock, an off-route rejoin and a requested re-lock scan wide. The re-lock
         // request is consumed here whichever branch wins, so it costs at most one wide search.
         let wide_relock = core::mem::take(&mut self.wide_next);
-        let (first_chunk, back, fwd) = if !self.started {
-            (0usize, i64::MAX, i64::MAX) // first lock: whole route
-        } else if self.off_route || wide_relock {
-            (self.chunk.saturating_sub(1), BACK_SEGS, FWD_SEGS_OFF)
-        } else {
-            (self.chunk.saturating_sub(1), BACK_SEGS, FWD_SEGS_ON)
+        let radius = if self.off_route || wide_relock { WINDOW_SEGS_OFF } else { WINDOW_SEGS_ON };
+        let bounded = self.anchored && recovery.is_none();
+        let mut first_chunk = if bounded { self.chunk } else { 0 };
+        while first_chunk > 0 && route.global_seg_index(first_chunk, 0) as i64 >= cur_gidx - radius {
+            first_chunk -= 1;
+        }
+        let travel = self.last_fix.map_or(0.0, |last| obc_map_scene::ground_dist_m(last, p));
+        let on_limit = if self.off_route { ON_M } else { OFF_M };
+        // A candidate must be spatially on-route before continuity can prefer it. Within that
+        // band, penalize travel beyond the fix displacement and its GPS tolerance. This preserves
+        // the occurrence on overlaps without penalizing ordinary forward or backward motion.
+        let rank = |dist: f32, progress: u32| {
+            let delta = progress.abs_diff(self.progress_m);
+            let excess = (delta as f32 - travel - TIE_EPS_M).max(0.0);
+            (
+                dist >= on_limit,
+                dist + if dist < on_limit { excess * 0.25 } else { 0.0 },
+                delta,
+                progress < self.progress_m,
+            )
         };
 
         let mut best: Option<Best> = None;
@@ -259,7 +277,7 @@ impl RouteMatch {
         let mut base_gidx = route.global_seg_index(first_chunk, 0) as i64;
         while c < chunks.len() {
             // Segments only run forward, so a chunk past the window ends the scan.
-            if self.started && base_gidx - cur_gidx > fwd {
+            if bounded && base_gidx - cur_gidx > radius {
                 break;
             }
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
@@ -274,7 +292,7 @@ impl RouteMatch {
                     for s in 0..n - 1 {
                         let off = base_gidx + s as i64 - cur_gidx;
                         let global = (base_gidx + s as i64).max(0) as u32;
-                        if self.started && off > fwd {
+                        if bounded && off > radius {
                             return true;
                         }
                         let a = (pts[s].lon, pts[s].lat);
@@ -283,7 +301,7 @@ impl RouteMatch {
                         if cum0 + intra > ceiling_m as f32 {
                             return true;
                         }
-                        if (!self.started || off >= -back) && global >= self.floor_global_seg {
+                        if (!bounded || off >= -radius) && global >= self.floor_global_seg {
                             let (mut t, mut dist) = project_to_segment(a, b, p, cl);
                             let mut progress = (cum0 + intra + t * seg_len) as u32;
                             if progress > ceiling_m {
@@ -325,11 +343,25 @@ impl RouteMatch {
                                     && separation > 2.0 * (nearest_dist + TIE_EPS_M))
                                     || (dist <= nearest_dist + 1.0 && separation > 2.0 * (nearest_dist + 1.0));
                             }
-                            // The first lock biases near-ties to the earliest segment. Once tracking,
-                            // the forward window bounds the search, so a strict nearest is right.
+                            // At an exact turnaround tie, prefer the next occurrence. Away from a
+                            // turnaround, the nearer along-route occurrence wins repeated geometry.
                             let better = match best {
                                 None => true,
-                                Some((_, _, bd, _)) if self.started || recovery.is_some() => dist < bd,
+                                Some((_, _, bd, bp)) if self.started => {
+                                    let candidate = rank(dist, progress);
+                                    let kept = rank(bd, bp);
+                                    // Metre-rounded progress and sub-metre projection error must not
+                                    // decide which side of an exact turnaround the rider takes.
+                                    if candidate.0 == kept.0
+                                        && (candidate.1 - kept.1).abs() < 0.25
+                                        && candidate.2.abs_diff(kept.2) <= 2
+                                    {
+                                        (candidate.3, candidate.1, candidate.2) < (kept.3, kept.1, kept.2)
+                                    } else {
+                                        candidate < kept
+                                    }
+                                }
+                                Some((_, _, bd, _)) if recovery.is_some() => dist < bd,
                                 Some((_, _, bd, _)) => dist < bd - tie_m,
                             };
                             if better {

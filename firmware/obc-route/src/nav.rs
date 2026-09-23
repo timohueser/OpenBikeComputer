@@ -1007,7 +1007,8 @@ impl NavPlanner {
         em.set_attribution_map(self.map_source);
         em.set_bike_type(self.bike);
         em.set_flags(
-            if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
+            obc_formats::obcr::FLAG_TEMPORARY
+                | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
                 | if self.unresolved_avoidance { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 },
         );
         self.emit_started = true;

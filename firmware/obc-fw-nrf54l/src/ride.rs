@@ -1109,8 +1109,8 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
-                    CatalogEffect::RemoveOrphanReviews { token } => {
-                        let heads = crate::flat_store::route_heads(flat, app.orphan_reviews());
+                    CatalogEffect::RemoveOrphanRoutes { token } => {
+                        let heads = crate::flat_store::route_heads(flat, app.orphan_routes());
                         let result = if heads.is_empty() {
                             Ok(())
                         } else if let Some(writer) = crate::flat_store::writer() {
@@ -1122,7 +1122,7 @@ pub(crate) async fn run_app(
                             Err(obc_storage::flat::StoreError::ReadOnly)
                         };
                         let outcome = match result {
-                            Ok(()) => CatalogOutcome::OrphanReviewsRemoved { token },
+                            Ok(()) => CatalogOutcome::OrphanRoutesRemoved { token },
                             Err(_) => CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
