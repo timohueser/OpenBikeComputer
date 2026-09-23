@@ -59,24 +59,34 @@
     let readError = $state<string | null>(null);
     let dragging = $state(false);
     let picker = $state<HTMLInputElement>();
+    // Conversions can overlap (a new drop, a type change); only the latest one may land.
+    let generation = 0;
 
     async function accept(file: File) {
+        const mine = ++generation;
         dropped = file;
         route = null;
         readError = null;
         job.reset();
         try {
-            route = await prepareRoute(file, bike);
+            const prepared = await prepareRoute(file, bike);
+            if (mine === generation) route = prepared;
         } catch (cause) {
-            readError = cause instanceof Error ? cause.message : String(cause);
+            if (mine === generation) readError = cause instanceof Error ? cause.message : String(cause);
         }
+    }
+
+    function forget() {
+        generation++;
+        dropped = null;
+        route = null;
     }
 
     function pickBike(event: Event) {
         bike = Number((event.currentTarget as HTMLSelectElement).value);
         rememberBikeType(bike);
-        // The type is written at conversion, so a route already shown is converted again.
-        if (route && dropped) void accept(dropped);
+        // The type is written at conversion, so a dropped file is converted again.
+        if (dropped) void accept(dropped);
     }
 
     function take(files: File[]) {
@@ -111,7 +121,7 @@
             (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,
         );
         if (!result) return;
-        route = null;
+        forget();
         onsent?.();
     }
 
@@ -179,7 +189,7 @@
                 >
                     Send route to device
                 </button>
-                <button type="button" class="btn ghostbtn" disabled={job.running} onclick={() => (route = null)}>
+                <button type="button" class="btn ghostbtn" disabled={job.running} onclick={forget}>
                     Discard
                 </button>
             </div>

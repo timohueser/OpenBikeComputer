@@ -24,8 +24,12 @@ export const BIKE_TYPES = ["Road", "Gravel", "MTB", "Touring"] as const;
 
 const BIKE_TYPE_KEY = "obcm.routeBikeType";
 
-/** The bike type last picked for a dropped route. Road when there is no pick or no storage. */
+/** This page's pick, which holds when storage is denied. */
+let picked: number | null = null;
+
+/** The bike type last picked for a dropped route. Road when there is no pick. */
 export function rememberedBikeType(): number {
+    if (picked !== null) return picked;
     try {
         const bike = Number(globalThis.localStorage?.getItem(BIKE_TYPE_KEY));
         return Number.isInteger(bike) && bike >= 0 && bike < BIKE_TYPES.length ? bike : 0;
@@ -35,6 +39,7 @@ export function rememberedBikeType(): number {
 }
 
 export function rememberBikeType(bike: number): void {
+    picked = bike;
     try {
         globalThis.localStorage?.setItem(BIKE_TYPE_KEY, String(bike));
     } catch {
