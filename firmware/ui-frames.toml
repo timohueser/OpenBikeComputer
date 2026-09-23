@@ -240,10 +240,9 @@ expect = "PeakView"
 args = ["--center", "7961000,46585000", "--heading", "141.25"]
 boot = false
 
-# Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
-# over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
-# synced/retention metadata boundary lands.
-# `p` presses into the Rides screen from the Menu (one `d` step + `w` settle).
+# The Rides screen: the "Alps traverse" trip folder at its newest ride, then the two loose rides,
+# in the Route menu's two-line row. `p` presses into the Rides screen from the Menu (one `d` step
+# + `w` settle).
 [[frame]]
 name = "rides"
 map = "{grimsel}"
@@ -251,33 +250,56 @@ env = "tracks"
 script = "B d w p"
 expect = "Rides"
 
-# The Ride detail (#680, repaged in owner review round 2, content-paired in round 3): press the
-# highlighted ride (the unsynced `ride-1` fixture) — RIDE bar with the "not synced" slot, name, date · time, the
-# content-paired pager on its entry page (page A: the recorded track's shape preview, host-filled —
-# start disc + end diamond — over DISTANCE + RIDE TIME), and the guarded Delete-ride row.
+# The folder pressed: the trip's name in the title bar, its totals over a hairline, and its rides
+# newest first, each with its weekday date.
+[[frame]]
+name = "rides-trip"
+map = "{grimsel}"
+env = "tracks"
+script = "B d w p p"
+expect = "Rides"
+
+# The Ride detail of Day 2: the date line, the ridden track on the Grimsel map in the trail red with
+# its start dot, DISTANCE, RIDE TIME and CLIMBED, and the plain Delete-ride row.
 [[frame]]
 name = "ride-detail"
 map = "{grimsel}"
 env = "tracks"
-script = "B d w p p"
+script = "B d w p p p"
 expect = "RideDetail"
 
-# Page B after the 5 s dwell (seven `w` ticks): the recorded elevation band (the staged fixture,
-# host-filled) over AVG + CLIMBED — the same band slot, so nothing jumps.
+# Page 2 after the 5 s dwell (seven `w` ticks): the profile with its high point, AVG SPEED and the
+# one sensor Day 2 recorded, AVG HR.
 [[frame]]
 name = "ride-detail-elevation"
 map = "{grimsel}"
 env = "tracks"
-script = "B d w p p w*7"
+script = "B d w p p p w*7"
 expect = "RideDetail"
 
-# The detail's delete charging: `H` partial-holds Select over the Delete-ride row, so its
-# warning-red fill draws mid-charge (the guarded-hold idiom, ride_control's pattern).
+# Page 2 of Day 1, which recorded no sensor: AVG SPEED alone, and the profile takes the room.
+[[frame]]
+name = "ride-detail-elevation-nohr"
+map = "{grimsel}"
+env = "tracks"
+script = "B d w p p d p w*7"
+expect = "RideDetail"
+
+# Page 2 of the loose "Sensor Ride", which recorded all three sensors: the most rows a page holds.
+[[frame]]
+name = "ride-detail-sensors"
+map = "{grimsel}"
+env = "tracks"
+script = "B d w p d p w*7"
+expect = "RideDetail"
+
+# The detail's delete charging: `H` partial-holds Select, so the Delete-ride row draws its shaded
+# base and the warning-red fill. On the board a hold step repaints only this row.
 [[frame]]
 name = "ride-detail-delete"
 map = "{grimsel}"
 env = "tracks"
-script = "B d w p p H"
+script = "B d w p p p H"
 expect = "RideDetail"
 
 # The delete row HIDDEN while a ride is being recorded (owner review round 1 — no greyed face):
@@ -285,13 +307,13 @@ expect = "RideDetail"
 # session only starts once positions flow, and `is_tracking` (the hiding predicate) is
 # `session.is_some()`, so without `--gpx` this frame would wrongly show the live delete row. Then
 # out to the main Menu — a bare `B` reaches it from anywhere since #1515 D3 — step to the Rides
-# station (`d w`), press into the detail: the page ends at the stat ledger with NO Delete-ride row
-# at all, and `H` fills nothing.
+# station (`d w`), press through the trip folder into the detail: the page ends at the stat ledger
+# with NO Delete-ride row at all, and `H` fills nothing.
 [[frame]]
 name = "ride-detail-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "p*4 f d p B d w p p H"
+script = "p*4 f d p B d w p p p H"
 expect = "RideDetail"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
