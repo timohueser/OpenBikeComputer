@@ -195,14 +195,18 @@ impl RideStartScreen {
     }
 }
 
-/// The hero bike in its box. The bike type editor over this card draws it too, with the staged type.
-pub(crate) fn draw_hero(cv: &mut impl Surface, w: i32, bike: BikeType) {
+fn draw_hero(cv: &mut impl Surface, w: i32, bike: BikeType) {
     bike_icons::draw(cv, bike_icons::sprite(bike), w / 2, HERO_TOP, HERO_SCALE, bike_icons::color(bike));
 }
 
-/// The hero's box inside the card's frame, for a sheet that repaints it.
-pub(crate) fn hero_box(w: i32) -> embedded_graphics::primitives::Rectangle {
-    rect(BAND_X, HERO_TOP, w - 2 * BAND_X, HERO_H)
+/// The staged bike over the recessed card, for the bike type editor above it: the hero in its own
+/// colour and the name on the recessed cursor band, so both follow the staged type live.
+pub(crate) fn draw_staged(cv: &mut impl Surface, w: i32, bike: BikeType, name: &str) {
+    use palette::*;
+    cv.fill(rect(BAND_X, HERO_TOP, w - 2 * BAND_X, HERO_H), super::dim_color(PARCHMENT));
+    draw_hero(cv, w, bike);
+    cv.round(rect(BAND_X, BIKE_TOP, w - 2 * BAND_X, BIKE_H), 5, super::dim_color(AMBER));
+    cv.text(name, Point::new(w / 2, BIKE_TOP + 4), Font::Caption, TextAlign::Center, INK);
 }
 
 #[cfg(test)]
