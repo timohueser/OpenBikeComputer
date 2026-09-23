@@ -121,6 +121,11 @@ public struct MeasuredLine: Equatable, Sendable {
         return (0..<count).map { elevation(at: length * Double($0) / Double(count - 1)) }
     }
 
+    /// A ride's profile card: `RouteStats.profileSampleCount` samples on a distance axis.
+    public static func elevationProfile(ridePoints: [RidePoint]) -> [Double] {
+        MeasuredLine(ridePoints: ridePoints).elevationProfile(count: RouteStats.profileSampleCount)
+    }
+
     /// Climb between two distances, from the cumulative walk: O(log n), so it can run on
     /// every drag frame.
     public func climb(from: Double, to: Double) -> Double {

@@ -119,8 +119,8 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
-    /// One highlight: "Furka 2,431 m", "2,431 m at km 31", "18 km climb", "62 kph descent" or
-    /// "Biggest day 82 km".
+    /// One highlight: "Furka 2,431 m", "2,431 m at km 31", "18.0 km climb", "62 kph descent" or
+    /// "Biggest day 82.0 km". Lengths use `distance(meters:)`, as every other km in the app.
     public static func highlight(_ highlight: RideHighlight, locale: Locale = .current) -> String {
         switch highlight {
         case .highestPoint(let elevation, let distance, let place):

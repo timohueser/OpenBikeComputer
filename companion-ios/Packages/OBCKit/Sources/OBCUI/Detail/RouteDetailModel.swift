@@ -168,8 +168,7 @@ public final class RouteDetailModel {
             preview = ride.trackPreview
             distanceMeters = ride.distanceMeters
             climbMeters = ride.climbMeters
-            elevationProfile = MeasuredLine(ridePoints: ridePoints)
-                .elevationProfile(count: RouteStats.profileSampleCount)
+            elevationProfile = MeasuredLine.elevationProfile(ridePoints: ridePoints)
 
         case .imported(let route, let fileName, let source):
             let stats = RouteStats.compute(from: route.points)

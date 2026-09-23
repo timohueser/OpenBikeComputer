@@ -15,7 +15,8 @@ public struct RouteStats: Equatable, Sendable {
     public var maxGradePercent: Double?
 
     /// Elevation-noise hysteresis: climb only accumulates once the track has
-    /// risen this far above its last confirmed elevation.
+    /// risen this far above its last confirmed elevation. The device's climb figure uses the same
+    /// band (`ELE_DEADBAND_M` in `obc-elevation`).
     public static let climbHysteresisMeters = 3.0
     /// Grades are measured over windows at least this long, so a single noisy sample cannot
     /// spike the MAX stat.
