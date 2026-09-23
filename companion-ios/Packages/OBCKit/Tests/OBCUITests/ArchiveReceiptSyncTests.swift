@@ -285,7 +285,6 @@ private struct ReceiptTransport: DeviceLink, DeviceObjects {
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { await peer.catalog() }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
     func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation { try await peer.confirm(receipt) }
     func downloadRides(_ ids: [RideID]) -> RideDownload {
         let (stream, continuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()

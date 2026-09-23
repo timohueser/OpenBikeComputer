@@ -97,7 +97,8 @@ public struct TrackPreviewView: View {
             let transform = Self.fittingTransform(
                 for: preview,
                 in: size,
-                inset: style.dotRadius + 6
+                inset: style.dotRadius + 6,
+                topInset: tag == nil ? 0 : Self.tagBandHeight
             )
             let points = preview.points.map { transform($0) }
 
@@ -129,17 +130,22 @@ public struct TrackPreviewView: View {
         }
     }
 
+    /// The corner tag's height with its padding. A tagged fit starts below it, so the tag never
+    /// covers a node dot.
+    static let tagBandHeight: CGFloat = 34
+
     /// Maps unit-square track points into `size`, keeping the source aspect ratio
     /// (centred letterbox), with a uniform `inset` so round caps and node dots never
-    /// clip. Internal for the geometry unit tests.
+    /// clip, below a `topInset` band. Internal for the geometry unit tests.
     static func fittingTransform(
         for preview: TrackPreview,
         in size: CGSize,
-        inset: CGFloat
+        inset: CGFloat,
+        topInset: CGFloat = 0
     ) -> (TrackPreview.Point) -> CGPoint {
         let available = CGSize(
             width: max(size.width - 2 * inset, 1),
-            height: max(size.height - 2 * inset, 1)
+            height: max(size.height - 2 * inset - topInset, 1)
         )
         let aspect = preview.aspectRatio > 0 ? preview.aspectRatio : 1
         // Fit a rect of the track's aspect into the available box.
@@ -149,7 +155,7 @@ public struct TrackPreviewView: View {
         }
         let origin = CGPoint(
             x: (size.width - fitted.width) / 2,
-            y: (size.height - fitted.height) / 2
+            y: topInset + (size.height - topInset - fitted.height) / 2
         )
         return { point in
             CGPoint(

@@ -8,8 +8,8 @@ import OBCTransport
 ///
 /// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
 /// derived from the saved record's own geometry, so the screen never asks the device for a route
-/// the phone already holds. Tracked renders its summary at once and fills the profile when the
-/// ride detail lands; a failed read degrades quietly. Imported computes everything up front.
+/// the phone already holds. Tracked computes its profile and highlights from the synced ride
+/// points in `start()`, which runs once on the live model. Imported computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
     /// Which of the three dressings this instance wears.
@@ -29,6 +29,8 @@ public final class RouteDetailModel {
     public private(set) var waypoints: [Waypoint] = []
     /// Elevation samples for the profile card; empty hides the card.
     public private(set) var elevationProfile: [Double] = []
+    /// A tracked ride's highlights, the most notable first; empty elsewhere.
+    public private(set) var highlights: [String] = []
     public private(set) var maxGradePercent: Double?
     /// The type the estimate uses and an upload writes. Changed through `setBikeType(_:)`.
     public private(set) var bikeType: BikeType
@@ -47,6 +49,8 @@ public final class RouteDetailModel {
         !fullTrackCoordinates.isEmpty ? fullTrackCoordinates : (preview?.coordinates ?? [])
     }
     @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
+    @ObservationIgnored private let ridePoints: [RidePoint]
+    @ObservationIgnored private let rides: [RideSummary]
     /// The soft line under the title: a ride's date, or an imported file's name.
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
@@ -127,9 +131,11 @@ public final class RouteDetailModel {
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         now: @escaping () -> Date = Date.init,
-        // The tracked dressing's full tracklog, threaded from the library's synced ride points. A
-        // ride carries no `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
-        rideGeometry: [Coordinate]? = nil
+        // The tracked dressing's full tracklog, from the library's synced ride. A ride carries no
+        // `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
+        ridePoints: [RidePoint] = [],
+        // Every synced ride summary: the tracked dressing finds its trip's biggest day in it.
+        rides: [RideSummary] = []
     ) {
         self.transport = transport
         self.dressing = dressing
@@ -143,10 +149,12 @@ public final class RouteDetailModel {
         default: uploadGeometry = plannedGeometry
         }
         // The interactive map draws this, never the downsampled `preview`. Full resolution is
-        // already in memory for imported and planned routes; `rideGeometry` threads it in for
+        // already in memory for imported and planned routes; `ridePoints` threads it in for
         // tracked. It falls back to the preview's coordinates when neither is available, which is
         // a coarser map, not a missing one.
-        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? rideGeometry ?? []
+        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? ridePoints.map(\.coordinate)
+        self.ridePoints = ridePoints
+        self.rides = rides
 
         switch dressing {
         case .planned(let route):
@@ -192,24 +200,20 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Fetch the tracked dressing's detail read; failures degrade quietly. Planned and imported
-    /// already have everything.
+    /// Watch the link, and fill a tracked ride's profile and highlights. A host may build throwaway
+    /// models on every render, so this whole-track work waits for the live one.
     public func start() {
         guard !started else { return }
         started = true
+        if case .tracked(let summary) = dressing {
+            let ride = Ride(summary: summary, points: ridePoints)
+            elevationProfile = MeasuredLine.elevationProfile(ridePoints: ridePoints)
+            highlights = RideHighlights.compute(ride, library: rides).map { OBCFormat.highlight($0) }
+        }
         connectionWatch = Task { [weak self, transport] in
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-            }
-        }
-        switch dressing {
-        case .planned, .imported:
-            break
-        case .tracked(let ride):
-            Task { [transport] in
-                guard let detail = try? await transport.rideDetail(ride.id) else { return }
-                elevationProfile = detail.elevationProfile
             }
         }
     }
@@ -260,13 +264,8 @@ public final class RouteDetailModel {
                     OBCStat(value: "\(Int($0.rounded()))", unit: "%", key: "Max")
                 } ?? OBCStat(value: "—", key: "Max"),
             ]
-        case .tracked(let ride):
-            [
-                OBCStat(value: OBCFormat.distanceValue(meters: ride.distanceMeters), unit: "km", key: "Distance"),
-                OBCStat(value: OBCFormat.movingTime(ride.movingTime), key: "Moving"),
-                OBCStat(value: OBCFormat.speedValue(mps: ride.averageSpeedMps), unit: "kph", key: "Avg"),
-                OBCStat(value: OBCFormat.climbValue(meters: ride.climbMeters), unit: "m", key: "Climb"),
-            ]
+        case .tracked:
+            []  // a ride has the one stats line instead
         case .imported:
             [
                 OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
@@ -275,6 +274,12 @@ public final class RouteDetailModel {
                 estimateStat,
             ]
         }
+    }
+
+    /// A tracked ride's one stats line under its title; nil on the other dressings.
+    public var statsLine: String? {
+        guard case .tracked(let ride) = dressing else { return nil }
+        return OBCFormat.rideStatsLine(ride)
     }
 
     /// Whole minutes, floored, as the device route overview shows the same estimate.
