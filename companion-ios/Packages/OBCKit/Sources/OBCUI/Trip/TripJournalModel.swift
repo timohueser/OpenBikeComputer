@@ -36,6 +36,10 @@ public final class TripJournalModel {
     /// "Furka 2,431 m · Biggest day 82.0 km".
     public private(set) var highlights: String?
 
+    /// About this many photo pins fit along a trip before they hide its line: a pin closer than
+    /// the trip length over this to the last pin is left out.
+    static let photoPinsPerTrip = 20
+
     public let trip: Trip
     @ObservationIgnored private let rides: [RideSummary]
     @ObservationIgnored private let library: any LibraryStore
@@ -90,7 +94,10 @@ public final class TripJournalModel {
                 day: index, header: header(index, day), note: library.dayNote(.tripDay(key: trip.key, dayIndex: index)),
                 photos: photos, thumbnails: thumbnails, rides: day.rides)
         }
-        photoPins = pins
+        let spacing = review.plannedMeters / Double(Self.photoPinsPerTrip)
+        photoPins = pins.reduce(into: []) { kept, pin in
+            if kept.last.map({ $0.distance(to: pin) >= spacing }) ?? true { kept.append(pin) }
+        }
         offer = review.rebalance.flatMap { library.rideJournal($0.ride).closedRows.contains(.rebalance) ? nil : $0 }
         highlights = Self.highlights(review, trip: trip)
         self.review = review
