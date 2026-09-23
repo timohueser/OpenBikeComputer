@@ -50,7 +50,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
         // A stat renders its value and unit as one text element.
         XCTAssertTrue(app.staticTexts["62.4 km"].exists, "distance stat missing")
-        XCTAssertTrue(app.staticTexts["3:20"].exists, "est. time stat missing")
+        XCTAssertTrue(app.staticTexts["3:12"].exists, "est. time stat missing")
         // The max grade derives from the saved record's geometry, so pin the shape and not a
         // fixture constant.
         let maxGrade = app.staticTexts.matching(

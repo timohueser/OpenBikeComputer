@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 57672,
+        "app": 57544,
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -33,7 +33,7 @@
         "arena_total": 131072,
         "arena_usb": 131072,
         "arena_render": 126888,
-        "arena_nav": 97440,
+        "arena_nav": 97448,
         "terrain": 2152,
         "terrain_window": 24,
         "stack_reserve": 65536,

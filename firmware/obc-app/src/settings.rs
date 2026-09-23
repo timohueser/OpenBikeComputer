@@ -10,6 +10,7 @@ use crate::screen::BRIGHTNESS_MAX;
 use crate::settings_enum::setting_enum;
 use crate::settings_table::settings_table;
 use crate::stat_fields::StatFieldList;
+pub use obc_formats::bike::BikeType;
 
 pub(crate) use obc_ports::DateTime;
 
@@ -215,6 +216,19 @@ setting_enum! {
     default Auto;
 }
 
+/// The bike type's name in `lang`. The device never shows a map's profile names.
+pub const fn bike_type_name(bike: BikeType, lang: Language) -> &'static str {
+    t(
+        match bike {
+            BikeType::Road => Msg::BikeTypeRoad,
+            BikeType::Gravel => Msg::BikeTypeGravel,
+            BikeType::Mtb => Msg::BikeTypeMtb,
+            BikeType::Touring => Msg::BikeTypeTouring,
+        },
+        lang,
+    )
+}
+
 impl ClimbMode {
     #[inline]
     pub const fn is_on(self) -> bool {
@@ -409,11 +423,8 @@ settings_table! {
         /// Show the small floating `HH:MM` clock on the Map.
         map_clock: bool = true, since(19);
         map_scale_bar: bool = true, since(19);
-        /// An index into the loaded map's profile table, not a device-side enum: a map with fewer
-        /// profiles than this index falls back to profile 0 at plan time, and the UI renders profile
-        /// 0's name so the rider is not lied to. Never range-clamped on decode for that reason — the
-        /// value only means anything against a map.
-        bike_profile_idx: u8 = 0, since(19);
+        /// The current bike type. Loading a route sets it to the route's type.
+        bike_type: BikeType = BikeType::Road, since(19);
         waypoint_mode: WaypointMode = WaypointMode::Approach, since(19);
         language: Language = Language::En, since(19);
         /// One slot per quantity; an empty slot is "no sensor saved". Written by the Sensors screen
@@ -524,7 +535,7 @@ const _: () = {
     assert!(off::idle_return == 80, "idle_return moved");
     assert!(off::map_clock == 81, "map_clock moved");
     assert!(off::map_scale_bar == 82, "map_scale_bar moved");
-    assert!(off::bike_profile_idx == 83, "bike_profile_idx moved");
+    assert!(off::bike_type == 83, "bike_type moved");
     assert!(off::waypoint_mode == 84, "waypoint_mode moved");
     assert!(off::language == 85, "language moved");
     assert!(off::saved_sensors == 86, "saved_sensors moved");
@@ -590,7 +601,7 @@ mod tests {
             map_landmarks: false,
             map_pois: false,
             map_poi_categories: 3,
-            bike_profile_idx: 3,
+            bike_type: BikeType::Touring,
             waypoint_mode: WaypointMode::Always,
             language: Language::De,
             saved_sensors: [
@@ -648,15 +659,12 @@ mod tests {
         assert_eq!(decode(&b).unwrap().brightness, BRIGHTNESS_MAX, "an out-of-range level clamps to the brightest");
     }
 
-    /// The routing-profile index is stored verbatim, never range-clamped on decode: an index past
-    /// the loaded map's profile count is resolved at plan time, not by the codec. The absence of a
-    /// `range` marker is what this guards.
     #[test]
-    fn bike_profile_idx_is_never_clamped() {
-        for idx in [0u8, 1, 3, 7, 200] {
-            let s = Settings { bike_profile_idx: idx, ..Settings::default() };
-            assert_eq!(decode(&encode(&s)), Some(s), "idx={idx} round-trips verbatim");
-        }
+    fn an_unknown_bike_type_byte_reads_as_road() {
+        let mut b = encode(&Settings { bike_type: BikeType::Mtb, ..Settings::default() });
+        b[off::bike_type] = 9;
+        re_stamp_crc(&mut b);
+        assert_eq!(decode(&b).expect("valid CRC").bike_type, BikeType::Road);
     }
 
     #[test]

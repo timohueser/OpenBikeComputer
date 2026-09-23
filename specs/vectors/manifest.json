@@ -16,11 +16,12 @@
   },
   "fixtures": {
     "route-waypoints.obcr": {
-      "format": "OBCR v4",
+      "format": "OBCR v5",
       "byte_len": 420,
-      "crc32": "0x75A4426E",
+      "crc32": "0x3ED448C6",
       "name": "Vector Loop",
-      "version": 4,
+      "version": 5,
+      "bike_type": 0,
       "point_count": 9,
       "chunk_count": 1,
       "total_distance_m": 2207,
@@ -50,28 +51,28 @@
       ]
     },
     "route-plain.obcr": {
-      "format": "OBCR v4",
+      "format": "OBCR v5",
       "byte_len": 260,
-      "crc32": "0x1B26FEAF",
+      "crc32": "0xD5158F64",
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
     },
     "route-visit.obcr": {
-      "format": "OBCR v4 descriptor envelope",
+      "format": "OBCR v5 descriptor envelope",
       "byte_len": 340,
-      "crc32": "0x6B264AEC",
+      "crc32": "0x1D01CCFB",
       "valid": true
     },
     "route-visit-waypoint-overlap.obcr": {
-      "format": "OBCR v4 descriptor envelope",
+      "format": "OBCR v5 descriptor envelope",
       "byte_len": 416,
-      "crc32": "0x592CE5D0",
+      "crc32": "0x9943C6CF",
       "valid": false
     },
     "route-visit-index-overlap.obcr": {
-      "format": "OBCR v4 descriptor envelope",
+      "format": "OBCR v5 descriptor envelope",
       "byte_len": 380,
-      "crc32": "0xFD29B876",
+      "crc32": "0x2E3AFB9C",
       "valid": false
     },
     "terrain-shard.obcd": {

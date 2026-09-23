@@ -167,7 +167,7 @@ impl App {
     }
     fn easier_current(&self) -> bool {
         let Some(c) = self.easier.context else { return false };
-        self.current_review_origin().is_some_and(|o| c.accepts_origin(self.settings().bike_profile_idx, o))
+        self.current_review_origin().is_some_and(|o| c.accepts_origin(self.settings().bike_type, o))
             && c.original.is_none_or(|p| {
                 self.active_route_index().and_then(|i| self.route_ids().get(i)).copied() == Some(p.object)
             })

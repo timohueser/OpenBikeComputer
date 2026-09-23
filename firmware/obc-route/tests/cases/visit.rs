@@ -3,7 +3,7 @@ use obc_formats::io::SliceSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_formats::obcr::RouteSourceKey;
 use obc_route::visit::{visit_anchor, VisitBuilder, VisitChoice, VisitCosts, VisitTarget};
-use obc_route::{for_each_waypoint, RouteIndex, RouteReader};
+use obc_route::{for_each_waypoint, BikeType, RouteIndex, RouteReader};
 
 fn key(id: u64) -> RouteSourceKey {
     RouteSourceKey { store: [1; 16], object: id, revision: 1 }
@@ -32,7 +32,8 @@ fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut VecSink) {
 fn composition_preserves_all_waypoints_and_measures_both_directions() {
     let wps: Vec<WpRec<'_>> =
         (0..48).map(|i| (10 + i * 4, 100 + i as i32 * 40, 100, 30, 1, 4, 11, b"same" as &[u8])).collect();
-    let original = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let mut original = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    original[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Mtb as u8;
     let outbound = route(vec![(0, 0, 10), (0, 1000, 30)], &[], 111);
     let returning = route(vec![(0, 1000, 30), (0, 0, 10)], &[], 111);
     let mut builder = VisitBuilder::new(key(2), key(3), 0, 0, SourceId::osm(1, 99), (0, 1000)).unwrap();
@@ -53,6 +54,7 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!((stats.total_ascent_m, stats.total_descent_m), (40, 20));
     let emitted = SliceSource(&sink.buf);
     let index = RouteIndex::read(&emitted).unwrap();
+    assert_eq!(index.bike_type(), BikeType::Mtb, "the visit keeps the original route's type");
     let visit = RouteReader::new(&index, &emitted).visit_descriptor().unwrap().unwrap();
     assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
     let reader = RouteReader::new(&index, &emitted);
@@ -203,21 +205,20 @@ fn coordinate_destinations_use_normal_snap_but_mapped_approaches_remain_exact() 
         display: (500, 500),
         metadata: PoiMetadata { source: SourceId::osm(1, 2), approach: None },
     };
-    assert_eq!(target.approach(key(1), 0), Some(target.display));
-    assert!(target.approach(key(2), 0).is_none());
-    assert!(target.approach(key(1), 8).is_none());
+    assert_eq!(target.approach(key(1), BikeType::Road), Some(target.display));
+    assert!(target.approach(key(2), BikeType::Road).is_none());
     let snapped = route(vec![(0, 0, 0), (0, 500, 0)], &[], 55);
-    assert_eq!(target.destination(&SliceSource(&snapped), 0).unwrap(), (0, 500));
+    assert_eq!(target.destination(&SliceSource(&snapped), BikeType::Road).unwrap(), (0, 500));
     let distant = route(vec![(0, 0, 0), (0, 2000, 0)], &[], 222);
-    assert!(target.validate_destination(&SliceSource(&distant), 0).is_err());
+    assert!(target.validate_destination(&SliceSource(&distant), BikeType::Road).is_err());
     target.metadata.approach = Some(PoiApproach { source: SourceId::osm(1, 3), lon: 0, lat: 0, profile_mask: 1 });
-    assert_eq!(target.approach(key(1), 0), Some((0, 0)));
-    assert!(target.approach(key(2), 0).is_none());
-    assert!(target.approach(key(1), 1).is_none());
+    assert_eq!(target.approach(key(1), BikeType::Road), Some((0, 0)));
+    assert!(target.approach(key(2), BikeType::Road).is_none());
+    assert!(target.approach(key(1), BikeType::Gravel).is_none());
     let nearby = route(vec![(0, 1000, 0), (100, 0, 0)], &[], 111);
-    assert!(target.validate_destination(&SliceSource(&nearby), 0).is_err());
+    assert!(target.validate_destination(&SliceSource(&nearby), BikeType::Road).is_err());
     let exact = route(vec![(0, 1000, 0), (0, 0, 0)], &[], 111);
-    assert!(target.validate_destination(&SliceSource(&exact), 0).is_ok());
+    assert!(target.validate_destination(&SliceSource(&exact), BikeType::Road).is_ok());
 }
 #[test]
 fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
@@ -233,8 +234,8 @@ fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
     let mut sink = VecSink::default();
     builder.begin(&mut sink).unwrap();
     let wrong = VisitTarget { metadata: PoiMetadata { source: SourceId::osm(1, 10), approach: None }, ..target };
-    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), 0).is_err());
-    builder.resolve_destination(target, &SliceSource(&outbound), 0).unwrap();
+    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), BikeType::Road).is_err());
+    builder.resolve_destination(target, &SliceSource(&outbound), BikeType::Road).unwrap();
     assert_eq!(builder.destination(), Some((0, 1000)));
     append(&mut builder, &outbound, &mut sink);
     append(&mut builder, &returning, &mut sink);

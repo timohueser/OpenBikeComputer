@@ -2,8 +2,8 @@
   "schema": 3,
   "package": "sim-grimsel",
   "archive": {
-    "bytes": 4137061,
-    "sha256": "b016608fb00921d10648f529e637152867b65b6f3751871b1b55c5b4dbaa78f9"
+    "bytes": 4137068,
+    "sha256": "430d5c3652564fa57c63abea1abb214a88dbf040d6ec1be6a8152656156a4bca"
   },
   "producer": {
     "source_commit": "3d835f672",

@@ -1093,6 +1093,7 @@ fn main() {
                 routes::import_gpx(
                     &mut routes,
                     std::path::Path::new(gpx),
+                    obc_route::BikeType::Road,
                     map.as_ref()
                         .map(|map| map.reader())
                         .as_ref()
@@ -1113,6 +1114,7 @@ fn main() {
                 routes::export_gpx(
                     std::path::Path::new(gpx),
                     std::path::Path::new(&args.routes_dir()),
+                    obc_route::BikeType::Road,
                     map.as_ref()
                         .map(|map| map.reader())
                         .as_ref()
@@ -1285,9 +1287,7 @@ fn main() {
             app.set_settings(settings);
         }
         args.stamp_initial_clock(&mut app);
-        // Mirror the map's routing-profile names for the bike-type editor and overview label, and
-        // whether it carries a nav graph at all, which gates the ride menu's Detour station.
-        app.set_nav_profiles(tables.nav_profiles());
+        // Whether the map carries a nav graph at all, which gates the ride menu's Detour station.
         app.set_map_nav_graph(tables.has_nav_graph());
         // Device-info built-ins for the System settings screen: the running firmware version, with
         // the sim's crate version standing in for the board's tag, and the loaded map's name and

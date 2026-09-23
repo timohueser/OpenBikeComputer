@@ -5,7 +5,9 @@
 use obc_elevation::{TerrainReader, TileCache};
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::{ride::FOOTER_LEN as RIDE_FOOTER_LEN, track::RECORD_LEN as TRACK_RECORD_LEN};
-use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_route::{
+    for_each_waypoint, track_to_gpx, BikeType, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK,
+};
 use obc_vectors::{
     all, crc32, dir, ride_v3, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
     TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME, TRIP_DAYS,
@@ -140,6 +142,17 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(info.point_count, idx_w.point_count);
     assert_eq!(info.waypoint_count, 2);
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
+}
+
+/// Header byte 7 is the bike type: a known value reads back, anything above 3 is rejected.
+#[test]
+fn route_vector_carries_its_bike_type() {
+    let mut bytes = fixture("route-plain.obcr");
+    assert_eq!(RouteIndex::read(&SliceSource(&bytes)).unwrap().bike_type(), BikeType::Road);
+    bytes[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Mtb as u8;
+    assert_eq!(RouteIndex::read(&SliceSource(&bytes)).unwrap().bike_type(), BikeType::Mtb);
+    bytes[obc_formats::obcr::BIKE_TYPE_OFF] = 4;
+    assert!(RouteIndex::read(&SliceSource(&bytes)).is_err());
 }
 
 #[test]

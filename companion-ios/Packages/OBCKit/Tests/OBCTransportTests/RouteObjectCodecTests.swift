@@ -3,7 +3,7 @@ import OBCDomain
 import OBCFormats
 @testable import OBCTransport
 
-/// The OBCR v4 route encoder and reader: the reader is pinned against the shared
+/// The OBCR v5 route encoder and reader: the reader is pinned against the shared
 /// firmware-produced fixtures in `specs/vectors`, and encode-decode round-trips prove geometry,
 /// exact stats and waypoints survive an upload.
 final class RouteObjectCodecTests: XCTestCase {
@@ -30,7 +30,7 @@ final class RouteObjectCodecTests: XCTestCase {
     func testDecodesTheSharedWaypointsFixture() throws {
         let decoded = try RouteObjectCodec.decode(try fixture("route-waypoints.obcr"))
 
-        XCTAssertEqual(decoded.version, 4)
+        XCTAssertEqual(decoded.version, 5)
         XCTAssertEqual(decoded.name, "Vector Loop")
         XCTAssertEqual(decoded.storedPointCount, 9)
         XCTAssertEqual(decoded.totalDistanceMeters, 2207)
@@ -56,9 +56,9 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertEqual(decoded.waypoints[1].lateralOffsetMeters, 0)
     }
 
-    func testRejectsPreV3Routes() throws {
+    func testRejectsOlderVersions() throws {
         var bytes = try fixture("route-waypoints.obcr")
-        for old: UInt8 in [1, 2, 3] {
+        for old: UInt8 in [1, 2, 3, 4] {
             bytes[bytes.startIndex + 4] = old
             XCTAssertThrowsError(try RouteObjectCodec.decode(bytes), "v\(old) must not decode")
         }
@@ -103,10 +103,10 @@ final class RouteObjectCodecTests: XCTestCase {
             ]
         )
 
-        let bytes = RouteObjectCodec.encode(route, name: route.name!)
+        let bytes = RouteObjectCodec.encode(route, name: route.name!, bikeType: .road)
         let decoded = try RouteObjectCodec.decode(bytes)
 
-        XCTAssertEqual(decoded.version, 4)
+        XCTAssertEqual(decoded.version, 5)
         XCTAssertEqual(decoded.name, "Round Trip Ridge")
 
         // The stats mirror RouteStats at whole-metre resolution.
@@ -138,7 +138,7 @@ final class RouteObjectCodecTests: XCTestCase {
         let points = (0...200).map { i in
             RoutePoint(coordinate: Coordinate(latitude: 47.0 + 0.0001 * Double(i), longitude: 11.0), elevationMeters: 300)
         }
-        let decoded = try RouteObjectCodec.decode(RouteObjectCodec.encode(points: points, waypoints: [], name: "Straight"))
+        let decoded = try RouteObjectCodec.decode(RouteObjectCodec.encode(points: points, waypoints: [], name: "Straight", bikeType: .road))
         XCTAssertLessThan(decoded.points.count, points.count, "collinear interior points are decimated away")
         XCTAssertGreaterThanOrEqual(decoded.points.count, 2)
         XCTAssertEqual(try XCTUnwrap(decoded.points.first).coordinate.latitude, 47.0, accuracy: 1e-6)
@@ -160,7 +160,7 @@ final class RouteObjectCodecTests: XCTestCase {
         let gpxData = try XCTUnwrap(FileManager.default.contents(atPath: gpxURL.path))
         let route = try GPXRouteDecoder().decode(gpxData)
 
-        let obcr = RouteObjectCodec.encode(route, name: route.name ?? "Route")
+        let obcr = RouteObjectCodec.encode(route, name: route.name ?? "Route", bikeType: .road)
 
         // The placeholder is a zero-filled bytes-per-metre estimate; OBCR costs bytes per vertex.
         let placeholder = Int(RouteStats.compute(from: route.points).distanceMeters * 37)
@@ -182,7 +182,7 @@ final class RouteObjectCodecTests: XCTestCase {
             RoutePoint(coordinate: Coordinate(latitude: 0, longitude: 0.001), elevationMeters: 100, surface: 3, elevationIncomplete: true),
         ]
         let waypoint = Waypoint(index: 0, name: "Source", distanceAlongMeters: 0, coordinate: points[0].coordinate, provenance: source)
-        let bytes = RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Gap")
+        let bytes = RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Gap", bikeType: .road)
         let decoded = try RouteObjectCodec.decode(bytes)
         XCTAssertEqual(decoded.points[0].elevationMeters, 0)
         XCTAssertNil(decoded.points[1].elevationMeters)
@@ -203,7 +203,7 @@ final class RouteObjectCodecTests: XCTestCase {
             RoutePoint(coordinate: Coordinate(latitude: 47, longitude: 8), elevationMeters: 100),
             RoutePoint(coordinate: Coordinate(latitude: 47, longitude: 8.1), elevationMeters: 200, surface: 1, elevationIncomplete: true),
         ]
-        let decoded = try RouteObjectCodec.decode(RouteObjectCodec.encode(points: points, waypoints: [], name: "Gap"))
+        let decoded = try RouteObjectCodec.decode(RouteObjectCodec.encode(points: points, waypoints: [], name: "Gap", bikeType: .road))
         XCTAssertGreaterThan(decoded.points.count, 2)
         XCTAssertEqual(decoded.points.first?.elevationMeters, 100)
         XCTAssertEqual(decoded.points.last?.elevationMeters, 200)
@@ -223,7 +223,7 @@ final class RouteObjectCodecTests: XCTestCase {
     }
 
     func testEmptyGeometryEncodesToEmptyData() {
-        XCTAssertTrue(RouteObjectCodec.encode(points: [], waypoints: [], name: "Nothing").isEmpty)
+        XCTAssertTrue(RouteObjectCodec.encode(points: [], waypoints: [], name: "Nothing", bikeType: .road).isEmpty)
     }
 
     func testRejectsNonOBCRBytes() {
@@ -250,11 +250,11 @@ final class RouteObjectCodecTests: XCTestCase {
                                  coordinate: points[0].coordinate,
                                  category: .water, lateralOffsetMeters: -42)])
 
-        let first = RouteObjectCodec.encode(route, name: route.name!)
-        let second = RouteObjectCodec.encode(route, name: route.name!)
+        let first = RouteObjectCodec.encode(route, name: route.name!, bikeType: .road)
+        let second = RouteObjectCodec.encode(route, name: route.name!, bikeType: .road)
         XCTAssertEqual(first, second, "the OBCR encode must be byte-identical run to run")
 
-        let goldenCRC: UInt32 = 0xDC3CBE0B
+        let goldenCRC: UInt32 = 0xAA1B381C
         XCTAssertEqual(
             CRC32.checksum(first), goldenCRC,
             "OBCR encoding changed; adoption's re-encode CRC moved — re-pin goldenCRC consciously")

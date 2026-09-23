@@ -12,6 +12,7 @@ use core::{
 
 use heapless::{String, Vec};
 
+use obc_formats::bike::BikeType;
 use obc_formats::cache::lru_victim;
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, DecodeError, Error};
 use obc_map_scene::BBox;
@@ -202,6 +203,7 @@ pub struct RouteIndex {
     /// the board's resident slot adopt caches the same way. Zero means empty or a failed parse.
     identity: u32,
     flags: u8,
+    bike: BikeType,
 }
 
 /// A [`RouteIndex`] paired with a borrow of the byte source its geometry chunks stream from.
@@ -235,6 +237,7 @@ impl RouteIndex {
             cum_seg: Vec::new(),
             identity: 0,
             flags: 0,
+            bike: BikeType::Road,
         }
     }
 
@@ -276,6 +279,7 @@ impl RouteIndex {
 
         let h = read_header(src)?;
         self.flags = h.flags;
+        self.bike = h.bike;
         if h.chunk_count as usize > MAX_ROUTE_CHUNKS {
             return Err(Error::TooLarge);
         }
@@ -341,6 +345,10 @@ impl RouteIndex {
     /// At least one retained point has a valid elevation. Flat sea-level routes remain valid.
     pub fn has_elevation(&self) -> bool {
         self.flags & obc_formats::obcr::FLAG_HAS_ELEVATION != 0
+    }
+
+    pub fn bike_type(&self) -> BikeType {
+        self.bike
     }
 
     pub fn is_assistant_candidate(&self) -> bool {
@@ -1109,6 +1117,7 @@ pub(crate) struct Header {
     pub(crate) index_offset: u32,
     pub(crate) name: String<NAME_CAP>,
     pub(crate) flags: u8,
+    pub(crate) bike: BikeType,
 }
 
 pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
@@ -1122,7 +1131,10 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         Err(DecodeError::Version) => return Err(Error::BadVersion),
         Err(_) => return Err(Error::BadMagic),
     }
-    if h[5] & !15 != 0 || h[7] != 0 || h[119] != 0 {
+    let Some(bike) = BikeType::from_u8(h[obc_formats::obcr::BIKE_TYPE_OFF]) else {
+        return Err(Error::BadOffset);
+    };
+    if h[5] & !15 != 0 || h[119] != 0 {
         return Err(Error::BadOffset);
     }
     if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 && h[128..160].iter().any(|b| *b != 0) {
@@ -1169,6 +1181,7 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     }
     Ok(Header {
         flags: h[5] | if h[118] != 0 { 128 } else { 0 },
+        bike,
         bbox: BBox {
             min_lon: rd_i32(&h, 8),
             min_lat: rd_i32(&h, 12),

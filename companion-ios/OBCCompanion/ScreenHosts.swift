@@ -116,6 +116,7 @@ struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
+        bikeType: BikeType = .road,
         rideGeometry: [Coordinate]? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
@@ -130,7 +131,7 @@ struct RouteDetailScreen: View {
         onRemoveFromTrip: (() -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
-            transport: transport, dressing: dressing,
+            transport: transport, dressing: dressing, bikeType: bikeType,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
             rideGeometry: rideGeometry
@@ -257,6 +258,7 @@ struct ImportLandingHost: View {
         activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
+        bikeType: BikeType,
         deviceName: String,
         noDevicePaired: Bool,
         tripPickerItems: [TripPickerItem] = [],
@@ -279,6 +281,7 @@ struct ImportLandingHost: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
             dressing: .imported(route, fileName: fileName),
+            bikeType: bikeType,
             deviceObjectID: replacingDeviceObjectID,
             provenCommittedCRC: replacingProvenCRC,
             importedRouteID: replacing?.id

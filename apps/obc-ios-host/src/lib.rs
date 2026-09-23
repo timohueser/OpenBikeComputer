@@ -170,7 +170,6 @@ impl Host {
         let mut app = Box::new(App::new(state));
         // One resident frame, repainted on demand, so every render is a render over the last one.
         app.set_resident_frame(true);
-        app.set_nav_profiles(map.tables().nav_profiles());
         app.set_map_nav_graph(map.tables().has_nav_graph());
         app.set_routes_with_ids(routes.catalog(), routes.ids());
         app.set_rides(rides.catalog());
@@ -290,7 +289,9 @@ impl Host {
         let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_ascii_lowercase();
         let bytes = match extension.as_str() {
             "obcr" => std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?,
-            "gpx" => convert_gpx(path, Some((&self.map.reader(), self.attribution_key())))?.0,
+            "gpx" => {
+                convert_gpx(path, self.app.settings().bike_type, Some((&self.map.reader(), self.attribution_key())))?.0
+            }
             _ => return Err(format!("{}: not an .obcr or .gpx route", path.display())),
         };
         let id = self.routes.import(&bytes).map_err(|error| format!("import {}: {error}", path.display()))?;

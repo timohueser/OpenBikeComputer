@@ -97,7 +97,7 @@ impl ByteSink for VecSink {
     }
 }
 
-/// Convert a GPX string to OBCR v3 bytes via the reference converter.
+/// Convert a GPX string to OBCR bytes via the reference converter.
 pub fn build_route(gpx: &str) -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
     gpx_to_obcr(&SliceSource(gpx.as_bytes()), ROUTE_NAME, &mut sink).unwrap();

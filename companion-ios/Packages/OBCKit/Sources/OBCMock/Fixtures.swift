@@ -124,6 +124,10 @@ public struct RouteEntry: Sendable {
             } else {
                 nil
             }
+        // The library keeps the estimate for the record's type, as an import saves it.
+        var summary = summary
+        summary.estimatedDuration = BikeType.road.estimatedDuration(
+            distanceMeters: summary.distanceMeters, ascentMeters: summary.elevationGainMeters)
         return PlannedRouteRecord(
             summary: summary,
             route: ImportedRoute(name: summary.name, points: points, waypoints: waypoints),

@@ -25,17 +25,12 @@ export interface ProfileSchema {
     multiplierMin: number;
     /** The per-profile `default` fallback multiplier (schema default: 2.0). */
     defaultMultiplier: number;
-    /** Min / max profile count (schema profiles minItems / maxItems). */
-    minProfiles: number;
-    maxProfiles: number;
-    /** Max name length on the wire, bytes (schema profile.name x-maxUtf8Bytes). */
-    nameMaxBytes: number;
     /** Climb-weight bounds, `0..255` (schema profile.climb_weight minimum/maximum). */
     climbMin: number;
     climbMax: number;
     /** The climb weight an unstated field means — `0`, climb-blind (schema default). */
     climbDefault: number;
-    /** The four shipped defaults (Road / Gravel / MTB / Touring), canonical. */
+    /** The four bike types' shipped weights (Road / Gravel / MTB / Touring), in their fixed order. */
     defaultProfiles: NavProfile[];
 }
 
@@ -45,7 +40,6 @@ export interface ProfileSchema {
 interface SchemaTree {
     properties?: {
         routing?: {
-            properties?: { profiles?: { minItems?: number; maxItems?: number } };
             default?: { profiles?: NavProfile[] };
         };
     };
@@ -53,7 +47,6 @@ interface SchemaTree {
         multiplier?: { oneOf?: { type?: string; minimum?: number }[] };
         profile?: {
             properties?: {
-                name?: { maxLength?: number; "x-maxUtf8Bytes"?: number };
                 default?: { default?: number };
                 climb_weight?: { minimum?: number; maximum?: number; default?: number };
                 highway?: { propertyNames?: { enum?: string[] } };
@@ -72,7 +65,6 @@ export function readProfileSchema(env: SchemaEnvelope | null): ProfileSchema | n
     const profile = s?.$defs?.profile?.properties;
     const highwayClasses = profile?.highway?.propertyNames?.enum;
     const surfaceClasses = profile?.surface?.propertyNames?.enum;
-    const profilesSchema = s?.properties?.routing?.properties?.profiles;
     const defaultProfiles = s?.properties?.routing?.default?.profiles;
     if (!highwayClasses?.length || !surfaceClasses?.length || !defaultProfiles?.length) {
         return null;
@@ -83,9 +75,6 @@ export function readProfileSchema(env: SchemaEnvelope | null): ProfileSchema | n
         surfaceClasses,
         multiplierMin: numberVariant?.minimum ?? 1,
         defaultMultiplier: profile?.default?.default ?? 2,
-        minProfiles: profilesSchema?.minItems ?? 1,
-        maxProfiles: profilesSchema?.maxItems ?? 8,
-        nameMaxBytes: profile?.name?.["x-maxUtf8Bytes"] ?? profile?.name?.maxLength ?? 12,
             // An older schema states no climb bounds; the wire field is a `u8` either
             // way, so fall back to its full range and to climb-blind.
         climbMin: profile?.climb_weight?.minimum ?? 0,
@@ -222,11 +211,6 @@ export function setProfileDefault(profile: NavProfile, v: Multiplier): void {
     profile.default = v;
 }
 
-/** Set a profile's display name (caller enforces the byte cap in the UI). */
-export function setProfileName(profile: NavProfile, name: string): void {
-    profile.name = name;
-}
-
 /**
  * The profiles the editor should display for a config: the config's own
  * `routing.profiles` if present, otherwise the schema's shipped defaults, shown
@@ -249,55 +233,11 @@ export function ensureRouting(config: PackConfig, ps: ProfileSchema): RoutingCon
     return config.routing;
 }
 
-/** A unique-ish name for an added profile ("Custom", "Custom 2", …). */
-function uniqueName(existing: NavProfile[], base = "Custom", max = 12): string {
-    const names = new Set(existing.map((p) => p.name));
-    if (!names.has(base) && base.length <= max) return base;
-    for (let i = 2; i < 100; i++) {
-        const cand = `${base} ${i}`;
-        if (!names.has(cand) && cand.length <= max) return cand;
-    }
-    return base.slice(0, max);
-}
-
-/**
- * Append a new profile, up to the schema max. The new profile carries only a name and
- * the schema default multiplier, so every class inherits `default`. Returns null if the
- * profile cap is already reached.
- */
-export function addProfile(config: PackConfig, ps: ProfileSchema): NavProfile | null {
-    const routing = ensureRouting(config, ps);
-    if (routing.profiles.length >= ps.maxProfiles) return null;
-    const profile: NavProfile = {
-        name: uniqueName(routing.profiles, "Custom", ps.nameMaxBytes),
-        default: ps.defaultMultiplier,
-    };
-    routing.profiles.push(profile);
-    return profile;
-}
-
-/** Remove profile `i` (never below the schema minimum). Returns true on removal. */
-export function removeProfile(config: PackConfig, i: number, ps: ProfileSchema): boolean {
-    const routing = ensureRouting(config, ps);
-    if (routing.profiles.length <= ps.minProfiles) return false;
-    if (i < 0 || i >= routing.profiles.length) return false;
-    routing.profiles.splice(i, 1);
-    return true;
-}
-
-/**
- * Reset profile `i` to its canonical shipped default. Matches by name first, so "Gravel"
- * resets to the Gravel default wherever it sits, falling back to the same-index default
- * and then the first.
- */
+/** Reset bike type `i` to its shipped weights. The order of the types is fixed. */
 export function resetProfile(config: PackConfig, i: number, ps: ProfileSchema): NavProfile | null {
     const routing = ensureRouting(config, ps);
     if (i < 0 || i >= routing.profiles.length) return null;
-    const defaults = ps.defaultProfiles;
-    const current = routing.profiles[i];
-    const match =
-        defaults.find((d) => d.name === current.name) ?? defaults[i] ?? defaults[0];
-    const replacement = deepCopy(match);
+    const replacement = deepCopy(ps.defaultProfiles[i]);
     routing.profiles[i] = replacement;
     return replacement;
 }

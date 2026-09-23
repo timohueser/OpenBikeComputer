@@ -244,9 +244,6 @@ pub struct Ctx<'a> {
     pub routes: &'a [RouteSummary],
     pub rides: &'a [RideEntry],
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names. Empty before a map load and on a router-less image,
-    /// where the bike-type row is inert because there is no choice to offer.
-    pub nav_profiles: &'a crate::NavProfiles,
     /// The App-owned POI-list snapshot, read-only: the POI list's `Gesture::Press` reads the
     /// highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen.
     pub poi_scratch: &'a PoiScratch,
@@ -281,8 +278,6 @@ impl Ctx<'_> {
             navigation: self.navigator.route_state(),
             settings: self.settings,
             recording: self.recorder.recording(),
-
-            nav_profiles: self.nav_profiles,
         }
     }
 }
@@ -292,7 +287,6 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     // The screens under test read these but never fill them, so one immutable `'static` each
     // serves every caller. A test-local temporary could not outlive this call.
     static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
-    static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
     Ctx {
         find: Box::leak(Box::new(crate::find_place::FindState::new())),
         landmarks: Box::leak(Box::new(crate::landmarks::Landmarks::new())),
@@ -304,7 +298,6 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         routes: &[],
         rides: &[],
         trips: &[],
-        nav_profiles: &EMPTY_PROFILES,
         backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
         corridor: &[],
@@ -359,9 +352,6 @@ pub struct Render<'a> {
     pub internal_routes: u64,
     pub rides: &'a [RideEntry],
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names; a stale index resolves to profile 0, the router's
-    /// fallback. Resident in the App because these frames draw without a `Reader` on the board.
-    pub nav_profiles: &'a crate::NavProfiles,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -460,8 +450,6 @@ impl Render<'_> {
             navigation: self.navigation,
             settings: self.settings,
             recording: self.recording,
-
-            nav_profiles: self.nav_profiles,
         }
     }
 
@@ -487,7 +475,7 @@ impl Render<'_> {
             next_waypoint: self.navigation.next_waypoint,
             now: self.now,
             now_ms: self.now_ms,
-            bike_profile_idx: self.settings.bike_profile_idx,
+            bike_type: self.settings.bike_type,
             language: self.settings.language,
             next_ahead: self.next_ahead,
         }
@@ -1185,7 +1173,7 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
         return Transition::Pop;
     };
     let (lon, lat) = (route.start_lon, route.start_lat);
-    cx.navigator.set_active_route(Some(i));
+    cx.navigator.load_route(i);
     begin_riding_session(cx.state, cx.activity, cx.recorder, lon, lat)
 }
 

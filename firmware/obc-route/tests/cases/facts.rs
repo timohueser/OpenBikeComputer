@@ -13,9 +13,14 @@ fn route(elevations: &[Option<i16>]) -> Vec<u8> {
     }
     gpx.push_str("</trkseg></trk></gpx>");
     let mut sink = VecSink::default();
-    gpx_to_obcr_attributed(&SliceSource(gpx.as_bytes()), "Facts", &mut sink, Some(MAP), |_, b| {
-        Ok(if b.0 < 1000 { 1 } else { 3 })
-    })
+    gpx_to_obcr_attributed(
+        &SliceSource(gpx.as_bytes()),
+        "Facts",
+        obc_route::BikeType::Road,
+        &mut sink,
+        Some(MAP),
+        |_, b| Ok(if b.0 < 1000 { 1 } else { 3 }),
+    )
     .unwrap();
     sink.buf
 }

@@ -6,6 +6,7 @@ use common::{route_points, VecSink};
 use obc_formats::io::SliceSource;
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavScratch};
+use obc_route::BikeType;
 
 /// Over the real packed grimsel map, the same endpoints planned under Road (profile 0) and MTB
 /// (profile 2) give different polylines: the profile weights steer the search end to end. The raw
@@ -24,8 +25,8 @@ fn road_vs_mtb_diverge_over_grimsel() {
     let from = (8_169_610, 46_694_536);
     let to = (8_217_309, 46_706_261);
 
-    let (road, obcr_road, _) = plan_p(&bytes, from, to, "Road", 0);
-    let (mtb, obcr_mtb, _) = plan_p(&bytes, from, to, "MTB", 2);
+    let (road, obcr_road, _) = plan_p(&bytes, from, to, "Road", BikeType::Road);
+    let (mtb, obcr_mtb, _) = plan_p(&bytes, from, to, "MTB", BikeType::Mtb);
     let road = road.expect("Road plans");
     let mtb = mtb.expect("MTB plans");
 
@@ -56,7 +57,7 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
     let mut scratch = Box::new(NavScratch::<{ obc_route::NAV_MAX_NODES }>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let route = plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink)
+    let route = plan_route(&r, from, to, "Grimsel", BikeType::Road, &mut scratch, &mut tiles, &mut terrain, &mut sink)
         .expect("the pass road plans");
 
     // Alpine ground, never the 0 m a missing fill would leave, and a real but not absurd climb.
@@ -93,7 +94,8 @@ fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let planned =
-        plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink).expect("plans");
+        plan_route(&r, from, to, "Grimsel", BikeType::Road, &mut scratch, &mut tiles, &mut terrain, &mut sink)
+            .expect("plans");
 
     // The export: one `<trkpt>` per stored point, exactly the fields an exporter has to hand.
     let mut gpx = String::from("<gpx><trk><trkseg>");
@@ -126,7 +128,7 @@ fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
     let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
     let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
     let actual = core::array::from_fn::<_, 4, _>(|idx| {
-        let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
+        let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", BikeType::ALL[idx]);
         res.unwrap_or_else(|e| panic!("profile {idx} plans on grimsel, got {e:?}"));
         digest(&obcr)
     });
@@ -134,4 +136,4 @@ fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
 }
 
 const GRIMSEL_ROUTE_DIGESTS: [u64; 4] =
-    [0xf19d_4c75_e881_a991, 0xb5ae_0e8d_eb90_d7b7, 0xbf1c_9f49_2699_20e0, 0x618f_00e9_7a9c_7042];
+    [0x5639_c196_df1b_155e, 0xbfba_332e_7b41_62f9, 0x2ec7_9079_bccc_5063, 0x2bd9_961b_436c_d426];

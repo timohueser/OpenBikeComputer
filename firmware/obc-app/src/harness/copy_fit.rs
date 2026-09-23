@@ -20,7 +20,7 @@ use crate::screen::*;
 use crate::settings::Language;
 use crate::{App, AppState, Gesture, Settings, WarningFlags};
 
-use super::support::{build_min_obcm_profiles, selected_place, Buf};
+use super::support::{build_min_obcm, selected_place, Buf};
 
 /// The panel, in pixels. Every screen lays out against the size the frame hands it, so the gate
 /// renders at the size the board has.
@@ -233,7 +233,6 @@ fn walk(
     let reader = Reader::new(&src, &tables, &cache);
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.set_settings(Settings { language, ..Default::default() });
-    app.set_nav_profiles(tables.nav_profiles());
     // A panel light adds the quick drawer's brightness control, which is the row its editor hangs
     // off, so the walk below reaches that page.
     app.set_backlight_available(true);
@@ -305,9 +304,7 @@ fn every_screen_is_seeded() {
 
 #[test]
 fn every_string_fits_the_panel_in_every_language() {
-    // A profile name filled to the OBCM cap is the bike-type row's worst case, and it is map data
-    // rather than catalog copy, so the fixture carries one.
-    let bytes = build_min_obcm_profiles(0xF800, &["Road", "Gravel", "MTB", "Cicloturismo"]);
+    let bytes = build_min_obcm(0xF800);
     let mut offenders: Vec<String> = Vec::new();
     for language in Language::ALL {
         for seed in seeds(language) {

@@ -237,7 +237,7 @@ where
     let label = if sources || state.peak.is_some() {
         rx.t(Msg::AssistantBack)
     } else {
-        rx.t(visit_action(state, rx.poi_scratch, rx.settings.bike_profile_idx))
+        rx.t(visit_action(state, rx.poi_scratch, rx.settings.bike_type))
     };
     cv.round(rect(4, 282, 232, 34), 6, AMBER);
     cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
@@ -245,7 +245,7 @@ where
 pub(super) fn visit_action(
     state: &crate::landmarks::Landmarks,
     scratch: &super::poi_list::PoiScratch,
-    profile: u8,
+    profile: crate::settings::BikeType,
 ) -> Msg {
     if !state.ready()
         || state.record.is_none()
@@ -257,7 +257,7 @@ pub(super) fn visit_action(
         .record
         .and_then(|r| r.osm)
         .and_then(|m| m.approach)
-        .is_some_and(|a| a.profile_mask & (1 << profile.min(7)) != 0)
+        .is_some_and(|a| a.profile_mask & (1 << profile as u8) != 0)
     {
         Msg::AssistantVisit
     } else {
@@ -392,19 +392,25 @@ mod tests {
         });
         let mut scratch = super::super::PoiScratch::new();
         scratch.detail_valid = true;
-        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantNoAccess));
+        assert!(matches!(visit_action(&state, &scratch, crate::settings::BikeType::Road), Msg::AssistantNoAccess));
         state.record.as_mut().unwrap().osm = Some(PoiMetadata {
             source: SourceId(42),
             approach: Some(PoiApproach { source: SourceId(43), lat: 0, lon: 0, profile_mask: 1 }),
         });
-        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantAccessUnavailable));
+        assert!(matches!(
+            visit_action(&state, &scratch, crate::settings::BikeType::Road),
+            Msg::AssistantAccessUnavailable
+        ));
         scratch.detail_source = 42;
-        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantVisit));
-        assert!(matches!(visit_action(&state, &scratch, 1), Msg::AssistantNoAccess));
+        assert!(matches!(visit_action(&state, &scratch, crate::settings::BikeType::Road), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, crate::settings::BikeType::Gravel), Msg::AssistantNoAccess));
         scratch.detail_schedule = obc_reader::WeeklySchedule::decode(&[0; 29]);
-        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantVisit));
-        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, crate::settings::BikeType::Road), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, crate::settings::BikeType::Road), Msg::AssistantVisit));
         state.invalidate();
-        assert!(matches!(visit_action(&state, &scratch, 0), Msg::AssistantAccessUnavailable));
+        assert!(matches!(
+            visit_action(&state, &scratch, crate::settings::BikeType::Road),
+            Msg::AssistantAccessUnavailable
+        ));
     }
 }

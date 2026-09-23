@@ -287,9 +287,8 @@ fn start_nav_flush(
 /// in the main task's poll frame, which is allocated at the entry of every poll.
 #[cfg(has_nav)]
 #[inline(never)]
-fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
-    // The rider's bike-type setting. An out-of-range index falls back to profile 0 in the router.
-    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
+fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, bike: obc_route::BikeType) {
+    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), bike));
     // One diagnostic line per plan start: the three addresses pin the memory map without the ELF at
     // hand. They are offsets inside the scratch arena's nav arm.
     let (planner, scratch, tiles) = nav.guard.arm_addrs();
@@ -1300,7 +1299,7 @@ pub(crate) async fn run_app(
                             && app.assistant_review_context().is_none_or(|context| {
                                 crate::flat_store::planner_map_current()
                                     && context.map == crate::flat_store::planner_map_key(flat)
-                                    && context.profile == app.settings().bike_profile_idx
+                                    && context.profile == app.settings().bike_type
                                     && context.original.is_none_or(|original| {
                                         visit.original_current()
                                             || review_original.as_ref().is_some_and(|held| {
@@ -1431,9 +1430,7 @@ pub(crate) async fn run_app(
                 let detour_effect = false;
                 #[cfg(has_nav)]
                 if detour_effect {
-                    if let Some(outcome) =
-                        detour.accept(effect, app, flat, &mut nav_guard, app.settings().bike_profile_idx)
-                    {
+                    if let Some(outcome) = detour.accept(effect, app, flat, &mut nav_guard, app.settings().bike_type) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
@@ -1448,7 +1445,7 @@ pub(crate) async fn run_app(
                                 || app.assistant_review_context().is_some_and(|context| {
                                     context.map != crate::flat_store::planner_map_key(flat)
                                         || context.store.bytes() != flat.store_id().0
-                                        || context.profile != app.settings().bike_profile_idx
+                                        || context.profile != app.settings().bike_type
                                         || !crate::assistant::original_allowed(
                                             flat,
                                             context,
@@ -1484,7 +1481,7 @@ pub(crate) async fn run_app(
                                             guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
                                             elev: &mut *nav.elev,
                                         };
-                                        nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
+                                        nav_begin(&mut bufs, &request, app.settings().bike_type);
                                         if let Some(context) = app.assistant_review_context() {
                                             if let Some((planner, ..)) = bufs.guard.plan_parts() {
                                                 planner.set_attribution_map(context.map);

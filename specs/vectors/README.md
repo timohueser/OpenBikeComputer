@@ -25,10 +25,11 @@ A drift on any side fails that side's tests — the files are the contract.
 
 | File | Layout | Content |
 |---|---|---|
-| `route-waypoints.obcr` | OBCR v4 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `<sym>Drinking Water</sym>` → category 1, 13 m left of travel; `Pass Summit` mid-route without ele, an unmapped `<type>Viewpoint</type>` → generic, on-route) |
-| `route-plain.obcr` | OBCR v4 | the same track, no waypoints — must ride identically |
-| `route-visit.obcr` | OBCR v4, visit descriptor ([`OBCR_Spec.md`](../OBCR_Spec.md) §6) | a valid 80-byte accepted-visit envelope |
-| `route-visit-waypoint-overlap.obcr`, `route-visit-index-overlap.obcr` | OBCR v4 §1.1 envelope | each shares the descriptor's last four reserved-zero bytes with another section; both codecs MUST reject them |
+| `route-waypoints.obcr` | OBCR v5 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `<sym>Drinking Water</sym>` → category 1, 13 m left of travel; `Pass Summit` mid-route without ele, an unmapped `<type>Viewpoint</type>` → generic, on-route) |
+| `route-plain.obcr` | OBCR v5 | the same track, no waypoints — must ride identically |
+| `route-visit.obcr` | OBCR v5, visit descriptor ([`OBCR_Spec.md`](../OBCR_Spec.md) §6) | a valid 80-byte accepted-visit envelope |
+| `route-visit-waypoint-overlap.obcr`, `route-visit-index-overlap.obcr` | OBCR v5 §1.1 envelope | each shares the descriptor's last four reserved-zero bytes with another section; both codecs MUST reject them |
+| `eta.csv` | [`OBCR_Spec.md`](../OBCR_Spec.md) §1.2 estimate | one row per case: bike type, distance, ascent and the expected whole seconds, for every bike type. `obc-formats` and the `OBCKit` Swift tests read it |
 | `track-log.obct` | sample-codec vector (five complete 20-byte records, no header) | shaped for sensor/signed-coordinate coverage only; it is not accepted as a ride or recovery input |
 | `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of finished `ride-v3.bin` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
 | `ride-v3.bin` | ride object v3 (spec §7.2) | "Sensor Ride": three exact 20-byte recorded samples (including segment flags and mixed sensor presence), followed by the fixed 84-byte summary footer |

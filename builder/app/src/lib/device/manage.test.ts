@@ -33,7 +33,7 @@ function obcrWithName(name: string): Uint8Array {
     const out = new Uint8Array(160);
     const view = new DataView(out.buffer);
     view.setUint32(0, 0x4f424352, false); // "OBCR"
-    out[4] = 4; // version
+    out[4] = 5; // version
     const bytes = new TextEncoder().encode(name);
     out[6] = bytes.length;
     out.set(bytes, 64);
