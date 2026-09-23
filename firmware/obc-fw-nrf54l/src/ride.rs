@@ -1285,6 +1285,7 @@ pub(crate) async fn run_app(
                             let request = crate::flat_store::Request::WriteProgress {
                                 record: record.clone(),
                                 keys: app.trips().iter().map(|trip| trip.key).collect(),
+                                rode_on: app.trip_progress_rode_on(token),
                             };
                             match metadata_call(request).await {
                                 Ok(()) => MetadataOutcome::ProgressWritten { token },

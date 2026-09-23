@@ -516,7 +516,14 @@ impl HostLoop {
             let outcome = match app.trip_progress_payload(token) {
                 Some(record) if scope.is_some() && scope.map(|s| s.store) == routes.store_scope().map(|s| s.store) => {
                     let keys: Vec<u64> = app.trips().iter().map(|t| t.key).collect();
-                    match trips.write_progress(record.clone(), &keys) {
+                    let record = match app.trip_progress_rode_on(token) {
+                        Some(rode_on) => rode_on.settle(
+                            record.clone(),
+                            &obc_formats::io::SliceSource(&routes.route_bytes(rode_on.route).unwrap_or_default()),
+                        ),
+                        None => record.clone(),
+                    };
+                    match trips.write_progress(record, &keys) {
                         Ok(()) => MetadataOutcome::ProgressWritten { token },
                         Err(error) => MetadataOutcome::Failed { token, error },
                     }

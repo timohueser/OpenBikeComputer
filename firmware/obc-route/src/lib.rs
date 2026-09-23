@@ -60,9 +60,9 @@ pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratc
 pub use obc_elevation::{ElevationSource, NullElevation};
 pub use profile::{elevation_sparkline, ride_track_into, DayProfile, Profile, Window, PROFILE_COLS, SPARKLINE_BUCKETS};
 pub use reader::{
-    for_each_waypoint, route_end, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RoutePosition,
-    RouteReader, RouteSummary, Waypoint, WaypointCursor, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
-    MAX_WAYPOINTS,
+    for_each_waypoint, nearest_along, route_end, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint,
+    RoutePosition, RouteReader, RouteSummary, Waypoint, WaypointCursor, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK,
+    MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
 pub use ride::{encode_summary_footer, RideInfo, RideStats, RideTrackFacts, POWER_STEP_W, RIDE_SERIES_BUCKETS};
 pub use splice::{original_name, splice_detour, Leg, SpliceStep, Splicer};

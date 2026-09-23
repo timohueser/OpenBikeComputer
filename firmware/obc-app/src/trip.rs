@@ -212,6 +212,42 @@ pub fn gap_m(end: (i32, i32), start: (i32, i32)) -> u32 {
     m + u32::from((m as f32) < d)
 }
 
+/// A fix at most this far from the next day's route puts a ride that rode on past the end of its
+/// day onto the next day (spec §7.7).
+pub const RODE_ON_MATCH_M: f32 = 50.0;
+
+/// A Finish after the rider rode on past the end of the loaded day: the last fix, `(lon, lat)`
+/// µdeg, and the next day with its route. The executor projects the fix onto that route once,
+/// when it writes the Finish's record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RodeOn {
+    pub fix: (i32, i32),
+    pub day: u16,
+    pub route: CatalogObjectId,
+}
+
+impl RodeOn {
+    /// The Finish's record once the fix is projected. `nearest` is `(metres along, metres away)` on
+    /// the next day's route. Within [`RODE_ON_MATCH_M`] the position moves into the next day, and
+    /// the finished day stays.
+    pub fn apply(self, record: TripProgress, nearest: Option<(u32, f32)>) -> TripProgress {
+        match nearest {
+            Some((metres, away)) if away <= RODE_ON_MATCH_M => TripProgress {
+                day: self.day,
+                day_route: RouteVersion { id: self.route, revision: 0 },
+                metres,
+                ..record
+            },
+            _ => record,
+        }
+    }
+
+    /// [`apply`](Self::apply) with the projection read from `next`, the next day's route bytes.
+    pub fn settle(self, record: TripProgress, next: &dyn obc_formats::io::ByteSource) -> TripProgress {
+        self.apply(record, obc_route::nearest_along(next, self.fix).ok().flatten())
+    }
+}
+
 /// A position on a trip: a day, that day's route, and metres into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripPosition {
@@ -572,6 +608,21 @@ mod tests {
         let short = t.finish(Some(&early), 2, at(1, 60_000), MON + 2);
         assert_eq!((short.day, short.metres, short.last_finished), (1, 60_000, Some(1)));
         assert_eq!(t.next_day(Some(&short)), Some(2));
+    }
+
+    #[test]
+    fn a_ride_that_rode_on_moves_into_the_next_day_when_the_fix_is_on_its_route() {
+        let t = trip(0);
+        // Day 2 ridden to its end, then 20 km on along Day 3 before the Finish.
+        let end = t.finish(None, 1, TripPosition { day: 1, route: 20, metres: 74_000 }, MON);
+        let rode_on = RodeOn { fix: (8_000_000, 46_000_000), day: 2, route: 30 };
+        let on = rode_on.apply(end.clone(), Some((20_000, RODE_ON_MATCH_M)));
+        assert_eq!((on.day, on.day_route.id, on.metres, on.last_finished), (2, 30, 20_000, Some(1)));
+        assert_eq!((t.next_day(Some(&on)), t.position_m(Some(&on))), (Some(2), 20_000));
+        assert_eq!(on.dates, end.dates);
+        // Off Day 3's line, or no line to read: the position stays at the end of Day 2.
+        assert_eq!(rode_on.apply(end.clone(), Some((20_000, RODE_ON_MATCH_M + 1.0))), end);
+        assert_eq!(rode_on.apply(end.clone(), None), end);
     }
 
     #[test]

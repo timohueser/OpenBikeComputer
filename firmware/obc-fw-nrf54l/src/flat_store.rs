@@ -389,6 +389,7 @@ pub(crate) enum Request {
     WriteProgress {
         record: obc_app::trip::TripProgress,
         keys: heapless::Vec<u64, { obc_app::MAX_TRIPS }>,
+        rode_on: Option<obc_app::trip::RodeOn>,
     },
     CleanupRoute {
         before_utc: u32,
@@ -997,10 +998,18 @@ fn serve(
             )
             .map_err(metadata_error),
         )),
-        Request::WriteProgress { record, keys } => Ok(Outcome::Metadata(
-            obc_storage::flat::metadata::write_progress(store, record, |key| keys.contains(&key))
-                .map_err(metadata_error),
-        )),
+        Request::WriteProgress { record, keys, rode_on } => {
+            let record = match rode_on {
+                Some(rode_on) => store
+                    .with_source(ObjectId(rode_on.route), None, |source| rode_on.settle(record.clone(), source))
+                    .unwrap_or(record),
+                None => record,
+            };
+            Ok(Outcome::Metadata(
+                obc_storage::flat::metadata::write_progress(store, record, |key| keys.contains(&key))
+                    .map_err(metadata_error),
+            ))
+        }
         Request::ReconcileMetadata => {
             Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(metadata_error)))
         }
