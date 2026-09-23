@@ -640,7 +640,7 @@ impl App {
         }
         if let Some(power) = power {
             if let Some(watts) = power.poll() {
-                self.recorder.record_power(watts, now_ms);
+                self.recorder.record_power(watts, now_ms, riding);
             }
         }
         if let Some(cadence) = cadence {
@@ -4281,6 +4281,26 @@ mod tests {
         assert!(app.settings.stat_fields.push(crate::stat_fields::StatField::HeartRate));
         pass_idle(&mut app, 0); // drain the boot frame
         assert!(!pass_hr_only(&mut app, Some(155), 1_000).map, "the Map draws no tiles → no repaint");
+    }
+
+    /// With a max HR set, a sample on the Map moves only the effort band. The band is opaque, so
+    /// the host repaints it with no map render; anything else in the same frame brings the map back.
+    #[test]
+    fn an_hr_sample_on_the_map_repaints_only_the_opaque_band() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        app.ui.frame_size = (240, 320);
+        app.settings.max_hr = 200;
+        pass_idle(&mut app, 0); // drain the boot frame
+        let up = pass_hr_only(&mut app, Some(150), 1_000);
+        assert!(up.map && up.map_free_region().is_none(), "the band appearing moves the chips: a map render");
+        let band = crate::screen::gauge_region(240, 320);
+        let moved = pass_hr_only(&mut app, Some(170), 2_000);
+        assert_eq!(moved.map_free_region(), Some(band), "a band that moved alone repaints with no map");
+
+        app.ui.request_region(band, true);
+        app.ui.request_region(crate::screen::map::clock_region(240), false);
+        let both = app.take_dirty();
+        assert!(both.region.is_some() && both.map_free_region().is_none(), "the clock's halo needs the map");
     }
 
     /// The debounce coalesces a multi-step edit into one write.

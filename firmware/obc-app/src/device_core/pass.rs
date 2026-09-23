@@ -236,7 +236,7 @@ impl App {
             Repaint::Nothing => {}
             Repaint::GaugeBand => {
                 let (w, h) = (self.ui.frame_size.0 as i32, self.ui.frame_size.1 as i32);
-                self.ui.request_region(crate::screen::gauge_region(w, h));
+                self.ui.request_region(crate::screen::gauge_region(w, h), true);
             }
             Repaint::Full => self.ui.map_dirty = true,
         }

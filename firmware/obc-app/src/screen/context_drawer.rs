@@ -30,7 +30,7 @@ use obc_render::{
     Surface,
 };
 
-use crate::effort::{FTP_MAX, FTP_MIN, FTP_STEP, MAX_HR_MAX, MAX_HR_MIN};
+use crate::effort::{FTP_MAX, FTP_MIN, FTP_START, FTP_STEP, MAX_HR_MAX, MAX_HR_MIN, MAX_HR_START};
 use crate::input::Gesture;
 use crate::navigator::RouteState;
 use crate::screen::quick_drawer::{brightness_percent, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
@@ -206,6 +206,16 @@ impl ContextValue {
                 0 => 0,
                 v => (1 + (v.clamp(FTP_MIN, FTP_MAX) - FTP_MIN) / FTP_STEP) as u8,
             },
+        }
+    }
+
+    /// Where the editor opens: the committed choice, except that an unset limit opens on a typical
+    /// value, so the rider does not step up from the bottom of the range.
+    fn opening(self, f: &ContextFacts) -> u8 {
+        match (self, self.committed(f)) {
+            (ContextValue::MaxHr, 0) => 1 + MAX_HR_START - MAX_HR_MIN,
+            (ContextValue::Ftp, 0) => (1 + (FTP_START - FTP_MIN) / FTP_STEP) as u8,
+            (_, committed) => committed,
         }
     }
 
@@ -708,7 +718,7 @@ impl ContextDrawerScreen {
             lang: f.settings.language,
             selected: 0,
             page: Page::Editor,
-            staged: value.committed(f),
+            staged: value.opening(f),
         }
     }
 
@@ -1543,6 +1553,19 @@ mod tests {
         assert_eq!(d.staged_brightness(), Some(BRIGHTNESS_MAX - 2), "the panel follows the staged level");
         let plain = ContextDrawerScreen::opening(&UP_AHEAD, Language::En);
         assert_eq!(plain.staged_brightness(), None);
+
+        // An unset limit opens on a typical value, and "Not set" stays the axis's first choice.
+        let mut d = ContextDrawerScreen::editor(ContextValue::MaxHr, Msg::RideMaxHr, &w.facts());
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.max_hr, 180, "an unset max HR opens on 180 bpm");
+        let mut d = ContextDrawerScreen::editor(ContextValue::Ftp, Msg::RideFtp, &w.facts());
+        w.press(&mut d, Gesture::Step(-1));
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.ftp_w, 195, "an unset FTP opens on 200 W, one 5 W step from 195");
+        let mut d = ContextDrawerScreen::editor(ContextValue::MaxHr, Msg::RideMaxHr, &w.facts());
+        w.press(&mut d, Gesture::Step(-100));
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.max_hr, 0, "the bottom of the axis is Not set");
 
         let mut d = ContextDrawerScreen::editor(ContextValue::UtcOffset, Msg::DatetimeOffset, &w.facts());
         assert_eq!(d.staged, 48, "+00:00 is 48 quarter hours above -12:00");

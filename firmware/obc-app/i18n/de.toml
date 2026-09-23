@@ -179,6 +179,7 @@ hr = "HF"
 pwr = "LEIST"
 # The power graph block leaves three glyphs beside the zone.
 pwr_short = "W"
+kj = "KJ"
 rpm = "TF"
 
 # --- The Climb (ClimbPro) riding screen ---

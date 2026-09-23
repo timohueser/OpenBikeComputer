@@ -1,23 +1,30 @@
 //! Effort: heart rate and power against the rider's own limits.
 //!
-//! One [`Effort`] turns the raw BLE samples into what the riding views draw: a zone per metric with
+//! [`Effort`] turns the raw BLE samples into what the riding views draw: a zone per metric with
 //! hysteresis, a 10 s power average, and a five-minute history of 5 s buckets. Every consumer reads
 //! the same smoothed power, so the PWR tile, its tint, the map gauge and the graph agree.
 //!
 //! Zones are indices `0..=4` for Z1..Z5. Without a limit (max HR or FTP of 0) nothing has a zone.
+//! The limits are the rider's settings and are passed in, never copied here.
 
 /// Bars in a history graph: five minutes of 5 s buckets.
 pub const HISTORY_BARS: usize = 60;
 const BUCKET_MS: u32 = 5_000;
 /// The power average window, in one-second slots.
-const SMOOTH_S: usize = 10;
+const SMOOTH_S: u32 = 10;
+/// A history bar stores power in steps of this many watts, so a bar fits a byte up to 1020 W.
+const POWER_STEP_W: u16 = 4;
+/// The stored "no zone" of a metric without a limit or a value.
+const NO_ZONE: u8 = u8::MAX;
 
-/// Editor bounds for the two limits. `0` stores "not set".
+/// Editor bounds for the two limits. `0` stores "not set"; an unset editor opens on the start.
 pub const MAX_HR_MIN: u8 = 120;
 pub const MAX_HR_MAX: u8 = 220;
+pub const MAX_HR_START: u8 = 180;
 pub const FTP_MIN: u16 = 50;
 pub const FTP_MAX: u16 = 600;
 pub const FTP_STEP: u16 = 5;
+pub const FTP_START: u16 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
@@ -26,11 +33,13 @@ pub enum Metric {
 }
 
 impl Metric {
-    /// The Z2..Z5 floors, in whole percent of the limit.
-    const fn floors(self) -> [u32; 4] {
+    /// The Z2..Z5 edges in percent of the limit, and whether a value exactly on the edge is
+    /// already in the upper zone. They follow the issue's table: HR `60-70, 70-80` shares its
+    /// ends upward, and power `55-75, 76-90` puts 75.5 % in Z3 and 105.6 % in Z5.
+    const fn edges(self) -> [(u32, bool); 4] {
         match self {
-            Metric::Hr => [60, 70, 80, 90],
-            Metric::Power => [55, 76, 91, 106],
+            Metric::Hr => [(60, true), (70, true), (80, true), (90, true)],
+            Metric::Power => [(55, true), (75, false), (90, false), (105, false)],
         }
     }
 
@@ -50,11 +59,6 @@ impl Metric {
         }
     }
 
-    /// The Z4 floor in percent, which the graph marks with a dotted line.
-    pub const fn z4_floor(self) -> u32 {
-        self.floors()[2]
-    }
-
     /// How far past a zone edge a value must go before the zone changes.
     const fn margin(self, limit: u32) -> u32 {
         match self {
@@ -65,11 +69,11 @@ impl Metric {
 
     /// The zone of `value` against `limit`, with no hysteresis.
     pub fn zone_of(self, value: u32, limit: u32) -> u8 {
-        let pct = value * 100 / limit.max(1);
-        self.floors().iter().filter(|&&f| pct >= f).count() as u8
+        let v = value * 100;
+        self.edges().iter().filter(|&&(e, on)| if on { v >= e * limit } else { v > e * limit }).count() as u8
     }
 
-    /// The zone after `value` arrives, given the zone shown before it.
+    /// The zone after `value`, given the zone shown before it.
     fn step(self, shown: Option<u8>, value: u32, limit: u32) -> u8 {
         let Some(shown) = shown else { return self.zone_of(value, limit) };
         let m = self.margin(limit);
@@ -88,8 +92,8 @@ impl Metric {
     /// it. Each zone is one equal slot of the gauge.
     fn position(self, value: u32, limit: u32) -> f32 {
         let (lo, hi) = self.gauge_span();
-        let f = self.floors();
-        let edges = [lo, f[0], f[1], f[2], f[3], hi];
+        let e = self.edges();
+        let edges = [lo, e[0].0, e[1].0, e[2].0, e[3].0, hi];
         let pct = value as f32 * 100.0 / limit.max(1) as f32;
         for z in 0..5 {
             let (a, b) = (edges[z] as f32, edges[z + 1] as f32);
@@ -98,6 +102,21 @@ impl Metric {
             }
         }
         5.0
+    }
+
+    /// A bucket average as one history byte, and back. `0` is a bucket with no data.
+    fn to_bar(self, v: u16) -> u8 {
+        match self {
+            Metric::Hr => v.min(255) as u8,
+            Metric::Power => v.div_ceil(POWER_STEP_W).min(255) as u8,
+        }
+    }
+
+    fn bar_value(self, b: u8) -> u16 {
+        match self {
+            Metric::Hr => b as u16,
+            Metric::Power => b as u16 * POWER_STEP_W,
+        }
     }
 }
 
@@ -132,68 +151,63 @@ pub struct Gauge {
     pub fill_px: u16,
 }
 
-/// The fill length of a `w` px gauge at `position` (`0.0..=5.0`).
-fn fill_px(position: f32, w: i32) -> u16 {
+/// The map gauge for a `w` px wide panel: power when the meter is live and FTP is set, otherwise
+/// heart rate when the strap is live and max HR is set, otherwise none.
+pub fn gauge(power: Option<Reading>, hr: Option<Reading>, limits: Limits, w: i32) -> Option<Gauge> {
+    let (m, r, limit) =
+        [(Metric::Power, power), (Metric::Hr, hr)].into_iter().find_map(|(m, r)| Some((m, r?, limits.of(m)?)))?;
     let slot = (w / 5).max(0);
-    ((position * slot as f32) as i32).clamp(0, 5 * slot) as u16
+    let fill = (m.position(r.value as u32, limit) * slot as f32) as i32;
+    Some(Gauge { zone: r.zone?, fill_px: fill.clamp(0, 5 * slot) as u16 })
 }
 
-/// One metric's derived state.
-#[derive(Debug, Clone, Copy)]
-struct Channel {
-    /// The latest value: raw heart rate, or the smoothed power.
-    last: u16,
-    /// The zone shown for `last`, held by hysteresis.
-    zone: Option<u8>,
-    /// Closed bucket averages, indexed by bucket number modulo [`HISTORY_BARS`]. `0` is no data.
-    hist: [u16; HISTORY_BARS],
-    /// The open bucket's running sum and count.
-    sum: u32,
-    n: u16,
-}
-
-impl Channel {
-    const fn new() -> Self {
-        Channel { last: 0, zone: None, hist: [0; HISTORY_BARS], sum: 0, n: 0 }
-    }
-}
-
-/// The 10 s power average: one slot per second, each holding its second and that second's samples.
-#[derive(Debug, Clone, Copy)]
+/// The 10 s power average: the latest watts of each of the last ten seconds.
+#[derive(Debug)]
 struct Smoother {
-    sec: [u32; SMOOTH_S],
-    sum: [u32; SMOOTH_S],
-    n: [u8; SMOOTH_S],
+    watts: [u16; SMOOTH_S as usize],
+    /// Bit `k` is set when slot `k` holds a second inside the window.
+    valid: u16,
+    /// The newest second a sample arrived in.
+    newest: u32,
 }
 
 impl Smoother {
-    /// Add a sample and return the mean over the samples of the last 10 s.
-    fn push(&mut self, watts: u16, now_ms: u32) -> u16 {
+    fn push(&mut self, watts: u16, now_ms: u32) {
         let s = now_ms / 1000;
-        let i = s as usize % SMOOTH_S;
-        if self.sec[i] != s {
-            (self.sec[i], self.sum[i], self.n[i]) = (s, 0, 0);
-        }
-        self.sum[i] += watts as u32;
-        self.n[i] = self.n[i].saturating_add(1);
-        let (mut sum, mut n) = (0u32, 0u32);
-        for k in 0..SMOOTH_S {
-            if self.n[k] > 0 && s.wrapping_sub(self.sec[k]) < SMOOTH_S as u32 {
-                sum += self.sum[k];
-                n += self.n[k] as u32;
+        let passed = s.wrapping_sub(self.newest);
+        if passed >= SMOOTH_S {
+            // A gap of a window or more, or a clock that went back, empties the window.
+            self.valid = 0;
+        } else {
+            for k in 1..=passed {
+                self.valid &= !(1 << ((self.newest + k) % SMOOTH_S));
             }
         }
-        (sum / n) as u16
+        let i = s % SMOOTH_S;
+        self.watts[i as usize] = watts;
+        self.valid |= 1 << i;
+        self.newest = s;
+    }
+
+    fn mean(&self) -> u16 {
+        let n = self.valid.count_ones();
+        let sum: u32 =
+            (0..SMOOTH_S).filter(|k| self.valid & (1 << k) != 0).map(|k| self.watts[k as usize] as u32).sum();
+        (sum / n.max(1)) as u16
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct Effort {
-    limits: Limits,
-    hr: Channel,
-    power: Channel,
+    /// Closed bucket averages per metric, indexed by bucket number modulo [`HISTORY_BARS`].
+    hist: [[u8; HISTORY_BARS]; 2],
+    /// The open bucket's running sum and count per metric.
+    sum: [u16; 2],
+    n: [u8; 2],
+    /// The zone shown per metric, held by hysteresis, or [`NO_ZONE`].
+    zone: [u8; 2],
     smooth: Smoother,
-    /// The open bucket's number, `now_ms / 5000`. Both channels share it.
+    /// The open bucket's number, `now_ms / 5000`. Both metrics share it.
     bucket: u32,
 }
 
@@ -206,25 +220,12 @@ impl Default for Effort {
 impl Effort {
     pub const fn new() -> Self {
         Effort {
-            limits: Limits { max_hr: 0, ftp_w: 0 },
-            hr: Channel::new(),
-            power: Channel::new(),
-            smooth: Smoother { sec: [0; SMOOTH_S], sum: [0; SMOOTH_S], n: [0; SMOOTH_S] },
+            hist: [[0; HISTORY_BARS]; 2],
+            sum: [0; 2],
+            n: [0; 2],
+            zone: [NO_ZONE; 2],
+            smooth: Smoother { watts: [0; SMOOTH_S as usize], valid: 0, newest: 0 },
             bucket: 0,
-        }
-    }
-
-    fn channel(&self, m: Metric) -> &Channel {
-        match m {
-            Metric::Hr => &self.hr,
-            Metric::Power => &self.power,
-        }
-    }
-
-    fn channel_mut(&mut self, m: Metric) -> &mut Channel {
-        match m {
-            Metric::Hr => &mut self.hr,
-            Metric::Power => &mut self.power,
         }
     }
 
@@ -233,26 +234,25 @@ impl Effort {
         self.roll(now_ms);
         let value = match m {
             Metric::Hr => value,
-            Metric::Power => self.smooth.push(value, now_ms),
+            Metric::Power => {
+                self.smooth.push(value, now_ms);
+                self.smooth.mean()
+            }
         };
-        let limit = self.limits.of(m);
-        let ch = self.channel_mut(m);
-        ch.last = value;
-        ch.zone = limit.map(|l| m.step(ch.zone, value as u32, l));
-        ch.sum += value as u32;
-        ch.n = ch.n.saturating_add(1);
+        self.sum[m as usize] = self.sum[m as usize].saturating_add(value);
+        self.n[m as usize] = self.n[m as usize].saturating_add(1);
     }
 
-    /// Advance the history to `now_ms` and adopt the rider's limits. Called once per pass, so the
-    /// graph scrolls through a dropout and a changed limit re-zones the last value.
-    pub(crate) fn advance(&mut self, now_ms: u32, limits: Limits) {
+    /// Once per pass: scroll the history to `now_ms`, so the graph moves through a dropout, and
+    /// step each zone to the latest value against the rider's limits.
+    pub(crate) fn advance(&mut self, now_ms: u32, limits: Limits, hr: Option<u16>) {
         self.roll(now_ms);
-        if limits != self.limits {
-            self.limits = limits;
-            for m in [Metric::Hr, Metric::Power] {
-                let ch = self.channel_mut(m);
-                ch.zone = limits.of(m).map(|l| m.zone_of(ch.last as u32, l));
-            }
+        for (m, value) in [(Metric::Hr, hr), (Metric::Power, Some(self.power()))] {
+            let shown = Some(self.zone[m as usize]).filter(|&z| z != NO_ZONE);
+            self.zone[m as usize] = match (value, limits.of(m)) {
+                (Some(v), Some(l)) => m.step(shown, v as u32, l),
+                _ => NO_ZONE,
+            };
         }
     }
 
@@ -264,22 +264,29 @@ impl Effort {
             return;
         }
         let open = (self.bucket % HISTORY_BARS as u32) as usize;
-        for ch in [&mut self.hr, &mut self.power] {
-            let closed = if ch.n > 0 { (ch.sum / ch.n as u32) as u16 } else { 0 };
+        for m in [Metric::Hr, Metric::Power] {
+            let i = m as usize;
+            let closed = if self.n[i] > 0 { m.to_bar(self.sum[i] / self.n[i] as u16) } else { 0 };
             for k in 0..passed.min(HISTORY_BARS as u32) as usize {
-                ch.hist[(open + k) % HISTORY_BARS] = 0;
+                self.hist[i][(open + k) % HISTORY_BARS] = 0;
             }
             // A bucket more than five minutes old is off the graph.
             if passed <= HISTORY_BARS as u32 {
-                ch.hist[open] = closed;
+                self.hist[i][open] = closed;
             }
-            (ch.sum, ch.n) = (0, 0);
+            (self.sum[i], self.n[i]) = (0, 0);
         }
         self.bucket = b;
     }
 
-    pub fn limits(&self) -> Limits {
-        self.limits
+    /// The 10 s power average as of the latest sample.
+    pub fn power(&self) -> u16 {
+        self.smooth.mean()
+    }
+
+    /// The zone shown for `m`, or `None` without a limit.
+    pub fn zone(&self, m: Metric) -> Option<u8> {
+        Some(self.zone[m as usize]).filter(|&z| z != NO_ZONE)
     }
 
     /// The open bucket's number. The graph changes only when it moves.
@@ -287,29 +294,15 @@ impl Effort {
         self.bucket
     }
 
-    /// The latest value and its zone, or `None` when the sensor is not `live`.
-    pub fn reading(&self, m: Metric, live: bool) -> Option<Reading> {
-        let ch = self.channel(m);
-        live.then_some(Reading { value: ch.last, zone: ch.zone })
-    }
-
     /// The closed bucket averages, oldest first. `0` is a bucket with no data.
     pub fn history(&self, m: Metric) -> impl Iterator<Item = u16> + '_ {
-        let ch = self.channel(m);
         let oldest = (self.bucket % HISTORY_BARS as u32) as usize;
-        (0..HISTORY_BARS).map(move |i| ch.hist[(oldest + i) % HISTORY_BARS])
+        (0..HISTORY_BARS).map(move |i| m.bar_value(self.hist[m as usize][(oldest + i) % HISTORY_BARS]))
     }
 
-    /// The map gauge for a `w` px wide panel: power when the meter is live and FTP is set,
-    /// otherwise heart rate when the strap is live and max HR is set, otherwise none.
-    pub fn gauge(&self, power_live: bool, hr_live: bool, w: i32) -> Option<Gauge> {
-        let m = [(Metric::Power, power_live), (Metric::Hr, hr_live)]
-            .into_iter()
-            .find(|&(m, live)| live && self.limits.of(m).is_some())?
-            .0;
-        let ch = self.channel(m);
-        let limit = self.limits.of(m)?;
-        Some(Gauge { zone: ch.zone?, fill_px: fill_px(m.position(ch.last as u32, limit), w) })
+    /// Whether any bar of `m`'s graph holds data.
+    pub fn has_history(&self, m: Metric) -> bool {
+        self.hist[m as usize].iter().any(|&b| b != 0)
     }
 }
 
@@ -333,94 +326,81 @@ mod tests {
 
     const LIMITS: Limits = Limits { max_hr: 200, ftp_w: 200 };
 
-    fn effort() -> Effort {
-        let mut e = Effort::new();
-        e.advance(0, LIMITS);
-        e
-    }
-
     #[test]
-    fn zone_edges_follow_the_tables() {
+    fn zone_edges_follow_the_table() {
         // Max HR 200: Z2 from 120, Z3 from 140, Z4 from 160, Z5 from 180.
         let hr = [119, 120, 139, 140, 159, 160, 179, 180].map(|v| Metric::Hr.zone_of(v, 200));
         assert_eq!(hr, [0, 1, 1, 2, 2, 3, 3, 4]);
-        // FTP 200: Z2 from 55 %, Z3 from 76 %, Z4 from 91 %, Z5 from 106 %.
-        let pw = [109, 110, 151, 152, 181, 182, 211, 212].map(|v| Metric::Power.zone_of(v, 200));
+        // FTP 200: Z2 from 55 %, Z3 above 75 %, Z4 above 90 %, Z5 above 105 %.
+        let pw = [109, 110, 150, 151, 180, 181, 210, 211].map(|v| Metric::Power.zone_of(v, 200));
         assert_eq!(pw, [0, 1, 1, 2, 2, 3, 3, 4]);
+        assert_eq!(Metric::Power.zone_of(264, 250), 4, "105.6 % is Z5, with no percent truncated away");
+    }
+
+    /// Pass one HR sample, then the pass boundary that zones it.
+    fn hr(e: &mut Effort, bpm: u16, now_ms: u32) -> Option<u8> {
+        e.sample(Metric::Hr, bpm, now_ms);
+        e.advance(now_ms, LIMITS, Some(bpm));
+        e.zone(Metric::Hr)
     }
 
     #[test]
     fn a_zone_changes_only_past_the_margin() {
-        let mut e = effort();
-        let zone = |e: &Effort| e.reading(Metric::Hr, true).unwrap().zone;
-        e.sample(Metric::Hr, 150, 0);
-        assert_eq!(zone(&e), Some(2), "the first value takes its zone outright");
-        e.sample(Metric::Hr, 161, 1_000);
-        assert_eq!(zone(&e), Some(2), "1 bpm past the Z4 edge is inside the 2 bpm margin");
-        e.sample(Metric::Hr, 162, 2_000);
-        assert_eq!(zone(&e), Some(3), "2 bpm past it, the zone moves up");
-        e.sample(Metric::Hr, 159, 3_000);
-        assert_eq!(zone(&e), Some(3), "1 bpm under the edge holds Z4");
-        e.sample(Metric::Hr, 157, 4_000);
-        assert_eq!(zone(&e), Some(2), "past the margin, it drops");
-        e.sample(Metric::Hr, 200, 5_000);
-        assert_eq!(zone(&e), Some(4), "a jump crosses several zones at once");
-    }
-
-    #[test]
-    fn a_new_limit_rezones_without_waiting_for_a_sample() {
         let mut e = Effort::new();
-        e.sample(Metric::Hr, 150, 0);
-        assert_eq!(e.reading(Metric::Hr, true), Some(Reading { value: 150, zone: None }), "no max HR, no zone");
-        e.advance(0, LIMITS);
-        assert_eq!(e.reading(Metric::Hr, true).unwrap().zone, Some(2));
-        assert_eq!(e.reading(Metric::Hr, false), None, "a stale strap reads nothing");
+        assert_eq!(hr(&mut e, 150, 0), Some(2), "the first value takes its zone outright");
+        assert_eq!(hr(&mut e, 161, 1_000), Some(2), "1 bpm past the Z4 edge is inside the 2 bpm margin");
+        assert_eq!(hr(&mut e, 162, 2_000), Some(3), "2 bpm past it, the zone moves up");
+        assert_eq!(hr(&mut e, 159, 3_000), Some(3), "1 bpm under the edge holds Z4");
+        assert_eq!(hr(&mut e, 157, 4_000), Some(2), "past the margin, it drops");
+        assert_eq!(hr(&mut e, 200, 5_000), Some(4), "a jump crosses several zones at once");
+        e.advance(5_000, Limits { max_hr: 0, ftp_w: 200 }, Some(200));
+        assert_eq!(e.zone(Metric::Hr), None, "no max HR, no zone");
     }
 
     #[test]
     fn power_is_the_mean_of_the_last_ten_seconds() {
-        let mut e = effort();
-        let watts = |e: &Effort| e.reading(Metric::Power, true).unwrap().value;
+        let mut e = Effort::new();
         for s in 0..10 {
             e.sample(Metric::Power, if s % 2 == 0 { 100 } else { 300 }, s * 1000);
         }
-        assert_eq!(watts(&e), 200, "ten alternating seconds average out");
+        assert_eq!(e.power(), 200, "ten alternating seconds average out");
         e.sample(Metric::Power, 400, 10_000);
-        assert_eq!(watts(&e), (100 * 4 + 300 * 5 + 400) / 10, "the oldest second leaves the window");
+        assert_eq!(e.power(), (100 * 4 + 300 * 5 + 400) / 10, "the oldest second leaves the window");
+        e.sample(Metric::Power, 500, 10_500);
+        assert_eq!(e.power(), (100 * 4 + 300 * 5 + 500) / 10, "a second holds its latest sample");
         e.sample(Metric::Power, 1000, 30_000);
-        assert_eq!(watts(&e), 1000, "after a dropout, old seconds do not come back");
+        assert_eq!(e.power(), 1000, "after a dropout, old seconds do not come back");
     }
 
     #[test]
     fn history_is_bucket_averages_with_gaps_for_dropouts() {
-        let mut e = effort();
+        let mut e = Effort::new();
         e.sample(Metric::Hr, 100, 0);
         e.sample(Metric::Hr, 110, 2_000);
         e.sample(Metric::Hr, 130, 6_000);
-        e.advance(20_000, LIMITS);
+        e.sample(Metric::Power, 1_000, 6_000);
+        e.advance(20_000, LIMITS, None);
         let h: std::vec::Vec<u16> = e.history(Metric::Hr).collect();
         assert_eq!(h.len(), HISTORY_BARS);
         assert_eq!(&h[HISTORY_BARS - 4..], [105, 130, 0, 0], "two filled buckets, then two empty ones");
-        e.advance(20_000 + 5 * 60_000, LIMITS);
-        assert!(e.history(Metric::Hr).all(|v| v == 0), "five quiet minutes empty the graph");
+        assert_eq!(e.history(Metric::Power).nth(HISTORY_BARS - 3), Some(1000), "power keeps 4 W steps");
+        e.advance(20_000 + 5 * 60_000, LIMITS, None);
+        assert!(!e.has_history(Metric::Hr), "five quiet minutes empty the graph");
     }
 
     #[test]
     fn gauge_prefers_live_power_and_fills_through_equal_slots() {
-        let mut e = effort();
-        e.sample(Metric::Power, 200, 0); // 100 % FTP: 9/15 through Z4
-        e.sample(Metric::Hr, 150, 0); // 75 % max HR: halfway through Z3
         let w = 240; // five 48 px slots
-        assert_eq!(e.gauge(true, true, w), Some(Gauge { zone: 3, fill_px: (3.6 * 48.0) as u16 }));
-        assert_eq!(e.gauge(false, true, w), Some(Gauge { zone: 2, fill_px: 2 * 48 + 24 }), "stale power falls to HR");
-        assert_eq!(e.gauge(false, false, w), None, "no live sensor, no gauge");
-        e.advance(0, Limits { max_hr: 200, ftp_w: 0 });
-        assert_eq!(e.gauge(true, false, w), None, "live power without FTP draws no gauge");
-
-        e.advance(0, LIMITS);
-        e.sample(Metric::Hr, 90, 1_000);
-        assert_eq!(e.gauge(false, true, w).unwrap().fill_px, 0, "below the gauge span is empty");
-        e.sample(Metric::Hr, 220, 2_000);
-        assert_eq!(e.gauge(false, true, w).unwrap().fill_px, 240, "above it is full");
+        let reading = |value, zone| Some(Reading { value, zone: Some(zone) });
+        let power = reading(200, 3); // 100 % FTP: 10/15 through Z4
+        let hr = reading(150, 2); // 75 % max HR: halfway through Z3
+        let fill = (48.0 * (3.0 + 10.0 / 15.0)) as u16;
+        assert_eq!(gauge(power, hr, LIMITS, w), Some(Gauge { zone: 3, fill_px: fill }));
+        assert_eq!(gauge(None, hr, LIMITS, w), Some(Gauge { zone: 2, fill_px: 2 * 48 + 24 }), "stale power: HR");
+        assert_eq!(gauge(None, None, LIMITS, w), None, "no live sensor, no gauge");
+        let no_ftp = Limits { max_hr: 0, ftp_w: 0 };
+        assert_eq!(gauge(power, None, no_ftp, w), None, "live power without FTP draws no gauge");
+        assert_eq!(gauge(None, reading(90, 0), LIMITS, w).unwrap().fill_px, 0, "below the span is empty");
+        assert_eq!(gauge(None, reading(220, 4), LIMITS, w).unwrap().fill_px, 240, "above it is full");
     }
 }

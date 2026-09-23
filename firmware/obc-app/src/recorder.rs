@@ -51,6 +51,9 @@ const MOVING_MIN_MPS: f32 = 0.8;
 /// A BLE sensor sample older than this (ms) is stale: the live accessors read `None` and the summary
 /// stops accumulating it. A dropped strap records absent, never its last value.
 const SENSOR_STALE_MS: u32 = 5_000;
+/// The longest interval one power sample is credited for. A meter reports every second or faster,
+/// so a longer gap is a dropout, and a dropout adds no energy.
+const ENERGY_GAP_MS: u32 = 2_000;
 
 /// The wall-clock anchor a ride footer carries. The pass gives it to Recorder as it offers the
 /// operation slot, which pairs the anchor with the samples that operation writes.
@@ -102,6 +105,8 @@ pub struct RideContinuation {
     pub max_power: u16,
     pub cadence_ms_sum: u64,
     pub cadence_ms: u32,
+    /// The ride's energy from power (J), or `None` before any power sample.
+    pub energy_j: Option<u32>,
 }
 
 /// Whether a completed checkpoint service established recovery on its medium.
@@ -465,6 +470,9 @@ pub struct RecorderMachine {
     /// coasting counts; a strap that is absent does not.
     cadence_ms_sum: u64,
     cadence_ms: u32,
+    /// The ride's energy (J): each power sample times the time since the one before it, at most
+    /// [`ENERGY_GAP_MS`], while the ride records. `None` until the first sample.
+    energy_j: Option<u32>,
     /// The live effort display: zones, smoothed power and the graph history. Not per ride, so no
     /// session edge resets it.
     effort: Effort,
@@ -529,6 +537,7 @@ impl RecorderMachine {
             max_power: 0,
             cadence_ms_sum: 0,
             cadence_ms: 0,
+            energy_j: None,
             effort: Effort::new(),
             origin: RideOrigin { bike: BikeType::Road, trip: None },
         }
@@ -866,15 +875,21 @@ impl RecorderMachine {
         self.effort.sample(Metric::Hr, bpm, now_ms);
     }
 
-    pub(crate) fn record_power(&mut self, watts: u16, now_ms: u32) {
+    /// Take one power sample. `riding` is false while paused or idle, and then no energy accrues.
+    pub(crate) fn record_power(&mut self, watts: u16, now_ms: u32, riding: bool) {
+        if riding && self.session.is_some() && self.pending != Some(RecorderIntent::Save) {
+            let dt = self.power_last.map_or(0, |_| now_ms.saturating_sub(self.power_at_ms).min(ENERGY_GAP_MS));
+            let joules = (watts as u32 * dt + 500) / 1000;
+            self.energy_j = Some(self.energy_j.unwrap_or(0).saturating_add(joules));
+        }
         self.power_last = Some(watts);
         self.power_at_ms = now_ms;
         self.effort.sample(Metric::Power, watts, now_ms);
     }
 
-    /// Scroll the effort history to this pass and adopt the rider's limits.
+    /// Scroll the effort history to this pass and zone the latest values against the limits.
     pub(crate) fn advance_effort(&mut self, limits: Limits) {
-        self.effort.advance(self.sensor_now_ms, limits);
+        self.effort.advance(self.sensor_now_ms, limits, self.hr_last);
     }
 
     pub(crate) fn record_cadence(&mut self, rpm: u8, now_ms: u32) {
@@ -1032,6 +1047,7 @@ impl RecorderMachine {
         self.max_power = 0;
         self.cadence_ms_sum = 0;
         self.cadence_ms = 0;
+        self.energy_j = None;
     }
 
     /// Distance actually pedalled (m) — the `done` stat.
@@ -1119,29 +1135,31 @@ impl RecorderMachine {
     /// Live heart rate or 10 s power with its zone, for the tiles, the gauge and the graphs. `None`
     /// while the sensor is stale, judged like [`live_hr_display`](Self::live_hr_display).
     pub fn reading(&self, m: Metric) -> Option<Reading> {
-        self.effort.reading(m, self.live(m))
-    }
-
-    fn live(&self, m: Metric) -> bool {
-        match m {
-            Metric::Hr => self.live_hr_display().is_some(),
-            Metric::Power => self.live_power_display().is_some(),
-        }
+        let value = match m {
+            Metric::Hr => self.live_hr_display(),
+            Metric::Power => self.live_power_display().map(|_| self.effort.power()),
+        };
+        value.map(|value| Reading { value, zone: self.effort.zone(m) })
     }
 
     /// The map's effort gauge for a `w` px wide panel, or `None` when no band shows.
-    pub fn gauge(&self, w: i32) -> Option<Gauge> {
-        self.effort.gauge(self.live(Metric::Power), self.live(Metric::Hr), w)
+    pub fn gauge(&self, limits: Limits, w: i32) -> Option<Gauge> {
+        crate::effort::gauge(self.reading(Metric::Power), self.reading(Metric::Hr), limits, w)
     }
 
     pub fn effort(&self) -> &Effort {
         &self.effort
     }
 
-    /// The ride's energy (kJ) from power over power-present moving time, or `None` before any
-    /// power sample. A dropout adds nothing.
+    /// The effort history's open bucket while `m`'s graph can still move: it holds a bar, or its
+    /// sensor is live. `None` for a graph that stays empty, so it forces no repaint.
+    pub fn graph_bucket(&self, m: Metric) -> Option<u32> {
+        (self.reading(m).is_some() || self.effort.has_history(m)).then(|| self.effort.bucket())
+    }
+
+    /// The ride's energy (kJ), or `None` before any power sample.
     pub fn kj(&self) -> Option<u32> {
-        (self.power_ms > 0).then_some((self.power_ms_sum / 1_000_000) as u32)
+        self.energy_j.map(|j| j / 1000)
     }
 
     /// Average heart rate (bpm) over HR-present moving time, or `None` before any sample.
@@ -1214,6 +1232,7 @@ impl RecorderMachine {
             max_power: self.max_power,
             cadence_ms_sum: self.cadence_ms_sum,
             cadence_ms: self.cadence_ms,
+            energy_j: self.energy_j,
         }
     }
 
@@ -1237,6 +1256,7 @@ impl RecorderMachine {
         self.max_power = state.max_power;
         self.cadence_ms_sum = state.cadence_ms_sum;
         self.cadence_ms = state.cadence_ms;
+        self.energy_j = state.energy_j;
     }
 }
 
@@ -1303,6 +1323,7 @@ impl RecorderMachine {
             max_power: _,
             cadence_ms_sum: _,
             cadence_ms: _,
+            energy_j: _,
             effort: _,
             origin,
         } = self;
@@ -1914,7 +1935,7 @@ mod tests {
     fn a_new_session_clears_every_accumulator() {
         let mut rec = ridden(4);
         rec.record_hr(150, 4_000);
-        rec.record_power(240, 4_000);
+        rec.record_power(240, 4_000, true);
         rec.record_cadence(88, 4_000);
         rec.record_altitude(100.0, true);
         rec.record_fix(Fix::at(BASE_LAT + STEP_UD * 4, LON), 4_000, true);
@@ -2270,7 +2291,7 @@ mod tests {
         let mut rec = recording();
         rec.record_fix(Fix::at(BASE_LAT, LON), 0, true);
         rec.record_hr(150, 1_000);
-        rec.record_power(200, 1_000);
+        rec.record_power(200, 1_000, true);
         rec.record_cadence(90, 1_000);
         rec.record_fix(Fix::at(BASE_LAT + STEP_UD, LON), 1_000, true);
         assert_eq!(rec.staged()[1].hr, Some(150), "a fresh strap is stamped onto the sample");
@@ -2288,25 +2309,22 @@ mod tests {
     }
 
     #[test]
-    fn kj_sums_live_power_and_a_dropout_adds_nothing() {
+    fn kj_counts_power_samples_and_a_dropout_adds_at_most_the_gap_cap() {
         let mut rec = recording();
-        rec.record_fix(Fix::at(BASE_LAT, LON), 0, true);
         assert_eq!(rec.kj(), None, "no power data, no energy");
-        for s in 1..=10 {
-            rec.record_power(1_000, s * 1_000 - 500);
-            rec.record_fix(Fix::at(BASE_LAT + STEP_UD * s as i32, LON), s * 1_000, true);
+        // No fix at all: energy does not wait for GPS or for movement.
+        for s in 0..=10 {
+            rec.record_power(1_000, s * 1_000, true);
         }
-        assert_eq!(rec.kj(), Some(10), "ten seconds at 1000 W");
+        assert_eq!(rec.kj(), Some(10), "ten one-second intervals at 1000 W");
 
-        // The meter drops out. Past the staleness gate the ride goes on and the energy stands.
-        for s in 11..=20 {
-            rec.record_fix(Fix::at(BASE_LAT + STEP_UD * s as i32, LON), s * 1_000, true);
-        }
-        let held = rec.kj();
-        for s in 21..=60 {
-            rec.record_fix(Fix::at(BASE_LAT + STEP_UD * s as i32, LON), s * 1_000, true);
-        }
-        assert_eq!(rec.kj(), held, "no sample, no energy, and nothing fills the gap");
+        // The meter drops out for 30 s. The first sample after it is credited for 2 s, not 30.
+        rec.record_power(1_000, 40_000, true);
+        assert_eq!(rec.kj(), Some(12), "the gap adds the 2 s cap and nothing more");
+
+        // Paused: samples keep the live value, but the ride books no energy.
+        rec.record_power(1_000, 41_000, false);
+        assert_eq!(rec.kj(), Some(12));
     }
 
     #[test]
@@ -2339,11 +2357,13 @@ mod tests {
             max_power: 901,
             cadence_ms_sum: 87 * 70_000,
             cadence_ms: 70_000,
+            energy_j: Some(19_600),
         };
         let mut rec = RecorderMachine::new();
         rec.restore_continuation(state);
         assert_eq!(rec.continuation(), state);
         assert_eq!((rec.avg_hr(), rec.avg_power(), rec.avg_cadence()), (Some(150), Some(245), Some(87)));
+        assert_eq!(rec.kj(), Some(19), "the ride's energy crosses the reset");
         assert_eq!(rec.climb_m(), 321.0);
         assert_eq!((rec.ride_stats().bike, rec.ride_stats().trip), (BikeType::Mtb, TripRef::new(9, 1, 3)));
     }

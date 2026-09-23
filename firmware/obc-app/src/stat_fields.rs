@@ -269,7 +269,7 @@ impl StatField {
             }
             StatField::Power => effort_cell(cx.recorder.reading(Metric::Power), t(Msg::TilePwr, lang)),
             StatField::PowerGraph => effort_cell(cx.recorder.reading(Metric::Power), t(Msg::TilePwrShort, lang)),
-            StatField::Kj => StatCell::new(cap("KJ", ""), fmt::integer_opt(cx.recorder.kj()), false),
+            StatField::Kj => StatCell::new(cap(t(Msg::TileKj, lang), ""), fmt::integer_opt(cx.recorder.kj()), false),
             StatField::Cadence => {
                 // A fresh `0` (coasting) is a real reading and shows `0`; only an absent or
                 // stale value reads `--`.
@@ -1284,7 +1284,7 @@ mod tests {
 
         // Fresh samples → the raw numbers, no glued unit.
         rec.record_hr(152, 1_000);
-        rec.record_power(210, 1_000);
+        rec.record_power(210, 1_000, false);
         rec.record_cadence(88, 1_000);
         rec.note_sensor_clock(1_000);
         assert_eq!(val(&rec, StatField::HeartRate).as_str(), "152");
