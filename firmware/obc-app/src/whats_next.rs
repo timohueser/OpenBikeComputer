@@ -875,6 +875,12 @@ mod tests {
         app.apply_gesture(Gesture::Back);
         assert!(!app.ui.ahead.pending(), "Back takes no new query");
         assert_eq!(app.ui.ahead.water, near);
+        let covered = crate::screen::Screen::Assistant(crate::screen::AssistantScreen::new());
+        crate::screen::apply(&mut app.ui.stack, crate::screen::Transition::Push(covered));
+        app.ui.map_dirty = false;
+        app.advance_animations(obc_ports::InputClock(now + 16 * 60_000));
+        assert!(!app.ui.map_dirty, "a covered Overview does not repaint");
+        crate::screen::apply(&mut app.ui.stack, crate::screen::Transition::Pop);
         for (minutes, expired, water_is_near) in [(5, false, true), (16, true, true), (31, true, false)] {
             app.ui.map_dirty = false;
             app.advance_animations(obc_ports::InputClock(now + minutes * 60_000));
