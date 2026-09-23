@@ -338,7 +338,7 @@ pub async fn run(
     );
 
     // Advertise → serve → re-advertise, forever, with a parked Off state the rider's Bluetooth
-    // switch gates. The sensor manager's one central-role task rides beside them, gated by the same
+    // switch gates. The sensor manager (the central role) rides beside them, gated by the same
     // switch.
     join(
         sensors::run(stack, server, sensor_injector),
