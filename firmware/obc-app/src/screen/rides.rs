@@ -15,7 +15,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::ride::RideEntry;
+use crate::ride::{RideEntry, RideTrip};
 use crate::settings::{DateTime, Units};
 use crate::{CatalogObjectId, Msg, UI_RIDES_CAP};
 
@@ -140,7 +140,7 @@ impl RidesScreen {
         match self.scope {
             Scope::TopLevel => title_frame(cv, w, h, rx.t(Msg::RidesTitle), &counter),
             Scope::Trip { key } => {
-                let trip = Folder::of(rides, key);
+                let trip = Folder::of(rides, rx.ride_trips, key);
                 // The title and the counter both keep 14 px from the bar's ends, and 8 px apart.
                 let counter_w = if counter.is_empty() { 0 } else { text_width(&counter, Font::Label) as i32 + 8 };
                 let title = fit(trip.as_ref().map_or("", |t| t.name), w - 28 - counter_w, Font::Body);
@@ -163,7 +163,8 @@ impl RidesScreen {
             let mut line2: heapless::String<48> = heapless::String::new();
             match rows[row.index] {
                 Row::Folder(i) => {
-                    let Some(folder) = rides[i].summary.trip.and_then(|t| Folder::of(rides, t.key())) else {
+                    let Some(folder) = rides[i].summary.trip.and_then(|t| Folder::of(rides, rx.ride_trips, t.key()))
+                    else {
                         return;
                     };
                     two_line::name_line(cv, &row, &rx.marquee, folder.name, (x, two_line::name_right(&row)), INK);
@@ -245,7 +246,7 @@ fn day_ordinal(rides: &[RideEntry], i: usize) -> usize {
 
 /// The facts of one trip folder, over the rides the catalog holds.
 struct Folder<'a> {
-    /// The newest non-empty trip name, or the newest ride's name when every footer's is empty.
+    /// The trip's name, or the newest ride's name when the trip table has none.
     name: &'a str,
     days_ridden: u32,
     /// The day count the newest ride stored.
@@ -260,23 +261,19 @@ impl<'a> Folder<'a> {
         rides.iter().position(|r| r.summary.trip.is_some_and(|t| t.key() == key))
     }
 
-    fn of(rides: &'a [RideEntry], key: u64) -> Option<Folder<'a>> {
+    fn of(rides: &'a [RideEntry], trips: &'a [RideTrip], key: u64) -> Option<Folder<'a>> {
         let newest = &rides[Self::newest(rides, key)?].summary;
+        let name = trips.iter().find(|t| t.key == key).map_or(newest.name.as_str(), |t| t.name.as_str());
         let mut folder = Folder {
-            name: &newest.name,
+            name,
             days_ridden: 0,
             day_count: newest.trip.map_or(0, |t| t.day_count()),
             distance_m: 0,
             climb_m: 0,
         };
-        let mut named = false;
         let mut days = [0u64; 4];
         for ride in rides.iter().map(|r| &r.summary) {
             let Some(trip) = ride.trip.filter(|t| t.key() == key) else { continue };
-            if !named && !ride.trip_name.is_empty() {
-                folder.name = &ride.trip_name;
-                named = true;
-            }
             let day = usize::from(trip.day_index());
             days[day / 64] |= 1 << (day % 64);
             folder.distance_m = folder.distance_m.saturating_add(ride.distance_m);
@@ -331,7 +328,6 @@ mod tests {
     const ALPS: u64 = 0xA1;
 
     fn ride(id: u64, name: &str, start_time: u32, trip: Option<TripRef>) -> RideEntry {
-        let trip_name = heapless::String::try_from(if trip.is_some() { "Alps traverse" } else { "" }).unwrap();
         RideEntry {
             id,
             summary: RideSummary {
@@ -340,7 +336,6 @@ mod tests {
                 distance_m: 40_000,
                 climb_m: 500,
                 trip,
-                trip_name,
                 ..Default::default()
             },
         }
@@ -376,9 +371,11 @@ mod tests {
         );
         assert_eq!(rows(&rides, Scope::Trip { key: ALPS }).as_slice(), [Row::Ride(1), Row::Ride(3), Row::Ride(4)]);
 
-        let folder = Folder::of(&rides, ALPS).unwrap();
+        let trips = [RideTrip { key: ALPS, name: heapless::String::try_from("Alps traverse").unwrap() }];
+        let folder = Folder::of(&rides, &trips, ALPS).unwrap();
         assert_eq!((folder.name, folder.days_ridden, folder.day_count), ("Alps traverse", 2, 3), "2 of 3 days");
         assert_eq!((folder.distance_m, folder.climb_m), (120_000, 1_500), "the sums of the three rides");
+        assert_eq!(Folder::of(&rides, &[], ALPS).unwrap().name, "Day 2 Ulrichen", "no trip name: the newest ride's");
     }
 
     #[test]
