@@ -180,6 +180,30 @@ def trip_week(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
+def arrival_trip(stage: Stage) -> Staging:
+    """A three-day trip whose Day 2 is the real Grimsel climb, so a replay of that climb rides to the
+    end of a trip day: "Day 1 Andermatt" (the plain vector route), "Day 2 Ulrichen" and "Day 3 Brig"
+    (both the climb), in the trip "Alpen Traverse" as `TP1.OBT`.
+    """
+    where = stage.dir("arrival-trip")
+    climb = (stage.fixtures / "sim-grimsel" / "routes" / "grimsel-climb.obcr").read_bytes()
+    days = [
+        ((stage.vectors / "route-plain.obcr").read_bytes(), "Day 1 Andermatt"),
+        (climb, "Day 2 Ulrichen"),
+        (climb, "Day 3 Brig"),
+    ]
+    for day, (source, name) in enumerate(days, 1):
+        route = bytearray(source)
+        _rename_route(route, name)
+        (where / f"day-{day}.obcr").write_bytes(route)
+    name = "Alpen Traverse".encode()
+    trip = struct.pack("<BBHB48sBHQ", 3, 0, len(days), len(name), name, 0, 20_360, 1)
+    for index in range(len(days)):
+        trip += struct.pack("<QII", index, 0, 0xFFFF_FFFF)
+    (where / "TP1.OBT").write_bytes(trip)
+    return Staging(("--routes-dir", str(where)))
+
+
 def eta_route(stage: Stage) -> Staging:
     """The real Grimsel climb route, alone."""
     where = stage.dir("eta-route")
@@ -313,6 +337,7 @@ ENVIRONMENTS = {
     "tracks": tracks,
     "trips": trips,
     "trip-week": trip_week,
+    "arrival-trip": arrival_trip,
     "eta-route": eta_route,
     "eta-flat": eta_flat,
     "day-route": day_route,
