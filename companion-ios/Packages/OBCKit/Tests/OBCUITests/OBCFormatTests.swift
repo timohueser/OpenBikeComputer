@@ -89,6 +89,29 @@ final class OBCFormatTests: XCTestCase {
         )
     }
 
+    func testRideStatsLineMatchesTheWireframe() {
+        let ride = RideSummary(
+            id: RideID("d2"), name: "Day 2", date: date(2026, 9, 30, hour: 8),
+            distanceMeters: 74_300, movingTime: 5 * 3600 + 52 * 60,
+            averageSpeedMps: 12.7 / 3.6, climbMeters: 2_080
+        )
+        XCTAssertEqual(OBCFormat.rideStatsLine(ride, locale: en), "74.3 km · 5:52 · 12.7 kph · 2,080 m ↑")
+    }
+
+    func testHighlightsReadAsOneShortPhraseEach() {
+        XCTAssertEqual(
+            OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: "Furka"), locale: en),
+            "Furka 2,431 m"
+        )
+        XCTAssertEqual(
+            OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: nil), locale: en),
+            "2,431 m at km 31"
+        )
+        XCTAssertEqual(OBCFormat.highlight(.longestClimb(ascent: 1_100, length: 18_000), locale: en), "18.0 km climb")
+        XCTAssertEqual(OBCFormat.highlight(.fastestDescent(speedMps: 62 / 3.6), locale: en), "62 kph descent")
+        XCTAssertEqual(OBCFormat.highlight(.biggestDay(distance: 82_000), locale: en), "Biggest day 82.0 km")
+    }
+
     // MARK: Stat-strip parts (the value and unit split)
 
     func testStatValuesMatchTheJoinedLines() {

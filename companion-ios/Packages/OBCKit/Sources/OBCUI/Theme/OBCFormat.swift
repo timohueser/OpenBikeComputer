@@ -109,6 +109,33 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
+    /// Ride detail stat line: "74.3 km · 5:52 · 12.7 kph · 2,080 m ↑".
+    public static func rideStatsLine(_ ride: RideSummary, locale: Locale = .current) -> String {
+        [
+            distance(meters: ride.distanceMeters, locale: locale),
+            movingTime(ride.movingTime),
+            speed(mps: ride.averageSpeedMps, locale: locale),
+            climb(meters: ride.climbMeters, locale: locale),
+        ].joined(separator: " · ")
+    }
+
+    /// One highlight: "Furka 2,431 m", "2,431 m at km 31", "18.0 km climb", "62 kph descent" or
+    /// "Biggest day 82.0 km". Lengths use `distance(meters:)`, as every other km in the app.
+    public static func highlight(_ highlight: RideHighlight, locale: Locale = .current) -> String {
+        switch highlight {
+        case .highestPoint(let elevation, let distance, let place):
+            let height = "\(climbValue(meters: elevation, locale: locale)) m"
+            if let place { return "\(place) \(height)" }
+            return "\(height) at km \(Int((distance / 1000).rounded()))"
+        case .longestClimb(_, let length):
+            return "\(Self.distance(meters: length, locale: locale)) climb"
+        case .fastestDescent(let speedMps):
+            return "\(Int((speedMps * 3.6).rounded())) kph descent"
+        case .biggestDay(let distance):
+            return "Biggest day \(Self.distance(meters: distance, locale: locale))"
+        }
+    }
+
     /// Trip card stat line: "2 stages · 141 km · 2,050 m ↑".
     public static func tripSubtitle(
         stageCount: Int,

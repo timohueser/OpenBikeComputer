@@ -22,11 +22,6 @@ public struct ElevationProfileView: View {
         self.init(samples: routePoints.compactMap(\.elevationMeters), height: height)
     }
 
-    /// From a ride's tracklog (skips missing elevations).
-    public init(ridePoints: [RidePoint], height: CGFloat = 80) {
-        self.init(samples: ridePoints.compactMap(\.elevationMeters), height: height)
-    }
-
     @ViewBuilder
     public var body: some View {
         if card {
