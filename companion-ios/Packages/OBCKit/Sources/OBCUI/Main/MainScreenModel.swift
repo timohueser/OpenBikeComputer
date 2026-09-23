@@ -999,7 +999,7 @@ public final class MainScreenModel {
     public func groupIntoTrip(_ routeIDs: [RouteID], name: String) -> TripID? {
         let records = routeIDs.compactMap { plannedRecords[$0] }
         let days = records.filter { Trip.isDay($0.route.points) }
-        tellTooShort(records.filter { !Trip.isDay($0.route.points) })
+        noteTooShort(records.filter { !Trip.isDay($0.route.points) }.map(\.summary.name))
         guard !days.isEmpty else { return nil }
         let ordered = TripJoin.proposedOrder(days.map(\.joinFile)).map { days[$0] }
         guard let tripID = createTrip(
@@ -1016,7 +1016,7 @@ public final class MainScreenModel {
     public func fileRoute(_ routeID: RouteID, into selection: TripSelection) -> TripID? {
         guard let record = plannedRecords[routeID], selection != .none else { return nil }
         guard Trip.isDay(record.route.points) else {
-            tellTooShort([record])
+            noteTooShort([record.summary.name])
             return nil
         }
         let tripID: TripID
@@ -1055,11 +1055,11 @@ public final class MainScreenModel {
         }.joined(separator: " ")
     }
 
-    private func tellTooShort(_ records: [PlannedRouteRecord]) {
-        guard !records.isEmpty else { return }
-        tripNotice = records.map { record in
-            "\u{201C}\(record.summary.name)\u{201D} is too short to be a day. It stays a route."
-        }.joined(separator: " ")
+    /// Tell the rider that these routes are too short to be days and stay routes.
+    public func noteTooShort(_ names: [String]) {
+        guard !names.isEmpty else { return }
+        tripNotice = names.map { "\u{201C}\($0)\u{201D} is too short to be a day. It stays a route." }
+            .joined(separator: " ")
     }
 
     /// Name each unnamed day end after its place. A lookup never replaces a name the rider gave,
