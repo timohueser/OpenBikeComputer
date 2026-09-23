@@ -146,7 +146,6 @@ impl StatFieldsScreen {
                             area,
                             &rx.marquee,
                             &cell.caption,
-                            cell.caption_climb.as_deref(),
                             &cell.value,
                             cell.arrow,
                             cell.value_align,
@@ -257,15 +256,7 @@ fn ghost_value(
         // The samples agree: 1 h 05 left from the 14:32 clock sample gives 15:37.
         F::TimeToGo => "1:05",
         F::Eta => "15:37",
-        F::TripToGo => {
-            // On a trip day the live caption is the unit and the climb. The ghost names the field
-            // instead, as the tile does off a trip.
-            if cell.caption_climb.take().is_some() {
-                let _ = cell.caption.push_str(crate::t(crate::Msg::TileTrip, lang));
-            }
-            "143"
-        }
-        F::TripDay => "2/3",
+        F::TripToGo => "143",
         F::Clock => "14:32",
         F::NextWaypoint => {
             // The wide waypoint tile is a name caption + a right-aligned distance value.
@@ -415,7 +406,7 @@ mod tests {
             bike_type: crate::settings::BikeType::Road,
             language: Language::De,
             next_ahead: &cache,
-            trip: None,
+            trip_later_m: None,
         };
         let mut seen: std::vec::Vec<(std::string::String, std::string::String)> = std::vec::Vec::new();
         for f in StatField::ALL.into_iter().filter(|f| f.category().is_some()) {

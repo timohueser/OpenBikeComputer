@@ -118,25 +118,15 @@ impl TripSummary {
     }
 }
 
-/// The loaded day's place in its trip, for the trip data fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TripLeg {
-    pub day: u16,
-    pub days: u16,
-    /// The routes of the days after this one. Transfers between days are not ridden, so they do
-    /// not count. The catalog holds whole kilometres, so each later day adds up to 500 m of error.
-    pub later_m: u32,
-    pub later_ascent_m: u32,
-}
-
 impl TripSummary {
-    /// Day `day` of this trip as a [`TripLeg`]: `catalog[i]` is the route at catalog index `i`.
-    pub fn leg(&self, day: u16, catalog: &[RouteSummary]) -> TripLeg {
-        let later = self.days().filter(|&(k, _)| k > day).filter_map(|(_, i)| catalog.get(usize::from(i)));
-        let (later_m, later_ascent_m) = later.fold((0u32, 0u32), |(m, up), r| {
-            (m.saturating_add(r.distance_km.saturating_mul(1000)), up.saturating_add(r.climb_m))
-        });
-        TripLeg { day, days: self.stage_ids.len() as u16, later_m, later_ascent_m }
+    /// The length of the routes of the days after day `day`: `catalog[i]` is the route at catalog
+    /// index `i`. Transfers between days are not ridden, so they do not count. The catalog holds
+    /// whole kilometres, so each later day adds up to 500 m of error.
+    pub fn later_m(&self, day: u16, catalog: &[RouteSummary]) -> u32 {
+        self.days()
+            .filter(|&(k, _)| k > day)
+            .filter_map(|(_, i)| catalog.get(usize::from(i)))
+            .fold(0, |m, r| m.saturating_add(r.distance_km.saturating_mul(1000)))
     }
 }
 
@@ -392,21 +382,19 @@ mod tests {
     }
 
     #[test]
-    fn a_leg_counts_the_days_after_it_and_skips_a_dangling_one() {
-        let route = |distance_km, climb_m| RouteSummary {
+    fn later_days_count_after_the_day_and_skip_a_dangling_one() {
+        let route = |distance_km| RouteSummary {
             name: Default::default(),
             distance_km,
-            climb_m,
+            climb_m: 0,
             bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
             start_lon: 0,
             start_lat: 0,
         };
-        let catalog = [route(74, 1_200), route(61, 900), route(50, 400)];
+        let catalog = [route(74), route(61), route(50)];
         let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 99, 30] };
         let t = TripSummary::resolve(&input, &catalog, &[10, 20, 30]);
-        let leg = t.leg(0, &catalog);
-        assert_eq!(leg, TripLeg { day: 0, days: 4, later_m: 111_000, later_ascent_m: 1_300 });
-        assert_eq!((t.leg(1, &catalog).later_m, t.leg(3, &catalog).later_m), (50_000, 0));
+        assert_eq!([0, 1, 3].map(|day| t.later_m(day, &catalog)), [111_000, 50_000, 0]);
     }
 
     #[test]

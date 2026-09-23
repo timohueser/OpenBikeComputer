@@ -1076,11 +1076,12 @@ impl App {
         crate::trip::trip_day(self.trips(), route)
     }
 
-    /// The loaded trip day's place in its trip, for the trip data fields.
-    fn trip_leg(&self) -> Option<crate::trip::TripLeg> {
+    /// The length of the loaded trip day's later days, or `None` when the loaded route is not a
+    /// trip day.
+    fn trip_later_m(&self) -> Option<u32> {
         let day = self.loaded_trip_day()?;
         let trip = self.trips().iter().find(|t| t.key == day.key())?;
-        Some(trip.leg(u16::from(day.day_index()), self.catalogs.routes()))
+        Some(trip.later_m(u16::from(day.day_index()), self.catalogs.routes()))
     }
 
     /// The arrival view's level: from arrival at the end of the loaded route until the rider rides
@@ -2925,7 +2926,7 @@ impl App {
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
         let visit_target = self.assistant_visit_target();
-        let trip = self.trip_leg();
+        let trip_later_m = self.trip_later_m();
 
         let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
             if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
@@ -2990,7 +2991,7 @@ impl App {
             trips: catalogs.trips(),
             trip_progress: metadata.progress(),
             day_join: metadata.day_join(),
-            trip,
+            trip_later_m,
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),

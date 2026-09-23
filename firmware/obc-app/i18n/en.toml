@@ -168,7 +168,6 @@ ride_time = "Ride time"
 time_to_go = "Time to go"
 eta = "ETA"
 trip_to_go = "Trip to go"
-trip_day = "Trip day"
 clock = "Clock"
 next_waypoint = "Next waypoint"
 waypoint_list = "Waypoint list"
@@ -190,9 +189,7 @@ ride = "RIDE"
 # (`h TO GO`), the same caption idiom `dist_to_go` uses (`km TO GO`) — a single tile fits 8 Label
 # glyphs, so a spelled-out caption would be ellipsised.
 eta = "ETA"
-# The trip-to-go caption without a trip. With a trip, the caption is the unit and the climb.
-trip = " TRIP"
-day = "DAY"
+trip = "TRIP "
 time = "TIME"
 next_wpt = "NEXT WPT"
 waypoints = "WAYPOINTS"
