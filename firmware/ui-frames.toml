@@ -1057,7 +1057,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "map-effort"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p"
+script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
 
@@ -1182,7 +1182,7 @@ args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 name = "statistics-effort-graphs"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 
@@ -1191,7 +1191,7 @@ args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "
 name = "statistics-effort-graphs"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 langs = ["de", "fr", "es"]
@@ -2400,7 +2400,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "dark-map-effort"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p"
+script = "{theme_dark} {start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
 
@@ -2408,7 +2408,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--senso
 name = "dark-statistics-sensors"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p b"
+script = "{theme_dark} {start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 
@@ -2416,7 +2416,7 @@ args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 name = "dark-statistics-effort-graphs"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p b"
+script = "{theme_dark} {start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 
