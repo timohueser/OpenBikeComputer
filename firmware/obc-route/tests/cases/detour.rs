@@ -643,6 +643,57 @@ fn an_approach_splice_is_the_leg_then_the_whole_route() {
     assert!((99..=101).contains(&first.ele), "the leg lands on the start's height (got {} m)", first.ele);
 }
 
+/// A day route over `points`, with a height that rises one metre per point from 100 m.
+fn day_route(name: &str, points: &[(i32, i32)]) -> Vec<u8> {
+    let mut g = String::from("<gpx><trk><trkseg>\n");
+    for (i, (lon, lat)) in points.iter().enumerate() {
+        let (lat, lon) = (*lat as f64 * 1e-6, *lon as f64 * 1e-6);
+        g.push_str(&format!("  <trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>{}.0</ele></trkpt>\n", 100 + i));
+    }
+    g.push_str("</trkseg></trk></gpx>");
+    convert(name, &g)
+}
+
+fn length_m(obcr: &[u8]) -> u32 {
+    RouteIndex::read(&SliceSource(obcr)).unwrap().total_distance_m
+}
+
+/// After an early stop, the next day is the rest of the day before and then the next day. Day 2
+/// ends at a camp off the line, and Day 3 comes back from it: the join skips both spurs.
+#[test]
+fn a_rest_splice_is_the_rest_of_the_day_then_the_next_day_without_the_spur() {
+    let camp = (road_at(6).0, BASE.1 + STREET_OFF);
+    let line2: Vec<_> = (0..=6).map(road_at).collect();
+    let line3: Vec<_> = (6..=SEGS).map(road_at).collect();
+    let day2 = day_route("Day 2 Ulrichen", &[&line2[..], &[camp]].concat());
+    let mut day3 = day_route("Day 3 Brig", &[&[camp][..], &line3].concat());
+    day3[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Gravel as u8;
+    let leave_m = length_m(&day_route("line", &line2));
+    let join_m = length_m(&day3) - length_m(&day_route("line", &line3));
+    let from_m = 700;
+
+    let (src2, src3) = (SliceSource(&day2[..]), SliceSource(&day3[..]));
+    let (idx2, idx3) = (RouteIndex::read(&src2).unwrap(), RouteIndex::read(&src3).unwrap());
+    let (rest, next) = (RouteReader::new(&idx2, &src2), RouteReader::new(&idx3, &src3));
+    let mut sink = VecSink::default();
+    let leg = Leg::Rest { from_m, to_m: leave_m };
+    let stats = splice_detour(leg, &next, &rest, 0, join_m, 0, true, &mut sink).unwrap();
+
+    let src = SliceSource(&sink.buf[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let joined = RouteReader::new(&idx, &src);
+    assert_eq!(idx.name(), "Day 3 Brig", "the ride takes the day's name");
+    assert_eq!(idx.bike_type(), BikeType::Gravel, "and the day's bike type");
+    assert!(!idx.has_unresolved_avoidance(), "a rest avoids nothing");
+    let want = (leave_m - from_m) + (next.total_distance_m - join_m);
+    assert!(stats.total_distance_m.abs_diff(want) <= 4, "length {} is rest plus day, {want}", stats.total_distance_m);
+    let (start, stop) = (joined.position_at(0).unwrap(), rest.position_at(from_m).unwrap());
+    assert!(obc_map_scene::ground_dist_m((start.lon, start.lat), (stop.lon, stop.lat)) < 2.0, "it starts at the stop");
+    let points = route_points(&sink.buf);
+    assert!(points.iter().all(|p| p.lat == BASE.1), "the route stays on the line and skips the camp");
+    assert_eq!(points[1].ele, 103, "the stored heights stay as they are");
+}
+
 fn trim_run(
     orig_obcr: &[u8],
     detour_obcr: &[u8],
