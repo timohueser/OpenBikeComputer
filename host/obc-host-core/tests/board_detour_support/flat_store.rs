@@ -217,6 +217,21 @@ pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
     app.set_routes_with_ids(&summaries, &ids);
 }
 
+pub fn remove_routes_batch(
+    store: &FlatStore<FlatCard>,
+    ids: impl Iterator<Item = u64>,
+) -> heapless::Vec<Mutation, { obc_storage::flat::store::MAX_BATCH }> {
+    let mut batch = heapless::Vec::new();
+    for id in ids {
+        if let Some(meta) =
+            store.entries().find(|m| m.kind == ObjectKind::Route && m.id.0 == id && m.flags.is_route_head())
+        {
+            let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
+        }
+    }
+    batch
+}
+
 pub fn fingerprint_reads() -> u32 {
     FINGERPRINT_READS.get()
 }

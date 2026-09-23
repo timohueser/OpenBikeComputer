@@ -255,6 +255,37 @@ impl crate::App {
     pub fn request_destination(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {
         self.request_place_route(target, name, true)
     }
+    /// The frozen inputs of a place route from where the rider is now. An active route makes it
+    /// a visit unless `destination` asks for the plain route to the place.
+    pub(crate) fn place_review_context(
+        &self,
+        map: obc_formats::obcr::RouteSourceKey,
+        destination: bool,
+    ) -> Result<ReviewContext, VisitUnavailable> {
+        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
+        if scope.store.bytes() != map.store {
+            return Err(VisitUnavailable::SourceChanged);
+        }
+        let fix = self.fresh_position().ok_or(VisitUnavailable::NoFix)?;
+        let original = self.active_route_index().and_then(|i| self.route_ids().get(i)).copied();
+        if original.is_some() && (!self.navigator.route_match.started() || self.navigator.following.off_route) {
+            return Err(VisitUnavailable::Unmatched);
+        }
+        let progress = self.navigator.following.progress_m;
+        Ok(ReviewContext {
+            purpose: if original.is_some() && !destination { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
+            map,
+            store: scope.store,
+            original: None,
+            origin: (fix.lon, fix.lat),
+            progress_m: progress,
+            occurrence: self.navigator.route_match.occurrence(),
+            required_anchors_m: [progress; 3],
+            profile: self.settings().bike_type,
+            facts_policy: super::REVIEW_FACTS_POLICY,
+            unresolved_avoidance: false,
+        })
+    }
     fn request_place_route(
         &mut self,
         target: VisitTarget,
@@ -270,38 +301,17 @@ impl crate::App {
         {
             return Err(VisitUnavailable::Busy);
         }
-        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
-        if scope.store.bytes() != target.map.store {
-            return Err(VisitUnavailable::SourceChanged);
-        }
-        let fix = self.fresh_position().ok_or(VisitUnavailable::NoFix)?;
+        let context = self.place_review_context(target.map, destination)?;
         if !target.metadata.source.is_valid() || target.metadata.approach.is_some_and(|a| !a.source.is_valid()) {
             return Err(VisitUnavailable::NoMappedAccess);
         }
-        let profile = self.settings().bike_type;
-        let approach = target.approach(target.map, profile).ok_or(VisitUnavailable::Profile)?;
-        let original = self.active_route_index().and_then(|i| self.route_ids().get(i)).copied();
-        if original.is_some() && (!self.navigator.route_match.started() || self.navigator.following.off_route) {
-            return Err(VisitUnavailable::Unmatched);
-        }
-        let progress = self.navigator.following.progress_m;
-        let context = ReviewContext {
-            purpose: if original.is_some() && !destination { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
-            map: target.map,
-            store: scope.store,
-            original: None,
-            origin: (fix.lon, fix.lat),
-            progress_m: progress,
-            occurrence: self.navigator.route_match.occurrence(),
-            required_anchors_m: [progress; 3],
-            profile,
-            facts_policy: super::REVIEW_FACTS_POLICY,
-            unresolved_avoidance: false,
-        };
+        let approach = target.approach(target.map, context.profile).ok_or(VisitUnavailable::Profile)?;
+        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
         self.navigator.visit = VisitState::new();
         self.navigator.visit.target = Some((target.metadata, target.display));
         self.navigator.visit.catalog_revision = scope.revision.raw();
-        self.navigator.visit.requested_route = original.unwrap_or(0);
+        self.navigator.visit.requested_route =
+            self.active_route_index().and_then(|i| self.route_ids().get(i)).copied().unwrap_or(0);
         self.navigator.visit.needs_bind = true;
         self.plan_assistant(crate::NavRequest::new(context.origin, approach, name), context);
         if self.assistant_review_status() == ReviewStatus::Planning {
@@ -310,6 +320,7 @@ impl crate::App {
             Err(VisitUnavailable::Busy)
         }
     }
+
     pub(crate) fn request_easier(
         &mut self,
         map: obc_formats::obcr::RouteSourceKey,
@@ -379,6 +390,16 @@ impl crate::App {
     /// Place queries supply a map-bound approach or an ordinary coordinate destination.
     /// No active route means a direct destination, with no implied continuation.
     pub fn plan_visit(&mut self, target: VisitTarget, mut context: ReviewContext) -> bool {
+        context.purpose = if context.original.is_some() { ReviewPurpose::Visit } else { ReviewPurpose::Destination };
+        context.required_anchors_m = [context.progress_m; 3];
+        self.plan_place(target, context, context.origin, false)
+    }
+    /// Measure a candidate's legs for the Find list: from `from` on the route to the place and,
+    /// for a visit, back again. No route is composed and no source is bound.
+    pub fn measure_visit(&mut self, target: VisitTarget, context: ReviewContext, from: (i32, i32)) -> bool {
+        self.plan_place(target, context, from, true)
+    }
+    fn plan_place(&mut self, target: VisitTarget, context: ReviewContext, from: (i32, i32), measure: bool) -> bool {
         if self.navigator.active_visit()
             || self.navigator.review.status == ReviewStatus::Unresolved
             || self.navigator.review.status == ReviewStatus::Planning
@@ -391,11 +412,10 @@ impl crate::App {
         let Some(approach) = target.approach(context.map, context.profile) else {
             return false;
         };
-        context.purpose = if context.original.is_some() { ReviewPurpose::Visit } else { ReviewPurpose::Destination };
-        context.required_anchors_m = [context.progress_m; 3];
         self.navigator.visit = VisitState::new();
         self.navigator.visit.target = Some((target.metadata, target.display));
-        self.plan_assistant(crate::NavRequest::new(context.origin, approach, "Visit"), context);
+        self.navigator.request_review(crate::NavRequest::new(from, approach, "Visit"), context, measure);
+        self.ui.map_dirty = true;
         self.assistant_review_status() == ReviewStatus::Planning
     }
     pub fn assistant_visit_target(&self) -> Option<VisitTarget> {

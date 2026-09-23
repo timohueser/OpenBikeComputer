@@ -393,10 +393,12 @@ impl CoreHarness {
             CatalogEffect::RemoveObject { kind, .. } => Some(kind),
             CatalogEffect::ReadCatalog { .. }
             | CatalogEffect::CleanupRoute { .. }
-            | CatalogEffect::RemoveReview { .. } => None,
+            | CatalogEffect::RemoveOrphanReviews { .. } => None,
         };
         match effect {
-            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
+            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                panic!("unexpected cleanup")
+            }
             CatalogEffect::ReadCatalog { token } => {
                 // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
                 // a refresh re-feeds exactly what the store now holds, and the outcome reports only
@@ -888,7 +890,9 @@ impl CoreHarness {
         for _ in 0..4 {
             let effect = self.next_catalog_effect();
             match effect {
-                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                    panic!("unexpected cleanup")
+                }
                 CatalogEffect::RemoveObject { .. } => return effect,
                 CatalogEffect::ReadCatalog { .. } => {
                     self.answer_catalog(effect);

@@ -647,6 +647,11 @@ impl NavPlanner {
         self.settles
     }
 
+    /// The graph coordinate the goal snapped to, once the search has run.
+    pub fn goal(&self) -> (i32, i32) {
+        self.goal_c
+    }
+
     /// The [`NAV_EPSILON_LADDER`] rung the search is on. After a terminal outcome it reads the
     /// rung the plan ended on.
     pub fn epsilon_used(&self) -> (u32, u32) {

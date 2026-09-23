@@ -82,12 +82,12 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!(seen, 48);
     let facts = RouteReader::new(&index, &emitted).interval_facts(0, stats.total_distance_m).unwrap();
     assert_eq!((facts.ascent_m, facts.descent_m), (stats.total_ascent_m, stats.total_descent_m));
-    let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+    let costs = VisitCosts::read(&emitted, [0, 111], None).unwrap();
     assert_eq!(costs.arrival_ascent_m, 20);
     assert!(costs.arrival_elevation_complete && costs.complete_elevation);
     let mut corrupt = sink.buf.clone();
     corrupt[40..44].copy_from_slice(&999u32.to_le_bytes());
-    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111]).is_err());
+    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111], None).is_err());
 }
 #[test]
 fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
@@ -312,7 +312,7 @@ fn quantized_return_seam_is_coalesced_but_a_disconnected_tail_is_rejected() {
         let visit = reader.visit_descriptor().unwrap().unwrap();
         assert_eq!(visit.original_anchors_m, [0; 3]);
         assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
-        let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+        let costs = VisitCosts::read(&emitted, [0, 111], None).unwrap();
         assert!(costs.arrival_elevation_complete);
         assert!(!costs.complete_elevation);
     }
@@ -356,7 +356,7 @@ fn imported_route_connections_are_retained_measured_and_bounded() {
             assert_eq!(descriptor.original_anchors_m, [0, anchor, anchor]);
             assert!((anchor + 443..=anchor + 445).contains(&descriptor.accepted_anchors_m[2]));
             assert!((777..=779).contains(&composed.total_distance_m), "composed {} m", composed.total_distance_m);
-            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]], None).unwrap();
             assert!(!costs.arrival_elevation_complete && !costs.complete_elevation);
         }
     }

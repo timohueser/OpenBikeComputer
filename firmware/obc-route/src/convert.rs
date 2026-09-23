@@ -42,6 +42,8 @@ pub struct RouteStats {
     pub waypoint_count: u16,
     /// At least one retained point has a valid elevation; zero metres is valid.
     pub has_elevation: bool,
+    /// Every pushed point carried a valid, complete elevation.
+    pub elevation_complete: bool,
 }
 
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route `name` and
@@ -174,6 +176,8 @@ pub(crate) struct ObcrEmitter {
     /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
     ele_keep_m: i16,
     surface: u8,
+    /// A pushed point had no elevation, or an incomplete one.
+    ele_gap: bool,
     flags: u8,
     bike: BikeType,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
@@ -195,6 +199,7 @@ impl ObcrEmitter {
             addr_of_mut!((*slot).pending).write(None);
             addr_of_mut!((*slot).ele_keep_m).write(1);
             addr_of_mut!((*slot).surface).write(0);
+            addr_of_mut!((*slot).ele_gap).write(false);
             addr_of_mut!((*slot).flags).write(0);
             addr_of_mut!((*slot).bike).write(BikeType::default());
             addr_of_mut!((*slot).map_source).write(None);
@@ -209,6 +214,7 @@ impl ObcrEmitter {
                 pending: _,
                 ele_keep_m: _,
                 surface: _,
+                ele_gap: _,
                 flags: _,
                 bike: _,
                 map_source: _,
@@ -234,6 +240,7 @@ impl ObcrEmitter {
             pending: None,
             ele_keep_m: 1,
             surface: 0,
+            ele_gap: false,
             flags: 0,
             bike: BikeType::default(),
             map_source: None,
@@ -295,6 +302,7 @@ impl ObcrEmitter {
         }
         self.prev = Some((lon, lat));
         self.bbox = Some(grow(self.bbox, lon, lat));
+        self.ele_gap |= ele == i16::MIN || self.surface & 8 != 0;
 
         let c = Cand {
             lon,
@@ -376,6 +384,7 @@ impl ObcrEmitter {
             max_ele_m: if self.enc.min_ele <= self.enc.max_ele { self.enc.max_ele } else { 0 },
             waypoint_count: wps.len() as u16,
             has_elevation: self.enc.min_ele <= self.enc.max_ele,
+            elevation_complete: !self.ele_gap,
         };
 
         let mut header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);

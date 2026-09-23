@@ -60,6 +60,31 @@ impl VisitTarget {
     }
 }
 
+/// Distance and climb of one planned leg, from the planner's own stats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegCost {
+    pub distance_m: u32,
+    pub ascent_m: u32,
+    pub elevation_complete: bool,
+}
+impl From<RouteStats> for LegCost {
+    fn from(stats: RouteStats) -> Self {
+        Self {
+            distance_m: stats.total_distance_m,
+            ascent_m: stats.total_ascent_m,
+            elevation_complete: stats.elevation_complete,
+        }
+    }
+}
+
+/// The measured legs of one candidate: out to the stop, and back to the route when there is one.
+/// Nothing is composed or published for these figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisitLegs {
+    pub outbound: LegCost,
+    pub back: Option<LegCost>,
+}
+
 /// Elevation confidence and arrival ascent measured from the same complete candidate geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisitCosts {
@@ -68,11 +93,20 @@ pub struct VisitCosts {
     pub unknown_m: u32,
     pub arrival_elevation_complete: bool,
     pub complete_elevation: bool,
+    /// The two excursion legs' distance and ascent, for a candidate that has them.
+    pub legs_m: Option<u32>,
+    pub legs_ascent_m: Option<u32>,
 }
 impl VisitCosts {
+    /// `arrival` is the span to the stop; `legs` the span the excursion adds to the original.
+    ///
     /// Must stay `#[inline(never)]`: the bounded chunk buffer lives in this popped frame.
     #[inline(never)]
-    pub fn read(src: &dyn obc_formats::io::ByteSource, arrival: [u32; 2]) -> Result<Self, Error> {
+    pub fn read(
+        src: &dyn obc_formats::io::ByteSource,
+        arrival: [u32; 2],
+        legs: Option<[u32; 2]>,
+    ) -> Result<Self, Error> {
         use crate::facts::FactsAccumulator;
         use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
         use obc_formats::obcr::CHUNK_META_LEN;
@@ -81,11 +115,13 @@ impl VisitCosts {
             || h.chunk_count as usize > crate::MAX_ROUTE_CHUNKS
             || arrival[0] > arrival[1]
             || arrival[1] > h.total_distance_m
+            || legs.is_some_and(|l| l[0] > l[1] || l[1] > h.total_distance_m)
         {
             return Err(Error::BadOffset);
         }
         let mut full = FactsAccumulator::new(0, None, 0, h.total_distance_m);
         let mut to_stop = FactsAccumulator::new(0, None, arrival[0], arrival[1]);
+        let mut excursion = legs.map(|l| FactsAccumulator::new(0, None, l[0], l[1]));
         let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         let mut previous = None;
         let mut count = 0u32;
@@ -111,12 +147,16 @@ impl VisitCosts {
             for &point in points.iter().skip(usize::from(k > 0)) {
                 full.push(point, &mut |_| {});
                 to_stop.push(point, &mut |_| {});
+                if let Some(excursion) = excursion.as_mut() {
+                    excursion.push(point, &mut |_| {});
+                }
                 count += 1;
                 previous = Some((point.lon, point.lat, point.ele));
             }
         }
         let full = full.finish(h.total_distance_m)?;
         let to_stop = to_stop.finish(h.total_distance_m)?;
+        let excursion = excursion.map(|e| e.finish(h.total_distance_m)).transpose()?;
         if count != h.point_count || full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
             return Err(Error::BadOffset);
         }
@@ -126,6 +166,8 @@ impl VisitCosts {
             unknown_m: full.surface_m[0],
             arrival_elevation_complete: to_stop.complete_elevation(),
             complete_elevation: full.complete_elevation(),
+            legs_m: excursion.as_ref().map(|e| e.distance_m()),
+            legs_ascent_m: excursion.filter(|e| e.complete_elevation()).map(|e| e.ascent_m),
         })
     }
 }
@@ -438,6 +480,19 @@ impl VisitBuilder {
     }
     pub fn arrival_m(&self) -> u32 {
         self.descriptor.map_or(0, |descriptor| descriptor.accepted_anchors_m[1])
+    }
+    /// The most bytes the next composition step appends, so a staged sink can take several
+    /// steps per flush. A chunk step can close one encoder chunk and open the next.
+    pub fn step_bound(&self) -> usize {
+        const CHUNK: usize = 2 * MAX_POINTS_PER_CHUNK * obc_formats::obcr::POINT_RECORD_LEN;
+        match self.phase {
+            Phase::Begin | Phase::BeginPrefix => HEADER_FULL_LEN,
+            Phase::Prefix | Phase::Outbound | Phase::Return | Phase::Tail => CHUNK,
+            Phase::Geometry => CHUNK + crate::MAX_ROUTE_CHUNKS * obc_formats::obcr::CHUNK_META_LEN,
+            Phase::Waypoints => WAYPOINT_LEN,
+            Phase::Descriptor => obc_formats::obcr::VISIT_DESCRIPTOR_LEN,
+            Phase::Done | Phase::RejectedGeometry => 0,
+        }
     }
     pub fn original_anchors(&self) -> [u32; 3] {
         self.anchors
