@@ -358,11 +358,12 @@ on_phone = "am Handy"
 title = "FAHRTEN"
 no_rides = "Keine Fahrten"
 no_rides_sub = "Fahrt aufzeichnen"
-not_synced = "nicht sync."
+of = "von"
+days = "Tagen"
+trip = "Reise"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "sync."
 delete_ride = "Fahrt löschen"
 
 # --- Route menu screen ---

@@ -309,7 +309,7 @@ impl CorpusState {
         let trip_stage_ids = vec![10, 20];
         let mut app = App::new_idle(AppState::new(8_330_000, 46_570_000, 1.0));
         app.set_routes_with_ids(&routes, &route_ids);
-        app.set_rides(&rides);
+        app.set_rides(&rides, &[]);
         app.set_trips(&[TripInput { id: TRIP, key: 1, name: "Alps", start_date: 0, stage_ids: &trip_stage_ids }]);
         Self {
             app,
@@ -365,7 +365,7 @@ impl CorpusState {
     }
 
     pub fn feed_rides(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
-        self.app.set_rides(&self.rides);
+        self.app.set_rides(&self.rides, &[]);
         trace.record_feeder(FeederCall::new(FeederKind::RideCatalog, key, self.rides.len()));
     }
 
@@ -387,7 +387,7 @@ impl CorpusState {
     fn reset_to_riding_map(&mut self) {
         self.app = App::new_idle(AppState::new(7_500_000, 43_500_000, 1.0));
         self.app.set_routes_with_ids(&self.routes, &self.route_ids);
-        self.app.set_rides(&self.rides);
+        self.app.set_rides(&self.rides, &[]);
         self.app.set_map_nav_graph(true);
         self.app.state.user_fix = Some(road_fix(0.0));
         self.mount_store(); // the ride these gestures start needs somewhere to go
@@ -919,6 +919,7 @@ pub fn ride(name: &str) -> RideSummary {
         climb_m: 10,
         synced: false,
         synced_at_utc: 0,
+        ..Default::default()
     };
     summary.name.push_str(name).unwrap();
     summary

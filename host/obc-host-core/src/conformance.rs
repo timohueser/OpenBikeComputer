@@ -193,6 +193,7 @@ mod tests {
                 climb_m: 1,
                 synced: false,
                 synced_at_utc: 0,
+                ..Default::default()
             },
             RideSummary {
                 name: Default::default(),
@@ -202,6 +203,7 @@ mod tests {
                 climb_m: 2,
                 synced: true,
                 synced_at_utc: 0,
+                ..Default::default()
             },
         ];
         let mut repo = MemRideStore::new(rides);
