@@ -23,6 +23,16 @@ impl RouteIndex {
     }
 }
 
+/// Where the rider stood on the loaded route when the ride ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RideEnd {
+    /// The route's catalog index.
+    pub(crate) route: usize,
+    pub(crate) progress_m: u32,
+    /// The rider had arrived at the route's end.
+    pub(crate) arrived: bool,
+}
+
 /// A seam re-anchor waiting for the next tick with matching route geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SeamRequest {
@@ -216,6 +226,7 @@ impl NavigatorMachine {
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.
     pub(crate) fn reset_ride(&mut self) {
         self.route_match.reset();
+        self.ride_end = None;
         self.following.seam_request = self
             .join_m
             .take()
@@ -227,6 +238,20 @@ impl NavigatorMachine {
         self.following.active_climb = None;
         self.following.next_waypoint = None;
         self.following.arrival = Arrival::Riding;
+    }
+
+    /// Keep where the rider stands on the loaded route, just before the ride ends and unloads it.
+    pub(crate) fn note_ride_end(&mut self) {
+        self.ride_end = self.following.active_route.map(|route| RideEnd {
+            route,
+            progress_m: self.following.progress_m,
+            arrived: self.following.arrival.arrived(),
+        });
+    }
+
+    /// Where the rider stood when the ride ended, once.
+    pub(crate) fn take_ride_end(&mut self) -> Option<RideEnd> {
+        self.ride_end.take()
     }
 
     /// Discard the matcher's forward-only floor when a ride session opens or closes.
@@ -288,7 +313,7 @@ impl NavigatorMachine {
     /// arrive while one is under way.
     pub(crate) fn match_fix(&mut self, fix: obc_ports::Fix, route: &RouteReader) {
         let at = (fix.lon, fix.lat);
-        if self.following.arrival != Arrival::Riding {
+        if self.following.arrival.arrived() {
             self.following.arrival = self.following.arrival.on_fix(at, route, &self.following);
             return;
         }
@@ -298,8 +323,8 @@ impl NavigatorMachine {
         if self.active_visit() {
             return;
         }
-        self.following.arrival = Arrival::Riding.on_fix(at, route, &self.following);
-        if self.following.arrival != Arrival::Riding {
+        self.following.arrival = self.following.arrival.on_fix(at, route, &self.following);
+        if self.following.arrival.arrived() {
             let end = obc_route::Match { progress_m: route.total_distance_m, off_route: false, dist_m: 0 };
             self.following.apply_match(end);
         }
@@ -458,6 +483,7 @@ impl NavigatorMachine {
         // nothing resets. When it vanished, navigation unloads and the per-route state goes with it.
         let old_active = self.following.active_route;
         self.following.active_route = old_active.and_then(remap);
+        self.ride_end = self.ride_end.and_then(|end| Some(RideEnd { route: remap(end.route)?, ..end }));
         // A queued seam re-anchor follows the same durable route identity as `active_route`, or is
         // cancelled if that route vanished. So does Navigator's undelivered detour request.
         self.following.remap_seam(remap);

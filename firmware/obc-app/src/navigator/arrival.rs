@@ -9,10 +9,19 @@ use obc_route::RouteReader;
 
 use super::RouteState;
 
-/// Metres from the end, along the route and in a straight line to its last point, at which the
-/// rider has arrived. Along the route is what keeps the start of a loop from counting as its end:
-/// the matcher's forward bias holds progress near 0 there.
+/// Metres before the end, along the route, at which an on-route rider has arrived. Along the route
+/// is what keeps the start of a loop from counting as its end: the matcher's forward bias holds
+/// progress near 0 there.
 pub(crate) const ROUTE_ARRIVAL_M: u32 = 30;
+
+/// Straight-line metres from the route's last point at which a fix arrives whatever the matcher
+/// says. Sparse fixes can step over the last [`ROUTE_ARRIVAL_M`], and a fix past the end is off the
+/// route: 10 s between fixes at 25 km/h is 69 m, and the GPS error adds about 15 m.
+pub(crate) const END_RADIUS_M: f32 = 85.0;
+
+/// The last matched progress must be this close to the end, and past half the route, for
+/// [`END_RADIUS_M`] to count. So the start of a short loop or an out-and-back does not arrive.
+const NEAR_END_M: u32 = 1_000;
 
 /// Straight-line metres from the route's last point at which a rider who arrived has ridden on.
 pub(crate) const RIDDEN_ON_M: f32 = 150.0;
@@ -21,31 +30,42 @@ pub(crate) const RIDDEN_ON_M: f32 = 150.0;
 pub(crate) enum Arrival {
     #[default]
     Riding,
-    /// At the route's last point, `(lon, lat)` µdeg.
+    /// The last matched progress is near the end, whose last point, `(lon, lat)` µdeg, is decoded
+    /// once.
+    Near { end: (i32, i32) },
+    /// At the route's last point.
     Arrived { end: (i32, i32) },
     /// Arrived, then rode on past [`RIDDEN_ON_M`].
     RodeOn,
 }
 
 impl Arrival {
-    /// The state after one fresh fix, `(lon, lat)` µdeg. While riding, `following` is the match of
-    /// this fix.
+    /// The state after one fresh fix, `(lon, lat)` µdeg. Before arrival, `following` is the match
+    /// of this fix; its progress is the last matched one while the fix is off the route.
     pub(super) fn on_fix(self, fix: (i32, i32), route: &RouteReader, following: &RouteState) -> Arrival {
-        match self {
-            Arrival::Riding => {
-                let total = route.total_distance_m;
-                if following.off_route || total.saturating_sub(following.progress_m) > ROUTE_ARRIVAL_M {
-                    return self;
-                }
-                // One chunk decode, and only within the last metres of the route.
-                match route.position_at(total).map(|end| (end.lon, end.lat)) {
-                    Some(end) if ground_dist_m(fix, end) <= ROUTE_ARRIVAL_M as f32 => Arrival::Arrived { end },
-                    _ => self,
-                }
-            }
-            Arrival::Arrived { end } if ground_dist_m(fix, end) >= RIDDEN_ON_M => Arrival::RodeOn,
-            _ => self,
+        let total = route.total_distance_m;
+        let to_go = total.saturating_sub(following.progress_m);
+        let end = match self {
+            Arrival::Arrived { end } if ground_dist_m(fix, end) >= RIDDEN_ON_M => return Arrival::RodeOn,
+            Arrival::Arrived { .. } | Arrival::RodeOn => return self,
+            _ if to_go > NEAR_END_M.min(total / 2) => return self,
+            Arrival::Near { end } => end,
+            Arrival::Riding => match route.position_at(total) {
+                Some(end) => (end.lon, end.lat),
+                None => return self,
+            },
+        };
+        let on_end = !following.off_route && to_go <= ROUTE_ARRIVAL_M;
+        if on_end || ground_dist_m(fix, end) <= END_RADIUS_M {
+            Arrival::Arrived { end }
+        } else {
+            Arrival::Near { end }
         }
+    }
+
+    /// Arrived at the end, whether or not the rider rode on after.
+    pub(crate) fn arrived(self) -> bool {
+        matches!(self, Arrival::Arrived { .. } | Arrival::RodeOn)
     }
 }
 
@@ -59,19 +79,24 @@ mod tests {
     use crate::activity::Mode;
     use crate::device_core::{DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs};
     use crate::harness::support::{mount_store, quiet_pass, VecSink, EVERY_CAPABILITY};
-    use crate::screen::{self, MapScreen, RouteSwapScreen, Screen, Transition, WarningFlags};
+    use crate::screen::{self, ArrivalView, MapScreen, RouteSwapScreen, Screen, Transition, WarningFlags};
+    use crate::trip::TripInput;
     use crate::{App, AppState, Gesture, RecorderIntent};
 
     /// A route through `points`, `(lon, lat)` in thousandths of a degree (about 111 m at 0°).
-    fn route(points: &[(i32, i32)]) -> Vec<u8> {
+    fn route_named(name: &str, points: &[(i32, i32)]) -> Vec<u8> {
         let mut gpx = String::from("<gpx><trk><trkseg>");
         for (lon, lat) in points {
             gpx += &format!("<trkpt lon=\"{}\" lat=\"{}\"/>", *lon as f64 / 1000.0, *lat as f64 / 1000.0);
         }
         gpx += "</trkseg></trk></gpx>";
         let mut sink = VecSink::default();
-        obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), "Day 2 Ulrichen", &mut sink).unwrap();
+        obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), name, &mut sink).unwrap();
         sink.0
+    }
+
+    fn route(points: &[(i32, i32)]) -> Vec<u8> {
+        route_named("Day 2 Ulrichen", points)
     }
 
     /// Ten points north along lon 0: 1.1 km, ending at lat 10 000 µdeg.
@@ -86,21 +111,59 @@ mod tests {
         }
     }
 
-    /// One pass at `ms`, with a fresh fix at `(lon, lat)` µdeg when given.
-    fn pass(app: &mut App, route: &RouteReader, ms: u32, fix: Option<(i32, i32)>, gestures: &[Gesture]) {
+    std::thread_local! {
+        /// The executor's answers to the last pass, delivered on the next one.
+        static OUTCOMES: core::cell::RefCell<OutcomeSlots> = const { core::cell::RefCell::new(OutcomeSlots::new()) };
+    }
+
+    /// One pass at `ms`, with a fresh fix at `(lon, lat)` µdeg when given. It answers the store work
+    /// the pass asks for, as an executor would, and returns a trip progress record it writes.
+    fn pass(
+        app: &mut App,
+        route: &RouteReader,
+        ms: u32,
+        fix: Option<(i32, i32)>,
+        gestures: &[Gesture],
+    ) -> Option<crate::trip::TripProgress> {
+        use crate::catalog_state::{CatalogEffect, CatalogOutcome};
+        use crate::device_core::{Revision, StoreIdentity, StoreRevision};
+        use crate::metadata::{MetadataEffect, MetadataOutcome};
+        use crate::recorder::{CheckpointStatus, RecorderEffect, RecorderOutcome};
+
+        let scope = StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) };
         let mut loc = Once(fix.map(|(lon, lat)| Fix::at(lat, lon)));
         let mut facts = ExternalFacts::NONE;
-        app.run_pass(PassInputs {
-            now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
-            gestures,
-            sensors: Sensors::new(&mut loc),
-            route: Some(route),
-            support: EVERY_CAPABILITY,
-            outcomes: &mut OutcomeSlots::new(),
-            facts: &mut facts,
-            derived: DerivedInputs::NONE,
-            targets: DerivedTargets::NONE,
-        });
+        facts.note_store_revision(scope);
+        OUTCOMES.with_borrow_mut(|outcomes| {
+            let mut plan = app.run_pass(PassInputs {
+                now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+                gestures,
+                sensors: Sensors::new(&mut loc),
+                route: Some(route),
+                support: EVERY_CAPABILITY,
+                outcomes,
+                facts: &mut facts,
+                derived: DerivedInputs::NONE,
+                targets: DerivedTargets::NONE,
+            });
+            if let Some(CatalogEffect::ReadCatalog { token }) = plan.effects.catalog.take() {
+                let _ = outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token, scope: Some(scope) });
+            }
+            let answer = match plan.effects.recorder.take() {
+                Some(RecorderEffect::Append { token, samples }) => Some(RecorderOutcome::Appended { token, samples }),
+                Some(RecorderEffect::Checkpoint { token }) => {
+                    Some(RecorderOutcome::Checkpointed { token, status: CheckpointStatus::Durable })
+                }
+                Some(RecorderEffect::Finalize { token }) => Some(RecorderOutcome::Finalized { token, ride: 77 }),
+                _ => None,
+            };
+            if let Some(answer) = answer {
+                let _ = outcomes.recorder.try_put(answer);
+            }
+            let Some(MetadataEffect::WriteProgress { token, .. }) = plan.effects.metadata.take() else { return None };
+            let _ = outcomes.metadata.try_put(MetadataOutcome::ProgressWritten { token });
+            app.trip_progress_payload(token).cloned()
+        })
     }
 
     /// Ride through `fixes`, one pass each, then one more pass with no fix.
@@ -120,16 +183,26 @@ mod tests {
 
     /// Recording on catalog route 0 of `routes`, on the Map.
     fn recording(routes: &[(obc_route::RouteSummary, u64)]) -> App {
-        recording_trip(routes, &[])
+        recording_on(routes, &[], 0, |_| {})
     }
 
-    fn recording_trip(routes: &[(obc_route::RouteSummary, u64)], trips: &[crate::trip::TripInput]) -> App {
+    /// Recording on catalog route `first`, with `trips`; `prepare` runs before the ride starts.
+    fn recording_on(
+        routes: &[(obc_route::RouteSummary, u64)],
+        trips: &[TripInput],
+        first: usize,
+        prepare: impl FnOnce(&mut App),
+    ) -> App {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let (summaries, ids): (Vec<_>, Vec<_>) = routes.iter().cloned().unzip();
         app.set_routes_with_ids(&summaries, &ids);
         app.set_trips(trips);
         mount_store(&mut app);
-        app.activate_route(0);
+        let store = crate::device_core::StoreIdentity::new(1);
+        let scope = crate::device_core::StoreRevision { store, revision: crate::device_core::Revision::new(1) };
+        app.catalogs.loaded_scope = Some(scope);
+        app.activate_route(first);
+        prepare(&mut app);
         app.recorder.request(RecorderIntent::Start);
         quiet_pass(&mut app, 1);
         assert!(app.recorder.recording());
@@ -142,8 +215,15 @@ mod tests {
         app.navigator.route_state().arrival
     }
 
+    fn view(app: &App) -> Option<ArrivalView> {
+        match app.top_screen() {
+            Screen::Arrival(view) => Some(view.view()),
+            _ => None,
+        }
+    }
+
     fn view_up(app: &App) -> bool {
-        matches!(app.top_screen(), Screen::Arrival(_))
+        view(app).is_some()
     }
 
     #[test]
@@ -154,8 +234,8 @@ mod tests {
         let route = RouteReader::new(&index, &src);
         let mut app = recording(&[(route.summary(), 7)]);
 
-        ride(&mut app, &route, &[(0, 0), (0, 4_000), (0, 8_000), (0, 9_500)]);
-        assert_eq!(arrival(&app), Arrival::Riding, "55 m before the end");
+        ride(&mut app, &route, &[(0, 0), (0, 4_000), (0, 8_000), (0, 9_000)]);
+        assert!(!arrival(&app).arrived(), "111 m before the end");
         assert!(!view_up(&app));
 
         ride(&mut app, &route, &[(0, 9_800)]);
@@ -171,35 +251,42 @@ mod tests {
     }
 
     #[test]
-    fn a_loop_arrives_at_its_end_and_not_at_its_start() {
-        let bytes = route(&[(0, 0), (0, 4), (4, 4), (4, 0), (0, 0)]);
-        let src = SliceSource(&bytes);
-        let index = RouteIndex::read(&src).unwrap();
-        let route = RouteReader::new(&index, &src);
-        let mut app = recording(&[(route.summary(), 7)]);
-
-        ride(&mut app, &route, &[(0, 100)]);
-        assert_eq!(arrival(&app), Arrival::Riding, "11 m from the end point, at the start");
-        ride(&mut app, &route, &[(0, 2_000), (0, 4_000), (2_000, 4_000), (4_000, 4_000), (4_000, 2_000), (4_000, 0)]);
-        ride(&mut app, &route, &[(2_000, 0), (100, 0)]);
-        assert!(matches!(arrival(&app), Arrival::Arrived { .. }));
-        assert!(view_up(&app));
-    }
-
-    #[test]
-    fn a_fix_near_the_end_but_off_the_route_does_not_arrive() {
+    fn sparse_fixes_that_step_over_the_end_arrive() {
         let bytes = line();
         let src = SliceSource(&bytes);
         let index = RouteIndex::read(&src).unwrap();
         let route = RouteReader::new(&index, &src);
         let mut app = recording(&[(route.summary(), 7)]);
 
-        // 28 m east of the end point: within the arrival radius, but off the route.
-        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_000), (250, 10_000)]);
-        assert!(app.navigator.route_state().off_route);
-        assert_eq!(arrival(&app), Arrival::Riding);
-        ride(&mut app, &route, &[(0, 10_000)]);
+        // 10 s apart at 25 km/h: 122 m before the end, then 70 m past it and off the route.
+        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 8_900)]);
+        assert!(!arrival(&app).arrived());
+        ride(&mut app, &route, &[(0, 10_630)]);
         assert!(matches!(arrival(&app), Arrival::Arrived { .. }));
+        assert!(!app.navigator.route_state().off_route);
+        assert!(view_up(&app));
+    }
+
+    #[test]
+    fn a_loop_and_an_out_and_back_arrive_at_their_end_and_not_at_their_start() {
+        let paths: [&[(i32, i32)]; 2] = [&[(0, 0), (0, 4), (4, 4), (4, 0), (0, 0)], &[(0, 0), (0, 4), (0, 0)]];
+        let rides: [&[(i32, i32)]; 2] = [
+            &[(0, 2_000), (0, 4_000), (2_000, 4_000), (4_000, 4_000), (4_000, 2_000), (4_000, 0), (2_000, 0), (100, 0)],
+            &[(0, 2_000), (0, 4_000), (0, 3_000), (0, 2_000), (0, 1_000), (0, 100)],
+        ];
+        for (path, fixes) in paths.into_iter().zip(rides) {
+            let bytes = route(path);
+            let src = SliceSource(&bytes);
+            let index = RouteIndex::read(&src).unwrap();
+            let route = RouteReader::new(&index, &src);
+            let mut app = recording(&[(route.summary(), 7)]);
+
+            ride(&mut app, &route, &[(0, 100)]);
+            assert!(!arrival(&app).arrived(), "11 m from the end point, at the start");
+            ride(&mut app, &route, fixes);
+            assert!(matches!(arrival(&app), Arrival::Arrived { .. }), "{path:?}");
+            assert!(view_up(&app));
+        }
     }
 
     #[test]
@@ -226,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_riding_closes_the_view_for_good() {
+    fn keep_riding_closes_the_view_for_good_across_a_pause() {
         let bytes = line();
         let src = SliceSource(&bytes);
         let index = RouteIndex::read(&src).unwrap();
@@ -238,6 +325,13 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Map(_)));
         ride(&mut app, &route, &[(0, 10_000), (0, 10_300)]);
         assert!(!view_up(&app), "the rider is still at the end");
+
+        press(&mut app, &route, &[Gesture::Press]);
+        assert!(matches!(app.top_screen(), Screen::RideControl(_)), "paused");
+        press(&mut app, &route, &[Gesture::Press]);
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "resumed");
+        ride(&mut app, &route, &[(0, 10_000)]);
+        assert!(!view_up(&app), "a pause does not bring the view back");
     }
 
     #[test]
@@ -268,16 +362,94 @@ mod tests {
         let src = SliceSource(&bytes);
         let index = RouteIndex::read(&src).unwrap();
         let route = RouteReader::new(&index, &src);
-        let stages = [7, 8];
-        let trip = crate::trip::TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &stages };
-        let mut app = recording_trip(&[(route.summary(), 7), (route.summary(), 8)], &[trip]);
+        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
+        let mut app = recording_on(&[(route.summary(), 7), (route.summary(), 8)], &[trip], 0, |_| {});
 
         ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
-        assert!(view_up(&app));
+        assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next: Some(1) }));
         press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
         assert_eq!(app.active_route_index(), Some(1), "Day 2 is loaded");
         assert!(matches!(app.top_screen(), Screen::Map(_)));
         assert!(app.recorder.recording());
         assert_eq!(app.ride_stats().trip.map(|day| day.day_index()), Some(0), "the ride keeps its day");
+    }
+
+    /// Run passes until the store has saved the ride, and return the trip progress it writes.
+    fn save(app: &mut App, route: &RouteReader) -> crate::trip::TripProgress {
+        (0..40)
+            .find_map(|_| {
+                let ms = app.ui.now_ms + 1_000;
+                pass(app, route, ms, None, &[])
+            })
+            .expect("the Finish writes the trip progress")
+    }
+
+    #[test]
+    fn finish_at_the_end_of_the_day_ride_on_reached_finishes_that_day() {
+        let bytes = line();
+        let src = SliceSource(&bytes);
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8, 9] };
+        let routes = [(route.summary(), 7), (route.summary(), 8), (route.summary(), 9)];
+        let mut app = recording_on(&routes, &[trip], 0, |_| {});
+
+        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+        press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
+        assert_eq!(app.active_route_index(), Some(1), "Day 2 is loaded");
+        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+        assert_eq!(view(&app), Some(ArrivalView { route: 1, day: Some(1), next: Some(2) }));
+        press(&mut app, &route, &[Gesture::Hold]);
+
+        let written = save(&mut app, &route);
+        assert_eq!((written.day, written.day_route.id, written.last_finished), (1, 8, Some(1)), "Day 2 is done");
+        assert_eq!(written.metres, route.total_distance_m);
+        let trip = &app.trips()[0];
+        assert_eq!(trip.next_day(Some(&written)), Some(2), "Day 3 is next");
+    }
+
+    #[test]
+    fn across_a_transfer_the_view_offers_no_ride_on() {
+        let bytes = line();
+        let src = SliceSource(&bytes);
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        // Day 2 starts 3.3 km north of where Day 1 ends.
+        let far = route_named("Day 2 Brig", &[(0, 40), (0, 45)]);
+        let far_src = SliceSource(&far);
+        let far_index = RouteIndex::read(&far_src).unwrap();
+        let far_route = RouteReader::new(&far_index, &far_src);
+        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
+        let mut app = recording_on(&[(route.summary(), 7), (far_route.summary(), 8)], &[trip], 0, |_| {});
+
+        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+        assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next: None }));
+        press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
+        assert_eq!(app.active_route_index(), Some(0), "the second row is Keep riding");
+        assert!(matches!(app.top_screen(), Screen::Map(_)));
+    }
+
+    #[test]
+    fn a_derived_day_is_named_for_its_own_route() {
+        let day = line();
+        let rest = route_named("From stop · Day 2 Ulrichen", &(0..=10).map(|k| (0, k)).collect::<Vec<_>>());
+        let src = SliceSource(&rest);
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        let day_src = SliceSource(&day);
+        let day_index = RouteIndex::read(&day_src).unwrap();
+        let day_route = RouteReader::new(&day_index, &day_src);
+        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
+        let routes = [(day_route.summary(), 7), (day_route.summary(), 8), (route.summary(), 9)];
+        let mut app = recording_on(&routes, &[trip], 2, |app| {
+            let lead = super::super::LeadIn { splice: 9, route: 8, lead_m: 500, join_m: 0, rest_from_m: Some(0) };
+            app.navigator.lead_in = Some(lead);
+        });
+
+        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+        assert_eq!(view(&app), Some(ArrivalView { route: 1, day: Some(1), next: None }), "named for Day 2's route");
+        assert_eq!(obc_route::original_name("From stop · Day 2 Ulrichen"), "Day 2 Ulrichen");
+        assert_eq!(obc_route::original_name("Detour · Grimsel"), "Grimsel");
+        assert_eq!(obc_route::original_name("To start · Grimsel"), "Grimsel");
     }
 }
