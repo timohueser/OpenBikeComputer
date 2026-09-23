@@ -22,6 +22,16 @@ public enum OBCFormat {
         return "\(Int((meters / 10).rounded()) * 10) m"
     }
 
+    /// "+0.8 km" or "−0.2 km": what a change adds to a distance, always in kilometres.
+    public static func extraDistance(meters: Double, locale: Locale = .current) -> String {
+        let formatter = numberFormatter(locale: locale)
+        formatter.minimumFractionDigits = 1
+        formatter.maximumFractionDigits = 1
+        let km = abs(meters) / 1000
+        let value = formatter.string(from: NSNumber(value: km)) ?? "\(km)"
+        return "\(meters < -50 ? "−" : "+")\(value) km"
+    }
+
     /// "on the line" or "430 m off the line": how far a stop is from a trip line.
     public static func stopOffset(meters: Double, locale: Locale = .current) -> String {
         meters <= Trip.onLineMeters ? "on the line" : "\(shortDistance(meters: meters, locale: locale)) off the line"

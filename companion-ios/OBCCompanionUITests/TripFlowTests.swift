@@ -226,10 +226,21 @@ final class TripFlowTests: XCTestCase {
         XCTAssertEqual(endHere.label, "End Day 1 here", "the nearest end that may move is Day 1's")
         snap(app, "DE-edit-callout")
         endHere.tap()
+
+        // The camp is off the line: the day reaches it out and back.
+        let outAndBack = app.buttons["offLine.outAndBack"]
+        XCTAssertTrue(outAndBack.waitForExistence(timeout: 5), "a stop off the line offers the two modes")
+        let routed = NSPredicate(format: "isEnabled == true")
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: routed, object: outAndBack)], timeout: 10), .completed,
+            "the mock router routes the spur")
+        snap(app, "DE-edit-off-line")
+        outAndBack.tap()
         let named = NSPredicate(format: "label CONTAINS %@", "Devil's Lake State Park Campgrounds")
         XCTAssertEqual(
             XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: named, object: day1)], timeout: 5), .completed,
             "the day takes the stop's name: \(day1.label)")
+        XCTAssertTrue(day1.label.contains("out and back"), "the day row says how it reaches the stop: \(day1.label)")
         snap(app, "DE-edit-at-stop")
 
         // Discard: the standard alert, then the trip page with its two days as saved.

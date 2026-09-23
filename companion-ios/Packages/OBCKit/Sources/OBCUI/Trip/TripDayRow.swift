@@ -1,23 +1,26 @@
 import SwiftUI
 
 /// One day on the trip page: the day colour, the day number from its position, the day's name,
-/// and the date and stat line.
+/// the date and stat line, and a note under it.
 public struct TripDayRow: View {
     let color: Color
     let number: Int
     let title: String?
     let detail: String
+    /// How the day reaches its stop or rides a gap: "out and back +0.8 km".
+    let note: String?
     let showsDivider: Bool
     let action: () -> Void
 
     public init(
-        color: Color, number: Int, title: String?, detail: String, showsDivider: Bool = true,
+        color: Color, number: Int, title: String?, detail: String, note: String? = nil, showsDivider: Bool = true,
         action: @escaping () -> Void = {}
     ) {
         self.color = color
         self.number = number
         self.title = title
         self.detail = detail
+        self.note = note
         self.showsDivider = showsDivider
         self.action = action
     }
@@ -43,6 +46,12 @@ public struct TripDayRow: View {
                         .foregroundStyle(OBCTheme.inkFaint)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                    if let note {
+                        Text(note)
+                            .font(.obcMono(size: 12))
+                            .foregroundStyle(OBCTheme.forest)
+                            .lineLimit(1)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
