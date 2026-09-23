@@ -404,7 +404,7 @@ public struct ImportLandingView: View {
                 onPair: onPair,
                 importAccessory: importAccessory
             )
-            .navigationTitle("Imported route")
+            .navigationTitle(model.landingTitle)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
