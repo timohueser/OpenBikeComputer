@@ -163,6 +163,19 @@ public struct OBCComponentGallery: View {
                         OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.wood, label: "Firmware update", comingSoon: true)
                         OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.warning, label: "Forget this device", showsDivider: false) { confirmShown = true }
                     }
+                    OBCGroupedSection {
+                        OBCListRow(label: "Add to Alps traverse", detail: "Becomes Day 4", showsChevron: true) {}
+                        OBCBikeTypeRow(type: .gravel) { _ in }
+                    }
+                }
+
+                section("Trip Day Rows") {
+                    OBCGroupedSection {
+                        TripDayRow(color: OBCTheme.stageColor(index: 0), number: 1, title: "Furka Pass",
+                                   detail: "Mon 29 Sep · 82.0 km · 1,640 m ↑ · 5h 10m")
+                        TripDayRow(color: OBCTheme.stageColor(index: 1), number: 2, title: nil,
+                                   detail: "Tue 30 Sep · 74.0 km · 2,100 m ↑ · 5h 0m", showsDivider: false)
+                    }
                 }
 
                 section("Connected Services") {

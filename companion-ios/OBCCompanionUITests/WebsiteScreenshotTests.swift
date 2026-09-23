@@ -130,14 +130,7 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.staticTexts["Grimsel Pass"].waitForExistence(timeout: 10),
             "the imported route landing did not appear"
         )
-        let upload = app.buttons["detail.upload"]
-        XCTAssertTrue(upload.exists, "the imported route upload action is missing")
-        // The call to action names the device, off the same unwaited name the top bar uses, so
-        // this page has the identity race too, although it never shows the top bar.
-        let named = expectation(
-            for: NSPredicate(format: "label == %@", "Upload to Trailhead"), evaluatedWith: upload
-        )
-        wait(for: [named], timeout: 15)
+        XCTAssertTrue(app.buttons["import.newRoute"].exists, "the import rows are missing")
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the imported route's hero did not draw"
@@ -149,6 +142,18 @@ final class WebsiteScreenshotTests: XCTestCase {
         )
         capture(app, name: "route-imported")
 
+        // Land it as a route, then upload it from its route page.
+        app.buttons["import.newRoute"].tap()
+        let savedRoute = app.staticTexts["Grimsel Pass"].firstMatch
+        XCTAssertTrue(savedRoute.waitForExistence(timeout: 10), "the imported route did not land in the list")
+        savedRoute.tap()
+        let upload = app.buttons["detail.upload"]
+        XCTAssertTrue(upload.waitForExistence(timeout: 10), "the route upload action is missing")
+        // The call to action names the device, off the same unwaited name the top bar uses.
+        let named = expectation(
+            for: NSPredicate(format: "label == %@", "Upload to Trailhead"), evaluatedWith: upload
+        )
+        wait(for: [named], timeout: 15)
         upload.tap()
 
         XCTAssertTrue(
@@ -171,9 +176,10 @@ final class WebsiteScreenshotTests: XCTestCase {
             "the upload sheet dismissed itself during the capture — the confirmation hold is broken"
         )
         app.buttons["upload.done"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(
             app.otherElements["main.screen"].waitForExistence(timeout: 10),
-            "the completed import did not return to the main screen"
+            "the route page did not return to the main screen"
         )
 
         // Pull the fixture ride off the same mock device, then open it through the ordinary

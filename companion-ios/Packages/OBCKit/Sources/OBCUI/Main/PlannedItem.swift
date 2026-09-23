@@ -1,11 +1,11 @@
 import Foundation
 import OBCDomain
 
-/// One row of the Planned tab: a trip card or a loose route card. A route filed in a
-/// trip never appears at the top level; it lives on its trip's page, so a route id is
-/// in exactly one place. Trips and loose routes interleave by `addedAt`, newest first.
+/// One row of the Planned tab: a trip card or a route card. A route added to a trip becomes part
+/// of the trip's line, so it is no longer a route. Trips and routes interleave by `addedAt`,
+/// newest first.
 public enum PlannedItem: Identifiable, Equatable, Sendable {
-    case trip(TripRecord)
+    case trip(Trip)
     /// A top-level route with its library `addedAt`, which the summary does not carry,
     /// for the interleave sort.
     case route(RouteSummary, addedAt: Date)
@@ -31,20 +31,11 @@ public enum PlannedItem: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// Partition the library into the interleaved top-level list: trips as trip cards,
-    /// routes not filed in any trip as loose cards, newest first. Pure over its inputs,
-    /// so the list model can be tested without a screen.
-    ///
-    /// `trips` are assumed already dangling-pruned, so a stage id that is not in
-    /// `records` is filed-and-hidden, never shown twice.
+    /// The interleaved top-level list: trip cards and route cards, newest first.
     public static func partition(
-        records: [PlannedRouteRecord], trips: [TripRecord]
+        records: [PlannedRouteRecord], trips: [Trip]
     ) -> [PlannedItem] {
-        let filed = Set(trips.flatMap(\.stageIDs))
-        var items: [PlannedItem] = trips.map(PlannedItem.trip)
-        for record in records where !filed.contains(record.id) {
-            items.append(.route(record.summary, addedAt: record.addedAt))
-        }
+        let items = trips.map(PlannedItem.trip) + records.map { .route($0.summary, addedAt: $0.addedAt) }
         return items.sorted { $0.sortDate > $1.sortDate }
     }
 }

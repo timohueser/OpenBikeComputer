@@ -62,7 +62,8 @@ struct OBCCompanionApp: App {
                 updateNotifier: SystemUpdateNotifier(),
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
-                syncTiming: Self.launchSyncTiming())
+                syncTiming: Self.launchSyncTiming(),
+                placeName: Self.makePlaceName())
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -98,6 +99,14 @@ struct OBCCompanionApp: App {
         }
         #endif
         return LastBikeTypeStore()
+    }
+
+    /// Day ends take their locality's name. Mock runs stay offline and deterministic.
+    static func makePlaceName() -> (@Sendable (Coordinate) async -> String?)? {
+        #if DEBUG
+        if mockControl != nil { return nil }
+        #endif
+        return PlaceNames.locality(at:)
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {

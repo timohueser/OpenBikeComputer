@@ -46,6 +46,8 @@ public struct OBCListRow<Trailing: View>: View {
     let icon: String?
     let iconColor: Color
     let label: String
+    /// A second line under the label, in the mono stat face.
+    let detail: String?
     /// Overrides the label's ink, for the warning-red "Forget device" row.
     let labelColor: Color?
     let value: String?
@@ -60,6 +62,7 @@ public struct OBCListRow<Trailing: View>: View {
         icon: String? = nil,
         iconColor: Color = OBCTheme.forest,
         label: String,
+        detail: String? = nil,
         labelColor: Color? = nil,
         value: String? = nil,
         showsChevron: Bool = false,
@@ -72,6 +75,7 @@ public struct OBCListRow<Trailing: View>: View {
         self.icon = icon
         self.iconColor = iconColor
         self.label = label
+        self.detail = detail
         self.labelColor = labelColor
         self.value = value
         self.showsChevron = showsChevron
@@ -87,11 +91,18 @@ public struct OBCListRow<Trailing: View>: View {
             if let icon {
                 OBCIconTile(systemImage: icon, color: iconColor)
             }
-            Text(label)
-                .font(.system(size: 16))
-                .foregroundStyle(
-                    disabled || comingSoon ? OBCTheme.inkFaint : labelColor ?? OBCTheme.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.system(size: 16))
+                    .foregroundStyle(
+                        disabled || comingSoon ? OBCTheme.inkFaint : labelColor ?? OBCTheme.ink)
+                if let detail {
+                    Text(detail)
+                        .font(.obcMono(size: 12))
+                        .foregroundStyle(OBCTheme.inkFaint)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if comingSoon {
                 OBCSoonBadge()
             }
@@ -132,6 +143,7 @@ public extension OBCListRow where Trailing == EmptyView {
         icon: String? = nil,
         iconColor: Color = OBCTheme.forest,
         label: String,
+        detail: String? = nil,
         labelColor: Color? = nil,
         value: String? = nil,
         showsChevron: Bool = false,
@@ -144,6 +156,7 @@ public extension OBCListRow where Trailing == EmptyView {
             icon: icon,
             iconColor: iconColor,
             label: label,
+            detail: detail,
             labelColor: labelColor,
             value: value,
             showsChevron: showsChevron,
