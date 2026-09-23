@@ -440,6 +440,10 @@ pub(crate) enum Request {
         id: ObjectId,
         kind: obc_app::catalog_state::CatalogObjectKind,
     },
+    /// Remove candidate route heads in one commit; see `route_cleanup::candidate_removals`.
+    RemoveRoutes {
+        heads: heapless::Vec<(ObjectId, Revision), MAX_BATCH>,
+    },
     /// One atomic batch. Replies with the commit sequence.
     Commit {
         batch: heapless::Vec<Mutation, MAX_BATCH>,
@@ -1081,6 +1085,13 @@ fn serve(
             Ok(Outcome::CleanedRoute(Some(id)))
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveRoutes { heads } => {
+            let batch = obc_storage::flat::route_cleanup::candidate_removals(store, &heads)?;
+            if !batch.is_empty() {
+                store.commit(&batch)?;
+            }
+            Ok(Outcome::Done)
+        }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
@@ -1452,6 +1463,21 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
+/// The current heads of up to one commit's worth of `ids`, in one catalog walk.
+pub(crate) fn route_heads(
+    store: &FlatStore<FlatCard>,
+    ids: impl Iterator<Item = u64>,
+) -> heapless::Vec<(ObjectId, Revision), MAX_BATCH> {
+    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = ids.collect();
+    let mut heads = heapless::Vec::new();
+    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+        if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
+            break;
+        }
+    }
+    heads
+}
+
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,
@@ -1659,24 +1685,6 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
                 }
                 if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
-                    let source = obc_formats::obcr::RouteSourceKey {
-                        store: store.store_id().0,
-                        object: entry.id.0,
-                        revision: entry.revision.0,
-                    };
-                    if app.can_reconcile_reviews()
-                        && !app.retains_find_review(source)
-                        && store
-                            .with_source(entry.id, Some(entry.revision), |bytes| {
-                                obc_route::RouteObjectInfo::read(bytes).is_ok_and(|info| {
-                                    info.assistant_candidate
-                                        && info.attribution_map.is_some_and(|map| map.store == source.store)
-                                })
-                            })
-                            .unwrap_or(false)
-                    {
-                        app.reconcile_review_candidate(source);
-                    }
                 }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);

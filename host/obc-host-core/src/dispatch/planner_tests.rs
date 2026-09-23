@@ -348,7 +348,7 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     let offset_reader = obc_route::RouteReader::new(&offset_index, &offset_visit);
     assert_eq!(offset_reader.preview_polyline::<64>().last(), Some(&(530_000, 500_100)));
     let stop = offset_reader.visit_descriptor().unwrap().unwrap().accepted_anchors_m[1];
-    assert!(!VisitCosts::read(&offset_visit, [0, stop]).unwrap().complete_elevation);
+    assert!(!VisitCosts::read(&offset_visit, [0, stop], None).unwrap().complete_elevation);
     let mut visit = crate::nav_visit::VisitPlan::start(context, Some(target), &original).unwrap();
     let stats = run(&mut visit, &original);
     assert_eq!(visit.searches(), 2);
@@ -357,7 +357,7 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     let index = obc_route::RouteIndex::read(&source).unwrap();
     let route = obc_route::RouteReader::new(&index, &source);
     let descriptor = route.visit_descriptor().unwrap().unwrap();
-    let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+    let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]], None).unwrap();
     assert!(!costs.complete_elevation && !costs.arrival_elevation_complete);
     assert_eq!(route.total_distance_m, stats.total_distance_m);
     assert!(stats.total_distance_m > original.total_distance_m);

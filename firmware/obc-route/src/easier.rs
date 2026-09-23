@@ -129,7 +129,7 @@ impl Costs {
         elev: &mut dyn ElevationSource,
     ) -> Result<(crate::visit::VisitCosts, Self), Error> {
         let mut stations = Stations::new(elev);
-        let facts = crate::visit::VisitCosts::read_with(src, arrival, |p| stations.push((p.lon, p.lat)))?;
+        let facts = crate::visit::VisitCosts::read_with(src, arrival, None, |p| stations.push((p.lon, p.lat)))?;
         let (distance_m, ascent_m, elevation_complete) = stations.finish();
         let costs = Self {
             distance_m,

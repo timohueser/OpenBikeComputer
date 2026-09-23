@@ -484,9 +484,8 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
-    RemoveReview {
-        source: obc_formats::obcr::RouteSourceKey,
-    },
+    /// Remove unaccepted Assistant candidates no review holds, a commit's batch at a time.
+    RemoveOrphanReviews,
     CleanupRoutes {
         before_utc: u32,
         store: crate::device_core::StoreIdentity,
@@ -516,9 +515,8 @@ pub enum CatalogObjectKind {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
-    RemoveReview {
+    RemoveOrphanReviews {
         token: OperationToken<CatalogTag>,
-        source: obc_formats::obcr::RouteSourceKey,
     },
     CleanupRoute {
         token: OperationToken<CatalogTag>,
@@ -542,7 +540,7 @@ impl CatalogEffect {
             CatalogEffect::CleanupRoute { token, .. }
             | CatalogEffect::ReadCatalog { token }
             | CatalogEffect::RemoveObject { token, .. }
-            | CatalogEffect::RemoveReview { token, .. } => *token,
+            | CatalogEffect::RemoveOrphanReviews { token } => *token,
         }
     }
 }
@@ -561,9 +559,8 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
-    ReviewRemoved {
+    OrphanReviewsRemoved {
         token: OperationToken<CatalogTag>,
-        source: obc_formats::obcr::RouteSourceKey,
     },
     CleanupFinished {
         token: OperationToken<CatalogTag>,
@@ -597,7 +594,7 @@ impl CatalogOutcome {
             CatalogOutcome::CleanupFinished { token }
             | CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
-            | CatalogOutcome::ReviewRemoved { token, .. }
+            | CatalogOutcome::OrphanReviewsRemoved { token }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
         }
@@ -665,6 +662,11 @@ impl CatalogState {
         self.ops.is_current(outcome.token())
     }
 
+    /// The last catalog read failed and its retry waits.
+    pub(crate) fn read_deferred(&self) -> bool {
+        self.read_retry_at.is_some()
+    }
+
     pub(crate) fn defer_read(&mut self, now_ms: u32) {
         self.read_retry_at = Some(now_ms.wrapping_add(30_000));
     }
@@ -686,7 +688,7 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
-            CatalogIntent::RemoveReview { source } => CatalogEffect::RemoveReview { token: self.ops.issue(), source },
+            CatalogIntent::RemoveOrphanReviews => CatalogEffect::RemoveOrphanReviews { token: self.ops.issue() },
             CatalogIntent::CleanupRoutes { before_utc, store } => {
                 self.cleanup_running = true;
                 self.pending = Some(intent);
@@ -781,7 +783,7 @@ impl CatalogState {
                 self.read_retry_at = None;
                 None
             }
-            CatalogOutcome::ReviewRemoved { .. } => {
+            CatalogOutcome::OrphanReviewsRemoved { .. } => {
                 self.loaded_scope = None;
                 self.refresh_owed = true;
                 None
@@ -1099,7 +1101,9 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                    panic!("unexpected cleanup")
+                }
                 CatalogEffect::RemoveObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
