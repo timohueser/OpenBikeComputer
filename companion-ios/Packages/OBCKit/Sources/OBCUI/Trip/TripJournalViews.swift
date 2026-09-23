@@ -254,3 +254,15 @@ public struct TripJournalDayEntry: View {
         .accessibilityLabel("\(photos.count) photos")
     }
 }
+
+extension MultiTrackPreviewView.Stage {
+    /// A run of the trip review's line: ridden solid in the trail colour, planned dashed, a
+    /// transfer dotted.
+    init(_ run: LineRun) {
+        switch run.kind {
+        case .ridden: self.init(coordinates: run.coordinates, color: OBCTheme.trackStroke)
+        case .planned: self.init(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [5, 4])
+        case .transfer: self.init(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [1.5, 4])
+        }
+    }
+}

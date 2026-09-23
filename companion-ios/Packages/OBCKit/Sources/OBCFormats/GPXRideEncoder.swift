@@ -65,7 +65,7 @@ public struct GPXRideEncoder: RideFileEncoder {
     }
 
     /// Fixed 6-decimal degrees on the v3 sample's microdegree grid, matching firmware.
-    private static func degrees(_ value: Double) -> String {
+    static func degrees(_ value: Double) -> String {
         let scaled = Int64((value * 1e6).rounded())
         let sign = scaled < 0 ? "-" : ""
         let magnitude = scaled.magnitude
@@ -81,13 +81,13 @@ public struct GPXRideEncoder: RideFileEncoder {
     }
 
     /// Elevation to the whole metre, the ride object's own quantum.
-    private static func ele(_ value: Double) -> String {
+    static func ele(_ value: Double) -> String {
         String(Int(value.rounded()))
     }
 
     /// Minimal XML escaping for the track name: the same three entities the firmware
     /// escapes.
-    private static func escaped(_ text: String) -> String {
+    static func escaped(_ text: String) -> String {
         var out = ""
         out.reserveCapacity(text.count)
         for ch in text {

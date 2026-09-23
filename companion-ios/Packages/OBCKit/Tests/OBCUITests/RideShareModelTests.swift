@@ -24,7 +24,7 @@ import OBCTransport
     private static func open(_ flow: ImportFlowModel) throws {
         flow.open(
             route: try #require(ride.plannedRoute()),
-            fileName: RideGPXFile.fileName(for: ride.summary.name),
+            fileName: GPXFile.fileName(for: ride.summary.name),
             fileData: Data(),
             source: .ride(ride.summary.date),
             bikeType: ride.summary.bikeType
@@ -61,20 +61,20 @@ import OBCTransport
     }
 
     @Test func gpxFileNameIsCleanedForTheFileSystem() {
-        #expect(RideGPXFile.fileName(for: "Furka: day 2/3") == "Furka- day 2-3.gpx")
-        #expect(RideGPXFile.fileName(for: " .hidden ") == "hidden.gpx")
-        #expect(RideGPXFile.fileName(for: "  ") == "Ride.gpx")
+        #expect(GPXFile.fileName(for: "Furka: day 2/3") == "Furka- day 2-3.gpx")
+        #expect(GPXFile.fileName(for: " .hidden ") == "hidden.gpx")
+        #expect(GPXFile.fileName(for: "  ") == "Ride.gpx")
     }
 
     /// A ride name has no length limit, but a file name has 255 bytes. The cut keeps whole
     /// characters, here four-byte emoji.
     @Test func gpxFileNameIsCutToTheFileSystemLimit() {
-        let long = RideGPXFile.fileName(for: String(repeating: "a", count: 300))
-        #expect(long == String(repeating: "a", count: RideGPXFile.maxBaseBytes) + ".gpx")
+        let long = GPXFile.fileName(for: String(repeating: "a", count: 300))
+        #expect(long == String(repeating: "a", count: GPXFile.maxBaseBytes) + ".gpx")
 
-        let emoji = RideGPXFile.fileName(for: String(repeating: "\u{1F6B2}", count: 300))
+        let emoji = GPXFile.fileName(for: String(repeating: "\u{1F6B2}", count: 300))
         #expect(emoji.hasSuffix(".gpx"))
-        #expect(emoji.utf8.count <= RideGPXFile.maxBaseBytes + 4)
+        #expect(emoji.utf8.count <= GPXFile.maxBaseBytes + 4)
         #expect(emoji.dropLast(4).allSatisfy { $0 == "\u{1F6B2}" })
     }
 }
