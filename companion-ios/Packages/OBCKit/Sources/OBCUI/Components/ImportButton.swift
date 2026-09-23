@@ -9,10 +9,10 @@ import UniformTypeIdentifiers
 /// dead click, and a share from another app arrives through `onOpenURL`.
 public struct OBCImportButton: View {
     let fileExtensions: Set<String>
-    let onPick: (URL) -> Void
+    let onPick: ([URL]) -> Void
     @State private var pickerShown = false
 
-    public init(fileExtensions: Set<String>, onPick: @escaping (URL) -> Void) {
+    public init(fileExtensions: Set<String>, onPick: @escaping ([URL]) -> Void) {
         self.fileExtensions = fileExtensions
         self.onPick = onPick
     }
@@ -39,9 +39,10 @@ public struct OBCImportButton: View {
         .accessibilityLabel("Import a route")
         .fileImporter(
             isPresented: $pickerShown,
-            allowedContentTypes: contentTypes
+            allowedContentTypes: contentTypes,
+            allowsMultipleSelection: true
         ) { result in
-            if case .success(let url) = result { onPick(url) }
+            if case .success(let urls) = result, !urls.isEmpty { onPick(urls) }
         }
     }
 }

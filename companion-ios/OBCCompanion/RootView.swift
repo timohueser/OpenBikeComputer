@@ -108,8 +108,8 @@ struct RootView: View {
                 MainScreenView(
                     model: mainModel,
                     importFileExtensions: importer.supportedFileExtensions,
-                    onImportFile: { url in
-                        Task { await importModel.openFile(at: url) }
+                    onImportFile: { urls in
+                        Task { await importModel.openFiles(at: urls) }
                     },
                     onSelectRoute: { route in
                         path.append(.route(id: route.id))
@@ -138,6 +138,9 @@ struct RootView: View {
         // the import cover and its alert must present over the pairing flow too.
         .fullScreenCover(item: $importModel.pendingImport) { pending in
             importLanding(for: pending)
+        }
+        .fullScreenCover(item: $importModel.pendingJoin) { join in
+            joinSheet(for: join)
         }
         // The share sheet can hand over anything; say what we accept.
         .alert("Couldn't read that file", isPresented: $importModel.importFailed) {
@@ -213,7 +216,8 @@ struct RootView: View {
         }
         // Share-sheet delivery: iOS hands route files here, the same path as a Files pick.
         .onOpenURL { url in
-            Task { await importModel.openFile(at: url) }
+            // A share of several files arrives one URL at a time; the model batches them.
+            importModel.receive(url)
         }
         // One shared online and offline signal for every basemap preview.
         .environment(\.obcIsOnline, reachability.isOnline)
@@ -292,6 +296,30 @@ struct RootView: View {
                 launchModel.startPairing()
             },
             onCancel: { importModel.closeImport() }
+        )
+    }
+
+    /// Several files at once: one trip with a day per file, or each file as a route.
+    private func joinSheet(for join: PendingJoin) -> some View {
+        TripJoinSheet(
+            files: join.files.enumerated().map { index, file in
+                TripJoinSheet.File(id: index, fileName: file.fileName, points: file.route.points)
+            },
+            onMakeTrip: { ordered in
+                let tripID = mainModel.createTrip(name: "New trip", files: ordered.map(\.points))
+                importModel.closeJoin()
+                if let tripID { path = [.trip(id: tripID)] }
+            },
+            onNotNow: {
+                for file in join.files {
+                    let detail = RouteDetailModel(
+                        transport: transport, dressing: .imported(file.route, fileName: file.fileName),
+                        bikeType: file.bikeType
+                    ).makeDetail()
+                    mainModel.addImportedRoute(file.record(for: detail))
+                }
+                importModel.closeJoin()
+            }
         )
     }
 
