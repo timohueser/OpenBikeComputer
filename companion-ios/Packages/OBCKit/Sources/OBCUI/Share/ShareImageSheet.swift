@@ -150,7 +150,7 @@ public struct ShareImageSheet: View {
         let key = "\(size.width)x\(size.height)"
         var map = maps[key]
         if map == nil {
-            map = await ShareMapSnapshot.image(for: content.coordinates, size: size)
+            map = await ShareMapSnapshot.image(for: content.stages, size: size)
             maps[key] = map
         }
         guard !Task.isCancelled else { return }

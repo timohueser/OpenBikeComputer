@@ -109,7 +109,7 @@ struct RouteDetailScreen: View {
     private let tripPickerItems: [TripPickerItem]
     private let onAddToTrip: ((TripSelection) -> Void)?
     /// The share button, rides with a tracklog only.
-    private let rideShareMenu: RideShareMenu?
+    private let rideShareMenu: ShareMenu?
     /// A tracked ride's photos.
     @State private var photos: RidePhotosModel?
     /// A tracked ride's day note.
@@ -141,7 +141,7 @@ struct RouteDetailScreen: View {
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         onAddToTrip: ((TripSelection) -> Void)? = nil,
-        rideShareMenu: RideShareMenu? = nil,
+        rideShareMenu: ShareMenu? = nil,
         rideEditMenu: RideEditMenu? = nil,
         quietRows: AnyView? = nil
     ) {

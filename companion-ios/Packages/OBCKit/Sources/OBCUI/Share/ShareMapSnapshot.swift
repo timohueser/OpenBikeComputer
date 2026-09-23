@@ -3,13 +3,14 @@ import MapKit
 import OBCDomain
 import UIKit
 
-/// The share image's map: an Apple Maps snapshot with the track drawn on top. `ImageRenderer`
+/// The share image's map: an Apple Maps snapshot with the line drawn on top. `ImageRenderer`
 /// cannot draw a live `Map`, so the share image uses this still.
 enum ShareMapSnapshot {
-    /// A light-mode snapshot of `size` points at 3x that frames the track, or nil when there is
-    /// no network or no track. The snapshot carries the Apple Maps attribution, so the card must
+    /// A light-mode snapshot of `size` points at 3x that frames the line, or nil when there is
+    /// no network or no line. The snapshot carries the Apple Maps attribution, so the card must
     /// show the image uncropped.
-    static func image(for coordinates: [Coordinate], size: CGSize) async -> UIImage? {
+    static func image(for stages: [MultiTrackPreviewView.Stage], size: CGSize) async -> UIImage? {
+        let coordinates = stages.flatMap(\.coordinates)
         guard coordinates.count > 1 else { return nil }
         let options = MKMapSnapshotter.Options()
         options.region = MapGeometry.boundingRegion(for: coordinates, pad: 1.25)
@@ -18,29 +19,38 @@ enum ShareMapSnapshot {
         options.pointOfInterestFilter = .excludingAll
         options.traitCollection = UITraitCollection(userInterfaceStyle: .light)
         guard let snapshot = try? await MKMapSnapshotter(options: options).start() else { return nil }
-        return drawTrack(coordinates, on: snapshot)
+        return draw(stages, on: snapshot)
     }
 
-    /// The same halo, stroke and end dots as the live map's `TrackMapContent`.
-    private static func drawTrack(_ coordinates: [Coordinate], on snapshot: MKMapSnapshotter.Snapshot) -> UIImage {
+    /// The same halo, stroke and end dots as the live map's `TrackMapContent`. A dashed stage
+    /// draws thinner and without the halo, as on the trip review's map.
+    private static func draw(_ stages: [MultiTrackPreviewView.Stage], on snapshot: MKMapSnapshotter.Snapshot) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = snapshot.image.scale
         return UIGraphicsImageRenderer(size: snapshot.image.size, format: format).image { context in
             snapshot.image.draw(at: .zero)
-            let points = coordinates.map { snapshot.point(for: MapGeometry.clLocation($0)) }
-            let path = UIBezierPath()
-            path.move(to: points[0])
-            for point in points.dropFirst() { path.addLine(to: point) }
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            path.lineWidth = 7
-            UIColor(OBCTheme.trackHalo).setStroke()
-            path.stroke()
-            path.lineWidth = 3.4
-            UIColor(OBCTheme.trackStroke).setStroke()
-            path.stroke()
-            dot(at: points[0], fill: UIColor(OBCTheme.trackStart), in: context.cgContext)
-            dot(at: points[points.count - 1], fill: UIColor(OBCTheme.trackEnd), in: context.cgContext)
+            for stage in stages where stage.coordinates.count > 1 {
+                let points = stage.coordinates.map { snapshot.point(for: MapGeometry.clLocation($0)) }
+                let path = UIBezierPath()
+                path.move(to: points[0])
+                for point in points.dropFirst() { path.addLine(to: point) }
+                path.lineCapStyle = .round
+                path.lineJoinStyle = .round
+                if stage.dash.isEmpty {
+                    path.lineWidth = 7
+                    UIColor(OBCTheme.trackHalo).setStroke()
+                    path.stroke()
+                    path.lineWidth = 3.4
+                } else {
+                    path.lineWidth = 2.4
+                    path.setLineDash(stage.dash, count: stage.dash.count, phase: 0)
+                }
+                UIColor(stage.color).setStroke()
+                path.stroke()
+            }
+            let ends = stages.flatMap(\.coordinates).map { snapshot.point(for: MapGeometry.clLocation($0)) }
+            dot(at: ends[0], fill: UIColor(OBCTheme.trackStart), in: context.cgContext)
+            dot(at: ends[ends.count - 1], fill: UIColor(OBCTheme.trackEnd), in: context.cgContext)
         }
     }
 
