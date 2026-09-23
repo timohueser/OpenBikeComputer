@@ -20,6 +20,8 @@ public struct RouteDetailView: View {
     private let photos: RidePhotosModel?
     /// A tracked ride's day note.
     private let dayNote: DayNoteModel?
+    /// The quiet rows under a ride's stats line, such as a merge suggestion.
+    private let quietRows: AnyView?
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -41,7 +43,8 @@ public struct RouteDetailView: View {
         onPair: (() -> Void)? = nil,
         importAccessory: AnyView? = nil,
         photos: RidePhotosModel? = nil,
-        dayNote: DayNoteModel? = nil
+        dayNote: DayNoteModel? = nil,
+        quietRows: AnyView? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -55,6 +58,7 @@ public struct RouteDetailView: View {
         self.importAccessory = importAccessory
         self.photos = photos
         self.dayNote = dayNote
+        self.quietRows = quietRows
     }
 
     public var body: some View {
@@ -74,6 +78,7 @@ public struct RouteDetailView: View {
                 if let dayNote {
                     DayNoteOfferRow(model: dayNote, photos: photos)
                 }
+                quietRows
 
                 if !model.stats.isEmpty {
                     OBCStatStrip(model.stats)
