@@ -106,6 +106,14 @@ impl Climbs {
         self.0.iter().position(|c| progress_m >= c.start_m && progress_m <= c.end_m)
     }
 
+    /// The climb the rider is on at `start_m`, or else the first one that starts by `end_m`.
+    pub fn ahead(&self, start_m: u32, end_m: u32) -> Option<&ClimbSeg> {
+        self.0
+            .iter()
+            .find(|c| c.start_m <= start_m && c.end_m > start_m)
+            .or_else(|| self.0.iter().find(|c| c.start_m > start_m && c.start_m <= end_m))
+    }
+
     /// Insert `seg`, capping the list at [`MAX_CLIMBS`] by largest gain: once full, `seg`
     /// replaces the smallest-gain climb only if it is bigger. The caller re-sorts into route order
     /// afterwards, because this leaves the list unordered once the cap is hit.
