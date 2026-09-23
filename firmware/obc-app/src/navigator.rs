@@ -344,6 +344,7 @@ pub struct NavigatorMachine {
     climbs_route: Option<usize>,
     waypoints: Waypoints,
     waypoints_route: Option<usize>,
+    waypoints_from_m: u32,
     /// The loaded route whose bike type the settings do not have yet; see
     /// [`take_loaded_bike_type`](Self::take_loaded_bike_type).
     bike_type_owed: Option<usize>,
@@ -353,8 +354,6 @@ pub struct NavigatorMachine {
     /// The one route matcher and the active-route key it last locked to.
     route_match: RouteMatch,
     matched_route: Option<usize>,
-    /// Where the next fresh ride joins the active route, instead of where its first fix locks.
-    join_m: Option<u32>,
     /// Where the rider stood on the route at Finish, which unloads it before the store confirms the
     /// save.
     ride_end: Option<following::RideEnd>,
@@ -387,13 +386,13 @@ impl NavigatorMachine {
             climbs_route: None,
             waypoints: Waypoints::new(),
             waypoints_route: None,
+            waypoints_from_m: 0,
             bike_type_owed: None,
             climb_profile: ClimbProfile::new(),
             #[cfg(test)]
             climb_fill_count: 0,
             route_match: RouteMatch::new(),
             matched_route: None,
-            join_m: None,
             ride_end: None,
         }
     );
@@ -786,12 +785,12 @@ impl NavigatorMachine {
             climbs_route,
             waypoints,
             waypoints_route,
+            waypoints_from_m,
             bike_type_owed,
             climb_profile,
             climb_fill_count,
             route_match,
             matched_route,
-            join_m,
             ride_end,
         } = self;
         assert_eq!(review.status, ReviewStatus::Idle);
@@ -807,11 +806,12 @@ impl NavigatorMachine {
         assert!(profile.cols().iter().all(|&(lo, hi)| lo > hi), "empty profile bands");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
         assert!(waypoints.is_empty() && waypoints_route.is_none(), "no waypoints before a route loads");
+        assert_eq!(*waypoints_from_m, 0);
         assert!(bike_type_owed.is_none(), "no route has been loaded");
         assert!(climb_profile.cols().iter().all(|&column| column == 0), "the climb detail starts flat");
         assert_eq!(*climb_fill_count, 0, "the climb detail has not been filled");
         assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
-        assert!(join_m.is_none() && ride_end.is_none(), "no ride waits to join or has ended");
+        assert!(ride_end.is_none(), "no ride has ended");
     }
 }
 

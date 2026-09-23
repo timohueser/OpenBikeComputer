@@ -18,6 +18,7 @@ pub struct FlatRouteStore {
     nav_id: Option<ObjectId>,
     unaccepted: u64,
     internal_routes: u64,
+    temporary_routes: u64,
     /// The built trip day, as a catalog bit: at most one is set.
     built_day: u64,
 }
@@ -38,6 +39,7 @@ impl FlatRouteStore {
             nav_id: None,
             unaccepted: 0,
             internal_routes: 0,
+            temporary_routes: 0,
             built_day: 0,
         };
         for meta in repo.owner.entries()? {
@@ -87,7 +89,7 @@ impl FlatRouteStore {
     }
 
     fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, flags: u8) {
-        use obc_formats::obcr::{FLAG_ASSISTANT_CANDIDATE, FLAG_BUILT_DAY};
+        use obc_formats::obcr::{FLAG_ASSISTANT_CANDIDATE, FLAG_BUILT_DAY, FLAG_TEMPORARY};
         let candidate = flags & FLAG_ASSISTANT_CANDIDATE != 0;
         let built = flags & FLAG_BUILT_DAY != 0;
         let i = if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
@@ -103,8 +105,12 @@ impl FlatRouteStore {
         };
         if i < 64 {
             self.internal_routes &= !(1 << i);
+            self.temporary_routes &= !(1 << i);
+            if obc_formats::obcr::disposable_navigation(flags) {
+                self.temporary_routes |= 1 << i;
+            }
             self.built_day &= !(1 << i);
-            if candidate || built {
+            if candidate || built || flags & FLAG_TEMPORARY != 0 {
                 self.internal_routes |= 1 << i;
             }
             if built {
@@ -152,6 +158,9 @@ impl RouteRepository for FlatRouteStore {
     fn internal_routes(&self) -> u64 {
         self.internal_routes
     }
+    fn temporary_routes(&self) -> u64 {
+        self.temporary_routes
+    }
     fn unaccepted_routes(&self) -> u64 {
         self.unaccepted
     }
@@ -179,6 +188,7 @@ impl RouteRepository for FlatRouteStore {
         let mut revisions = Vec::new();
         let mut unaccepted = 0u64;
         let mut internal_routes = 0u64;
+        let mut temporary_routes = 0u64;
         let mut built_day = 0u64;
         for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
             if ids.len() == obc_app::MAX_ROUTES {
@@ -188,8 +198,11 @@ impl RouteRepository for FlatRouteStore {
                 .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_flags(source))
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
+            if obc_formats::obcr::disposable_navigation(flags) {
+                temporary_routes |= 1 << ids.len();
+            }
             let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
-            if candidate || flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
+            if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
                 internal_routes |= 1 << ids.len();
             }
             if flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
@@ -210,6 +223,7 @@ impl RouteRepository for FlatRouteStore {
         self.revisions = revisions;
         self.unaccepted = unaccepted;
         self.internal_routes = internal_routes;
+        self.temporary_routes = temporary_routes;
         self.built_day = built_day;
         Ok(Some(start))
     }
@@ -247,7 +261,9 @@ impl RouteRepository for FlatRouteStore {
         self.ids.remove(i);
         self.catalog.remove(i);
         if i < 64 {
-            for mask in [&mut self.unaccepted, &mut self.internal_routes] {
+            for mask in
+                [&mut self.unaccepted, &mut self.internal_routes, &mut self.temporary_routes, &mut self.built_day]
+            {
                 *mask = (*mask & ((1u64 << i) - 1)) | if i < 63 { (*mask >> (i + 1)) << i } else { 0 };
             }
         }
@@ -344,7 +360,7 @@ impl RouteRepository for FlatRouteStore {
         }
     }
 
-    fn retract_reviews(&mut self, ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
+    fn retract_generated_routes(&mut self, ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
         let heads: Vec<_> = ids
             .iter()
             .filter_map(|id| self.ids.iter().position(|candidate| candidate == id))

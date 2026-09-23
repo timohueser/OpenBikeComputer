@@ -40,6 +40,8 @@ peaks = "{repo}/apps/obc-sim/assets/grimsel-demo.obcm"
 wptgpx = "{repo}/fixtures/sources/vector/vector-loop-replay.gpx"
 
 [script]
+# Start a stored route outside map coverage after the connection fails.
+start_unguided = "p*4 f p f p"
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is `p p` from boot (open Menu, then press the Routes station, which the
 # menu starts on). The compass menu is Routes / Rides / Map / Peaks / Settings, so Settings is one
@@ -316,7 +318,7 @@ expect = "RideDetail"
 name = "ride-detail-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "p*4 f d p B d w p p p H"
+script = "{start_unguided} B d w p p p H"
 expect = "RideDetail"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -805,7 +807,7 @@ expect = "Firmware"
 name = "firmware-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "p*4 f d p B u p d*4 p d d d p"
+script = "{start_unguided} B u p d*4 p d d d p"
 expect = "Firmware"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1007,7 +1009,7 @@ script = "p p p p f p"
 expect = "NavPlanning"
 args = ["--center", "8298495,46625396", "--heading", "0", "--hold", "detour"]
 
-# No way to the start: Join nearest (the cursor) and Cancel. This fix is 4.1 km east of km 12.
+# No connection to the start: Start without directions is selected; Join nearest remains available.
 [[frame]]
 name = "start-away-noroute"
 map = "{grimsel}"
@@ -1044,7 +1046,7 @@ args = ["--gpx", "{gpx}", "--script-at", "5611", "--at", "5611"]
 name = "map"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p"
+script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1055,7 +1057,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "map-effort"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p"
+script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
 
@@ -1131,7 +1133,7 @@ boot = false
 name = "statistics"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1141,7 +1143,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-pan"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b h w"
+script = "{start_unguided} b h w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1149,7 +1151,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-zoom"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b h p d d d w"
+script = "{start_unguided} b h p d d d w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1157,7 +1159,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-pan-zoomed"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b h p d d d p d d w"
+script = "{start_unguided} b h p d d d p d d w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1169,7 +1171,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "statistics-sensors"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 
@@ -1180,7 +1182,7 @@ args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 name = "statistics-effort-graphs"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 
@@ -1189,7 +1191,7 @@ args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "
 name = "statistics-effort-graphs"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 langs = ["de", "fr", "es"]
@@ -1251,7 +1253,7 @@ expect = "RouteOverview"
 name = "map-lowbatt"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p"
+script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--battery", "5", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1305,7 +1307,7 @@ args = ["--gpx", "{gpx}", "--script-at", "30", "--at", "30"]
 name = "ridecontrol"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p p"
+script = "{start_unguided} p"
 expect = "RideControl"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1325,7 +1327,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "map-context"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p C"
+script = "{start_unguided} C"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1337,7 +1339,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "map-display-sheet"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p C u p"
+script = "{start_unguided} C u p"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1350,7 +1352,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "map-display-clock-off"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p C u p p"
+script = "{start_unguided} C u p p"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1836,7 +1838,7 @@ expect = "Home"
 name = "quick-root"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q"
+script = "{start_unguided} Q"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1844,7 +1846,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-assistant"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p A w"
+script = "{start_unguided} A w"
 expect = "Assistant"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1852,7 +1854,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-bluetooth-off"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q d p w"
+script = "{start_unguided} Q d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1860,7 +1862,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-brightness"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q p w"
+script = "{start_unguided} Q p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1868,7 +1870,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-power-confirm"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q d d d p w"
+script = "{start_unguided} Q d d d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1876,7 +1878,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-power-hold"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q d d d p w H"
+script = "{start_unguided} Q d d d p w H"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -1889,7 +1891,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "quick-root-no-backlight"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q"
+script = "{start_unguided} Q"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30", "--no-backlight"]
 
@@ -1962,7 +1964,7 @@ langs = ["de", "fr", "es"]
 name = "statistics"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p b"
+script = "{start_unguided} b"
 expect = "Statistics"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -1971,7 +1973,7 @@ langs = ["de", "fr", "es"]
 name = "map"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p"
+script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2173,7 +2175,7 @@ langs = ["de", "fr", "es"]
 name = "map-context"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p C"
+script = "{start_unguided} C"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2182,7 +2184,7 @@ langs = ["de", "fr", "es"]
 name = "map-display-sheet"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p C u p"
+script = "{start_unguided} C u p"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2193,7 +2195,7 @@ langs = ["de", "fr", "es"]
 name = "up-ahead-context"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p A d p f p f C"
+script = "{start_unguided} A d p f p f C"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2202,7 +2204,7 @@ langs = ["de", "fr", "es"]
 name = "up-ahead-filter-editor"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p A d p f p f C p w d d"
+script = "{start_unguided} A d p f p f C p w d d"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2222,7 +2224,7 @@ langs = ["de", "fr", "es"]
 name = "quick-root"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q"
+script = "{start_unguided} Q"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2231,7 +2233,7 @@ langs = ["de", "fr", "es"]
 name = "quick-assistant"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p A w"
+script = "{start_unguided} A w"
 expect = "Assistant"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2240,7 +2242,7 @@ langs = ["de", "fr", "es"]
 name = "quick-bluetooth-off"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q d p w"
+script = "{start_unguided} Q d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2249,7 +2251,7 @@ langs = ["de", "fr", "es"]
 name = "quick-brightness"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q p w"
+script = "{start_unguided} Q p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2258,7 +2260,7 @@ langs = ["de", "fr", "es"]
 name = "quick-power-confirm"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q d d d p w"
+script = "{start_unguided} Q d d d p w"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2267,7 +2269,7 @@ langs = ["de", "fr", "es"]
 name = "quick-power-hold"
 map = "{grimsel}"
 env = "routes"
-script = "p*4 f d p Q d d d p w H"
+script = "{start_unguided} Q d d d p w H"
 expect = "QuickDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2380,7 +2382,7 @@ expect = "RouteOverview"
 name = "dark-map"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p"
+script = "{theme_dark} {start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
@@ -2388,7 +2390,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 name = "dark-statistics"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p b"
+script = "{theme_dark} {start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -2398,7 +2400,7 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 name = "dark-map-effort"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p"
+script = "{theme_dark} {start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
 
@@ -2406,7 +2408,7 @@ args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--senso
 name = "dark-statistics-sensors"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p b"
+script = "{theme_dark} {start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 
@@ -2414,7 +2416,7 @@ args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 name = "dark-statistics-effort-graphs"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p b"
+script = "{theme_dark} {start_unguided} b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 
@@ -2422,7 +2424,7 @@ args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "
 name = "dark-map-context"
 map = "{grimsel}"
 env = "routes"
-script = "{theme_dark} p*4 f d p C"
+script = "{theme_dark} {start_unguided} C"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 

@@ -79,6 +79,9 @@ pub trait RouteRepository {
     fn internal_routes(&self) -> u64 {
         0
     }
+    fn temporary_routes(&self) -> u64 {
+        0
+    }
     fn unaccepted_routes(&self) -> u64 {
         0
     }
@@ -123,8 +126,8 @@ pub trait RouteRepository {
     fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {
         Err(CatalogError::Unsupported)
     }
-    /// Remove as many of these unaccepted candidates as one commit carries.
-    fn retract_reviews(&mut self, _ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
+    /// Remove unused generated routes, at most one commit per call.
+    fn retract_generated_routes(&mut self, _ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
         Err(CatalogError::Unsupported)
     }
     /// Make the active route match `want`, (re)reading its bytes only on a change. **Returns whether

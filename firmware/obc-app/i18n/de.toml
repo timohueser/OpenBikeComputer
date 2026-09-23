@@ -468,10 +468,11 @@ not_found_hint = "Kein Weg in der Nähe - an einer Straße starten."
 
 # --- Start away from the route start: Ride to start or Join nearest ---
 [start_away]
-title = "ZUM START"
+title = "ROUTE ERREICHEN"
 you_are = "Du bist "
 from_start = " vom Start entfernt."
-no_route = "Keine Route zum Start von hier."
+no_route = "Keine Verbindung von hier."
+start_without = "Trotzdem starten"
 ride_to_start = "Zum Start fahren"
 then_route = ", dann Route"
 join_nearest = "Nächster Einstieg"

@@ -918,7 +918,12 @@ mod tests {
         drive(&mut d, &mut now, "step:1", "StartAway");
         drive(&mut d, &mut now, "press", "Map");
         assert!(d.app.recording(), "Join nearest begins the session before the next chapter");
-        assert!(d.app.progress_m() > 1_000, "the ride joins the route mid-climb");
+        d.cmd("play");
+        for _ in 0..4 {
+            now += 250.0;
+            d.tick(now);
+        }
+        assert!(d.app.progress_m() > 1_000, "the first riding fix joins the route mid-climb");
     }
 
     #[test]

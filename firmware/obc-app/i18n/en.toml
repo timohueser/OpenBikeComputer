@@ -502,10 +502,11 @@ not_found_hint = "No rideable way nearby - try from a road."
 # hint are fragments around a distance: `you_are` + "3.2 km" + `from_start`, and
 # "400 m" + `away_at` + "km 12". ---
 [start_away]
-title = "RIDE TO START"
+title = "JOIN ROUTE"
 you_are = "You are "
 from_start = " from the start."
-no_route = "No route to the start from here."
+no_route = "No connecting route from here."
+start_without = "Start anyway"
 ride_to_start = "Ride to start"
 then_route = ", then route"
 join_nearest = "Join nearest"
