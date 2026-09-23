@@ -1067,7 +1067,7 @@ impl App {
     /// written, so a ride continued after a reset names its trip too.
     pub fn ride_stats(&self) -> obc_route::RideStats {
         let mut stats = self.recorder.ride_stats();
-        if let Some(trip) = stats.trip.and_then(|day| self.trips().iter().find(|t| t.key == day.key)) {
+        if let Some(trip) = stats.trip.and_then(|day| self.trips().iter().find(|t| t.key == day.key())) {
             stats.trip_name = obc_formats::ride::Name::new(&trip.name);
         }
         stats

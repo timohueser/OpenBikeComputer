@@ -932,7 +932,7 @@ mod tests {
         assert!(d.rides.catalog().is_empty(), "no fabricated ride or archive proof");
 
         drive(&mut d, &mut now, "enter", "Map");
-        let stats = d.app.recorder.ride_stats();
+        let stats = d.app.ride_stats();
         assert!(stats.distance_m > 1_000, "the visible Finish flow should contain a real partial ride");
         assert!(stats.moving_time_s > 60);
         assert!(stats.climb_m > 50);

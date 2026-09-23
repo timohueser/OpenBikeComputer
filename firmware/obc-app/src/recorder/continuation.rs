@@ -29,9 +29,9 @@ pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; R
     out[72..76].copy_from_slice(&state.cadence_ms.to_le_bytes());
     out[76] = u8::from(start_time.is_some());
     if let Some(trip) = state.origin.trip {
-        out[80..88].copy_from_slice(&trip.key.to_le_bytes());
-        out[88] = trip.day_index;
-        out[89] = trip.day_count;
+        out[80..88].copy_from_slice(&trip.key().to_le_bytes());
+        out[88] = trip.day_index();
+        out[89] = trip.day_count();
     }
     out[90] = state.origin.bike as u8;
     out

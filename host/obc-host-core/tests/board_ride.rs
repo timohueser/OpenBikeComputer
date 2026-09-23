@@ -304,11 +304,7 @@ fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample(
             } else {
                 assert_eq!(store.entries().count(), 1);
                 assert_eq!(
-                    complete(recorder.checkpoint(
-                        20_000,
-                        &app.recorder.ride_stats(),
-                        app.recorder.checkpoint_context()
-                    )),
+                    complete(recorder.checkpoint(20_000, &app.ride_stats(), app.recorder.checkpoint_context())),
                     Ok(CheckpointStatus::Durable)
                 );
                 assert!(!writer.attempts.borrow().is_empty());
