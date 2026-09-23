@@ -34,7 +34,7 @@ public final class RidePhotosModel {
     public static let thumbnailPixels = 400
 
     public private(set) var offer: Offer?
-    /// The added photos on the ride, in time order. A photo outside the ride's points is left out.
+    /// The added photos on the ride, in time order. A photo outside the ride's window is left out.
     public private(set) var placed: [RidePhotoPlacement.Placed] = []
     /// Keyed by asset id. A photo without one shows a placeholder until `fillThumbnails()`.
     public private(set) var thumbnails: [String: Data] = [:]
@@ -191,8 +191,8 @@ public final class RidePhotosModel {
     // MARK: Private
 
     private func placedCandidates() async -> [RidePhotoPlacement.Placed] {
-        guard let span = RidePhotoPlacement.span(of: points), let line else { return [] }
-        let candidates = await photoLibrary.candidates(takenIn: span)
+        guard let window = RidePhotoPlacement.window(of: points), let line else { return [] }
+        let candidates = await photoLibrary.candidates(takenIn: window)
         let points = points
         return await Task.detached { RidePhotoPlacement.place(candidates, on: points, line: line) }.value
     }
