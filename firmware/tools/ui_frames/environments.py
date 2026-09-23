@@ -78,6 +78,19 @@ def _ride(samples, name, start, distance_m, moving_s, climb_m, descent_m, hr, tr
     return bytes(body + footer)
 
 
+def _dead_band(elevations):
+    """Climb and descent as the recorder books them: a move of `ELE_DEADBAND_M` (3 m) or more from
+    the reference books the whole move and becomes the new reference; a smaller move is ignored."""
+    ref, ascent, descent = None, 0, 0
+    for ele in elevations:
+        if ref is not None and abs(ele - ref) < 3:
+            continue
+        if ref is not None:
+            ascent, descent = ascent + max(0, ele - ref), descent + max(0, ref - ele)
+        ref = ele
+    return ascent, descent
+
+
 def _metric(a, b):
     """Two `(lon, lat)` microdegree points as local metres, for a ground distance."""
     k = 0.111_32 * math.cos(math.radians(a[1] / 1e6))
@@ -88,7 +101,8 @@ def tracks(stage: Stage) -> Staging:
     """Four stored rides for the Rides screens, oldest first, so the import gives the newest the
     highest id: two loose copies of the pinned `ride-v5.bin` vector, "Sensor Ride" with all three
     sensors, and two days of the trip "Alps traverse" on the Grimsel climb's track. Day 2 has a
-    heart rate that rises and falls with the climb; Day 1 has no sensor. Every ride is unsynced; the flat store stages no archive rows.
+    heart rate that rises and falls with the climb; Day 1 has no sensor. Every ride is unsynced;
+    the flat store stages no archive rows.
     """
     where = stage.dir("tracks")
     vector = (stage.vectors / "ride-v5.bin").read_bytes()
@@ -112,8 +126,7 @@ def tracks(stage: Stage) -> Staging:
     ]
     for day, (name, samples, when, moving, hr) in enumerate(days):
         metres = round(sum(math.dist(*_metric(a, b)) for a, b in zip(samples, samples[1:])))
-        ascent = sum(max(0, b[2] - a[2]) for a, b in zip(samples, samples[1:]))
-        descent = sum(max(0, a[2] - b[2]) for a, b in zip(samples, samples[1:]))
+        ascent, descent = _dead_band(ele for _, _, ele in samples)
         start = calendar.timegm((*when, 0, 0, 0, 0))
         ride = _ride(samples, name, start, metres, moving, ascent, descent, hr, (alps[0], day, 3, alps[1]))
         (where / f"ride-{day + 2}.obcr").write_bytes(ride)

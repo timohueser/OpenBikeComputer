@@ -64,7 +64,7 @@ pub use reader::{
     RouteReader, RouteSummary, Waypoint, WaypointCursor, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
     MAX_WAYPOINTS,
 };
-pub use ride::{encode_summary_footer, RideInfo, RideStats, RideTrackFacts, RIDE_SERIES_BUCKETS};
+pub use ride::{encode_summary_footer, RideInfo, RideStats, RideTrackFacts, POWER_STEP_W, RIDE_SERIES_BUCKETS};
 pub use splice::{original_name, splice_detour, Leg, SpliceStep, Splicer};
 pub use track::track_to_gpx;
 pub use trim::{trim_detour_to_tail, TrimOutcome, TrimStep, Trimmer};

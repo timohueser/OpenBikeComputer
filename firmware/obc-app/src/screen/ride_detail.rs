@@ -18,6 +18,7 @@ use obc_render::{
     text::{text_width, Font, TextAlign},
     Canvas, Surface,
 };
+use obc_route::RideTrackFacts;
 
 use super::route_overview::{climb_arrow, ARROW_W};
 use super::vocab::band::draw_profile;
@@ -163,9 +164,10 @@ impl RideDetailScreen {
     }
 }
 
-/// Two pages, and a third for a ride with any sensor data.
+/// Two pages, and a third for a ride with any sensor data. Energy alone counts: power with no
+/// moving time, as on a trainer, has no average.
 fn page_count(ride: &RideSummary) -> usize {
-    if ride.avg_hr.is_some() || ride.avg_cadence.is_some() || ride.avg_power.is_some() {
+    if ride.avg_hr.is_some() || ride.avg_cadence.is_some() || ride.avg_power.is_some() || ride.energy_kj.is_some() {
         3
     } else {
         2
@@ -238,7 +240,7 @@ fn sensor_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSumma
     let w = rx.w;
     let limits = rx.settings.effort_limits();
     let avg = rx.t(Msg::TileAvg);
-    let facts = rx.ride_facts;
+    let facts = rx.ride_facts.unwrap_or(&RideTrackFacts::EMPTY);
     let mut y = GRAPH_TOP;
     let mut area = || {
         let area = rect(MAP_X, y, w - 2 * MAP_X, GRAPH_H);
@@ -246,14 +248,13 @@ fn sensor_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSumma
         area
     };
     if let Some(hr) = ride.avg_hr {
-        let series = facts.map_or(&[][..], |f| f.hr()).iter().map(|&v| u16::from(v));
+        let series = facts.hr().iter().map(|&v| u16::from(v));
         let caption = caption(avg, rx.t(Msg::TileHr));
         ride_graph(cv, area(), &caption, hr.into(), series, Metric::Hr, limits.of(Metric::Hr));
     }
     if let Some(power) = ride.avg_power {
-        let series = facts.map_or(&[][..], |f| f.power()).iter().copied();
         let caption = caption(avg, rx.t(Msg::TilePwrShort));
-        ride_graph(cv, area(), &caption, power, series, Metric::Power, limits.of(Metric::Power));
+        ride_graph(cv, area(), &caption, power, facts.power(), Metric::Power, limits.of(Metric::Power));
     }
     let mut row = y + 2;
     let mut ledger = |caption: &str, value: heapless::String<8>| {
@@ -404,6 +405,9 @@ mod tests {
         assert_eq!(turn(&hr, 1), "3/3", "any sensor adds the third page");
         assert_eq!(turn(&hr, -2), "1/3");
         assert_eq!(page_count(&cadence.summary), 3, "cadence alone also counts");
+        let mut trainer = summary("D");
+        trainer.summary.energy_kj = Some(420);
+        assert_eq!(page_count(&trainer.summary), 3, "energy without averages also counts");
 
         let mut scr = RideDetailScreen { ride: 0, page: 2 };
         assert_eq!(scr.counter(&plain[0].summary), "2/2", "a page past a remapped ride's end clamps");

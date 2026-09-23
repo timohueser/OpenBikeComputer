@@ -7,13 +7,13 @@
 //! Zones are indices `0..=4` for Z1..Z5. Without a limit (max HR or FTP of 0) nothing has a zone.
 //! The limits are the rider's settings and are passed in, never copied here.
 
+use obc_route::POWER_STEP_W;
+
 /// Bars in a history graph: five minutes of 5 s buckets.
 pub const HISTORY_BARS: usize = 60;
 const BUCKET_MS: u32 = 5_000;
 /// The power average window, in one-second slots.
 const SMOOTH_S: u32 = 10;
-/// A history bar stores power in steps of this many watts, so a bar fits a byte up to 1020 W.
-const POWER_STEP_W: u16 = 4;
 /// The stored "no zone" of a metric without a limit or a value.
 const NO_ZONE: u8 = u8::MAX;
 
