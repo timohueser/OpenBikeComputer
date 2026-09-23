@@ -1,10 +1,8 @@
-//! Full-screen boot faults — the unrecoverable bring-up failures that leave nothing else to draw:
-//! no SD card, no map object on the card, or a map the reader cannot parse. Unlike the dismissable
-//! [warnings](crate::screen::WarningScreen), these are drawn without an [`App`], because there is no
-//! map to build one around, and they never dismiss.
+//! Full-screen storage and map faults at boot. These render without an [`App`], because no map
+//! has mounted. They cannot be dismissed, but USB recovery can replace them with transfer status.
 //!
-//! A host with a live display calls [`draw_boot_fault`] once and then idles; the frame persists on
-//! glass with no further work. The copy is a parallel two-line family: the ink line says what is
+//! A host draws [`draw_boot_fault`] for a static fault or uses [`BootRecovery`] while USB can
+//! replace the map. The copy is a parallel two-line family: the ink line says what is
 //! wrong, the olive line says the fix, and no jargon appears on either.
 //!
 //! It is kept in `obc-app` rather than the board crate, so the simulator draws the identical screen
@@ -22,8 +20,7 @@ use crate::screen::vocab::chrome::{title_frame, wrapped, TITLE_BAR_H};
 use crate::settings::Language;
 use crate::{t, Msg};
 
-/// An unrecoverable storage fault at boot, before the app exists. Each maps to one of the fatal
-/// `idle` sites in the board's `main` — a card that will not mount, no map object, or a map
+/// A storage fault before the app exists: a card that will not mount, no map object, or a map
 /// that fails [`obc_reader`]'s header parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootFault {
@@ -64,6 +61,46 @@ impl BootFault {
             }
             BootFault::NoMap => ("NO MAP", t(Msg::FaultNomapWhat, EN), t(Msg::FaultNomapFix, EN)),
             BootFault::BadMap => ("MAP UNREADABLE", t(Msg::FaultBadmapWhat, EN), t(Msg::FaultBadmapFix, EN)),
+        }
+    }
+}
+
+/// The boot fault gives way to USB progress and the result, without a mounted map.
+#[derive(Debug)]
+pub struct BootRecovery {
+    fault: BootFault,
+    transfer: Option<crate::screen::MapTransfer>,
+}
+
+impl BootRecovery {
+    pub fn new(fault: BootFault) -> Self {
+        Self { fault, transfer: None }
+    }
+
+    /// Return whether the visible state changed. Cancellation restores the boot fault.
+    pub fn update(&mut self, transfer: Option<crate::screen::MapTransfer>) -> bool {
+        let changed = self.transfer != transfer;
+        self.transfer = transfer;
+        changed
+    }
+
+    pub fn restart_requested(&self, gesture: crate::Gesture) -> bool {
+        self.transfer == Some(crate::screen::MapTransfer::Installed) && gesture == crate::Gesture::Press
+    }
+
+    pub fn draw<D, F>(&self, target: &mut D, w: i32, h: i32, color_fn: F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let Some(transfer) = self.transfer else {
+            draw_boot_fault(target, w, h, color_fn, self.fault);
+            return;
+        };
+        let mut cv = Canvas::new(target, &color_fn);
+        transfer.draw(&mut cv, w, h, Language::En);
+        if transfer == crate::screen::MapTransfer::Installed {
+            cv.text("Press to restart", Point::new(w / 2, h - 32), Font::Label, TextAlign::Center, palette::INK);
         }
     }
 }
@@ -117,6 +154,57 @@ fn sd_card_glyph(cv: &mut impl Surface, c: Point) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_shows_transfer_results_and_only_restarts_after_success() {
+        use crate::screen::{MapTransfer, MapTransferError};
+        use crate::Gesture;
+
+        let mut panel = crate::harness::support::Buf::new(240, 320);
+        let mut text = |recovery: &BootRecovery| {
+            obc_render::text_tap::record(|| {
+                recovery.draw(&mut panel, 240, 320, |color| {
+                    let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+                    embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+                });
+            })
+            .into_iter()
+            .map(|draw| draw.text)
+            .collect::<Vec<_>>()
+            .join(" ")
+        };
+        let mut recovery = BootRecovery::new(BootFault::BadMap);
+        assert!(text(&recovery).contains("MAP UNREADABLE"));
+        assert!(!recovery.restart_requested(Gesture::Press));
+
+        let receiving = Some(MapTransfer::Receiving { received_kib: 50, total_kib: 100 });
+        assert!(recovery.update(receiving));
+        let progress = text(&recovery);
+        assert!(progress.contains("Receiving map") && progress.contains("50 %"));
+        assert!(!progress.contains("MAP UNREADABLE"));
+        assert!(!recovery.restart_requested(Gesture::Press));
+        assert!(!recovery.update(receiving), "unchanged progress needs no redraw");
+
+        assert!(recovery.update(None));
+        assert!(text(&recovery).contains("MAP UNREADABLE"), "cancellation restores the fault");
+        for error in
+            [MapTransferError::Storage, MapTransferError::Damaged, MapTransferError::NotAMap, MapTransferError::Refused]
+        {
+            recovery.update(Some(MapTransfer::Failed(error)));
+            assert!(text(&recovery).contains("Map not stored"));
+            assert!(!recovery.restart_requested(Gesture::Press));
+        }
+
+        recovery.update(receiving);
+        recovery.update(Some(MapTransfer::Installed));
+        let success = text(&recovery);
+        assert!(success.contains("Map installed") && success.contains("Press to restart"));
+        assert!(!success.contains("MAP UNREADABLE"));
+        assert!(recovery.restart_requested(Gesture::Press));
+        assert!(!recovery.restart_requested(Gesture::Back));
+        recovery.update(receiving);
+        assert!(!recovery.restart_requested(Gesture::Press), "a retry disables restart");
+    }
 
     /// The four shipped languages. Every catalogued fault line must fit in each, although the card
     /// renders English before the app exists.
