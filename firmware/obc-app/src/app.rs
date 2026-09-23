@@ -807,7 +807,7 @@ impl App {
         use crate::find_place::{Action, State};
         matches!(self.top_screen(), Screen::FindPlace(screen) if screen.choices())
             && (matches!(self.ui.find.action, Action::Refresh | Action::Preview(_))
-                || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning | State::Releasing))
+                || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning))
     }
 
     /// A preview mode change waiting for the previous planner and catalog owners.
@@ -823,11 +823,7 @@ impl App {
             || (matches!(self.top_screen(), Screen::VisitReview(_))
                 && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
         {
-            Some(if self.requested_assistant_restore().is_some() {
-                Msg::AssistantLoadingRoute
-            } else {
-                Msg::AssistantPlanningRoute
-            })
+            Some(Msg::AssistantPlanningRoute)
         } else {
             None
         }
@@ -1379,6 +1375,10 @@ impl App {
             return;
         }
         match outcome {
+            NavigatorOutcome::ReviewReady { .. } if self.assistant_measuring() => {
+                self.navigator.measured();
+                self.end_plan(PlanFamily::Route, PlanPhase::Idle);
+            }
             NavigatorOutcome::ReviewReady { .. } => {
                 let Some(preview) = self.assistant_preview() else { return };
                 let index = self.route_ids().iter().position(|&id| id == preview.source.object);
@@ -1419,8 +1419,7 @@ impl App {
                 self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
-                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Releasing
-                {
+                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Planning {
                     self.ui.map_dirty = true;
                 }
             }
@@ -4728,7 +4727,7 @@ mod tests {
         assert!(matches!(app.planning_banner(), Some(Msg::AssistantFinding)));
         app.take_dirty();
         app.ui.find.action = Action::None;
-        for state in [State::Querying, State::Planning, State::Releasing] {
+        for state in [State::Querying, State::Planning] {
             app.ui.find.state = state;
             app.mode.search_started(PlanFamily::Route);
             assert!(!app.take_dirty().overlay, "a new candidate does not replace the banner");
