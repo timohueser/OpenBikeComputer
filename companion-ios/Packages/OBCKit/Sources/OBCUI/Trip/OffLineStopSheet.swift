@@ -90,7 +90,7 @@ public struct OffLineStopSheet: View {
                     case .failed:
                         Text("No road found")
                     case .noRoom:
-                        Text("No room on the line to leave and rejoin it")
+                        Text("No room for a via here")
                     }
                 }
                 .font(.obcMono(size: 12))

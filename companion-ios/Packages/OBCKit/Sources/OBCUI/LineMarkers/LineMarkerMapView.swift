@@ -824,4 +824,3 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
     }
 }
 #endif
-

@@ -111,7 +111,6 @@ public final class TripDayEditorModel {
     public var maxDays: Int { Trip.maxSplitDays(forLength: line.length) }
     /// The day the handle belongs to.
     public func day(of handle: LineMarker.ID) -> Int? { handleIDs.firstIndex(of: handle) }
-    /// The day is long enough to hold a second day end.
     /// The day's stretch of the line, clear of the vias at its ends, holds two days.
     public func canSplit(_ day: Int) -> Bool {
         guard trip.dayEnds.indices.contains(day) else { return false }

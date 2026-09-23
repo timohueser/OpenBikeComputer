@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import OBCDomain
+import OBCDomain
 @testable import OBCUI
 
 /// The day editor with the phone's router: a stop off the line offers out and back and via, a
@@ -87,13 +87,14 @@ struct OffLineStopModelTests {
         #expect(model.trip.dayEnds[0].name == "Camp Ulrichen")
     }
 
+    /// The stop's line point is the start of a piece: the via has no line before it to leave.
     @Test
     func aViaWithoutRoomSaysSoAndTheOutAndBackStays() async throws {
-        let model = editor([file(0, 10_000), file(10_000, 20_000), file(20_000, 30_000)], router: FakeLegRouter())
-        model.endDay(at: camp(on: model, offset: 400))
-        var trip = model.trip
-        trip.dayEnds[1].distance = trip.dayEnds[0].distance + 1
-        let choice = OffLineStopModel(trip: trip, day: 0, router: FakeLegRouter()) { _ in }
+        let model = editor([file(0, 10_000), file(10_150, 20_050), file(20_050, 30_050)], router: FakeLegRouter())
+        model.joinDay(0)
+        let stop = Stop(name: "Camp Ulrichen", coordinate: coordinate(10_150, 400), kind: .campsite)
+        model.endDay(at: model.trip.place([stop], near: 10_000)[0])
+        let choice = try #require(model.offLineStop)
         await choice.load()
         #expect(choice.via == .noRoom)
         #expect(choice.failure == nil, "the out and back still routes")
