@@ -186,7 +186,7 @@
       ]
     },
     "track-export.gpx": {
-      "format": "GPX 1.1 export of ride-v4.bin (obc_route::track_to_gpx)",
+      "format": "GPX 1.1 export of ride-v5.bin (obc_route::track_to_gpx)",
       "byte_len": 755,
       "track_name": "Schauinsland & back",
       "segments": 2,
@@ -194,10 +194,10 @@
       "creator": "OpenBikeComputer",
       "note": "the exporter accepts only a validated finished ride; headerless sample arrays are rejected"
     },
-    "ride-v4.bin": {
-      "format": "ride object v4 (spec 7.2): verbatim 20-byte samples plus fixed 144-byte footer",
-      "byte_len": 204,
-      "version": 4,
+    "ride-v5.bin": {
+      "format": "ride object v5 (spec 7.2): verbatim 20-byte samples plus fixed 150-byte footer",
+      "byte_len": 210,
+      "version": 5,
       "name": "Sensor Ride",
       "bike_type": "Gravel (1)",
       "trip_key": "0x0123456789ABCDEF",
@@ -209,17 +209,20 @@
       "moving_time_s": 3600,
       "avg_speed_cms": 343,
       "climb_m": 120,
+      "descent_m": 95,
       "sensor_summary": {
         "avg_hr": 142,
         "max_hr": 176,
         "avg_cad": 85,
         "avg_pwr": 210,
-        "max_pwr": 480
+        "max_pwr": 480,
+        "energy_kj": 756
       },
       "sensor_sentinels": {
         "hr": 255,
         "cad": 255,
-        "pwr": 65535
+        "pwr": 65535,
+        "energy_kj": 4294967295
       },
       "points": [
         {

@@ -310,6 +310,7 @@ public final class RouteDetailModel {
         if let v = ride.maxHeartRate { rows.append(SensorRow(label: "Max heart rate", value: "\(v) bpm")) }
         if let v = ride.avgPower { rows.append(SensorRow(label: "Avg power", value: "\(v) W")) }
         if let v = ride.maxPower { rows.append(SensorRow(label: "Max power", value: "\(v) W")) }
+        if let v = ride.energyKJ { rows.append(SensorRow(label: "Energy", value: "\(v) kJ")) }
         if let v = ride.avgCadence { rows.append(SensorRow(label: "Avg cadence", value: "\(v) rpm")) }
         return rows
     }

@@ -276,11 +276,13 @@ public final class RideSyncCoordinator {
                         let decoded = ride.summary
                         ride.summary = summary
                         if ride.summary.trackPreview == nil { ride.summary.trackPreview = decoded.trackPreview }
+                        ride.summary.descentMeters = decoded.descentMeters
                         ride.summary.avgHeartRate = decoded.avgHeartRate
                         ride.summary.maxHeartRate = decoded.maxHeartRate
                         ride.summary.avgCadence = decoded.avgCadence
                         ride.summary.avgPower = decoded.avgPower
                         ride.summary.maxPower = decoded.maxPower
+                        ride.summary.energyKJ = decoded.energyKJ
                     }
                     let receipt = try library.archiveRide(ride)
                     syncedRideIDs.insert(downloaded.id)
