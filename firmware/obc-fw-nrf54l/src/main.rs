@@ -609,7 +609,7 @@ async fn main(_spawner: Spawner) {
         let v = board::take_reset_reason!();
         if v & 0x6 != 0 {
             // Bits 1 and 2 are the two watchdogs. The WDT0 instance used here reports as bit 2.
-            defmt::error!("boot: WATCHDOG reset (RESETREAS=0x{=u32:08x})", v);
+            defmt::error!("boot: WATCHDOG reset (RESETREAS=0x{=u32:08x}) — a plane wedged last session", v);
         } else {
             defmt::info!("boot: RESETREAS=0x{=u32:08x}", v);
         }

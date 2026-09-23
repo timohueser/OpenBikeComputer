@@ -3,6 +3,9 @@ import Foundation
 /// Joining several route files into one trip: the proposed ride order and the joins between
 /// the files. The files become days in this order, with the day ends on the file boundaries.
 public enum TripJoin {
+    /// Two files closer than this at a boundary read as "joins"; farther apart, as a gap.
+    public static let joinMeters = 200.0
+
     /// One file as the join reads it: its name and its end points.
     public struct File: Equatable, Sendable {
         public var name: String

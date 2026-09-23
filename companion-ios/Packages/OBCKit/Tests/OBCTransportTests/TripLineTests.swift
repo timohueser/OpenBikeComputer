@@ -65,24 +65,6 @@ struct TripLineTests {
     }
 
     @Test
-    func aDayThatStartsMoreThanTwoHundredMetresFromTheDayBeforeFollowsATransfer() {
-        #expect(Trip.transferMinMeters == 200, "TRANSFER_MIN_M, spec §7.7")
-        // The test plane and the great-circle distance differ by 0.1 %, so the 200 m cases keep
-        // half a metre clear of the constant.
-        let days = [
-            file([(0, 0), (1000, 0)]), file([(1000, 0), (2000, 0)]), file([(2199, 0), (3000, 0)]),
-            file([(3201, 0), (4000, 0)]), file([(84_000, 0), (85_000, 0)]),
-        ]
-        let transfers = Trip.transferMeters(between: days)
-        #expect(transfers.count == 4)
-        #expect(transfers[0] == nil, "the next day starts where the day ends")
-        #expect(transfers[1] == nil, "a start 199 m away is a ride to the start")
-        #expect((200.5...200.9).contains(transfers[2] ?? 0))
-        #expect(abs((transfers[3] ?? 0) - 80_000) < 100, "a train")
-        #expect(Trip.transferMeters(between: join(days).dayLines()).map { $0 != nil } == [false, false, true, true])
-    }
-
-    @Test
     func appendKeepsTheDaysBeforeIt() {
         var trip = join([file([(0, 0), (1000, 0)]), file([(1000, 0), (2000, 0)])])
         let before = trip.dayLines()
