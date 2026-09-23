@@ -97,6 +97,7 @@ struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    private let onRenameTap: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
     /// Reverse the route, planned dressing only: it creates the flipped copy and navigates to it.
     /// Nil on rides and imports.
@@ -134,6 +135,7 @@ struct RouteDetailScreen: View {
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onRenameTap: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
@@ -154,6 +156,7 @@ struct RouteDetailScreen: View {
         self.deviceName = deviceName
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onRenameTap = onRenameTap
         self.onBikeTypeChange = onBikeTypeChange
         self.onReverse = onReverse
         self.onUploaded = onUploaded
@@ -200,6 +203,7 @@ struct RouteDetailScreen: View {
             },
             onDelete: onDelete,
             onRename: onRename,
+            onRenameTap: onRenameTap,
             onReverse: onReverse,
             onBikeTypeChange: onBikeTypeChange,
             photos: photos,

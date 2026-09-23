@@ -224,32 +224,30 @@ extension FixtureSet {
 
 /// The bundled sample route files the import launch hook feeds the import path, so demos and UI
 /// tests exercise the same decoder a Files pick does. One is a real GPX export, one a
-/// Garmin-style TCX course, and one an impostor: a PDF name over non-route bytes.
+/// Garmin-style TCX course, and one an impostor: a PDF name over non-route bytes. `trip` is two
+/// files that arrive together, as a share of several files does.
 public enum SampleRouteFile {
     /// Raw values are the launch-argument tokens.
     public enum Kind: String, Sendable {
-        case gpx, tcx, bad, grimsel
+        case gpx, tcx, bad, grimsel, trip
     }
 
-    public static func fileName(_ kind: Kind = .gpx) -> String {
-        switch kind {
-        case .gpx, .tcx: "sample-import.\(kind.rawValue)"
-        case .grimsel: "website-import.gpx"
-        case .bad: "packing-list.pdf"
-        }
-    }
-
-    public static func data(_ kind: Kind = .gpx) -> Data? {
+    /// The files of one kind, in arrival order.
+    public static func files(_ kind: Kind = .gpx) -> [(data: Data, fileName: String)] {
         switch kind {
         case .gpx, .tcx:
-            Bundle.module.url(forResource: "sample-import", withExtension: kind.rawValue)
-                .flatMap { try? Data(contentsOf: $0) }
+            bundled("sample-import", kind.rawValue).map { [($0, "sample-import.\(kind.rawValue)")] } ?? []
         case .grimsel:
-            Bundle.module.url(forResource: "website-import", withExtension: "gpx")
-                .flatMap { try? Data(contentsOf: $0) }
+            bundled("website-import", "gpx").map { [($0, "website-import.gpx")] } ?? []
         case .bad:
-            Data("socks · stove · sleeping bag — definitely not a route\n".utf8)
+            [(Data("socks · stove · sleeping bag — definitely not a route\n".utf8), "packing-list.pdf")]
+        case .trip:
+            files(.gpx) + files(.grimsel)
         }
+    }
+
+    private static func bundled(_ name: String, _ ext: String) -> Data? {
+        Bundle.module.url(forResource: name, withExtension: ext).flatMap { try? Data(contentsOf: $0) }
     }
 }
 

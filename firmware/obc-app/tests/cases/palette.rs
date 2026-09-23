@@ -43,6 +43,11 @@ fn palette_quantizes_to_documented_device64() {
         ("TRACK_END", TRACK_END, (170, 0, 0)),
         ("TRAIL", TRAIL, (170, 0, 0)),
         ("CONTOUR", CONTOUR, (85, 85, 85)),
+        ("ZONE[0]", ZONE[0], (170, 170, 170)),
+        ("ZONE[1]", ZONE[1], (85, 170, 255)),
+        ("ZONE[2]", ZONE[2], (85, 170, 85)),
+        ("ZONE[3]", ZONE[3], (255, 170, 0)),
+        ("ZONE[4]", ZONE[4], (255, 85, 85)),
     ];
     for &(name, c, want) in cases {
         assert_eq!(rgb565_to_device64(c), want, "{name}: device-64 result drifted from screen/palette.rs");
