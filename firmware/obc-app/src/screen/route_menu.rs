@@ -33,10 +33,15 @@ const NAME_INSET: i32 = 12;
 /// The list side inset: the row area's margin from the panel edge.
 const SIDE_INSET: i32 = 12;
 
-/// Line 2 of every row: one size under the name, so "Day 2 next · 3 days" fits the row.
-const LINE2_FONT: Font = Font::Caption;
+/// The name on line 1 of every row.
+const NAME_FONT: Font = Font::Label;
 
-/// The top of line 2 in a row. Its capitals start where a [`Font::Label`] line's would.
+/// Line 2 of every row: one size under the name, so "Day 2 next · 3 days" fits the row. It is
+/// olive on every row, the cursor's too.
+const LINE2_FONT: Font = Font::Caption;
+const LINE2: u16 = palette::SUBTEXT;
+
+/// The top of line 2 in a row.
 const LINE2_Y: i32 = 36;
 
 /// The stats line's second column, the climb group, as a fraction of the row's inner width, so the
@@ -298,7 +303,6 @@ impl RouteMenuScreen {
         let sel = self.selected.min(total - 1);
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
-            let accent = if row.selected { INK } else { SUBTEXT };
             let unaccepted =
                 |ri: usize| (rx.unaccepted_routes & (1 << ri) != 0).then(|| rx.t(Msg::RouteMenuUnaccepted));
             match rows[row.index] {
@@ -306,24 +310,24 @@ impl RouteMenuScreen {
                     let t = &trips[ti];
                     let x = name_line(cv, &row, &rx.marquee, &t.name, w, None, INK);
                     let meta = trip_meta(t, t.progress_in(rx.trip_progress), lang, line2_right(&row) - x);
-                    cv.text(&meta, Point::new(x, row.area.top_left.y + LINE2_Y), LINE2_FONT, TextAlign::Left, accent);
+                    cv.text(&meta, Point::new(x, row.area.top_left.y + LINE2_Y), LINE2_FONT, TextAlign::Left, LINE2);
                 }
-                Row::Route(ri) => draw_route_row(cv, &row, &rx.marquee, &routes[ri], w, accent, unaccepted(ri)),
+                Row::Route(ri) => draw_route_row(cv, &row, &rx.marquee, &routes[ri], w, unaccepted(ri)),
                 Row::Day { day, route } => {
                     let Some(t) = trip else { return };
                     let progress = t.progress_in(rx.trip_progress);
                     // A ridden day is dim, except under the cursor, where dim olive on amber is
                     // unreadable.
-                    let (ink, accent, tick) = match (t.is_ticked(day, progress), row.selected) {
-                        (false, _) => (INK, accent, None),
-                        (true, false) => (RIDDEN, RIDDEN, Some(SUBTEXT)),
-                        (true, true) => (INK, INK, Some(INK)),
+                    let (ink, line2, tick) = match (t.is_ticked(day, progress), row.selected) {
+                        (false, _) => (INK, LINE2, None),
+                        (true, false) => (RIDDEN, RIDDEN, Some(LINE2)),
+                        (true, true) => (INK, LINE2, Some(LINE2)),
                     };
                     let r = &routes[route];
                     let x = name_line(cv, &row, &rx.marquee, &r.name, w, tick, ink);
                     let sy = row.area.top_left.y + LINE2_Y;
                     if let Some(label) = unaccepted(route) {
-                        cv.text(label, Point::new(x, sy), LINE2_FONT, TextAlign::Left, SUBTEXT);
+                        cv.text(label, Point::new(x, sy), LINE2_FONT, TextAlign::Left, LINE2);
                         return;
                     }
                     let mut dist: heapless::String<24> = heapless::String::new();
@@ -331,13 +335,13 @@ impl RouteMenuScreen {
                         let _ = write!(dist, "{} · ", tr(weekday(date), lang));
                     }
                     let _ = write!(dist, "{} km", r.distance_km);
-                    cv.text(&dist, Point::new(x, sy), LINE2_FONT, TextAlign::Left, accent);
+                    cv.text(&dist, Point::new(x, sy), LINE2_FONT, TextAlign::Left, line2);
                     // The climb follows the distance, because the weekday leaves no room for a
                     // column. It drops whole when the row is too narrow.
                     let climb_x = x + text_width(&dist, LINE2_FONT) as i32 + 8;
                     let climb = climb_label(r.climb_m);
                     if climb_x + CLIMB_GLYPH_W + text_width(&climb, LINE2_FONT) as i32 <= line2_right(&row) {
-                        climb_group(cv, climb_x, sy, &climb, accent);
+                        climb_group(cv, climb_x, sy, &climb, line2);
                     }
                 }
             }
@@ -370,11 +374,11 @@ fn name_line(
     let y = row.area.top_left.y;
     let mut x = row.area.top_left.x + NAME_INSET;
     if let Some(tick_color) = tick {
-        row_check(cv, Point::new(x + ROW_CHECK_HALF, y + 9 + Font::Body.cap_mid() as i32), tick_color);
+        row_check(cv, Point::new(x + ROW_CHECK_HALF, y + 9 + NAME_FONT.cap_mid() as i32), tick_color);
         x += TICK_W;
     }
-    let name = marquee.fit(name, (w - 20) - x, Font::Body, row.scroll());
-    cv.text(&name, Point::new(x, y + 9), Font::Body, TextAlign::Left, color);
+    let name = marquee.fit(name, (w - 20) - x, NAME_FONT, row.scroll());
+    cv.text(&name, Point::new(x, y + 9), NAME_FONT, TextAlign::Left, color);
     x
 }
 
@@ -386,21 +390,20 @@ fn draw_route_row(
     marquee: &MarqueeFrame,
     route: &RouteSummary,
     w: i32,
-    accent: u16,
     unavailable: Option<&str>,
 ) {
     use palette::*;
     let name_x = name_line(cv, row, marquee, &route.name, w, None, INK);
     let sy = row.area.top_left.y + LINE2_Y;
     if let Some(label) = unavailable {
-        cv.text(label, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, SUBTEXT);
+        cv.text(label, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, LINE2);
         return;
     }
     let mut dist: heapless::String<12> = heapless::String::new();
     let _ = write!(dist, "{} km", route.distance_km);
-    cv.text(&dist, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, accent);
+    cv.text(&dist, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, LINE2);
 
-    climb_group(cv, climb_col_x(row.area.top_left.x, w), sy, &climb_label(route.climb_m), accent);
+    climb_group(cv, climb_col_x(row.area.top_left.x, w), sy, &climb_label(route.climb_m), LINE2);
 }
 
 fn climb_label(climb_m: u32) -> heapless::String<12> {
@@ -411,16 +414,16 @@ fn climb_label(climb_m: u32) -> heapless::String<12> {
 
 /// Draw the climb group at `x`: the triangle, then `climb`. The triangle is drawn, because the
 /// panel font has no `↑` glyph.
-fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb: &str, accent: u16) {
+fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb: &str, color: u16) {
     // The base sits on the baseline, so the triangle reads as a capital.
     let base = sy + LINE2_FONT.cap_bottom() as i32 - 1;
     cv.triangle(
         Point::new(x, base),
         Point::new(x + CLIMB_TRI, base),
         Point::new(x + CLIMB_TRI / 2, base - CLIMB_TRI),
-        accent,
+        color,
     );
-    cv.text(climb, Point::new(x + CLIMB_GLYPH_W, sy), LINE2_FONT, TextAlign::Left, accent);
+    cv.text(climb, Point::new(x + CLIMB_GLYPH_W, sy), LINE2_FONT, TextAlign::Left, color);
 }
 
 /// The weekday of `date`, in days since 1970-01-01, which was a Thursday.
