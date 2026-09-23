@@ -8,7 +8,7 @@ extension Trip {
     /// the point. It keeps a stop on its own leg of an out-and-back.
     public static let stopWindowMeters = 10_000.0
 
-    /// `stops` measured against the line, in order along the line. With `near`, each stop
+    /// `stops` measured against the line, in the order given. With `near`, each stop
     /// projects onto the line within ``stopWindowMeters`` of that distance; without it, onto the
     /// nearest point of the whole line.
     public func place(_ stops: [Stop], near: Double? = nil) -> [PlacedStop] {
@@ -21,7 +21,6 @@ extension Trip {
             let fine = measured.projection(of: stop.coordinate, near: coarse.distance, window: Self.refineWindowMeters)
             return PlacedStop(stop: stop, distance: fine.distance, offset: fine.error)
         }
-        .sorted { $0.distance < $1.distance }
     }
 
     /// The distances where `day` can end: after the day before it and before the day after it,

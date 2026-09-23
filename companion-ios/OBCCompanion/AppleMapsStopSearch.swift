@@ -20,6 +20,8 @@ struct AppleMapsStopSearch: StopSearch {
             span: MKCoordinateSpan(
                 latitudeDelta: northEast.latitude - southWest.latitude,
                 longitudeDelta: northEast.longitude - southWest.longitude))
+        // Without it the region is only a hint, and "Münster" finds the city in Germany.
+        if #available(iOS 18, *) { request.regionPriority = .required }
         return try await Self.run(MKLocalSearch(request: request))
     }
 

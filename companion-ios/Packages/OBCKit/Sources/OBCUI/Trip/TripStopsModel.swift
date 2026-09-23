@@ -18,7 +18,7 @@ public final class TripStopsModel: Identifiable {
     /// The stops near the day end, in order along the line.
     public private(set) var stops: [PlacedStop] = []
     public var query = ""
-    /// The places the last search found, in order along the line. Nil before a search.
+    /// The places the last search found, in Apple Maps' order. Nil before a search.
     public private(set) var results: [PlacedStop]?
 
     @ObservationIgnored private let trip: Trip
@@ -49,18 +49,22 @@ public final class TripStopsModel: Identifiable {
         let waypoints = trip.waypoints.filter {
             $0.coordinate.distance(to: dayEnd.coordinate) <= StopFinder.radiusMeters
         }
-        stops = trip.place(waypoints, near: dayEnd.distance)
+        stops = alongTheLine(waypoints)
         guard isOnline, let finder else {
             nearby = .offline
             return
         }
         do {
             let found = try await finder.stops(near: dayEnd.distance, on: trip.measuredLine)
-            stops = trip.place(found + waypoints, near: dayEnd.distance)
+            stops = alongTheLine(found + waypoints)
             nearby = .loaded
         } catch {
             nearby = .offline
         }
+    }
+
+    private func alongTheLine(_ stops: [Stop]) -> [PlacedStop] {
+        trip.place(stops, near: dayEnd.distance).sorted { $0.distance < $1.distance }
     }
 
     /// Search for `query` in the trip's region. A failed search finds nothing.
