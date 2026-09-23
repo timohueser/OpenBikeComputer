@@ -30,8 +30,7 @@ pub struct EasierScreen {
     review: bool,
     saving: bool,
     unresolved: bool,
-    failed: bool,
-    no_better: bool,
+    phase: Phase,
     failure: Option<obc_route::NavError>,
 }
 impl EasierScreen {
@@ -49,8 +48,7 @@ impl EasierScreen {
             review: false,
             saving: false,
             unresolved: false,
-            failed: false,
-            no_better: false,
+            phase: state.phase,
             failure: None,
         }
     }
@@ -79,8 +77,7 @@ impl EasierScreen {
         self.ready = state.phase == Phase::Ready && status == ReviewStatus::Preview;
         self.saving = status == ReviewStatus::Saving;
         self.unresolved = status == ReviewStatus::Unresolved;
-        self.failed = state.phase == Phase::Failed;
-        self.no_better = state.phase == Phase::NoBetter;
+        self.phase = state.phase;
         self.failure = state.failure;
         *self != before
     }
@@ -186,7 +183,7 @@ impl EasierScreen {
         if let Some(next) = self.next.filter(|_| self.ready) {
             benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true, rx);
             button(cv, rx.t(Msg::AssistantPreviewRoute));
-        } else if self.no_better && Goal::LessClimb.evaluable(self.current) {
+        } else if self.phase == Phase::NoBetter && Goal::LessClimb.evaluable(self.current) {
             // Name what was compared, so "nothing" reads as a result and not as an error.
             let checked = if Goal::Smoother.evaluable(self.current) {
                 [Msg::AssistantCheckedAll, Msg::AssistantCheckedAllGoals]
@@ -199,12 +196,13 @@ impl EasierScreen {
             }
         } else {
             cv.text(
-                match (self.failed, self.failure) {
-                    (true, Some(obc_route::NavError::Exhausted)) => rx.t(Msg::AssistantSearchLimit),
-                    (true, Some(obc_route::NavError::NoPath)) => rx.t(Msg::AssistantNoConnection),
-                    (true, _) => rx.t(Msg::AssistantSearchFailed),
-                    (false, _) if self.no_better => rx.t(Msg::AssistantNoComparison),
-                    (false, _) => rx.t(Msg::AssistantComparing),
+                match (self.phase, self.failure) {
+                    (Phase::Failed, Some(obc_route::NavError::Exhausted)) => rx.t(Msg::AssistantSearchLimit),
+                    (Phase::Failed, Some(obc_route::NavError::NoPath)) => rx.t(Msg::AssistantNoConnection),
+                    (Phase::Failed, _) => rx.t(Msg::AssistantSearchFailed),
+                    (Phase::NoBetter, _) => rx.t(Msg::AssistantNoComparison),
+                    (Phase::Stale, _) => rx.t(Msg::AssistantRefreshNeeded),
+                    _ => rx.t(Msg::AssistantComparing),
                 },
                 Point::new(rx.w / 2, 223),
                 Font::Label,

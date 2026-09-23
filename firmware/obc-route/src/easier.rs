@@ -101,14 +101,33 @@ impl Costs {
     /// The rest of `route` from `start_m`, measured as the planner measures a candidate: terrain
     /// at each stored point and at most every `ELE_SAMPLE_STEP_M` between, through the same dead
     /// band. An imported route's own heights come from another source and never enter a comparison.
-    #[inline(never)]
     pub fn remaining(
         route: &RouteReader,
         start_m: u32,
         map: RouteSourceKey,
         elev: &mut dyn ElevationSource,
     ) -> Result<Self, Error> {
+        // Two sibling frames, so only one chunk buffer is on the stack at a time.
         let facts = route.interval_facts(start_m, route.total_distance_m)?;
+        let terrain = Terrain::walk(route, start_m, elev)?;
+        Ok(Self {
+            distance_m: facts.distance_m(),
+            ascent_m: terrain.band.ascent() as u32,
+            rough_m: facts.rough_m(),
+            unknown_m: facts.surface_m[0],
+            elevation_complete: terrain.complete,
+            surface_attributed: facts.attribution_map == Some(map),
+        })
+    }
+}
+struct Terrain<'a> {
+    elev: &'a mut dyn ElevationSource,
+    band: DeadBand<f64>,
+    complete: bool,
+}
+impl<'a> Terrain<'a> {
+    #[inline(never)]
+    fn walk(route: &RouteReader, start_m: u32, elev: &'a mut dyn ElevationSource) -> Result<Self, Error> {
         let start = route.position_at(start_m).ok_or(Error::BadOffset)?;
         let mut terrain = Terrain { elev, band: DeadBand::new(), complete: true };
         let mut previous = (start.lon, start.lat);
@@ -133,22 +152,8 @@ impl Costs {
                 previous = p;
             }
         }
-        Ok(Self {
-            distance_m: facts.distance_m(),
-            ascent_m: terrain.band.ascent() as u32,
-            rough_m: facts.rough_m(),
-            unknown_m: facts.surface_m[0],
-            elevation_complete: terrain.complete,
-            surface_attributed: facts.attribution_map == Some(map),
-        })
+        Ok(terrain)
     }
-}
-struct Terrain<'a> {
-    elev: &'a mut dyn ElevationSource,
-    band: DeadBand<f64>,
-    complete: bool,
-}
-impl Terrain<'_> {
     fn sample(&mut self, (lon, lat): (i32, i32)) {
         match self.elev.sample(lat, lon) {
             Some(h) => self.band.push(f64::from(h)),
