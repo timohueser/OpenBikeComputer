@@ -27,10 +27,11 @@ extension Trip {
     public static let transferMinMeters = TripJoin.joinMeters
 
     /// Whether the next day starts more than ``transferMinMeters`` from where `day` ends.
-    /// Moving such a day end would put the gap inside a day.
-    public func endsAtTransfer(_ day: Int) -> Bool {
+    /// Moving such a day end would put the gap inside a day. A caller that holds the measured
+    /// line passes it, so the answer costs no line walk.
+    public func endsAtTransfer(_ day: Int, on measured: MeasuredLine? = nil) -> Bool {
         guard dayEnds.indices.contains(day) else { return false }
-        let vertices = measuredLine.vertices
+        let vertices = (measured ?? measuredLine).vertices
         return pieceStarts.contains { start in
             abs(vertices[start].distance - dayEnds[day].distance) < MeasuredLine.tieMeters
                 && line[start - 1].coordinate.distance(to: line[start].coordinate) > Self.transferMinMeters
