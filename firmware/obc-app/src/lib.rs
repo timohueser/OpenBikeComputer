@@ -33,6 +33,7 @@ mod device_status;
 pub mod dfu;
 pub mod dirty;
 mod easier;
+pub mod effort;
 pub mod fault;
 pub mod find_place;
 #[cfg(test)]
