@@ -161,11 +161,11 @@ public final class LineMarkerEditorModel {
 
     // MARK: Moves
 
-    /// Take the marker. Refused while another marker is held, so a second finger changes
-    /// nothing until the first lets go.
+    /// Take the marker. Refused for a fixed marker, and while another marker is held, so a
+    /// second finger changes nothing until the first lets go.
     @discardableResult
     public func begin(_ id: LineMarker.ID) -> Bool {
-        guard activeID == nil, marker(id) != nil else { return false }
+        guard activeID == nil, let marker = marker(id), !marker.isFixed else { return false }
         activeID = id
         onEvent(.began(id))
         return true
