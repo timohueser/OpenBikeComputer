@@ -3009,12 +3009,9 @@ impl App {
                 if let (Some(work), Screen::LandmarkPhoto(page)) = (photo.as_mut(), &mut ui.stack[i]) {
                     if !covered || page.covered_rebuild {
                         let (target, color) = cv.split();
-                        for _ in 0..work.steps {
-                            work.runtime.step(page, reader, target, color, rx.settings.language);
-                            if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
-                                page.covered_rebuild = false;
-                                break;
-                            }
+                        work.runtime.step(page, reader, target, color, rx.settings.language, work.steps);
+                        if page.status != crate::photo::Status::Pending {
+                            page.covered_rebuild = false;
                         }
                     } else {
                         work.runtime.cancel();
