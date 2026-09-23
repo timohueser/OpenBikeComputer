@@ -42,7 +42,8 @@ mod web {
         let bike = whole.then_some(bike as u8).and_then(obc_route::BikeType::from_u8).ok_or_else(|| {
             to_js(ConvertFailure {
                 code: crate::ErrorCode::Internal,
-                message: format!("Internal error: {bike} is not a bike type. This is a bug in the builder."),
+                // A static message: formatting the `f64` would link float printing into the module.
+                message: "Internal error: the bike type is not 0 to 3. This is a bug in the builder.".into(),
             })
         })?;
         crate::convert::gpx_to_obcr(bytes, name, bike).map_err(to_js)
