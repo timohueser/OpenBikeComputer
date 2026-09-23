@@ -539,14 +539,36 @@ fn sustained_backtracking_and_forward_recovery_keep_the_route_position() {
 #[test]
 fn a_far_first_fix_does_not_lock_the_search_to_the_start() {
     let bytes = convert("Long ride", &sawtooth_gpx(1_500));
-    let src = SliceSource(&bytes);
+    use core::cell::Cell;
+    use obc_formats::io::{ByteSource, Error};
+    struct Counted<'a> {
+        bytes: &'a [u8],
+        reads: Cell<usize>,
+    }
+    impl ByteSource for Counted<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+            self.reads.set(self.reads.get() + 1);
+            SliceSource(self.bytes).read_at(offset, out)
+        }
+    }
+    let src = Counted { bytes: &bytes, reads: Cell::new(0) };
     let index = RouteIndex::read(&src).unwrap();
     let route = RouteReader::new(&index, &src);
     let mut matcher = RouteMatch::new();
     let p = route.position_at(10_000).unwrap();
-    for _ in 0..3 {
+    let mut first_reads = 0;
+    for attempt in 0..3 {
+        src.reads.set(0);
         assert!(matcher.update(p.lon, p.lat + north_ud(500.0), &route).off_route);
         assert!(!matcher.started());
+        if attempt == 0 {
+            first_reads = src.reads.get();
+        } else {
+            assert!(src.reads.get() < first_reads, "off-route updates reuse a bounded search anchor");
+        }
     }
     let matched = matcher.update(p.lon, p.lat, &route);
     assert!(!matched.off_route && matched.progress_m.abs_diff(10_000) <= 3);

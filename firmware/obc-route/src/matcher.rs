@@ -2,7 +2,8 @@
 //!
 //! Near overlapping sections, along-route continuity distinguishes repeated passes. Progress can
 //! decrease when the rider turns back. Off-route fixes freeze the cursor and widen the search;
-//! until the first on-route fix, the search covers the whole route. One decode buffer is reused.
+//! the first search covers the whole route, then keeps a search anchor even before an on-route
+//! lock. One decode buffer is reused.
 
 use heapless::Vec;
 
@@ -51,14 +52,15 @@ pub struct RouteMatch {
     seg: usize,
     progress_m: u32,
     last_fix: Option<(i32, i32)>,
+    /// A search cursor exists even when progress has never locked onto the route.
+    anchored: bool,
     /// Durable lower bound installed by a skip-ahead commit. It survives off-route fixes and
     /// stops the backward slack from re-entering the skipped stretch.
     floor_progress_m: u32,
     /// Global segment containing `floor_progress_m`; segments before it are not candidates.
     floor_global_seg: u32,
     off_route: bool,
-    /// `false` until the first fix has been matched. That first match scans the whole route, to
-    /// lock on from anywhere.
+    /// `false` until an on-route fix establishes progress.
     started: bool,
     /// Widen the next match's search window to the rejoin window, then clear. Set when the
     /// caller knows fixes went unmatched, so the cursor is stale by more than one fix's travel.
@@ -79,6 +81,7 @@ impl RouteMatch {
             seg: 0,
             progress_m: 0,
             last_fix: None,
+            anchored: false,
             floor_progress_m: 0,
             floor_global_seg: 0,
             off_route: false,
@@ -94,6 +97,7 @@ impl RouteMatch {
         self.seg = 0;
         self.progress_m = 0;
         self.last_fix = None;
+        self.anchored = false;
         self.floor_progress_m = 0;
         self.floor_global_seg = 0;
         self.off_route = false;
@@ -112,6 +116,7 @@ impl RouteMatch {
         self.seg = pos.seg;
         self.progress_m = pos.progress_m;
         self.last_fix = Some((pos.lon, pos.lat));
+        self.anchored = true;
         self.floor_progress_m = pos.progress_m;
         self.floor_global_seg = route.global_seg_index(pos.chunk, pos.seg) as u32;
         self.off_route = false;
@@ -214,7 +219,13 @@ impl RouteMatch {
             self.off_route
         };
         self.off_route = now_off;
-        // Move only when on-route, so a far fix cannot drag progress.
+        self.anchored = true;
+        // Before progress locks, follow the nearest search window without publishing progress.
+        if !self.started {
+            self.chunk = bc;
+            self.seg = bs;
+        }
+        // Move progress only when on-route, so a far fix cannot drag it.
         if !now_off {
             self.started = true;
             self.last_fix = Some((lon, lat));
@@ -244,7 +255,8 @@ impl RouteMatch {
         // request is consumed here whichever branch wins, so it costs at most one wide search.
         let wide_relock = core::mem::take(&mut self.wide_next);
         let radius = if self.off_route || wide_relock { WINDOW_SEGS_OFF } else { WINDOW_SEGS_ON };
-        let mut first_chunk = if self.started { self.chunk } else { 0 };
+        let bounded = self.anchored && recovery.is_none();
+        let mut first_chunk = if bounded { self.chunk } else { 0 };
         while first_chunk > 0 && route.global_seg_index(first_chunk, 0) as i64 >= cur_gidx - radius {
             first_chunk -= 1;
         }
@@ -270,7 +282,7 @@ impl RouteMatch {
         let mut base_gidx = route.global_seg_index(first_chunk, 0) as i64;
         'outer: while c < chunks.len() {
             // Segments only run forward, so a chunk past the window ends the scan.
-            if self.started && base_gidx - cur_gidx > radius {
+            if bounded && base_gidx - cur_gidx > radius {
                 break;
             }
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
@@ -288,7 +300,7 @@ impl RouteMatch {
                 for s in 0..n - 1 {
                     let off = base_gidx + s as i64 - cur_gidx;
                     let global = (base_gidx + s as i64).max(0) as u32;
-                    if self.started && off > radius {
+                    if bounded && off > radius {
                         break 'outer;
                     }
                     let a = (self.buf[s].lon, self.buf[s].lat);
@@ -297,7 +309,7 @@ impl RouteMatch {
                     if cum0 + intra > ceiling_m as f32 {
                         break 'outer;
                     }
-                    if (!self.started || off >= -radius) && global >= self.floor_global_seg {
+                    if (!bounded || off >= -radius) && global >= self.floor_global_seg {
                         let (mut t, mut dist) = project_to_segment(a, b, p, cl);
                         let mut progress = (cum0 + intra + t * seg_len) as u32;
                         if progress > ceiling_m {
