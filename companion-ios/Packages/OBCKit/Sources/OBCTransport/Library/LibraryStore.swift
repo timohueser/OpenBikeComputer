@@ -34,15 +34,13 @@ public protocol LibraryStore: Sendable {
 
     // MARK: Tracked rides
 
-    /// Every synced ride's summary, newest first: the Tracked list's whole appetite. Never decodes
-    /// tracklogs.
-    func rideSummaries() -> [RideSummary]
-    /// One ride's full tracklog, loaded on demand for the detail map. Nil when the ride is unknown
-    /// or its points do not decode: the ride stays summary-only rather than dropped, and the detail
-    /// degrades to the preview's coordinates.
-    func ridePoints(_ id: RideID) -> [RidePoint]?
-    /// One ride's line for the all-rides map. Nil when its points do not load. A persistent store
-    /// caches it, so the map reads a season of rides without decoding a tracklog.
+    /// Every synced ride's summary as it was synced, newest first. Never decodes tracklogs. The
+    /// rider sees `rideSummaries()`, where edited rides replace the rides they cover.
+    func archivedRideSummaries() -> [RideSummary]
+    /// One synced ride's full tracklog. Nil when the ride is unknown or its points do not decode.
+    func archivedRidePoints(_ id: RideID) -> [RidePoint]?
+    /// One ride's line for the all-rides map, edited or not. Nil when its points do not load. A
+    /// persistent store caches it, so the map reads a season of rides without decoding a tracklog.
     func rideMapLine(_ id: RideID) -> RideMapLine?
     /// Save one ride's summary and points. Report a write failure before sync records success.
     func saveRide(_ ride: Ride) throws
@@ -53,12 +51,20 @@ public protocol LibraryStore: Sendable {
     func archivedRideSource(_ id: RideID) -> RideSource?
     /// Revalidate durable storage before returning proof for an existing archive.
     func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt?
-    /// Update a ride's summary without touching its stored points: the rename write path.
+    /// Update a synced ride's summary without touching its stored points: the rename write path.
     /// Re-encoding a full tracklog to change a name would be exactly the whole-ride coupling the
     /// split read removed.
-    func saveRideSummary(_ summary: RideSummary)
+    func saveArchivedRideSummary(_ summary: RideSummary)
     /// Also deletes the ride's journal and photo thumbnails.
-    func deleteRide(_ id: RideID)
+    func deleteArchivedRide(_ id: RideID)
+
+    /// The edited rides. `RideViews.swift` reads and edits through these two.
+    func rideViews() -> [RideView]
+    func saveRideViews(_ views: [RideView])
+
+    /// Merge suggestions the rider dismissed. A dismissed suggestion never comes back.
+    func dismissedMerges() -> Set<RidePair>
+    func dismissMerge(_ pair: RidePair)
 
     /// The phone's additions to a stored ride; empty for an unknown ride.
     func rideJournal(_ id: RideID) -> RideJournal
@@ -129,6 +135,8 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private var storedTrips: [TripID: Trip] = [:]
     private var summaries: [RideID: RideSummary] = [:]
     private var points: [RideID: [RidePoint]] = [:]
+    private var views: [RideView] = []
+    private var dismissed: Set<RidePair> = []
     private var synced: Set<RideID> = []
     private var deleted: Set<RideID> = []
     private var trashed: [RideID: Date] = [:]
@@ -164,11 +172,11 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock { storedTrips[id] = nil }
     }
 
-    public func rideSummaries() -> [RideSummary] {
+    public func archivedRideSummaries() -> [RideSummary] {
         lock.withLock { summaries.values.sorted { $0.date > $1.date } }
     }
 
-    public func ridePoints(_ id: RideID) -> [RidePoint]? {
+    public func archivedRidePoints(_ id: RideID) -> [RidePoint]? {
         lock.withLock { points[id] }
     }
 
@@ -195,11 +203,11 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock { points[id] == nil ? nil : summaries[id]?.source }
     }
 
-    public func saveRideSummary(_ summary: RideSummary) {
+    public func saveArchivedRideSummary(_ summary: RideSummary) {
         lock.withLock { summaries[summary.id] = summary }
     }
 
-    public func deleteRide(_ id: RideID) {
+    public func deleteArchivedRide(_ id: RideID) {
         lock.withLock {
             summaries[id] = nil
             points[id] = nil
@@ -232,6 +240,22 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
             let kept = Set(journal.photos.map(\.assetID))
             thumbnails[id] = (thumbnails[id] ?? [:]).merging(new) { $1 }.filter { kept.contains($0.key) }
         }
+    }
+
+    public func rideViews() -> [RideView] {
+        lock.withLock { views }
+    }
+
+    public func saveRideViews(_ views: [RideView]) {
+        lock.withLock { self.views = views }
+    }
+
+    public func dismissedMerges() -> Set<RidePair> {
+        lock.withLock { dismissed }
+    }
+
+    public func dismissMerge(_ pair: RidePair) {
+        lock.withLock { _ = dismissed.insert(pair) }
     }
 
     public func syncedRideIDs() -> Set<RideID> {
