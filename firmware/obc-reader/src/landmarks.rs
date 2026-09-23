@@ -166,7 +166,7 @@ pub enum QueryProgress {
     Cancelled,
 }
 
-/// Records per scan read: one read then costs about one 512-byte card block.
+/// Records per scan read: at most one block's worth of bytes.
 const SCAN_RECORDS: usize = 6;
 
 /// One frozen position, scope and source generation. A step makes one read and adds at most one
