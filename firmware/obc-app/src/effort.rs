@@ -245,9 +245,10 @@ impl Effort {
 
     /// Once per pass: scroll the history to `now_ms`, so the graph moves through a dropout, and
     /// step each zone to the latest value against the rider's limits.
-    pub(crate) fn advance(&mut self, now_ms: u32, limits: Limits, hr: Option<u16>) {
+    /// `hr` and `power` are the latest values, `None` before a metric's first sample.
+    pub(crate) fn advance(&mut self, now_ms: u32, limits: Limits, hr: Option<u16>, power: Option<u16>) {
         self.roll(now_ms);
-        for (m, value) in [(Metric::Hr, hr), (Metric::Power, Some(self.power()))] {
+        for (m, value) in [(Metric::Hr, hr), (Metric::Power, power)] {
             let shown = Some(self.zone[m as usize]).filter(|&z| z != NO_ZONE);
             self.zone[m as usize] = match (value, limits.of(m)) {
                 (Some(v), Some(l)) => m.step(shown, v as u32, l),
@@ -340,7 +341,7 @@ mod tests {
     /// Pass one HR sample, then the pass boundary that zones it.
     fn hr(e: &mut Effort, bpm: u16, now_ms: u32) -> Option<u8> {
         e.sample(Metric::Hr, bpm, now_ms);
-        e.advance(now_ms, LIMITS, Some(bpm));
+        e.advance(now_ms, LIMITS, Some(bpm), None);
         e.zone(Metric::Hr)
     }
 
@@ -353,8 +354,20 @@ mod tests {
         assert_eq!(hr(&mut e, 159, 3_000), Some(3), "1 bpm under the edge holds Z4");
         assert_eq!(hr(&mut e, 157, 4_000), Some(2), "past the margin, it drops");
         assert_eq!(hr(&mut e, 200, 5_000), Some(4), "a jump crosses several zones at once");
-        e.advance(5_000, Limits { max_hr: 0, ftp_w: 200 }, Some(200));
+        e.advance(5_000, Limits { max_hr: 0, ftp_w: 200 }, Some(200), None);
         assert_eq!(e.zone(Metric::Hr), None, "no max HR, no zone");
+    }
+
+    #[test]
+    fn the_first_power_reading_takes_its_zone_outright() {
+        let mut e = Effort::new();
+        let ftp = Limits { max_hr: 0, ftp_w: 250 };
+        e.advance(0, ftp, None, None);
+        assert_eq!(e.zone(Metric::Power), None, "no sample yet, no zone");
+        e.sample(Metric::Power, 190, 1_000);
+        let power = e.power();
+        e.advance(1_000, ftp, None, Some(power));
+        assert_eq!(e.zone(Metric::Power), Some(2), "76 % of FTP is Z3 at once, with no climb through Z1 and Z2");
     }
 
     #[test]
@@ -379,12 +392,12 @@ mod tests {
         e.sample(Metric::Hr, 110, 2_000);
         e.sample(Metric::Hr, 130, 6_000);
         e.sample(Metric::Power, 1_000, 6_000);
-        e.advance(20_000, LIMITS, None);
+        e.advance(20_000, LIMITS, None, None);
         let h: std::vec::Vec<u16> = e.history(Metric::Hr).collect();
         assert_eq!(h.len(), HISTORY_BARS);
         assert_eq!(&h[HISTORY_BARS - 4..], [105, 130, 0, 0], "two filled buckets, then two empty ones");
         assert_eq!(e.history(Metric::Power).nth(HISTORY_BARS - 3), Some(1000), "power keeps 4 W steps");
-        e.advance(20_000 + 5 * 60_000, LIMITS, None);
+        e.advance(20_000 + 5 * 60_000, LIMITS, None, None);
         assert!(!e.has_history(Metric::Hr), "five quiet minutes empty the graph");
     }
 

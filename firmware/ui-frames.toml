@@ -1175,8 +1175,8 @@ expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
 
 # The HR graph and power graph fields: the zone-tinted number block continues as a 2 px frame around
-# the last five minutes of 5 s bars, each bar in its own zone, with the Z4 floor dotted. The replay
-# runs five and a half minutes, so the graphs are full.
+# the last five minutes of 5 s bars, each bar in its own zone. The replay runs five and a half
+# minutes, so the graphs are full.
 [[frame]]
 name = "statistics-effort-graphs"
 map = "{grimsel}"
