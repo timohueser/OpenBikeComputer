@@ -138,11 +138,6 @@ public final class TripDayEditorModel {
         balance { trip, candidates in trip.split(into: days, candidates: candidates) }
     }
 
-    /// Re-balance every day by riding time, keeping the number of days.
-    public func evenOut() {
-        balance { trip, candidates in trip.evenOut(candidates: candidates) }
-    }
-
     /// Cut `day` in two at the middle of its riding time. The new end closes `day`, and the
     /// rest of the old day becomes the next one.
     public func splitDay(_ day: Int) {

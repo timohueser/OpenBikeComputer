@@ -53,6 +53,8 @@ public struct TripDayEditorView: View {
                 )
                 .presentationDetents([.height(peekHeight), .medium, Self.topDetent], selection: $detent)
                 .presentationBackgroundInteraction(.enabled(upThrough: Self.topDetent))
+                // A swipe on the day list scrolls it; the grab handle and the header resize.
+                .presentationContentInteraction(.scrolls)
                 .presentationBackground(OBCTheme.parchment)
                 .presentationDragIndicator(.visible)
                 .interactiveDismissDisabled()
@@ -130,8 +132,8 @@ public struct TripDayEditorView: View {
     }
 }
 
-/// The sheet over the map: the header with the trip figures, Even out days and, in split mode,
-/// the stepper; the profile; and the day rows. The alerts and sheets of the editor present from
+/// The sheet over the map: a one-line header with the trip's figures and, in split mode, the
+/// stepper; the profile; and the day rows. The alerts and sheets of the editor present from
 /// here, above the sheet.
 struct DayEditorSheet: View {
     let model: TripDayEditorModel
@@ -152,9 +154,17 @@ struct DayEditorSheet: View {
         VStack(spacing: 0) {
             header
                 .padding(.horizontal, 20)
-                .padding(.top, 18)
+                .padding(.top, 20)
                 .padding(.bottom, 12)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { peekHeight = $0 }
+            if model.isSplitMode, model.balancesByDistance {
+                Text("This file has no elevation. Days are balanced by distance.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(OBCTheme.inkSoft)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 10)
+            }
             LineMarkerProfileView(model: model.handles, height: 150, showsAxis: true)
                 .padding(.horizontal, 20)
             list
@@ -186,37 +196,33 @@ struct DayEditorSheet: View {
 
     // MARK: Header
 
-    /// "4 DAYS · 324 KM · ~5 H A DAY" over the stepper in split mode, and Even out days.
+    /// "4 days · 324 km · ~5 h a day", with the stepper beside it in split mode. The lowest
+    /// detent is this line: it holds no button, and one height fits both modes.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 12) {
             let hours = Int((model.averageDayDuration / 3600).rounded())
-            OBCEyebrow(
+            Text(
                 "\(trip.dayCount) \(trip.dayCount == 1 ? "day" : "days") · "
-                    + "\(OBCFormat.distance(meters: model.handles.line.length)) · ~\(hours) h a day")
+                    + "\(OBCFormat.distance(meters: model.handles.line.length)) · "
+                    + (hours < 1 ? "under 1 h a day" : "~\(hours) h a day"))
+                .font(.system(size: 15, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(OBCTheme.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .accessibilityIdentifier("dayEditor.summary")
-            HStack {
-                if model.isSplitMode {
-                    Stepper(
-                        "Days",
-                        value: Binding(get: { trip.dayCount }, set: { model.setDayCount($0) }),
-                        in: 1...model.maxDays
-                    )
-                    .labelsHidden()
-                    .accessibilityIdentifier("dayEditor.days")
-                }
-                Spacer()
-                Button("Even out days") { model.evenOut() }
-                    .font(.system(size: 16))
-                    .foregroundStyle(OBCTheme.forest)
-                    .disabled(trip.dayCount < 2)
-                    .accessibilityIdentifier("dayEditor.evenOut")
-            }
-            if model.isSplitMode, model.balancesByDistance {
-                Text("This file has no elevation. Days are balanced by distance.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(OBCTheme.inkSoft)
+            Spacer(minLength: 0)
+            if model.isSplitMode {
+                Stepper(
+                    "Days",
+                    value: Binding(get: { trip.dayCount }, set: { model.setDayCount($0) }),
+                    in: 1...model.maxDays
+                )
+                .labelsHidden()
+                .accessibilityIdentifier("dayEditor.days")
             }
         }
+        .frame(minHeight: 32)
     }
 
     // MARK: Rows
