@@ -1498,6 +1498,34 @@ script = "B d d w p p d p w w"
 expect = "RouteOverview"
 args = ["--battery", "45", "--trip-progress", "0:1000:0"]
 
+# Finish on a trip day. Day 1 of "Alpen Traverse" is finished; the start card's day row starts Day 2,
+# the Grimsel replay rides 75 minutes of it, and Finish on the Paused page saves it. The card shows
+# today's ledger and Day 3, and page 2 shows Day 3's profile. A ride on the last day shows TRIP DONE:
+# Day 3 starts at the top of the climb, so its ride goes through Ride to start.
+[[frame]]
+name = "day-done"
+map = "{grimsel}"
+env = "arrival-trip"
+script = "B d d w p p d p p"
+expect = "DayDone"
+args = ["--trip-progress", "0:0:0", "--gpx", "{gpx}", "--script-at", "0", "--at", "4500", "--script-after", "f p d h f w w"]
+
+[[frame]]
+name = "day-done-tomorrow"
+map = "{grimsel}"
+env = "arrival-trip"
+script = "B d d w p p d p p"
+expect = "DayDone"
+args = ["--trip-progress", "0:0:0", "--gpx", "{gpx}", "--script-at", "0", "--at", "4500", "--script-after", "f p d h f w w w w w w w"]
+
+[[frame]]
+name = "trip-done"
+map = "{grimsel}"
+env = "arrival-trip"
+script = "B d d w p p d p p p w w"
+expect = "DayDone"
+args = ["--trip-progress", "1:0:1", "--gpx", "{gpx}", "--script-at", "0", "--at", "4500", "--script-after", "f p d h f w w"]
+
 # The bike type editor over the start card: the cursor on the bike row, a press opens the shared
 # editor sheet, and one step stages the next type, which the hero above the sheet shows at once.
 [[frame]]

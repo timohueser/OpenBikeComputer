@@ -122,22 +122,6 @@ extension Trip {
 
     // MARK: Cut
 
-    /// A day that starts more than this, straight line, from the end of the day before follows a
-    /// transfer: `TRANSFER_MIN_M` of `obc-ble-interface-spec.md` §7.7. The device uses the same
-    /// value. Closer, two files join.
-    public static let transferMinMeters = 200.0
-
-    /// The transfer after each day but the last: the straight-line metres from the day's last
-    /// point to the next day's first point, or nil when the next day starts within
-    /// ``transferMinMeters``. `days` are the day routes in ride order.
-    public static func transferMeters(between days: [[RoutePoint]]) -> [Double?] {
-        zip(days, days.dropFirst()).map { day, next in
-            guard let end = day.last, let start = next.first else { return nil }
-            let gap = end.coordinate.distance(to: start.coordinate)
-            return gap > transferMinMeters ? gap : nil
-        }
-    }
-
     /// The line cut at the day ends: one point list per day, in ride order. A day that starts at
     /// a gap starts at the next piece; a gap inside a day stays in it as a straight segment.
     public func dayLines() -> [[RoutePoint]] {
