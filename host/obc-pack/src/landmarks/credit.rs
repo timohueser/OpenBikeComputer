@@ -41,7 +41,8 @@ pub fn photo(attribution: &Attribution) -> Result<Credit, &'static str> {
     checked(["Wikimedia Commons".into(), file.replace('_', " "), creator, licence])
 }
 
-/// The short name of a supported Creative Commons licence URL.
+/// The short name and the canonical URI of a supported Creative Commons licence. The 1.0 to 3.0
+/// licences require the URI with every copy, and one form for all keeps the rule simple.
 pub fn licence(url: &str) -> Result<String, &'static str> {
     let path = url
         .strip_prefix("https://creativecommons.org/")
@@ -54,10 +55,10 @@ pub fn licence(url: &str) -> Result<String, &'static str> {
         .filter(|(_, tail)| tail.starts_with("deed.") || tail.starts_with("legalcode"))
         .map_or(path, |(base, _)| base);
     match path {
-        "publicdomain/zero/1.0" => Ok("CC0 1.0".into()),
+        "publicdomain/zero/1.0" => Ok(format!("CC0 1.0 creativecommons.org/{path}/")),
         _ => match path.strip_prefix("licenses/").and_then(|rest| rest.split_once('/')) {
             Some((kind @ ("by" | "by-sa"), version @ ("1.0" | "2.0" | "2.5" | "3.0" | "4.0"))) => {
-                Ok(format!("CC {} {version}", kind.to_ascii_uppercase()))
+                Ok(format!("CC {} {version} creativecommons.org/{path}/", kind.to_ascii_uppercase()))
             }
             _ => Err("unsupported_license"),
         },
@@ -102,7 +103,12 @@ mod tests {
         );
         assert_eq!(
             article(&source).unwrap(),
-            ["en.wikipedia.org/?oldid=1322295338", "Dunlough Castle", "Wikipedia contributors", "CC BY-SA 4.0"]
+            [
+                "en.wikipedia.org/?oldid=1322295338",
+                "Dunlough Castle",
+                "Wikipedia contributors",
+                "CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/"
+            ]
         );
     }
 
@@ -113,7 +119,7 @@ mod tests {
         let by = "https://creativecommons.org/licenses/by/3.0";
         assert_eq!(
             photo(&attribution(url, "t", by, artist)).unwrap(),
-            ["Wikimedia Commons", "Fuorcla Radönt 2.jpg", "Ab C", "CC BY 3.0"]
+            ["Wikimedia Commons", "Fuorcla Radönt 2.jpg", "Ab C", "CC BY 3.0 creativecommons.org/licenses/by/3.0/"]
         );
         let requested = r#"{"Artist":{"value":"Ab"},"Attribution":{"value":"© Ab / Wikimedia Commons"}}"#;
         assert_eq!(photo(&attribution(url, "t", by, requested)).unwrap()[2], "© Ab / Wikimedia Commons");
@@ -122,7 +128,10 @@ mod tests {
             Err("photo_creator_missing")
         );
         let zero = "https://creativecommons.org/publicdomain/zero/1.0/";
-        assert_eq!(photo(&attribution(url, "t", zero, "{}")).unwrap()[2..], ["", "CC0 1.0"]);
+        assert_eq!(
+            photo(&attribution(url, "t", zero, "{}")).unwrap()[2..],
+            ["", "CC0 1.0 creativecommons.org/publicdomain/zero/1.0/"]
+        );
         let long = format!(r#"{{"Artist":{{"value":"{}"}}}}"#, "a ".repeat(600));
         assert_eq!(photo(&attribution(url, "t", by, &long)), Err("attribution_bytes"));
         assert_eq!(photo(&attribution(url, "t", by, r#"{"Artist":{"value":"作者"}}"#)), Err("attribution_glyph"));

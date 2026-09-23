@@ -226,7 +226,8 @@ where
         return;
     }
     if sources {
-        let screen = state.source_page - state.source_first;
+        // A failed read keeps the last work's first screen, so this can briefly exceed the page.
+        let screen = state.source_page.saturating_sub(state.source_first);
         source_layout(state.source_photo, &state.text, |at, y, line| {
             let (text, color) = match line {
                 SourceLine::Caption(msg) => (rx.t(msg), SUBTEXT),
@@ -282,9 +283,9 @@ pub(crate) fn source_layout(photo: bool, fields: &str, mut emit: impl FnMut(u16,
             Msg::AssistantSourceLicense,
         ]
     };
-    // An article is an excerpt; the photo is also resized and dithered to the panel palette.
-    let changes = photo.then_some((Msg::AssistantSourceChanges, None));
-    let rows = captions.into_iter().zip(fields.split('\n').map(Some)).chain(changes);
+    // The article is an excerpt; the photo is resized and dithered to the panel palette.
+    let changes = if photo { Msg::AssistantSourceResized } else { Msg::AssistantSourceExcerpt };
+    let rows = captions.into_iter().zip(fields.split('\n').map(Some)).chain([(Msg::AssistantSourceChanges, None)]);
     let (mut screen, mut y) = (0, TOP);
     for (caption, value) in rows.filter(|(_, value)| *value != Some("")) {
         let mut lines = 1;
@@ -301,7 +302,7 @@ pub(crate) fn source_layout(photo: bool, fields: &str, mut emit: impl FnMut(u16,
         emit(screen, y, SourceLine::Caption(caption));
         y += pitch;
         let Some(value) = value else {
-            emit(screen, y, SourceLine::Note(Msg::AssistantSourceResized));
+            emit(screen, y, SourceLine::Note(changes));
             y += pitch;
             continue;
         };
@@ -424,6 +425,7 @@ mod tests {
             Msg::AssistantSourceAuthor,
             Msg::AssistantSourceChanges,
             Msg::AssistantSourceResized,
+            Msg::AssistantSourceExcerpt,
         ];
         for language in Language::ALL {
             for msg in messages {
@@ -446,23 +448,30 @@ mod tests {
             });
             (screens, lines)
         };
-        let (screens, text) =
-            lines(false, "en.wikipedia.org/?oldid=1322295338\nDunlough Castle\nWikipedia contributors\nCC BY-SA 4.0");
-        assert_eq!(screens, 1);
-        let drawn: std::vec::Vec<_> = text.iter().map(|(_, _, line)| line.as_str()).collect();
+        let licence = "CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/";
+        let article =
+            std::format!("en.wikipedia.org/?oldid=1322295338\nDunlough Castle\nWikipedia contributors\n{licence}");
+        let (screens, text) = lines(false, &article);
+        assert_eq!(screens, 2);
+        let drawn: std::vec::Vec<_> = text.iter().map(|(screen, _, line)| (*screen, line.as_str())).collect();
         assert_eq!(
             drawn,
             [
-                "Text",
-                "en.wikipedia.org/",
-                "?oldid=1322295338",
-                "Article",
-                "Dunlough Castle",
-                "Authors",
-                "Wikipedia",
-                "contributors",
-                "License",
-                "CC BY-SA 4.0"
+                (0, "Text"),
+                (0, "en.wikipedia.org/"),
+                (0, "?oldid=1322295338"),
+                (0, "Article"),
+                (0, "Dunlough Castle"),
+                (0, "Authors"),
+                (0, "Wikipedia"),
+                (0, "contributors"),
+                (1, "License"),
+                (1, "CC BY-SA 4.0"),
+                (1, "creativecommons."),
+                (1, "org/licenses/"),
+                (1, "by-sa/4.0/"),
+                (1, "Changes"),
+                (1, "Excerpt"),
             ]
         );
         // No creator: its row is left out, and the photo states its changes.

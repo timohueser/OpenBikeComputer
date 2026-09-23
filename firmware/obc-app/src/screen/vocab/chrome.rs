@@ -131,13 +131,13 @@ pub(crate) const fn copy_w(w: i32) -> i32 {
 /// Greedy word wrap over the monospace cell, one call of `emit` per line. The budget counts
 /// characters, not bytes: the face renders every char of its repertoire in one cell, so a byte
 /// count breaks the accented languages early. A single word wider than the budget breaks after
-/// its last slash or hyphen that fits, else at the budget.
+/// its last slash that fits, else its last hyphen, else its last dot, else at the budget.
 pub(crate) fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
     let budget = (width_px / font.char_width() as i32).max(1) as usize;
     let mut line: heapless::String<64> = heapless::String::new();
     for mut word in text.split(' ') {
         while let Some((limit, _)) = word.char_indices().nth(budget) {
-            let cut = word[..limit].rfind(['/', '-']).map_or(limit, |at| at + 1);
+            let cut = ['/', '-', '.'].iter().find_map(|&c| word[..limit].rfind(c)).map_or(limit, |at| at + 1);
             if !line.is_empty() {
                 emit(&line);
                 line.clear();
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn a_word_wider_than_the_budget_breaks_after_a_hyphen_or_at_the_budget() {
+    fn a_word_wider_than_the_budget_breaks_after_a_slash_hyphen_or_dot_or_at_the_budget() {
         let mut lines = std::vec::Vec::new();
         let copy = "2019-07-30-Dunlough Castle 12345678901234567890";
         wrap(copy, 18 * Font::Label.char_width() as i32, Font::Label, |line| {

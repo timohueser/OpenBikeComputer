@@ -575,7 +575,7 @@ page."
         );
         state.read_step(&reader, true, *b"en").unwrap();
         assert_eq!(state.text.as_str(), CREDIT.join("\n"));
-        assert_eq!(state.source_pages, 1);
+        assert_eq!(state.source_pages, 2, "the Changes row starts the text credit's second screen");
         state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.text, before);
         assert_eq!(state.selected().unwrap().key.qid, 3);
@@ -631,11 +631,11 @@ page."
         state.read_step(&reader, false, *b"en").unwrap();
         let photo_screens = crate::screen::source_layout(true, &photo.join("\n"), |_, _, _| {});
         assert!(photo_screens > 1);
-        assert_eq!(state.source_pages, 1 + photo_screens, "the text credit fits one screen");
+        assert_eq!(state.source_pages, 2 + photo_screens);
         state.source_page = state.source_pages - 1;
         state.read_step(&reader, true, *b"en").unwrap();
         assert!(state.source_photo);
-        assert_eq!((state.source_first, state.text.as_str()), (1, photo.join("\n").as_str()));
+        assert_eq!((state.source_first, state.text.as_str()), (2, photo.join("\n").as_str()));
         state.source_page = 0;
         state.read_step(&reader, true, *b"en").unwrap();
         assert_eq!((state.source_photo, state.source_first), (false, 0));
@@ -685,7 +685,7 @@ page."
         app.prepare_landmarks(Some(&reader));
         assert_eq!(app.ui.landmarks.status, Status::Ready);
         assert_eq!(app.ui.landmarks.text.as_str(), CREDIT.join("\n"));
-        assert_eq!((app.ui.landmarks.source_page, app.ui.landmarks.source_pages), (0, 1));
+        assert_eq!((app.ui.landmarks.source_page, app.ui.landmarks.source_pages), (0, 2));
         assert!(app.ui.landmarks.record.unwrap().photo.is_absent());
         app.apply_gesture(crate::Gesture::Back);
         app.prepare_landmarks(Some(&reader));

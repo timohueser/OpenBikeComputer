@@ -1358,7 +1358,7 @@ most 1,024 bytes. Readers wrap the fields themselves.
 | Source | URL of the exact revision, `<language>.wikipedia.org/?oldid=<revision>` | `Wikimedia Commons` |
 | Title | Article title | Commons file name, which identifies the file page |
 | Creator | `Wikipedia contributors` | The licensor's requested attribution, else the author |
-| Licence | Creative Commons short name, for example `CC BY-SA 4.0` | Same as the article |
+| Licence | Creative Commons short name and licence URI, for example `CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/` | Same as the article |
 
 ### 9.3 Independent photo stream
 
