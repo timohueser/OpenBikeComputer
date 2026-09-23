@@ -180,10 +180,9 @@ fn a_ride_records_its_trip_day_and_bike_type() {
     assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, None, ""));
 }
 
-/// Finish of a ride on a trip day moves the trip's progress: the store gets one record, and the
-/// resident records name the next day at once.
-#[test]
-fn a_saved_ride_on_a_trip_day_writes_the_trip_progress() {
+/// Ride Day 2 of a three-day trip and save it. `ride_on` loads Day 3 during the ride, as Ride on in
+/// the arrival view does. Returns the progress record the Finish writes.
+fn finish_day_2(ride_on: bool) -> (App, obc_app::trip::TripProgress) {
     use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
     use obc_app::device_core::{ExternalFacts, OutcomeSlots, Revision, StoreIdentity, StoreRevision};
     use obc_app::metadata::{MetadataEffect, MetadataOutcome};
@@ -201,7 +200,8 @@ fn a_saved_ride_on_a_trip_day_writes_the_trip_progress() {
         facts.note_store_revision(scope);
         match pass {
             1 => app.recorder.request(RecorderIntent::Start),
-            2 => app.recorder.request(RecorderIntent::Save),
+            2 if ride_on => app.activate_route(2),
+            3 => app.recorder.request(RecorderIntent::Save),
             _ => {}
         }
         let mut plan = crate::common::pass(&mut app, pass * 1_000, &mut outcomes, &mut facts, None);
@@ -227,8 +227,22 @@ fn a_saved_ride_on_a_trip_day_writes_the_trip_progress() {
         }
     }
 
-    let written = written.expect("the Finish writes the trip's progress");
+    (app, written.expect("the Finish writes the trip's progress"))
+}
+
+/// Finish of a ride on a trip day moves the trip's progress: the store gets one record, and the
+/// resident records name the next day at once.
+#[test]
+fn a_saved_ride_on_a_trip_day_writes_the_trip_progress() {
+    let (app, written) = finish_day_2(false);
     assert_eq!((written.key, written.day, written.day_route.id, written.last_finished), (42, 1, 8, Some(1)));
     let trip = &app.trips()[0];
     assert_eq!(trip.next_day(trip.progress_in(app.trip_progress())), Some(2), "Day 3 is next");
+}
+
+/// A ride that rode on into Day 3 finishes Day 2 and leaves the position in Day 3.
+#[test]
+fn a_ride_that_rode_on_leaves_the_position_in_the_next_day() {
+    let (_, written) = finish_day_2(true);
+    assert_eq!((written.day, written.day_route.id, written.last_finished), (2, 9, Some(1)));
 }

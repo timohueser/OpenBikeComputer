@@ -1153,13 +1153,21 @@ impl App {
                     _ => None,
                 }
             });
+        // Ride on from the arrival view loads a later day of the trip during the ride.
+        let later = active
+            .and_then(|active| trip.stage_ids.iter().position(|&id| id == active))
+            .and_then(|k| u16::try_from(k).ok())
+            .filter(|&k| k > day);
         let mut at = match lead.map(|lead| lead.position(self.progress_m())) {
             Some(Err(metres)) if day > 0 => {
                 TripPosition { day: day - 1, route: trip.stage_ids[usize::from(day) - 1], metres }
             }
             Some(Ok(metres)) => TripPosition { day, route, metres },
             _ if active == Some(route) => TripPosition { day, route, metres: self.progress_m() },
-            _ => TripPosition { day, route, metres: 0 },
+            _ => match (later, active) {
+                (Some(k), Some(active)) => TripPosition { day: k, route: active, metres: self.progress_m() },
+                _ => TripPosition { day, route, metres: 0 },
+            },
         };
         // Metres measured on geometry that a re-upload replaced during the ride mean nothing on the
         // new one.
