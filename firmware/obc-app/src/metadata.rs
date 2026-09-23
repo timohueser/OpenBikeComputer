@@ -64,6 +64,8 @@ pub(crate) struct MetadataMachine {
     progress: Records,
     /// A Finish's record that the store does not hold yet.
     progress_owed: Option<TripProgress>,
+    /// The owed Finish rode on past the end of its day.
+    rode_on: Option<crate::trip::RodeOn>,
     /// The write in flight is the owed record.
     writing_progress: bool,
     /// Where the active trip's next day meets the day before, from the last catalog read.
@@ -80,6 +82,7 @@ impl MetadataMachine {
             blocked: false,
             progress: Records::new(),
             progress_owed: None,
+            rode_on: None,
             writing_progress: false,
             day_join: None,
             replaced: heapless::Vec::new(),
@@ -105,6 +108,10 @@ impl MetadataMachine {
     pub(crate) fn progress_payload(&self, token: OperationToken<MetadataTag>) -> Option<&TripProgress> {
         self.progress_owed.as_ref().filter(|_| self.writing_progress && self.ops.is_current(token))
     }
+    /// The owed record's ride on past the end of its day, while `token` is the write in flight.
+    pub(crate) fn progress_rode_on(&self, token: OperationToken<MetadataTag>) -> Option<crate::trip::RodeOn> {
+        self.progress_payload(token).and(self.rode_on)
+    }
     pub(crate) fn apply_outcome(&mut self, outcome: MetadataOutcome) -> bool {
         if !self.inflight || !self.ops.is_current(outcome.token()) {
             return false;
@@ -116,6 +123,7 @@ impl MetadataMachine {
         );
         if core::mem::take(&mut self.writing_progress) && !retry {
             self.progress_owed = None;
+            self.rode_on = None;
         }
         self.ops.invalidate();
         self.inflight = false;
@@ -123,9 +131,23 @@ impl MetadataMachine {
         true
     }
     /// A Finish's record. The resident records take it at once; the store takes it when it can.
-    pub(crate) fn owe_progress(&mut self, record: TripProgress, stored: impl Fn(u64) -> bool) {
+    pub(crate) fn owe_progress(
+        &mut self,
+        record: TripProgress,
+        rode_on: Option<crate::trip::RodeOn>,
+        stored: impl Fn(u64) -> bool,
+    ) {
         obc_formats::trip_progress::record(&mut self.progress, record.clone(), stored);
         self.progress_owed = Some(record);
+        self.rode_on = rode_on;
+        // A write in flight carries the record before this one, so its answer must not clear this.
+        self.writing_progress = false;
+    }
+    /// A start's record. It never displaces a Finish's record that the store does not hold yet.
+    pub(crate) fn owe_start(&mut self, record: TripProgress, stored: impl Fn(u64) -> bool) {
+        if self.progress_owed.is_none() {
+            self.owe_progress(record, None, stored);
+        }
     }
     pub(crate) fn progress(&self) -> &[TripProgress] {
         &self.progress
@@ -171,6 +193,7 @@ impl MetadataMachine {
                 && !self.blocked
                 && self.progress.is_empty()
                 && self.progress_owed.is_none()
+                && self.rode_on.is_none()
                 && !self.writing_progress
                 && self.day_join.is_none()
                 && self.replaced.is_empty()
@@ -199,5 +222,24 @@ mod tests {
         let retry = machine.next_checkpoint_effect().unwrap().token();
         assert!(machine.apply_outcome(MetadataOutcome::Cancelled { token: retry }));
         assert!(machine.next_checkpoint_effect().is_some());
+    }
+
+    #[test]
+    fn a_finish_owed_while_a_start_write_is_in_flight_is_written_next() {
+        let record = |key, last_finished| TripProgress {
+            key,
+            day: 0,
+            day_route: obc_formats::trip_progress::RouteVersion { id: 7, revision: 0 },
+            metres: 0,
+            last_finished,
+            dates: [0; obc_formats::trip_progress::MAX_DAYS],
+        };
+        let mut machine = MetadataMachine::new();
+        machine.owe_start(record(1, None), |_| true);
+        let start = machine.next_progress_effect().unwrap().token();
+        machine.owe_progress(record(1, Some(0)), None, |_| true);
+        assert!(machine.apply_outcome(MetadataOutcome::ProgressWritten { token: start }));
+        let finish = machine.next_progress_effect().expect("the Finish is still owed").token();
+        assert_eq!(machine.progress_payload(finish), Some(&record(1, Some(0))));
     }
 }

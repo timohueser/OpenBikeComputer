@@ -573,6 +573,8 @@ impl App {
                 }
             }
         }
+        // A continuation writes it too: a reset can come before the start's write lands.
+        self.note_trip_start();
         self.recorder.restart_buffers();
         self.ui.map_dirty = true;
     }

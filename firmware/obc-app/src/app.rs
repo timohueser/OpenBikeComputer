@@ -1154,6 +1154,29 @@ impl App {
         self.metadata.progress_payload(token)
     }
 
+    /// The ride on past the end of its day of the record that `token` writes: the executor settles
+    /// the record with [`RodeOn::settle`](crate::trip::RodeOn::settle) before it writes it.
+    pub fn trip_progress_rode_on(
+        &self,
+        token: crate::device_core::OperationToken<crate::device_core::MetadataTag>,
+    ) -> Option<crate::trip::RodeOn> {
+        self.metadata.progress_rode_on(token)
+    }
+
+    /// A ride on a trip day makes that trip the active one: its start record moves the trip's record
+    /// to the end of the records, in the store too, so the start card follows it after a power
+    /// cycle. The store moves its own copy, so records the device has not read yet are safe.
+    pub(crate) fn note_trip_start(&mut self) {
+        let Some(day) = self.recorder.ride_stats().trip else { return };
+        if self.metadata.progress().last().is_some_and(|p| p.key == day.key()) {
+            return;
+        }
+        let Some(trip) = self.trips().iter().find(|t| t.key == day.key()) else { return };
+        let record = trip.start();
+        let trips = self.catalogs.trips();
+        self.metadata.owe_start(record, |key| trips.iter().any(|t| t.key == key));
+    }
+
     /// A saved ride on a trip day moves that trip's progress to where the ride ended.
     pub(crate) fn note_trip_finish(&mut self) {
         use crate::trip::TripPosition;
@@ -1168,6 +1191,8 @@ impl App {
         let active_index = end.map_or(self.active_route_index(), |end| Some(end.route));
         let progress_m = end.map_or(self.progress_m(), |end| end.progress_m);
         let arrived = end.map_or(self.navigator.route_state().arrival.arrived(), |end| end.arrived);
+        let rode_on =
+            end.map_or(self.navigator.route_state().arrival == crate::navigator::Arrival::RodeOn, |end| end.rode_on);
         let active = active_index.and_then(|i| self.route_ids().get(i).copied());
         // After a reset the adopted lead-in is gone, but a built day is still the internal route
         // the record and the line facts describe: its rest starts where the record stands.
@@ -1212,8 +1237,16 @@ impl App {
         // can have moved past the day the ride started on.
         let finished = if arrived { at.day } else { day };
         let record = trip.finish(old, finished, at, today);
+        // Past the end of its day the ride may be on the next day's line; the executor reads that
+        // route and projects the fix onto it once.
+        let rode_on = rode_on.then_some(()).and_then(|()| {
+            let fix = self.state.user_fix?;
+            let day = at.day.checked_add(1)?;
+            let &route = trip.stage_ids.get(usize::from(day))?;
+            Some(crate::trip::RodeOn { fix: (fix.lon, fix.lat), day, route })
+        });
         let trips = self.catalogs.trips();
-        self.metadata.owe_progress(record, |key| trips.iter().any(|t| t.key == key));
+        self.metadata.owe_progress(record, rode_on, |key| trips.iter().any(|t| t.key == key));
     }
 
     /// The card after the save of a ride on a trip day: DAY N DONE, or TRIP DONE after the last
