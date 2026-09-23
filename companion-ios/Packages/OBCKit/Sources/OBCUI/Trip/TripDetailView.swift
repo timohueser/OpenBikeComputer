@@ -4,8 +4,8 @@ import OBCTransport
 
 /// The trip page, behind a trip card in the routes list: the map in day colours, the totals, the
 /// Upload trip action, one row per day with its number and its name, then the start date and the
-/// bike type. A tap on a day renames it; a long press also offers
-/// to end the day at a stop. A tap on a transfer line labels it. The overflow menu carries
+/// bike type. A tap on a day opens its route detail; a long press offers Rename day and End day at
+/// a stop. A tap on a transfer line labels it. The overflow menu carries
 /// Rename, Reverse and Delete trip.
 ///
 /// Once the trip has a ride, the page is the trip review: the line with the ridden part, the
@@ -20,6 +20,7 @@ public struct TripDetailView: View {
     private let onOpenRide: (RideID) -> Void
     /// Even out the days of a re-balance offer. The offer shows only with it.
     private let onEvenOut: ((RebalanceOffer) -> Void)?
+    private let onOpenDay: (Int) -> Void
 
     @State private var renameShown = false
     @State private var deleteDialogShown = false
@@ -48,13 +49,15 @@ public struct TripDetailView: View {
         tripID: TripID,
         onClose: @escaping () -> Void = {},
         onOpenRide: @escaping (RideID) -> Void = { _ in },
-        onEvenOut: ((RebalanceOffer) -> Void)? = nil
+        onEvenOut: ((RebalanceOffer) -> Void)? = nil,
+        onOpenDay: @escaping (Int) -> Void = { _ in }
     ) {
         self.model = model
         self.tripID = tripID
         self.onClose = onClose
         self.onOpenRide = onOpenRide
         self.onEvenOut = onEvenOut
+        self.onOpenDay = onOpenDay
     }
 
     private var trip: Trip? { model.trip(tripID) }
@@ -245,7 +248,7 @@ public struct TripDetailView: View {
                         .joined(separator: " · "),
                     showsDivider: index != indices.last
                 ) {
-                    dayRename = index
+                    onOpenDay(index)
                 }
                 .contextMenu {
                     Button { dayRename = index } label: { Label("Rename day", systemImage: "pencil") }

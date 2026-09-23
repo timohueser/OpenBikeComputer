@@ -343,6 +343,9 @@ public struct RouteDetailView: View {
             case .imported:
                 // The rows under the stats land the route; upload is on the route or trip page.
                 EmptyView()
+            case .tripDay:
+                // The trip page uploads and deletes the whole trip.
+                EmptyView()
             case .tracked:
                 // The services block above carries the per-ride upload.
                 Button("Delete ride") { deleteConfirmShown = true }
