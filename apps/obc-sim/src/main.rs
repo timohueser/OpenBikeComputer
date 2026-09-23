@@ -308,6 +308,9 @@ fn stat_field_id(f: obc_app::StatField) -> &'static str {
         F::HeartRate => "heart-rate",
         F::Power => "power",
         F::Cadence => "cadence",
+        F::Kj => "kj",
+        F::HrGraph => "hr-graph",
+        F::PowerGraph => "power-graph",
         F::NextWater => "next-water",
         F::NextCampsite => "next-campsite",
         F::NextLodging => "next-lodging",
@@ -657,8 +660,9 @@ fn headless_replay_advance<'s>(
     baro: &'s mut BaroSensor,
     dt: f64,
     from: f64,
+    sensors: ReplaySensors<'s>,
 ) -> (obc_ports::RideClock, obc_ports::Sensors<'s>) {
-    let (ride, sensors) = replay_advance(player, baro, None, dt, ReplaySensors::default());
+    let (ride, sensors) = replay_advance(player, baro, None, dt, sensors);
     (obc_ports::RideClock(ride.0.saturating_sub((from * 1000.0) as u32)), sensors)
 }
 
@@ -1262,10 +1266,11 @@ fn main() {
             if let Some(lang) = args.lang {
                 settings.language = lang;
             }
-            // `--sensors demo`: pin the three sensor tiles onto the visible Statistics page so the
-            // snapshot shows them, replacing the default six.
+            // `--sensors demo`: set the rider's limits and pin the sensor tiles onto the visible
+            // Statistics page, replacing the default six, so the snapshot shows them in their zones.
             if args.sensors == Some(SensorSeed::Demo) {
                 use obc_app::StatField;
+                (settings.max_hr, settings.ftp_w) = (185, 250);
                 let mut sf = settings.stat_fields;
                 while !sf.is_empty() {
                     sf.remove(0);
@@ -1273,8 +1278,8 @@ fn main() {
                 for f in [
                     StatField::HeartRate,
                     StatField::Power,
+                    StatField::Kj,
                     StatField::Cadence,
-                    StatField::Speed,
                     StatField::RideTime,
                     StatField::Climbed,
                 ] {
@@ -1590,6 +1595,11 @@ fn main() {
             }
             let step = ((replay_to - replay_from) / 400.0).clamp(1.0, 8.0);
             let mut t = replay_from;
+            // `--sensors demo`: the synthetic straps ride along on the replay's own clock.
+            let mut demo = crate::sim_sensors::SimSensors::new();
+            (demo.cfg.hr_enabled, demo.cfg.power_enabled, demo.cfg.cadence_enabled) = (true, true, true);
+            demo.cfg.cadence_rpm = 88;
+            let demo_on = args.sensors == Some(SensorSeed::Demo);
             while t < replay_to {
                 session.sync(&app, stores.routes);
                 let mut plan = {
@@ -1599,7 +1609,19 @@ fn main() {
                         _ => None,
                     };
                     let dt = if args.script_at.is_some() { step.min(replay_to - t) } else { step };
-                    let (ride, sensors) = headless_replay_advance(p, &mut baro, dt, replay_from);
+                    let sensors = if demo_on {
+                        let at = p.time() + dt;
+                        (demo.cfg.hr_bpm, demo.cfg.power_w) = crate::sim_sensors::demo_effort(at);
+                        demo.feed(((at - replay_from) * 1000.0) as u32, 0.0);
+                        ReplaySensors {
+                            hr: Some(&mut demo.hr),
+                            power: Some(&mut demo.power),
+                            cadence: Some(&mut demo.cadence),
+                        }
+                    } else {
+                        ReplaySensors::default()
+                    };
+                    let (ride, sensors) = headless_replay_advance(p, &mut baro, dt, replay_from, sensors);
                     replay_clock = ride;
                     host.pass(
                         &mut app,
@@ -1627,70 +1649,6 @@ fn main() {
                 // does.
                 app.sample_terrain(&mut *elev);
                 t = (t + step).min(replay_to);
-            }
-        }
-
-        // `--sensors demo`: one final frame fed a fixed synthetic heart rate, power and cadence
-        // through the HAL sensor traits, so the three stat tiles render live values in the
-        // Statistics-grid snapshot. Stamped at the replay's own `now_ms`, so the 5 s staleness gate
-        // reads them fresh.
-        if args.sensors == Some(SensorSeed::Demo) {
-            if let Some(p) = player.as_mut() {
-                struct DemoHr;
-                impl obc_ports::HeartRateSource for DemoHr {
-                    fn poll(&mut self) -> Option<u16> {
-                        Some(152)
-                    }
-                }
-                struct DemoPower;
-                impl obc_ports::PowerSource for DemoPower {
-                    fn poll(&mut self) -> Option<u16> {
-                        Some(210)
-                    }
-                }
-                struct DemoCadence;
-                impl obc_ports::CadenceSource for DemoCadence {
-                    fn poll(&mut self) -> Option<u8> {
-                        Some(88)
-                    }
-                }
-                session.sync(&app, stores.routes);
-                let ride = obc_ports::RideClock(((p.time() - replay_from) * 1000.0) as u32);
-                replay_clock = ride;
-                let mut plan = {
-                    let src = stores.routes.active_source();
-                    let route = match (session.index(), src) {
-                        (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
-                        _ => None,
-                    };
-                    let (mut hr, mut power, mut cadence) = (DemoHr, DemoPower, DemoCadence);
-                    let sensors = obc_ports::Sensors {
-                        hr: Some(&mut hr),
-                        power: Some(&mut power),
-                        cadence: Some(&mut cadence),
-                        ..obc_ports::Sensors::new(p)
-                    };
-                    host.pass(
-                        &mut app,
-                        obc_app::device_core::PassClock { ride, ui: InputClock(script_now) },
-                        &[],
-                        sensors,
-                        route.as_ref(),
-                        gui::SIM_SUPPORT,
-                    )
-                };
-                host.execute(
-                    &mut app,
-                    &mut plan,
-                    &mut session,
-                    stores.routes,
-                    stores.rides,
-                    stores.tracks,
-                    stores.trips,
-                    map.planner_map(),
-                    &mut *elev,
-                    &mut platform,
-                );
             }
         }
 
@@ -1895,7 +1853,7 @@ mod cli_tests {
         player.play();
         let mut baro = BaroSensor::new();
         for second in 1..=3 {
-            let (ride, sensors) = headless_replay_advance(&mut player, &mut baro, 1.0, from);
+            let (ride, sensors) = headless_replay_advance(&mut player, &mut baro, 1.0, from, ReplaySensors::default());
             assert_eq!(ride.0, second * 1000);
             assert_eq!(sensors.loc.poll().unwrap().lon, 7_000_050 + second as i32 * 10);
         }

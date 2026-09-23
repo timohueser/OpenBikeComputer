@@ -282,7 +282,7 @@ public struct OBCComponentGallery: View {
         }
         .background(OBCTheme.parchment)
         .obcToast(isPresented: $toastShown, message: "You're up to date — no new rides on Trailhead.")
-        .obcRenameAlert("Rename device", isPresented: $renameShown, name: $name) {}
+        .obcRenameSheet("Rename device", isPresented: $renameShown, name: name) { name = $0 }
         .obcDestructiveConfirm(
             "Forget Trailhead?",
             isPresented: $confirmShown,

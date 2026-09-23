@@ -20,7 +20,7 @@ use crate::Msg;
 use super::vocab::band::ElevationBand;
 use super::vocab::chrome::title_frame;
 use super::vocab::fmt::write_distance_coarse;
-use super::vocab::tiles::{category_tile, tile, waypoint_panel};
+use super::vocab::tiles::{category_tile, graph_tile, tile, waypoint_panel, zone_tile};
 use super::{palette, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Cursor scrub per Up/Down step, as a fraction of the whole route.
@@ -335,12 +335,17 @@ impl StatisticsScreen {
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
             let area = rect(x, y, tile_w, row_h);
             // A `Next: <category>` tile puts the category icon in front of its caption, which moves
-            // the caption, so it has its own drawer.
-            match placed.field.category() {
-                Some(cat) => {
+            // the caption, so it has its own drawer. An effort tile with a zone takes its tint.
+            match (placed.field.graph(), placed.field.category(), cell.zone) {
+                (Some(m), ..) => {
+                    let limit = rx.settings.effort_limits().of(m);
+                    graph_tile(cv, area, &cell.caption, &cell.value, cell.zone, rx.recorder.effort(), m, limit);
+                }
+                (None, Some(cat), _) => {
                     category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, SUBTEXT, INK);
                 }
-                None => tile(
+                (None, None, Some(zone)) => zone_tile(cv, area, &cell.caption, &cell.value, zone),
+                (None, None, None) => tile(
                     cv,
                     area,
                     &rx.marquee,

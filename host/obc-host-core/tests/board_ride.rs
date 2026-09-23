@@ -67,6 +67,7 @@ fn context(n: u32) -> RideContinuation {
         max_power: 200,
         cadence_ms_sum: u64::from(n) * 85_000,
         cadence_ms: n * 1_000,
+        energy_j: Some(n * 200),
     }
 }
 fn point(n: u32) -> TrackPoint {

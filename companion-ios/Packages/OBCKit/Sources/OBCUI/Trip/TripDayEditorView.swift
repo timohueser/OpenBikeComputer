@@ -151,7 +151,6 @@ struct DayEditorSheet: View {
 
     @State private var stopsModel: TripStopsModel?
     @State private var dayRename: Int?
-    @State private var dayDraft = ""
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -180,11 +179,11 @@ struct DayEditorSheet: View {
         ) {
             if let day = dayMenu { dayActions(day) }
         }
-        .obcRenameAlert(
+        .obcRenameSheet(
             "Rename day",
             isPresented: Binding(get: { dayRename != nil }, set: { if !$0 { dayRename = nil } }),
-            name: $dayDraft,
-            onSave: { if let day = dayRename { model.renameDay(day, to: dayDraft) } }
+            name: dayRename.flatMap { trip.dayEnds.indices.contains($0) ? trip.dayEnds[$0].title : nil } ?? "",
+            onSave: { if let day = dayRename { model.renameDay(day, to: $0) } }
         )
         .sheet(item: $stopsModel) { stops in
             TripStopsSheet(model: stops)
@@ -349,7 +348,6 @@ struct DayEditorSheet: View {
     }
 
     private func rename(_ day: Int) {
-        dayDraft = trip.dayEnds[day].title ?? ""
         dayRename = day
     }
 }

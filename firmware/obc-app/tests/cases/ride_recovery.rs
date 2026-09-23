@@ -24,6 +24,7 @@ fn continuation() -> RideContinuation {
         max_power: 640,
         cadence_ms_sum: 84 * 9_000,
         cadence_ms: 9_000,
+        energy_j: Some(1_760),
     }
 }
 
