@@ -3,6 +3,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).parents[1] / "check_dependencies.py"
 SPEC = importlib.util.spec_from_file_location("check_dependencies", SCRIPT)
@@ -59,7 +60,56 @@ def rules():
         ],
     }
 
+
+def resolved_metadata(package, features):
+    package_id = f"registry+example#{package}@1.0.0"
+    return {
+        "packages": [{"id": package_id, "name": package}],
+        "resolve": {"nodes": [{"id": package_id, "features": features}]},
+    }
+
+
 class DependencyTests(unittest.TestCase):
+
+    @mock.patch.object(check_dependencies.subprocess, "run")
+    def test_feature_policy_metadata_resolves_all_features(self, run):
+        run.return_value.stdout = '{"packages": [], "resolve": {"nodes": []}}'
+
+        check_dependencies.cargo_metadata(Path("/repo/board/Cargo.toml"), resolve_all_features=True)
+
+        command = run.call_args.args[0]
+        self.assertIn("--all-features", command)
+        self.assertNotIn("--no-deps", command)
+        self.assertIn("/repo/board/Cargo.toml", command)
+
+    def test_forbidden_resolved_feature_is_rejected(self):
+        violations = check_dependencies.check_forbidden_features(
+            resolved_metadata("radio-host", ["security", "defmt"]),
+            [
+                {
+                    "package": "radio-host",
+                    "features": ["defmt", "log"],
+                    "reason": "host logs can expose keys",
+                }
+            ],
+        )
+        self.assertEqual(
+            violations,
+            ["forbidden dependency feature `radio-host/defmt` is enabled: host logs can expose keys"],
+        )
+
+    def test_allowed_resolved_features_pass(self):
+        violations = check_dependencies.check_forbidden_features(
+            resolved_metadata("radio-host", ["security"]),
+            [
+                {
+                    "package": "radio-host",
+                    "features": ["defmt", "log"],
+                    "reason": "host logs can expose keys",
+                }
+            ],
+        )
+        self.assertEqual(violations, [])
 
     def test_usb_transport_is_host_only(self):
         production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
