@@ -81,6 +81,16 @@ completes the media sync barrier before offering Resume. Route removal or
 replacement must refuse while the checkpoint depends on that exact object.
 Clearing or completing the journey releases its original dependency.
 
+Acceptance adds a route-only `ASSISTANT_ACCEPTED` catalog amendment
+to the same batch that replaces Metadata. The amendment preserves the exact source tuple and
+payload extents. Readback checks both the Metadata bytes and the accepted catalog entry.
+The commit is atomic: recovery cannot expose a checkpoint without its acceptance flag.
+Clear preserves the flag; a new route payload cannot inherit it.
+
+Explicit cleanup skips both checkpoint source IDs and the live active route. Explicit removal
+or replacement of either checkpoint source is refused. Invalid Metadata makes cleanup fail
+closed. It does not prevent unrelated Ride payload mutations. No automatic expiry is added.
+
 ## Trip progress records
 
 The trip progress records follow the checkpoint, or the rows when there is no checkpoint. The
@@ -104,16 +114,7 @@ key is an error. Proof-row and checkpoint edits preserve the records.
 ## Size
 
 The image holds all 128 ride proof rows, the optional checkpoint and 16 progress records: at most
-6,784 bytes.
-It has no route proof rows. Acceptance adds a route-only `ASSISTANT_ACCEPTED` catalog amendment
-to the same batch that replaces Metadata. The amendment preserves the exact source tuple and
-payload extents. Readback checks both the Metadata bytes and the accepted catalog entry.
-The commit is atomic: recovery cannot expose a checkpoint without its acceptance flag.
-Clear preserves the flag; a new route payload cannot inherit it.
-
-Explicit cleanup skips both checkpoint source IDs and the live active route. Explicit removal
-or replacement of either checkpoint source is refused. Invalid Metadata makes cleanup fail
-closed. It does not prevent unrelated Ride payload mutations. No automatic expiry is added.
+6,784 bytes. It has no route proof rows.
 
 ## Load, reconcile, and publish
 

@@ -197,10 +197,11 @@ impl TripSummary {
             .map_or(0, |p| p.metres)
     }
 
-    /// The record a Finish of day `ridden` writes: the position moves to `at`, `ridden` is the last
-    /// finished day, and it takes `today` (days since 1970-01-01; 0 without a trusted clock) as its
-    /// date.
-    pub fn finish(&self, old: Option<&TripProgress>, ridden: u16, at: TripPosition, today: u16) -> TripProgress {
+    /// The record a Finish of a ride on day `day` writes: the position moves to `at`, and the ride's
+    /// day is finished on `today` (days since 1970-01-01; 0 without a trusted clock). A ride that
+    /// ends in the rest of the day before, before it joins its day, finishes the day before.
+    pub fn finish(&self, old: Option<&TripProgress>, day: u16, at: TripPosition, today: u16) -> TripProgress {
+        let ridden = day.min(at.day);
         let mut dates = self.own(old).map_or([0; MAX_TRIP_DAYS], |p| p.dates);
         if let Some(date) = dates.get_mut(usize::from(ridden)).filter(|_| today != 0) {
             *date = today;
@@ -395,6 +396,11 @@ mod tests {
         assert_eq!((t.next_day(Some(&past)), t.position_m(Some(&past))), (Some(2), 20_000));
         assert_eq!(past.dates[..2], [MON, 0], "no trusted clock, no date");
         assert_eq!(t.finish(None, 0, at(0, 5), MON).dates[0], MON, "the first Finish starts the record");
+        // A ride on the rest of Day 2 and Day 3 that stops 6 km into the rest: Day 2 is finished,
+        // and Day 3 is still next.
+        let short = t.finish(Some(&early), 2, at(1, 60_000), MON + 2);
+        assert_eq!((short.day, short.metres, short.last_finished), (1, 60_000, Some(1)));
+        assert_eq!(t.next_day(Some(&short)), Some(2));
     }
 
     #[test]

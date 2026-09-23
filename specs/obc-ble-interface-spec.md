@@ -332,6 +332,8 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   When `next` is past the last day, the trip is done. Example: the rider stops 20 km before the end
   of Day 2 and finishes. Day 3 is next, and the device loads the rest of Day 2 plus Day 3. When the
   rider instead rides 20 km into Day 3, Day 3 is next with 20 km less to ride.
+  A ride on the rest of Day 2 plus Day 3 that ends before it joins Day 3 finishes Day 2, not
+  Day 3. The position stays on Day 2, so Day 3 is still next.
 - **Ticks.** A day is ticked when it is at or before the last finished day, or when it is before
   the position day.
 - **Day dates.** Dates follow the rides. For day `k`, take the latest day `j ≤ k` with a finish
