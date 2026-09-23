@@ -868,6 +868,15 @@ env = "routes"
 script = "p p p"
 expect = "RouteOverview"
 
+# Page 1 for a day of about 80 km: the fit is past the band's map scale ceiling, so the track draws
+# on the plain page, as it does without a map.
+[[frame]]
+name = "routeoverview-long"
+map = "{grimsel}"
+env = "long-route"
+script = "p p p"
+expect = "RouteOverview"
+
 # The cursor on the Delete row (idle): `d` moves the selection onto it, nothing charging.
 [[frame]]
 name = "routeoverview-delete-selected"

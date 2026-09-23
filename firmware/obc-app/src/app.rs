@@ -2689,7 +2689,7 @@ impl App {
         if let Some(route) = route {
             self.state.sync_pan_route(route);
         }
-        if scratch.is_some() && self.ui.base_draws_map() && self.ui.render_clip.is_none() {
+        if scratch.is_some() && self.ui.base_draws_live_map() && self.ui.render_clip.is_none() {
             self.ui.map_icons.prepare(reader, &self.state.viewport(w, h), &self.settings, self.ui.now_ms);
             // The overlay has no rider switch yet; `true` is the input a switch would drive.
             self.ui.settlements.prepare(reader, &self.state.viewport(w, h), true);

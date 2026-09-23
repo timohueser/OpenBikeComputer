@@ -1,7 +1,8 @@
 //! The track map: a route or a ride drawn on the device map inside one band, fitted to the track,
 //! with a start dot, an optional end dot, and the bike-type chip in the band's lower-left corner.
-//! Without a map, or when the track lies outside it, the track draws on the plain page in the same
-//! box, with the same dots and chip.
+//! Without a map, when the track lies outside it, or when the track is too long for the map to
+//! read at the band's scale, the track draws on the plain page in the same box, with the same dots
+//! and chip.
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_map_scene::{cos_lat, BBox};
@@ -24,6 +25,11 @@ pub(crate) struct Track<'a> {
 }
 
 const DOT_R: u32 = 5;
+/// The farthest scale (m/px) the band draws a map at: the coarsest bounded LOD tier of the shipped
+/// map schema (`builder/presets/schema.json`). Past it one unbounded tier serves every zoom, the
+/// roads drop out and a frame streams far more of the card, so a longer track draws on the plain
+/// page.
+const MAP_MAX_MPP: f32 = 400.0;
 /// Clear space (px) between the fitted track and the edges of its box, so a dot on an extreme
 /// point stays whole.
 const FIT_MARGIN: f32 = 8.0;
@@ -54,7 +60,8 @@ pub(crate) fn draw_track_map<D, F>(
     let vp = bounds(track.points).map(|b| (fit_clear_of(band, chip, b, track, rx.w, y1), b));
 
     let on_map = vp.is_some_and(|(vp, b)| {
-        rx.scene.is_some_and(|scene| scene.bbox.intersects(&b))
+        vp.meters_per_pixel() <= MAP_MAX_MPP
+            && rx.scene.is_some_and(|scene| scene.bbox.intersects(&b))
             && draw_track_scene(cv, rx, &vp, track.points, track.color)
     });
     if on_map {
