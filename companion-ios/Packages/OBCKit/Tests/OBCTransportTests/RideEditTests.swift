@@ -69,21 +69,23 @@ struct RideEditTests {
     }
 
     @Test
-    func aSplitNamesBothPartsAndAMergeGivesTheRideBack() throws {
+    func aSplitPartTakesTheNextFreeNumberAndAMergeGivesTheRideBack() throws {
         let original = Self.ride("Day 2 Ulrichen", start: t0, seconds: 600)
-        let store = store(original)
+        let lunch = Self.ride("day 2 ulrichen (2)", start: t0.addingTimeInterval(3_600), seconds: 60)
+        let store = store(original, lunch)
         let second = try #require(store.splitRide(original.id, at: t0.addingTimeInterval(200),
                                                   summary: original.summary))
 
-        let parts = store.rideSummaries()
-        #expect(parts.map(\.name) == ["Day 2 Ulrichen (2)", "Day 2 Ulrichen (1)"])
+        let parts = store.rideSummaries().filter { $0.id != lunch.id }
+        #expect(parts.map(\.name) == ["Day 2 Ulrichen (3)", "Day 2 Ulrichen (1)"],
+                "\"(2)\" is taken, whatever its case")
         #expect(parts.map(\.id) == [second, original.id])
         #expect(parts.map(\.movingTime) == [400, 200], "the two parts meet at one point, without a gap")
 
         #expect(store.mergeRides(parts[1], second))
         let view = try #require(store.rideViews().first)
         #expect(view.slices == [RideSlice(source: original.id, start: t0, end: t0.addingTimeInterval(600))])
-        #expect(store.rideSummaries()[0].movingTime == 600)
+        #expect(store.rideSummaries().first { $0.id == original.id }?.movingTime == 600)
     }
 
     @Test

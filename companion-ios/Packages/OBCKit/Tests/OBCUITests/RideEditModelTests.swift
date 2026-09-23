@@ -59,17 +59,87 @@ struct RideEditModelTests {
     }
 
     @Test
-    func aDismissedMergeSuggestionStaysGone() {
+    func aDismissedMergeSuggestionStaysGone() async {
         let morning = ride("Day 2 Ulrichen", start: t0, seconds: 600, latitude: 46.5)
         let lunch = ride("Day 2 Ulrichen (2)", start: t0.addingTimeInterval(3_600), seconds: 400,
                          latitude: morning.points.last!.coordinate.latitude + 0.002)
         let (model, library) = model([morning, lunch])
-        #expect(model.mergeSuggestion(for: morning.id)?.id == lunch.id)
-        #expect(model.mergeSuggestion(for: lunch.id) == nil, "no ride follows the second one")
+        #expect(await model.mergeSuggestion(for: morning.id)?.id == lunch.id)
+        #expect(await model.mergeSuggestion(for: lunch.id) == nil, "no ride follows the second one")
 
         model.dismissMergeSuggestion(for: morning.id)
-        #expect(model.mergeSuggestion(for: morning.id) == nil)
+        #expect(await model.mergeSuggestion(for: morning.id) == nil)
         #expect(library.dismissedMerges() == [RidePair(first: morning.id, second: lunch.id)])
+    }
+
+    @Test
+    func thePartsOfASplitDoNotSuggestAMerge() async throws {
+        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
+        let (model, _) = model([original])
+        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
+        #expect(model.nextRide(after: original.id)?.id == second)
+        #expect(await model.mergeSuggestion(for: original.id) == nil, "the parts meet, but they are one synced ride")
+    }
+
+    @Test
+    func deletingOnePartOfASplitLeavesTheOtherRevertable() throws {
+        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
+        let (model, library) = model([original])
+        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
+        model.deleteRide(original.id)
+        model.deleteRideForever(original.id)
+        #expect(model.rides.map(\.id) == [second])
+
+        model.revertRide(second)
+        #expect(model.rides == [original.summary], "the synced ride shows again, whole")
+        #expect(library.deletedRideIDs().isEmpty)
+    }
+
+    @Test
+    func revertingAPartBringsTheOtherOutOfRecentlyDeleted() throws {
+        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
+        let (model, _) = model([original])
+        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
+        model.deleteRide(original.id)
+        model.revertRide(second)
+        #expect(model.rides == [original.summary])
+        #expect(model.trashedRides.isEmpty)
+    }
+
+    @Test
+    func deletingBothPartsDeletesTheSyncedRideForGood() throws {
+        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
+        let (model, library) = model([original])
+        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
+        for id in [original.id, second] {
+            model.deleteRide(id)
+            model.deleteRideForever(id)
+        }
+        #expect(model.rides.isEmpty)
+        #expect(model.trashedRides.isEmpty)
+        #expect(library.archivedRidePoints(original.id) == nil, "no file stays that nothing reaches")
+        #expect(library.deletedRideIDs() == [original.id], "a sync must not bring it back")
+    }
+
+    @Test
+    func theAllRidesMapReadsTheEditedLine() async throws {
+        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
+        let (model, _) = model([original])
+        await model.rideLibrary.loadMapLines()
+        #expect(model.trimRide(original.id, to: t0...t0.addingTimeInterval(100)))
+        await model.rideLibrary.loadMapLines()
+        let line = try #require(model.rideLibrary.mapLines?.lines(metersPerPoint: 1).first)
+        #expect(line.pieces.last?.last == original.points[100].coordinate)
+    }
+
+    @Test
+    func aReDownloadedSyncedRideShowsThroughItsEdit() throws {
+        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
+        let (model, _) = model([original])
+        #expect(model.trimRide(original.id, to: t0...t0.addingTimeInterval(100)))
+        model.sync.onRideLanded(original)
+        #expect(model.rides.count == 1)
+        #expect(model.rides.first?.movingTime == 100, "the trim stays")
     }
 
     @Test
