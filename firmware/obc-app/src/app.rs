@@ -1078,6 +1078,39 @@ impl App {
         }
     }
 
+    /// The device's trip progress records, at most one per trip key.
+    pub fn trip_progress(&self) -> &[crate::trip::TripProgress] {
+        self.metadata.progress()
+    }
+
+    /// Replace the trip progress records with the ones a complete catalog read found.
+    pub fn set_trip_progress(&mut self, records: impl IntoIterator<Item = crate::trip::TripProgress>) {
+        self.metadata.set_progress(records);
+        self.ui.map_dirty = true;
+    }
+
+    /// The record a [`WriteProgress`](crate::metadata::MetadataEffect::WriteProgress) writes.
+    pub fn trip_progress_payload(
+        &self,
+        token: crate::device_core::OperationToken<crate::device_core::MetadataTag>,
+    ) -> Option<&crate::trip::TripProgress> {
+        self.metadata.progress_payload(token)
+    }
+
+    /// A saved ride on a trip day moves that trip's progress to where the ride ended.
+    pub(crate) fn note_trip_finish(&mut self) {
+        let Some(ridden) = self.recorder.ride_stats().trip else { return };
+        let Some(trip) = self.trips().iter().find(|t| t.key == ridden.key()) else { return };
+        let day = u16::from(ridden.day_index());
+        let Some(&route) = trip.stage_ids.get(usize::from(day)) else { return };
+        let on_day = self.active_route_index().and_then(|i| self.route_ids().get(i)) == Some(&route);
+        let at = crate::trip::TripPosition { day, route, metres: if on_day { self.progress_m() } else { 0 } };
+        let today = if self.clock_trusted() { (self.wall_clock.unix_now(self.ui.now_ms) / 86_400) as u16 } else { 0 };
+        let record = trip.finish(trip.progress_in(self.metadata.progress()), day, at, today);
+        let trips = self.catalogs.trips();
+        self.metadata.owe_progress(record, |key| trips.iter().any(|t| t.key == key));
+    }
+
     /// The open ride's footer facts. The trip name is read from the trip catalog as the footer is
     /// written, so a ride continued after a reset names its trip too.
     pub fn ride_stats(&self) -> obc_route::RideStats {

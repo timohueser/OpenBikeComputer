@@ -256,10 +256,19 @@ pub trait TripCatalog {
     fn rescan(&mut self) -> Result<(), CatalogError> {
         Ok(())
     }
-    /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) — call **after** the
-    /// route catalog is re-fed so the stage ids resolve.
+    /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) and progress
+    /// records — call **after** the route catalog is re-fed so the stage ids resolve.
     fn refeed(&self, app: &mut App) {
         let _ = app;
+    }
+    /// Write one trip progress record by the bound rules; `keys` are the stored trips' keys.
+    fn write_progress(
+        &mut self,
+        record: obc_app::trip::TripProgress,
+        keys: &[u64],
+    ) -> Result<(), obc_app::metadata::MetadataError> {
+        let _ = (record, keys);
+        Err(obc_app::metadata::MetadataError::Unsupported)
     }
 }
 
