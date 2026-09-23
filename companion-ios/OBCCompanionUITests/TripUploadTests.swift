@@ -1,9 +1,8 @@
 import XCTest
 
-/// Whole-trip upload driven through the real UI against the trips fixture. The queue planner,
-/// adoption and reconcile logic are host-tested; this proves the wiring: Upload trip, the queued
-/// sheet, the done confirm, the interrupt and resume framing, the capacity boundary, and delete
-/// trip and routes.
+/// Whole-trip upload driven through the real UI against the trips fixture. The queue planner and
+/// reconcile logic are host-tested; this proves the wiring: Upload trip, the queued sheet, the done
+/// confirm, the interrupt and resume framing, the capacity boundary, and delete trip.
 final class TripUploadTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -29,7 +28,7 @@ final class TripUploadTests: XCTestCase {
     }
 
     private let tripCardID = "main.trip.driftless-weekender"
-    private let stageAID = "trip.stage.devils-lake-overnighter"
+    private let dayAID = "trip.day.0"
 
     @MainActor
     private func openTrip(_ app: XCUIApplication) {
@@ -37,12 +36,12 @@ final class TripUploadTests: XCTestCase {
         let card = app.buttons[tripCardID]
         XCTAssertTrue(card.waitForExistence(timeout: 10), "trip card missing")
         card.tap()
-        XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "trip page did not open")
+        XCTAssertTrue(app.descendants(matching: .any)[dayAID].waitForExistence(timeout: 10), "trip page did not open")
     }
 
     // MARK: Happy path
 
-    /// The queued sheet walks the stages then the trip object, and lands on the done confirm.
+    /// The queued sheet walks the day routes then the trip object, and lands on the done confirm.
     @MainActor
     func testWholeTripUploadHappyPath() {
         let app = launch()
@@ -54,10 +53,10 @@ final class TripUploadTests: XCTestCase {
 
         let sheet = app.otherElements["tripUpload.sheet"]
         XCTAssertTrue(sheet.waitForExistence(timeout: 10), "trip upload sheet missing")
-        // The queued-mode header appears while stages move.
+        // The queued-mode header appears while day routes move.
         XCTAssertTrue(
-            app.staticTexts["tripUpload.stageLabel"].waitForExistence(timeout: 10),
-            "queued-mode stage header missing")
+            app.staticTexts["tripUpload.stepLabel"].waitForExistence(timeout: 10),
+            "queued-mode step header missing")
         snap(app, "TR8-trip-upload-queued")
 
         // It reaches the done confirm.
@@ -69,16 +68,16 @@ final class TripUploadTests: XCTestCase {
         app.buttons["tripUpload.done"].tap()
 
         // Back on the trip page.
-        XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "did not return to trip page")
+        XCTAssertTrue(app.descendants(matching: .any)[dayAID].waitForExistence(timeout: 10), "did not return to trip page")
     }
 
     // MARK: Interrupt + resume
 
-    /// A mid-upload drop swaps in the interrupted framing; Resume restarts the current stage and
+    /// A mid-upload drop swaps in the interrupted framing; Resume restarts the current step and
     /// the trip still lands.
     @MainActor
     func testWholeTripUploadInterruptThenResume() {
-        // Arm the next transfer to drop partway through the first stage.
+        // Arm the next transfer to drop partway through the first day route.
         let app = launch(scenario: "uploadDrop")
         openTrip(app)
         app.buttons["trip.upload"].tap()
@@ -111,12 +110,11 @@ final class TripUploadTests: XCTestCase {
         app.buttons["tripUpload.done"].tap()
     }
 
-    // MARK: Delete trip & routes while connected
+    // MARK: Delete trip while connected
 
-    /// Upload the trip, then delete the trip and its routes: they are gone from the library, and a
-    /// loose route survives.
+    /// Upload the trip, then delete it: the trip card is gone, and a route survives.
     @MainActor
-    func testDeleteTripAndRoutesAfterUpload() {
+    func testDeleteTripAfterUpload() {
         let app = launch()
         openTrip(app)
 
@@ -126,19 +124,18 @@ final class TripUploadTests: XCTestCase {
             app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
             "trip upload never completed")
         app.buttons["tripUpload.done"].tap()
-        XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "did not return to trip page")
+        XCTAssertTrue(app.descendants(matching: .any)[dayAID].waitForExistence(timeout: 10), "did not return to trip page")
 
-        // Delete the trip and its routes.
+        // Delete the trip.
         app.buttons["trip.overflow"].tap()
         let delete = app.buttons["trip.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")
         delete.tap()
-        app.sheets.buttons["Delete trip & routes"].tap()
+        app.sheets.buttons["Delete trip"].tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")
-        XCTAssertFalse(app.staticTexts["Devil's Lake Overnighter"].exists, "member route survived delete")
-        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists, "loose route wrongly removed")
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists, "route wrongly removed")
     }
 
 }

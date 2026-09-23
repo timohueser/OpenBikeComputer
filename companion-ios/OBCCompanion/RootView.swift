@@ -54,7 +54,8 @@ struct RootView: View {
         firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil,
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
-        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -77,7 +78,8 @@ struct RootView: View {
             // Once per established connection, push the bond record's desired name if the device
             // config disagrees, which heals a rename whose write never landed.
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
-            transferActivity: transferActivity
+            transferActivity: transferActivity,
+            placeName: placeName
         ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
@@ -276,7 +278,7 @@ struct RootView: View {
             },
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
-                    // File into the chosen trip as its last stage; `.none` leaves it loose.
+                    // Move it into the chosen trip as its last day; `.none` leaves it a route.
                 mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 importModel.closeImport()
             },
@@ -364,11 +366,13 @@ struct RootView: View {
                                 id, objectID: objectID, crc32: crc)
                         }
                     },
-                    // Add to trip on a loose route; Move to trip and Remove from trip on a filed one.
+                    // The route moves into the trip, so the trip page replaces the route page.
                     tripPickerItems: mainModel.tripPickerItems,
-                    currentTripID: mainModel.tripContaining(id),
-                    onAddToTrip: { mainModel.fileRoute(id, into: $0) },
-                    onRemoveFromTrip: { mainModel.removeRouteFromTrip(id) }
+                    onAddToTrip: { selection in
+                        guard let tripID = mainModel.fileRoute(id, into: selection) else { return }
+                        path.removeLast()
+                        path.append(.trip(id: tripID))
+                    }
                 )
             }
         case .ride(let id):
@@ -397,9 +401,7 @@ struct RootView: View {
             TripDetailView(
                 model: mainModel,
                 tripID: id,
-                // A stage opens the ordinary route detail, as a top-level route card does.
-                onSelectRoute: { route in path.append(.route(id: route.id)) },
-                // The trip dissolved or was deleted: pop back and drop anything pushed above it.
+                // The trip was deleted: pop back and drop anything pushed above it.
                 onClose: {
                     if let index = path.firstIndex(of: .trip(id: id)) {
                         path.removeSubrange(index...)

@@ -34,7 +34,7 @@ public final class MainScreenModel {
     /// the badge moves the instant an upload commits or a re-import changes the content.
     public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
     /// Every saved trip, newest first.
-    public private(set) var trips: [TripRecord] = []
+    public private(set) var trips: [Trip] = []
     /// The Planned tab rows: trip cards and loose route cards, newest first. A route filed in
     /// a trip shows only inside that trip; `routes` keeps every planned summary.
     public private(set) var plannedItems: [PlannedItem] = []
@@ -109,6 +109,10 @@ public final class MainScreenModel {
     @ObservationIgnored private var lastTripCatalog: [TripCatalogEntry]?
     /// Per-trip content CRCs from the device trip catalog, the trip half of `deviceRouteCRCs`.
     @ObservationIgnored private var deviceTripCRCs: [DeviceObjectID: UInt32] = [:]
+    /// Each trip's day routes with the trip they were cut from.
+    @ObservationIgnored private var tripDayCache: [TripID: (trip: Trip, days: [TripDayRoute])] = [:]
+    /// Names the place at a coordinate, such as its locality. Nil in tests and previews.
+    private let placeName: (@Sendable (Coordinate) async -> String?)?
     /// The in-flight transfer ledger. Nil in tests and previews.
     @ObservationIgnored private let transferActivity: TransferActivity?
     /// The in-flight identity read for the current connection. A reconnect replaces it and
@@ -126,8 +130,10 @@ public final class MainScreenModel {
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
         nameReconciler: DeviceNameReconciler? = nil,
         transferActivity: TransferActivity? = nil,
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
+        self.placeName = placeName
         self.transport = transport
         self.library = library
         self.lastBikeType = lastBikeType
@@ -348,24 +354,55 @@ public final class MainScreenModel {
             return
         }
         let listed = Set(deviceRoutes.map(\.id))
-        // 1) Drop links the catalog disproves: an absent object, or a present one whose
-        //    non-zero CRC differs from our fingerprint. A `crc32 = 0` entry proves nothing,
-        //    so that link is kept.
+        // 1) Drop links the catalog disproves.
         for (id, var record) in plannedRecords {
-            guard let link = record.deviceLink, link.matches(scope) else { continue }
-            let present = listed.contains(link.objectID)
-            let catalogCRC = deviceRouteCRCs[link.objectID] ?? 0
-            let crcMismatch = present && catalogCRC != 0
-                && record.uploadedCRC32 != nil && catalogCRC != record.uploadedCRC32
-            guard !present || crcMismatch else { continue }
+            guard let link = record.deviceLink, link.matches(scope),
+                catalogDisproves(link.objectID, uploadedCRC32: record.uploadedCRC32, listed: listed)
+            else { continue }
             record.deviceLink = nil
             record.uploadedCRC32 = nil
             plannedRecords[id] = record
             library.savePlannedRoute(record)
         }
-        // 2) Adopt by content: heal identical unlinked copies without a re-upload.
-        adoptByContent(scope: scope, catalog: deviceRoutes)
+        dropDisprovedDayCopies(scope: scope, listed: listed)
+        // 2) Adopt by content: heal identical unlinked copies without a re-upload. Planned
+        //    routes and day routes share the route catalog, so they share the claimed ids.
+        var claimed = Set(plannedRecords.values.compactMap { record -> DeviceObjectID? in
+            guard let link = record.deviceLink, link.matches(scope) else { return nil }
+            return link.objectID
+        })
+        for trip in library.trips() {
+            for case let copy? in trip.dayCopies where copy.link.matches(scope) { claimed.insert(copy.link.objectID) }
+        }
+        adoptByContent(scope: scope, catalog: deviceRoutes, claimed: &claimed)
+        adoptDayCopiesByContent(scope: scope, catalog: deviceRoutes, claimed: &claimed)
         refreshOnDeviceStates()
+    }
+
+    /// The catalog disproves a link when its object is absent, or present with a non-zero CRC
+    /// that differs from the committed fingerprint. A `crc32 = 0` entry proves nothing, so that
+    /// link is kept.
+    private func catalogDisproves(
+        _ objectID: DeviceObjectID, uploadedCRC32: UInt32?, listed: Set<DeviceObjectID>
+    ) -> Bool {
+        guard listed.contains(objectID) else { return true }
+        let catalogCRC = deviceRouteCRCs[objectID] ?? 0
+        return catalogCRC != 0 && uploadedCRC32 != nil && catalogCRC != uploadedCRC32
+    }
+
+    /// The first unclaimed catalog entry that holds `payload`, or holds it under the entry's own
+    /// name: a rename moves the bytes without changing the route.
+    private static func entry(
+        holding payload: Data, named name: String, in catalog: [RouteCatalogEntry],
+        claimed: Set<DeviceObjectID>
+    ) -> RouteCatalogEntry? {
+        let crc = CRC32.checksum(payload)
+        return catalog.first { entry in
+            guard entry.crc32 != 0, !claimed.contains(entry.id) else { return false }
+            if entry.crc32 == crc { return true }
+            guard entry.name != name else { return false }
+            return entry.crc32 == CRC32.checksum(RouteObjectCodec.renamed(payload, to: entry.name))
+        }
     }
 
     /// Re-link an unlinked record to a catalog entry that holds the same content, so the next
@@ -378,14 +415,9 @@ public final class MainScreenModel {
     /// reads "out of date" and the next send is a same-id replace that carries the new name.
     ///
     /// Ambiguity resolves first-come, each side claimed at most once.
-    private func adoptByContent(scope: LibraryScope, catalog: [RouteCatalogEntry]) {
-        // Object ids already spoken for by a valid link — never adopt over them.
-        var claimed = Set(plannedRecords.values.compactMap { record -> DeviceObjectID? in
-            guard let link = record.deviceLink, link.matches(scope) else { return nil }
-            return link.objectID
-        })
-        let adoptable = catalog.filter { $0.crc32 != 0 && !claimed.contains($0.id) }
-        guard !adoptable.isEmpty else { return }
+    private func adoptByContent(
+        scope: LibraryScope, catalog: [RouteCatalogEntry], claimed: inout Set<DeviceObjectID>
+    ) {
         // Deterministic order, so an adoption is reproducible run to run.
         let candidates = plannedRecords.values
             .filter { record in
@@ -397,14 +429,8 @@ public final class MainScreenModel {
             let payload = RouteObjectCodec.encode(
                 points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name,
                 bikeType: record.bikeType)
-            let currentCRC = CRC32.checksum(payload)
-            guard let entry = adoptable.first(where: { entry in
-                guard !claimed.contains(entry.id) else { return false }
-                if entry.crc32 == currentCRC { return true }
-                // The rename case: the device's copy is still under the catalog's name.
-                guard entry.name != record.summary.name else { return false }
-                return entry.crc32 == CRC32.checksum(RouteObjectCodec.renamed(payload, to: entry.name))
-            }) else { continue }
+            guard let entry = Self.entry(holding: payload, named: record.summary.name, in: catalog, claimed: claimed)
+            else { continue }
             var adopted = record
             adopted.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
             adopted.uploadedCRC32 = entry.crc32
@@ -451,58 +477,82 @@ public final class MainScreenModel {
         plannedItems = PlannedItem.partition(records: Array(plannedRecords.values), trips: trips)
     }
 
-    public func trip(_ id: TripID) -> TripRecord? { trips.first { $0.id == id } }
+    public func trip(_ id: TripID) -> Trip? { trips.first { $0.id == id } }
 
     public var tripPickerItems: [TripPickerItem] {
-        trips.map { TripPickerItem(id: $0.id, name: $0.name, stageCount: $0.stageIDs.count) }
+        trips.map { TripPickerItem(id: $0.id, name: $0.name, dayCount: $0.dayCount) }
     }
 
-    public func tripContaining(_ routeID: RouteID) -> TripID? {
-        trips.first { $0.stageIDs.contains(routeID) }?.id
+    /// The trip an import offers to extend: the one the rider changed last.
+    public var lastEditedTrip: Trip? { trips.max { $0.editedAt < $1.editedAt } }
+
+    /// A trip's day routes as an upload sends them, with the names and the stats the device shows.
+    public func tripDays(_ id: TripID) -> [TripDayRoute] {
+        trip(id).map(dayRoutes(of:)) ?? []
     }
 
-    /// A trip's member routes as list summaries, in ride order.
-    public func tripStages(_ id: TripID) -> [RouteSummary] {
-        guard let trip = trip(id) else { return [] }
-        return trip.stageIDs.compactMap { plannedRecords[$0]?.summary }
-    }
+    public func tripStats(_ id: TripID) -> TripStats { TripStats(days: tripDays(id)) }
 
-    public func tripStats(_ id: TripID) -> TripStats {
-        TripStats.summing(tripStages(id))
+    /// The cut and the encode run once per change of the line, the day ends or the bike type.
+    private func dayRoutes(of trip: Trip) -> [TripDayRoute] {
+        if let cached = tripDayCache[trip.id], cached.trip.line == trip.line,
+            cached.trip.pieceStarts == trip.pieceStarts, cached.trip.dayEnds == trip.dayEnds,
+            cached.trip.bikeType == trip.bikeType {
+            return cached.days
+        }
+        let days = trip.dayRoutes()
+        tripDayCache[trip.id] = (trip, days)
+        return days
     }
 
     /// The trip badge: up to date only when the trip object itself is proven current and every
-    /// stage is up to date. A trip the phone never pushed reads `.notOnDevice`.
+    /// day route is up to date. A trip the phone never pushed reads `.notOnDevice`.
     public func tripOnDeviceState(_ id: TripID) -> OnDeviceState {
-        guard let trip = trip(id), !trip.stageIDs.isEmpty else { return .notOnDevice }
+        guard let trip = trip(id) else { return .notOnDevice }
+        let days = dayRoutes(of: trip)
         let tripSelf = OnDeviceState.determine(
             provenCommittedCRC: provenTripCommittedCRC(for: trip),
             currentCRC: { currentTripPayloadCRC(for: trip) }
         )
-        let stageStates = trip.stageIDs.map { onDeviceState($0) }
-        return Self.composeTripState(tripSelf: tripSelf, stageStates: stageStates)
+        let dayStates = days.map { day in
+            OnDeviceState.determine(provenCommittedCRC: provenDayCRC(trip, day: day.day), currentCRC: { day.crc32 })
+        }
+        return Self.composeTripState(tripSelf: tripSelf, dayStates: dayStates)
     }
 
-    /// Each stage's committed device object id, in ride order, dropping any stage the device
-    /// does not hold. The one definition the encode, the fingerprint and the plan all read.
-    private func currentTripDeviceStageIDs(for trip: TripRecord) -> [DeviceObjectID] {
-        trip.stageIDs.compactMap { plannedDeviceObjectID(for: $0) }
+    /// A day route's copy on the connected device. A copy made on another device or in another
+    /// id era answers nil, so a replace never overwrites an object the link does not point at.
+    private func scopedDayCopy(_ trip: Trip, day: Int) -> TripDayCopy? {
+        guard let scope = connectedScope, trip.dayCopies.indices.contains(day),
+            let copy = trip.dayCopies[day], copy.link.matches(scope)
+        else { return nil }
+        return copy
     }
 
-    /// The trip object an upload would send now: one whole day per resolved stage. The one
-    /// definition the encode and the fingerprint read.
-    private func currentTripObject(for trip: TripRecord, stageIDs: [DeviceObjectID]) -> TripObjectCodec.Trip {
-        TripObjectCodec.Trip(
-            key: trip.key, name: trip.name, startDate: 0, days: stageIDs.map(TripObjectCodec.Day.whole))
+    /// The day-route twin of `provenCommittedCRC(for:)`.
+    private func provenDayCRC(_ trip: Trip, day: Int) -> UInt32? {
+        guard let copy = scopedDayCopy(trip, day: day), let uploaded = copy.uploadedCRC32,
+            let catalogCRC = deviceRouteCRCs[copy.link.objectID], catalogCRC != 0, catalogCRC == uploaded
+        else { return nil }
+        return uploaded
     }
 
-    /// The CRC of the trip object an upload would send now.
-    private func currentTripPayloadCRC(for trip: TripRecord) -> UInt32 {
-        TripObjectCodec.payloadCRC(currentTripObject(for: trip, stageIDs: currentTripDeviceStageIDs(for: trip)))
+    /// The trip object an upload would send now. Nil until every day route has a copy on the
+    /// connected device: a trip object never names fewer days than the trip has.
+    private func currentTripObject(for trip: Trip) -> TripObjectCodec.Trip? {
+        let ids = (0..<trip.dayCount).compactMap { scopedDayCopy(trip, day: $0)?.link.objectID }
+        guard !ids.isEmpty, ids.count == trip.dayCount else { return nil }
+        return trip.tripObject(dayObjectIDs: ids)
+    }
+
+    /// The CRC of the trip object an upload would send now. A trip without a complete set of
+    /// day copies has no object to compare, so it reads 0, which no committed CRC equals.
+    private func currentTripPayloadCRC(for trip: Trip) -> UInt32 {
+        currentTripObject(for: trip).map(TripObjectCodec.payloadCRC) ?? 0
     }
 
     /// The trip twin of `provenCommittedCRC(for:)`.
-    private func provenTripCommittedCRC(for trip: TripRecord) -> UInt32? {
+    private func provenTripCommittedCRC(for trip: Trip) -> UInt32? {
         guard let scope = connectedScope, let link = trip.deviceLink, link.matches(scope),
             let uploaded = trip.uploadedCRC32,
             let catalogCRC = deviceTripCRCs[link.objectID], catalogCRC != 0,
@@ -511,10 +561,46 @@ public final class MainScreenModel {
         return uploaded
     }
 
-    /// True up every trip's `deviceLink` against the device trip catalog: drop pass, then adopt
-    /// pass. A local edit (rename, reorder) never drops a link; it leaves the committed CRC
-    /// intact and reads as outdated. Adoption also heals a lost commit ack, where the trip
-    /// object landed but the ack did not, which otherwise mints a same-name twin folder.
+    /// The day-route half of the route reconcile: drop each day copy the catalog disproves, with
+    /// the planned-route rule.
+    private func dropDisprovedDayCopies(scope: LibraryScope, listed: Set<DeviceObjectID>) {
+        for var trip in library.trips() {
+            var changed = false
+            for (day, copy) in trip.dayCopies.enumerated() {
+                guard let copy, copy.link.matches(scope),
+                    catalogDisproves(copy.link.objectID, uploadedCRC32: copy.uploadedCRC32, listed: listed)
+                else { continue }
+                trip.dayCopies[day] = nil
+                changed = true
+            }
+            if changed { library.saveTrip(trip) }
+        }
+    }
+
+    /// `adoptByContent` for day routes: a day without a copy adopts an unclaimed catalog entry
+    /// that holds its bytes, so a lost commit ack never mints a device twin.
+    private func adoptDayCopiesByContent(
+        scope: LibraryScope, catalog: [RouteCatalogEntry], claimed: inout Set<DeviceObjectID>
+    ) {
+        for var trip in library.trips().sorted(by: { $0.id.rawValue < $1.id.rawValue }) {
+            var changed = false
+            for day in dayRoutes(of: trip) where scopedDayCopy(trip, day: day.day) == nil {
+                guard let entry = Self.entry(holding: day.payload, named: day.name, in: catalog, claimed: claimed)
+                else { continue }
+                while trip.dayCopies.count <= day.day { trip.dayCopies.append(nil) }
+                trip.dayCopies[day.day] = TripDayCopy(
+                    link: DeviceRouteLink(scope: scope, objectID: entry.id), uploadedCRC32: entry.crc32)
+                claimed.insert(entry.id)
+                changed = true
+            }
+            if changed { library.saveTrip(trip) }
+        }
+    }
+
+    /// True up every trip's object link against the device trip catalog: drop pass, then adopt
+    /// by content. A `crc32 = 0` entry proves nothing, so its link is kept intact and reads as
+    /// outdated. Adoption also heals a lost commit ack, where the trip object landed but the phone
+    /// never recorded it.
     private func reconcileTripsOnDevice(with catalog: [TripCatalogEntry]) {
         deviceTripCRCs = Dictionary(
             catalog.map { ($0.id, $0.crc32) }, uniquingKeysWith: { first, _ in first })
@@ -534,9 +620,9 @@ public final class MainScreenModel {
         adoptTripsByContent(scope: scope, catalog: catalog)
     }
 
-    /// `adoptByContent`'s trip twin, with the same tie-breaks. The fingerprint is the trip's
-    /// current encoding, so both call sites run this after the route reconcile has trued the
-    /// stage links up.
+    /// `adoptByContent`'s trip twin, with the same tie-breaks. The fingerprint is the trip
+    /// object's CRC; a rename splices the catalog entry's name back in to rebuild the stored
+    /// bytes.
     private func adoptTripsByContent(scope: LibraryScope, catalog: [TripCatalogEntry]) {
         var claimed = Set(library.trips().compactMap { trip -> DeviceObjectID? in
             guard let link = trip.deviceLink, link.matches(scope) else { return nil }
@@ -551,13 +637,11 @@ public final class MainScreenModel {
             }
             .sorted { $0.id.rawValue < $1.id.rawValue }
         for var trip in candidates {
-            let stageIDs = currentTripDeviceStageIDs(for: trip)
-            let object = currentTripObject(for: trip, stageIDs: stageIDs)
+            guard let object = currentTripObject(for: trip) else { continue }
             let currentCRC = TripObjectCodec.payloadCRC(object)
             guard let entry = adoptable.first(where: { entry in
                 guard !claimed.contains(entry.id) else { return false }
                 if entry.crc32 == currentCRC { return true }
-                // The rename case: the device's copy is still under the catalog's name.
                 guard entry.name != trip.name else { return false }
                 var renamed = object
                 renamed.name = entry.name
@@ -574,15 +658,15 @@ public final class MainScreenModel {
 
     // MARK: Whole-trip upload
 
-    /// Partition the stages into skip, replace and fresh, and do the precheck math. Nil when
-    /// the trip has dissolved.
+    /// Partition the day routes into skip, replace and fresh, and do the precheck math. Nil when
+    /// the trip is gone.
     public func planTripUpload(_ id: TripID) -> TripUploadPlan? {
         guard let trip = trip(id) else { return nil }
-        let stageInputs = trip.stageIDs.map { routeID in
-            TripUploadPlanner.StageInput(
-                routeID: routeID,
-                isUpToDate: onDeviceState(routeID) == .upToDate,
-                committedObjectID: plannedDeviceObjectID(for: routeID)
+        let dayInputs = dayRoutes(of: trip).map { day in
+            TripUploadPlanner.DayInput(
+                day: day.day,
+                isUpToDate: provenDayCRC(trip, day: day.day) == day.crc32,
+                committedObjectID: scopedDayCopy(trip, day: day.day)?.link.objectID
             )
         }
         // A valid scoped link is the replace target. Do not re-check the cached catalog: a
@@ -595,7 +679,7 @@ public final class MainScreenModel {
             return link.objectID
         }()
         return TripUploadPlanner.plan(
-            stages: stageInputs,
+            days: dayInputs,
             tripObjectID: tripObjectID,
             deviceRouteCount: lastRouteCatalog?.count ?? 0,
             deviceTripCount: lastTripCatalog?.count ?? 0
@@ -603,8 +687,9 @@ public final class MainScreenModel {
     }
 
     /// Re-read both catalogs and reconcile before planning: the retry-after-failure path. A
-    /// stage, or the trip object, that committed but whose ack was lost would otherwise re-plan
-    /// as fresh and mint a device twin. Routes before trips; the adoption rule needs that order.
+    /// day route, or the trip object, that committed but whose ack was lost would otherwise
+    /// re-plan as fresh and mint a device twin. Routes before trips; the trip adoption reads
+    /// the day copies.
     public func prepareTripUpload(
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) async -> TripUploadModel? {
@@ -623,40 +708,40 @@ public final class MainScreenModel {
         return makeTripUploadModel(id, timing: timing)
     }
 
-    /// Turn the plan into a queue: a step per stage in ride order, then the trip object last.
-    /// Nothing is sent when every stage and the trip object are already current. Each step
-    /// commits its own link the instant it lands. Nil when the trip dissolved.
+    /// Turn the plan into a queue: a step per day route in ride order, then the trip object
+    /// last. Nothing is sent when every day route and the trip object are already current. Each
+    /// step commits its own link the instant it lands. Nil when the trip is gone.
     public func makeTripUploadModel(
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) -> TripUploadModel? {
         guard let trip = trip(id), let plan = planTripUpload(id) else { return nil }
+        let days = dayRoutes(of: trip)
         var steps: [TripUploadModel.QueueStep] = []
-        for stagePlan in plan.stages {
-            let routeID = stagePlan.routeID
-            let name = plannedRecords[routeID]?.summary.name ?? "Stage"
-            switch stagePlan.action {
+        for dayPlan in plan.days {
+            let day = dayPlan.day
+            let title = days[day].name
+            switch dayPlan.action {
             case .skip:
-                steps.append(.skip(title: name))
+                steps.append(.skip(title: title))
             case .fresh, .replace:
                 let target: DeviceObjectID? =
-                    if case .replace(let objectID) = stagePlan.action { objectID } else { nil }
+                    if case .replace(let objectID) = dayPlan.action { objectID } else { nil }
                 steps.append(.transfer(
-                    title: name,
+                    title: title,
                     makeTransfer: { [weak self] in
-                        guard let self, let blob = self.makeStageBlob(routeID, target: target) else { return nil }
+                        guard let self, let blob = self.makeDayBlob(id, day: day, target: target) else { return nil }
                         return (self.transport.uploadRoute(blob), CRC32.checksum(blob.payload))
                     },
                     commit: { [weak self] objectID, crc in
                         guard let objectID else { return }
-                        self?.markRouteUploaded(
-                            routeID, objectID: objectID, crc32: crc, adopt: false)
+                        self?.markTripDayUploaded(id, day: day, objectID: objectID, crc32: crc)
                     }
                 ))
             }
         }
         let tripProven = provenTripCommittedCRC(for: trip)
         let tripObjectUpToDate = tripProven != nil && tripProven == currentTripPayloadCRC(for: trip)
-        if !(plan.allStagesSkip && tripObjectUpToDate) {
+        if !(plan.allDaysSkip && tripObjectUpToDate) {
             let target: DeviceObjectID? =
                 if case .replace(let objectID) = plan.tripObject { objectID } else { nil }
             steps.append(.transfer(
@@ -677,163 +762,224 @@ public final class MainScreenModel {
         )
     }
 
-    private func makeStageBlob(_ routeID: RouteID, target: DeviceObjectID?) -> RouteBlob? {
-        guard let record = plannedRecords[routeID] else { return nil }
-        let payload = RouteObjectCodec.encode(
-            points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name,
-            bikeType: record.bikeType)
-        guard !payload.isEmpty else { return nil }
+    /// Built at execution time from the current trip, so a change during the queue sends the
+    /// bytes the trip holds now.
+    private func makeDayBlob(_ tripID: TripID, day: Int, target: DeviceObjectID?) -> RouteBlob? {
+        let days = tripDays(tripID)
+        guard days.indices.contains(day), !days[day].payload.isEmpty else { return nil }
         return RouteBlob(
-            summary: record.summary, waypoints: record.route.waypoints,
-            payload: payload, targetObjectID: target)
+            summary: days[day].summary(tripID: tripID), payload: days[day].payload, targetObjectID: target)
     }
 
-    /// Built at execution time, after the stages committed, so it carries their fresh device
-    /// ids. Nil when no stage resolves to a device copy: there is nothing to reference.
+    /// Built at execution time, after the day routes committed, so it carries their fresh
+    /// device ids. Nil until every day has a copy.
     private func makeTripBlob(_ tripID: TripID, target: DeviceObjectID?) -> TripBlob? {
-        guard let trip = trip(tripID) else { return nil }
-        let deviceStageIDs = currentTripDeviceStageIDs(for: trip)
-        guard !deviceStageIDs.isEmpty else { return nil }
-        let payload = TripObjectCodec.encode(currentTripObject(for: trip, stageIDs: deviceStageIDs))
+        guard let trip = trip(tripID), let object = currentTripObject(for: trip) else { return nil }
         return TripBlob(
-            name: trip.name, deviceStageIDs: deviceStageIDs, payload: payload, targetObjectID: target)
+            name: trip.name, deviceStageIDs: object.days.map(\.routeID),
+            payload: TripObjectCodec.encode(object), targetObjectID: target)
     }
 
     /// Pure and static, so the rule is testable without a device.
     static func composeTripState(
-        tripSelf: OnDeviceState, stageStates: [OnDeviceState]
+        tripSelf: OnDeviceState, dayStates: [OnDeviceState]
     ) -> OnDeviceState {
-        guard !stageStates.isEmpty, tripSelf != .notOnDevice else { return .notOnDevice }
-        if tripSelf == .upToDate, stageStates.allSatisfy({ $0 == .upToDate }) { return .upToDate }
+        guard !dayStates.isEmpty, tripSelf != .notOnDevice else { return .notOnDevice }
+        if tripSelf == .upToDate, dayStates.allSatisfy({ $0 == .upToDate }) { return .upToDate }
         return .outdated
+    }
+
+    /// Record the link a day route upload landed under. No settled scope records no link.
+    func markTripDayUploaded(_ id: TripID, day: Int, objectID: DeviceObjectID, crc32: UInt32) {
+        guard var trip = trip(id) else { return }
+        while trip.dayCopies.count <= day { trip.dayCopies.append(nil) }
+        if let scope = connectedScope {
+            trip.dayCopies[day] = TripDayCopy(
+                link: DeviceRouteLink(scope: scope, objectID: objectID), uploadedCRC32: crc32)
+            // The transfer verified this CRC, so the badge proves before the next catalog read.
+            deviceRouteCRCs[objectID] = crc32
+        } else {
+            trip.dayCopies[day] = nil
+        }
+        library.saveTrip(trip)
+        reloadTrips()
+    }
+
+    /// Record the link and fingerprint a trip-object upload landed under, so the trip badge
+    /// lights and a later push replaces that object in place. No scope or no id means no link,
+    /// the safe direction.
+    public func markTripUploaded(_ id: TripID, objectID: DeviceObjectID?, crc32: UInt32) {
+        guard var trip = trip(id) else { return }
+        if let scope = connectedScope, let objectID {
+            trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
+            trip.uploadedCRC32 = crc32
+            // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
+            deviceTripCRCs[objectID] = crc32
+        } else {
+            trip.deviceLink = nil
+            trip.uploadedCRC32 = nil
+        }
+        library.saveTrip(trip)
+        reloadTrips()
+    }
+
+    // MARK: Trip edits
+
+    /// Save a rider's change to a trip. It becomes the most recently edited trip.
+    private func saveEditedTrip(_ trip: Trip) {
+        var trip = trip
+        trip.editedAt = now()
+        library.saveTrip(trip)
+        reloadTrips()
     }
 
     /// Rename a trip. Phone-local; the new name rides the next trip upload.
     public func renameTrip(_ id: TripID, to name: String) {
         guard var trip = trip(id) else { return }
         trip.name = name
-        library.saveTrip(trip)
-        reloadTrips()
+        saveEditedTrip(trip)
     }
 
-    /// Reorder a trip's stages. Ride order is the trip's source of truth, and a reorder
-    /// out-dates the device copy.
-    public func reorderTripStages(_ id: TripID, from source: IndexSet, to destination: Int) {
+    /// Name one day after its end. Nil or blank returns the day to "Day N".
+    public func renameTripDay(_ id: TripID, day: Int, to name: String?) {
         guard var trip = trip(id) else { return }
-        trip.stageIDs.move(fromOffsets: source, toOffset: destination)
-        library.saveTrip(trip)
-        reloadTrips()
+        trip.renameDay(day, to: name)
+        saveEditedTrip(trip)
     }
 
-    /// Remove one stage; the route returns to the top level. Removing the last stage dissolves
-    /// the trip and returns `true`, so the caller can pop the page.
-    @discardableResult
-    public func removeStage(_ routeID: RouteID, from tripID: TripID) -> Bool {
-        guard var trip = trip(tripID) else { return false }
-        trip.stageIDs.removeAll { $0 == routeID }
-        if trip.stageIDs.isEmpty {
-            library.deleteTrip(tripID)  // dissolve — routes stay in the library
-            reloadTrips()
-            return true
-        }
-        library.saveTrip(trip)
-        reloadTrips()
-        return false
+    /// Reverse the trip in place: the direction and the day order. It gets a new trip key, so
+    /// its device progress starts empty.
+    public func reverseTrip(_ id: TripID) {
+        guard var trip = trip(id) else { return }
+        trip.reverse()
+        saveEditedTrip(trip)
+        nameDayEnds(id)
     }
 
-    /// Drop the trip metadata. Every member route stays in the library and returns to the top
-    /// level.
-    public func ungroupTrip(_ id: TripID) {
-        library.deleteTrip(id)
-        reloadTrips()
+    /// Set or clear the date of Day 1.
+    public func setTripStartDay(_ id: TripID, to day: CivilDay?) {
+        guard var trip = trip(id) else { return }
+        trip.startDay = day
+        saveEditedTrip(trip)
     }
 
-    /// Delete each member route's device copy and the trip object while connected, then the
-    /// phone library. Offline, only the phone copies go and the device copies surface as
-    /// orphans at the next reconcile.
-    public func deleteTripAndRoutes(_ id: TripID) {
+    /// Set a trip's bike type, and make it the type the next import starts with. Every day route
+    /// carries the type, so the change out-dates them until the next upload.
+    public func setTripBikeType(_ id: TripID, to type: BikeType) {
+        lastBikeType.value = type
+        guard var trip = trip(id) else { return }
+        trip.bikeType = type
+        saveEditedTrip(trip)
+    }
+
+    /// Delete a trip from the phone. While connected, also delete its day routes and its trip
+    /// object on the device: the protocol delete does not cascade. Offline, the device copies stay
+    /// and surface as loose routes there.
+    public func deleteTrip(_ id: TripID) {
         guard let trip = trip(id) else { return }
-        let stages = trip.stageIDs
-        // The protocol trip delete does not cascade, so compose it here. Best-effort: a failed
-        // command leaves an orphan the reconcile heals.
         if let scope = connectedScope {
-            let routeObjectIDs: [DeviceObjectID] = stages.compactMap { stage in
-                guard let link = plannedRecords[stage]?.deviceLink, link.matches(scope) else { return nil }
-                return link.objectID
+            let routeObjectIDs = trip.dayCopies.compactMap { copy -> DeviceObjectID? in
+                guard let copy, copy.link.matches(scope) else { return nil }
+                return copy.link.objectID
             }
             let tripObjectID: DeviceObjectID? = {
                 guard let link = trip.deviceLink, link.matches(scope) else { return nil }
                 return link.objectID
             }()
             if !routeObjectIDs.isEmpty || tripObjectID != nil {
+                // Best-effort: a failed command leaves an orphan the reconcile heals.
                 Task { [transport] in
-                    for objectID in routeObjectIDs { try? await transport.deleteRoute(objectID) }
                     if let tripObjectID { try? await transport.deleteTrip(tripObjectID) }
+                    for objectID in routeObjectIDs { try? await transport.deleteRoute(objectID) }
                 }
             }
         }
+        tripDayCache[id] = nil
         library.deleteTrip(id)
-        for stage in stages {
-            routes.removeAll { $0.id == stage }
-            plannedRecords[stage] = nil
-            onDevice[stage] = nil
-            library.deletePlannedRoute(stage)
-        }
         reloadTrips()
     }
 
     // MARK: Create & file
 
-    /// Group the selected routes into a new trip. Stages take Planned-list order, not selection
-    /// order, and reordering stays the trip page's job. The new trip takes the slot of its
-    /// newest member. Ids with no live record are dropped; an empty result creates nothing.
+    /// The one join path: route files in ride order become one trip, one day per file, with
+    /// the day ends on the file boundaries. Nil when no file has a line.
     @discardableResult
-    public func groupIntoTrip(_ routeIDs: [RouteID], name: String) -> TripID? {
-        let ordered = routeIDs
-            .compactMap { plannedRecords[$0] }
-            .sorted { $0.addedAt > $1.addedAt }
-        guard !ordered.isEmpty else { return nil }
+    public func createTrip(name: String, files: [[RoutePoint]], bikeType: BikeType? = nil) -> TripID? {
+        let lines = files.filter { $0.count > 1 }
+        guard !lines.isEmpty else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trip = TripRecord(
-            id: TripID(UUID().uuidString.lowercased()),
+        let trip = Trip.joining(
+            lines, id: TripID(UUID().uuidString.lowercased()),
             name: trimmed.isEmpty ? "New trip" : trimmed,
-            stageIDs: ordered.map(\.id),
-            addedAt: ordered.map(\.addedAt).max() ?? now()
-        )
-        library.saveTrip(trip)  // ≤ 1-trip invariant enforced in the store
+            bikeType: bikeType ?? lastBikeType.value, now: now())
+        library.saveTrip(trip)
         reloadTrips()
+        nameDayEnds(trip.id)
         return trip.id
     }
 
-    /// File a route per a picker selection. `.existing` appends it as the trip's last stage;
-    /// the store strips it from any other trip, so a move is an implicit remove. `.new` starts
-    /// a trip in that route's list slot. Phone-local: library writes only.
-    public func fileRoute(_ routeID: RouteID, into selection: TripSelection) {
-        switch selection {
-        case .none:
-            break
-        case .existing(let tripID):
-            guard var trip = trip(tripID), !trip.stageIDs.contains(routeID) else { return }
-            trip.stageIDs.append(routeID)
-            library.saveTrip(trip)
-            reloadTrips()
-        case .new(let name):
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard plannedRecords[routeID] != nil else { return }
-            let trip = TripRecord(
-                id: TripID(UUID().uuidString.lowercased()),
-                name: trimmed.isEmpty ? "New trip" : trimmed,
-                stageIDs: [routeID],
-                addedAt: plannedRecords[routeID]?.addedAt ?? now()
-            )
-            library.saveTrip(trip)
-            reloadTrips()
-        }
+    /// Add a route file to a trip as its new last day.
+    public func appendToTrip(_ id: TripID, file: [RoutePoint]) {
+        guard var trip = trip(id), file.count > 1 else { return }
+        trip.append(file)
+        saveEditedTrip(trip)
+        nameDayEnds(id)
     }
 
-    public func removeRouteFromTrip(_ routeID: RouteID) {
-        guard let tripID = tripContaining(routeID) else { return }
-        _ = removeStage(routeID, from: tripID)
+    /// Group loose routes into one trip, in the proposed join order. The routes move into the
+    /// trip: they leave the library, and the trip keeps no link to them.
+    @discardableResult
+    public func groupIntoTrip(_ routeIDs: [RouteID], name: String) -> TripID? {
+        let records = routeIDs.compactMap { plannedRecords[$0] }.filter { $0.route.points.count > 1 }
+        guard !records.isEmpty else { return nil }
+        let order = TripJoin.proposedOrder(records.map(\.joinFile))
+        let ordered = order.map { records[$0] }
+        guard let tripID = createTrip(
+            name: name, files: ordered.map(\.route.points), bikeType: ordered[0].bikeType)
+        else { return nil }
+        for record in ordered { deleteRoute(record.id) }
+        return tripID
+    }
+
+    /// File a route per a picker selection: it becomes the last day of an existing trip, or the
+    /// only day of a new one, and leaves the library. Returns the trip it went into.
+    @discardableResult
+    public func fileRoute(_ routeID: RouteID, into selection: TripSelection) -> TripID? {
+        guard let record = plannedRecords[routeID], record.route.points.count > 1 else { return nil }
+        let tripID: TripID
+        switch selection {
+        case .none:
+            return nil
+        case .existing(let id):
+            guard trip(id) != nil else { return nil }
+            appendToTrip(id, file: record.route.points)
+            tripID = id
+        case .new(let name):
+            guard let id = createTrip(name: name, files: [record.route.points], bikeType: record.bikeType)
+            else { return nil }
+            tripID = id
+        }
+        deleteRoute(routeID)
+        return tripID
+    }
+
+    /// Name each unnamed day end after its place. A lookup never replaces a name the rider gave,
+    /// and one that finds nothing leaves "Day N".
+    private func nameDayEnds(_ id: TripID) {
+        guard let placeName, let trip = trip(id) else { return }
+        let unnamed = trip.dayEnds.enumerated().filter { $0.element.name == nil }.map { ($0.offset, $0.element.coordinate) }
+        guard !unnamed.isEmpty else { return }
+        Task { [weak self] in
+            for (day, coordinate) in unnamed {
+                guard let name = await placeName(coordinate) else { continue }
+                guard let self, var trip = self.trip(id), trip.dayEnds.indices.contains(day),
+                    trip.dayEnds[day].coordinate == coordinate, trip.dayEnds[day].name == nil
+                else { continue }
+                trip.renameDay(day, to: name)
+                library.saveTrip(trip)
+                reloadTrips()
+            }
+        }
     }
 
     // MARK: Delete
@@ -844,9 +990,8 @@ public final class MainScreenModel {
         routes.removeAll { $0.id == id }
         plannedRecords[id] = nil
         onDevice[id] = nil
-        // The store also prunes the id from any trip, and dissolves a trip left with no stages.
         library.deletePlannedRoute(id)
-        reloadTrips()
+        rebuildPlannedItems()
     }
 
     /// Move a tracked ride to Recently Deleted. The device copy stays, and so do the stored
@@ -1055,18 +1200,7 @@ public final class MainScreenModel {
     /// Record the scope-qualified link an upload landed under, so the badge lights and a later
     /// re-upload replaces that object on that device. With no settled scope no link is recorded:
     /// the safe direction, because a scope-less link aliases across devices.
-    public func markRouteUploaded(
-        _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32
-    ) {
-        markRouteUploaded(id, objectID: objectID, crc32: crc32, adopt: true)
-    }
-
-    /// A single route upload adopts: it pushes its trip object when the trip is on the device.
-    /// A stage committed inside a whole-trip upload does not, because that queue pushes the trip
-    /// object once at the end.
-    func markRouteUploaded(
-        _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32, adopt: Bool
-    ) {
+    public func markRouteUploaded(_ id: RouteID, objectID: DeviceObjectID, crc32: UInt32) {
         guard var record = plannedRecords[id] else { return }
         if let scope = connectedScope {
             record.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
@@ -1074,7 +1208,6 @@ public final class MainScreenModel {
             // The transfer verified this CRC for this object, so record it as device truth: the
             // badge proves before the next catalog read overwrites it.
             deviceRouteCRCs[objectID] = crc32
-
         } else {
             record.deviceLink = nil
             record.uploadedCRC32 = nil
@@ -1082,61 +1215,6 @@ public final class MainScreenModel {
         plannedRecords[id] = record
         library.savePlannedRoute(record)
         refreshOnDeviceStates()
-        // Adoption rule: a single route that belongs to a trip already on the device files into
-        // the folder, so push the updated trip object. Runs after the route's own commit, so the
-        // trip object carries the fresh stage id.
-        if adopt { maybeAdoptRouteIntoDeviceTrip(id) }
-    }
-
-    /// Record the link and fingerprint a trip-object upload landed under, so the trip badge
-    /// lights and a later push replaces that object in place. No scope or no id means no link,
-    /// the safe direction.
-    public func markTripUploaded(_ id: TripID, objectID: DeviceObjectID?, crc32: UInt32) {
-        guard var trip = trip(id) else { return }
-        if let scope = connectedScope, let objectID {
-            trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
-            trip.uploadedCRC32 = crc32
-            // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
-            deviceTripCRCs[objectID] = crc32
-        } else {
-            trip.deviceLink = nil
-            trip.uploadedCRC32 = nil
-        }
-        library.saveTrip(trip)
-        reloadTrips()
-    }
-
-    /// Push the updated trip object when the route's trip is already on the device, so the
-    /// newly-committed route files into the folder. Best-effort: a failed push leaves the trip
-    /// page reading outdated, which the Upload-trip button or the next reconcile heals.
-    private func maybeAdoptRouteIntoDeviceTrip(_ routeID: RouteID) {
-        guard let scope = connectedScope,
-            let tripID = tripContaining(routeID),
-            let trip = trip(tripID),
-            let link = trip.deviceLink, link.matches(scope),
-            // Confirmed on the device: a non-zero CRC for the trip object, the same proof the
-            // badge uses, so an in-session upload counts without re-reading.
-            (deviceTripCRCs[link.objectID] ?? 0) != 0
-        else { return }
-        pushTripObject(tripID, replacing: link.objectID)
-    }
-
-    /// Encode and upload one trip object, replacing by id, and commit the link on success.
-    /// Fire-and-forget; the reconcile is the backstop.
-    private func pushTripObject(_ tripID: TripID, replacing objectID: DeviceObjectID?) {
-        guard let trip = trip(tripID) else { return }
-        let deviceStageIDs = currentTripDeviceStageIDs(for: trip)
-        let payload = TripObjectCodec.encode(currentTripObject(for: trip, stageIDs: deviceStageIDs))
-        let crc = CRC32.checksum(payload)
-        let blob = TripBlob(
-            name: trip.name, deviceStageIDs: deviceStageIDs, payload: payload, targetObjectID: objectID)
-        Task { [weak self, transport] in
-            let handle = transport.uploadTrip(blob)
-            guard await handle.outcome == .completed else { return }
-            let assigned = await handle.assignedObjectID
-            guard let self else { return }
-            self.markTripUploaded(tripID, objectID: assigned ?? objectID, crc32: crc)
-        }
     }
 
     // MARK: Helpers
@@ -1161,5 +1239,14 @@ public final class MainScreenModel {
         let query = searchText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return items }
         return items.filter { $0[keyPath: name].localizedCaseInsensitiveContains(query) }
+    }
+}
+
+extension PlannedRouteRecord {
+    /// The route as the join reads it. The caller keeps only routes with a line.
+    fileprivate var joinFile: TripJoin.File {
+        TripJoin.File(
+            name: summary.name, start: route.points[0].coordinate,
+            end: route.points[route.points.count - 1].coordinate)
     }
 }

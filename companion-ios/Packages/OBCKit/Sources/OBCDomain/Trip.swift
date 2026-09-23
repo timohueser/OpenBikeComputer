@@ -2,113 +2,143 @@ import Foundation
 
 /// Stable identifier for a trip in the app's library: app-generated, never a device object id.
 ///
-/// A thin `String` wrapper for type safety, the exact ``RouteID`` idiom. A trip groups routes the
-/// phone owns, and its device copy is named by a ``DeviceObjectID``, so a `TripID` never crosses
-/// the transport's data plane.
+/// A thin `String` wrapper for type safety, the exact ``RouteID`` idiom. The device copy of a trip
+/// is named by a ``DeviceObjectID`` and keyed by ``Trip/key``, so a `TripID` never crosses the
+/// transport's data plane.
 public struct TripID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
 }
 
-/// A trip as the phone's library keeps it: a tiny metadata object that references planned routes
-/// by ``RouteID`` in ride order. It never carries route payloads, so membership edits never touch
-/// a route's bytes.
+/// A place where a day of a trip ends. The place is the truth; ``distance`` is derived from it
+/// by projection onto the line after every line change.
+public struct DayEnd: Equatable, Sendable {
+    public var coordinate: Coordinate
+    /// The rider's or the geocoder's name for the place. Nil reads as "Day N".
+    public var name: String?
+    /// Metres along the trip line. The stored value is the hint for the next projection, which
+    /// keeps a day end on its own leg of an out-and-back or a loop.
+    public var distance: Double
+
+    public init(coordinate: Coordinate, name: String? = nil, distance: Double) {
+        self.coordinate = coordinate
+        self.name = name
+        self.distance = distance
+    }
+}
+
+/// The device copy of one day route: the same link and fingerprint a planned route keeps.
+public struct TripDayCopy: Equatable, Sendable {
+    public var link: DeviceRouteLink
+    /// The CRC-32 of the day route payload the device committed. Nil reads as outdated.
+    public var uploadedCRC32: UInt32?
+
+    public init(link: DeviceRouteLink, uploadedCRC32: UInt32?) {
+        self.link = link
+        self.uploadedCRC32 = uploadedCRC32
+    }
+}
+
+/// A trip as the phone's library keeps it: one line with day ends on it. The line owns the
+/// geometry; a route file added to a trip becomes part of the line and keeps no link to its old
+/// library record. The upload cuts the line into one route per day.
 ///
-/// Ordering lives here and nowhere else: `stageIDs` is the single source of truth for stage order,
-/// and the device object and every derived view read it in that order. A route belongs to at most
-/// one trip, or is standalone at top level.
-public struct TripRecord: Identifiable, Equatable, Sendable {
+/// The line is made of pieces, as ``MeasuredLine`` reads it. A gap between two pieces sits only
+/// at a day end: the next day starts where the next piece starts.
+public struct Trip: Identifiable, Equatable, Sendable {
     public var id: TripID
-    /// Display name. The codec truncates it on a character boundary at encode.
+    /// The key the device stores progress and rides under. A trip keeps it for life, and a
+    /// reverse gives the trip a new one, so the progress of the old direction never ticks days
+    /// of the new one.
+    public internal(set) var key: UInt64
     public var name: String
-    /// Member routes in ride order: the ordering source of truth. Each is a ``RouteID`` in the
-    /// phone's library, and the trip references them and never the route bytes. The store keeps
-    /// each id in at most one trip and drops any whose route record is gone.
-    public var stageIDs: [RouteID]
-    /// The device copy this trip was assigned on upload: the durable link between a library trip
-    /// and its copy on one device in one id era, the same link routes use. A bare object id would
-    /// silently match every connected device, and trip ids come from the device's own per-store
-    /// counter. Nil until an upload commits, and a device-side delete clears it again at reconcile.
-    /// Only meaningful when ``DeviceRouteLink/matches(_:)`` holds for the connected device.
+    /// Written into every day route of an upload.
+    public var bikeType: BikeType
+    /// The date of Day 1, when the rider set one.
+    public var startDay: CivilDay?
+    public internal(set) var line: [RoutePoint]
+    /// Indices into ``line`` that start a new piece. Ascending, never 0.
+    public internal(set) var pieceStarts: [Int]
+    /// One per day, in ride order. The last one sits at the end of the line.
+    public internal(set) var dayEnds: [DayEnd]
+    /// The device copy of each day route, by day index. A missing or nil entry has no copy.
+    public var dayCopies: [TripDayCopy?]
+    /// The device copy of the trip object: the same link a planned route keeps. Only meaningful
+    /// when ``DeviceRouteLink/matches(_:)`` holds for the connected device.
     public var deviceLink: DeviceRouteLink?
-    /// The CRC-32 of the trip object the device last committed: the fingerprint behind the
-    /// trip-level ``OnDeviceState``. Set alongside ``deviceLink`` when an upload's result lands,
-    /// and nil when the copy's content is unknown, which reads as outdated until the next push. A
-    /// stage reorder changes this CRC while leaving the length and name untouched, so it is the
-    /// only signal that detects an outdated trip.
+    /// The CRC-32 of the trip object the device last committed. Nil reads as outdated.
     public var uploadedCRC32: UInt32?
     /// When the trip entered the library, which is the newest-first list order.
     public var addedAt: Date
-
-    /// The trip key the device stores progress and rides under. It is derived from ``id`` with
-    /// 64-bit FNV-1a, so it is stable for the life of the trip and needs no stored field.
-    public var key: UInt64 {
-        Self.key(fnv1a: id.rawValue.utf8.reduce(0xCBF2_9CE4_8422_2325) { ($0 ^ UInt64($1)) &* 0x0000_0100_0000_01B3 })
-    }
-
-    /// The device reads key 0 as "no trip", so a zero hash maps to 1.
-    static func key(fnv1a hash: UInt64) -> UInt64 { max(hash, 1) }
-
-    /// Whether some device holds a copy, derived from ``deviceLink``.
-    public var uploadedToDevice: Bool { deviceLink != nil }
+    /// When the rider last changed the trip. Import offers to add a file to the most recently
+    /// edited trip.
+    public var editedAt: Date
 
     public init(
         id: TripID,
+        key: UInt64 = Trip.newKey(),
         name: String,
-        stageIDs: [RouteID],
+        bikeType: BikeType,
+        startDay: CivilDay? = nil,
+        line: [RoutePoint] = [],
+        pieceStarts: [Int] = [],
+        dayEnds: [DayEnd] = [],
+        dayCopies: [TripDayCopy?] = [],
         deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
-        addedAt: Date = Date()
+        addedAt: Date,
+        editedAt: Date? = nil
     ) {
         self.id = id
+        self.key = max(key, 1)
         self.name = name
-        self.stageIDs = stageIDs
+        self.bikeType = bikeType
+        self.startDay = startDay
+        self.line = line
+        self.pieceStarts = pieceStarts
+        self.dayEnds = dayEnds
+        self.dayCopies = dayCopies
         self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
         self.addedAt = addedAt
+        self.editedAt = editedAt ?? addedAt
     }
 
-    /// The trip-level ``OnDeviceState``, the same rule routes use. `currentCRC` is a closure, so
-    /// the trip object is only encoded when the up-to-date against outdated split actually needs
-    /// it; the encode lives in `OBCTransport`.
-    public func onDeviceState(
-        provenCommittedCRC: UInt32?,
-        currentCRC: () -> UInt32
-    ) -> OnDeviceState {
-        OnDeviceState.determine(provenCommittedCRC: provenCommittedCRC, currentCRC: currentCRC)
+    /// A fresh trip key. The device reads key 0 as "no trip".
+    public static func newKey() -> UInt64 { UInt64.random(in: 1...UInt64.max) }
+
+    public var dayCount: Int { dayEnds.count }
+
+    /// The day's name as the rider reads it: "Day 2 Ulrichen", or "Day 2" for an unnamed end.
+    public func dayTitle(_ day: Int) -> String {
+        let number = "Day \(day + 1)"
+        guard dayEnds.indices.contains(day), let name = dayEnds[day].name, !name.isEmpty else { return number }
+        return "\(number) \(name)"
     }
+
+    /// Name one day end. The name travels with the place through every line change.
+    public mutating func renameDay(_ day: Int, to name: String?) {
+        guard dayEnds.indices.contains(day) else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        dayEnds[day].name = trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    /// Whether some device holds a copy of the trip object.
+    public var uploadedToDevice: Bool { deviceLink != nil }
 }
 
-/// A trip's derived statistics: distance and climb summed over its member routes, plus the stage
-/// count. The one implementation everything reads, so the phone and the device can never disagree
-/// about a trip's numbers.
-///
-/// It sums over the summaries of the resolvable stages the caller hands it, so a dangling member
-/// is simply not in the list, and `stageCount` is the count of what was summed.
+/// A trip's totals, summed over its days in ride order.
 public struct TripStats: Equatable, Sendable {
     public var distanceMeters: Double
     public var elevationGainMeters: Double
-    public var stageCount: Int
+    public var dayCount: Int
 
-    public init(distanceMeters: Double = 0, elevationGainMeters: Double = 0, stageCount: Int = 0) {
+    public init(distanceMeters: Double = 0, elevationGainMeters: Double = 0, dayCount: Int = 0) {
         self.distanceMeters = distanceMeters
         self.elevationGainMeters = elevationGainMeters
-        self.stageCount = stageCount
-    }
-
-    /// Sum distance and ascent and count the stages over the member summaries in the order given.
-    /// The caller resolves the stage ids to summaries and keeps ride order.
-    public static func summing<S: Sequence>(_ stages: S) -> TripStats where S.Element == RouteSummary {
-        var stats = TripStats()
-        for stage in stages {
-            stats.distanceMeters += stage.distanceMeters
-            stats.elevationGainMeters += stage.elevationGainMeters
-            stats.stageCount += 1
-        }
-        return stats
+        self.dayCount = dayCount
     }
 }
-
 /// One entry of the device's trip catalog: the durable trip object id plus the summed display
 /// fields the device computed over its resolvable stages. Deliberately not a `TripRecord`: the
 /// catalog is per-connection reconcile state from the connected device, so the bare id is

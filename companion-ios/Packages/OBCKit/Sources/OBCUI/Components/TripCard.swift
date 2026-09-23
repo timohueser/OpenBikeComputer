@@ -1,13 +1,12 @@
 import SwiftUI
 import OBCDomain
 
-/// The routes-list panel for a trip: every stage drawn on one multi-stage preview in
-/// its palette color, a serif name, and the stage-count stat line. The full-width
-/// hero preview tells it apart from a ``RouteCard``, which uses the compact side-cell
-/// layout; the multi-color stage map is the "group of routes" signal.
+/// The routes-list panel for a trip: every day drawn on one preview in its palette color, a
+/// serif name, and the day-count stat line. The full-width hero preview tells it apart from a
+/// ``RouteCard``, which uses the compact side-cell layout.
 ///
-/// The on-device badge is the trip-level ``OnDeviceState`` the caller resolves: a
-/// check only when the trip object and every stage are up to date.
+/// The on-device badge is the trip-level ``OnDeviceState`` the caller resolves: a check only
+/// when the trip object and every day route are up to date.
 public struct TripCard: View {
     let name: String
     let subtitle: String
@@ -26,22 +25,22 @@ public struct TripCard: View {
         self.onDevice = onDevice
     }
 
-    /// Builds the stat line and the stage previews from a trip's summed stats and its
-    /// member summaries, coloring each stage by index.
+    /// Builds the stat line and the day previews from a trip's totals and its day summaries,
+    /// coloring each day by index.
     public init(
         name: String,
         stats: TripStats,
-        stageSummaries: [RouteSummary],
+        daySummaries: [RouteSummary],
         onDevice: OnDeviceState = .notOnDevice
     ) {
         self.init(
             name: name,
             subtitle: OBCFormat.tripSubtitle(
-                stageCount: stats.stageCount,
+                dayCount: stats.dayCount,
                 distanceMeters: stats.distanceMeters,
                 elevationGainMeters: stats.elevationGainMeters
             ),
-            stages: stageSummaries.enumerated().map { index, summary in
+            stages: daySummaries.enumerated().map { index, summary in
                 MultiTrackPreviewView.Stage(
                     coordinates: summary.trackPreview?.coordinates ?? [],
                     color: OBCTheme.stageColor(index: index)
@@ -101,7 +100,7 @@ public struct TripCard: View {
         VStack(spacing: 14) {
             TripCard(
                 name: "Driftless Weekender",
-                subtitle: "2 stages · 141 km · 2,050 m ↑",
+                subtitle: "2 days · 141 km · 2,050 m ↑",
                 stages: [
                     .init(coordinates: a, color: OBCTheme.stageColor(index: 0)),
                     .init(coordinates: b, color: OBCTheme.stageColor(index: 1)),

@@ -30,28 +30,30 @@ public struct FixtureSet: Sendable {
     }
 }
 
-/// A fixture trip: the app-side grouping of member routes by their library id, in ride order.
-/// Seeded into the mock run's `LibraryStore`, and carrying no device link, because a trip lands on
-/// the device only through a whole-trip upload. `order` fixes its `addedAt`, so it interleaves
-/// with the loose route cards deterministically.
+/// A fixture trip: fixture routes joined into one line, one day per route, in ride order. The
+/// member routes seed only as the trip, never as loose routes, because a route added to a trip
+/// becomes part of its line. It carries no device link: a trip lands on the device only through a
+/// whole-trip upload. `order` fixes its `addedAt`, so it interleaves with the route cards
+/// deterministically.
 public struct TripEntry: Sendable {
     public var id: TripID
     public var name: String
-    public var stageIDs: [RouteID]
+    public var routeIDs: [RouteID]
     /// Seconds subtracted from the seed base date; bigger is older. It fixes the trip's slot in
     /// the newest-first list.
     public var order: Double
 
-    public init(id: TripID, name: String, stageIDs: [RouteID], order: Double = 0) {
+    public init(id: TripID, name: String, routeIDs: [RouteID], order: Double = 0) {
         self.id = id
         self.name = name
-        self.stageIDs = stageIDs
+        self.routeIDs = routeIDs
         self.order = order
     }
 
-    /// The library record this fixture seeds: a phone-local trip with no device link.
-    public func record(base: Date) -> TripRecord {
-        TripRecord(id: id, name: name, stageIDs: stageIDs, addedAt: base.addingTimeInterval(-order))
+    /// The library trip this fixture seeds from the fixture routes' geometry.
+    public func trip(routes: [RouteEntry], base: Date) -> Trip {
+        let files = routeIDs.compactMap { id in routes.first { $0.summary.id == id }?.points }
+        return Trip.joining(files, id: id, name: name, bikeType: .road, now: base.addingTimeInterval(-order))
     }
 }
 
@@ -298,7 +300,7 @@ private struct FixtureFile: Decodable {
     let diagnostics: String?
     let routes: [RouteDTO]
     let rides: [RideDTO]
-    /// Optional, and carried only by the trips demo fixture: it groups some of `routes` into trips
+    /// Optional, and carried only by the trips demo fixture: it joins some of `routes` into trips
     /// by their string ids.
     let trips: [TripDTO]?
 
@@ -318,13 +320,13 @@ private struct FixtureFile: Decodable {
 private struct TripDTO: Decodable {
     let id: String
     let name: String
-    let stages: [String]
+    let routes: [String]
     let order: Double?
 
     var entry: TripEntry {
         TripEntry(
             id: TripID(id), name: name,
-            stageIDs: stages.map(RouteID.init), order: order ?? 0)
+            routeIDs: routes.map(RouteID.init), order: order ?? 0)
     }
 }
 
