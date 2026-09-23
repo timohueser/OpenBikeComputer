@@ -1293,13 +1293,32 @@ script = "{up_base} C d p w d"
 expect = "ContextDrawer"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
+# (d) A POI row's detail: the category title, the Ahead row and the Off route row's side arrow.
 [[frame]]
 name = "up-ahead-poi-detail"
 map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_scope_pois} p f"
 expect = "PoiDetail"
+args = ["--gpx", "{upgpx}", "--at", "25"]
+
+# (d2) The fullest timeline detail: a two-line name, both distance rows and split hours. The page
+# drops its subtitle and draws the compact hours rows, so the hours clear the footer bar.
+[[frame]]
+name = "up-ahead-poi-detail-tight"
+map = "{monaco}"
+env = "monaco-garden"
+script = "{up_base} {up_scope_pois} p f"
+expect = "PoiDetail"
+args = ["--at", "0", "--clock", "2025-01-06T12:00"]
+
+# (b2) The same list in imperial units, where a climb gives way to the wider offset figure.
+[[frame]]
+name = "up-ahead-water-imperial"
+map = "{monaco}"
+env = "monaco-route"
+script = "B u p d*4 p p w d p w b b b w {up_base} {up_filter_water} d*9 f*8"
+expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
@@ -2014,6 +2033,17 @@ env = "routes"
 script = "p*4 f d p A d p f p f C p w d d"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
+langs = ["de", "fr", "es"]
+
+# A timeline place's detail: the category title and the Ahead and Off route captions beside their
+# values.
+[[frame]]
+name = "up-ahead-poi-detail"
+map = "{monaco}"
+env = "monaco-route"
+script = "{up_base} {up_scope_pois} p f"
+expect = "PoiDetail"
+args = ["--gpx", "{upgpx}", "--at", "25"]
 langs = ["de", "fr", "es"]
 
 [[frame]]

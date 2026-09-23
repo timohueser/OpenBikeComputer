@@ -158,8 +158,9 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         // The two filter row labels are deliberately absent: "Filter" is the German word and
         // "Sources" the French one, so both would fail this net for being right. They are covered
         // instead by the render sweep below and by `context_drawer`'s width test.
-        ("poi_detail.side_left", Msg::PoiDetailSideLeft),
-        ("poi_detail.side_right", Msg::PoiDetailSideRight),
+        ("poi_detail.ahead", Msg::PoiDetailAhead),
+        ("poi_detail.away", Msg::PoiDetailAway),
+        ("poi_detail.off_route", Msg::PoiDetailOffRoute),
     ] {
         for lang in [Language::De, Language::Fr, Language::Es] {
             assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
