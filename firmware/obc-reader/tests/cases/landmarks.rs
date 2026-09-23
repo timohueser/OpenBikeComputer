@@ -53,7 +53,7 @@ impl ByteSource for Source<'_> {
 }
 
 #[test]
-fn pages_reach_every_colocated_identity_with_one_record_read_per_step() {
+fn pages_reach_every_colocated_identity_with_one_read_per_step() {
     let bytes = section(19);
     let source = Source { bytes: &bytes, reads: Cell::new(0), fail: Cell::new(false) };
     let directory = LandmarkDirectory::read(&source).unwrap();

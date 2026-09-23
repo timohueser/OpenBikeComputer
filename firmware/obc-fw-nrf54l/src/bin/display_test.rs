@@ -40,10 +40,6 @@ mod flpr_mux;
 #[path = "../semmc.rs"]
 mod semmc;
 
-#[cfg(feature = "landmark-photo-demo")]
-#[path = "../landmark_photo_demo.rs"]
-mod landmark_photo_demo;
-
 use defmt::{info, warn};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -62,7 +58,6 @@ static mut FB: [u8; FB_W * FB_H] = [0; FB_W * FB_H];
 static mut ROW_DIFF: RowDiff<FB_H> = RowDiff::new();
 
 /// The colour cycle: device-64 bytes (R = bits 0–1, G = bits 2–3, B = bits 4–5).
-#[cfg(not(feature = "landmark-photo-demo"))]
 const CYCLE: [(u8, &str); 5] = [(0x00, "black"), (0x03, "red"), (0x0C, "green"), (0x30, "blue"), (0x3F, "white")];
 
 #[embassy_executor::main]
@@ -149,22 +144,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(defmt::unwrap!(com::com_task(vcom, vb, va)));
     info!("display_test: COM free-running (watch LED0 shimmer) — colour cycle starts");
 
-    #[cfg(feature = "landmark-photo-demo")]
-    landmark_photo_demo::run(
-        &mut frame,
-        &mut panel,
-        [
-            Input::new(p.P1_26, Pull::Up),
-            Input::new(p.P1_09, Pull::Up),
-            Input::new(p.P1_08, Pull::Up),
-            Input::new(p.P0_05, Pull::Up),
-        ],
-    )
-    .await;
-
-    #[cfg(not(feature = "landmark-photo-demo"))]
     let mut step = 0usize;
-    #[cfg(not(feature = "landmark-photo-demo"))]
     loop {
         let full_frame = step % (CYCLE.len() + 1);
         if full_frame < CYCLE.len() {

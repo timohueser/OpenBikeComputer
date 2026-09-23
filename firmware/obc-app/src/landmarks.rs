@@ -131,9 +131,16 @@ impl Landmarks {
             map_generation: self.generation?,
         }))
     }
+    fn requested(&self, sources: bool, language: [u8; 2]) -> (usize, bool, u16, [u8; 2]) {
+        (self.selected, sources, if sources { self.source_page } else { self.page }, language)
+    }
     pub(crate) fn read_step(&mut self, reader: &Reader, sources: bool, language: [u8; 2]) -> Result<(), Error> {
         if Some(reader.generation()) != self.generation {
             self.invalidate();
+            return Ok(());
+        }
+        // The prepared page is still the one asked for: this frame reads nothing.
+        if self.loaded == Some(self.requested(sources, language)) {
             return Ok(());
         }
         if let Some(selection) = self.peak {
@@ -219,10 +226,7 @@ impl Landmarks {
             self.page = 0;
             self.source_page = 0;
         }
-        let requested = (self.selected, sources, if sources { self.source_page } else { self.page }, language);
-        if self.loaded == Some(requested) {
-            return Ok(());
-        }
+        let requested = self.requested(sources, language);
         let article = bundle.map(|bundle| obc_reader::articles::select(bundle, language)).transpose()?;
         self.name.clear();
         let mut bytes = [0; MAX_NAME_BYTES as usize];
