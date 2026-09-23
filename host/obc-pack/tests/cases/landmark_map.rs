@@ -109,8 +109,19 @@ fn source_join_content_pool_and_independent_photo_readback() {
     let text = directory.content(&source, article.text, MAX_TEXT_BYTES).unwrap();
     assert_eq!(page(&text, 1, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), "Eine Burg.");
     for (reference, expected) in [
-        (article.attribution, ["de.wikipedia.org/?oldid=1", "Burg", "Wikipedia contributors", "CC BY-SA 4.0"]),
-        (first.photo_attribution, ["Wikimedia Commons", "Burg.jpg", "A", "CC BY 4.0"]),
+        (
+            article.attribution,
+            [
+                "de.wikipedia.org/?oldid=1",
+                "Burg",
+                "Wikipedia contributors",
+                "CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/",
+            ],
+        ),
+        (
+            first.photo_attribution,
+            ["Wikimedia Commons", "Burg.jpg", "A", "CC BY 4.0 creativecommons.org/licenses/by/4.0/"],
+        ),
     ] {
         let credit = directory.content(&source, reference, MAX_ATTRIBUTION_BYTES).unwrap();
         for (index, expected) in expected.into_iter().enumerate() {
