@@ -121,32 +121,32 @@ impl Costs {
             surface_attributed: facts.attribution_map == Some(map),
         })
     }
-    /// A complete candidate, measured by [`Stations`] like the original. Its surface figures come
-    /// from `facts`, and the caller has checked that it is attributed to the current map.
+    /// A complete candidate, measured by [`Stations`] like the original, in the same walk that
+    /// reads its visit costs. The caller has checked that it is attributed to the current map.
     pub fn candidate(
         src: &dyn ByteSource,
-        facts: crate::visit::VisitCosts,
+        arrival: [u32; 2],
         elev: &mut dyn ElevationSource,
-    ) -> Result<Self, Error> {
-        let h = crate::reader::read_header(src)?;
+    ) -> Result<(crate::visit::VisitCosts, Self), Error> {
         let mut stations = Stations::new(elev);
-        crate::reader::for_each_stored_point(src, &h, |p| stations.push((p.lon, p.lat)))?;
+        let facts = crate::visit::VisitCosts::read_with(src, arrival, |p| stations.push((p.lon, p.lat)))?;
         let (distance_m, ascent_m, elevation_complete) = stations.finish();
-        Ok(Self {
+        let costs = Self {
             distance_m,
             ascent_m,
             rough_m: facts.rough_m,
             unknown_m: facts.unknown_m,
             elevation_complete,
             surface_attributed: true,
-        })
+        };
+        Ok((facts, costs))
     }
 }
 
 /// Along-track spacing of the measuring stations. The planner stores a candidate point about every
 /// 30 m on mountain roads and the terrain postings are about 40 m apart, so a finer spacing only
 /// measures GPS noise and lateral offset on a slope.
-pub const STATION_SPACING_M: f64 = 40.0;
+const STATION_SPACING_M: f64 = 40.0;
 
 /// Measures an original and a candidate the same way: a station every [`STATION_SPACING_M`] of
 /// stored geometry and one at the end. Distance is the sum of the chords between stations, and

@@ -106,20 +106,17 @@ impl ReviewedRoute {
             }
             None
         };
-        let visit_costs = if matches!(
-            context.purpose,
-            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)
-        ) {
-            let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
-            Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
-        } else {
-            None
-        };
-        let easier = match (context.purpose, visit_costs) {
-            (ReviewPurpose::Easier(_), Some(facts)) => {
-                Some(obc_route::easier::Costs::candidate(bytes, facts, elev).map_err(|_| NavigatorError::Unavailable)?)
+        let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
+        let (visit_costs, easier) = match context.purpose {
+            ReviewPurpose::Easier(_) => {
+                let (facts, costs) = obc_route::easier::Costs::candidate(bytes, arrival, elev)
+                    .map_err(|_| NavigatorError::Unavailable)?;
+                (Some(facts), Some(costs))
             }
-            _ => None,
+            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute => (
+                Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?),
+                None,
+            ),
         };
         Ok(Self {
             source,

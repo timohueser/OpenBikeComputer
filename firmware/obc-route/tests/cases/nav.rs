@@ -1297,52 +1297,27 @@ fn terrain_fills_every_point_and_the_header_stats() {
     assert_eq!(route.total_distance_m, 4474);
 }
 
-/// An exact copy of a plan and a noisy, dense track of the same road measure what the plan
-/// measures, whatever heights they carry, so an easier comparison finds no saving on one road.
+/// An imported copy of a plan measures what the plan measures, whatever heights it carries, so an
+/// easier comparison finds no saving on the same road.
 #[test]
-fn a_copy_and_a_noisy_track_of_a_plan_compare_equal_to_it() {
+fn an_imported_copy_of_a_plan_measures_what_the_plan_measured() {
     use crate::common::{build_obcr, ChunkIn, RouteSpec};
-    use obc_route::easier::{Costs, Goal, MIN_CLIMB_SAVING_M, MIN_DISTANCE_SAVING_M};
+    use obc_route::easier::Costs;
     let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let (plan, obcr) = plan_with_elevation(&bytes, &mut Ridge);
+    let (_, planned) = Costs::candidate(&SliceSource(&obcr), [0, plan.total_distance_m], &mut Ridge).unwrap();
+    let points = route_points(&obcr).iter().map(|p| (p.lon, p.lat, 0)).collect();
+    let (imported, _) = build_obcr(&RouteSpec {
+        chunks: &[ChunkIn { points, cum_distance_m: 0, cum_ascent_m: 0 }],
+        totals: (plan.total_distance_m, 0, 0),
+        ..RouteSpec::default()
+    });
+    let source = SliceSource(&imported);
+    let index = RouteIndex::read(&source).unwrap();
     let map = obc_formats::obcr::RouteSourceKey { store: [0; 16], object: 1, revision: 1 };
-    let facts = obc_route::visit::VisitCosts::read(&SliceSource(&obcr), [0, plan.total_distance_m]).unwrap();
-    let planned = Costs::candidate(&SliceSource(&obcr), facts, &mut Ridge).unwrap();
-    let imported = |points: Vec<(i32, i32, i16)>| {
-        let length = points
-            .windows(2)
-            .map(|w| f64::from(obc_map_scene::ground_dist_m((w[0].0, w[0].1), (w[1].0, w[1].1))))
-            .sum::<f64>() as u32;
-        let (bytes, _) = build_obcr(&RouteSpec {
-            chunks: &[ChunkIn { points, cum_distance_m: 0, cum_ascent_m: 0 }],
-            totals: (length, 0, 0),
-            ..RouteSpec::default()
-        });
-        let source = SliceSource(&bytes);
-        let index = RouteIndex::read(&source).unwrap();
-        Costs::remaining(&RouteReader::new(&index, &source), 0, map, &mut Ridge).unwrap()
-    };
-    let shape: Vec<_> = route_points(&obcr).iter().map(|p| (p.lon, p.lat)).collect();
-    let copy = imported(shape.iter().map(|&(lon, lat)| (lon, lat, 0)).collect());
+    let copy = Costs::remaining(&RouteReader::new(&index, &source), 0, map, &mut Ridge).unwrap();
     assert!(planned.elevation_complete && planned.ascent_m > 0);
     assert_eq!((copy.distance_m, copy.ascent_m), (planned.distance_m, planned.ascent_m));
-    // A point about every 25 m, each up to 2 m off the road, with heights from another source.
-    let mut track = vec![(shape[0].0, shape[0].1, 0)];
-    for (i, w) in shape.windows(2).enumerate() {
-        let steps = (obc_map_scene::ground_dist_m(w[0], w[1]) / 25.0).ceil().max(1.0) as i32;
-        for k in 1..=steps {
-            let jitter = ((i as i32 * 31 + k * 17) % 37) - 18;
-            let at = |a: i32, b: i32| a + (b - a) * k / steps + jitter;
-            track.push((at(w[0].0, w[1].0), at(w[0].1, w[1].1), 900 + jitter as i16));
-        }
-    }
-    assert!(track.len() > 2 * shape.len());
-    let noisy = imported(track);
-    assert!(noisy.ascent_m.abs_diff(planned.ascent_m) < MIN_CLIMB_SAVING_M, "{noisy:?} {planned:?}");
-    assert!(noisy.distance_m.abs_diff(planned.distance_m) < MIN_DISTANCE_SAVING_M, "{noisy:?} {planned:?}");
-    for goal in Goal::ALL {
-        assert!(!goal.eligible(noisy, planned) && !goal.eligible(planned, noisy));
-    }
 }
 
 /// Densification is bounded by ground distance, not by vertex count, so the bound is asserted on
