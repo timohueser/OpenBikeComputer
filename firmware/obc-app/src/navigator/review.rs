@@ -624,7 +624,7 @@ impl NavigatorMachine {
                 self.checkpoint_unpublished();
                 None
             }
-            MetadataOutcome::Cancelled { .. } => None,
+            MetadataOutcome::Cancelled { .. } | MetadataOutcome::ProgressWritten { .. } => None,
         }
     }
 }

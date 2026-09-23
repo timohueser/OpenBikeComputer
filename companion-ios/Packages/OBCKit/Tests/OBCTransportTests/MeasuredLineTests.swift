@@ -61,6 +61,21 @@ struct MeasuredLineTests {
     }
 
     @Test
+    func theProfileRunsOnDistanceSoAGapAndDenseSamplesDoNotSkewIt() {
+        // Dense samples on the first kilometre, one on the second, and a free jump between them.
+        let line = MeasuredLine(
+            coordinates: [point(0, 0), point(250, 0), point(500, 0), point(750, 0), point(1000, 0),
+                          point(5000, 0), point(6000, 0)],
+            elevations: [100, 100, 100, 100, 100, 100, 300],
+            pieceStarts: [5]
+        )
+        let profile = line.elevationProfile(count: 5)
+        #expect(profile.count == 5)
+        #expect(zip(profile, [100, 100, 100, 200, 300]).allSatisfy { abs($0 - $1) < 1 })
+        #expect(MeasuredLine(coordinates: [point(0, 0), point(1000, 0)]).elevationProfile(count: 5).isEmpty)
+    }
+
+    @Test
     func projectionStaysOnItsLegOfASwitchback() {
         let line = switchback
         // A finger 10 m above the first leg, at x = 600, is also 20 m below the return leg.

@@ -84,8 +84,7 @@ expect = "RouteMenu"
 # The Route menu with a trip (the `trips` env): the "Alpen Traverse" row, its full name over
 # "Day 1 next · 3 days", above the loose grimsel route. `p p p` opens the trip's day list: the trip
 # name as the title, one row per resolvable day ("Day 1 Andermatt" over "Mon · 2 km ▲76 m"), the
-# cursor on the next day. No progress record reaches the app, so no day is ticked and the trip is
-# never done in these frames.
+# cursor on the next day. These frames have no progress record, so no day is ticked.
 [[frame]]
 name = "routemenu-trips"
 map = "{grimsel}"
@@ -99,6 +98,25 @@ map = "{grimsel}"
 env = "trips"
 script = "p p p"
 expect = "RouteMenu"
+
+# With a progress record (`--trip-progress DAY:METRES:LAST`): all three days finished, so the trip
+# row reads "Done · 3 days"; and Day 1 finished, so the day list ticks Day 1 and the cursor is on
+# Day 2.
+[[frame]]
+name = "routemenu-trip-done"
+map = "{grimsel}"
+env = "trips"
+script = "p p"
+expect = "RouteMenu"
+args = ["--trip-progress", "2:0:2"]
+
+[[frame]]
+name = "trip-stage-list-ticked"
+map = "{grimsel}"
+env = "trips"
+script = "p p p"
+expect = "RouteMenu"
+args = ["--trip-progress", "0:1000:0"]
 
 # A seven-day day list scrolls: the title bar cuts the trip name clear of the "1 / 7" counter.
 [[frame]]
@@ -1385,6 +1403,38 @@ map = "{grimsel}"
 script = "B d d w p p"
 expect = "RideStart"
 args = ["--clock", "2025-06-29T14:40", "--battery", "8"]
+
+# The start card with a trip day: Day 1 of "Alpen Traverse" is finished, so the day row offers
+# Day 2 under Start ride, and the cursor moves onto it. A press opens the day's own route detail,
+# which is the `routeoverview` frame.
+[[frame]]
+name = "ride-start-trip"
+map = "{grimsel}"
+env = "trips"
+script = "B d d w p p d"
+expect = "RideStart"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
+
+# After an early stop the day row builds the day from the rest of the day before: 1 km into Day 1,
+# with Day 1 finished, Day 2's detail shows the rest of Day 1 and then all of Day 2 under Day 2's
+# name.
+[[frame]]
+name = "ride-start-trip-rest"
+map = "{grimsel}"
+env = "trips"
+script = "B d d w p p d p w w"
+expect = "RouteOverview"
+args = ["--battery", "45", "--trip-progress", "0:1000:0"]
+
+# The bike type editor over the start card: the cursor on the bike row, a press opens the shared
+# editor sheet, and one step stages the next type, which the hero above the sheet shows at once.
+[[frame]]
+name = "ride-start-bike-editor"
+map = "{grimsel}"
+env = "trips"
+script = "B d d w p p u p w d w"
+expect = "ContextDrawer"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
 
 # (c) A route-less RIDING map (start card → Start ride): the follow map with the recorded breadcrumb,
 # no route line and no off-route chip (there's no route to be off).

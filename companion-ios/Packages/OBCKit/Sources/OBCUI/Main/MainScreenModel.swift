@@ -1016,8 +1016,8 @@ public final class MainScreenModel {
     }
 
     /// A synced ride with its full tracklog, read from the store on demand: the interactive map,
-    /// share and save as route use this, never the downsampled `trackPreview`. Nil when the ride
-    /// carries no points, and the detail then degrades to the preview's coordinates.
+    /// the profile, share and save as route use this, never the downsampled `trackPreview`. Nil
+    /// when the ride carries no points, and the detail then degrades to the preview's coordinates.
     public func ride(_ id: RideID) -> Ride? {
         guard let summary = rides.first(where: { $0.id == id }),
             let points = library.ridePoints(id), !points.isEmpty

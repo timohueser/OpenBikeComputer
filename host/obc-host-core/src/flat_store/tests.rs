@@ -224,7 +224,7 @@ fn exhausted_counter_mount_remains_readable_and_refuses_writes() {
         assert_eq!(owner.mode().unwrap(), exhausted);
         assert_eq!(owner.store_id().unwrap(), identity);
         assert_eq!(bytes(&owner.open(meta.id, revision).unwrap()), ROUTE);
-        assert!(matches!(owner.import_computed_route(ROUTE), Err(ImportError::Storage(StoreError::ReadOnly))));
+        assert!(matches!(owner.import_computed_route(ROUTE, None), Err(ImportError::Storage(StoreError::ReadOnly))));
         assert_eq!(owner.entries().unwrap().len(), 1);
         if exhausted == Mode::ReadWrite {
             // One slot remains for ordinary writes, but not publication plus compensation.

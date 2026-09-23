@@ -325,6 +325,10 @@ pub(crate) enum Request {
         change: obc_app::navigator::CheckpointChange,
     },
     ReconcileMetadata,
+    WriteProgress {
+        record: obc_app::trip::TripProgress,
+        keys: heapless::Vec<u64, { obc_app::MAX_TRIPS }>,
+    },
     CleanupRoute {
         before_utc: u32,
         store: obc_app::device_core::StoreIdentity,
@@ -361,6 +365,8 @@ pub(crate) enum Request {
         allocation: Allocation,
         name: DisplayName,
         original: Option<(ObjectId, Revision)>,
+        /// The route is a built trip day, which replaces the one the card holds in place.
+        built_day: bool,
     },
     /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried,
     /// so this can never remove a later replacement that happens to share the object id.
@@ -926,6 +932,10 @@ fn serve(
             )
             .map_err(metadata_error),
         )),
+        Request::WriteProgress { record, keys } => Ok(Outcome::Metadata(
+            obc_storage::flat::metadata::write_progress(store, record, |key| keys.contains(&key))
+                .map_err(metadata_error),
+        )),
         Request::ReconcileMetadata => {
             Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(metadata_error)))
         }
@@ -950,7 +960,7 @@ fn serve(
             store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
             Ok(Outcome::Done)
         }
-        Request::PublishComputedRoute { allocation, name, original } => {
+        Request::PublishComputedRoute { allocation, name, original, built_day } => {
             if let Some((id, revision)) = original {
                 if store.current_revision(id)? != Some(revision) {
                     return Err(StoreError::NotFound);
@@ -966,21 +976,34 @@ fn serve(
             if !store.has_commit_capacity(2) {
                 return Err(StoreError::ReadOnly);
             }
-            let id = store.next_object_id();
+            let previous = if built_day { built_day_head(store)? } else { None };
+            if let Some((id, _)) = previous {
+                obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+                    obc_storage::flat::metadata::Error::Store(error) => error,
+                    _ => StoreError::ReadOnly,
+                })?;
+            }
+            let (id, revision) = match previous {
+                Some((id, revision)) => (id, Revision(revision.0.checked_add(1).ok_or(StoreError::ReadOnly)?)),
+                None => (store.next_object_id(), Revision(1)),
+            };
             let payload_crc = store.allocation_crc(&allocation)?;
             let meta = EntryMeta {
                 added_at_utc: 0,
                 id,
-                revision: Revision(1),
+                revision,
                 kind: ObjectKind::Route,
                 flags: EntryFlags::NONE,
                 payload_len: allocation.written_bytes(),
                 payload_crc,
                 name,
             };
-            store
-                .commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
-                .map(|_| Outcome::Published(id))
+            let put = Mutation::Put { meta, source: PutSource::Fresh(allocation) };
+            match previous {
+                Some((id, revision)) => store.commit(&[Mutation::Remove { id, revision }, put]),
+                None => store.commit(&[put]),
+            }
+            .map(|_| Outcome::Published(id))
         }
         Request::RemoveComputedRoute { id, revision } => {
             check_route_change(store, id)?;
@@ -1566,10 +1589,11 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
     let mut internal_routes = 0u64;
     for (index, entry) in heads.into_iter().enumerate() {
         match store
-            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_candidate(source))
+            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_flags(source))
         {
-            Ok(Ok((summary, candidate))) => {
-                if candidate {
+            Ok(Ok((summary, flags))) => {
+                let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+                if candidate || flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
                     internal_routes |= 1 << routes.len();
                 }
                 if candidate && accepted & (1 << index) == 0 {
@@ -1756,5 +1780,44 @@ pub(crate) fn load_metadata(
 ) -> Result<(), obc_app::metadata::MetadataError> {
     obc_storage::flat::metadata::read_rows(store, |row| app.set_ride_archive_proof(row.id.0, row.timestamp))
         .map_err(metadata_error)?;
+    let mut records = obc_formats::trip_progress::Records::new();
+    obc_storage::flat::metadata::read_progress(store, |record| {
+        let _ = records.push(record);
+    })
+    .map_err(metadata_error)?;
+    app.set_trip_progress(records);
+    let join = day_join(store, app);
+    app.set_day_join(join);
     Ok(())
+}
+
+/// The built trip day the card holds, if any.
+fn built_day_head(store: &FlatStore<FlatCard>) -> Result<Option<(ObjectId, Revision)>, StoreError> {
+    let head = store
+        .entries()
+        .filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head())
+        .find(|entry| {
+            store
+                .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_flags(source))
+                .is_ok_and(|read| read.is_ok_and(|(_, flags)| flags & obc_formats::obcr::FLAG_BUILT_DAY != 0))
+        })
+        .map(|entry| (entry.id, entry.revision));
+    if !store.entries_ok() {
+        return Err(StoreError::Media);
+    }
+    Ok(head)
+}
+
+/// Where the active trip's next day meets the day before: the day before's leave point, clamped to
+/// its route's length, and the day's join point.
+fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::trip::DayJoin> {
+    let (trip, day) = app.next_trip_day()?;
+    let read = |k| store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).ok()?.ok();
+    let (before, this) = (read(day.checked_sub(1)?)?, read(day)?);
+    let length = store
+        .with_source(ObjectId(before.route), None, |source| obc_route::RouteObjectInfo::read(source))
+        .ok()?
+        .ok()?
+        .distance_m;
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
 }
