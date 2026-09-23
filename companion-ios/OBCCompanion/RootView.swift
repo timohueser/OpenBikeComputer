@@ -459,8 +459,21 @@ struct RootView: View {
                         path.removeSubrange(index...)
                     }
                 },
-                onOpenRide: { path.append(.ride(id: $0)) }
+                onOpenRide: { path.append(.ride(id: $0)) },
+                onOpenDay: { path.append(.tripDay(id: id, day: $0)) }
             )
+        case .tripDay(let id, let day):
+            if let trip = mainModel.trip(id), let route = mainModel.tripDays(id).first(where: { $0.day == day }) {
+                RouteDetailScreen(
+                    transport: transport,
+                    dressing: .tripDay(route.summary(tripID: id)),
+                    preloadedDetail: route.detail(tripID: id),
+                    // The full-resolution cut, for the interactive map.
+                    plannedGeometry: ImportedRoute(points: route.points),
+                    bikeType: trip.bikeType,
+                    deviceName: mainModel.deviceName
+                )
+            }
         case .trash:
             RecentlyDeletedView(model: mainModel)
         case .settings:
@@ -543,6 +556,7 @@ struct RootView: View {
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case trip(id: TripID)
+    case tripDay(id: TripID, day: Int)
     case ride(id: RideID)
     case trash
     case settings
