@@ -43,6 +43,8 @@ public final class LineMarkerEditorModel {
     /// Known stops near the line: small pins on the map and marks along the top of the profile.
     public var stops: [PlacedStop] = []
     @ObservationIgnored public var onEvent: (LineMarkerEvent) -> Void
+    /// A finger that touched a handle and lifted without moving it.
+    @ObservationIgnored public var onTap: (LineMarker.ID) -> Void = { _ in }
 
     /// The profile resampled by distance, so a 50,000-point line draws as a few hundred.
     private(set) var profile: [ProfileSample] = []
@@ -194,6 +196,12 @@ public final class LineMarkerEditorModel {
         guard let id = activeID, let marker = marker(id) else { return }
         activeID = nil
         onEvent(.ended(id, distance: marker.distance))
+    }
+
+    /// A touch on the handle that never became a drag.
+    public func tap(_ id: LineMarker.ID) {
+        guard marker(id) != nil else { return }
+        onTap(id)
     }
 
     /// One VoiceOver step: a whole move in one call.
