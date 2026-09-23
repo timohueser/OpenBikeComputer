@@ -256,6 +256,7 @@ fn ghost_value(
         // The samples agree: 1 h 05 left from the 14:32 clock sample gives 15:37.
         F::TimeToGo => "1:05",
         F::Eta => "15:37",
+        F::TripToGo => "143",
         F::Clock => "14:32",
         F::NextWaypoint => {
             // The wide waypoint tile is a name caption + a right-aligned distance value.
@@ -405,6 +406,7 @@ mod tests {
             bike_type: crate::settings::BikeType::Road,
             language: Language::De,
             next_ahead: &cache,
+            trip_later_m: None,
         };
         let mut seen: std::vec::Vec<(std::string::String, std::string::String)> = std::vec::Vec::new();
         for f in StatField::ALL.into_iter().filter(|f| f.category().is_some()) {

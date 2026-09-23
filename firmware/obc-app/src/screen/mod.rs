@@ -372,6 +372,9 @@ pub struct Render<'a> {
     pub trip_progress: &'a [crate::trip::TripProgress],
     /// Where the active trip's next day meets the day before; `None` loads the day as it is.
     pub day_join: Option<crate::trip::DayJoin>,
+    /// The length of the loaded trip day's later days, or `None` when the loaded route is not a
+    /// trip day.
+    pub trip_later_m: Option<u32>,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -502,6 +505,7 @@ impl Render<'_> {
             bike_type: self.settings.bike_type,
             language: self.settings.language,
             next_ahead: self.next_ahead,
+            trip_later_m: self.trip_later_m,
         }
     }
 }

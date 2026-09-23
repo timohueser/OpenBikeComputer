@@ -41,6 +41,8 @@ pub struct Readout<'a> {
     /// The per-category "next ahead" cache the six `Next: <category>` tiles read. It is empty on
     /// a host that never refreshes it, which makes those tiles waypoint-only.
     pub next_ahead: &'a crate::next_ahead::NextAhead,
+    /// The length of the loaded trip day's later days, or `None` off a trip.
+    pub trip_later_m: Option<u32>,
 }
 
 /// Grid geometry: a page is `ROWS_PER_PAGE` x `COLS` tiles. A single-span field fills one slot, a
@@ -100,6 +102,7 @@ stat_field_table! {
     RideTime = 8, StatfieldRideTime, 1, 1, None;
     TimeToGo = 21, StatfieldTimeToGo, 1, 1, None;
     Eta = 22, StatfieldEta, 1, 1, None;
+    TripToGo = 23, StatfieldTripToGo, 1, 1, None;
     Clock = 9, StatfieldClock, 2, 1, None;
     NextWaypoint = 10, StatfieldNextWaypoint, 2, 1, None;
     NextWater = 15, PoiCatWater, 2, 1, Some(PoiCategory::Water);
@@ -206,6 +209,17 @@ impl StatField {
                     None => fmt::dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileEta, lang), ""), value, false)
+            }
+            StatField::TripToGo => {
+                let value = match (cx.trip_later_m, cx.route) {
+                    (Some(later_m), Some(r)) => {
+                        let to_go_m = r.total_distance_m.saturating_sub(cx.navigation.progress_m) + later_m;
+                        // Whole units: each later day is a whole-kilometre catalog figure.
+                        fmt::integer((units.dist(to_go_m as f32 / 1000.0) + 0.5) as u32)
+                    }
+                    _ => fmt::dashes(),
+                };
+                StatCell::new(cap(t(Msg::TileTrip, lang), units.dist_label()), value, false)
             }
             StatField::Clock => {
                 let value = fmt::clock_hm(cx.now.hour, cx.now.minute);
@@ -502,6 +516,7 @@ mod tests {
             bike_type: crate::settings::BikeType::Road,
             language: Language::En,
             next_ahead: EMPTY_CACHE,
+            trip_later_m: None,
         }
     }
 
@@ -623,6 +638,28 @@ mod tests {
     }
 
     #[test]
+    fn trip_to_go_adds_the_later_days_to_the_rest_of_the_loaded_day() {
+        let rec = idle_recorder();
+        with_pass_route(|route, _| {
+            let mut navigation = RouteState::new();
+            navigation.route_total_m = route.total_distance_m;
+            navigation.progress_m = route.total_distance_m - 1_000;
+            let empty = Waypoints::new();
+            let cell = |units| {
+                let cx = Readout {
+                    route: Some(route),
+                    trip_later_m: Some(61_000),
+                    ..readout(&navigation, rec, units, &empty)
+                };
+                let cell = StatField::TripToGo.cell(&cx);
+                (cell.caption.as_str().to_owned(), cell.value.as_str().to_owned())
+            };
+            assert_eq!(cell(Units::Metric), ("TRIP KM".into(), "62".into()), "the last km of today, 61 km later");
+            assert_eq!(cell(Units::Imperial), ("TRIP MI".into(), "39".into()));
+        });
+    }
+
+    #[test]
     fn elevation_tile_reads_live_barometric_altitude() {
         let navigation = RouteState::new();
         let empty = Waypoints::new();
@@ -678,6 +715,8 @@ mod tests {
         assert_eq!(val(StatField::RideTime).as_str(), "0:00");
         assert_eq!(val(StatField::TimeToGo).as_str(), "--", "no route → no end to ride to, reads --");
         assert_eq!(val(StatField::Eta).as_str(), "--", "no route → no arrival to estimate, reads --");
+        assert_eq!(val(StatField::TripToGo).as_str(), "--", "no trip → nothing left of one, reads --");
+        assert_eq!(StatField::TripToGo.cell(&cx).caption.as_str(), "TRIP KM");
         assert_eq!(val(StatField::Clock).as_str(), "12:00", "the neutral default DateTime");
         assert_eq!(val(StatField::NextWaypoint).as_str(), "--", "no route → the waypoint tile reads --");
     }
@@ -732,6 +771,7 @@ mod tests {
             (RideTime, 8, Msg::StatfieldRideTime, 1, 1, None),
             (TimeToGo, 21, Msg::StatfieldTimeToGo, 1, 1, None),
             (Eta, 22, Msg::StatfieldEta, 1, 1, None),
+            (TripToGo, 23, Msg::StatfieldTripToGo, 1, 1, None),
             (Clock, 9, Msg::StatfieldClock, 2, 1, None),
             (NextWaypoint, 10, Msg::StatfieldNextWaypoint, 2, 1, None),
             (NextWater, 15, Msg::PoiCatWater, 2, 1, Some(PoiCategory::Water)),
@@ -754,7 +794,7 @@ mod tests {
                 assert_eq!(field.name(lang), t(name, lang), "{field:?} in {lang:?}");
             }
         }
-        for byte in 23..=u8::MAX {
+        for byte in 24..=u8::MAX {
             assert_eq!(StatField::from_u8(byte), None, "unknown persisted ID {byte}");
         }
         let list = StatFieldList::decode(1, &[10]);
