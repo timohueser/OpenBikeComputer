@@ -937,6 +937,17 @@ public final class MainScreenModel {
         }
     }
 
+    /// The day editor of a trip. Done saves its draft; nothing changes before.
+    public func dayEditor(_ id: TripID, isSplitMode: Bool) -> TripDayEditorModel? {
+        guard let trip = trip(id) else { return nil }
+        return TripDayEditorModel(
+            trip: trip, isSplitMode: isSplitMode, finder: stopFinder, placeName: placeName
+        ) { [weak self] edited in
+            self?.saveEditedTrip(edited)
+            self?.nameDayEnds(id)
+        }
+    }
+
     /// End a day at a stop: the day end moves to the line point nearest the stop and takes its
     /// name.
     public func endTripDay(_ id: TripID, day: Int, at stop: PlacedStop) {
