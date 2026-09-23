@@ -485,6 +485,19 @@ ride_time = "TIEMPO"
 distance = "DISTANCIA"
 climb = "ASCENSO"
 
+# --- The card after Finish on a trip day ---
+[day_done]
+# The title "DAY 2 DONE": the day number goes between the two words.
+day = "DÍA"
+done = "HECHO"
+# The title after the last day of a trip.
+trip_done = "VIAJE HECHO"
+# The caption over tomorrow's day, and the title of page 2.
+tomorrow = "MAÑANA"
+# After the time estimate: "~3:30 h est."
+est = "est."
+ok = "OK"
+
 # --- Salida recuperada al arrancar ---
 [ride_recovery]
 title = "RECUPERACIÓN"

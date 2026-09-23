@@ -26,6 +26,7 @@ mod arrival;
 pub(crate) mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
+mod day_done;
 mod detour;
 mod dfu;
 mod find_place;
@@ -68,6 +69,8 @@ pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
+pub use day_done::DayDoneScreen;
+pub(crate) use day_done::RideTotals;
 pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
@@ -381,6 +384,8 @@ pub struct Render<'a> {
     /// The viewed ride's recorded-track elevation profile, host-filled on detail entry and
     /// invalidated on exit. `None` while the fill still streams and on every other screen.
     pub ride_profile: Option<&'a Profile>,
+    /// Tomorrow's profile on the day-done card, host-filled into the ride profile's buffer.
+    pub day_profile: Option<&'a Profile>,
     /// The climb the rider is currently on, or `None` between climbs. A `Some` means a climb is
     /// tracked and both halves are valid, so a screen never reads a stale detail buffer.
     pub climb: Option<ActiveClimb<'a>>,
@@ -891,6 +896,9 @@ screens! {
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
+    /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
+    /// totals. OK returns Home.
+    DayDone(DayDoneScreen) => Caps::modal(),
     Menu(MenuScreen) => Caps::nav(),
     /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
     /// platform-fed, so the screen is unreachable when no panorama data is installed.
@@ -1165,6 +1173,7 @@ impl Screen {
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
             Screen::RideDetail(s) => s.tick_timers(now_ms),
+            Screen::DayDone(s) => s.tick_timers(now_ms),
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
             Screen::PeakView(s) => s.tick_timers(now_ms, w, h),
             Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),

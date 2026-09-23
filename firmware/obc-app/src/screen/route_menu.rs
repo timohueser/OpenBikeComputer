@@ -385,7 +385,7 @@ fn climb_label(climb_m: u32) -> heapless::String<12> {
 
 /// Draw the climb group at `x`: the triangle, then `climb`. The triangle is drawn, because the
 /// panel font has no `↑` glyph.
-fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb: &str, color: u16) {
+pub(super) fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb: &str, color: u16) {
     // The base sits on the baseline, so the triangle reads as a capital.
     let base = sy + LINE2_FONT.cap_bottom() as i32 - 1;
     cv.triangle(
