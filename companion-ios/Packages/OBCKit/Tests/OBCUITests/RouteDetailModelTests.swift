@@ -98,7 +98,7 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: Tracked
 
-    func testTrackedDressingShowsRideStatsAndItsOwnProfile() {
+    func testTrackedDressingShowsItsStatsLineProfileAndHighlights() {
         let control = makeControl()
         let entry = control.fixtures.rides[0]  // Kettle Moraine Loop (ride)
         let ride = entry.summary
@@ -106,11 +106,18 @@ final class RouteDetailModelTests: XCTestCase {
             transport: MockTransport(control: control), dressing: .tracked(ride), ridePoints: entry.points
         )
 
-        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Moving", "Avg", "Climb"])
+        XCTAssertTrue(model.stats.isEmpty, "the stats line replaces the strip")
+        XCTAssertEqual(model.statsLine, OBCFormat.rideStatsLine(ride))
         XCTAssertTrue(model.tag.text.hasPrefix("Tracked · "))
         XCTAssertTrue(model.tag.isAccent)
         XCTAssertNotNil(model.subtitle)
         XCTAssertTrue(model.isRenamable)
+        XCTAssertTrue(model.elevationProfile.isEmpty && model.highlights.isEmpty, "whole-track work waits for start()")
+
+        model.start()
+        let highlights = RideHighlights.compute(entry.ride()).map { OBCFormat.highlight($0) }
+        XCTAssertFalse(highlights.isEmpty)
+        XCTAssertEqual(model.highlights, highlights)
         XCTAssertEqual(model.elevationProfile.count, RouteStats.profileSampleCount)
         XCTAssertEqual(model.elevationProfile.first, entry.points.first?.elevationMeters)
         XCTAssertEqual(model.elevationProfile.last, entry.points.last?.elevationMeters)
@@ -124,6 +131,7 @@ final class RouteDetailModelTests: XCTestCase {
             let model = RouteDetailModel(
                 transport: MockTransport(control: control), dressing: .tracked(entry.summary), ridePoints: points
             )
+            model.start()
             XCTAssertTrue(model.elevationProfile.isEmpty, "no profile card without elevation")
         }
     }

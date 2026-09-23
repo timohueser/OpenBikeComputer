@@ -121,6 +121,7 @@ struct RouteDetailScreen: View {
         plannedGeometry: ImportedRoute? = nil,
         bikeType: BikeType = .road,
         ridePoints: [RidePoint] = [],
+        rides: [RideSummary] = [],
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
@@ -139,7 +140,7 @@ struct RouteDetailScreen: View {
             transport: transport, dressing: dressing, bikeType: bikeType,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
-            ridePoints: ridePoints
+            ridePoints: ridePoints, rides: rides
         ))
         self.transport = transport
         self.activity = activity
