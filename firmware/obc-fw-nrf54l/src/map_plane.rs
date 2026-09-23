@@ -44,11 +44,7 @@ const OVL_ROWS: u16 = 12;
 // map plane presents with `damage_around(bulge window)`, which clips the bulge's rows out of the
 // spans it pushes and leaves them for `MapDisplay::present_bulge`.
 
-/// Draw a full-screen [boot fault](obc_app::BootFault) to glass and return: the undismissable
-/// storage-failure screen. `main` brings the display up first, then calls this at the fatal card and
-/// map sites before dropping to the heartbeat idle, so the rider sees what is wrong instead of a
-/// dark panel. One push holds, because the message never changes. It is free-standing rather than
-/// tied to an [`App`], because at boot there may be no map to build one around.
+/// Draw a static boot fault when card bring-up fails before USB recovery is available.
 pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::BootFault) {
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
     display.render_frame(|f| {
@@ -57,6 +53,37 @@ pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::Bo
         RenderStats::default()
     });
     let _ = display.present_frame(None).await;
+}
+
+/// Keep the recovery UI and its restart control live while USB replaces an unreadable map.
+pub(crate) async fn run_map_recovery(
+    display: &mut MapDisplay,
+    led: &mut Output<'static>,
+    fault: obc_app::BootFault,
+) -> ! {
+    let mut recovery = obc_app::fault::BootRecovery::new(fault);
+    let mut redraw = true;
+    loop {
+        let transfer = crate::link::map_transfer_state();
+        // A queued press cannot accept a success page that has not reached the display.
+        let changed = recovery.update(transfer);
+        while let Ok(gesture) = crate::input_plane::GESTURES.try_receive() {
+            if !redraw && !changed && recovery.restart_requested(gesture) && !crate::flat_store::transfer_active() {
+                cortex_m::peripheral::SCB::sys_reset();
+            }
+        }
+        while crate::input_plane::CHORDS.try_receive().is_ok() {}
+        if redraw || changed {
+            display.render_frame(|f| {
+                let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                recovery.draw(&mut fbdev, FRAME_W as i32, FRAME_H as i32, |c| Rgb565::from(RawU16::new(c)));
+                RenderStats::default()
+            });
+            redraw = !display.present_frame(None).await.0;
+        }
+        led.toggle();
+        embassy_time::Timer::after_millis(500).await;
+    }
 }
 
 /// Consecutive failed presents that trigger one FLPR relaunch. Each failure already costs a full

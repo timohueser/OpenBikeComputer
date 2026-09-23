@@ -23,7 +23,7 @@ pub enum PlanKind {
     Nav,
     /// The mid-ride detour plan, which pops to the Detour chooser.
     Detour,
-    /// The way to a route's start, which pops to the Start-away prompt.
+    /// The way to a route join point, which pops to the Start-away prompt.
     Approach,
     /// The rest of the day before and the next day, which the start card asked for.
     Day,
@@ -58,7 +58,7 @@ impl NavPlanningScreen {
         NavPlanningScreen { kind: PlanKind::Detour, name: heapless::String::new(), spin: Spinner::default() }
     }
 
-    /// The planning screen for Ride to start. Its plan is a detour-family search, so it cancels
+    /// The planning screen for either route connection. Its plan is a detour-family search, so it cancels
     /// like one.
     pub fn approach() -> Self {
         NavPlanningScreen { kind: PlanKind::Approach, name: heapless::String::new(), spin: Spinner::default() }

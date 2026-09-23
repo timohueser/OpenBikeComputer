@@ -29,6 +29,10 @@ const _: () = assert!(
         == core::mem::size_of::<RideSummary>() + core::mem::size_of::<crate::CatalogObjectId>()
 );
 
+// The board holds `UI_RIDES_CAP` entries resident; a field that grows one costs 32 times its size.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<RideEntry>() == 112);
+
 /// A stored ride's header facts for the Rides screen, plus the device-local `synced` flag the
 /// unsynced-delete guard keys on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,6 +53,7 @@ pub struct RideSummary {
     pub avg_hr: Option<u8>,
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
+    pub energy_kj: Option<u32>,
 }
 
 impl RideSummary {
@@ -66,6 +71,7 @@ impl RideSummary {
             avg_hr: info.avg_hr,
             avg_cadence: info.avg_cadence,
             avg_power: info.avg_power,
+            energy_kj: info.energy_kj,
         }
     }
 }

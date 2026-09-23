@@ -81,7 +81,7 @@ pub enum Msg {
 /// a catalog that cannot be listed, cannot be produced on a real card without risking it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDamageKind {
-    /// Bytes that are not a ride-v4 sample/footer boundary.
+    /// Bytes that are not a ride-v5 sample/footer boundary.
     Payload,
     /// A valid sample boundary with a continuation image that does not decode.
     Metadata,

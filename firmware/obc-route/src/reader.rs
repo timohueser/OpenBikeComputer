@@ -6,7 +6,7 @@
 //! without making them generic.
 
 use core::{
-    cell::RefCell,
+    cell::{Ref, RefCell},
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -467,6 +467,23 @@ impl<'a> RouteReader<'a> {
         decode_chunk_from(self.src, m, n, out)
     }
 
+    /// Borrow a cached chunk for one synchronous operation. Reentrant reads use local scratch
+    /// while the callback pins a slot, so neither another identity nor eviction can replace it.
+    pub fn with_chunk<R>(&self, k: usize, visit: impl FnOnce(&[RoutePoint]) -> R) -> Result<R, Error> {
+        if let Some(points) = self.cache.and_then(|cache| cache.borrow_chunk(self.idx.identity, k)) {
+            return Ok(visit(&points));
+        }
+        self.with_decoded_chunk(k, visit)
+    }
+
+    // Keep miss scratch off the cache-hit path and out of its caller's frame.
+    #[inline(never)]
+    fn with_decoded_chunk<R>(&self, k: usize, visit: impl FnOnce(&[RoutePoint]) -> R) -> Result<R, Error> {
+        let mut points = Vec::new();
+        self.decode_chunk(k, &mut points)?;
+        Ok(visit(&points))
+    }
+
     pub fn attribution_map(&self) -> Result<Option<obc_formats::obcr::RouteSourceKey>, Error> {
         if self.flags & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 {
             return Ok(None);
@@ -491,48 +508,41 @@ impl<'a> RouteReader<'a> {
     }
 
     /// Locate `progress_m` on the route, clamped to the route end and interpolated inside the
-    /// containing segment. It uses caller-owned decode scratch, so the matcher adds no
-    /// stack-sized route copy.
-    pub(crate) fn locate_progress(
-        &self,
-        progress_m: u32,
-        buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
-    ) -> Option<RoutePosition> {
+    /// containing segment. Cached points are borrowed for the interpolation.
+    pub(crate) fn locate_progress(&self, progress_m: u32) -> Option<RoutePosition> {
         let target = progress_m.min(self.total_distance_m);
-        let (p, chunk, seg) = self.locate_interpolated(target, buf)?;
+        let (p, chunk, seg) = self.locate_interpolated(target)?;
         Some(RoutePosition { progress_m: target, lon: p.lon, lat: p.lat, chunk, seg })
     }
 
     /// The shared walk behind [`locate_progress`](Self::locate_progress) and
     /// [`elevation_at`](Self::elevation_at): the interpolated point at `target`, which the caller
     /// has already clamped, plus its chunk and segment.
-    fn locate_interpolated(
-        &self,
-        target: u32,
-        buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
-    ) -> Option<(RoutePoint, usize, usize)> {
+    fn locate_interpolated(&self, target: u32) -> Option<(RoutePoint, usize, usize)> {
         let chunks = self.chunks();
         let k = chunks.iter().rposition(|cm| cm.cum_distance_m <= target).unwrap_or(0);
         let cm = chunks.get(k)?;
-        self.decode_chunk(k, buf).ok()?;
-        let first = *buf.first()?;
-        if buf.len() == 1 {
-            return Some((first, k, 0));
-        }
-
-        let mut s = cm.cum_distance_m as f64;
-        for i in 0..buf.len() - 1 {
-            let a = buf[i];
-            let b = buf[i + 1];
-            let dl = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat)) as f64;
-            let last = i + 2 == buf.len();
-            if target as f64 <= s + dl || last {
-                let t = if dl > 1e-3 { ((target as f64 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
-                return Some((interpolate_point(a, b, t as f32), k, i));
+        self.with_chunk(k, |buf| {
+            let first = *buf.first()?;
+            if buf.len() == 1 {
+                return Some((first, k, 0));
             }
-            s += dl;
-        }
-        None
+
+            let mut s = cm.cum_distance_m as f64;
+            for i in 0..buf.len() - 1 {
+                let a = buf[i];
+                let b = buf[i + 1];
+                let dl = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat)) as f64;
+                let last = i + 2 == buf.len();
+                if target as f64 <= s + dl || last {
+                    let t = if dl > 1e-3 { ((target as f64 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
+                    return Some((interpolate_point(a, b, t as f32), k, i));
+                }
+                s += dl;
+            }
+            None
+        })
+        .ok()?
     }
 
     /// The interpolated elevation at `progress_m`, clamped to the route end: the splice path's
@@ -540,17 +550,15 @@ impl<'a> RouteReader<'a> {
     /// splice's seam contract can be asserted against the same lookup the splice uses.
     #[inline(never)]
     pub fn elevation_at(&self, progress_m: u32) -> Option<i16> {
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         let target = progress_m.min(self.total_distance_m);
-        self.locate_interpolated(target, &mut buf)?.0.elevation()
+        self.locate_interpolated(target)?.0.elevation()
     }
 
     /// The coordinate at `progress_m`, clamped to the route end. The UI-facing wrapper around
-    /// [`locate_progress`](Self::locate_progress); the matcher supplies its own scratch instead.
+    /// [`locate_progress`](Self::locate_progress).
     #[inline(never)]
     pub fn position_at(&self, progress_m: u32) -> Option<RoutePosition> {
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        self.locate_progress(progress_m, &mut buf)
+        self.locate_progress(progress_m)
     }
 
     /// Stream only the polyline stretch in the inclusive interval `[start_m, end_m]`. Each
@@ -993,6 +1001,9 @@ impl RouteCache {
 
     /// Drop every resident slot and zero the counters. A route switch already invalidates through
     /// [`RouteReader::new_cached`]. Only the slot tags and counters are touched.
+    ///
+    /// # Panics
+    /// Panics while a [`RouteReader::with_chunk`] callback borrows this cache.
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
     }
@@ -1005,27 +1016,35 @@ impl RouteCache {
 
     /// Bind the cache to one parsed route. A different identity clears every same-index slot
     /// before the reader can decode; a move of the same index preserves its hits. Identity zero is
-    /// accepted for the empty index, which owns no decodable chunks.
+    /// accepted for the empty index, which owns no decodable chunks. A callback can pin the
+    /// old identity; get/put then defer adoption until the borrow ends.
     fn adopt(&self, identity: u32) {
-        self.inner.borrow_mut().adopt(identity);
+        if let Ok(mut inner) = self.inner.try_borrow_mut() {
+            inner.adopt(identity);
+        }
+    }
+
+    fn borrow_chunk(&self, identity: u32, key: usize) -> Option<Ref<'_, [RoutePoint]>> {
+        let i = {
+            let mut inner = self.inner.try_borrow_mut().ok()?;
+            inner.adopt(identity);
+            let tag = u16::try_from(key).ok()?.checked_add(1)?;
+            let i = inner.slots.iter().position(|s| s.tag == tag)?;
+            inner.hits = inner.hits.saturating_add(1);
+            inner.slots[i].used = inner.touch();
+            i
+        };
+        Some(Ref::map(self.inner.borrow(), |inner| inner.slots[i].pts.as_slice()))
     }
 
     /// If chunk `key` is resident, copy its points into `out` and return `true`. Identity
     /// adoption and lookup share one borrow, so an interleaved reader cannot cross-serve a slot.
     fn get(&self, identity: u32, key: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> bool {
-        let mut inner = self.inner.borrow_mut();
-        inner.adopt(identity);
-        // Bounded by `RouteIndex::index`, and the assertion above leaves zero free as the empty
-        // tag after adding one.
-        let tag = key as u16 + 1;
-        let Some(i) = inner.slots.iter().position(|s| s.tag == tag) else {
+        let Some(points) = self.borrow_chunk(identity, key) else {
             return false;
         };
-        inner.hits = inner.hits.saturating_add(1);
-        let t = inner.touch();
-        inner.slots[i].used = t;
         out.clear();
-        let _ = out.extend_from_slice(&inner.slots[i].pts);
+        let _ = out.extend_from_slice(&points);
         true
     }
 
@@ -1033,7 +1052,9 @@ impl RouteCache {
     /// re-adopted here, after the source read, because a reentrant source can fill the shared
     /// cache for another reader while this miss is in flight.
     fn put(&self, identity: u32, key: usize, pts: &[RoutePoint]) {
-        let mut inner = self.inner.borrow_mut();
+        let Ok(mut inner) = self.inner.try_borrow_mut() else {
+            return;
+        };
         inner.adopt(identity);
         inner.misses = inner.misses.saturating_add(1);
         let i = lru_victim(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
@@ -1163,7 +1184,7 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let Some(bike) = BikeType::from_u8(h[obc_formats::obcr::BIKE_TYPE_OFF]) else {
         return Err(Error::BadOffset);
     };
-    if h[5] & !31 != 0 || h[119] != 0 {
+    if h[5] & !63 != 0 || h[119] != 0 {
         return Err(Error::BadOffset);
     }
     if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 && h[128..160].iter().any(|b| *b != 0) {

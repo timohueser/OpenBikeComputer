@@ -184,7 +184,7 @@ pub enum RecorderError {
 /// this domain may attempt — a catalog it could not read completely is not one it may mutate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDamage {
-    /// The recovered bytes are not a ride-v4 sample/footer boundary.
+    /// The recovered bytes are not a ride-v5 sample/footer boundary.
     Payload,
     /// The recovered samples carry no decodable continuation image.
     Metadata,
@@ -1201,6 +1201,7 @@ impl RecorderMachine {
             moving_time_s: self.moving_s as u32,
             avg_speed_cms: if self.moving_s > 0.0 { (self.moving_m / self.moving_s * 100.0) as u16 } else { 0 },
             climb_m: self.climb.ascent() as u16,
+            descent_m: self.climb.descent() as u16,
             unix_at_anchor: self.clock.unix_at_anchor,
             anchor_ms: self.clock.anchor_ms,
             clock_trusted: self.clock.trusted,
@@ -1210,6 +1211,7 @@ impl RecorderMachine {
             avg_cadence: self.avg_cadence(),
             avg_power: self.avg_power(),
             max_power: self.max_power(),
+            energy_kj: self.kj(),
             bike: self.origin.bike,
             trip: self.origin.trip,
             trip_name: Name::EMPTY,
@@ -2365,6 +2367,7 @@ mod tests {
         assert_eq!(rec.continuation(), state);
         assert_eq!((rec.avg_hr(), rec.avg_power(), rec.avg_cadence()), (Some(150), Some(245), Some(87)));
         assert_eq!(rec.kj(), Some(19), "the ride's energy crosses the reset");
+        assert_eq!((rec.ride_stats().energy_kj, rec.ride_stats().descent_m), (Some(19), 123), "and reach the footer");
         assert_eq!(rec.climb_m(), 321.0);
         assert_eq!((rec.ride_stats().bike, rec.ride_stats().trip), (BikeType::Mtb, TripRef::new(9, 1, 3)));
     }
