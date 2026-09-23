@@ -245,6 +245,8 @@ struct Served {
     high_water: u64,
     next_object: u64,
     entry_count: u16,
+    /// Body fingerprint from the gate that selected this retained catalog.
+    body_crc: u32,
 }
 
 pub struct FlatStore<D> {
@@ -636,6 +638,7 @@ impl<D: BlockDevice> FlatStore<D> {
                 high_water: 0,
                 next_object: 0,
                 entry_count: 0,
+                body_crc: 0,
             }),
             free: const { RefCell::new(FreeMap::BLANK) },
             holds: const { RefCell::new([None; MAX_OPEN_OBJECTS]) },
@@ -725,7 +728,18 @@ impl<D: BlockDevice> FlatStore<D> {
     /// The identity and catalog marks that make this retained mount safe to reuse.
     pub fn mounted_media_state(&self) -> super::MountedMediaState {
         let served = self.served.get();
-        super::MountedMediaState { store: self.store, sequence: served.sequence, high_water: served.high_water }
+        super::MountedMediaState {
+            store: self.store,
+            extent_size: self.geometry.extent_size(),
+            extent_count: self.extents,
+            served: super::CatalogGateIdentity {
+                copy: served.copy as u8,
+                sequence: served.sequence,
+                entry_count: served.entry_count,
+                body_crc: served.body_crc,
+            },
+            high_water: served.high_water,
+        }
     }
 
     /// The catalog commit sequence — the staleness hint a client compares its listing against.
@@ -1026,6 +1040,7 @@ impl<D: BlockDevice> FlatStore<D> {
                 served.sequence = gate.sequence;
                 served.next_object = loaded.next_object;
                 served.entry_count = gate.entry_count;
+                served.body_crc = gate.body_crc;
                 // A counter that has run out mounts read-only rather than wrapping.
                 served.mode = if loaded.exhausted {
                     Mode::RevisionSpaceExhausted
@@ -1679,6 +1694,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             high_water: header.sequence,
             next_object: header.next_object,
             entry_count: header.entry_count,
+            body_crc,
         });
         self.release(plan);
         {

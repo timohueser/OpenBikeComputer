@@ -51,7 +51,7 @@ fn validate_mounted_media(
     for lba in obc_storage::flat::SUPERBLOCK_BLOCKS {
         read_recovery_identity(sd, started, lba, &mut block)?;
         if let Some(identity) = obc_storage::flat::decode_media_identity(&block.0, observed) {
-            if identity.store != expected.store {
+            if !obc_storage::flat::media_identity_matches(expected, identity) {
                 return Err(SemmcError::MediaChanged);
             }
             matched_superblock = true;
@@ -65,7 +65,7 @@ fn validate_mounted_media(
     let mut gates = [None; 2];
     for (copy, lba) in obc_storage::flat::CATALOG_GATE_BLOCKS.into_iter().enumerate() {
         read_recovery_identity(sd, started, lba, &mut block)?;
-        gates[copy] = obc_storage::flat::decode_catalog_sequence(&block.0, copy, expected.store);
+        gates[copy] = obc_storage::flat::decode_catalog_identity(&block.0, copy, expected.store);
     }
     obc_storage::flat::catalog_state_matches(expected, gates).then_some(()).ok_or(SemmcError::MediaChanged)
 }
