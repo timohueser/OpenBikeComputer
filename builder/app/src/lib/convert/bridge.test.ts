@@ -249,7 +249,9 @@ describe("failures", () => {
 
     it("refuses a bike type the device does not have", async () => {
         const gpx = bytes(text("host/obc-vectors/src/route-source.gpx"));
-        expect((await failure(() => gpxToObcr(gpx, "x", 4))).code).toBe("internal");
+        for (const bike of [4, -1, 258, 2.7, NaN]) {
+            expect((await failure(() => gpxToObcr(gpx, "x", bike))).code, String(bike)).toBe("internal");
+        }
     });
 
     it("tells an empty file from bytes that are not a finished ride", async () => {

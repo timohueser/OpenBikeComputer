@@ -45,9 +45,10 @@
         void (async () => {
             // Sequential rather than parallel: each conversion holds the wasm module briefly and
             // the list fills top-to-bottom, which reads as progress without a progress bar.
+            const bike = rememberedBikeType();
             for (const row of rows) {
                 try {
-                    row.prepared = await prepareRoute(row.file, rememberedBikeType());
+                    row.prepared = await prepareRoute(row.file, bike);
                 } catch (cause) {
                     row.error = cause instanceof Error ? cause.message : String(cause);
                 }

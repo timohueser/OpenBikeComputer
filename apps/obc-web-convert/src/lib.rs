@@ -31,13 +31,15 @@ mod web {
     }
 
     /// Convert a GPX file's bytes into `.obcr` bytes, naming the route `name` and typing it
-    /// `bike` (`0..=3`: Road, Gravel, MTB, Touring). The header truncates an over-long name on a
+    /// `bike` (`0..=3`: Road, Gravel, MTB, Touring). `bike` crosses as `f64` because a narrower
+    /// integer would wrap or truncate a bad JS number into a valid type. The header truncates an over-long name on a
     /// char boundary rather than refusing it.
     ///
     /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
     #[wasm_bindgen]
-    pub fn obc_convert_gpx_to_obcr(bytes: &[u8], name: &str, bike: u8) -> Result<Vec<u8>, JsValue> {
-        let bike = obc_route::BikeType::from_u8(bike).ok_or_else(|| {
+    pub fn obc_convert_gpx_to_obcr(bytes: &[u8], name: &str, bike: f64) -> Result<Vec<u8>, JsValue> {
+        let whole = bike.fract() == 0.0 && (0.0..=3.0).contains(&bike);
+        let bike = whole.then_some(bike as u8).and_then(obc_route::BikeType::from_u8).ok_or_else(|| {
             to_js(ConvertFailure {
                 code: crate::ErrorCode::Internal,
                 message: format!("Internal error: {bike} is not a bike type. This is a bug in the builder."),
