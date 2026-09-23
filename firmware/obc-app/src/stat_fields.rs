@@ -214,7 +214,8 @@ impl StatField {
                 let value = match (cx.trip_later_m, cx.route) {
                     (Some(later_m), Some(r)) => {
                         let to_go_m = r.total_distance_m.saturating_sub(cx.navigation.progress_m) + later_m;
-                        fmt::distance_figure(units.dist(to_go_m as f32 / 1000.0))
+                        // Whole units: each later day is a whole-kilometre catalog figure.
+                        fmt::integer((units.dist(to_go_m as f32 / 1000.0) + 0.5) as u32)
                     }
                     _ => fmt::dashes(),
                 };
@@ -653,8 +654,8 @@ mod tests {
                 let cell = StatField::TripToGo.cell(&cx);
                 (cell.caption.as_str().to_owned(), cell.value.as_str().to_owned())
             };
-            assert_eq!(cell(Units::Metric), ("TRIP KM".into(), "62.0".into()), "the last km of today, 61 km later");
-            assert_eq!(cell(Units::Imperial), ("TRIP MI".into(), "38.5".into()));
+            assert_eq!(cell(Units::Metric), ("TRIP KM".into(), "62".into()), "the last km of today, 61 km later");
+            assert_eq!(cell(Units::Imperial), ("TRIP MI".into(), "39".into()));
         });
     }
 
