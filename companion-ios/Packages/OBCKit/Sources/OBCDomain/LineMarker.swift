@@ -8,11 +8,14 @@ public struct LineMarker: Identifiable, Equatable, Sendable {
     public var distance: Double
     /// What VoiceOver calls it: "Day 2 end".
     public var name: String
+    /// A marker no finger can take: a day end at a transfer.
+    public var isFixed: Bool
 
-    public init(id: Int, distance: Double, name: String) {
+    public init(id: Int, distance: Double, name: String, isFixed: Bool = false) {
         self.id = id
         self.distance = distance
         self.name = name
+        self.isFixed = isFixed
     }
 
     /// `distance` held inside the line and between the neighbours of `markers[index]`.
