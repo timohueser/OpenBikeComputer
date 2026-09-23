@@ -208,12 +208,19 @@ impl RouteReader<'_> {
         self.build_profile(profile, false);
     }
 
-    /// Derive both route summaries from one geometry pass.
+    /// Derive both summaries from one geometry pass. After a read error, retry the profile
+    /// independently so a transient failure in climb detection does not leave it empty.
     pub fn elevation_profile_and_climbs_into(&self, profile: &mut Profile) -> crate::Climbs {
-        self.build_profile(profile, true)
+        let (climbs, profile_ok) = self.build_profile(profile, true);
+        if !profile_ok {
+            self.elevation_profile_into(profile);
+        }
+        climbs
     }
 
-    fn build_profile(&self, profile: &mut Profile, include_climbs: bool) -> crate::Climbs {
+    // Pop the summary scratch before a failed profile is retried.
+    #[inline(never)]
+    fn build_profile(&self, profile: &mut Profile, include_climbs: bool) -> (crate::Climbs, bool) {
         // An empty column carries the sentinel `min > max`.
         profile.reset();
         let Profile { cols, grades, .. } = profile;
@@ -253,6 +260,9 @@ impl RouteReader<'_> {
                             smooth.smoothed().unwrap_or(p.ele as f32)
                         };
                         detector.push(crate::climb::ElePt { dist_m: dist, ele_m });
+                    }
+                    if !profile_ok {
+                        continue;
                     }
                     let frac = dist / total;
                     let col = ((frac * base_last as f64) as usize).min(base_last);
@@ -299,6 +309,12 @@ impl RouteReader<'_> {
             }
         }
 
+        let climbs = detector.map_or_else(crate::Climbs::new, |d| d.finish());
+        if !profile_ok {
+            profile.reset();
+            return (climbs, false);
+        }
+
         fill_gaps(&mut cols[..PROFILE_COLS], band_fallback((self.min_ele_m, self.max_ele_m)), band_is_set);
         for (i, gap) in gaps.into_iter().enumerate() {
             if gap {
@@ -313,10 +329,7 @@ impl RouteReader<'_> {
         profile.min_ele_m = self.min_ele_m;
         profile.max_ele_m = self.max_ele_m;
         profile.peak_col = peak_col;
-        if !profile_ok {
-            profile.reset();
-        }
-        detector.map_or_else(crate::Climbs::new, |d| d.finish())
+        (climbs, true)
     }
 }
 

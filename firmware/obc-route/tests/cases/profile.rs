@@ -328,6 +328,8 @@ fn combined_summaries_stream_once_and_keep_climb_gap_and_read_error_behavior() {
         bytes: &'a [u8],
         reads: Cell<usize>,
         fail_at: Option<u64>,
+        fail_once: bool,
+        failed: Cell<bool>,
     }
     impl ByteSource for Source<'_> {
         fn len(&self) -> u64 {
@@ -335,7 +337,8 @@ fn combined_summaries_stream_once_and_keep_climb_gap_and_read_error_behavior() {
         }
         fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
             self.reads.set(self.reads.get() + 1);
-            if self.fail_at == Some(offset) {
+            if self.fail_at == Some(offset) && (!self.fail_once || !self.failed.get()) {
+                self.failed.set(true);
                 return Err(Error::BadOffset);
             }
             SliceSource(self.bytes).read_at(offset, out)
@@ -357,15 +360,24 @@ fn combined_summaries_stream_once_and_keep_climb_gap_and_read_error_behavior() {
     let (bytes, extents) =
         build_obcr(&RouteSpec { chunks: &chunks, totals: (5520, 600, 500), seam_shared: true, ..Default::default() });
     let index = RouteIndex::read(&SliceSource(&bytes)).unwrap();
-    for fail_at in [None, Some(extents[3].start as u64)] {
-        let source = Source { bytes: &bytes, reads: Cell::new(0), fail_at };
+    for (fail_at, fail_once) in
+        [(None, false), (Some(extents[3].start as u64), false), (Some(extents[3].start as u64), true)]
+    {
+        let source = Source { bytes: &bytes, reads: Cell::new(0), fail_at, fail_once, failed: Cell::new(false) };
         let route = RouteReader::new(&index, &source);
-        let expected = route.elevation_profile();
         let expected_climbs = route.detect_climbs();
+        let expected = route.elevation_profile();
+        let separate_reads = source.reads.get();
         source.reads.set(0);
+        source.failed.set(false);
         let mut profile = obc_route::Profile::EMPTY;
         let climbs = route.elevation_profile_and_climbs_into(&mut profile);
-        assert_eq!(source.reads.get(), chunks.len(), "one geometry read per chunk, even beyond cache capacity");
+        if fail_at.is_none() {
+            assert_eq!(separate_reads, 2 * chunks.len());
+            assert_eq!(source.reads.get(), chunks.len(), "healthy summaries share one pass beyond cache capacity");
+        } else {
+            assert_eq!(source.reads.get(), separate_reads, "a failed pass retains the independent profile retry");
+        }
         assert_eq!(climbs.as_slice(), expected_climbs.as_slice());
         assert_eq!(profile.cols(), expected.cols());
         assert_eq!(
