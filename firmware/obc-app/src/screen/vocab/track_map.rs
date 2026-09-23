@@ -1,5 +1,6 @@
 //! The track map: a route or a ride drawn on the device map inside one band, fitted to the track,
-//! with a start dot, an optional end dot, and the bike-type chip in the band's lower-left corner.
+//! with a start dot, an optional end dot, and an optional bike-type chip in the band's lower-left
+//! corner.
 //! Without a map, when the track lies outside it, or when the track is too long for the map to
 //! read at the band's scale, the track draws on the plain page in the same box, with the same dots
 //! and chip.
@@ -46,7 +47,7 @@ pub(crate) fn draw_track_map<D, F>(
     rx: &mut RenderFrame<'_, '_>,
     band: Rectangle,
     track: Track<'_>,
-    bike: BikeType,
+    bike: Option<BikeType>,
 ) where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
@@ -66,10 +67,16 @@ pub(crate) fn draw_track_map<D, F>(
         outside(cv, rx.w, rx.h);
         return;
     }
-    let chip = rect(x0 + CHIP_INSET, y1 - 2 - CHIP_H, CHIP_W, CHIP_H);
+    let chip = bike.map(|bike| (bike, rect(x0 + CHIP_INSET, y1 - 2 - CHIP_H, CHIP_W, CHIP_H)));
     // The renderer collects what lies inside the viewport, so it ends at the band's bottom edge
     // and spends nothing on the page below.
-    let vp = bounds(track.points).map(|b| (fit_clear_of(band, chip, b, track, rx.w, y1), b));
+    let vp = bounds(track.points).map(|b| {
+        let vp = match chip {
+            Some((_, chip)) => fit_clear_of(band, chip, b, track, rx.w, y1),
+            None => fit(band, b, rx.w, y1),
+        };
+        (vp, b)
+    });
 
     let on_map = vp.is_some_and(|(vp, b)| {
         vp.meters_per_pixel() <= MAP_MAX_MPP
@@ -95,16 +102,18 @@ pub(crate) fn draw_track_map<D, F>(
         cv.disc(at(&vp, track.points[0]), DOT_R, TRACK_START);
     }
 
-    cv.round(chip, 4, PARCHMENT);
-    cv.round_outline(chip, 4, RULE);
-    bike_icons::draw(
-        cv,
-        bike_icons::sprite(bike),
-        chip.top_left.x + CHIP_W / 2,
-        chip.top_left.y + 1,
-        1,
-        bike_icons::color(bike),
-    );
+    if let Some((bike, chip)) = chip {
+        cv.round(chip, 4, PARCHMENT);
+        cv.round_outline(chip, 4, RULE);
+        bike_icons::draw(
+            cv,
+            bike_icons::sprite(bike),
+            chip.top_left.x + CHIP_W / 2,
+            chip.top_left.y + 1,
+            1,
+            bike_icons::color(bike),
+        );
+    }
 }
 
 fn at(vp: &Viewport, (lon, lat): (i32, i32)) -> Point {

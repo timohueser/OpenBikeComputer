@@ -8,6 +8,7 @@
 use heapless::String;
 
 use obc_formats::obcr::NAME_CAP;
+use obc_formats::ride::TripRef;
 use obc_route::RideInfo;
 pub const MAX_RIDES: usize = 128;
 pub const UI_RIDES_CAP: usize = 32;
@@ -30,7 +31,7 @@ const _: () = assert!(
 
 /// A stored ride's header facts for the Rides screen, plus the device-local `synced` flag the
 /// unsynced-delete guard keys on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RideSummary {
     /// Ride name (truncated to [`NAME_CAP`] on a char boundary), for the row's first line.
     pub name: String<NAME_CAP>,
@@ -42,6 +43,14 @@ pub struct RideSummary {
     /// Whether exact durable client archive proof exists. The delete footer warns when false.
     pub synced: bool,
     pub synced_at_utc: u32,
+    /// The trip day the ride started on. The Rides screen groups a trip's rides into one folder.
+    pub trip: Option<TripRef>,
+    /// The trip's name as the footer stores it, so a folder keeps its name after the trip is
+    /// deleted.
+    pub trip_name: String<NAME_CAP>,
+    pub avg_hr: Option<u8>,
+    pub avg_cadence: Option<u8>,
+    pub avg_power: Option<u16>,
 }
 
 impl RideSummary {
@@ -55,6 +64,11 @@ impl RideSummary {
             climb_m: info.climb_m,
             synced,
             synced_at_utc,
+            trip: info.trip,
+            trip_name: info.trip_name.clone(),
+            avg_hr: info.avg_hr,
+            avg_cadence: info.avg_cadence,
+            avg_power: info.avg_power,
         }
     }
 }

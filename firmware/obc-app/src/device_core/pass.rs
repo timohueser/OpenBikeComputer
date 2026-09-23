@@ -906,6 +906,7 @@ mod tests {
             climb_m: 10,
             synced: false,
             synced_at_utc: 0,
+            ..Default::default()
         }
     }
     fn committed(revision: u64) -> ExternalFacts {

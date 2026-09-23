@@ -919,6 +919,7 @@ pub fn ride(name: &str) -> RideSummary {
         climb_m: 10,
         synced: false,
         synced_at_utc: 0,
+        ..Default::default()
     };
     summary.name.push_str(name).unwrap();
     summary

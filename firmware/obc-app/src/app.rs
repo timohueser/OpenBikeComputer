@@ -1195,10 +1195,9 @@ impl App {
         let old_ids = self.catalogs.replace_rides(entries);
         let catalogs = &self.catalogs;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_ride(&old_ids, i) };
-        let new_len = catalogs.ride_len();
         for s in self.ui.stack.iter_mut() {
             match s {
-                Screen::Rides(m) => m.remap_rides(&remap, new_len),
+                Screen::Rides(m) => m.remap_rides(catalogs.rides()),
                 Screen::RideDetail(d) => d.remap_rides(&remap),
                 _ => {}
             }

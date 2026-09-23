@@ -248,10 +248,6 @@ impl CatalogState {
         self.rides.get(idx)
     }
 
-    pub(crate) fn ride_len(&self) -> usize {
-        self.rides.len()
-    }
-
     pub(crate) fn replace_rides(&mut self, entries: &[RideEntry]) -> OldRideIds {
         let old_ids = self.rides.iter().map(|ride| ride.id).collect();
         self.rides.clear();

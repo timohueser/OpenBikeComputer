@@ -1,42 +1,56 @@
-//! The detail page of one recorded ride. A pager flips the media band together with its stats:
-//! the track shape over DISTANCE + RIDE TIME, then the elevation band over AVG + CLIMBED. A
-//! guarded Delete ride row sits at the bottom, hidden while a ride is being recorded.
+//! The detail page of one recorded ride, the recorded twin of the route detail. Two pages flip on
+//! a dwell. Page 1 is the date line and the ridden track on the device map over DISTANCE, RIDE TIME
+//! and CLIMBED. Page 2 is the full-height profile over AVG SPEED and one row for each sensor the
+//! ride recorded. Both pages end with the guarded Delete-ride row, which is hidden while a ride
+//! records.
 //!
-//! The shape and the profile come from the host: entry sets `Activity::viewed_ride`, the host
+//! The track and the profile come from the host: entry sets `Activity::viewed_ride`, the host
 //! fills the resident ride-preview and ride-profile buffers, and Back or delete clears the key,
 //! so both buffers invalidate on exit.
 
 use core::fmt::Write;
 
-use embedded_graphics::prelude::Point;
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Surface,
+    Canvas, Surface,
 };
 
-use super::vocab::band::{ElevationBand, PeakLabel};
-use super::vocab::chrome::{empty_state, title_frame, LIST_TOP};
-use super::vocab::fmt::{date_iso, duration_hms};
+use super::vocab::band::ElevationBand;
+use super::vocab::chrome::{empty_state, title_chrome, title_frame};
+use super::vocab::fmt::{duration_hms, write_date_weekday};
+use super::vocab::marquee::fit;
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::vocab::track_map::{draw_track_map, Track};
 use crate::input::Gesture;
+use crate::ride::RideSummary;
 use crate::screen::ScreenTick;
-use crate::Msg;
+use crate::settings::{DateTime, Language, Units};
+use crate::{t, Msg};
 
-use super::{palette, Ctx, Render, Transition};
+use super::{palette, Ctx, Render, RenderFrame, Transition};
 
-/// The media band slot. Both pages draw in it, so nothing moves on the flip.
-const BAND_TOP: i32 = 96;
-const BAND_BOT: i32 = 178;
-const SIDE_MARGIN: i32 = 12;
+/// Page 1's date line under the title bar, and the map band under it.
+const DATE_Y: i32 = 40;
+const MAP_X: i32 = 5;
+const MAP_TOP: i32 = 62;
 
-/// The two stat rows of a page, between the band and the delete row.
-const ROWS_TOP: i32 = 186;
-const ROW_PITCH: i32 = 42;
+/// Page 2's profile band. The peak label sits in the headroom above it.
+const PROFILE_TOP: i32 = 62;
 
-/// The height of the guarded Delete-ride row.
-const ROW_H: i32 = 34;
+/// The ledger: rows at a fixed pitch, each over a rule, stacked up from the bottom rule, so the
+/// band above takes whatever height the rows leave.
+const LEDGER_BOT: i32 = 264;
+const ROW_PITCH: i32 = 36;
+const ROW_RULE: i32 = 40;
+
+/// The Delete-ride row sits where the route detail's Delete-route row sits.
+const DELETE_ROW_H: i32 = 38;
+
+/// The most ledger rows a page holds: AVG SPEED and three sensors.
+const MAX_ROWS: usize = 4;
 
 #[derive(Debug, Default)]
 pub struct RideDetailScreen {
@@ -70,6 +84,12 @@ impl RideDetailScreen {
         self.delete_enabled(recording, rides_len)
     }
 
+    /// The Delete row, the one rectangle a hold step repaints. It lies under the map band, so a
+    /// clipped repaint of it renders no map.
+    pub(crate) fn hold_fill_region(w: i32, h: i32) -> Rectangle {
+        delete_row(w, h).row(0)
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // The completed hold is the confirmation. The host resolves the index to the
@@ -87,7 +107,11 @@ impl RideDetailScreen {
         }
     }
 
-    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         let Some(ride) = rx.rides.get(self.ride).map(|entry| &entry.summary) else {
@@ -95,87 +119,127 @@ impl RideDetailScreen {
             empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
             return;
         };
+        // The title does not scroll: a scroll step on a map base would render the map again.
+        let title = fit(&ride.name, w - 28, Font::Body);
         let units = rx.settings.units;
 
-        let sync = if ride.synced { rx.t(Msg::RideDetailSynced) } else { rx.t(Msg::RidesNotSynced) };
-        title_frame(cv, w, h, rx.t(Msg::RideStartTitle), sync);
-
-        let name_row = rect(14, LIST_TOP + 2, w - 28, Font::Body.line_height() as i32);
-        let name = rx.marquee.fit(&ride.name, w - 28, Font::Body, Some(name_row));
-        cv.text(&name, Point::new(14, LIST_TOP + 2), Font::Body, TextAlign::Left, INK);
-
-        let d = crate::settings::DateTime::from_unix(ride.start_time);
-        let mut when: heapless::String<20> = heapless::String::new();
-        let _ = write!(when, "{} · {:02}:{:02}", date_iso(ride.start_time), d.hour, d.minute);
-        cv.text(&when, Point::new(14, LIST_TOP + 28), Font::Label, TextAlign::Left, SUBTEXT);
-
-        let chart_x = SIDE_MARGIN;
-        let chart_w = w - 2 * SIDE_MARGIN;
-        let page_b = self.pager.on_second_page();
-        if !page_b {
-            // An empty preview leaves the slot blank until the host fill lands.
-            super::route_overview::draw_route_preview(cv, w, BAND_TOP, BAND_BOT, rx.ride_preview);
-        } else if let Some(profile) = rx.ride_profile {
-            // The label goes in the corner: the band is too short for a label over the apex.
-            let band = ElevationBand::whole_route(profile, rect(chart_x, BAND_TOP, chart_w, BAND_BOT - BAND_TOP + 1));
-            band.fill(cv, PARCHMENT_SHADE);
-            band.stroke(cv, AMBER);
-            band.peak_label(cv, units, PeakLabel::TopRight);
+        let lang = rx.settings.language;
+        let mut values = Rows::new();
+        if self.pager.on_second_page() {
+            page_two_rows(ride, units, lang, &mut values);
+            let top = rows_top(values.len());
+            title_frame(cv, w, h, &title, "");
+            draw_profile(cv, rx, top + 4);
         } else {
-            // The track still streams in. Keep the band footprint so the page does not jump.
-            cv.text(
-                rx.t(Msg::RouteOverviewLoadingProfile),
-                Point::new(w / 2, (BAND_TOP + BAND_BOT) / 2 - 9),
-                Font::Label,
-                TextAlign::Center,
-                SUBTEXT,
-            );
-        }
-        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE);
-
-        // AVG is the stored distance over the stored moving time, and `--` before any moving time.
-        let mut dist: heapless::String<8> = heapless::String::new();
-        let _ = write!(dist, "{:.1}", units.dist(ride.distance_m as f32 / 1000.0));
-        let dist_unit = if units.is_imperial() { "mi" } else { "km" };
-
-        let time = duration_hms(ride.moving_time_s as f32);
-
-        let mut avg: heapless::String<8> = heapless::String::new();
-        if ride.moving_time_s > 0 {
-            let kmh = ride.distance_m as f32 / 1000.0 / (ride.moving_time_s as f32 / 3600.0);
-            let _ = write!(avg, "{:.1}", units.speed(kmh));
-        } else {
-            let _ = avg.push_str("--");
-        }
-        let mut avg_cap: heapless::String<12> = heapless::String::new();
-        let _ = avg_cap.push_str(rx.t(Msg::TileAvg));
-        let _ = avg_cap.push_str(units.speed_label());
-
-        let mut climb: heapless::String<8> = heapless::String::new();
-        let _ = write!(climb, "{}", (units.elev(ride.climb_m as f32) + 0.5) as u32);
-
-        let entries: [(&str, &str, &str, Option<bool>); 4] = [
-            (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
-            (rx.t(Msg::RideControlRideTime), &time, "", None),
-            (&avg_cap, &avg, "", None),
-            (rx.t(Msg::TileClimbed), &climb, units.elev_label(), Some(true)),
-        ];
-        let page_rows: [usize; 2] = if page_b { [2, 3] } else { [0, 1] };
-        for (slot, &e) in page_rows.iter().enumerate() {
-            let y = ROWS_TOP + slot as i32 * ROW_PITCH;
-            let (caption, value, unit, arrow) = entries[e];
-            ledger_row(cv, w, y, caption, value, unit, arrow);
-            if slot + 1 < page_rows.len() {
-                cv.hline(16, y + ROW_PITCH - 4, w - 32, RULE);
-            }
+            page_one_rows(ride, units, lang, &mut values);
+            let top = rows_top(values.len());
+            let track = Track { points: rx.ride_preview, color: TRAIL, end_dot: false };
+            draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, top + 4 - MAP_TOP), track, None);
+            title_chrome(cv, w, h, &title);
+            cv.hline(MAP_X, top + 4, w - 2 * MAP_X, RULE);
+            let mut when: heapless::String<24> = heapless::String::new();
+            let d = DateTime::from_unix(ride.start_time);
+            write_date_weekday(&mut when, &d, lang);
+            let _ = write!(when, " · {:02}:{:02}", d.hour, d.minute);
+            cv.text(&when, Point::new(14, DATE_Y), Font::Label, TextAlign::Left, SUBTEXT);
         }
 
+        let top = rows_top(values.len());
+        for (i, (caption, value, unit, arrow)) in values.iter().enumerate() {
+            let y = top + i as i32 * ROW_PITCH;
+            ledger_row(cv, w, y, caption, value, unit, *arrow);
+            cv.hline(16, y + ROW_RULE, w - 32, RULE);
+        }
+
+        // A plain row, like Delete route under an unselected cursor; the shaded base and the fill
+        // draw only while a hold charges.
         if self.delete_enabled(rx.recording, rx.rides.len()) {
-            let row_y = h - 10 - ROW_H;
-            let geo = GuardedRowsGeometry::panel(w, row_y, ROW_H, 0);
             let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
-            draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, geo);
+            let selected = if rx.hold_progress > 0.0 { 0 } else { usize::MAX };
+            draw_guarded_rows(cv, &items, selected, rx.hold_progress, WARNING, delete_row(w, h));
         }
+    }
+}
+
+/// A ledger row: the caption, the value, its unit, and the climb arrow.
+type Rows = heapless::Vec<(heapless::String<16>, heapless::String<8>, &'static str, Option<bool>), MAX_ROWS>;
+
+/// The top of the first of `n` ledger rows.
+fn rows_top(n: usize) -> i32 {
+    LEDGER_BOT - ROW_RULE - (n as i32 - 1) * ROW_PITCH
+}
+
+fn delete_row(w: i32, h: i32) -> GuardedRowsGeometry {
+    GuardedRowsGeometry::panel(w, h - 10 - DELETE_ROW_H, DELETE_ROW_H, 0)
+}
+
+fn number(v: impl core::fmt::Display) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    let _ = write!(s, "{v}");
+    s
+}
+
+/// A caption from catalog fragments, such as `AVG ` and `HR`.
+fn caption(parts: &[&str]) -> heapless::String<16> {
+    let mut s = heapless::String::new();
+    for part in parts {
+        let _ = s.push_str(part);
+    }
+    s
+}
+
+/// DISTANCE, RIDE TIME and CLIMBED.
+fn page_one_rows(ride: &RideSummary, units: Units, lang: Language, out: &mut Rows) {
+    let dist = number(format_args!("{:.1}", units.dist(ride.distance_m as f32 / 1000.0)));
+    let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+    let climb = number((units.elev(ride.climb_m as f32) + 0.5) as u32);
+    let time = duration_hms(ride.moving_time_s as f32);
+    let _ = out.push((caption(&[t(Msg::RideControlDistance, lang)]), dist, dist_unit, None));
+    let _ = out.push((caption(&[t(Msg::RideControlRideTime, lang)]), time, "h", None));
+    let _ = out.push((caption(&[t(Msg::TileClimbed, lang)]), climb, units.elev_label(), Some(true)));
+}
+
+/// The average speed, then one row for each sensor the ride recorded. The captions are the riding
+/// tiles' own, because "AVG SPEED" and a value with its unit overrun the row.
+fn page_two_rows(ride: &RideSummary, units: Units, lang: Language, out: &mut Rows) {
+    let avg = t(Msg::TileAvg, lang);
+    // The stored distance over the stored moving time, and `--` before any moving time.
+    let speed = if ride.moving_time_s > 0 {
+        let kmh = ride.distance_m as f32 / 1000.0 / (ride.moving_time_s as f32 / 3600.0);
+        number(format_args!("{:.1}", units.speed(kmh)))
+    } else {
+        number("--")
+    };
+    let _ = out.push((caption(&[avg, units.speed_label()]), speed, "", None));
+    if let Some(hr) = ride.avg_hr {
+        let _ = out.push((caption(&[avg, t(Msg::TileHr, lang)]), number(hr), "bpm", None));
+    }
+    if let Some(cadence) = ride.avg_cadence {
+        let _ = out.push((caption(&[avg, t(Msg::TileRpm, lang)]), number(cadence), "", None));
+    }
+    if let Some(power) = ride.avg_power {
+        let _ = out.push((caption(&[avg, t(Msg::TilePwr, lang)]), number(power), "W", None));
+    }
+}
+
+/// The whole ride's profile from [`PROFILE_TOP`] to `bot`, with the high point over its apex.
+fn draw_profile(cv: &mut impl Surface, rx: &Render, bot: i32) {
+    use palette::*;
+    let (x, w) = (12, rx.w - 24);
+    if let Some(profile) = rx.ride_profile {
+        let band = ElevationBand::whole_route(profile, rect(x, PROFILE_TOP, w, bot - PROFILE_TOP + 1));
+        band.fill(cv, PARCHMENT_SHADE);
+        band.stroke(cv, AMBER);
+        band.peak_label(cv, rx.settings.units);
+    } else {
+        // The track still streams in. Keep the band's footprint so the page does not jump.
+        cv.text(
+            rx.t(Msg::RouteOverviewLoadingProfile),
+            Point::new(rx.w / 2, (PROFILE_TOP + bot) / 2 - 9),
+            Font::Label,
+            TextAlign::Center,
+            SUBTEXT,
+        );
     }
 }
 
@@ -197,8 +261,7 @@ mod tests {
                 distance_m: 42_500,
                 moving_time_s: 2 * 3600 + 31 * 60,
                 climb_m: 640,
-                synced: false,
-                synced_at_utc: 0,
+                ..Default::default()
             },
         }
     }
