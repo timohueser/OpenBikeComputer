@@ -96,7 +96,7 @@ extension Trip {
             guard let resume else {
                 return DayEnd(
                     coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance,
-                    stop: end.stop)
+                    stop: end.stop, stopRoute: end.stopRoute?.reversed(length: length))
             }
             return DayEnd(
                 coordinate: resume, name: end.resumeName, title: titles[day], distance: length - end.distance,
@@ -135,6 +135,8 @@ extension Trip {
                 dropped.append(dayEnd)
                 continue
             }
+            dayEnd.stopRoute = dayEnd.stopRoute?.reprojected(
+                on: measured, old: dayEnd.distance, new: fine.distance, error: fine.error)
             dayEnd.distance = fine.distance
             kept.append(dayEnd)
             previous = fine.distance
@@ -147,15 +149,31 @@ extension Trip {
 
     // MARK: Cut
 
-    /// The line cut at the day ends: one point list per day, in ride order. A day that starts at
-    /// a gap starts at the next piece; a gap inside a day stays in it as a straight segment.
-    public func dayLines() -> [[RoutePoint]] {
+    /// The line cut at the day ends: one route per day, in ride order. A day that starts at a
+    /// gap starts at the next piece; a gap inside a day stays in it as a straight segment. The
+    /// stop routes are inlined: a day ends with the spur out or the via leg to its stop, and the
+    /// next day starts with the spur back or the via leg from it.
+    public func dayLines() -> [DayLine] {
         guard line.count > 1 else { return [] }
         let measured = measuredLine
-        var from = 0.0
-        return dayEnds.map { end in
-            defer { from = end.distance }
-            return slice(measured, from: from, to: end.distance)
+        return dayEnds.indices.map { day in
+            let previous = day > 0 ? dayEnds[day - 1].stopRoute : nil
+            var cut = DayLine(points: [], joinIndex: 0, leaveIndex: nil)
+            switch previous {
+            case .outAndBack(let spur)?: cut.append(spur.reversed())
+            case .via(_, let fromStop, _, _)?: cut.append(fromStop)
+            case nil: break
+            }
+            let main = cut.append(slice(measured, from: lineStart(of: day), to: lineEnd(of: day)))
+            if case .outAndBack? = previous { cut.joinIndex = main }
+            switch dayEnds[day].stopRoute {
+            case .outAndBack(let spur)?:
+                cut.leaveIndex = cut.points.count - 1
+                cut.append(spur)
+            case .via(let toStop, _, _, _)?: cut.append(toStop)
+            case nil: break
+            }
+            return cut
         }
     }
 
@@ -200,5 +218,27 @@ extension Trip {
             elevationMeters: elevation,
             surface: b.surface,
             elevationIncomplete: b.elevationIncomplete)
+    }
+}
+
+/// One day's route as an upload cuts it from the trip line.
+public struct DayLine: Equatable, Sendable {
+    public var points: [RoutePoint]
+    /// The first point on the main line: after the spur back of an out and back, else 0.
+    public var joinIndex: Int
+    /// The last point on the main line, when the spur out of an out and back follows it.
+    public var leaveIndex: Int?
+
+    /// Append `more`, without a first point that repeats the last one. Returns the index of
+    /// `more`'s first point.
+    @discardableResult
+    mutating func append(_ more: [RoutePoint]) -> Int {
+        guard let first = more.first else { return points.count }
+        if points.last?.coordinate == first.coordinate {
+            points += more.dropFirst()
+            return points.count - more.count
+        }
+        points += more
+        return points.count - more.count
     }
 }

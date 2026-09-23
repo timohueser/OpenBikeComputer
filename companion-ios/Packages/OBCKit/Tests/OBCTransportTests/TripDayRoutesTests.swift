@@ -78,11 +78,11 @@ struct TripDayRoutesTests {
         var trip = trip
         trip.startDay = CivilDay(daysSince1970: 20_725)
         let ids = [DeviceObjectID(7), DeviceObjectID(9), DeviceObjectID(4)]
-        let decoded = try TripObjectCodec.decode(TripObjectCodec.encode(trip.tripObject(dayObjectIDs: ids)))
+        let decoded = try TripObjectCodec.decode(TripObjectCodec.encode(trip.tripObject(days: trip.dayRoutes(), dayObjectIDs: ids)))
         #expect(decoded.key == trip.key)
         #expect(decoded.name == "Alps")
         #expect(decoded.startDate == 20_725)
         #expect(decoded.days == ids.map(TripObjectCodec.Day.whole))
-        #expect(Trip(id: TripID("n"), name: "N", bikeType: .road, addedAt: Date()).tripObject(dayObjectIDs: []).startDate == 0)
+        #expect(Trip(id: TripID("n"), name: "N", bikeType: .road, addedAt: Date()).tripObject(days: [], dayObjectIDs: []).startDate == 0)
     }
 }
