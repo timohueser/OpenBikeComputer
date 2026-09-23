@@ -1101,6 +1101,20 @@ impl HostLoop {
                 self.inbox.derived.ride_track = Some(input);
             }
         }
+        if let Some(key) = plan.derived_needs.day_profile {
+            let filled = obc_app::device_core::fill_day_profile(key, app.begin_day_profile_fill(), |id, body| {
+                routes.route_bytes(id).is_some_and(|bytes| body(&obc_formats::io::SliceSource(&bytes)))
+            });
+            // Filling invalidates the view, so answer with its post-fill key, for the same subject.
+            if let Some(key) = app
+                .derived_needs()
+                .day_profile
+                .filter(|now| (now.day, now.join_m, now.rest) == (key.day, key.join_m, key.rest))
+            {
+                let input = if filled { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
+                self.inbox.derived.day_profile = Some(input);
+            }
+        }
         if let Some(key) = plan.derived_needs.nav_preview {
             // Re-sync first: a plan or a splice this very `execute` committed replaced the active
             // route's bytes, and the resident parse is still the old route's until the store is

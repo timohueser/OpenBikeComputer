@@ -1822,6 +1822,23 @@ pub(crate) fn fill_ride_track(
     valid
 }
 
+/// Answer one keyed day-profile need into the app's resident profile buffer, one route object open
+/// at a time.
+#[inline(never)]
+pub(crate) fn fill_day_profile(
+    store: &'static FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+    key: obc_app::device_core::DayProfileKey,
+) -> bool {
+    let filled = obc_app::device_core::fill_day_profile(key, app.begin_day_profile_fill(), |id, body| {
+        store.with_source(ObjectId(id), None, |source| body(source)).unwrap_or(false)
+    });
+    if !filled {
+        defmt::warn!("flat: day profile fill for route {=u64} failed", key.day);
+    }
+    filled
+}
+
 /// Exact physical catalog identity, also used for admitted policy work.
 pub(crate) fn catalog_scope(store: &FlatStore<FlatCard>) -> obc_app::device_core::StoreRevision {
     obc_app::device_core::StoreRevision {
@@ -1878,27 +1895,33 @@ fn built_day_head(store: &FlatStore<FlatCard>) -> Result<Option<(ObjectId, Revis
 
 /// Where the active trip's next day meets the day before: the day before's leave point, clamped to
 /// its route's length, the day's join point, and the gap from the day before's end to the day's
-/// start.
+/// start; and the same facts one day on.
 fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::trip::DayJoin> {
     let (trip, day) = app.next_trip_day()?;
+    // The first day has no day before, so while it is next the facts are the second day's.
+    let day = day.max(1);
     let read = |k| store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).ok()?.ok();
     let (before, this) = (read(day.checked_sub(1)?)?, read(day)?);
-    let (length, end) = store
-        .with_source(ObjectId(before.route), None, |source| {
-            Ok::<_, obc_formats::io::Error>((
-                obc_route::RouteObjectInfo::read(source)?.distance_m,
-                obc_route::route_end(source)?,
-            ))
+    // Where `this` meets `before` on the line.
+    let meet = |before: obc_route::TripDay, this: obc_route::TripDay| {
+        let (length, end) = store
+            .with_source(ObjectId(before.route), None, |source| {
+                Ok::<_, obc_formats::io::Error>((
+                    obc_route::RouteObjectInfo::read(source)?.distance_m,
+                    obc_route::route_end(source)?,
+                ))
+            })
+            .ok()?
+            .ok()?;
+        let start =
+            store.with_source(ObjectId(this.route), None, |source| obc_route::RouteSummary::read(source)).ok()?.ok()?;
+        Some(obc_app::trip::Join {
+            leave_m: before.leave_m.min(length),
+            join_m: this.join_m,
+            gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
         })
-        .ok()?
-        .ok()?;
-    let start =
-        store.with_source(ObjectId(this.route), None, |source| obc_route::RouteSummary::read(source)).ok()?.ok()?;
-    Some(obc_app::trip::DayJoin {
-        key: trip.key,
-        day,
-        leave_m: before.leave_m.min(length),
-        join_m: this.join_m,
-        gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
-    })
+    };
+    let obc_app::trip::Join { leave_m, join_m, gap_m } = meet(before, this)?;
+    let after = read(day + 1).and_then(|next| meet(this, next));
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m, join_m, gap_m, after })
 }

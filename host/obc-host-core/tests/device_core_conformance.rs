@@ -1805,8 +1805,9 @@ fn the_pass_protocol_stays_within_its_budget() {
 
     assert!(size_of::<EffectSlots>() <= 216, "eight bounded effects: {}", size_of::<EffectSlots>());
     assert!(size_of::<OutcomeSlots>() <= 248, "eight bounded outcomes: {}", size_of::<OutcomeSlots>());
-    assert!(size_of::<DerivedNeeds>() <= 64);
-    assert!(size_of::<DerivedInputs>() <= 80);
+    // Three keyed needs: the ride track, the route shape and the day-done card's day profile.
+    assert!(size_of::<DerivedNeeds>() <= 120);
+    assert!(size_of::<DerivedInputs>() <= 136);
 
     // The largest single message per direction — what a payload creeping into the protocol would
     // show up as first.

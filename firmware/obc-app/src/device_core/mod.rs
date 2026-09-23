@@ -7,7 +7,8 @@ pub mod slots;
 pub mod storage_info;
 
 pub use derived::{
-    DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
+    fill_day_profile, DayProfileKey, DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets,
+    NavPreviewKey, RestStretch, RideTrackKey,
 };
 
 pub use core_mode::ModeState;
