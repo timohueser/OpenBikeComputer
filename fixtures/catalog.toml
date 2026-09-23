@@ -5,9 +5,9 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/430d5c3652564fa57c63abea1abb214a88dbf040d6ec1be6a8152656156a4bca.tar.gz"
-sha256 = "430d5c3652564fa57c63abea1abb214a88dbf040d6ec1be6a8152656156a4bca"
-bytes = 4137068
+archive = "packages/1dfe2ef77041f26d54315f713d213832e8806731601899efe23c96d42f7851f3.tar.gz"
+sha256 = "1dfe2ef77041f26d54315f713d213832e8806731601899efe23c96d42f7851f3"
+bytes = 4203356
 provenance = "OBCM v18, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain, authored OBCR v5 route and authored trip object v3. Schema 2 multilingual Swiss landmarks and separate bounded peak articles with original Sources. Canonical fixture bbox, and 19 settlement records. Exact source, producer and output identities: sources/ride-assistant/grimsel-v18.json."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
@@ -120,18 +120,18 @@ packages = ["assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-r
 
 [packages.sim-assistant-meiringen]
 summary = "Swiss v18 regional map, terrain, landmark content, and authored Meiringen motion"
-archive = "packages/0ec2fbcb97baec35ba738fceede4726d8f305df047b2f9416b539cbe354c05e3.tar.gz"
-sha256 = "0ec2fbcb97baec35ba738fceede4726d8f305df047b2f9416b539cbe354c05e3"
-bytes = 33484275
+archive = "packages/d4f92c64a66da2f1588d22b099752868429b2836bd98830e758cf5e500ba182e.tar.gz"
+sha256 = "d4f92c64a66da2f1588d22b099752868429b2836bd98830e758cf5e500ba182e"
+bytes = 34580251
 provenance = "OBCM v18 Swiss regional crop selected by 8.1..8.4 E, 46.5..46.8 N from the full pinned 2026-09-13 Switzerland PBF. Shipping bake/cut/assemble with schema 2 multilingual country landmarks, separate bounded peak articles, settlement names and four unchanged native Copernicus terrain cells. Not a full-country map. Exact hashes and attribution: sources/ride-assistant/meiringen-v18.json and packaged build.json."
 license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "replays/meiringen-out-and-back.gpx" = "sources/ride-assistant/replays/meiringen-out-and-back.gpx", "replays/meiringen-loop-crossing.gpx" = "sources/ride-assistant/replays/meiringen-loop-crossing.gpx", "replays/meiringen-forward-rejoin.gpx" = "sources/ride-assistant/replays/meiringen-forward-rejoin.gpx" }
 
 [packages.sim-assistant-west-cork]
 summary = "West Cork v18 regional map, terrain, landmark content, and authored motion"
-archive = "packages/26f60e2ac8cebd152043b489b82400795182c318dadd8292f9aeec15ae58cde9.tar.gz"
-sha256 = "26f60e2ac8cebd152043b489b82400795182c318dadd8292f9aeec15ae58cde9"
-bytes = 2435914
+archive = "packages/19156cb89216347471307b0cac2f9c0fe284a8c1a90edde102a8b790b0c51708.tar.gz"
+sha256 = "19156cb89216347471307b0cac2f9c0fe284a8c1a90edde102a8b790b0c51708"
+bytes = 2470965
 provenance = "OBCM v18 from the pinned 2026-09-13 West Cork OSM crop, Copernicus GLO-30, and four-site assistant-wiki compiler input through shipping bake/cut/assemble. Landmark section v1 retains supported captured languages with shared photos and Sources. Settlement names are new; the native raster is unchanged. Exact hashes and producer attribution: sources/ride-assistant/west-cork-v18.json and packaged build.json."
 license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "replays/dunlough-access.gpx" = "sources/ride-assistant/replays/dunlough-access.gpx" }

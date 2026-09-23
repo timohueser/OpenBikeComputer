@@ -396,6 +396,14 @@ script = "{landmarks} p f C p f"
 expect = "LandmarkSources"
 args = ["--heading", "0", "--center", "-9829419,51482665"]
 
+# The photo's credit starts on its own page after the article's.
+[[frame]]
+name = "landmark-sources-photo"
+map = "{cork}"
+script = "{landmarks} p f C p f d f"
+expect = "LandmarkSources"
+args = ["--heading", "0", "--center", "-9829419,51482665"]
+
 [[frame]]
 name = "visit-preview"
 map = "{cork}"

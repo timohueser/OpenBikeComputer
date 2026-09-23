@@ -2,16 +2,15 @@
   "schema": 3,
   "package": "sim-assistant-meiringen",
   "archive": {
-    "bytes": 33484275,
-    "sha256": "0ec2fbcb97baec35ba738fceede4726d8f305df047b2f9416b539cbe354c05e3"
+    "bytes": 34580251,
+    "sha256": "d4f92c64a66da2f1588d22b099752868429b2836bd98830e758cf5e500ba182e"
   },
   "producer": {
-    "source_commit": "3d835f672",
+    "source_commit": "8ce3bf86b",
     "executables_sha256": {
-      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
-      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
-      "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
-      "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
+      "obc-bake": "17a0579932606996dd003aa6d94aa14bd44e858d35e7ce8f4b54ec77bfa58b0a",
+      "obc-dem": "ee482ccc01ca46f2a494d1031764b4785d1c0d1dabeea3f9e5cbbddda5da2c6f",
+      "obcm-assemble": "9b40f409db738018228bab6c1ce6b37139aecace78422dfa01f3951bce62e9a6"
     }
   },
   "bounds_lon_lat": [
@@ -33,8 +32,8 @@
     "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
   },
   "map": {
-    "bytes": 48740272,
-    "sha256": "232d44072991da3470ea29e48bf44a30fbd81de8d80d56465dcf9e10cee01e48",
+    "bytes": 49718544,
+    "sha256": "ed646943ddb381538088019208e267ee7a300d0b0daedfb49fb2c2cdad905f17",
     "obcm_version": 18
   },
   "land_source": {
@@ -76,8 +75,8 @@
   "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
   "recipe": "python3 fixtures/build-assistant-package.py meiringen",
   "packaged_build": {
-    "bytes": 13525,
-    "sha256": "e29c4566f26811595f7840c0fbebffdcb17e6e39789bc70e3470d757f4bdc7ef",
+    "bytes": 13362,
+    "sha256": "29f90fe9ee8cb2af2d7e9468278e1b2ea0602beeae3a33bc567d29fe5bba26ec",
     "note": "The packaged build.json holds the bake commands, executable digests and content counts."
   },
   "terrain": {
