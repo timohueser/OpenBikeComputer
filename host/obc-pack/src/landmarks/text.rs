@@ -4,8 +4,8 @@ use scraper::{ElementRef, Html, Node, Selector};
 pub const PAGE_WIDTH: u32 = 216;
 pub const PAGE_HEIGHT: u32 = 240;
 pub const MAX_TEXT_PAGES: usize = 4;
-pub const MAX_CREDIT_BYTES: usize = 8192;
-pub const MAX_SOURCE_PAGES: usize = 256;
+/// The retained source notices of one asset. The map carries only the credit derived from them.
+pub const MAX_NOTICE_BYTES: usize = 8192;
 
 /// Typography substitutions do not transliterate names or replace unsupported letters.
 pub fn normalize(text: &str) -> String {
@@ -196,27 +196,6 @@ pub fn article_pages(markup: &str) -> Result<Vec<String>, &'static str> {
     Ok(result)
 }
 
-/// URLs may wrap at any character; their percent-encoded bytes remain reconstructible.
-pub fn credit_pages(text: &str) -> Result<Vec<String>, &'static str> {
-    if text.len() > MAX_CREDIT_BYTES {
-        return Err("attribution_bytes");
-    }
-    if !supported(text) {
-        return Err("attribution_glyph");
-    }
-    let columns = (PAGE_WIDTH / Font::Label.char_width()) as usize;
-    let rows = (PAGE_HEIGHT / Font::Label.line_height()) as usize;
-    let mut lines = Vec::new();
-    for paragraph in text.lines() {
-        let chars: Vec<_> = paragraph.chars().collect();
-        lines.extend(chars.chunks(columns).map(|line| line.iter().collect::<String>()));
-    }
-    if lines.len() > MAX_SOURCE_PAGES * rows {
-        return Err("attribution_pages");
-    }
-    Ok(lines.chunks(rows).map(|part| part.join("\n")).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,12 +220,5 @@ mod tests {
         let long = format!("<p>{}. Short.</p>", "word ".repeat(200));
         assert_eq!(article_pages(&long), Err("page_budget"));
         assert_eq!(pages("abcdefghijklmnopqrs", 4), Err("unbreakable_word"));
-    }
-    #[test]
-    fn credits_have_an_independent_budget_and_preserve_characters() {
-        let source = format!("Creator Áine\nhttps://example.org/{}", "a".repeat(400));
-        assert_eq!(credit_pages(&source).unwrap().join("").replace('\n', ""), source.replace('\n', ""));
-        assert_eq!(credit_pages(&"x".repeat(8193)), Err("attribution_bytes"));
-        assert_eq!(credit_pages("作者"), Err("attribution_glyph"));
     }
 }

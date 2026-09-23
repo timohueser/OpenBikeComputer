@@ -2,6 +2,7 @@
 //! by the map serializer; this module emits bounded text, attribution and RGB222 assets.
 
 mod assets;
+pub mod credit;
 pub mod discover;
 mod locale;
 pub mod peaks;
@@ -64,7 +65,7 @@ pub fn artifact_digest(artifact: &Path) -> Result<(String, u64), String> {
     Ok((hash(listing.as_bytes()), bytes))
 }
 
-const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credits-8192;decode-32MiB-16384-128MiB";
+const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;label-216x240;rgba-white-lanczos3-bayer4;credit-fields-1024;decode-32MiB-16384-128MiB";
 
 /// The photo candidate pools, best first, shared verbatim with the capture tool. A pool also names
 /// the captured bytes that have to prove a candidate's origin, so a capture cannot hand the
@@ -166,7 +167,6 @@ pub struct Attribution {
     pub revision: String,
     pub license_url: String,
     pub original_notices: String,
-    pub display_pages: Vec<String>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Photo {
@@ -721,17 +721,11 @@ fn prepare_article(
             continue;
         }
         match assets::photo(root, sources, image, allowed, qid) {
-            Ok((candidate, pixels))
-                if variants.iter().all(|v| {
-                    candidate.attribution.display_pages.len() + v.attribution.display_pages.len()
-                        <= text::MAX_SOURCE_PAGES
-                }) =>
-            {
+            Ok((candidate, pixels)) => {
                 fs::write(output.join(&candidate.path), pixels).map_err(|e| e.to_string())?;
                 photo = Some(candidate);
                 break;
             }
-            Ok(_) => omit("photo", "attribution_pages".into()),
             Err(reason) => omit("photo", reason),
         }
     }
