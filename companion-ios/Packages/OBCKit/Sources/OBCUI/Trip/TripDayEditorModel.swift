@@ -140,7 +140,7 @@ public final class TripDayEditorModel {
         case .ended(let id, let distance):
             guard let day = handleIDs.firstIndex(of: id) else { return }
             commit { $0.moveDayEnd(day, to: distance) }
-            syncHandles()
+            syncHandles(animated: false)
         }
     }
 
@@ -190,14 +190,22 @@ public final class TripDayEditorModel {
         return unique
     }
 
-    private func syncHandles() {
+    /// The handles follow the trip. A balance, an undo, an add or a remove glides; a release
+    /// leaves the handle where the finger left it.
+    private func syncHandles(animated: Bool = true) {
         if handleIDs.count != trip.dayCount - 1 { handleIDs = (1..<max(trip.dayCount, 1)).map { _ in takeHandleID() } }
         let markers = trip.dayEnds.dropLast().enumerated().map { day, end in
             LineMarker(id: handleIDs[day], distance: end.distance, name: "Day \(day + 1) end", isFixed: trip.endsAtTransfer(day))
         }
-        handles.setMarkers(markers, segmentColors: (0..<trip.dayCount).map { OBCTheme.stageColor(index: $0) })
+        let colors = (0..<trip.dayCount).map { OBCTheme.stageColor(index: $0) }
+        withAnimation(animated ? .snappy(duration: 0.28) : nil) {
+            handles.setMarkers(markers, segmentColors: colors)
+        }
         stats = line.dayStats(ends: markers.map(\.distance), bikeType: trip.bikeType)
     }
+
+    /// The day the handle belongs to.
+    public func day(of handle: LineMarker.ID) -> Int? { handleIDs.firstIndex(of: handle) }
 
     private func takeHandleID() -> Int {
         defer { nextHandleID += 1 }

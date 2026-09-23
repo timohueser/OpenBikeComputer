@@ -13,6 +13,7 @@ public struct TripDetailView: View {
     @Bindable private var model: MainScreenModel
     private let tripID: TripID
     private let onClose: () -> Void
+    private let onEditDays: () -> Void
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -36,11 +37,13 @@ public struct TripDetailView: View {
     public init(
         model: MainScreenModel,
         tripID: TripID,
-        onClose: @escaping () -> Void = {}
+        onClose: @escaping () -> Void = {},
+        onEditDays: @escaping () -> Void = {}
     ) {
         self.model = model
         self.tripID = tripID
         self.onClose = onClose
+        self.onEditDays = onEditDays
     }
 
     private var trip: Trip? { model.trip(tripID) }
@@ -52,6 +55,10 @@ public struct TripDetailView: View {
                 header
                 dayRows
                     .padding(.top, 14)
+                Button("Edit days", action: onEditDays)
+                    .buttonStyle(.obcGhost)
+                    .padding(.top, 12)
+                    .accessibilityIdentifier("trip.editDays")
                 OBCGroupedSection {
                     OBCListRow(
                         label: "Start date",
