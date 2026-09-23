@@ -182,23 +182,29 @@ def trip_week(stage: Stage) -> Staging:
 
 def arrival_trip(stage: Stage) -> Staging:
     """A three-day trip whose Day 2 is the real Grimsel climb, so a replay of that climb rides to the
-    end of a trip day: "Day 1 Andermatt" (the plain vector route), "Day 2 Ulrichen" and "Day 3 Brig"
-    (both the climb), in the trip "Alpen Traverse" as `TP1.OBT`.
+    end of a trip day: "Day 1 Andermatt" (the plain vector route), "Day 2 Ulrichen" (the climb) and
+    "Day 3 Brig" (the climb reversed, so it starts where Day 2 ends), in the trip "Alpen Traverse"
+    as `TP1.OBT`.
     """
     where = stage.dir("arrival-trip")
     climb = (stage.fixtures / "sim-grimsel" / "routes" / "grimsel-climb.obcr").read_bytes()
-    days = [
-        ((stage.vectors / "route-plain.obcr").read_bytes(), "Day 1 Andermatt"),
-        (climb, "Day 2 Ulrichen"),
-        (climb, "Day 3 Brig"),
-    ]
-    for day, (source, name) in enumerate(days, 1):
+    for day, (source, name) in enumerate(
+        [((stage.vectors / "route-plain.obcr").read_bytes(), "Day 1 Andermatt"), (climb, "Day 2 Ulrichen")], 1
+    ):
         route = bytearray(source)
         _rename_route(route, name)
         (where / f"day-{day}.obcr").write_bytes(route)
+    track = (stage.fixtures / "sim-grimsel" / "tracks" / "grimsel-climb.gpx").read_text()
+    points = re.findall(r"<trkpt\b.*?(?:/>|</trkpt>)", track, flags=re.S)
+    points = [re.sub(r"<time>[^<]*</time>", "", point) for point in reversed(points)]
+    descent = where / "Day 3 Brig.gpx"
+    descent.write_text("<gpx><trk><trkseg>" + "".join(points) + "</trkseg></trk></gpx>")
+    stage.run(["--import", str(descent), "--routes-dir", str(where)])
+    descent.unlink()
+    (where / "Day 3 Brig.obcr").rename(where / "day-3.obcr")
     name = "Alpen Traverse".encode()
-    trip = struct.pack("<BBHB48sBHQ", 3, 0, len(days), len(name), name, 0, 20_360, 1)
-    for index in range(len(days)):
+    trip = struct.pack("<BBHB48sBHQ", 3, 0, 3, len(name), name, 0, 20_360, 1)
+    for index in range(3):
         trip += struct.pack("<QII", index, 0, 0xFFFF_FFFF)
     (where / "TP1.OBT").write_bytes(trip)
     return Staging(("--routes-dir", str(where)))
