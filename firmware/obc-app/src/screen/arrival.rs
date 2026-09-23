@@ -18,12 +18,13 @@ use crate::{Msg, RecorderIntent};
 /// What the view offers, fixed when it opens. The card scheduler holds one, so it stays small.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ArrivalView {
-    /// The loaded route's catalog index.
+    /// The catalog index of the route the view is named for: the loaded route, or its trip day's
+    /// own route when the loaded one is derived.
     pub(crate) route: u16,
     /// The loaded route's trip day, from 0.
     pub(crate) day: Option<u16>,
-    /// The next trip day's catalog index. The rider stands at the end of the day, so it loads as
-    /// it is.
+    /// The next trip day's catalog index, when it starts where this day ends. The rider stands at
+    /// the end of the day, so it loads as it is.
     pub(crate) next: Option<u16>,
 }
 
@@ -43,6 +44,11 @@ pub struct ArrivalScreen {
 impl ArrivalScreen {
     pub(crate) fn new(view: ArrivalView) -> Self {
         ArrivalScreen { view, rows: ActionRows::new(0) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn view(&self) -> ArrivalView {
+        self.view
     }
 
     /// Follow the routes through a catalog rescan. A next day that vanished takes its row away.
@@ -92,7 +98,7 @@ impl ArrivalScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::ArrivalTitle), "");
-        let name = |i: u16| rx.routes.get(usize::from(i)).map_or("", |r| r.name.as_str());
+        let name = |i: u16| rx.routes.get(usize::from(i)).map_or("", |r| obc_route::original_name(&r.name));
         let day_word = rx.t(Msg::RouteMenuDay);
 
         let here = name(self.view.route);
