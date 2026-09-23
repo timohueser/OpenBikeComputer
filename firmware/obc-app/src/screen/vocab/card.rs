@@ -44,6 +44,10 @@ impl ActionRows {
         }
     }
 
+    pub(crate) fn selected(&self) -> usize {
+        self.selected
+    }
+
     /// Whether the selected row requires a hold.
     pub(crate) fn selection_is_guarded(&self, guards: &[bool]) -> bool {
         guards.get(self.selected).copied().unwrap_or(false)

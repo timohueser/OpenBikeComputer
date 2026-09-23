@@ -22,6 +22,7 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
+mod arrival;
 pub(crate) mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
@@ -61,6 +62,8 @@ mod trip_delete;
 pub(crate) mod vocab;
 mod warning;
 
+pub use arrival::ArrivalScreen;
+pub(crate) use arrival::ArrivalView;
 pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
@@ -925,6 +928,10 @@ screens! {
     RouteOverview(RouteOverviewScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
     /// START RIDE away from the route start: Ride to start, Join nearest, or Cancel.
     StartAway(StartAwayScreen) => Caps::nav(),
+    /// The end of the loaded route during a ride: Finish ride, Ride on to the next trip day, or
+    /// Keep riding. Only the card scheduler opens it, and it waits until the rider has closed
+    /// everything over the riding page.
+    Arrival(ArrivalScreen) => Caps::modal(),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt(),
     /// The idle route-upload prompt: Start navigation or Dismiss. Host-pushed, and auto-closes
     /// after [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory: the route is already committed.
@@ -1101,6 +1108,7 @@ impl Screen {
             Screen::RideControl(s) => s.selection_is_guarded(),
             Screen::RideRecovery(s) => s.selection_is_guarded(),
             Screen::RouteSwap(s) => s.selection_is_guarded(),
+            Screen::Arrival(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Connections(s) => s.selection_is_guarded(state),

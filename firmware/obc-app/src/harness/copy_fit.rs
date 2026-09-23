@@ -104,6 +104,8 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::RouteOverview(RouteOverviewScreen::new(0, None)),
         Screen::StartAway(StartAwayScreen::sample(false)),
         Screen::StartAway(StartAwayScreen::sample(true)),
+        Screen::Arrival(ArrivalScreen::new(ArrivalView { route: 0, day: Some(1), next: Some(1) })),
+        Screen::Arrival(ArrivalScreen::new(ArrivalView { route: 0, day: None, next: None })),
         Screen::RouteSwap(RouteSwapScreen::new(0)),
         Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
         Screen::RouteUpdated(RouteUpdatedScreen::new(0, 0)),
