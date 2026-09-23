@@ -64,14 +64,16 @@ final class TripTests: XCTestCase {
         snap(app, "TR6-trip-card")
     }
 
-    /// Tapping the trip card opens the trip page with both days and the Upload trip action,
-    /// enabled because the connected device holds no copy of this trip yet.
+    /// Tapping the trip card opens the trip page with both days, the transfer line between them, and
+    /// the Upload trip action, enabled because the connected device holds no copy of this trip yet.
     @MainActor
     func testDrillIntoTripPage() {
         let app = launch()
         openTrip(app)
 
         XCTAssertTrue(day(app, 1).exists, "second day row missing")
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.transfer.0"].exists, "the two days have a transfer between them")
         let upload = app.buttons["trip.upload"]
         XCTAssertTrue(upload.exists, "Upload trip action missing")
         XCTAssertTrue(upload.isEnabled, "Upload trip must be enabled on a connected device (TR8)")

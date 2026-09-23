@@ -171,10 +171,11 @@ public struct TripDetailView: View {
     }
 
     /// One row per day: the number, the day's own name or "to ‹place›", then the date, when the
-    /// trip has one, and the day's stats.
+    /// trip has one, and the day's stats. A transfer line sits between two days with a transfer.
     private var dayRows: some View {
         let routes = model.tripDays(tripID)
         let dates = model.tripDayDates(tripID)
+        let transfers = Trip.transferMeters(between: routes.map(\.points))
         return OBCGroupedSection {
             ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
                 let end = trip?.dayEnds[safe: index]
@@ -190,8 +191,23 @@ public struct TripDetailView: View {
                     dayRename = index
                 }
                 .accessibilityIdentifier("trip.day.\(index)")
+                if let meters = transfers[safe: index] ?? nil {
+                    transferLine(meters: meters)
+                        .accessibilityIdentifier("trip.transfer.\(index)")
+                }
             }
         }
+    }
+
+    /// "Transfer · 80 km", in the type of the join sheet's "joins" and "gap" lines.
+    private func transferLine(meters: Double) -> some View {
+        Text("Transfer · \(OBCFormat.distance(meters: meters))")
+            .font(.obcMono(size: 12))
+            .foregroundStyle(OBCTheme.inkFaint)
+            .padding(.vertical, 8)
+            .padding(.leading, 38)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) { OBCTheme.screenLine.frame(height: 1).padding(.leading, 38) }
     }
 
     private var header: some View {
