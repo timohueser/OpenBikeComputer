@@ -30,6 +30,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::effort::{FTP_MAX, FTP_MIN, FTP_START, FTP_STEP, MAX_HR_MAX, MAX_HR_MIN, MAX_HR_START};
 use crate::input::Gesture;
 use crate::navigator::RouteState;
 use crate::screen::quick_drawer::{brightness_percent, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
@@ -129,6 +130,9 @@ pub enum ContextValue {
     Units,
     /// The local UTC offset in quarter hours.
     UtcOffset,
+    /// The effort limits: `Not set` first, then one step per bpm or per [`FTP_STEP`] watts.
+    MaxHr,
+    Ftp,
 }
 
 impl ContextValue {
@@ -151,6 +155,8 @@ impl ContextValue {
             ContextValue::WaypointMode => WaypointMode::COUNT as u8,
             ContextValue::Units => Units::COUNT as u8,
             ContextValue::UtcOffset => ((UTC_OFFSET_MAX - UTC_OFFSET_MIN) / UTC_OFFSET_STEP + 1) as u8,
+            ContextValue::MaxHr => 2 + MAX_HR_MAX - MAX_HR_MIN,
+            ContextValue::Ftp => (2 + (FTP_MAX - FTP_MIN) / FTP_STEP) as u8,
         }
     }
 
@@ -164,6 +170,8 @@ impl ContextValue {
                 | ContextValue::FixInterval
                 | ContextValue::StatCycle
                 | ContextValue::UtcOffset
+                | ContextValue::MaxHr
+                | ContextValue::Ftp
         )
     }
 
@@ -190,6 +198,24 @@ impl ContextValue {
             ContextValue::UtcOffset => {
                 ((s.utc_offset_min.clamp(UTC_OFFSET_MIN, UTC_OFFSET_MAX) - UTC_OFFSET_MIN) / UTC_OFFSET_STEP) as u8
             }
+            ContextValue::MaxHr => match s.max_hr {
+                0 => 0,
+                v => 1 + v.clamp(MAX_HR_MIN, MAX_HR_MAX) - MAX_HR_MIN,
+            },
+            ContextValue::Ftp => match s.ftp_w {
+                0 => 0,
+                v => (1 + (v.clamp(FTP_MIN, FTP_MAX) - FTP_MIN) / FTP_STEP) as u8,
+            },
+        }
+    }
+
+    /// Where the editor opens: the committed choice, except that an unset limit opens on a typical
+    /// value, so the rider does not step up from the bottom of the range.
+    fn opening(self, f: &ContextFacts) -> u8 {
+        match (self, self.committed(f)) {
+            (ContextValue::MaxHr, 0) => 1 + MAX_HR_START - MAX_HR_MIN,
+            (ContextValue::Ftp, 0) => (1 + (FTP_START - FTP_MIN) / FTP_STEP) as u8,
+            (_, committed) => committed,
         }
     }
 
@@ -217,6 +243,8 @@ impl ContextValue {
                 s.local_offset_known = true;
                 s.utc_offset_min = (UTC_OFFSET_MIN + ordinal as i16 * UTC_OFFSET_STEP).min(UTC_OFFSET_MAX);
             }
+            ContextValue::MaxHr => s.max_hr = max_hr_of(ordinal),
+            ContextValue::Ftp => s.ftp_w = ftp_of(ordinal),
         }
     }
 
@@ -260,6 +288,8 @@ impl ContextValue {
                 let _ = buf.push_str(&super::vocab::fmt::utc_offset(min));
                 buf.as_str()
             }
+            ContextValue::MaxHr => limit_label(max_hr_of(ordinal) as u16, "bpm", lang, buf),
+            ContextValue::Ftp => limit_label(ftp_of(ordinal), "W", lang, buf),
         }
     }
 
@@ -271,6 +301,31 @@ impl ContextValue {
             _ => None,
         }
     }
+}
+
+/// The max HR an editor ordinal stands for; ordinal 0 is not set.
+fn max_hr_of(ordinal: u8) -> u8 {
+    match ordinal {
+        0 => 0,
+        k => (MAX_HR_MIN + (k - 1)).min(MAX_HR_MAX),
+    }
+}
+
+/// The FTP an editor ordinal stands for; ordinal 0 is not set.
+fn ftp_of(ordinal: u8) -> u16 {
+    match ordinal {
+        0 => 0,
+        k => (FTP_MIN + (k - 1) as u16 * FTP_STEP).min(FTP_MAX),
+    }
+}
+
+/// A limit's choice label: `Not set` for 0, else the number and its unit.
+fn limit_label<'a>(value: u16, unit: &str, lang: Language, buf: &'a mut heapless::String<24>) -> &'a str {
+    if value == 0 {
+        return crate::t(Msg::RideNotSet, lang);
+    }
+    let _ = write!(buf, "{value} {unit}");
+    buf.as_str()
 }
 
 /// A `bool` a row flips in place. The binding owns where the bit lives; the drawer owns the row,
@@ -663,7 +718,7 @@ impl ContextDrawerScreen {
             lang: f.settings.language,
             selected: 0,
             page: Page::Editor,
-            staged: value.committed(f),
+            staged: value.opening(f),
         }
     }
 
@@ -1417,6 +1472,8 @@ mod tests {
                 ContextValue::WaypointMode,
                 ContextValue::Units,
                 ContextValue::UtcOffset,
+                ContextValue::MaxHr,
+                ContextValue::Ftp,
             ] {
                 for ordinal in 0..v.count() {
                     buf.clear();
@@ -1463,6 +1520,8 @@ mod tests {
             ContextValue::BikeProfile => {
                 crate::settings::bike_type_name(crate::settings::BikeType::from_u8(ordinal).unwrap(), lang)
             }
+            ContextValue::MaxHr => limit_label(max_hr_of(ordinal) as u16, "bpm", lang, buf),
+            ContextValue::Ftp => limit_label(ftp_of(ordinal), "W", lang, buf),
         }
     }
 
@@ -1494,6 +1553,19 @@ mod tests {
         assert_eq!(d.staged_brightness(), Some(BRIGHTNESS_MAX - 2), "the panel follows the staged level");
         let plain = ContextDrawerScreen::opening(&UP_AHEAD, Language::En);
         assert_eq!(plain.staged_brightness(), None);
+
+        // An unset limit opens on a typical value, and "Not set" stays the axis's first choice.
+        let mut d = ContextDrawerScreen::editor(ContextValue::MaxHr, Msg::RideMaxHr, &w.facts());
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.max_hr, 180, "an unset max HR opens on 180 bpm");
+        let mut d = ContextDrawerScreen::editor(ContextValue::Ftp, Msg::RideFtp, &w.facts());
+        w.press(&mut d, Gesture::Step(-1));
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.ftp_w, 195, "an unset FTP opens on 200 W, one 5 W step from 195");
+        let mut d = ContextDrawerScreen::editor(ContextValue::MaxHr, Msg::RideMaxHr, &w.facts());
+        w.press(&mut d, Gesture::Step(-100));
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(w.settings.max_hr, 0, "the bottom of the axis is Not set");
 
         let mut d = ContextDrawerScreen::editor(ContextValue::UtcOffset, Msg::DatetimeOffset, &w.facts());
         assert_eq!(d.staged, 48, "+00:00 is 48 quarter hours above -12:00");

@@ -133,6 +133,16 @@ impl SimSensors {
     }
 }
 
+/// The headless `--sensors demo` effort at replay second `t_s`, as `(bpm, watts)`: power swings
+/// from an easy spin past threshold and back every few minutes, with short surges on top, and heart
+/// rate follows it half a minute late. Against the demo limits (185 bpm, 250 W) it reaches every
+/// zone within five minutes.
+pub fn demo_effort(t_s: f64) -> (u16, u16) {
+    let watts = 190.0 + 70.0 * (t_s / 40.0).sin() + 40.0 * (t_s / 13.0).sin();
+    let bpm = 150.0 + 25.0 * ((t_s - 30.0) / 40.0).sin();
+    (bpm as u16, watts.max(0.0) as u16)
+}
+
 /// Synthetic heart rate, driven by the panel. Hand `&mut SimHeartRate` to `Sensors::hr`.
 #[derive(Default)]
 pub struct SimHeartRate(Emitter<u16>);

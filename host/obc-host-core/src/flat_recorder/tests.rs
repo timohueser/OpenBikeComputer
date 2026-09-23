@@ -33,6 +33,7 @@ fn context() -> RideContinuation {
         max_power: 250,
         cadence_ms_sum: 800_000,
         cadence_ms: 10_000,
+        energy_j: Some(2_000),
     }
 }
 fn stats() -> RideStats {

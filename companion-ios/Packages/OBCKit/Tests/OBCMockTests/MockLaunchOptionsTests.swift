@@ -100,6 +100,7 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertEqual(parse(["-OBCImportSample", "tcx"]).importSample, .tcx)
         XCTAssertEqual(parse(["-OBCImportSample", "bad"]).importSample, .bad)
         XCTAssertEqual(parse(["-OBCImportSample", "grimsel"]).importSample, .grimsel)
+        XCTAssertEqual(parse(["-OBCImportSample", "trip"]).importSample, .trip)
         // Unknown kind degrades to gpx, never crashes.
         XCTAssertEqual(parse(["-OBCImportSample", "fit"]).importSample, .gpx)
         // Env fallback: 1 = gpx, kind tokens pass through, 0/empty = off.
@@ -138,13 +139,13 @@ final class MockLaunchOptionsTests: XCTestCase {
     }
 
     func testSampleRouteFileServesEveryKind() {
-        for kind in [SampleRouteFile.Kind.gpx, .tcx, .bad, .grimsel] {
-            XCTAssertNotNil(SampleRouteFile.data(kind), "\(kind) sample must load")
+        let names: [SampleRouteFile.Kind: [String]] = [
+            .gpx: ["sample-import.gpx"], .tcx: ["sample-import.tcx"], .bad: ["packing-list.pdf"],
+            .grimsel: ["website-import.gpx"], .trip: ["sample-import.gpx", "website-import.gpx"],
+        ]
+        for (kind, expected) in names {
+            XCTAssertEqual(SampleRouteFile.files(kind).map(\.fileName), expected, "\(kind) sample must load")
         }
-        XCTAssertEqual(SampleRouteFile.fileName(.gpx), "sample-import.gpx")
-        XCTAssertEqual(SampleRouteFile.fileName(.tcx), "sample-import.tcx")
-        XCTAssertEqual(SampleRouteFile.fileName(.bad), "packing-list.pdf")
-        XCTAssertEqual(SampleRouteFile.fileName(.grimsel), "website-import.gpx")
     }
 
     func testMakeControlAppliesScenarioThenOverrides() async throws {

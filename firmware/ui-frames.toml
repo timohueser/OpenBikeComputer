@@ -551,6 +551,22 @@ map = "{grimsel}"
 script = "B u p p w"
 expect = "Ride"
 
+# The effort limits at the foot of the Ride page, with the demo's max HR and FTP set, and the FTP
+# editor open on the committed 250 W.
+[[frame]]
+name = "ride-settings-effort"
+map = "{grimsel}"
+script = "B u p p d*5 w"
+expect = "Ride"
+args = ["--sensors", "demo"]
+
+[[frame]]
+name = "ride-ftp-editor"
+map = "{grimsel}"
+script = "B u p p d*6 p w"
+expect = "ContextDrawer"
+args = ["--sensors", "demo"]
+
 # A value row pressed: the drawer's editor rises as a sheet over the page, on the committed choice.
 [[frame]]
 name = "ride-climb-editor"
@@ -589,6 +605,29 @@ map = "{grimsel}"
 script = "B u p p p"
 expect = "StatFields"
 args = ["--stat-fields", "next-water,next-campsite,next-lodging"]
+
+# The effort fields in the Fields editor: the picker's last rows, one Up step from its top (the list
+# wraps), with KJ single and the two graphs wide; and the three placed, the graphs previewed as wide
+# tiles under their picker names.
+[[frame]]
+name = "addfield-effort"
+map = "{grimsel}"
+script = "B u p p p d*6 p u"
+expect = "AddField"
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "addfield-effort"
+map = "{grimsel}"
+script = "B u p p p d*6 p u"
+expect = "AddField"
+
+[[frame]]
+name = "fields-effort"
+map = "{grimsel}"
+script = "B u p p p"
+expect = "StatFields"
+args = ["--stat-fields", "hr-graph,kj,power,power-graph"]
 
 # The Waypoints mode row (epic #523): the group's 4th row, under Climb. Three steps park the amber
 # cursor on it, showing the default `Approach` mode.
@@ -1009,6 +1048,17 @@ script = "p*4 f d p"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
+# The effort band: live power against the demo FTP draws a gauge along the bottom edge, five zone
+# slots filled to the rider's position in the current zone's colour. The scale bar and any bottom
+# chip stand on top of the band.
+[[frame]]
+name = "map-effort"
+map = "{grimsel}"
+env = "routes"
+script = "p*4 f d p"
+expect = "Map"
+args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
+
 # Settlement names (#1900). The Grimsel map is high alpine and holds almost no place records, so
 # these three use the Freiburg package: 44 settlements over 20 km, one city, three towns, 26
 # villages and 14 hamlets. `--zoom` multiplies the bbox-fit zoom of *that* package, and the three
@@ -1111,11 +1161,10 @@ script = "p*4 f d p b h p d d d p d d w"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
-# The live BLE-sensor stat tiles (epic #707, SE5): the Statistics grid pinned to HR / PWR / RPM (the
-# three new single-column raw-int tiles) alongside a couple of live neighbours. `--sensors demo` seeds
-# that grid and feeds a fixed synthetic HR/power/cadence through SE2's HAL traits for one tick, so the
-# tiles read live values (152 bpm / 210 W / 88 rpm) rather than `--`. A minimal stub until SE8 wires
-# the sim control-panel sliders; this frame pins the new tiles' captions + value formatting.
+# The live BLE-sensor stat tiles: the Statistics grid pinned to HR / PWR / KJ / RPM beside two ride
+# neighbours. `--sensors demo` sets a 185 bpm max HR and a 250 W FTP and feeds a synthetic effort
+# wave through the replay, so HR and PWR fill with their zone colour and show the zone at the top
+# right, and KJ counts the ride's energy.
 [[frame]]
 name = "statistics-sensors"
 map = "{grimsel}"
@@ -1123,6 +1172,27 @@ env = "routes"
 script = "p*4 f d p b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
+
+# The HR graph and power graph fields: the zone-tinted number block continues as a 2 px frame around
+# the last five minutes of 5 s bars, each bar in its own zone. The replay runs five and a half
+# minutes, so the graphs are full.
+[[frame]]
+name = "statistics-effort-graphs"
+map = "{grimsel}"
+env = "routes"
+script = "p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
+
+# The graph blocks per language: a caption that does not fit beside the zone is cut, the zone stays.
+[[frame]]
+name = "statistics-effort-graphs"
+map = "{grimsel}"
+env = "routes"
+script = "p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
+langs = ["de", "fr", "es"]
 
 # The EL9 time tiles (#1077): TIME TO GO (`h TO GO`) and ETA on the Statistics grid, beside the
 # DIST TO GO / TO CLIMB pair they are derived from, at a pinned 14:40 wall clock. The A/B is the
@@ -2321,6 +2391,32 @@ env = "routes"
 script = "{theme_dark} p*4 f d p b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
+
+# The effort display in Dark: the zone colours are content and do not change, text on a tint stays
+# black, and the graph panel takes the page colour.
+[[frame]]
+name = "dark-map-effort"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p"
+expect = "Map"
+args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
+
+[[frame]]
+name = "dark-statistics-sensors"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
+
+[[frame]]
+name = "dark-statistics-effort-graphs"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 
 [[frame]]
 name = "dark-map-context"

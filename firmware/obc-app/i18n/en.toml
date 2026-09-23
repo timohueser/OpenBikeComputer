@@ -178,6 +178,9 @@ waypoint_list = "Waypoint list"
 heart_rate = "Heart rate"
 power = "Power"
 cadence = "Cadence"
+kj = "Energy"
+hr_graph = "HR graph"
+power_graph = "Power graph"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
@@ -199,6 +202,9 @@ next_wpt = "NEXT WPT"
 waypoints = "WAYPOINTS"
 hr = "HR"
 pwr = "PWR"
+# The power graph block leaves three glyphs beside the zone.
+pwr_short = "PWR"
+kj = "KJ"
 rpm = "RPM"
 
 # --- The Climb (ClimbPro) riding screen ---
@@ -255,6 +261,9 @@ pages = "Auto-flip"
 climb = "Climb panel"
 waypoints = "Waypoints"
 bike_type = "Bike type"
+max_hr = "Max heart rate"
+ftp = "FTP"
+not_set = "Not set"
 
 # --- Display settings screen ---
 [display]
