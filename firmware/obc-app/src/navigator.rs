@@ -13,6 +13,7 @@
 //! never ride an effect or an outcome. What crosses is an identity, a bounded request, and the
 //! preview figures the HUD prints.
 
+mod arrival;
 mod following;
 mod review;
 mod visit;
@@ -23,6 +24,7 @@ pub use review::{
 };
 pub use visit::VisitUnavailable;
 
+pub(crate) use arrival::Arrival;
 pub use following::RouteState;
 
 use obc_route::nav::NavError;
