@@ -1487,7 +1487,7 @@ impl App {
         self.catalogs.clear_detour_preview();
         // The spliced route starts at the fix the leg was planned from.
         let Some((lon, lat)) = self.catalogs.routes().get(idx).map(|r| (r.start_lon, r.start_lat)) else { return };
-        self.navigator.set_active_route(Some(idx));
+        self.navigator.load_route(idx);
         let ride = screen::begin_riding_session(&mut self.state, &mut self.activity, &mut self.recorder, lon, lat);
         screen::apply(&mut self.ui.stack, ride);
         self.ui.map_dirty = true;
@@ -5852,14 +5852,15 @@ mod tests {
     }
 
     /// Each rider load sets the current type from the loaded route, once: a start from the
-    /// overview, a swap mid-ride, the received-route prompt, and a phone replace of the active
+    /// overview, Ride to start, a swap mid-ride, the received-route prompt, and a phone replace of the active
     /// route.
     #[test]
     fn a_route_load_sets_the_bike_type_once() {
         use crate::harness::support::tick_typed_route;
         use crate::settings::BikeType::{Mtb, Road};
         type Load = fn(&mut App);
-        let loads: [(&str, Load); 4] = [
+        let loads: [(&str, Load); 5] = [
+            ("Ride to start", |app| app.ride_approach(1)),
             ("start from the overview", |app| {
                 app.navigator.route_state_mut().active_route = Some(0);
                 let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
