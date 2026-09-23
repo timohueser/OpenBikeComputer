@@ -146,6 +146,18 @@ impl Splicer {
         _detour_has_elevation: bool,
         orig_name: &str,
     ) -> Splicer {
+        let mut slot = core::mem::MaybeUninit::uninit();
+        // SAFETY: the local slot is aligned, writable and exclusively owned.
+        unsafe {
+            Self::init_in_place(slot.as_mut_ptr(), leg, split_m, rejoin_m, orig_name);
+            slot.assume_init()
+        }
+    }
+
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a complete splicer.
+    #[inline(never)]
+    pub unsafe fn init_in_place(slot: *mut Self, leg: Leg, split_m: u32, rejoin_m: u32, orig_name: &str) {
         let (split_m, rejoin_m) = match leg {
             Leg::Detour => (split_m, rejoin_m),
             Leg::Approach => (0, 0),
@@ -167,31 +179,57 @@ impl Splicer {
                 break;
             }
         }
-        Splicer {
-            leg,
-            adds_avoidance: leg == Leg::Detour,
-            assistant_candidate: false,
-            phase: Phase::Init,
-            split_m,
-            rejoin_m,
-            name,
-            em: ObcrEmitter::empty(),
-            head_k: 0,
-            det_k: 0,
-            tail_k: 0,
-            ele_split: 0,
-            ele_rejoin: 0,
-            det_ele_first: 0,
-            det_ele_last: 0,
-            res_start: 0.0,
-            res_end: 0.0,
-            det_total: 0.0,
-            det_along: 0.0,
-            last_pushed: None,
-            prev_det: None,
-            tail_first_along: None,
-            waypoints: Vec::new(),
-            waypoint_cursor: None,
+        unsafe {
+            core::ptr::addr_of_mut!((*slot).leg).write(leg);
+            core::ptr::addr_of_mut!((*slot).adds_avoidance).write(leg == Leg::Detour);
+            core::ptr::addr_of_mut!((*slot).assistant_candidate).write(false);
+            core::ptr::addr_of_mut!((*slot).phase).write(Phase::Init);
+            core::ptr::addr_of_mut!((*slot).split_m).write(split_m);
+            core::ptr::addr_of_mut!((*slot).rejoin_m).write(rejoin_m);
+            core::ptr::addr_of_mut!((*slot).name).write(name);
+            ObcrEmitter::init_in_place(core::ptr::addr_of_mut!((*slot).em));
+            core::ptr::addr_of_mut!((*slot).head_k).write(0);
+            core::ptr::addr_of_mut!((*slot).det_k).write(0);
+            core::ptr::addr_of_mut!((*slot).tail_k).write(0);
+            core::ptr::addr_of_mut!((*slot).ele_split).write(0);
+            core::ptr::addr_of_mut!((*slot).ele_rejoin).write(0);
+            core::ptr::addr_of_mut!((*slot).det_ele_first).write(0);
+            core::ptr::addr_of_mut!((*slot).det_ele_last).write(0);
+            core::ptr::addr_of_mut!((*slot).res_start).write(0.0);
+            core::ptr::addr_of_mut!((*slot).res_end).write(0.0);
+            core::ptr::addr_of_mut!((*slot).det_total).write(0.0);
+            core::ptr::addr_of_mut!((*slot).det_along).write(0.0);
+            core::ptr::addr_of_mut!((*slot).last_pushed).write(None);
+            core::ptr::addr_of_mut!((*slot).prev_det).write(None);
+            core::ptr::addr_of_mut!((*slot).tail_first_along).write(None);
+            core::ptr::addr_of_mut!((*slot).waypoints).write(Vec::new());
+            core::ptr::addr_of_mut!((*slot).waypoint_cursor).write(None);
+            let Self {
+                leg: _,
+                adds_avoidance: _,
+                assistant_candidate: _,
+                phase: _,
+                split_m: _,
+                rejoin_m: _,
+                name: _,
+                em: _,
+                head_k: _,
+                det_k: _,
+                tail_k: _,
+                ele_split: _,
+                ele_rejoin: _,
+                det_ele_first: _,
+                det_ele_last: _,
+                res_start: _,
+                res_end: _,
+                det_total: _,
+                det_along: _,
+                last_pushed: _,
+                prev_det: _,
+                tail_first_along: _,
+                waypoints: _,
+                waypoint_cursor: _,
+            } = &*slot;
         }
     }
 

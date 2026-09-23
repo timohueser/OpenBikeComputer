@@ -317,3 +317,77 @@ fn a_day_of_stretches_climbs_what_each_route_profile_says() {
     assert_eq!((out.min_ele_m, out.max_ele_m), (200, 300));
     assert!(out.cols().iter().all(|&(mn, mx)| mn <= mx), "a gap-free band");
 }
+
+#[test]
+fn combined_summaries_stream_once_and_keep_climb_gap_and_read_error_behavior() {
+    use crate::common::{build_obcr, ChunkIn, RouteSpec};
+    use core::cell::Cell;
+    use obc_formats::io::{ByteSource, Error};
+
+    struct Source<'a> {
+        bytes: &'a [u8],
+        reads: Cell<usize>,
+        fail_at: Option<u64>,
+        fail_once: bool,
+        failed: Cell<bool>,
+    }
+    impl ByteSource for Source<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+            self.reads.set(self.reads.get() + 1);
+            if self.fail_at == Some(offset) && (!self.fail_once || !self.failed.get()) {
+                self.failed.set(true);
+                return Err(Error::BadOffset);
+            }
+            SliceSource(self.bytes).read_at(offset, out)
+        }
+    }
+    let chunks: Vec<_> = (0..8)
+        .map(|k| ChunkIn {
+            points: (0..32)
+                .map(|i| {
+                    let station = k * 31 + i;
+                    let height = if station == 110 { i16::MIN } else { (100 + (station % 70) * 3) as i16 };
+                    (station * 200, 0, height)
+                })
+                .collect(),
+            cum_distance_m: k as u32 * 690,
+            cum_ascent_m: 0,
+        })
+        .collect();
+    let (bytes, extents) =
+        build_obcr(&RouteSpec { chunks: &chunks, totals: (5520, 600, 500), seam_shared: true, ..Default::default() });
+    let index = RouteIndex::read(&SliceSource(&bytes)).unwrap();
+    for (fail_at, fail_once) in
+        [(None, false), (Some(extents[3].start as u64), false), (Some(extents[3].start as u64), true)]
+    {
+        let source = Source { bytes: &bytes, reads: Cell::new(0), fail_at, fail_once, failed: Cell::new(false) };
+        let route = RouteReader::new(&index, &source);
+        let expected_climbs = route.detect_climbs();
+        let expected = route.elevation_profile();
+        let separate_reads = source.reads.get();
+        source.reads.set(0);
+        source.failed.set(false);
+        let mut profile = obc_route::Profile::EMPTY;
+        let climbs = route.elevation_profile_and_climbs_into(&mut profile);
+        if fail_at.is_none() {
+            assert_eq!(separate_reads, 2 * chunks.len());
+            assert_eq!(source.reads.get(), chunks.len(), "healthy summaries share one pass beyond cache capacity");
+        } else {
+            assert_eq!(source.reads.get(), separate_reads, "a failed pass retains the independent profile retry");
+        }
+        assert_eq!(climbs.as_slice(), expected_climbs.as_slice());
+        assert_eq!(profile.cols(), expected.cols());
+        assert_eq!(
+            (profile.min_ele_m, profile.max_ele_m, profile.peak_col),
+            (expected.min_ele_m, expected.max_ele_m, expected.peak_col)
+        );
+        for col in 0..PROFILE_COLS {
+            let fraction = col as f32 / (PROFILE_COLS - 1) as f32;
+            assert_eq!(profile.grade_at(fraction), expected.grade_at(fraction));
+            assert_eq!(profile.ascent_to(fraction), expected.ascent_to(fraction));
+        }
+    }
+}

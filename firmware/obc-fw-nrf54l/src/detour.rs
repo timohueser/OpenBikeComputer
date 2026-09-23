@@ -252,13 +252,7 @@ impl Executor {
         let corridor = obc_route::Corridor::build(&reader, request.progress_m, request.target_m);
         // Initialize the planner arm only after the source-index references have ended.
         guard.restore_plan();
-        guard.begin_plan(obc_route::NavPlanner::new_detour(
-            request.from,
-            (to.lon, to.lat),
-            "Detour leg",
-            profile,
-            corridor,
-        ));
+        guard.begin_plan(request.from, (to.lon, to.lat), "Detour leg", profile, Some(corridor));
         Ok(())
     }
     /// The day before's stored route, while the leg is a rest: the leg reads it in place of a
