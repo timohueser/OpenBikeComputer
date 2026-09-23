@@ -56,6 +56,7 @@ struct OBCCompanionApp: App {
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
+                photoLibrary: Self.makePhotoLibrary(),
                 lastBikeType: Self.makeLastBikeTypeStore(),
                 reachability: Self.makeReachability(),
                 updateSurface: Self.makeUpdateSurfaceStore(),
@@ -198,6 +199,17 @@ struct OBCCompanionApp: App {
         }
         #endif
         return FileLibraryStore.standard()
+    }
+
+    /// The simulator has no photos worth placing, so mock runs draw their own.
+    static func makePhotoLibrary() -> any PhotoLibrary {
+        #if DEBUG
+        if mockControl != nil {
+            return MockPhotoLibrary(
+                access: launchOptions.photoAccess ?? .notDetermined, lastPhotoGone: launchOptions.photoGone)
+        }
+        #endif
+        return PhotoKitLibrary()
     }
 
     /// The reachability seam behind the basemap. The real path watches `NWPathMonitor`, and a

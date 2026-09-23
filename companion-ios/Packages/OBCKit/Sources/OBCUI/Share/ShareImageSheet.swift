@@ -2,21 +2,35 @@
 import SwiftUI
 import UIKit
 
+/// A photo the share image can show: its thumbnail for the choice, and a loader for the full
+/// image the card draws.
+public struct SharePhoto {
+    let thumbnail: UIImage
+    let load: @MainActor () async -> UIImage?
+
+    public init(thumbnail: UIImage, load: @escaping @MainActor () async -> UIImage?) {
+        self.thumbnail = thumbnail
+        self.load = load
+    }
+}
+
 /// The share image preview: the rendered image, the photo and profile choices, then the system
 /// share sheet.
 public struct ShareImageSheet: View {
     private let content: ShareCardContent
-    private let photos: [UIImage]
+    private let photos: [SharePhoto]
     /// The chosen photo, or nil for none.
     @State private var photoIndex: Int?
     @State private var showsProfile = false
     /// Snapshots by size: a photo or profile choice changes the map size, and a size seen once is not
     /// fetched again.
     @State private var maps: [String: UIImage] = [:]
+    /// Full photos by choice index. A photo that does not load draws its thumbnail.
+    @State private var fullPhotos: [Int: UIImage] = [:]
     @State private var image: UIImage?
     @Environment(\.dismiss) private var dismiss
 
-    public init(content: ShareCardContent, photos: [UIImage] = []) {
+    public init(content: ShareCardContent, photos: [SharePhoto] = []) {
         self.content = content
         self.photos = photos
         _photoIndex = State(initialValue: photos.isEmpty ? nil : 0)
@@ -88,7 +102,7 @@ public struct ShareImageSheet: View {
                     } action: { photoIndex = nil }
                     ForEach(photos.indices, id: \.self) { index in
                         choiceTile(selected: photoIndex == index) {
-                            Image(uiImage: photos[index]).resizable().scaledToFill()
+                            Image(uiImage: photos[index].thumbnail).resizable().scaledToFill()
                         } action: { photoIndex = index }
                     }
                 }
@@ -126,7 +140,11 @@ public struct ShareImageSheet: View {
     /// cancellation, so a render whose choices changed during the snapshot drops its image and
     /// leaves the frame to the newer render.
     private func render() async {
-        let photo = photoIndex.map { photos[$0] }
+        var photo: UIImage?
+        if let index = photoIndex {
+            if fullPhotos[index] == nil { fullPhotos[index] = await photos[index].load() ?? photos[index].thumbnail }
+            photo = fullPhotos[index]
+        }
         let showsProfile = showsProfile
         let size = ShareCard.mapSize(hasPhoto: photo != nil, showsProfile: showsProfile)
         let key = "\(size.width)x\(size.height)"

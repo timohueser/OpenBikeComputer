@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import OBCDomain
+import OBCTransport
 
 public enum FirmwareDemoStage: String, Sendable, Equatable {
     /// Pre-stage a sample update and stop.
@@ -40,6 +41,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var deviceRoutesFull: Bool
 
     public var oldFirmware: Bool
+    /// The simulator photo library's access state. `nil` starts undetermined, as a fresh install.
+    public var photoAccess: PhotoAccess?
+    /// The mock library's last photo is gone after it is added.
+    public var photoGone: Bool
 
     public init(
         scenario: Scenario? = nil,
@@ -55,7 +60,9 @@ public struct MockLaunchOptions: Equatable, Sendable {
         networkOnline: Bool? = nil,
         firmwareDemo: FirmwareDemoStage? = nil,
         deviceRoutesFull: Bool = false,
-        oldFirmware: Bool = false
+        oldFirmware: Bool = false,
+        photoAccess: PhotoAccess? = nil,
+        photoGone: Bool = false
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -71,6 +78,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.firmwareDemo = firmwareDemo
         self.deviceRoutesFull = deviceRoutesFull
         self.oldFirmware = oldFirmware
+        self.photoAccess = photoAccess
+        self.photoGone = photoGone
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with environment
@@ -139,6 +148,14 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_DEVICE_ROUTES_FULL"] == "1"
         let oldFirmware = arguments.contains("-OBCOldFirmware")
             || environment["OBC_OLD_FIRMWARE"] == "1"
+        let photoAccess: PhotoAccess? = switch value("OBCPhotoAccess", env: "OBC_PHOTO_ACCESS") {
+        case "full": .full
+        case "limited": .limited
+        case "denied": .denied
+        default: nil
+        }
+        let photoGone = arguments.contains("-OBCPhotoGone")
+            || environment["OBC_PHOTO_GONE"] == "1"
 
         return MockLaunchOptions(
             scenario: scenario,
@@ -154,7 +171,9 @@ public struct MockLaunchOptions: Equatable, Sendable {
             networkOnline: networkOnline,
             firmwareDemo: firmwareDemo,
             deviceRoutesFull: deviceRoutesFull,
-            oldFirmware: oldFirmware)
+            oldFirmware: oldFirmware,
+            photoAccess: photoAccess,
+            photoGone: photoGone)
     }
 
     public func makeControl() -> MockControl {

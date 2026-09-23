@@ -23,6 +23,10 @@ public struct MapTrackPreviewView: View {
     var waypoints: [Waypoint] = []
     /// Only needed to place `waypoints` on the grid.
     var totalDistanceMeters: Double = 0
+    /// A ride's photos. The basemap pins them; the grid does not.
+    var photoPins: [Coordinate] = []
+    /// The index in `photoPins` of the photo on screen.
+    var highlightedPhoto: Int? = nil
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -33,7 +37,9 @@ public struct MapTrackPreviewView: View {
         tagColor: Color = OBCTheme.inkSoft,
         showsChrome: Bool = true,
         waypoints: [Waypoint] = [],
-        totalDistanceMeters: Double = 0
+        totalDistanceMeters: Double = 0,
+        photoPins: [Coordinate] = [],
+        highlightedPhoto: Int? = nil
     ) {
         self.preview = preview
         self.style = style
@@ -42,6 +48,8 @@ public struct MapTrackPreviewView: View {
         self.showsChrome = showsChrome
         self.waypoints = waypoints
         self.totalDistanceMeters = totalDistanceMeters
+        self.photoPins = photoPins
+        self.highlightedPhoto = highlightedPhoto
     }
 
     private var mode: MapPreviewMode {
@@ -75,7 +83,8 @@ public struct MapTrackPreviewView: View {
             interactionModes: []
         ) {
             TrackMapContent(
-                coordinates: coordinates, dotRadius: style.dotRadius, waypoints: waypoints
+                coordinates: coordinates, dotRadius: style.dotRadius, waypoints: waypoints,
+                photoPins: photoPins, highlightedPhoto: highlightedPhoto
             )
         }
         // Always the light tile set: the design's palette is light throughout, and
@@ -113,6 +122,8 @@ struct TrackMapContent: MapContent {
     let coordinates: [Coordinate]
     var dotRadius: CGFloat = 5
     var waypoints: [Waypoint] = []
+    var photoPins: [Coordinate] = []
+    var highlightedPhoto: Int?
 
     var body: some MapContent {
         let coords = MapGeometry.clLocations(coordinates)
@@ -138,6 +149,18 @@ struct TrackMapContent: MapContent {
                 WaypointPinBadge(label: "\(waypoint.index + 1)")
             }
         }
+        // The highlighted pin comes last, so it draws over its neighbours.
+        ForEach(photoPinOrder, id: \.self) { index in
+            Annotation("", coordinate: MapGeometry.clLocations([photoPins[index]])[0]) {
+                PhotoPin(highlighted: index == highlightedPhoto)
+            }
+        }
+    }
+
+    private var photoPinOrder: [Int] {
+        let others = photoPins.indices.filter { $0 != highlightedPhoto }
+        guard let highlightedPhoto, photoPins.indices.contains(highlightedPhoto) else { return others }
+        return others + [highlightedPhoto]
     }
 
     private func nodeDot(_ fill: Color) -> some View {
@@ -160,6 +183,25 @@ struct WaypointPinBadge: View {
             .frame(width: 18, height: 18)
             .background(Circle().fill(OBCTheme.amber))
             .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 2.5))
+    }
+}
+
+/// A photo's place on the map: a small dot, or a camera badge for the photo on screen.
+struct PhotoPin: View {
+    let highlighted: Bool
+
+    var body: some View {
+        Circle()
+            .fill(OBCTheme.water)
+            .frame(width: highlighted ? 22 : 9, height: highlighted ? 22 : 9)
+            .overlay {
+                if highlighted {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(OBCTheme.panel)
+                }
+            }
+            .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: highlighted ? 2.5 : 2))
     }
 }
 #endif

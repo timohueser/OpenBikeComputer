@@ -16,6 +16,8 @@ public struct RouteDetailView: View {
     private let onPair: (() -> Void)?
     /// The imported dressing's choice rows, under the stats.
     private let importAccessory: AnyView?
+    /// A tracked ride's photos.
+    private let photos: RidePhotosModel?
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -35,7 +37,8 @@ public struct RouteDetailView: View {
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
-        importAccessory: AnyView? = nil
+        importAccessory: AnyView? = nil,
+        photos: RidePhotosModel? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -47,6 +50,7 @@ public struct RouteDetailView: View {
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
         self.importAccessory = importAccessory
+        self.photos = photos
     }
 
     public var body: some View {
@@ -59,6 +63,10 @@ public struct RouteDetailView: View {
                 hero
 
                 titleBlock
+
+                if let photos {
+                    RidePhotoOfferRow(model: photos)
+                }
 
                 if !model.stats.isEmpty {
                     OBCStatStrip(model.stats)
@@ -91,11 +99,15 @@ public struct RouteDetailView: View {
                     OBCEyebrow("Elevation profile")
                         .padding(.top, 18)
                         .padding(.bottom, 4)
-                    ElevationProfileView(samples: model.elevationProfile)
+                    ElevationProfileView(samples: model.elevationProfile, ticks: photos?.tickFractions ?? [])
                 }
 
                 if !model.highlights.isEmpty {
                     highlightsLine
+                }
+
+                if let photos {
+                    RidePhotoStripSection(model: photos, preview: model.preview)
                 }
 
                 if !model.sensorRows.isEmpty {
@@ -139,6 +151,7 @@ public struct RouteDetailView: View {
             }
         )
         .task { model.start() }
+        .task { await photos?.start() }
     }
 
     /// Offline keeps the grid and no tap: a map with no network path is blank.
@@ -154,7 +167,8 @@ public struct RouteDetailView: View {
             tag: model.tag.text,
             tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft,
             waypoints: model.waypoints,
-            totalDistanceMeters: model.distanceMeters
+            totalDistanceMeters: model.distanceMeters,
+            photoPins: photos?.pinCoordinates ?? []
         )
         .frame(height: 214)
 

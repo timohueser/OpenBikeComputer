@@ -74,6 +74,9 @@ targets:
         CFBundleDisplayName: OBC
         # H7 copy — do not reword without updating the design source.
         NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
+        NSPhotoLibraryUsageDescription: "OBC shows the photos you took during a ride on that ride. It does not change your library."
+        # The ride's photo offer has its own "Choose more photos…", so iOS must not add its own prompt.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
         # Keep object transfers active when the phone locks or the app enters the background.
         UIBackgroundModes:
           - bluetooth-central
