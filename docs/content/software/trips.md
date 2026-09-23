@@ -84,6 +84,30 @@ stop opens a callout with "End Day N here", which moves the nearest day end that
 end then takes the name of the stop. The Apple Maps search needs a connection; offline, the sheet
 lists the waypoints only.
 
+### Stops off the line
+
+A stop more than 150 m from the line offers two ways to reach it. The rider picks one per stop:
+
+- **Out and back** adds a spur from the nearest line point to the stop. The next day rides it
+  back, so the line does not change. The trip object records where each day route leaves and joins
+  the line, so the device skips the spur when it joins the rest of a day to the next day.
+- **Via the stop** leaves the line up to 2 km before the stop and rejoins it up to 2 km after. The
+  old section shows dashed. The day routes pass through the stop, so the device sees an ordinary
+  line.
+
+The phone shows what each way adds before the rider picks. When no road is found, the day ends on
+the line point nearest the stop.
+
+A gap inside a day (200 m or less, after a Join) is ridden as a straight line. "Bridge the gap" in
+the day's menu replaces it with a routed piece. A gap at a day end stays.
+
+### The router on the phone
+
+Stops off the line and gap bridges use the device's own router, built into the app, with the
+device's search limit. So the phone finds the roads the device would find. The phone downloads the
+map cells around each request from the published catalog and caches them. Only the first request
+in an area needs a connection.
+
 ### Transfers
 
 A day end is a transfer when the next day starts more than 200 m from it: the rider takes a train,
