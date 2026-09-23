@@ -129,6 +129,27 @@ public struct Ride: Identifiable, Equatable, Sendable {
         self.summary = summary
         self.points = points
     }
+
+    /// This ride as a planned route under the ride's name: the tracked line with its elevation,
+    /// without time or sensors. It is not simplified here, because the route codec decimates
+    /// every route at upload, so a ride keeps the density of an imported GPX track.
+    ///
+    /// A route is one line, so it joins the ride's segments with a straight leg at each break.
+    /// The device does not count a break's jump as ridden, but the route counts it and navigates
+    /// it. Nil when those legs would add more than 1 % to the ridden distance.
+    public func plannedRoute() -> ImportedRoute? {
+        var ridden = 0.0
+        var bridged = 0.0
+        for (from, to) in zip(points, points.dropFirst()) {
+            let leg = from.coordinate.routeDistance(to: to.coordinate)
+            if to.segmentStart { bridged += leg } else { ridden += leg }
+        }
+        guard bridged <= ridden * 0.01 else { return nil }
+        return ImportedRoute(
+            name: summary.name,
+            points: points.map { RoutePoint(coordinate: $0.coordinate, elevationMeters: $0.elevationMeters) }
+        )
+    }
 }
 
 /// Everything the ride-detail screen renders beyond the list summary.

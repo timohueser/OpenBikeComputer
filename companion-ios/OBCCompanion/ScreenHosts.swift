@@ -110,6 +110,8 @@ struct RouteDetailScreen: View {
     private let currentTripID: TripID?
     private let onAddToTrip: ((TripSelection) -> Void)?
     private let onRemoveFromTrip: (() -> Void)?
+    /// The share button, rides with a tracklog only.
+    private let rideShareMenu: RideShareMenu?
 
     init(
         transport: any DeviceTransport,
@@ -130,7 +132,8 @@ struct RouteDetailScreen: View {
         tripPickerItems: [TripPickerItem] = [],
         currentTripID: TripID? = nil,
         onAddToTrip: ((TripSelection) -> Void)? = nil,
-        onRemoveFromTrip: (() -> Void)? = nil
+        onRemoveFromTrip: (() -> Void)? = nil,
+        rideShareMenu: RideShareMenu? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing, bikeType: bikeType,
@@ -150,6 +153,7 @@ struct RouteDetailScreen: View {
         self.currentTripID = currentTripID
         self.onAddToTrip = onAddToTrip
         self.onRemoveFromTrip = onRemoveFromTrip
+        self.rideShareMenu = rideShareMenu
         if case .tracked = dressing { isRide = true } else { isRide = false }
     }
 
@@ -186,6 +190,9 @@ struct RouteDetailScreen: View {
                 ToolbarItem(placement: .primaryAction) {
                     tripMenu(onAddToTrip: onAddToTrip)
                 }
+            }
+            if let rideShareMenu {
+                ToolbarItem(placement: .primaryAction) { rideShareMenu }
             }
         }
         .sheet(item: $uploadRequest) { request in
@@ -262,6 +269,7 @@ struct ImportLandingHost: View {
         activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
+        source: ImportSource,
         bikeType: BikeType,
         deviceName: String,
         noDevicePaired: Bool,
@@ -284,7 +292,7 @@ struct ImportLandingHost: View {
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
-            dressing: .imported(route, fileName: fileName),
+            dressing: .imported(route, fileName: fileName, source: source),
             bikeType: bikeType,
             deviceObjectID: replacingDeviceObjectID,
             provenCommittedCRC: replacingProvenCRC,

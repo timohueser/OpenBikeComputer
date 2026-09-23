@@ -75,22 +75,31 @@ public final class ImportFlowModel {
     /// saved route already carries this name, offer update-in-place against new.
     public func open(data: Data, fileName: String) {
         do {
-            let route = try decode(data, fileName)
-            let pending = PendingImport(
-                route: route,
-                fileName: fileName,
-                fileData: data,
-                noDevicePaired: !isBonded(),
-                bikeType: lastBikeType.value
-            )
-            // A route by this name is already saved, so offer update-in-place against new.
-            if let existing = plannedRoute(named: route.name ?? fileName) {
-                collision = ImportCollision(pending: pending, existing: existing)
-            } else {
-                pendingImport = pending
-            }
+            open(route: try decode(data, fileName), fileName: fileName, fileData: data)
         } catch {
             importFailed = true
+        }
+    }
+
+    /// A route already in hand, such as a ride saved as a route: the same landing and the same
+    /// name-collision rule as a decoded file. A nil `bikeType` takes the last one picked.
+    public func open(
+        route: ImportedRoute, fileName: String, fileData: Data, source: ImportSource = .file,
+        bikeType: BikeType? = nil
+    ) {
+        let pending = PendingImport(
+            route: route,
+            fileName: fileName,
+            fileData: fileData,
+            source: source,
+            noDevicePaired: !isBonded(),
+            bikeType: bikeType ?? lastBikeType.value
+        )
+        // A route by this name is already saved, so offer update-in-place against new.
+        if let existing = plannedRoute(named: route.name ?? fileName) {
+            collision = ImportCollision(pending: pending, existing: existing)
+        } else {
+            pendingImport = pending
         }
     }
 
@@ -173,6 +182,7 @@ public struct PendingImport: Identifiable, Sendable {
     public let fileName: String
     /// The original bytes, kept for the library record.
     public let fileData: Data
+    public let source: ImportSource
     /// Bond state at arrival, which picks the framing.
     public let noDevicePaired: Bool
     /// The rider's last-used type at arrival.
@@ -185,6 +195,7 @@ public struct PendingImport: Identifiable, Sendable {
         route: ImportedRoute,
         fileName: String,
         fileData: Data,
+        source: ImportSource = .file,
         noDevicePaired: Bool,
         bikeType: BikeType = .road,
         replacing: PlannedRouteRecord? = nil
@@ -192,6 +203,7 @@ public struct PendingImport: Identifiable, Sendable {
         self.route = route
         self.fileName = fileName
         self.fileData = fileData
+        self.source = source
         self.noDevicePaired = noDevicePaired
         self.bikeType = bikeType
         self.replacing = replacing
