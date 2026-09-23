@@ -1,5 +1,4 @@
 import Foundation
-import Observation
 import OBCDomain
 
 /// Campsites and hotels near points of a trip line, from Apple Maps. It asks once per
@@ -7,7 +6,7 @@ import OBCDomain
 /// and forth costs no new request. Apple throttles searches per device.
 ///
 /// Ask when a day end is tapped or a handle is released, never while a handle moves.
-@MainActor @Observable
+@MainActor
 public final class StopFinder {
     /// One request covers this much of the line.
     public static let bucketMeters = 1_000.0
@@ -15,12 +14,10 @@ public final class StopFinder {
     /// bucket from its middle, so one answer holds every stop within 2.5 km of any point of it.
     public static let radiusMeters = 3_000.0
 
-    @ObservationIgnored private let search: any StopSearch
+    private let search: any StopSearch
     /// One request per bucket middle, in flight or answered. A failed one is removed, so the
     /// next ask tries again.
-    @ObservationIgnored private var requests: [Coordinate: Task<[Stop], any Error>] = [:]
-    /// Every stop an answer held: the pins near the line.
-    public private(set) var known: Set<Stop> = []
+    private var requests: [Coordinate: Task<[Stop], any Error>] = [:]
 
     public init(search: any StopSearch) {
         self.search = search
@@ -32,9 +29,7 @@ public final class StopFinder {
         let bucket = (min(max(distance, 0), line.length) / Self.bucketMeters).rounded(.down)
         let center = line.coordinate(at: min((bucket + 0.5) * Self.bucketMeters, line.length))
         let request = requests[center] ?? Task { [search] in
-            let stops = try await search.stops(near: center, radius: Self.radiusMeters)
-            self.known.formUnion(stops)
-            return stops
+            try await search.stops(near: center, radius: Self.radiusMeters)
         }
         requests[center] = request
         do {
@@ -45,7 +40,8 @@ public final class StopFinder {
         }
     }
 
-    /// Stops near several points, asked one after the other, in the order of `distances`.
+    /// Stops near several points, asked one after the other, in the order of `distances`: the
+    /// candidates of the day editor's auto split.
     public func stops(near distances: [Double], on line: MeasuredLine) async throws -> [[Stop]] {
         var answers: [[Stop]] = []
         for distance in distances { answers.append(try await stops(near: distance, on: line)) }

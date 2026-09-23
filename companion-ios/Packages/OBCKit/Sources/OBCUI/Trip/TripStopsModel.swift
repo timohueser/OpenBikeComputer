@@ -74,7 +74,14 @@ public final class TripStopsModel: Identifiable {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canSearch, let finder else { return }
         let places = (try? await finder.places(matching: text, along: trip.measuredLine)) ?? []
-        results = trip.place(places)
+        // Inside the day's range, so a place beside both legs of an out-and-back lands on the
+        // leg this day can end on.
+        if let range = trip.endRange(of: day) {
+            let half = (range.upperBound - range.lowerBound) / 2
+            results = trip.place(places, near: range.lowerBound + half, window: half)
+        } else {
+            results = trip.place(places)
+        }
     }
 
     /// Whether the day can end at `stop`: it must stay after the day before and before the day

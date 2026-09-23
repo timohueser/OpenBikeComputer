@@ -30,8 +30,9 @@ struct TripStopsTests {
     func aJoinKeepsTheWaypointsOfEveryFile() {
         let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 500, coordinate: coordinate(500, 20))
         let hut = Waypoint(index: 0, name: "Hut", distanceAlongMeters: 300, coordinate: coordinate(20_300, 40))
-        let trip = trip(waypoints: [[spring], [], [hut]])
-        #expect(trip.waypoints.map(\.name) == ["Spring", "Hut"])
+        let hutAgain = Waypoint(index: 0, name: "Hut", distanceAlongMeters: 0, coordinate: coordinate(20_302, 41))
+        let trip = trip(waypoints: [[spring], [], [hut, hutAgain]])
+        #expect(trip.waypoints.map(\.name) == ["Spring", "Hut"], "a waypoint two files share is one stop")
         #expect(trip.waypoints.allSatisfy { $0.kind == .waypoint })
     }
 
