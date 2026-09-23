@@ -206,8 +206,9 @@ pub fn route_end(src: &dyn ByteSource) -> Result<(i32, i32), Error> {
 }
 
 /// The route point nearest `p`, `(lon, lat)` µdeg, as `(metres along, metres away)`. It walks every
-/// chunk through one small block, so it needs no [`RouteIndex`]. The earliest of equal distances
-/// wins. `None` for a route without a segment.
+/// chunk through one small block, so it needs no [`RouteIndex`]. As on the live first lock, a later
+/// point replaces the kept one only when it is more than the matcher's tie nearer, so the outbound
+/// leg of an out-and-back wins. `None` for a route without a segment.
 pub fn nearest_along(src: &dyn ByteSource, p: (i32, i32)) -> Result<Option<(u32, f32)>, Error> {
     use crate::geo::project_to_segment;
     use obc_map_scene::{cos_lat, ground_dist_m_cl};
@@ -234,7 +235,7 @@ pub fn nearest_along(src: &dyn ByteSource, p: (i32, i32)) -> Result<Option<(u32,
                 let b = (point.lon, point.lat);
                 let seg = ground_dist_m_cl(a, b, cl);
                 let (t, dist) = project_to_segment(a, b, p, cl);
-                if best.is_none_or(|(_, nearest)| dist < nearest) {
+                if best.is_none_or(|(_, nearest)| dist < nearest - crate::matcher::TIE_EPS_M) {
                     best = Some(((along + t * seg) as u32, dist));
                 }
                 along += seg;

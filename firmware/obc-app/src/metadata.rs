@@ -140,6 +140,8 @@ impl MetadataMachine {
         obc_formats::trip_progress::record(&mut self.progress, record.clone(), stored);
         self.progress_owed = Some(record);
         self.rode_on = rode_on;
+        // A write in flight carries the record before this one, so its answer must not clear this.
+        self.writing_progress = false;
     }
     /// A start's record. It never displaces a Finish's record that the store does not hold yet.
     pub(crate) fn owe_start(&mut self, record: TripProgress, stored: impl Fn(u64) -> bool) {
@@ -220,5 +222,24 @@ mod tests {
         let retry = machine.next_checkpoint_effect().unwrap().token();
         assert!(machine.apply_outcome(MetadataOutcome::Cancelled { token: retry }));
         assert!(machine.next_checkpoint_effect().is_some());
+    }
+
+    #[test]
+    fn a_finish_owed_while_a_start_write_is_in_flight_is_written_next() {
+        let record = |key, last_finished| TripProgress {
+            key,
+            day: 0,
+            day_route: obc_formats::trip_progress::RouteVersion { id: 7, revision: 0 },
+            metres: 0,
+            last_finished,
+            dates: [0; obc_formats::trip_progress::MAX_DAYS],
+        };
+        let mut machine = MetadataMachine::new();
+        machine.owe_start(record(1, None), |_| true);
+        let start = machine.next_progress_effect().unwrap().token();
+        machine.owe_progress(record(1, Some(0)), None, |_| true);
+        assert!(machine.apply_outcome(MetadataOutcome::ProgressWritten { token: start }));
+        let finish = machine.next_progress_effect().expect("the Finish is still owed").token();
+        assert_eq!(machine.progress_payload(finish), Some(&record(1, Some(0))));
     }
 }
