@@ -48,11 +48,19 @@ public final class TripUploadModel: Identifiable {
         let skip: Bool
         let makeTransfer: (@MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?)?
         let commit: (@MainActor @Sendable (DeviceObjectID?, UInt32) -> Void)?
+        var run: (@MainActor @Sendable () async throws -> Void)?
 
         public static func skip(
             title: String
         ) -> QueueStep {
             QueueStep(title: title, skip: true, makeTransfer: nil, commit: nil)
+        }
+
+        /// A device command with no bytes to send, such as a delete. A throw fails the queue.
+        public static func command(
+            title: String, run: @escaping @MainActor @Sendable () async throws -> Void
+        ) -> QueueStep {
+            QueueStep(title: title, skip: false, makeTransfer: nil, commit: nil, run: run)
         }
 
         /// A transfer step: a day route upload or the trip object.
@@ -247,6 +255,18 @@ public final class TripUploadModel: Identifiable {
             let step = steps[stepIndex]
             if step.skip {
                 skippedCount += 1
+                stepIndex += 1
+                continue
+            }
+            if let run = step.run {
+                do {
+                    try await run()
+                } catch {
+                    failure = .device(error as? DeviceError ?? .writeFailed)
+                    phase = .failed
+                    setActive(false)
+                    return
+                }
                 stepIndex += 1
                 continue
             }

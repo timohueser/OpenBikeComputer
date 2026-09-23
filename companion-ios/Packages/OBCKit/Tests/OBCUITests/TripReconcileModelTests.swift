@@ -106,10 +106,59 @@ struct TripReconcileModelTests {
         #expect(control.deviceTripCount == 1)
     }
 
-    /// A reverse changes every day route and the trip key: each day route and the trip object are
-    /// replaced in place, and the device reads the new key.
+    /// A route already on the device that moves into a trip hands its device copy to its day,
+    /// so the trip upload replaces that object and the device keeps no orphan.
     @Test
-    func aReversedTripReplacesEveryObjectInPlace() async throws {
+    func aRouteMovedIntoATripHandsItsDeviceCopyToTheDay() async throws {
+        let (model, control) = try await makeMain()
+        let kettle = RouteID("kettle-moraine-loop")
+        // The link is scoped, so it reads only once the device identity settled.
+        try await waitFor("identity settled", timeout: .seconds(20), interval: .milliseconds(5)) {
+            model.plannedDeviceObjectID(for: kettle) != nil
+        }
+        let objectID = model.plannedDeviceObjectID(for: kettle)!
+
+        model.fileRoute(kettle, into: .existing(tripID))
+        #expect(dayObjectID(model, 2) == objectID)
+        #expect(model.planTripUpload(tripID)?.days.last?.action == .replace(objectID))
+
+        try await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        #expect(control.deviceTripStageIDs(deviceTripID).last == objectID)
+        #expect(!control.deletedRouteObjectIDs.contains(objectID))
+    }
+
+    /// A reversed trip has a new key. An upload that stops after the first day must not leave
+    /// the old trip object, with the old key, over reversed days: the old object goes first.
+    @Test
+    func anInterruptedReverseUploadNeverLeavesTheOldKeyOverNewDays() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
+        let oldTripID = control.deviceTripObjectIDs.first!
+
+        model.reverseTrip(tripID)
+        control.dropTransfer(atFraction: 0.5)
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        try await waitFor("first day stalls", timeout: .seconds(20), interval: .milliseconds(5)) {
+            upload.phase == .interrupted
+        }
+        #expect(control.deletedTripObjectIDs.contains(oldTripID))
+        #expect(control.deviceTripCount == 0, "no trip object while the reversed days land")
+        upload.cancel()
+
+        let retry = await model.prepareTripUpload(tripID, timing: Self.fastTiming)!
+        retry.start()
+        try await waitFor("retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { retry.phase == .done }
+        #expect(control.deviceTripCount == 1)
+        #expect(model.trip(tripID)?.uploadedKey == model.trip(tripID)?.key)
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
+    }
+
+    /// A reverse changes every day route and the trip key: each day route is replaced in place,
+    /// and the old trip object gives way to one with the new key.
+    @Test
+    func aReversedTripReplacesEveryDayInPlace() async throws {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
@@ -121,8 +170,9 @@ struct TripReconcileModelTests {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
         try await waitFor("reverse landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
+        #expect(control.deletedTripObjectIDs.contains(deviceTripID), "the old key goes first")
         #expect(control.deviceTripCount == 1)
-        #expect(control.deviceTripStageIDs(deviceTripID) == dayIDs)
+        #expect(control.deviceTripStageIDs(control.deviceTripObjectIDs.first!) == dayIDs)
         #expect(model.tripOnDeviceState(tripID) == .upToDate)
     }
 

@@ -141,7 +141,8 @@ struct TripLineTests {
 
         #expect(reversed.dayCount == 3)
         #expect(Array(reversed.dayEnds.prefix(2).map(\.coordinate)) == [trip.dayEnds[1].coordinate, trip.dayEnds[0].coordinate])
-        #expect(reversed.dayEnds.map(\.name) == ["Ulrichen", "Andermatt", nil], "the old start has no name yet")
+        #expect(reversed.dayEnds.map(\.name) == ["Ulrichen", "Andermatt", nil], "the old start had no name")
+        #expect(reversed.startName == "Brig")
         #expect(reversed.dayEnds[2].coordinate == trip.line[0].coordinate)
         #expect(reversed.key != trip.key)
         // Each reversed day is an old day ridden backwards, in reverse day order.
@@ -151,13 +152,30 @@ struct TripLineTests {
     }
 
     @Test
-    func reversingTwiceGivesBackTheLine() {
-        var trip = threeDays
+    func reversingTwiceGivesBackTheLineThePlacesAndTheNames() {
+        var original = threeDays
+        original.startName = "Realp"
+        var trip = original
         trip.reverse()
+        #expect(trip.dayEnds.last?.name == "Realp")
         trip.reverse()
-        #expect(trip.line == threeDays.line)
-        #expect(trip.pieceStarts == threeDays.pieceStarts)
-        #expect(distances(trip) == distances(threeDays))
+        #expect(trip.line == original.line)
+        #expect(trip.pieceStarts == original.pieceStarts)
+        #expect(trip.dayEnds.map(\.name) == ["Andermatt", "Ulrichen", "Brig"])
+        #expect(trip.startName == "Realp")
+        #expect(trip.dayEnds.map(\.coordinate) == original.dayEnds.map(\.coordinate))
+        #expect(distances(trip) == distances(original))
+    }
+
+    @Test
+    func aFileShorterThanADayChangesNothing() {
+        var trip = join([file([(0, 0), (1000, 0)]), file([(1000, 0), (2000, 0)])])
+        let before = trip
+        let tiny = [RoutePoint(coordinate: coordinate(2000)), RoutePoint(coordinate: coordinate(2000.6))]
+        #expect(!Trip.isDay(tiny))
+        #expect(trip.append(tiny).isEmpty)
+        #expect(trip == before)
+        #expect(join([file([(0, 0), (1000, 0)]), tiny]).dayCount == 1)
     }
 
     /// Out 2 km and back on the same road, with a day end at the same place on both legs.

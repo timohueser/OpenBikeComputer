@@ -6,15 +6,16 @@ import Foundation
 extension Trip {
     /// A day end farther than this from the changed line is dropped.
     public static let dayEndDropMeters = 500.0
-    /// A projection closer than this to the previous day end or to the line end makes an empty
-    /// day, so the day end is dropped.
-    static let minimumDayMeters = 1.0
+    /// The shortest day. A file shorter than this is not a day, and a projection closer than
+    /// this to the previous day end or to the line end would make one, so that day end is
+    /// dropped.
+    public static let minimumDayMeters = 100.0
     /// The window of the second, local projection pass. It re-centres the planar maths on the
     /// candidate, so the drop check measures true metres on a long line.
     static let refineWindowMeters = 2_000.0
 
     /// A new trip from route files in ride order: one day per file, the day ends on the file
-    /// boundaries. Files with fewer than two points add nothing.
+    /// boundaries. A file shorter than ``minimumDayMeters`` adds nothing.
     public static func joining(
         _ files: [[RoutePoint]], id: TripID, name: String, bikeType: BikeType, now: Date
     ) -> Trip {
@@ -30,11 +31,18 @@ extension Trip {
             pieceStarts: pieceStarts)
     }
 
+    /// Whether `file` is long enough to be a day.
+    public static func isDay(_ file: [RoutePoint]) -> Bool {
+        file.count > 1 && MeasuredLine(routePoints: file).length >= minimumDayMeters
+    }
+
     /// Add a file as a new last day. The old line end becomes a day end. A file that starts
     /// exactly where the line ends continues the piece; any other start opens a new piece, so
-    /// the gap sits at the day end and the next day starts where the file starts.
-    public mutating func append(_ file: [RoutePoint]) {
-        guard file.count > 1 else { return }
+    /// the gap sits at the day end and the next day starts where the file starts. A file that is
+    /// not a day changes nothing. Returns the day ends the change dropped.
+    @discardableResult
+    public mutating func append(_ file: [RoutePoint]) -> [DayEnd] {
+        guard Self.isDay(file) else { return [] }
         var points = file
         if let end = line.last {
             if points[0].coordinate == end.coordinate {
@@ -45,14 +53,16 @@ extension Trip {
         }
         line += points
         dayEnds.append(DayEnd(coordinate: points[points.count - 1].coordinate, distance: 0))
-        reproject()
+        return reproject()
     }
 
     /// Reverse the whole trip: the direction and the order of the days. Every day end keeps its
-    /// place and its name. The old start becomes the last day end, without a name. The trip gets
-    /// a new key, so device progress of the old direction does not carry over.
-    public mutating func reverse() {
-        guard line.count > 1 else { return }
+    /// place and its name; the start and the last day end swap names. The trip gets a new key,
+    /// so device progress of the old direction does not carry over. Returns the day ends the
+    /// change dropped.
+    @discardableResult
+    public mutating func reverse() -> [DayEnd] {
+        guard line.count > 1 else { return [] }
         let length = measuredLine.length
         let count = line.count
         line = ImportedRoute(points: line).reversed().points
@@ -61,9 +71,11 @@ extension Trip {
         let interior = dayEnds.dropLast().reversed().map { end in
             DayEnd(coordinate: end.coordinate, name: end.name, distance: length - end.distance)
         }
-        dayEnds = interior + [DayEnd(coordinate: line[count - 1].coordinate, distance: length)]
+        let endName = dayEnds.last?.name
+        dayEnds = interior + [DayEnd(coordinate: line[count - 1].coordinate, name: startName, distance: length)]
+        startName = endName
         key = Self.newKey()
-        reproject()
+        return reproject()
     }
 
     /// Project every day end onto the line again, near its stored distance. The last day end
