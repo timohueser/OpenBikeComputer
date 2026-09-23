@@ -487,7 +487,8 @@ public struct MainScreenView: View {
         } else {
             if model.searchText.isEmpty {
                 RideLibraryHeader(model: model.rideLibrary) { libraryMapShown = true }
-                    .task(id: model.rides.map(\.id)) { await model.rideLibrary.loadMapLines() }
+                    // Keyed on the summaries, not the ids: a trim keeps the id and changes the line.
+                    .task(id: model.rides) { await model.rideLibrary.loadMapLines() }
             }
             ForEach(model.filteredRides) { ride in
                 Button {

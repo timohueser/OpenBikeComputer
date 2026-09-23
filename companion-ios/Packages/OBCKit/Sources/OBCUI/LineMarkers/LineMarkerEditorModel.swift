@@ -36,6 +36,8 @@ public final class LineMarkerEditorModel {
     public private(set) var markers: [LineMarker]
     /// One colour per segment: `markers.count + 1`, in line order.
     public private(set) var segmentColors: [Color]
+    /// Segments drawn dashed: the cut parts of a trim.
+    public private(set) var dashedSegments: Set<Int>
     /// The marker under a finger, or under VoiceOver's adjustment. One at a time.
     public private(set) var activeID: LineMarker.ID?
     /// Known stops near the line: small pins on the map and marks along the top of the profile.
@@ -51,6 +53,7 @@ public final class LineMarkerEditorModel {
         line: MeasuredLine,
         markers: [LineMarker],
         segmentColors: [Color],
+        dashedSegments: Set<Int> = [],
         onEvent: @escaping (LineMarkerEvent) -> Void = { _ in }
     ) {
         guard line.vertices.count > 1 else { return nil }
@@ -58,6 +61,7 @@ public final class LineMarkerEditorModel {
         self.line = line
         self.markers = Self.ordered(markers, on: line)
         self.segmentColors = segmentColors
+        self.dashedSegments = dashedSegments
         self.onEvent = onEvent
         resample()
     }
@@ -65,22 +69,25 @@ public final class LineMarkerEditorModel {
     // MARK: Replacement from outside
 
     /// Add, remove, re-balance or undo: the whole set at once. A drag in flight ends first.
-    public func setMarkers(_ markers: [LineMarker], segmentColors: [Color]) {
+    public func setMarkers(_ markers: [LineMarker], segmentColors: [Color], dashedSegments: Set<Int> = []) {
         precondition(segmentColors.count == markers.count + 1, "one colour per segment")
         end()
         self.markers = Self.ordered(markers, on: line)
         self.segmentColors = segmentColors
+        self.dashedSegments = dashedSegments
     }
 
     /// A new line (a join, a reverse, a reroute) with its markers. Ignored for a line with
     /// fewer than two vertices.
-    public func setLine(_ line: MeasuredLine, markers: [LineMarker], segmentColors: [Color]) {
+    public func setLine(
+        _ line: MeasuredLine, markers: [LineMarker], segmentColors: [Color], dashedSegments: Set<Int> = []
+    ) {
         guard line.vertices.count > 1 else { return }
         end()
         self.line = line
         lineVersion += 1
         resample()
-        setMarkers(markers, segmentColors: segmentColors)
+        setMarkers(markers, segmentColors: segmentColors, dashedSegments: dashedSegments)
     }
 
     private static func ordered(_ markers: [LineMarker], on line: MeasuredLine) -> [LineMarker] {

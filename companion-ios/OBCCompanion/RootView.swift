@@ -435,11 +435,18 @@ struct RootView: View {
                     },
                     onRename: { mainModel.renameRide(id, to: $0) },
                     onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) },
-                    rideShareMenu: tracked.map(rideShareMenu(for:))
+                    rideShareMenu: tracked.map(rideShareMenu(for:)),
+                    rideEditMenu: tracked.map { rideEditMenu(for: $0) },
+                    quietRows: AnyView(RideMergeSuggestion(
+                        load: { await mainModel.mergeSuggestion(for: id) },
+                        onMerge: { mainModel.mergeRideWithNext(id) },
+                        onDismiss: { mainModel.dismissMergeSuggestion(for: id) }
+                    ))
                 )
-                // The screen's models hold the points they were built with, so an edit of the
-                // ride's points builds them again.
-                .id(tracked.map { [Double($0.points.count), $0.points.first?.timestamp.timeIntervalSince1970 ?? 0,
+                // An edit, or new points, build the screen's models again: they hold the points
+                // they were built with.
+                .id(tracked.map { [Double(mainModel.rideEditCount), Double($0.points.count),
+                                   $0.points.first?.timestamp.timeIntervalSince1970 ?? 0,
                                    $0.points.last?.timestamp.timeIntervalSince1970 ?? 0] })
             }
         case .trip(let id):
@@ -493,6 +500,27 @@ struct RootView: View {
             gpx: RideGPXFile(ride: ride, encode: { try exporter.export($0).data }),
             onSaveAsRoute: ride.plannedRoute().map { route in
                 { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
+            }
+        )
+    }
+
+    /// Edit ride and Revert to original. A revert that removes this ride's id pops the detail.
+    private func rideEditMenu(for ride: Ride) -> RideEditMenu {
+        let id = ride.id
+        return RideEditMenu(
+            ride: ride,
+            nextRide: mainModel.nextRide(after: id),
+            isEdited: mainModel.isEditedRide(id),
+            onEdit: { edit in
+                switch edit {
+                case .trim(let range): mainModel.trimRide(id, to: range)
+                case .split(let time): mainModel.splitRide(id, at: time)
+                case .mergeWithNext: mainModel.mergeRideWithNext(id)
+                }
+            },
+            onRevert: {
+                mainModel.revertRide(id)
+                if !mainModel.rides.contains(where: { $0.id == id }) { path.removeAll() }
             }
         )
     }
