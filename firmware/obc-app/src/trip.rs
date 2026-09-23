@@ -126,6 +126,15 @@ pub struct TripPosition {
     pub metres: u32,
 }
 
+/// The active trip's next day: `(trip, day, catalog index)`. The active trip is the trip of the
+/// latest progress record, while it has a day left whose route the store holds.
+pub fn next_trip_day<'t>(trips: &'t [TripSummary], progress: &[TripProgress]) -> Option<(&'t TripSummary, u16, u16)> {
+    let (trip, record) = progress.iter().rev().find_map(|p| Some((trips.iter().find(|t| t.key == p.key)?, p)))?;
+    let day = trip.next_day(Some(record))?;
+    let (_, index) = trip.days().find(|&(k, _)| k == day)?;
+    Some((trip, day, index))
+}
+
 /// The trip day whose route is `route`. A route is in at most one trip.
 pub fn trip_day(trips: &[TripSummary], route: CatalogObjectId) -> Option<TripRef> {
     trips.iter().find_map(|trip| {
@@ -258,6 +267,29 @@ mod tests {
         let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 30] };
         let t = TripSummary::resolve(&input, &[], &[30, 10]);
         assert_eq!(t.days().collect::<std::vec::Vec<_>>(), [(0, 1), (2, 0)]);
+    }
+
+    #[test]
+    fn the_active_trip_is_the_latest_record_while_it_has_a_day_left() {
+        let catalog_ids = [10, 20, 30, 40];
+        let alps = TripSummary::resolve(
+            &TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 30] },
+            &[],
+            &catalog_ids,
+        );
+        let jura = TripSummary::resolve(
+            &TripInput { id: 2, key: 7, name: "Jura", start_date: 0, stage_ids: &[40] },
+            &[],
+            &catalog_ids,
+        );
+        let trips = [alps, jura];
+        let alps_day2 = progress(1, Some(0), &[]);
+        let jura_done = TripProgress { key: 7, ..progress(0, Some(0), &[]) };
+        let next = |records: &[TripProgress]| next_trip_day(&trips, records).map(|(t, day, index)| (t.key, day, index));
+        assert_eq!(next(&[alps_day2.clone()]), Some((KEY, 1, 1)));
+        assert_eq!(next(&[alps_day2.clone(), jura_done.clone()]), None, "the last ride finished its trip");
+        assert_eq!(next(&[jura_done, alps_day2]), Some((KEY, 1, 1)));
+        assert_eq!(next(&[]), None);
     }
 
     #[test]
