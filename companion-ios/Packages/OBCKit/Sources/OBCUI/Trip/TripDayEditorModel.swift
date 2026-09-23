@@ -17,6 +17,9 @@ public final class TripDayEditorModel {
     public let handles: LineMarkerEditorModel
     /// The figures of every day for the handle positions of this frame.
     public private(set) var stats: [DayStats] = []
+    /// Per day, why its end cannot be removed; nil when it can. Worked out once per change, so
+    /// a drag frame costs no line walk.
+    public private(set) var removeBlockers: [String?] = []
     /// One long file became this trip: a stepper sets the day count.
     public let isSplitMode: Bool
     /// The trips before each committed change, newest last.
@@ -28,7 +31,7 @@ public final class TripDayEditorModel {
     private let placeName: (@Sendable (Coordinate) async -> String?)?
     private let onSave: (Trip) -> Void
     /// The second, snapping pass of the last balance. A new balance cancels it.
-    @ObservationIgnored private var snapTask: Task<Void, Never>?
+    @ObservationIgnored var snapTask: Task<Void, Never>?
     /// One handle id per interior day end. Ids outlive moves and re-balances, so a handle
     /// animates to its new place instead of being replaced.
     @ObservationIgnored private var handleIDs: [Int] = []
@@ -66,13 +69,17 @@ public final class TripDayEditorModel {
         line.cost(to: line.length, bikeType: trip.bikeType) / Double(max(trip.dayCount, 1))
     }
     /// Why `day`'s end cannot be removed, or nil when it can.
-    public func removeBlocker(_ day: Int) -> String? { trip.removeDayEndBlocker(day) }
+    public func removeBlocker(_ day: Int) -> String? {
+        removeBlockers.indices.contains(day) ? removeBlockers[day] : nil
+    }
+    /// The most days the stepper offers for this line.
+    public var maxDays: Int { Trip.maxSplitDays(forLength: line.length) }
 
     // MARK: Changes
 
     /// Split mode: cut the line into `count` days.
     public func setDayCount(_ count: Int) {
-        let days = min(max(count, 1), Trip.maxSplitDays)
+        let days = min(max(count, 1), maxDays)
         balance { trip, candidates in trip.split(into: days, candidates: candidates) }
     }
 
@@ -156,7 +163,8 @@ public final class TripDayEditorModel {
     }
 
     /// Balance at once with the stops known now, then again with the stops near the new day
-    /// ends once they arrive. One undo step for both.
+    /// ends once they arrive. One undo step for both. The second pass lands only while the day
+    /// ends still sit where the first put them; a place name written meanwhile does not count.
     private func balance(_ apply: @escaping (inout Trip, [PlacedStop]) -> Void) {
         snapTask?.cancel()
         let known = handles.stops
@@ -165,12 +173,11 @@ public final class TripDayEditorModel {
             return true
         }
         syncHandles()
-        let ends = trip.dayEnds.dropLast().map(\.distance)
-        let before = trip
+        let ends = trip.dayEnds.map(\.distance)
         snapTask = Task { [weak self] in
             guard let self else { return }
-            let found = await self.candidates(near: ends)
-            guard !Task.isCancelled, self.trip == before else { return }
+            let found = await self.candidates(near: Array(ends.dropLast()))
+            guard !Task.isCancelled, self.trip.dayEnds.map(\.distance) == ends else { return }
             self.commit(undoable: false) { trip in
                 apply(&trip, found)
                 return true
@@ -180,10 +187,13 @@ public final class TripDayEditorModel {
     }
 
     /// The waypoints and the campsites and hotels near `distances`, all measured against the
-    /// line. Offline, the waypoints alone.
+    /// line: each answer near the day end it was asked for, so a stop beside the return leg of
+    /// an out-and-back lands on that leg. Offline, the waypoints alone.
     private func candidates(near distances: [Double]) async -> [PlacedStop] {
         let found = (try? await finder?.stops(near: distances, on: line)) ?? []
-        let stops = trip.place(trip.waypoints + found.flatMap { $0 })
+        let stops = trip.place(trip.waypoints) + zip(found, distances).flatMap { answer, distance in
+            trip.place(answer, near: distance)
+        }
         var seen = Set<Stop>()
         let unique = stops.filter { seen.insert($0.stop).inserted }
         handles.stops = unique
@@ -194,8 +204,11 @@ public final class TripDayEditorModel {
     /// leaves the handle where the finger left it.
     private func syncHandles(animated: Bool = true) {
         if handleIDs.count != trip.dayCount - 1 { handleIDs = (1..<max(trip.dayCount, 1)).map { _ in takeHandleID() } }
+        removeBlockers = (0..<trip.dayCount).map { trip.removeDayEndBlocker($0, on: line) }
         let markers = trip.dayEnds.dropLast().enumerated().map { day, end in
-            LineMarker(id: handleIDs[day], distance: end.distance, name: "Day \(day + 1) end", isFixed: trip.endsAtTransfer(day))
+            LineMarker(
+                id: handleIDs[day], distance: end.distance, name: "Day \(day + 1) end",
+                isFixed: removeBlockers[day] != nil)
         }
         let colors = (0..<trip.dayCount).map { OBCTheme.stageColor(index: $0) }
         withAnimation(animated ? .snappy(duration: 0.28) : nil) {

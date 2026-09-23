@@ -937,14 +937,17 @@ public final class MainScreenModel {
         }
     }
 
-    /// The day editor of a trip. Done saves its draft; nothing changes before.
+    /// The day editor of a trip. Done writes the draft's day ends into the trip as it is then,
+    /// so an upload or a reconcile that ran meanwhile keeps its links.
     public func dayEditor(_ id: TripID, isSplitMode: Bool) -> TripDayEditorModel? {
         guard let trip = trip(id) else { return nil }
         return TripDayEditorModel(
             trip: trip, isSplitMode: isSplitMode, finder: stopFinder, placeName: placeName
         ) { [weak self] edited in
-            self?.saveEditedTrip(edited)
-            self?.nameDayEnds(id)
+            guard let self, var current = self.trip(id) else { return }
+            current.replaceDayEnds(from: edited)
+            self.saveEditedTrip(current)
+            self.nameDayEnds(id)
         }
     }
 

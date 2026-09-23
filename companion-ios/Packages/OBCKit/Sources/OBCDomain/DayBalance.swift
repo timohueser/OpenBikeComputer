@@ -75,8 +75,8 @@ public enum DayBalance {
     /// riding time, in ascending order. A candidate within ``snapCostFraction`` of an ideal end
     /// and at most ``snapOffsetMeters`` off the line wins it; of several, the one nearest along
     /// the line. Day ends never cross, and no day is shorter than ``minimumDayFraction`` of the
-    /// average: an end that would make one moves toward its ideal point until the day is long
-    /// enough.
+    /// average or than ``Trip/minimumDayMeters``: an end that would make one moves toward its
+    /// ideal point until the day is long enough.
     public static func ends(
         on line: MeasuredLine, bikeType: BikeType, days: Int, candidates: [PlacedStop],
         stretch: ClosedRange<Double>? = nil
@@ -100,16 +100,17 @@ public enum DayBalance {
             return End(distance: snapped?.distance ?? ideal, stop: snapped?.stop)
         }
 
+        // The floor in riding time, and never under the trip's shortest day in metres.
         let floor = minimumDayFraction * average
         var previous = stretch.lowerBound
         for day in ends.indices {
-            let lowest = distance(atCost: cost(previous) + floor)
+            let lowest = max(distance(atCost: cost(previous) + floor), previous + Trip.minimumDayMeters)
             if ends[day].distance < lowest { ends[day] = End(distance: lowest) }
             previous = ends[day].distance
         }
         var next = stretch.upperBound
         for day in ends.indices.reversed() {
-            let highest = distance(atCost: cost(next) - floor)
+            let highest = min(distance(atCost: cost(next) - floor), next - Trip.minimumDayMeters)
             if ends[day].distance > highest { ends[day] = End(distance: highest) }
             next = ends[day].distance
         }

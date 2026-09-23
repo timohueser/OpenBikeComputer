@@ -70,6 +70,20 @@ struct DayBalanceTests {
     }
 
     @Test
+    func aShortLineKeepsEveryDayAtLeastTheMinimum() {
+        let xs = stride(from: 0.0, through: 2_000, by: 100).map { $0 }
+        let short = MeasuredLine(coordinates: xs.map { coordinate($0) })
+        let days = Trip.maxSplitDays(forLength: short.length)
+        #expect(days == Int(short.length / (2 * Trip.minimumDayMeters)), "twice the minimum day per day")
+        let ends = DayBalance.ends(on: short, bikeType: .road, days: days, candidates: [camp("Near start", 30)])
+        let bounds = [0] + ends.map(\.distance) + [short.length]
+        #expect(zip(bounds, bounds.dropFirst()).allSatisfy { $1 - $0 >= Trip.minimumDayMeters - 0.01 })
+        #expect(ends[0].stop == nil, "a stop that would make a day under the minimum is left")
+        #expect(Trip.maxSplitDays(forLength: 1_000_000) == Trip.maxSplitDays)
+        #expect(Trip.maxSplitDays(forLength: 150) == 1)
+    }
+
+    @Test
     func aStretchBalancesOnlyItsPart() {
         let ends = DayBalance.ends(
             on: line(), bikeType: .road, days: 2, candidates: [camp("Before", 9_800)], stretch: 10_000...30_000)

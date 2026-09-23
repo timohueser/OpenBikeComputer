@@ -47,6 +47,23 @@ struct TripFlowModelTests {
         #expect(model.plannedItems.map(\.id).contains("trip:\(id.rawValue)"))
     }
 
+    /// Done writes the editor's day ends into the trip as it is then: a change that landed while
+    /// the editor was open stays.
+    @Test
+    func dayEditorDoneKeepsChangesMadeMeanwhile() {
+        let (model, _) = makeModel()
+        let editor = model.dayEditor(tripID, isSplitMode: false)!
+        #expect(editor.addDayEnd() != nil)
+        model.renameTrip(tripID, to: "Renamed meanwhile")
+        model.setTripStartDay(tripID, to: CivilDay(daysSince1970: 20_000))
+
+        editor.save()
+        let trip = model.trip(tripID)!
+        #expect(trip.dayCount == 3, "Done saved the new day end")
+        #expect(trip.name == "Renamed meanwhile")
+        #expect(trip.startDay == CivilDay(daysSince1970: 20_000))
+    }
+
     @Test
     func groupWithNoResolvableRoutesCreatesNothing() {
         let (model, _) = makeModel()

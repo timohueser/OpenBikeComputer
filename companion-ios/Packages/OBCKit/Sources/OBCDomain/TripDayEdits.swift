@@ -9,6 +9,13 @@ extension Trip {
     /// device's route list is made for.
     public static let maxSplitDays = 30
 
+    /// The most days a line of `length` splits into: every day at least twice
+    /// ``minimumDayMeters``, so a re-projection never drops a day end, and never more than
+    /// ``maxSplitDays``.
+    public static func maxSplitDays(forLength length: Double) -> Int {
+        max(1, min(maxSplitDays, Int(length / (2 * minimumDayMeters))))
+    }
+
     /// The figures of every day, in ride order.
     public func dayStats() -> [DayStats] {
         measuredLine.dayStats(ends: dayEnds.dropLast().map(\.distance), bikeType: bikeType)
@@ -70,9 +77,16 @@ extension Trip {
 
     /// Why `day`'s end cannot be removed, or nil when it can. The last day ends at the line end.
     /// A day end at a transfer holds a gap that must not move inside a day.
-    public func removeDayEndBlocker(_ day: Int) -> String? {
+    public func removeDayEndBlocker(_ day: Int, on measured: MeasuredLine? = nil) -> String? {
         guard dayEnds.indices.contains(day), day < dayCount - 1 else { return "The last day ends the trip." }
-        return endsAtTransfer(day) ? "This day ends at a transfer." : nil
+        return endsAtTransfer(day, on: measured) ? "This day ends at a transfer." : nil
+    }
+
+    /// Take the day ends of an edited copy of this trip: the day editor's Done. Everything
+    /// else, the device links above all, stays as it is now.
+    public mutating func replaceDayEnds(from edited: Trip) {
+        dayEnds = edited.dayEnds
+        reproject()
     }
 
     /// Remove `day`'s end, so the day joins the next one. False, and no change, when

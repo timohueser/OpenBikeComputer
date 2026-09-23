@@ -121,6 +121,31 @@ struct TripDayEditsTests {
     }
 
     @Test
+    func splitOfAShortFileSurvivesReprojection() {
+        var trip = trip([file(0, 2_000)])
+        let days = Trip.maxSplitDays(forLength: trip.measuredLine.length)
+        trip.split(into: days, candidates: [])
+        #expect(trip.dayCount == days)
+        let dropped = trip.reproject()
+        #expect(dropped.isEmpty)
+        #expect(trip.dayCount == days)
+    }
+
+    @Test
+    func replaceDayEndsTakesOnlyTheDayEnds() {
+        var edited = threeDays()
+        edited.name = "Edited copy"
+        edited.moveDayEnd(0, to: 12_000)
+        var current = threeDays()
+        current.name = "Current"
+        current.startDay = CivilDay(daysSince1970: 20_000)
+        current.replaceDayEnds(from: edited)
+        #expect(current.name == "Current")
+        #expect(current.startDay == CivilDay(daysSince1970: 20_000))
+        #expect(abs(current.dayEnds[0].distance - 12_000) < 1)
+    }
+
+    @Test
     func dayStatsCoverTheWholeLine() {
         let stats = threeDays().dayStats()
         #expect(stats.count == 3)

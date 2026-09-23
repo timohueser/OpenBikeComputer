@@ -21,6 +21,8 @@ struct RootView: View {
     /// from the cache, so foregrounding is not a network request.
     @State private var updateSurfaceModel: UpdateSurfaceModel
     @State private var path: [MainDestination] = []
+    /// The open day editor's draft, for the `.dayEditor` destination.
+    @State private var dayEditor: TripDayEditorModel?
     @Environment(\.scenePhase) private var scenePhase
 
     private let transport: any DeviceTransport
@@ -297,7 +299,7 @@ struct RootView: View {
                 // A new trip from one file opens in the day editor's split mode.
                 if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
                     path = [.trip(id: tripID)]
-                    if case .new = tripSelection { path.append(.dayEditor(id: tripID, isSplitMode: true)) }
+                    if case .new = tripSelection { openDayEditor(tripID, isSplitMode: true) }
                 }
                 importModel.closeImport()
             },
@@ -461,11 +463,12 @@ struct RootView: View {
                         path.removeSubrange(index...)
                     }
                 },
-                onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) }
+                onEditDays: { openDayEditor(id, isSplitMode: false) }
             )
         case .dayEditor(let id, let isSplitMode):
-            if let editor = mainModel.dayEditor(id, isSplitMode: isSplitMode) {
+            if let editor = dayEditor {
                 TripDayEditorView(model: editor) {
+                    dayEditor = nil
                     if let index = path.lastIndex(of: .dayEditor(id: id, isSplitMode: isSplitMode)) {
                         path.removeSubrange(index...)
                     }
@@ -516,6 +519,14 @@ struct RootView: View {
     }
 
     /// Edit ride and Revert to original. A revert that removes this ride's id pops the detail.
+    /// Built once when the editor opens, because the destination body runs on every pass and
+    /// the model holds the draft.
+    private func openDayEditor(_ id: TripID, isSplitMode: Bool) {
+        guard let editor = mainModel.dayEditor(id, isSplitMode: isSplitMode) else { return }
+        dayEditor = editor
+        path.append(.dayEditor(id: id, isSplitMode: isSplitMode))
+    }
+
     private func rideEditMenu(for ride: Ride) -> RideEditMenu {
         let id = ride.id
         return RideEditMenu(

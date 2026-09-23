@@ -6,8 +6,7 @@ import OBCDomain
 /// mode Even out sits there instead. A tap on a handle or a day row opens the stops sheet; a
 /// swipe on a row removes its day end. Done saves; the back chevron with changes asks first.
 public struct TripDayEditorView: View {
-    /// Held here, so a host that builds the screen again on a body pass keeps the draft.
-    @State private var model: TripDayEditorModel
+    private let model: TripDayEditorModel
     private let onClose: () -> Void
 
     @State private var discardShown = false
@@ -18,8 +17,9 @@ public struct TripDayEditorView: View {
     @Environment(\.obcIsOnline) private var isOnline
 
     /// `onClose` pops the screen, after Done saved or Discard let the draft go.
+    /// The host owns `model` for the screen's life: a body pass must not build it again.
     public init(model: TripDayEditorModel, onClose: @escaping () -> Void) {
-        _model = State(initialValue: model)
+        self.model = model
         self.onClose = onClose
     }
 
@@ -141,7 +141,7 @@ public struct TripDayEditorView: View {
                 Stepper(
                     "Days",
                     value: Binding(get: { trip.dayCount }, set: { model.setDayCount($0) }),
-                    in: 1...Trip.maxSplitDays
+                    in: 1...model.maxDays
                 )
                 .labelsHidden()
                 .accessibilityIdentifier("dayEditor.days")
