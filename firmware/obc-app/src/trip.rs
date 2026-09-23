@@ -286,7 +286,7 @@ mod tests {
         let alps_day2 = progress(1, Some(0), &[]);
         let jura_done = TripProgress { key: 7, ..progress(0, Some(0), &[]) };
         let next = |records: &[TripProgress]| next_trip_day(&trips, records).map(|(t, day, index)| (t.key, day, index));
-        assert_eq!(next(&[alps_day2.clone()]), Some((KEY, 1, 1)));
+        assert_eq!(next(core::slice::from_ref(&alps_day2)), Some((KEY, 1, 1)));
         assert_eq!(next(&[alps_day2.clone(), jura_done.clone()]), None, "the last ride finished its trip");
         assert_eq!(next(&[jura_done, alps_day2]), Some((KEY, 1, 1)));
         assert_eq!(next(&[]), None);

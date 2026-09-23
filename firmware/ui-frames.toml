@@ -1386,6 +1386,35 @@ script = "B d d w p p"
 expect = "RideStart"
 args = ["--clock", "2025-06-29T14:40", "--battery", "8"]
 
+# The start card with a trip day: Day 1 of "Alpen Traverse" is finished, so the day row offers
+# Day 2 under Start ride. The cursor moves onto the day row, and a press opens that day's route
+# detail.
+[[frame]]
+name = "ride-start-trip"
+map = "{grimsel}"
+env = "trips"
+script = "B d d w p p d"
+expect = "RideStart"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
+
+[[frame]]
+name = "ride-start-trip-day"
+map = "{grimsel}"
+env = "trips"
+script = "B d d w p p d p w"
+expect = "RouteOverview"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
+
+# The bike type editor over the start card: the cursor on the bike row, a press opens the shared
+# editor sheet, and one step stages the next type, which the hero above the sheet shows at once.
+[[frame]]
+name = "ride-start-bike-editor"
+map = "{grimsel}"
+env = "trips"
+script = "B d d w p p u p w d w"
+expect = "ContextDrawer"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
+
 # (c) A route-less RIDING map (start card → Start ride): the follow map with the recorded breadcrumb,
 # no route line and no off-route chip (there's no route to be off).
 [[frame]]

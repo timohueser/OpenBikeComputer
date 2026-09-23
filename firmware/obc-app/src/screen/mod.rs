@@ -1002,7 +1002,7 @@ impl Screen {
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.motion.needs_base(),
-            Screen::ContextDrawer(s) => s.motion.needs_base(),
+            Screen::ContextDrawer(s) => s.motion.needs_base() || s.draws_hero(),
             _ => false,
         }
     }
