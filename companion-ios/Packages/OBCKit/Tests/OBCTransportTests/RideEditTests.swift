@@ -168,4 +168,54 @@ struct RideEditTests {
         #expect(reopened.rideMapLine(ride.id) == whole)
         #expect(reopened.rideSummaries() == [ride.summary])
     }
+
+    // MARK: Photos
+
+    private func photo(_ name: String, _ second: Double) -> RidePhoto {
+        RidePhoto(assetID: name, takenAt: t0.addingTimeInterval(second))
+    }
+
+    @Test
+    func eachPartOfASplitShowsThePhotosOfItsTimeAndANewPhotoStays() throws {
+        let original = Self.ride("a", start: t0, seconds: 3_600)
+        let store = store(original)
+        store.saveRideJournal(RideJournal(photos: [photo("early", 100), photo("late", 3_000)]), thumbnails: [:], for: original.id)
+        let second = try #require(store.splitRide(original.id, at: t0.addingTimeInterval(1_800), summary: original.summary))
+
+        #expect(store.rideJournal(original.id).photos.map(\.assetID) == ["early"])
+        #expect(store.rideJournal(second).photos.map(\.assetID) == ["late"])
+
+        var journal = store.rideJournal(second)
+        journal.add([photo("new", 2_500)])
+        store.saveRideJournal(journal, thumbnails: ["new": Data([1])], for: second)
+        #expect(store.rideJournal(second).photos.map(\.assetID) == ["new", "late"])
+        #expect(store.ridePhotoThumbnails(second) == ["new": Data([1])])
+        #expect(store.rideJournal(original.id).photos.map(\.assetID) == ["early"], "part 1 does not change")
+    }
+
+    @Test
+    func aMergeShowsThePhotosOfBothRides() throws {
+        let morning = Self.ride("am", start: t0, seconds: 600)
+        let afternoon = Self.ride("pm", start: t0.addingTimeInterval(7_800), seconds: 400)
+        let store = store(morning, afternoon)
+        store.saveRideJournal(RideJournal(photos: [photo("am", 100)]), thumbnails: [:], for: morning.id)
+        store.saveRideJournal(RideJournal(photos: [photo("pm", 7_900)]), thumbnails: [:], for: afternoon.id)
+        #expect(store.mergeRides(morning.summary, afternoon.id))
+        #expect(store.rideJournal(morning.id).photos.map(\.assetID) == ["am", "pm"])
+    }
+
+    @Test
+    func aTrimHidesThePhotosItCutsAndRevertShowsThemAgain() throws {
+        let original = Self.ride("a", start: t0, seconds: 3_600)
+        let store = store(original)
+        let photos = [photo("kept", 100), photo("cut", 3_000)]
+        store.saveRideJournal(RideJournal(photos: photos), thumbnails: [:], for: original.id)
+        #expect(store.trimRide(original.id, to: t0...t0.addingTimeInterval(600), summary: original.summary))
+        #expect(store.rideJournal(original.id).photos.map(\.assetID) == ["kept"])
+
+        // A save on the trimmed ride keeps the hidden photo with the synced ride.
+        store.saveRideJournal(store.rideJournal(original.id), thumbnails: [:], for: original.id)
+        store.revertRide(original.id)
+        #expect(store.rideJournal(original.id).photos == photos)
+    }
 }
