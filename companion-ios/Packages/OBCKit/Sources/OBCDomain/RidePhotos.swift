@@ -116,6 +116,7 @@ public enum RidePhotoPlacement {
 /// never again for that ride.
 public enum RideQuietRow: String, CaseIterable, Sendable {
     case photos
+    case note
 }
 
 /// What the phone adds to a synced ride. The device copy never has it.
@@ -141,5 +142,11 @@ public struct RideJournal: Equatable, Sendable {
 
     public mutating func close(_ row: RideQuietRow) {
         closedRows.insert(row)
+    }
+
+    /// Whether "How was the day?" shows. Opening the writer closes the row; the note check covers
+    /// a note another ride of the same trip day wrote.
+    public func offersNote(_ note: String) -> Bool {
+        note.isEmpty && !closedRows.contains(.note)
     }
 }
