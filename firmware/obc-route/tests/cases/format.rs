@@ -349,6 +349,17 @@ fn chunk_index_and_decode() {
 }
 
 #[test]
+fn route_end_is_the_last_decoded_point() {
+    let bytes = two_chunk_route();
+    assert_eq!(obc_route::route_end(&SliceSource(&bytes)).unwrap(), (90, 70));
+    // A last chunk longer than one read block.
+    let points: Vec<_> = (0..40).map(|i| (10 + i * 3, 10 - i * 2, 100)).collect();
+    let chunks = [ChunkIn { points, cum_distance_m: 0, cum_ascent_m: 0 }];
+    let bytes = build_route("Long", (10, 10), (1000, 0, 0), (100, 100), &chunks);
+    assert_eq!(obc_route::route_end(&SliceSource(&bytes)).unwrap(), (127, -68));
+}
+
+#[test]
 fn visible_chunk_query() {
     let bytes = two_chunk_route();
     let src = SliceSource(&bytes);
