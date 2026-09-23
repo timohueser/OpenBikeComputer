@@ -183,6 +183,7 @@ impl PoiDetailScreen {
                 (fix.lon, fix.lat),
                 (self.poi.lon, self.poi.lat),
                 heading,
+                WOOD,
             );
         }
         y += ROW_PITCH;

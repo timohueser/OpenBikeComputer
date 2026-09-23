@@ -131,8 +131,7 @@ impl Runtime {
         &mut self,
         page: &mut crate::screen::LandmarkPhotoScreen,
         reader: Option<&Reader<'_>>,
-        target: &mut D,
-        color: F,
+        cv: &mut obc_render::Canvas<D, F>,
         language: crate::settings::Language,
         steps: usize,
     ) where
@@ -143,10 +142,11 @@ impl Runtime {
         page.status = match reader {
             None => Status::Unavailable,
             Some(reader) if matches!(page.status, Status::Fresh | Status::Pending) => {
-                self.decode(page, reader, target, &color, steps).unwrap_or(Status::Unavailable)
+                self.decode(page, reader, cv, steps).unwrap_or(Status::Unavailable)
             }
             Some(_) => page.status,
         };
+        let (target, color) = cv.split();
         if matches!(page.status, Status::Missing | Status::Unavailable) {
             clear(target, &color);
         }
@@ -160,14 +160,14 @@ impl Runtime {
         &mut self,
         page: &crate::screen::LandmarkPhotoScreen,
         reader: &Reader<'_>,
-        target: &mut D,
-        color: &F,
+        cv: &mut obc_render::Canvas<D, F>,
         steps: usize,
     ) -> Result<Status, ()>
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        let (target, color, policy_enabled) = cv.split_with_policy_switch();
         if page.status == Status::Fresh || self.selection != Some(page.selection) || self.revision != page.revision {
             self.decoder.reset();
             self.selection = Some(page.selection);
@@ -180,10 +180,14 @@ impl Runtime {
         }
         let source =
             WindowSource::new(reader.source(), self.photo.start, self.photo.end - self.photo.start).ok_or(())?;
+        let policy_was_enabled = policy_enabled.map(|enabled| enabled.replace(false));
         let palette: [D::Color; 64] = core::array::from_fn(|pixel| {
             let level = |shift: usize| ((pixel >> shift) & 3) as u8 * 85;
             color(RawU16::from(Rgb565::from(Rgb888::new(level(4), level(2), level(0)))).into_inner())
         });
+        if let (Some(enabled), Some(previous)) = (policy_enabled, policy_was_enabled) {
+            enabled.set(previous);
+        }
         for _ in 0..steps {
             let progress = self
                 .decoder

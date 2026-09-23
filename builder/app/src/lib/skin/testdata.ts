@@ -28,6 +28,18 @@ export const canonicalSkin: SkinEntry = {
     marker_color: 0xf800, styles, preview: null,
 };
 
+export const canonicalDarkSkin: SkinEntry = {
+    ...canonicalSkin,
+    id: "dusk",
+    name: "Dusk",
+    description: "Dark",
+    marker_color: 0xffe0,
+};
+
 export const canonicalCatalogBody = JSON.stringify({
-    ...exampleCatalog, schema: canonicalSchema, skins: [{ ...canonicalSkin, preview: undefined }],
+    ...exampleCatalog,
+    schema: canonicalSchema,
+    skins: [canonicalSkin, canonicalDarkSkin]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((skin) => ({ ...skin, preview: undefined })),
 });

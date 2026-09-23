@@ -8,8 +8,9 @@
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED};
 use obc_reader::{Interval, MapCache, MapTables, PoiCategory, Reader, SliceSource, WeeklySchedule};
 use obcm_testkit::{
-    align_up, build_file, empty_nav_directory, filler_len, hours_pool, pack_poi_chunk, pack_poi_record, poi_dir_len,
-    poi_directory, resolve_offset, scaled, seal, LodSpec, PoiCat, Style, FILLER,
+    align_up, append_dark_styles, build_file, empty_nav_directory, filler_len, hours_pool, pack_poi_chunk,
+    pack_poi_record, poi_dir_len, poi_directory, resolve_offset, scaled, seal, LodSpec, PoiCat, Style, DARK_MARKER,
+    FILLER,
 };
 
 const CS: usize = 64;
@@ -85,6 +86,7 @@ fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u1
     let nav_off = bytes.len();
     bytes[36..40].copy_from_slice(&scaled(nav_off).to_le_bytes());
     bytes.extend_from_slice(&empty_nav_directory(nav_off));
+    append_dark_styles(&mut bytes, STYLES, DARK_MARKER);
     bytes
 }
 
@@ -198,7 +200,7 @@ fn poi_hours_corrupt_count_past_eof_is_none() {
     bytes[pool_off..pool_off + 2].copy_from_slice(&forged_count.to_le_bytes());
 
     // Report a len big enough that parse's pool-region bound fits, while the real bytes stop short.
-    let reported_len = (pool_off + 2 + forged_count as usize * POI_HOURS_BLOB_LEN + 16) as u32;
+    let reported_len = (pool_off + 2 + forged_count as usize * POI_HOURS_BLOB_LEN + 16).max(real_len + 16) as u32;
     let src = ShortBackedSource { bytes, reported_len };
 
     let tables = MapTables::parse(&src).expect("inflated len lets the corrupt pool parse");

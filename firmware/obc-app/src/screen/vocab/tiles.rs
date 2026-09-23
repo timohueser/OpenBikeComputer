@@ -26,9 +26,9 @@ pub(crate) fn tile(
     arrow: bool,
     value_align: TextAlign,
     bg: u16,
+    caption_color: u16,
     value_color: u16,
 ) {
-    use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     cv.round(area, 5, bg);
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
@@ -37,7 +37,7 @@ pub(crate) fn tile(
     let caption_budget = area.size.width as i32 - 5;
     let caption_row = rect(x + 5, cy, caption_budget, Font::Label.line_height() as i32);
     let label = marquee.fit_once(label, caption_budget, Font::Label, caption_row);
-    cv.text(&label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(&label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, caption_color);
     let vy = cy + 18;
     match value_align {
         TextAlign::Right => {
@@ -76,6 +76,7 @@ const CATEGORY_TILE_NAME_X: i32 = 31;
 /// Draw a `Next: <category>` tile: [`tile`]'s wide anatomy with the category's row icon in front of
 /// the caption, as `[icon] name` over a right-aligned distance. It is separate from [`tile`],
 /// because the icon changes the caption's inset and therefore its ellipsis budget.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn category_tile(
     cv: &mut impl Surface,
     area: Rectangle,
@@ -83,16 +84,16 @@ pub(crate) fn category_tile(
     name: &str,
     value: &str,
     bg: u16,
+    caption_color: u16,
     value_color: u16,
 ) {
-    use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     let w = area.size.width as i32;
     cv.round(area, 5, bg);
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
-    poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), SUBTEXT, bg);
+    poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), caption_color, bg);
     let name = fit(name, w - CATEGORY_TILE_NAME_X - 5, Font::Label);
-    cv.text(&name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(&name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, caption_color);
     cv.text(value, Point::new(x + w - 8, cy + 18), Font::Display, TextAlign::Right, value_color);
 }
 
@@ -138,12 +139,17 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
 /// The Fields-editor ghost of [`waypoint_panel`]. The editor has no route loaded, so the real panel
 /// would read a lone `--`. This draws two fixed sample rows instead, so the placed panel is judged
 /// against realistic content.
-pub(crate) fn waypoint_panel_ghost(cv: &mut impl Surface, area: Rectangle, lang: crate::settings::Language, bg: u16) {
-    use palette::*;
+pub(crate) fn waypoint_panel_ghost(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    lang: crate::settings::Language,
+    bg: u16,
+    color: u16,
+) {
     let (x, y) = (area.top_left.x, area.top_left.y);
     let (w, hgt) = (area.size.width as i32, area.size.height as i32);
     cv.round(area, 5, bg);
-    cv.text(t(Msg::TileWaypoints, lang), Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(t(Msg::TileWaypoints, lang), Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, color);
     const HEAD: i32 = 30;
     let stride = (hgt - HEAD - 6) / WAYPOINT_PANEL_ROWS as i32;
     // Olive, so the block reads as a placeholder preview and not as live content.
@@ -151,8 +157,8 @@ pub(crate) fn waypoint_panel_ghost(cv: &mut impl Surface, area: Rectangle, lang:
     for (i, (name, dist)) in samples.iter().enumerate() {
         let font = if i == 0 { Font::Body } else { Font::Label };
         let ry = y + HEAD + i as i32 * stride;
-        cv.text(dist, Point::new(x + w - 10, ry), font, TextAlign::Right, SUBTEXT);
-        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, SUBTEXT);
+        cv.text(dist, Point::new(x + w - 10, ry), font, TextAlign::Right, color);
+        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, color);
     }
 }
 
@@ -330,6 +336,7 @@ mod tests {
             "Fontaine",
             "2.4km",
             palette::PARCHMENT_SHADE,
+            palette::SUBTEXT,
             palette::INK,
         );
         assert!(cv.primitives > 0, "the category glyph draws as primitives, not a font char");
@@ -355,6 +362,7 @@ mod tests {
             "Boulangerie du Port Hercule",
             "1.6km",
             palette::PARCHMENT_SHADE,
+            palette::SUBTEXT,
             palette::INK,
         );
         let name = cv.calls[0].0.as_str();

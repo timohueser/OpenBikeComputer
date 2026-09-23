@@ -66,6 +66,7 @@ pub(crate) fn name_line(
     (x, right): (i32, i32),
     color: u16,
 ) {
+    let color = row_color(row, color);
     let name = marquee.fit(name, right - x, NAME_FONT, row.scroll());
     cv.text(&name, Point::new(x, row.area.top_left.y + NAME_Y), NAME_FONT, TextAlign::Left, color);
 }
@@ -73,4 +74,13 @@ pub(crate) fn name_line(
 /// The top of line 2.
 pub(crate) fn line2_y(row: &RowCtx) -> i32 {
     row.area.top_left.y + LINE2_Y
+}
+
+/// Text on the amber cursor keeps its contrast in both themes.
+pub(crate) fn row_color(row: &RowCtx, color: u16) -> u16 {
+    match (row.selected, color) {
+        (true, palette::INK) => palette::ON_ACCENT,
+        (true, palette::SUBTEXT) => palette::SUBTEXT_ON_ACCENT,
+        _ => color,
+    }
 }

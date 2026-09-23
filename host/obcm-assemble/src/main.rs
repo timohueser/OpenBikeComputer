@@ -6,7 +6,7 @@
 //! reports.
 //!
 //! ```text
-//! obcm-assemble --cells <cells.json> --skin <skin.json> --out <path.obcm> [options]
+//! obcm-assemble --cells <cells.json> --light-skin <light.json> --dark-skin <dark.json> --out <path.obcm> [options]
 //! ```
 //!
 //! `cells.json` is the cutter's provenance sidecar, which already states every cell's band, path
@@ -510,11 +510,13 @@ const USAGE: &str = "\
 obcm-assemble — assemble baked OBCA cells into one .obcm
 
 USAGE:
-    obcm-assemble --cells <cells.json> --skin <skin.json> --out <path.obcm> [OPTIONS]
+    obcm-assemble --cells <cells.json> --light-skin <skin.json> --dark-skin <skin.json> --out <path.obcm> [OPTIONS]
+    obcm-assemble restamp --map <path.obcm> --schema <schema.json> --light-skin <skin.json> --dark-skin <skin.json>
 
 REQUIRED:
     --cells <path>          the cutter's provenance sidecar (obc-pack cut)
-    --skin <path>           the skin to stamp (OBCC §5, or an id-keyed style table)
+    --light-skin <path>     the light skin to stamp (OBCC §5, or an id-keyed style table)
+    --dark-skin <path>      the dark skin to stamp (OBCC §5, or an id-keyed style table)
     --out <path>            the map file to write
 
 OPTIONS:
@@ -556,10 +558,14 @@ fn run() -> std::result::Result<(), String> {
         print!("{USAGE}");
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("restamp") {
+        return restamp(&args[1..]);
+    }
     let mut cells_path: Option<PathBuf> = None;
     let mut terrain_path: Option<PathBuf> = None;
     let mut schema_path: Option<PathBuf> = None;
-    let mut skin_path: Option<PathBuf> = None;
+    let mut light_skin_path: Option<PathBuf> = None;
+    let mut dark_skin_path: Option<PathBuf> = None;
     let mut out_path: Option<PathBuf> = None;
     let mut only_bands: Vec<String> = Vec::new();
     let mut only_cells: Vec<CellId> = Vec::new();
@@ -576,7 +582,8 @@ fn run() -> std::result::Result<(), String> {
             "--cells" => cells_path = Some(PathBuf::from(value(&mut i)?)),
             "--terrain" => terrain_path = Some(PathBuf::from(value(&mut i)?)),
             "--schema" => schema_path = Some(PathBuf::from(value(&mut i)?)),
-            "--skin" => skin_path = Some(PathBuf::from(value(&mut i)?)),
+            "--light-skin" => light_skin_path = Some(PathBuf::from(value(&mut i)?)),
+            "--dark-skin" => dark_skin_path = Some(PathBuf::from(value(&mut i)?)),
             "--out" => out_path = Some(PathBuf::from(value(&mut i)?)),
             "--band" => only_bands.push(value(&mut i)?),
             "--cell" => only_cells.push(CellId::parse(&value(&mut i)?)?),
@@ -596,7 +603,8 @@ fn run() -> std::result::Result<(), String> {
     }
 
     let cells_path = cells_path.ok_or("--cells is required")?;
-    let skin_path = skin_path.ok_or("--skin is required")?;
+    let light_skin_path = light_skin_path.ok_or("--light-skin is required")?;
+    let dark_skin_path = dark_skin_path.ok_or("--dark-skin is required")?;
     let out_path = out_path.ok_or("--out is required")?;
     let root = cells_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let sidecar = std::fs::read_to_string(&cells_path).map_err(|e| format!("read {}: {e}", cells_path.display()))?;
@@ -605,8 +613,15 @@ fn run() -> std::result::Result<(), String> {
         None => sidecar_schema,
         Some(p) => Schema::parse(&std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))?)?,
     };
-    let skin =
-        Skin::parse(&std::fs::read_to_string(&skin_path).map_err(|e| format!("read {}: {e}", skin_path.display()))?)?;
+    let map_styles = obcm_assemble::MapStyles {
+        light: Skin::parse(
+            &std::fs::read_to_string(&light_skin_path)
+                .map_err(|e| format!("read {}: {e}", light_skin_path.display()))?,
+        )?,
+        dark: Skin::parse(
+            &std::fs::read_to_string(&dark_skin_path).map_err(|e| format!("read {}: {e}", dark_skin_path.display()))?,
+        )?,
+    };
 
     // Open every selected cell. The sources outlive the assembly, so they are held here.
     let selected: Vec<&SidecarCell> = listed
@@ -663,7 +678,7 @@ fn run() -> std::result::Result<(), String> {
     // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap,
     // which is also what makes the `mem-profile` numbers mean anything.
     let scratch = FileScratch::new()?;
-    let summary = assemble_full(inputs, Vec::new(), job, &schema, &skin, &opts, &mut store, &clock, &scratch)
+    let summary = assemble_full(inputs, Vec::new(), job, &schema, &map_styles, &opts, &mut store, &clock, &scratch)
         .map_err(|e| e.to_string())?;
 
     // The engine returns what a producer reports; the CLI is what has a stderr. Printed before the
@@ -680,6 +695,96 @@ fn run() -> std::result::Result<(), String> {
     #[cfg(feature = "mem-profile")]
     clock.report(&summary);
     Ok(())
+}
+
+fn restamp(args: &[String]) -> std::result::Result<(), String> {
+    let mut map = None;
+    let mut schema = None;
+    let mut light = None;
+    let mut dark = None;
+    let mut i = 0;
+    while i < args.len() {
+        let value = |i: &mut usize| -> std::result::Result<PathBuf, String> {
+            *i += 1;
+            args.get(*i).map(PathBuf::from).ok_or_else(|| format!("{} needs a value", args[*i - 1]))
+        };
+        match args[i].as_str() {
+            "--map" => map = Some(value(&mut i)?),
+            "--schema" => schema = Some(value(&mut i)?),
+            "--light-skin" => light = Some(value(&mut i)?),
+            "--dark-skin" => dark = Some(value(&mut i)?),
+            other => return Err(format!("unknown restamp argument {other:?}\n\n{USAGE}")),
+        }
+        i += 1;
+    }
+    let map = map.ok_or("restamp requires --map")?;
+    let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()));
+    let schema_path = schema.ok_or("restamp requires --schema")?;
+    let schema = parse_restamp_schema(&read(&schema_path)?)?;
+    let styles = obcm_assemble::MapStyles {
+        light: parse_restamp_skin(&read(&light.ok_or("restamp requires --light-skin")?)?, &schema)?,
+        dark: parse_restamp_skin(&read(&dark.ok_or("restamp requires --dark-skin")?)?, &schema)?,
+    };
+    let (light, dark) = styles.resolve(&schema)?;
+    let mut bytes = std::fs::read(&map).map_err(|e| format!("read {}: {e}", map.display()))?;
+    obcm_assemble::emit::restamp_style_tables(
+        &mut bytes,
+        &light,
+        &dark,
+        styles.light.marker_color,
+        styles.dark.marker_color,
+    )
+    .map_err(|e| format!("restamp: {e:?}"))?;
+    std::fs::write(&map, bytes).map_err(|e| format!("write {}: {e}", map.display()))
+}
+
+fn parse_restamp_schema(text: &str) -> std::result::Result<Schema, String> {
+    if let Ok(schema) = Schema::parse(text) {
+        return Ok(schema);
+    }
+    let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("schema: {e}"))?;
+    let features = doc["features"].as_object().ok_or("schema: expected `styles` or `features`")?;
+    let mut styles = Vec::new();
+    for (group, values) in features {
+        let values = values.as_object().ok_or_else(|| format!("schema: feature group {group:?} is not an object"))?;
+        for name in values.keys() {
+            let id = u8::try_from(styles.len() + 1).map_err(|_| "schema: too many feature styles")?;
+            styles.push(serde_json::json!({"id": id, "feature_type": format!("{group}.{name}")}));
+        }
+    }
+    let minimal = serde_json::json!({"lods": [], "bands": [], "styles": styles});
+    serde_json::from_value(minimal).map_err(|e| format!("schema: {e}"))
+}
+
+fn parse_restamp_skin(text: &str, schema: &Schema) -> std::result::Result<Skin, String> {
+    if let Ok(skin) = Skin::parse(text) {
+        return Ok(skin);
+    }
+    let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("skin: {e}"))?;
+    let features = doc["features"].as_object().ok_or("skin: expected `styles` or `features`")?;
+    let mut styles: Vec<serde_json::Value> = Vec::with_capacity(schema.styles.len());
+    for assignment in &schema.styles {
+        let (group, name) = assignment
+            .feature_type
+            .split_once('.')
+            .ok_or_else(|| format!("skin: invalid feature type {:?}", assignment.feature_type))?;
+        let mut style = features
+            .get(group)
+            .and_then(|values| values.get(name))
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .ok_or_else(|| format!("skin: missing feature {:?}", assignment.feature_type))?;
+        style.insert("feature_type".into(), assignment.feature_type.clone().into());
+        styles.push(style.into());
+    }
+    let meta = &doc["_meta"];
+    let hosted = serde_json::json!({
+        "id": meta["id"],
+        "name": meta["name"],
+        "marker_color": doc["marker"]["color"],
+        "styles": styles,
+    });
+    serde_json::from_value(hosted).map_err(|e| format!("skin: {e}"))
 }
 
 fn print_summary(s: &obcm_assemble::Summary, out_path: &Path) {

@@ -33,10 +33,10 @@ pub(crate) fn title_frame_ble(cv: &mut impl Surface, w: i32, h: i32, title: &str
     let right_w = if right.is_empty() { 0 } else { text_width(right, Font::Label) as i32 + GAP };
     title_chrome(cv, w, h, &super::marquee::fit(title, right_x - right_w - 14, Font::Body));
     if ble_connected {
-        ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, PARCHMENT);
+        ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, BAR_TEXT);
     }
     // The two y values differ because the Body and Label glyphs have different baselines.
-    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, PARCHMENT);
+    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, BAR_TEXT);
 }
 
 /// The outline and the titled wood bar of [`title_frame`], without its clear: for a page whose
@@ -45,7 +45,7 @@ pub(crate) fn title_chrome(cv: &mut impl Surface, w: i32, h: i32, title: &str) {
     use palette::*;
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
     cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
-    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
+    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, BAR_TEXT);
 }
 
 /// Total width (px) the [`ble_glyph`] rune occupies, so callers can reserve its slot.
@@ -81,8 +81,8 @@ pub(crate) fn card_triangle(cv: &mut impl Surface, center: Point, k: i32) {
     let (cx, cy) = (center.x, center.y);
     cv.triangle(Point::new(cx, cy - k), Point::new(cx - k, cy + k), Point::new(cx + k, cy + k), AMBER);
     // Exclamation: a bar over a dot.
-    cv.vline(cx, cy - k / 4, k / 2, 3, INK);
-    cv.disc(Point::new(cx, cy + k / 2 + 1), 2, INK);
+    cv.vline(cx, cy - k / 4, k / 2, 3, ON_ACCENT);
+    cv.disc(Point::new(cx, cy + k / 2 + 1), 2, ON_ACCENT);
 }
 
 /// Draw the shared card check glyph near `center`, `k` its half-width. The two strokes are stepped

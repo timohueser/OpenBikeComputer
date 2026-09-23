@@ -139,7 +139,7 @@ impl RideStartScreen {
             cv.round(rect(BAND_X, BIKE_TOP, w - 2 * BAND_X, BIKE_H), 5, AMBER);
         }
         let name = crate::settings::bike_type_name(bike, rx.settings.language);
-        let ink = if on_bike { INK } else { SUBTEXT };
+        let ink = if on_bike { ON_ACCENT } else { SUBTEXT };
         cv.text(name, Point::new(w / 2, BIKE_TOP + 4), Font::Caption, TextAlign::Center, ink);
 
         let mut status: heapless::String<48> = heapless::String::new();
@@ -160,17 +160,19 @@ impl RideStartScreen {
             if row == self.selected {
                 cv.round(rect(BAND_X, top, w - 2 * BAND_X, h), 5, AMBER);
             }
+            let ink = if row == self.selected { ON_ACCENT } else { INK };
+            let subtext = if row == self.selected { SUBTEXT_ON_ACCENT } else { SUBTEXT };
             let text_top = top + TEXT_DY;
             match (row, next.and_then(|(trip, day, route)| Some((trip, day, rx.routes.get(usize::from(route))?)))) {
                 (Row::Day, Some((trip, day, route))) => {
                     let load = trip.load_day(day, trip.progress_in(rx.trip_progress), rx.day_join.as_ref());
                     let name = rx.marquee.fit(&route.name, w - TEXT_X - BAND_X, Font::Label, None);
-                    cv.text(&name, Point::new(TEXT_X, text_top - 2), Font::Label, TextAlign::Left, INK);
+                    cv.text(&name, Point::new(TEXT_X, text_top - 2), Font::Label, TextAlign::Left, ink);
                     let mut line2: heapless::String<40> = heapless::String::new();
                     let km = load.distance_km(route.distance_km);
                     let _ = write!(line2, "{} · {km} km", rx.t(Msg::RideStartShowRoute));
                     let line2_top = text_top - 2 + DAY_LINE2_DY - 2;
-                    cv.text(&line2, Point::new(TEXT_X, line2_top), Font::Caption, TextAlign::Left, SUBTEXT);
+                    cv.text(&line2, Point::new(TEXT_X, line2_top), Font::Caption, TextAlign::Left, subtext);
                 }
                 (Row::Start, _) => {
                     cv.text(
@@ -178,7 +180,7 @@ impl RideStartScreen {
                         Point::new(TEXT_X, text_top),
                         Font::Label,
                         TextAlign::Left,
-                        INK,
+                        ink,
                     );
                 }
                 (Row::Back, _) => {
@@ -187,7 +189,7 @@ impl RideStartScreen {
                         Point::new(TEXT_X, text_top - 1),
                         Font::Label,
                         TextAlign::Left,
-                        INK,
+                        ink,
                     );
                 }
                 _ => {}
@@ -205,10 +207,10 @@ fn draw_hero(cv: &mut impl Surface, w: i32, bike: BikeType) {
 /// colour and the name on the recessed cursor band, so both follow the staged type live.
 pub(crate) fn draw_staged(cv: &mut impl Surface, w: i32, bike: BikeType, name: &str) {
     use palette::*;
-    cv.fill(rect(BAND_X, HERO_TOP, w - 2 * BAND_X, HERO_H), super::dim_color(PARCHMENT));
+    cv.fill(rect(BAND_X, HERO_TOP, w - 2 * BAND_X, HERO_H), RECESSED_BASE);
     draw_hero(cv, w, bike);
-    cv.round(rect(BAND_X, BIKE_TOP, w - 2 * BAND_X, BIKE_H), 5, super::dim_color(AMBER));
-    cv.text(name, Point::new(w / 2, BIKE_TOP + 4), Font::Caption, TextAlign::Center, INK);
+    cv.round(rect(BAND_X, BIKE_TOP, w - 2 * BAND_X, BIKE_H), 5, super::dim_color(crate::settings::Theme::Light, AMBER));
+    cv.text(name, Point::new(w / 2, BIKE_TOP + 4), Font::Caption, TextAlign::Center, ON_ACCENT);
 }
 
 #[cfg(test)]

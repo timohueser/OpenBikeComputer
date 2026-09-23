@@ -8,6 +8,7 @@
 //! returns.
 
 use obc_formats::io::Error as IoError;
+use obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF;
 use obc_map_scene::{BBox, Kind};
 use obc_reader::{ByteSource, MapCache, MapTables, Reader, SliceSource};
 use obcm_testkit::{
@@ -55,10 +56,11 @@ fn relocate(near: &[u8]) -> Vec<u8> {
     let lod_tab = resolve_offset(near, 26);
     let poi_off = resolve_offset(near, 32);
     let nav_off = resolve_offset(near, 36);
+    let dark_style_off = resolve_offset(near, HEADER_DARK_STYLE_OFFSET_OFF);
     let lod_count = near[25] as usize;
 
-    // The four header offsets: style table, LOD table, POI section, nav section.
-    for at in [21usize, 26, 32, 36] {
+    // The five header offsets: both style tables, LOD table, POI section and nav section.
+    for at in [21usize, 26, 32, 36, HEADER_DARK_STYLE_OFFSET_OFF] {
         let moved = scaled(BASE + resolve_offset(near, at));
         far[at..at + 4].copy_from_slice(&moved.to_le_bytes());
     }
@@ -74,7 +76,7 @@ fn relocate(near: &[u8]) -> Vec<u8> {
     let poi = empty_poi_directory(BASE + poi_off);
     let nav = empty_nav_directory(BASE + nav_off);
     assert_eq!(poi.len(), nav_off - poi_off, "a relocated POI directory is the same length");
-    assert_eq!(nav.len(), near.len() - nav_off, "…and so is the nav section");
+    assert_eq!(nav.len(), dark_style_off - nav_off, "…and so is the nav section");
     far[poi_off..poi_off + poi.len()].copy_from_slice(&poi);
     far[nav_off..nav_off + nav.len()].copy_from_slice(&nav);
     far

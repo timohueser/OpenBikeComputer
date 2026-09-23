@@ -1,0 +1,48 @@
+{
+  "id": "dusk",
+  "name": "Dusk",
+  "marker_color": 65504,
+  "styles": [
+    {
+      "id": 1,
+      "color": 693,
+      "weight": 1,
+      "z_index": 14,
+      "priority": 2,
+      "line_style": "solid",
+      "fixed_width": false,
+      "terrain_layer": false
+    },
+    {
+      "id": 2,
+      "color": 64832,
+      "weight": 3,
+      "z_index": 50,
+      "priority": 2,
+      "line_style": "solid",
+      "fixed_width": false,
+      "terrain_layer": false
+    },
+    {
+      "id": 3,
+      "color": 44373,
+      "weight": 1,
+      "z_index": 30,
+      "priority": 3,
+      "line_style": "solid",
+      "fixed_width": false,
+      "terrain_layer": false,
+      "color2": 0
+    },
+    {
+      "id": 4,
+      "color": 64842,
+      "weight": 1,
+      "z_index": 24,
+      "priority": 3,
+      "line_style": "solid",
+      "fixed_width": true,
+      "terrain_layer": false
+    }
+  ]
+}

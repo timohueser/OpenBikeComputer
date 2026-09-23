@@ -65,6 +65,9 @@ up_scope_pois = "C d p w d d p w b f*8"
 # Turn the Auto climb panel off (open the Climb row's editor, one step wraps Auto -> Off, commit),
 # then climb back to Home.
 u5_climb_off = "B u p p d d p d p b b b"
+# Use the same settings path as the device. This commits Dark and returns to Home, so a themed
+# frame can prepend this fragment to an ordinary Home-based recipe without a simulator-only seam.
+theme_dark = "B u p d p d p d p b b b"
 
 [[frame]]
 name = "home"
@@ -608,7 +611,7 @@ expect = "Display"
 [[frame]]
 name = "display-idle-editor"
 map = "{grimsel}"
-script = "B u p d p d p w"
+script = "B u p d p d d p w"
 expect = "ContextDrawer"
 
 # Connections (group 2): the Bluetooth switch, the Sensors door, the phone's status line (read-only,
@@ -2212,3 +2215,232 @@ map = "{grimsel}"
 expect = "RouteCleanup"
 args = ["--route-cleanup", "--clock", "2025-07-10T09:41"]
 langs = ["de", "fr", "es"]
+
+# --- Dark theme ---------------------------------------------------------------------------------
+# These frames cross each distinct screen vocabulary instead of duplicating the full light sweep.
+# The shared fragment changes the persisted setting through the real Display page before it follows
+# the ordinary recipe. The map uses its authored Dark style.
+
+[[frame]]
+name = "dark-menu"
+map = "{grimsel}"
+script = "{theme_dark} B w"
+expect = "Menu"
+args = ["--battery", "45"]
+
+[[frame]]
+name = "dark-routemenu"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p p"
+expect = "RouteMenu"
+
+[[frame]]
+name = "dark-rides"
+map = "{grimsel}"
+env = "tracks"
+script = "{theme_dark} B d w p"
+expect = "Rides"
+
+[[frame]]
+name = "dark-ride-detail"
+map = "{grimsel}"
+env = "tracks"
+script = "{theme_dark} B d w p p p"
+expect = "RideDetail"
+
+[[frame]]
+name = "dark-find-place"
+map = "{cork}"
+script = "{theme_dark} A p p f"
+expect = "FindPlace"
+args = ["--heading", "0", "--center", "-9829419,51482665"]
+
+[[frame]]
+name = "dark-poi-detail"
+map = "{monaco}"
+script = "{theme_dark} {place_detail}"
+expect = "PoiDetail"
+args = ["--center", "7416969,43730798", "--heading", "0", "--clock", "2025-01-06T12:00"]
+
+[[frame]]
+name = "dark-settings"
+map = "{grimsel}"
+script = "{theme_dark} B u p w"
+expect = "Settings"
+
+[[frame]]
+name = "dark-display"
+map = "{grimsel}"
+script = "{theme_dark} B u p d p"
+expect = "Display"
+
+[[frame]]
+name = "dark-display-idle-editor"
+map = "{grimsel}"
+script = "{theme_dark} B u p d p d d p w"
+expect = "ContextDrawer"
+
+[[frame]]
+name = "dark-fields"
+map = "{grimsel}"
+script = "{theme_dark} B u p p p"
+expect = "StatFields"
+
+[[frame]]
+name = "dark-language"
+map = "{grimsel}"
+script = "{theme_dark} B u p d*4 p d d p"
+expect = "Language"
+
+[[frame]]
+name = "dark-routeoverview"
+map = "{grimsel}"
+env = "eta-route"
+script = "{theme_dark} p p p"
+expect = "RouteOverview"
+
+[[frame]]
+name = "dark-routeoverview-delete"
+map = "{grimsel}"
+env = "eta-route"
+script = "{theme_dark} p p p d H"
+expect = "RouteOverview"
+
+[[frame]]
+name = "dark-map"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p"
+expect = "Map"
+args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
+
+[[frame]]
+name = "dark-statistics"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "30"]
+
+[[frame]]
+name = "dark-map-context"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p C"
+expect = "ContextDrawer"
+args = ["--gpx", "{gpx}", "--at", "30"]
+
+[[frame]]
+name = "dark-detour-planning"
+map = "{monaco}"
+env = "monaco-route"
+script = "{theme_dark} {detour_pre} C d p w p"
+expect = "NavPlanning"
+args = ["--gpx", "{upgpx}", "--at", "25", "--hold", "detour"]
+
+[[frame]]
+name = "dark-climb"
+map = "{grimsel}"
+env = "eta-route"
+script = "{theme_dark} p*4 f d p"
+expect = "Climb"
+args = ["--gpx", "{gpx}", "--at", "1500"]
+
+[[frame]]
+name = "dark-up-ahead"
+map = "{monaco}"
+env = "monaco-route"
+script = "{theme_dark} {up_base}"
+expect = "WhatsNext"
+args = ["--gpx", "{upgpx}", "--at", "25"]
+
+[[frame]]
+name = "dark-easier-route"
+env = ["elevation", "eta-route"]
+script = "{theme_dark} p*4 b T A d d p f"
+expect = "Easier"
+args = ["--gpx", "{gpx}", "--script-at", "30", "--at", "30"]
+
+[[frame]]
+name = "dark-ride-start"
+map = "{grimsel}"
+script = "{theme_dark} B d d w p p"
+expect = "RideStart"
+args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30", "--battery", "45"]
+
+[[frame]]
+name = "dark-peak-view"
+map = "{grimsel}"
+script = "{theme_dark} {peak}"
+expect = "PeakView"
+args = ["--peak-view", "gornergrat"]
+
+[[frame]]
+name = "dark-peak-article"
+map = "{peaks}"
+script = "{theme_dark} {peak_article}"
+expect = "PeakArticle"
+args = ["--center", "7961000,46585000", "--heading", "141.25"]
+boot = false
+
+[[frame]]
+name = "dark-peak-photo"
+map = "{peaks}"
+script = "{theme_dark} {peak_article} u f"
+expect = "LandmarkPhoto"
+args = ["--center", "7961000,46585000", "--heading", "141.25"]
+boot = false
+
+[[frame]]
+name = "dark-dfu-error"
+map = "{grimsel}"
+script = "{theme_dark} {dfu_pre}"
+expect = "DfuError"
+args = ["--dfu", "error=damaged"]
+
+[[frame]]
+name = "dark-warning"
+map = "{grimsel}"
+script = "{theme_dark}"
+expect = "Warning"
+args = ["--inject", "warning=gps,altimeter,compass,storage"]
+
+[[frame]]
+name = "dark-map-transfer-error"
+map = "{grimsel}"
+script = "{theme_dark}"
+expect = "MapTransfer"
+args = ["--inject", "map-transfer=failed:damaged"]
+
+[[frame]]
+name = "dark-home-quick"
+map = "{grimsel}"
+script = "{theme_dark} Q"
+expect = "QuickDrawer"
+
+
+[[frame]]
+name = "dark-ride-start-trip"
+map = "{grimsel}"
+env = "trips"
+script = "{theme_dark} B d d w p p d"
+expect = "RideStart"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
+
+
+[[frame]]
+name = "dark-ride-start-bike-editor"
+map = "{grimsel}"
+env = "trips"
+script = "{theme_dark} B d d w p p u p w d w"
+expect = "ContextDrawer"
+args = ["--battery", "45", "--trip-progress", "0:5000:0"]
+
+
+[[frame]]
+name = "dark-landmark-photo"
+map = "{cork}"
+script = "{theme_dark} {landmarks} p f u f"
+expect = "LandmarkPhoto"
+args = ["--heading", "0", "--center", "-9829419,51482665"]

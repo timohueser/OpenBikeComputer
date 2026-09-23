@@ -4,10 +4,10 @@ use obc_formats::io::SliceSource;
 use obc_host_core::frame::device_rgb888;
 use obc_host_core::RgbaFrame;
 use obc_map_scene::BBox;
-use obc_reader::{Error as ReadError, MapCache, MapTables, Reader};
+use obc_reader::{Error as ReadError, MapCache, MapStyleSet, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, RenderStats, Viewport};
-use obcm_assemble::emit::{restamp_style_table, RestampError};
-use obcm_assemble::schema::{Schema, Skin};
+use obcm_assemble::emit::restamp_style_tables;
+use obcm_assemble::schema::{validate_style_pair, Schema, Skin};
 
 pub const FRAME_W: u32 = 240;
 pub const FRAME_H: u32 = 240;
@@ -81,20 +81,15 @@ impl PreviewFailure {
 }
 
 fn read_failure(err: ReadError) -> PreviewFailure {
-    match err {
+    let code = match err {
         ReadError::BadMagic
         | ReadError::BadVersion
         | ReadError::BadScale
         | ReadError::TooShort
-        | ReadError::BadOffset => PreviewFailure {
-            code: PreviewErrorCode::NotAMap,
-            message: "The Teningen preview map is missing, stale, or truncated.".into(),
-        },
-        ReadError::Source(_) | ReadError::CacheBusy => PreviewFailure {
-            code: PreviewErrorCode::Internal,
-            message: "The Teningen preview map could not be read.".into(),
-        },
-    }
+        | ReadError::BadOffset => PreviewErrorCode::NotAMap,
+        ReadError::Source(_) | ReadError::CacheBusy => PreviewErrorCode::Internal,
+    };
+    PreviewFailure { code, message: "The preview map could not be read.".into() }
 }
 
 pub struct MapPreview {
@@ -110,6 +105,7 @@ pub struct MapPreview {
     max_mpp: f32,
     camera_bounds: BBox,
     render_stats: RenderStats,
+    style_set: MapStyleSet,
     dirty: bool,
 }
 
@@ -128,7 +124,12 @@ pub struct SchemaMapPreview {
 }
 
 impl MapPreview {
-    pub fn open(bytes: Vec<u8>, schema_json: &str, skin_json: &str) -> Result<Self, PreviewFailure> {
+    pub fn open(
+        bytes: Vec<u8>,
+        schema_json: &str,
+        light_skin_json: &str,
+        dark_skin_json: &str,
+    ) -> Result<Self, PreviewFailure> {
         let tables = MapTables::parse(&SliceSource(&bytes)).map_err(read_failure)?;
         let schema = Schema::parse(schema_json).map_err(PreviewFailure::input)?;
         schema.validate().map_err(PreviewFailure::input)?;
@@ -167,40 +168,34 @@ impl MapPreview {
             max_mpp,
             camera_bounds,
             render_stats: RenderStats::default(),
+            style_set: MapStyleSet::Light,
             dirty: true,
         };
         preview.clamp_camera();
         preview.default_camera = preview.camera;
-        preview.set_skin(skin_json)?;
+        preview.set_styles(light_skin_json, dark_skin_json)?;
         Ok(preview)
     }
 
-    pub fn set_skin(&mut self, skin_json: &str) -> Result<(), PreviewFailure> {
-        let skin = Skin::parse(skin_json).map_err(PreviewFailure::input)?;
-        let styles = skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
+    pub fn set_styles(&mut self, light_skin_json: &str, dark_skin_json: &str) -> Result<(), PreviewFailure> {
+        let light_skin = Skin::parse(light_skin_json).map_err(PreviewFailure::input)?;
+        let dark_skin = Skin::parse(dark_skin_json).map_err(PreviewFailure::input)?;
+        let light = light_skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
+        let dark = dark_skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
+        validate_style_pair(&light, &dark).map_err(PreviewFailure::input)?;
 
         // Style table and marker colour, in place. The assembler owns that algorithm, and the
         // published thumbnails go through the same function.
-        restamp_style_table(&mut self.bytes, &styles, skin.marker_color).map_err(|e| match e {
-            RestampError::ShorterThanHeader => {
-                PreviewFailure::input("The Teningen preview is shorter than the OBCM header.")
-            }
-            RestampError::BadStyleOffset => PreviewFailure::input("The Teningen preview has a bad style offset."),
-            RestampError::TableOverflows => PreviewFailure::input("The Teningen preview style table overflows."),
-            RestampError::TableTruncated => PreviewFailure::input("The Teningen preview style table is truncated."),
-            RestampError::TooFewStyles { count, resolved } => PreviewFailure::input(format!(
-                "The preview has {count} styles, but this skin resolves to only {resolved}."
-            )),
-            RestampError::LengthMismatch { .. } => {
-                PreviewFailure::input("The Teningen preview style table is not the length it declares.")
-            }
-            RestampError::IdMismatch { .. } => PreviewFailure::input(
-                "The preview map belongs to a different schema revision; refresh the builder deployment.",
-            ),
-        })?;
+        restamp_style_tables(&mut self.bytes, &light, &dark, light_skin.marker_color, dark_skin.marker_color)
+            .map_err(|_| PreviewFailure::input("The preview map could not be restyled."))?;
         self.tables = MapTables::parse(&SliceSource(&self.bytes)).map_err(read_failure)?;
         self.dirty = true;
         Ok(())
+    }
+
+    pub fn set_style_set(&mut self, style_set: MapStyleSet) {
+        self.style_set = style_set;
+        self.dirty = true;
     }
 
     /// Move the rendered map by a logical-frame pixel delta. An invalid delta is ignored at this
@@ -252,7 +247,7 @@ impl MapPreview {
 
     pub fn stats(&self) -> PreviewStats {
         let source = SliceSource(&self.bytes);
-        let reader = Reader::new(&source, &self.tables, &self.cache);
+        let reader = Reader::new(&source, &self.tables, &self.cache).with_style_set(self.style_set);
         let lod_index = reader.select_lod_for_mpp(self.camera.meters_per_pixel);
         PreviewStats {
             camera_lon: self.camera.lon,
@@ -272,7 +267,7 @@ impl MapPreview {
     pub fn frame(&mut self) -> &[u8] {
         if self.dirty {
             let source = SliceSource(&self.bytes);
-            let reader = Reader::new(&source, &self.tables, &self.cache);
+            let reader = Reader::new(&source, &self.tables, &self.cache).with_style_set(self.style_set);
             let background = reader.backdrop_style().map_or(0xFFFF, |style| style.color);
             let viewport = self.viewport();
             self.render_stats = self.scratch.render(
@@ -559,12 +554,12 @@ mod tests {
         let schema = schema_json();
         let day_skin = skin_json("default");
         let dusk_skin = skin_json("dusk");
-        let mut preview = MapPreview::open(MAP.to_vec(), &schema, &day_skin).expect("default opens");
+        let mut preview = MapPreview::open(MAP.to_vec(), &schema, &day_skin, &dusk_skin).expect("default opens");
         let day = preview.frame().to_vec();
         assert_eq!(day.len(), (FRAME_W * FRAME_H * 4) as usize);
         assert!(day.as_chunks::<4>().0.iter().all(|px| px[3] == 0xFF));
 
-        preview.set_skin(&dusk_skin).expect("dusk restamps");
+        preview.set_style_set(MapStyleSet::Dark);
         let dusk = preview.frame().to_vec();
         assert_ne!(day, dusk, "a skin edit must change the rendered scene");
     }
@@ -573,15 +568,17 @@ mod tests {
     fn refuses_schema_space_edits() {
         let schema = schema_json();
         let day_skin = skin_json("default");
-        let mut preview = MapPreview::open(MAP.to_vec(), &schema, &day_skin).expect("default opens");
+        let mut preview = MapPreview::open(MAP.to_vec(), &schema, &day_skin, &day_skin).expect("default opens");
         let mut skin: serde_json::Value = serde_json::from_str(&day_skin).unwrap();
         skin["styles"].as_array_mut().unwrap().remove(0);
-        let err = preview.set_skin(&skin.to_string()).expect_err("missing schema type is refused");
+        let err = preview.set_styles(&skin.to_string(), &day_skin).expect_err("missing schema type is refused");
         assert_eq!(err.code, PreviewErrorCode::Input);
     }
 
     fn opened() -> MapPreview {
-        MapPreview::open(MAP.to_vec(), &schema_json(), &skin_json("default")).expect("preview opens")
+        let light = skin_json("default");
+        let dark = skin_json("dusk");
+        MapPreview::open(MAP.to_vec(), &schema_json(), &light, &dark).expect("preview opens")
     }
 
     #[test]
@@ -705,7 +702,7 @@ mod tests {
         assert_eq!(day_stats.lod_index, preview.render_stats.lod);
         assert!(day_stats.features_drawn > 0);
 
-        preview.set_skin(&skin_json("dusk")).expect("dusk restamps");
+        preview.set_style_set(MapStyleSet::Dark);
         let dusk = preview.frame().to_vec();
         assert_eq!(preview.camera, camera, "presentation changes must not reset the user's view");
         assert_eq!(preview.stats().lod_index, day_stats.lod_index);

@@ -860,7 +860,8 @@
                 : undefined,
             terrainCells: store.terrain ? terrainCells : undefined,
             schemaJson: store.rootBody,
-            skinJson: JSON.stringify(store.skin),
+            lightSkinJson: JSON.stringify(store.lightSkin),
+            darkSkinJson: JSON.stringify(store.darkSkin),
             options: {
                 // The same budget the estimate was given, so the projection prices
                 // the run that actually happens rather than the engine's default.
@@ -1238,7 +1239,8 @@
             {/if}
             <p class="line small faint">
                 <span class="serif">{store.catalog.schema.name}</span> schema ·
-                <span class="serif">{store.skin.name}</span> skin
+                <span class="serif">{store.lightSkin.name}</span> Light ·
+                <span class="serif">{store.darkSkin.name}</span> Dark
             </p>
 
             {#if refusal}

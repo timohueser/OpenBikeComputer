@@ -1,0 +1,99 @@
+{
+  "schema": 3,
+  "package": "sim-assistant-west-cork",
+  "archive": {
+    "bytes": 2471292,
+    "sha256": "24ead56c03001e62c3534e237286e8c3eddcee7a914c238000fc6abfdf7cb32a"
+  },
+  "producer": {
+    "source_commit": "e0a047c6c",
+    "executables_sha256": {
+      "obc-bake": "8a0432cd30a86388bccf99afea28e53eacd34f851aa947735e6b59fe4b86618f",
+      "obc-dem": "ee482ccc01ca46f2a494d1031764b4785d1c0d1dabeea3f9e5cbbddda5da2c6f",
+      "obcm-assemble": "9b40f409db738018228bab6c1ce6b37139aecace78422dfa01f3951bce62e9a6"
+    }
+  },
+  "bounds_lon_lat": [
+    -9.9,
+    51.43,
+    -9.5,
+    51.65
+  ],
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-terrain": "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+    "assistant-replays": "3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574",
+    "assistant-wiki": "d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1"
+  },
+  "source_pbf": {
+    "path": "west-cork.osm.pbf",
+    "bytes": 2995373,
+    "sha256": "1c4a40f4887b23854e618ad3c5e38777e034941014b042046dafe494896876d5"
+  },
+  "map": {
+    "bytes": 4821401,
+    "sha256": "1d541f33e8ad145b280ab14140319a45fb63b7b499488e341b73b0f98ff4cdc7",
+    "obcm_version": 19,
+    "format_upgrade": {
+      "input_sha256": "0f5b9cbc16dd15e79a5d39682f798e6a9f33b06cae52496f2c2e974a12510760",
+      "input_obcm_version": 18,
+      "dark_skin": {
+        "path": "builder/presets/skins/dusk.json",
+        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+      },
+      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
+      "transformer": {
+        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
+        "name": "upgrade_obcm_v18_to_v19.py"
+      }
+    }
+  },
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
+  "recipe": "python3 fixtures/build-assistant-package.py west-cork",
+  "packaged_build": {
+    "bytes": 8122,
+    "sha256": "992a12998ec7d79419efd8f8303ec5b57629088b339ab2781434f626b51a82b9",
+    "note": "The packaged build.json holds the bake commands, executable digests and content counts."
+  },
+  "terrain": {
+    "bytes": 2097200,
+    "sha256": "0f7ccc2d45537ac81c3c3e39db30c484abdeb9ee2a2563b5a1fd642dcceb3c3e",
+    "policy": "Byte-identical embedded terrain to the prior registered map."
+  }
+}
