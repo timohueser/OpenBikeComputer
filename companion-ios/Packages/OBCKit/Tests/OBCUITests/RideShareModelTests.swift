@@ -8,7 +8,9 @@ import OBCTransport
 /// pinned in `RideToRouteTests`.
 @MainActor @Suite struct RideShareModelTests {
     private static let ride = Ride(
-        summary: RideSummary(id: RideID("r"), name: "Lunch / Loop", date: Date(), distanceMeters: 1_112),
+        summary: RideSummary(
+            id: RideID("r"), name: "Lunch / Loop", date: Date(), distanceMeters: 1_112, bikeType: .gravel
+        ),
         points: [
             RidePoint(timestamp: Date(), coordinate: Coordinate(latitude: 48.00, longitude: 8.0), elevationMeters: 100),
             RidePoint(timestamp: Date(), coordinate: Coordinate(latitude: 48.01, longitude: 8.0), elevationMeters: 200),
@@ -24,7 +26,8 @@ import OBCTransport
             route: try #require(ride.plannedRoute()),
             fileName: RideGPXFile.fileName(for: ride.summary.name),
             fileData: Data(),
-            source: .ride(ride.summary.date)
+            source: .ride(ride.summary.date),
+            bikeType: ride.summary.bikeType
         )
     }
 
@@ -36,6 +39,7 @@ import OBCTransport
         #expect(flow.pendingImport?.route.name == "Lunch / Loop")
         #expect(flow.pendingImport?.fileName == "Lunch - Loop.gpx")
         #expect(flow.pendingImport?.source == .ride(Self.ride.summary.date))
+        #expect(flow.pendingImport?.bikeType == .gravel)
         #expect(flow.collision == nil)
     }
 
