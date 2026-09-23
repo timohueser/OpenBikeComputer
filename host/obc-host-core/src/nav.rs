@@ -65,6 +65,11 @@ impl NavPlan {
         self.sink.bytes()
     }
 
+    /// The graph coordinate the goal snapped to, once the search has run.
+    pub fn goal(&self) -> (i32, i32) {
+        self.planner.goal()
+    }
+
     /// The plan's cumulative graph-chunk and route-index cache counters.
     pub fn tile_stats(&self) -> obc_reader::NavCacheStats {
         self.tiles.stats()

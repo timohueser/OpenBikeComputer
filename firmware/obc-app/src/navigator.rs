@@ -71,7 +71,8 @@ pub enum NavigatorIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerWork {
     AssistantRoute(NavRequest),
-    RestoreReview(obc_formats::obcr::RouteSourceKey),
+    /// Plan the request as a leg and, for a visit, the leg back; report the figures, keep nothing.
+    MeasureLegs(NavRequest),
     Route(NavRequest),
     Detour(DetourRequest),
 }
@@ -489,8 +490,8 @@ impl NavigatorMachine {
                     return None;
                 }
                 let request = self.route_request.take()?;
-                if let Some(source) = self.review.restore {
-                    PlannerWork::RestoreReview(source)
+                if self.review.measure {
+                    PlannerWork::MeasureLegs(request)
                 } else if self.review.status == ReviewStatus::Planning {
                     PlannerWork::AssistantRoute(request)
                 } else {
@@ -533,7 +534,7 @@ impl NavigatorMachine {
             }
             NavigatorOutcome::ReviewReady { .. } => {
                 (self.phase == OperationPhase::Committing
-                    || self.phase == OperationPhase::Acquiring && self.review.restore.is_some())
+                    || self.phase == OperationPhase::Stepping && self.review.measure)
                     && self.live == Some(PlanFamily::Route)
                     && self.review.context.is_some()
             }

@@ -420,6 +420,35 @@ impl HostStore {
         Ok(entries)
     }
 
+    /// Remove several route heads in one commit. A head that moved is skipped, not refused.
+    pub(crate) fn remove_routes(&self, heads: &[(ObjectId, Revision)]) -> Result<(), StoreError> {
+        let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
+        let store = owner.ready()?;
+        let mut batch = Vec::new();
+        for &(id, revision) in heads {
+            let current = store.entries().any(|entry| {
+                entry.id == id
+                    && entry.revision == revision
+                    && entry.kind == ObjectKind::Route
+                    && entry.flags.is_route_head()
+            });
+            if !store.entries_ok() {
+                return Err(StoreError::Media);
+            }
+            if current {
+                batch.push(Mutation::Remove { id, revision });
+            }
+        }
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let result = store.commit(&batch);
+        if result == Err(StoreError::Media) {
+            owner.remount_required = true;
+        }
+        result.map(|_| ())
+    }
+
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;

@@ -119,6 +119,10 @@ pub trait RouteRepository {
     fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {
         Err(CatalogError::Unsupported)
     }
+    /// Remove as many of these unaccepted candidates as one commit carries.
+    fn retract_reviews(&mut self, _ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
     /// Make the active route match `want`, (re)reading its bytes only on a change. **Returns whether
     /// the active bytes were (re)loaded this call** — the signal [`ActiveRouteSession`](crate::ActiveRouteSession)
     /// gates its index reparse on, so a settled view never reparses.

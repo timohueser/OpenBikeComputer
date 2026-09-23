@@ -3,8 +3,48 @@ use crate::{NavPlan, VecSink};
 use obc_app::navigator::{NavigatorError, ReviewContext, ReviewPurpose};
 use obc_formats::io::SliceSource;
 use obc_formats::obcr::RouteSourceKey;
-use obc_route::visit::{visit_anchor, VisitBuilder, VisitChoice, VisitTarget};
+use obc_route::visit::{visit_anchor, LegCost, VisitBuilder, VisitChoice, VisitLegs, VisitTarget};
 use obc_route::{RouteIndex, RouteReader, RouteStats};
+
+/// The leg searches of one Find candidate, kept only for their figures: out to the place and,
+/// for a visit, back to where the outbound leg left the route.
+pub struct LegMeasure {
+    leg: NavPlan,
+    from: (i32, i32),
+    context: ReviewContext,
+    outbound: Option<LegCost>,
+}
+impl LegMeasure {
+    pub fn start(request: &obc_app::NavRequest, context: ReviewContext) -> Self {
+        Self { leg: Self::leg(request.from, request.to, context), from: request.from, context, outbound: None }
+    }
+    fn leg(from: (i32, i32), to: (i32, i32), context: ReviewContext) -> NavPlan {
+        let mut plan = NavPlan::start(&obc_app::NavRequest::new(from, to, "Visit leg"), context.profile);
+        plan.set_attribution_map(context.map);
+        plan
+    }
+    /// One planner step. `Some` holds both legs' figures.
+    pub fn step(
+        &mut self,
+        reader: &obc_reader::Reader,
+        elev: &mut dyn obc_route::ElevationSource,
+    ) -> Result<Option<VisitLegs>, NavigatorError> {
+        let stats = match self.leg.step(reader, elev) {
+            obc_route::Step::Running => return Ok(None),
+            obc_route::Step::Failed(error) => return Err(NavigatorError::Plan(error)),
+            obc_route::Step::Done(stats) => LegCost::from(stats),
+        };
+        match self.outbound {
+            None if self.context.purpose == ReviewPurpose::Visit => {
+                self.leg = Self::leg(self.leg.goal(), self.from, self.context);
+                self.outbound = Some(stats);
+                Ok(None)
+            }
+            None => Ok(Some(VisitLegs { outbound: stats, back: None })),
+            Some(outbound) => Ok(Some(VisitLegs { outbound, back: Some(stats) })),
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {

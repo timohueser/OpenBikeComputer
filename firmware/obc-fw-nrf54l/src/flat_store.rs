@@ -1368,6 +1368,23 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
+/// One removal per current route head among `ids`, for a single commit.
+pub(crate) fn remove_routes_batch(
+    store: &FlatStore<FlatCard>,
+    ids: impl Iterator<Item = u64>,
+) -> heapless::Vec<Mutation, MAX_BATCH> {
+    let mut batch = heapless::Vec::new();
+    for id in ids {
+        let head = store
+            .entries()
+            .find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id && meta.flags.is_route_head());
+        if let Some(meta) = head.filter(|_| store.entries_ok()) {
+            let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
+        }
+    }
+    batch
+}
+
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,
@@ -1574,24 +1591,6 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
                 }
                 if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
-                    let source = obc_formats::obcr::RouteSourceKey {
-                        store: store.store_id().0,
-                        object: entry.id.0,
-                        revision: entry.revision.0,
-                    };
-                    if app.can_reconcile_reviews()
-                        && !app.retains_find_review(source)
-                        && store
-                            .with_source(entry.id, Some(entry.revision), |bytes| {
-                                obc_route::RouteObjectInfo::read(bytes).is_ok_and(|info| {
-                                    info.assistant_candidate
-                                        && info.attribution_map.is_some_and(|map| map.store == source.store)
-                                })
-                            })
-                            .unwrap_or(false)
-                    {
-                        app.reconcile_review_candidate(source);
-                    }
                 }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);
