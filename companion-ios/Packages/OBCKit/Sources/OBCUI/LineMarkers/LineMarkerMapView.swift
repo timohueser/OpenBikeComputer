@@ -12,6 +12,7 @@ struct LineMarkerMapView: UIViewRepresentable {
     let markers: [LineMarker]
     let activeID: LineMarker.ID?
     let segmentColors: [Color]
+    let dashedSegments: Set<Int>
     let stops: [PlacedStop]
 
     func makeUIView(context: Context) -> MKMapView {
@@ -37,7 +38,8 @@ struct LineMarkerMapView: UIViewRepresentable {
         }
         coordinator.renderer?.set(
             splits: markers.map(\.distance),
-            colors: segmentColors.map { UIColor($0).cgColor }
+            colors: segmentColors.map { UIColor($0).cgColor },
+            dashed: dashedSegments
         )
         if coordinator.stops != stops {
             mapView.removeAnnotations(mapView.annotations.filter { $0 is StopAnnotation })
@@ -126,7 +128,8 @@ struct LineMarkerMapView: UIViewRepresentable {
             let renderer = SegmentedLineRenderer(overlay: overlay)
             renderer.set(
                 splits: parent.markers.map(\.distance),
-                colors: parent.segmentColors.map { UIColor($0).cgColor }
+                colors: parent.segmentColors.map { UIColor($0).cgColor },
+                dashed: parent.dashedSegments
             )
             self.renderer = renderer
             return renderer
@@ -441,16 +444,18 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
     private let lock = NSLock()
     private var splits: [Double] = []
     private var colors: [CGColor] = []
+    private var dashed: Set<Int> = []
     private let halo = UIColor(OBCTheme.trackHalo).cgColor
 
     /// Main thread in, `draw` on MapKit's threads out: the lock is the hand-over. A moved
     /// split redraws only the tiles between its old and new place.
-    func set(splits: [Double], colors: [CGColor]) {
+    func set(splits: [Double], colors: [CGColor], dashed: Set<Int>) {
         lock.lock()
         let previous = self.splits
-        let colorsChanged = colors != self.colors
+        let colorsChanged = colors != self.colors || dashed != self.dashed
         self.splits = splits
         self.colors = colors
+        self.dashed = dashed
         lock.unlock()
         guard let overlay = overlay as? SegmentedLineOverlay else { return }
         if colorsChanged || previous.count != splits.count {
@@ -467,6 +472,7 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
         lock.lock()
         let splits = self.splits
         let colors = self.colors
+        let dashed = self.dashed
         lock.unlock()
 
         let width = 3.4 / zoomScale
@@ -483,7 +489,7 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
         context.setLineJoin(.round)
         context.setLineWidth(haloWidth)
         context.setStrokeColor(halo)
-        for path in paths {
+        for (run, path) in paths.enumerated() where !dashed.contains(run) {
             context.addPath(path)
         }
         context.strokePath()
@@ -491,6 +497,8 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
         context.setLineWidth(width)
         for (run, path) in paths.enumerated() {
             context.setStrokeColor(run < colors.count ? colors[run] : halo)
+            // The dash phase is in map points, so the dashes stay put while a split moves.
+            context.setLineDash(phase: 0, lengths: dashed.contains(run) ? [6 / zoomScale, 8 / zoomScale] : [])
             context.addPath(path)
             context.strokePath()
         }
