@@ -70,9 +70,15 @@ pub struct VisitCosts {
     pub complete_elevation: bool,
 }
 impl VisitCosts {
-    /// Must stay `#[inline(never)]`: the bounded chunk buffer lives in this popped frame.
-    #[inline(never)]
     pub fn read(src: &dyn obc_formats::io::ByteSource, arrival: [u32; 2]) -> Result<Self, Error> {
+        Self::read_with(src, arrival, |_| {})
+    }
+    /// The same walk, also handing each stored point to `visit`.
+    pub(crate) fn read_with(
+        src: &dyn obc_formats::io::ByteSource,
+        arrival: [u32; 2],
+        mut visit: impl FnMut(crate::RoutePoint),
+    ) -> Result<Self, Error> {
         use crate::facts::FactsAccumulator;
         let h = crate::reader::read_header(src)?;
         if arrival[0] > arrival[1] || arrival[1] > h.total_distance_m {
@@ -83,6 +89,7 @@ impl VisitCosts {
         crate::reader::for_each_stored_point(src, &h, |point| {
             full.push(point, &mut |_| {});
             to_stop.push(point, &mut |_| {});
+            visit(point);
         })?;
         let full = full.finish(h.total_distance_m)?;
         let to_stop = to_stop.finish(h.total_distance_m)?;
