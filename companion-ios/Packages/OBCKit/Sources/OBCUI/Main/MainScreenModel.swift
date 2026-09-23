@@ -1221,6 +1221,73 @@ public final class MainScreenModel {
         }
     }
 
+    // MARK: Ride edits
+
+    /// Whether Revert to original applies: the ride is a trim, a split part or a merge.
+    public func isEditedRide(_ id: RideID) -> Bool { library.isEditedRide(id) }
+
+    /// Keep only the part of the ride inside `range`. False when fewer than two points remain.
+    @discardableResult
+    public func trimRide(_ id: RideID, to range: ClosedRange<Date>) -> Bool {
+        guard let summary = rideSummaries[id], library.trimRide(id, to: range, summary: summary)
+        else { return false }
+        reloadRides()
+        return true
+    }
+
+    /// Make two rides of one at `time`. Returns the second ride's id.
+    @discardableResult
+    public func splitRide(_ id: RideID, at time: Date) -> RideID? {
+        guard let summary = rideSummaries[id], let second = library.splitRide(id, at: time, summary: summary)
+        else { return nil }
+        reloadRides()
+        return second
+    }
+
+    /// The listed ride after `id` in time: the partner of Merge with next.
+    public func nextRide(after id: RideID) -> RideSummary? {
+        guard let ride = rides.first(where: { $0.id == id }) else { return nil }
+        return rides.filter { $0.date > ride.date }.min { $0.date < $1.date }
+    }
+
+    /// Join the next ride onto this one. The time between the two does not count as moving time.
+    @discardableResult
+    public func mergeRideWithNext(_ id: RideID) -> Bool {
+        guard let summary = rideSummaries[id], let next = nextRide(after: id),
+              library.mergeRides(summary, next.id)
+        else { return false }
+        reloadRides()
+        return true
+    }
+
+    /// Restore the synced rides behind this edited ride, as they were synced.
+    public func revertRide(_ id: RideID) {
+        library.revertRide(id)
+        reloadRides()
+    }
+
+    /// The next ride, when the two look like one ride with a break and the rider has not
+    /// dismissed the merge. Decodes both tracklogs, so call it once per detail.
+    public func mergeSuggestion(for id: RideID) -> RideSummary? {
+        guard let next = nextRide(after: id),
+              !library.dismissedMerges().contains(RidePair(first: id, second: next.id)),
+              let first = ride(id), let second = ride(next.id), RideEdit.suggestsMerge(first, second)
+        else { return nil }
+        return next
+    }
+
+    public func dismissMergeSuggestion(for id: RideID) {
+        guard let next = nextRide(after: id) else { return }
+        library.dismissMerge(RidePair(first: id, second: next.id))
+    }
+
+    /// An edit can add, remove or restore rides, so the whole list reloads.
+    private func reloadRides() {
+        rideSummaries = Dictionary(uniqueKeysWithValues: library.rideSummaries().map { ($0.id, $0) })
+        rides = trackedList()
+        trashedRides = trashedList()
+    }
+
     /// Land a just-imported route at the top of Planned and in the library, so it survives a
     /// relaunch and can upload later.
     public func addImportedRoute(_ record: PlannedRouteRecord) {
