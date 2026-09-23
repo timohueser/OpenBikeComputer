@@ -138,13 +138,13 @@ public enum OBCFormat {
 
     /// Trip card stat line: "2 stages · 141 km · 2,050 m ↑".
     public static func tripSubtitle(
-        stageCount: Int,
+        dayCount: Int,
         distanceMeters: Double,
         elevationGainMeters: Double,
         locale: Locale = .current
     ) -> String {
         [
-            stageCount == 1 ? "1 stage" : "\(stageCount) stages",
+            dayCount == 1 ? "1 day" : "\(dayCount) days",
             distance(meters: distanceMeters, locale: locale),
             climb(meters: elevationGainMeters, locale: locale),
         ].joined(separator: " · ")

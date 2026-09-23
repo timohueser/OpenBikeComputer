@@ -4,12 +4,12 @@ import OBCDomain
 import OBCTransport
 
 /// Drives a whole-trip upload: the queued sibling of `UploadSheetModel`. One transfer in flight
-/// at a time, in ride order: each stage is skipped when it is already up to date, replaced in
+/// at a time, in ride order: each day route is skipped when it is already up to date, replaced in
 /// place when it is on the device but outdated, or freshly uploaded when it is absent. Then the
 /// trip object, last. The precheck runs before any bytes, so a trip that cannot fit fails up front
-/// with guidance rather than hitting a full device at stage four.
+/// with guidance rather than hitting a full device at day four.
 ///
-/// Interruption keeps `UploadSheetModel`'s restart-the-current-stage semantics, completed stages
+/// Interruption keeps `UploadSheetModel`'s restart-the-current-step semantics, completed days
 /// stay committed, and re-running is idempotent, because the skips catch everything already
 /// landed. Each object's link is committed the instant its transfer lands, exactly like a single
 /// upload.
@@ -40,9 +40,9 @@ public final class TripUploadModel: Identifiable {
         }
     }
 
-    /// One queue step: a skipped stage with no bytes, or a transfer of a stage or the trip object.
-    /// `makeTransfer` is evaluated at execution time, so the trip-object step reads the stage ids
-    /// the just-committed stages landed under. It returns nil to degenerate to a skip.
+    /// One queue step: a skipped day with no bytes, or a transfer of a day route or the trip object.
+    /// `makeTransfer` is evaluated at execution time, so the trip-object step reads the day route ids
+    /// the just-committed days landed under. It returns nil to degenerate to a skip.
     public struct QueueStep: Sendable {
         let title: String
         let skip: Bool
@@ -55,7 +55,7 @@ public final class TripUploadModel: Identifiable {
             QueueStep(title: title, skip: true, makeTransfer: nil, commit: nil)
         }
 
-        /// A transfer step: a stage upload or the trip object.
+        /// A transfer step: a day route upload or the trip object.
         public static func transfer(
             title: String,
             makeTransfer: @escaping @MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?,
@@ -75,9 +75,9 @@ public final class TripUploadModel: Identifiable {
     public private(set) var connection: ConnectionState = .connected
     /// The current queue step, zero-based, which drives the header.
     public private(set) var stepIndex = 0
-    /// Stages skipped because the device already held them: the done state's tally.
+    /// Days skipped because the device already held them: the done state's tally.
     public private(set) var skippedCount = 0
-    /// Objects committed so far, stages and trip: the done state's tally.
+    /// Objects committed so far, days and trip: the done state's tally.
     public private(set) var committedCount = 0
 
     // MARK: Fixed facts
@@ -131,7 +131,7 @@ public final class TripUploadModel: Identifiable {
         OBCFormat.transferSizeLine(bytesDone: progress.bytesDone, totalBytes: progress.total, hasWaypoints: false)
     }
 
-    /// The current step's title, a stage name or the trip object's. Nil in a terminal phase.
+    /// The current step's title, a day name or the trip object's. Nil in a terminal phase.
     public var currentStepTitle: String? {
         guard stepIndex < steps.count else { return nil }
         return steps[stepIndex].title
@@ -139,10 +139,10 @@ public final class TripUploadModel: Identifiable {
 
     /// The queued-mode header over the per-transfer bar. It counts every step, skips and trip
     /// object included, in the denominator.
-    public var stageProgressLabel: String {
+    public var stepProgressLabel: String {
         let position = min(stepIndex + 1, stepCount)
         let title = currentStepTitle ?? tripName
-        return "Stage \(position) of \(stepCount) — \(title)"
+        return "Step \(position) of \(stepCount) — \(title)"
     }
 
     /// The done-state tally.
@@ -179,7 +179,7 @@ public final class TripUploadModel: Identifiable {
         guard !started else { return }
         started = true
 
-        // A link drop stalls the current stage. Progress after reconnect resumes it.
+        // A link drop stalls the current step. Progress after reconnect resumes it.
         linkWatcher = Task { [weak self, transport] in
             for await state in transport.state {
                 guard let self else { return }
@@ -196,7 +196,7 @@ public final class TripUploadModel: Identifiable {
         beginQueue()
     }
     /// Precheck, then start the queue. The precheck runs before any bytes, so a trip that cannot
-    /// fit fails up front rather than as a partial upload that fills the device at the last stage.
+    /// fit fails up front rather than as a partial upload that fills the device at the last day.
     private func beginQueue() {
         guard precheck.fits else {
             phase = .failed
@@ -208,7 +208,7 @@ public final class TripUploadModel: Identifiable {
         driver = Task { [weak self] in await self?.runQueue() }
     }
 
-    /// Restart the current stage's transfer after a drop: uploads restart, they do not resume.
+    /// Restart the current step's transfer after a drop: uploads restart, they do not resume.
     public func resume() {
         guard phase == .interrupted else { return }
         currentHandle?.resume()
@@ -216,7 +216,7 @@ public final class TripUploadModel: Identifiable {
         setActive(true)
     }
 
-    /// Cancel the whole trip upload, aborting the in-flight transfer. Completed stages stay
+    /// Cancel the whole trip upload, aborting the in-flight transfer. Completed days stay
     /// committed on the device, and re-running is idempotent.
     public func cancel() {
         currentHandle?.cancel()
@@ -251,7 +251,7 @@ public final class TripUploadModel: Identifiable {
                 continue
             }
             guard let (handle, committedCRC) = step.makeTransfer?() else {
-                // Nothing resolvable to send, such as a trip with no on-device stages, so treat it
+                // Nothing resolvable to send, such as a trip with no on-device days, so treat it
                 // as a skip and move on.
                 stepIndex += 1
                 continue
@@ -260,7 +260,7 @@ public final class TripUploadModel: Identifiable {
             phase = .uploading
             watchProgress(handle)
             // `handle.outcome` stays unresolved across a drop, because the transfer is
-            // restartable, so this awaits through the interrupt and the resume until the stage
+            // restartable, so this awaits through the interrupt and the resume until the step
             // truly finishes, fails, or is cancelled.
             let outcome = await handle.outcome
             progressWatcher?.cancel()

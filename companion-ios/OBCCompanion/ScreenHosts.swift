@@ -88,8 +88,8 @@ struct UploadRequest: Identifiable {
 struct RouteDetailScreen: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
-    /// The route-menu picker, planned dressing only: the detail overflow's Add or Move to trip
-    /// presents the shared picker sheet.
+    /// The route-menu picker, planned dressing only: the detail overflow's Add to trip presents
+    /// the shared picker sheet.
     @State private var tripPickerShown = false
     private let transport: any DeviceTransport
     /// The in-flight ledger the upload sheet claims a token from. Nil in previews.
@@ -103,13 +103,10 @@ struct RouteDetailScreen: View {
     private let onReverse: (() -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
-    /// Trip filing, planned only: the existing trips, this route's current trip, where nil means
-    /// loose and offers Add while non-nil offers Move and Remove, and the two edits. A nil
-    /// `onAddToTrip` suppresses the overflow entirely.
+    /// Add to trip, planned only: the route becomes a day of the picked trip. A nil `onAddToTrip`
+    /// suppresses the overflow entirely.
     private let tripPickerItems: [TripPickerItem]
-    private let currentTripID: TripID?
     private let onAddToTrip: ((TripSelection) -> Void)?
-    private let onRemoveFromTrip: (() -> Void)?
     /// The share button, rides with a tracklog only.
     private let rideShareMenu: RideShareMenu?
 
@@ -131,9 +128,7 @@ struct RouteDetailScreen: View {
         onReverse: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
-        currentTripID: TripID? = nil,
         onAddToTrip: ((TripSelection) -> Void)? = nil,
-        onRemoveFromTrip: (() -> Void)? = nil,
         rideShareMenu: RideShareMenu? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
@@ -151,9 +146,7 @@ struct RouteDetailScreen: View {
         self.onReverse = onReverse
         self.onUploaded = onUploaded
         self.tripPickerItems = tripPickerItems
-        self.currentTripID = currentTripID
         self.onAddToTrip = onAddToTrip
-        self.onRemoveFromTrip = onRemoveFromTrip
         self.rideShareMenu = rideShareMenu
         if case .tracked = dressing { isRide = true } else { isRide = false }
     }
@@ -201,39 +194,22 @@ struct RouteDetailScreen: View {
         }
         .sheet(isPresented: $tripPickerShown) {
             TripPickerSheet(
-                title: currentTripID == nil ? "Add to trip" : "Move to trip",
+                title: "Add to trip",
                 trips: tripPickerItems,
-                currentTripID: currentTripID,
                 onPick: { onAddToTrip?($0) }
             )
         }
     }
 
-    /// The detail overflow's trip menu: Add to trip for a loose route, or Move to trip and Remove
-    /// from trip for one already filed.
+    /// The detail overflow's trip menu.
     private func tripMenu(onAddToTrip: @escaping (TripSelection) -> Void) -> some View {
         Menu {
-            if currentTripID == nil {
-                Button {
-                    tripPickerShown = true
-                } label: {
-                    Label("Add to trip…", systemImage: "folder.badge.plus")
-                }
-                .accessibilityIdentifier("detail.addToTrip")
-            } else {
-                Button {
-                    tripPickerShown = true
-                } label: {
-                    Label("Move to trip…", systemImage: "folder")
-                }
-                .accessibilityIdentifier("detail.moveToTrip")
-                Button(role: .destructive) {
-                    onRemoveFromTrip?()
-                } label: {
-                    Label("Remove from trip", systemImage: "minus.circle")
-                }
-                .accessibilityIdentifier("detail.removeFromTrip")
+            Button {
+                tripPickerShown = true
+            } label: {
+                Label("Add to trip…", systemImage: "folder.badge.plus")
             }
+            .accessibilityIdentifier("detail.addToTrip")
         } label: {
             Image(systemName: "ellipsis.circle")
         }

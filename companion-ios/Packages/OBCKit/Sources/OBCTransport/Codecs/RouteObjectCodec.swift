@@ -48,7 +48,12 @@ public enum RouteObjectCodec {
     /// The header Total Distance, Total Ascent and Total Descent an upload of `points` carries:
     /// the figures the device shows and estimates from. Nil for geometry that does not encode.
     public static func totals(points: [RoutePoint]) -> (distanceMeters: UInt32, ascentMeters: UInt32, descentMeters: UInt32)? {
-        let header = ByteView(encode(points: points, waypoints: [], name: "", bikeType: .road))
+        totals(of: encode(points: points, waypoints: [], name: "", bikeType: .road))
+    }
+
+    /// The header totals of an encoded payload.
+    static func totals(of payload: Data) -> (distanceMeters: UInt32, ascentMeters: UInt32, descentMeters: UInt32)? {
+        let header = ByteView(payload)
         guard let distance = try? header.u32(at: 36), let ascent = try? header.u32(at: 40),
             let descent = try? header.u32(at: 44) else { return nil }
         return (distance, ascent, descent)

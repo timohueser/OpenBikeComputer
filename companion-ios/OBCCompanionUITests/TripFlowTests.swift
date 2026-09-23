@@ -1,8 +1,8 @@
 import XCTest
 
 /// The create and file flows end to end against the trips fixture: multi-select grouping, the
-/// route card context menu, the detail overflow, and the import row's new-trip option. Model logic
-/// is host-tested in `TripFlowModelTests`; this proves the wiring.
+/// detail overflow, and the import row's new-trip option. Model logic is host-tested in
+/// `TripFlowModelTests`; this proves the wiring.
 final class TripFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -62,49 +62,22 @@ final class TripFlowTests: XCTestCase {
         field.typeText("Northwoods Weekend")
         alert.buttons["Create"].tap()
 
-        // The trip card appears, and the two grouped routes are no longer loose.
+        // The trip card appears, and the two grouped routes left the list.
         XCTAssertTrue(app.staticTexts["Northwoods Weekend"].waitForExistence(timeout: 5), "new trip card missing")
         XCTAssertFalse(app.buttons["main.card.kettle-moraine-loop"].exists, "grouped route still loose")
         XCTAssertFalse(app.buttons["main.card.sugar-river-trail"].exists, "grouped route still loose")
         snap(app, "TR7-grouped")
     }
 
-    // MARK: Card context menu → New trip
+    // MARK: Detail overflow → Add to trip
 
-    /// A long press on a loose route files it into a fresh trip, and it leaves the top level.
+    /// A route's detail overflow adds it to an existing trip as a new last day: the trip page
+    /// replaces the route page, and the route leaves the list.
     @MainActor
-    func testAddToTripViaCardContextMenuNewTrip() {
+    func testDetailOverflowAddsTheRouteToATrip() {
         let app = launch()
         waitForMain(app)
 
-        app.buttons["main.card.blue-mounds-backroads"].press(forDuration: 1.1)
-        let addItem = app.buttons.matching(
-            NSPredicate(format: "label CONTAINS 'Add to trip'")).firstMatch
-        XCTAssertTrue(addItem.waitForExistence(timeout: 5), "context menu Add to trip… missing")
-        addItem.tap()
-
-        let newTrip = app.buttons["tripPicker.newTrip"]
-        XCTAssertTrue(newTrip.waitForExistence(timeout: 5), "picker missing")
-        newTrip.tap()
-        let create = app.buttons["tripPicker.create"]
-        XCTAssertTrue(create.waitForExistence(timeout: 5), "new-trip create missing")
-        create.tap()  // the default name
-
-        // The route filed into the new trip, and a trip card is now present.
-        XCTAssertTrue(app.staticTexts["New trip"].waitForExistence(timeout: 5), "new trip card missing")
-        XCTAssertFalse(app.buttons["main.card.blue-mounds-backroads"].exists, "filed route still loose")
-    }
-
-    // MARK: Detail overflow → add, then move + remove
-
-    /// A loose route's detail overflow files it into an existing trip; a filed route's overflow
-    /// offers Move to trip and Remove from trip.
-    @MainActor
-    func testDetailOverflowAddMoveRemove() {
-        let app = launch()
-        waitForMain(app)
-
-        // Add a loose route to the trip from its detail overflow.
         app.buttons["main.card.kettle-moraine-loop"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
         app.buttons["detail.overflow"].tap()
@@ -112,37 +85,22 @@ final class TripFlowTests: XCTestCase {
         XCTAssertTrue(addToTrip.waitForExistence(timeout: 5), "overflow Add to trip… missing")
         addToTrip.tap()
         app.buttons["tripPicker.trip.driftless-weekender"].tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.day.2"].firstMatch.waitForExistence(timeout: 5),
+            "the route is not the trip's third day")
         snap(app, "TR7-detail-added")
 
-        // Back on the list, the route is filed and no longer a loose card.
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["main.card.kettle-moraine-loop"].waitForExistence(timeout: 3),
-                       "route added to a trip must leave the top level")
-
-        // Open the trip, open a stage, and remove it from the trip through the overflow.
-        app.buttons["main.trip.driftless-weekender"].tap()
-        let stage = app.buttons["trip.stage.kettle-moraine-loop"]
-        XCTAssertTrue(stage.waitForExistence(timeout: 5), "added stage missing from the trip")
-        stage.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
-        app.buttons["detail.overflow"].tap()
-        XCTAssertTrue(app.buttons["detail.moveToTrip"].waitForExistence(timeout: 5),
-                      "a filed route must offer Move to trip…")
-        app.buttons["detail.removeFromTrip"].tap()
-
-        // The route returns to the top level.
-        app.navigationBars.buttons.element(boundBy: 0).tap()  // detail to trip page
-        app.navigationBars.buttons.element(boundBy: 0).tap()  // trip page to main
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["main.card.kettle-moraine-loop"].waitForExistence(timeout: 5),
-                      "removed route did not return to the top level")
+                       "a route added to a trip must leave the list")
     }
 
     // MARK: Import row → New trip
 
-    /// The import-save screen's optional Add-to-trip row files the new import into a fresh trip on
-    /// save.
+    /// The import-save screen's optional Add-to-trip row makes the new import the first day of a
+    /// fresh trip on save.
     @MainActor
     func testImportWithNewTrip() {
         let app = launch(fixtures: "trips", importSample: "gpx")
@@ -164,7 +122,7 @@ final class TripFlowTests: XCTestCase {
         app.buttons["tripPicker.create"].tap()
         snap(app, "TR7-import-newtrip")
 
-        // Save the import; it lands filed in the new trip.
+        // Save the import; it lands as the new trip's first day.
         let save = app.buttons["detail.saveToPlanned"]
         for _ in 0..<4 where !save.isHittable { app.swipeUp(velocity: .fast) }
         save.tap()
@@ -172,10 +130,11 @@ final class TripFlowTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
         let tripCard = app.staticTexts["Schwarzwald Trip"]
         XCTAssertTrue(tripCard.waitForExistence(timeout: 5), "new trip card missing after import")
-        // The imported route is filed, not a loose top-level card.
+        // The imported route is part of the trip, not a route card.
         XCTAssertFalse(app.staticTexts["Schwarzwald Tour · Tag 2"].exists, "imported route leaked to top level")
         tripCard.tap()
-        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5),
-                      "imported route is not a stage of the new trip")
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 5),
+            "imported route is not the first day of the new trip")
     }
 }

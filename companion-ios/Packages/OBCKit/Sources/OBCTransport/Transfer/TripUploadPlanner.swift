@@ -1,9 +1,9 @@
 import Foundation
 import OBCDomain
 
-/// What a whole-trip upload does to one stage: up to date by CRC is a skip, on the device but
+/// What a whole-trip upload does to one day route: up to date by CRC is a skip, on the device but
 /// outdated is a replace in place by id, and absent is a fresh upload the device assigns an id for.
-public enum TripStageAction: Equatable, Sendable {
+public enum TripDayAction: Equatable, Sendable {
     /// The device's copy is byte-identical to what an upload would send, so no bytes move.
     case skip
     /// On the device under this id but outdated: replace that object in place.
@@ -24,13 +24,13 @@ public enum TripObjectAction: Equatable, Sendable {
     public var isFresh: Bool { self == .fresh }
 }
 
-/// One stage's slot in the plan: its library id plus its verdict, in ride order.
-public struct TripStagePlan: Equatable, Sendable {
-    public let routeID: RouteID
-    public let action: TripStageAction
+/// One day's slot in the plan: its day index plus its verdict, in ride order.
+public struct TripDayPlan: Equatable, Sendable {
+    public let day: Int
+    public let action: TripDayAction
 
-    public init(routeID: RouteID, action: TripStageAction) {
-        self.routeID = routeID
+    public init(day: Int, action: TripDayAction) {
+        self.day = day
         self.action = action
     }
 }
@@ -39,7 +39,7 @@ public struct TripStagePlan: Equatable, Sendable {
 /// the route and the trip catalogs. A trip that cannot fit fails up front with guidance, rather
 /// than filling the device partway through.
 public struct TripUploadPrecheck: Equatable, Sendable {
-    /// Stages that would be fresh uploads; each needs a free route slot.
+    /// Day routes that would be fresh uploads; each needs a free route slot.
     public let freshRoutesNeeded: Int
     /// Free route slots on the device (`routeCapacity − routes currently stored`).
     public let freeRouteSlots: Int
@@ -66,54 +66,54 @@ public struct TripUploadPrecheck: Equatable, Sendable {
     /// Whether the new trip object has nowhere to land.
     public var tripSlotExhausted: Bool { needsNewTripSlot && freeTripSlots < 1 }
 
-    /// The whole trip fits: every fresh stage has a slot, and the trip object has one when it is
+    /// The whole trip fits: every fresh day route has a slot, and the trip object has one when it is
     /// new.
     public var fits: Bool { routeSlotDeficit == 0 && !tripSlotExhausted }
 }
 
-/// The full plan a whole-trip upload executes: the per-stage queue in ride order, how the trip
+/// The full plan a whole-trip upload executes: the per-day queue in ride order, how the trip
 /// object lands, and the precheck. A pure value: the queue driver turns it into transfers, and the
 /// precheck gates it.
 public struct TripUploadPlan: Equatable, Sendable {
-    public let stages: [TripStagePlan]
+    public let days: [TripDayPlan]
     public let tripObject: TripObjectAction
     public let precheck: TripUploadPrecheck
 
-    public init(stages: [TripStagePlan], tripObject: TripObjectAction, precheck: TripUploadPrecheck) {
-        self.stages = stages
+    public init(days: [TripDayPlan], tripObject: TripObjectAction, precheck: TripUploadPrecheck) {
+        self.days = days
         self.tripObject = tripObject
         self.precheck = precheck
     }
 
-    /// The stages that actually move bytes, skips excluded, in order.
-    public var uploadStages: [TripStagePlan] { stages.filter { $0.action.isUpload } }
+    /// The days that actually move bytes, skips excluded, in order.
+    public var uploadDays: [TripDayPlan] { days.filter { $0.action.isUpload } }
 
-    /// Every stage is already up-to-date on the device.
-    public var allStagesSkip: Bool { stages.allSatisfy { $0.action == .skip } }
+    /// Every day route is already up to date on the device.
+    public var allDaysSkip: Bool { days.allSatisfy { $0.action == .skip } }
 }
 
-/// Partitions a trip's stages into skip, replace and fresh, and does the precheck math. Pure: the
-/// model feeds it a per-stage snapshot of the reconcile state and the device catalog counts, and
+/// Partitions a trip's day routes into skip, replace and fresh, and does the precheck math. Pure: the
+/// model feeds it a per-day snapshot of the reconcile state and the device catalog counts, and
 /// it never touches the transport.
 public enum TripUploadPlanner {
-    /// One stage's reconcile snapshot, as `MainScreenModel` reads it.
-    public struct StageInput: Equatable, Sendable {
-        public let routeID: RouteID
-        /// The device is proven to hold this stage's current content, so the stage is skipped.
+    /// One day route's reconcile snapshot, as `MainScreenModel` reads it.
+    public struct DayInput: Equatable, Sendable {
+        public let day: Int
+        /// The device is proven to hold this day route's current content, so it is skipped.
         public let isUpToDate: Bool
-        /// The device object id this stage is currently stored under, when a valid scoped link
+        /// The device object id this day route is currently stored under, when a valid scoped link
         /// points at a still-present catalog entry. Nil means absent, so a fresh upload; present
         /// but not up to date means a replace by id.
         public let committedObjectID: DeviceObjectID?
 
-        public init(routeID: RouteID, isUpToDate: Bool, committedObjectID: DeviceObjectID?) {
-            self.routeID = routeID
+        public init(day: Int, isUpToDate: Bool, committedObjectID: DeviceObjectID?) {
+            self.day = day
             self.isUpToDate = isUpToDate
             self.committedObjectID = committedObjectID
         }
 
-        /// This stage's queue verdict.
-        var action: TripStageAction {
+        /// This day's queue verdict.
+        var action: TripDayAction {
             if isUpToDate { return .skip }
             if let committedObjectID { return .replace(committedObjectID) }
             return .fresh
@@ -123,7 +123,7 @@ public enum TripUploadPlanner {
     /// Build the plan and the precheck for a trip.
     ///
     /// - Parameters:
-    ///   - stages: the trip's stages, in ride order, each with its reconcile snapshot.
+    ///   - days: the trip's day routes, in ride order, each with its reconcile snapshot.
     ///   - tripObjectID: the trip object's current device id when a valid scoped link points at a
     ///     still-present trip-catalog entry, which makes the push a replace by id. Nil means a
     ///     fresh trip object.
@@ -134,15 +134,15 @@ public enum TripUploadPlanner {
     ///     production leaves these nil and the device's atomic refusal stays the authority. The
     ///     device's route and trip menu limits are bounded on-device snapshots, not storage limits.
     public static func plan(
-        stages: [StageInput],
+        days: [DayInput],
         tripObjectID: DeviceObjectID?,
         deviceRouteCount: Int,
         deviceTripCount: Int,
         routeCapacity: Int? = nil,
         tripCapacity: Int? = nil
     ) -> TripUploadPlan {
-        let stagePlans = stages.map { TripStagePlan(routeID: $0.routeID, action: $0.action) }
-        let freshRoutes = stagePlans.reduce(0) { $0 + ($1.action == .fresh ? 1 : 0) }
+        let dayPlans = days.map { TripDayPlan(day: $0.day, action: $0.action) }
+        let freshRoutes = dayPlans.reduce(0) { $0 + ($1.action == .fresh ? 1 : 0) }
         let tripAction: TripObjectAction = tripObjectID.map(TripObjectAction.replace) ?? .fresh
         let precheck = TripUploadPrecheck(
             freshRoutesNeeded: freshRoutes,
@@ -150,6 +150,6 @@ public enum TripUploadPlanner {
             needsNewTripSlot: tripAction.isFresh,
             freeTripSlots: tripCapacity.map { max(0, $0 - deviceTripCount) } ?? .max
         )
-        return TripUploadPlan(stages: stagePlans, tripObject: tripAction, precheck: precheck)
+        return TripUploadPlan(days: dayPlans, tripObject: tripAction, precheck: precheck)
     }
 }

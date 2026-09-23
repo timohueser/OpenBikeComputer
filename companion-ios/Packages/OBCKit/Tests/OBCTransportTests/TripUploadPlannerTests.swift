@@ -5,28 +5,28 @@ import OBCDomain
 /// The pure whole-trip upload planner: the skip, replace and fresh partition, and the precheck
 /// slot math. No transport, no model.
 struct TripUploadPlannerTests {
-    private func stage(_ id: String, upToDate: Bool = false, committed: UInt16? = nil) -> TripUploadPlanner.StageInput {
-        TripUploadPlanner.StageInput(
-            routeID: RouteID(id), isUpToDate: upToDate,
+    private func day(_ index: Int, upToDate: Bool = false, committed: UInt16? = nil) -> TripUploadPlanner.DayInput {
+        TripUploadPlanner.DayInput(
+            day: index, isUpToDate: upToDate,
             committedObjectID: committed.map(DeviceObjectID.init))
     }
 
     // MARK: Partition
 
     @Test
-    func partitionsStagesIntoSkipReplaceFresh() {
+    func partitionsDaysIntoSkipReplaceFresh() {
         let plan = TripUploadPlanner.plan(
-            stages: [
-                stage("a", upToDate: true, committed: 7),   // on device, current → skip
-                stage("b", committed: 12),                    // on device, outdated → replace
-                stage("c"),                                   // absent → fresh
+            days: [
+                day(0, upToDate: true, committed: 7),   // on device, current → skip
+                day(1, committed: 12),                    // on device, outdated → replace
+                day(2),                                   // absent → fresh
             ],
             tripObjectID: nil,
             deviceRouteCount: 2, deviceTripCount: 0
         )
-        #expect(plan.stages.map(\.action) == [.skip, .replace(DeviceObjectID(12)), .fresh])
-        #expect(plan.uploadStages.count == 2)
-        #expect(!plan.allStagesSkip)
+        #expect(plan.days.map(\.action) == [.skip, .replace(DeviceObjectID(12)), .fresh])
+        #expect(plan.uploadDays.count == 2)
+        #expect(!plan.allDaysSkip)
         #expect(plan.tripObject == .fresh)  // no existing device trip link
     }
 
@@ -34,12 +34,12 @@ struct TripUploadPlannerTests {
     func upToDateBeatsAPresentLink() {
         // A stage that is both up to date and on the device is a skip, not a replace.
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a", upToDate: true, committed: 7)],
+            days: [day(0, upToDate: true, committed: 7)],
             tripObjectID: DeviceObjectID(3),
             deviceRouteCount: 1, deviceTripCount: 1
         )
-        #expect(plan.stages.map(\.action) == [.skip])
-        #expect(plan.allStagesSkip)
+        #expect(plan.days.map(\.action) == [.skip])
+        #expect(plan.allDaysSkip)
         #expect(plan.tripObject == .replace(DeviceObjectID(3)))
     }
 
@@ -51,7 +51,7 @@ struct TripUploadPlannerTests {
         // 1,916 catalog entries. With no advertised admission cap the planner must proceed and
         // leave the device as the storage authority.
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a"), stage("b")],
+            days: [day(0), day(1)],
             tripObjectID: nil,
             deviceRouteCount: 249, deviceTripCount: 0
         )
@@ -63,7 +63,7 @@ struct TripUploadPlannerTests {
     @Test
     func precheckFitsWhenFreshStagesHaveSlots() {
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a"), stage("b")],  // 2 fresh
+            days: [day(0), day(1)],  // 2 fresh
             tripObjectID: nil,
             deviceRouteCount: 60, deviceTripCount: 0,
             routeCapacity: 64, tripCapacity: 16
@@ -77,7 +77,7 @@ struct TripUploadPlannerTests {
     @Test
     func precheckFailsWhenFreshStagesOutrunSlots() {
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a"), stage("b"), stage("c")],  // 3 fresh
+            days: [day(0), day(1), day(2)],  // 3 fresh
             tripObjectID: nil,
             deviceRouteCount: 63, deviceTripCount: 0,
             routeCapacity: 64, tripCapacity: 16
@@ -93,7 +93,7 @@ struct TripUploadPlannerTests {
         // A device at the route cap still fits a trip whose stages all replace or skip: replace
         // is cap-exempt on the device.
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a", upToDate: true, committed: 1), stage("b", committed: 2)],
+            days: [day(0, upToDate: true, committed: 1), day(1, committed: 2)],
             tripObjectID: DeviceObjectID(9),
             deviceRouteCount: 64, deviceTripCount: 5,
             routeCapacity: 64, tripCapacity: 16
@@ -105,7 +105,7 @@ struct TripUploadPlannerTests {
     @Test
     func precheckFailsWhenANewTripHasNoTripSlot() {
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a", upToDate: true, committed: 1)],  // no fresh routes
+            days: [day(0, upToDate: true, committed: 1)],  // no fresh routes
             tripObjectID: nil,  // a new trip object
             deviceRouteCount: 0, deviceTripCount: 16,  // trip catalog full
             routeCapacity: 64, tripCapacity: 16
@@ -123,12 +123,12 @@ struct TripUploadPlannerTests {
     func reRunOfALandedTripIsAllSkips() {
         // Every stage up to date and the trip already on the device: a pure-skip plan fits.
         let plan = TripUploadPlanner.plan(
-            stages: [stage("a", upToDate: true, committed: 1), stage("b", upToDate: true, committed: 2)],
+            days: [day(0, upToDate: true, committed: 1), day(1, upToDate: true, committed: 2)],
             tripObjectID: DeviceObjectID(9),
             deviceRouteCount: 2, deviceTripCount: 1
         )
-        #expect(plan.allStagesSkip)
-        #expect(plan.uploadStages.isEmpty)
+        #expect(plan.allDaysSkip)
+        #expect(plan.uploadDays.isEmpty)
         #expect(plan.tripObject == .replace(DeviceObjectID(9)))
         #expect(plan.precheck.fits)
     }

@@ -3,21 +3,16 @@ import OBCDomain
 import OBCTransport
 
 /// The trip page, behind a trip card in the routes list. The header carries the trip name, the
-/// summed stats and the Upload trip action; below it the member routes appear as the same route
-/// cards as everywhere, in stage order, each tinted with its palette colour. The overflow menu
-/// carries Rename, Reorder stages, Remove from trip and Delete trip.
+/// totals and the Upload trip action; below it the days appear as route cards, each tinted with
+/// its palette colour. The overflow menu carries Rename, Reverse and Delete trip.
 ///
 /// Driven straight off `MainScreenModel`: the model owns the trip edits and the library, and this
-/// view binds them. It pops itself the moment the trip dissolves or is deleted.
+/// view binds them. It pops itself the moment the trip is deleted.
 public struct TripDetailView: View {
     @Bindable private var model: MainScreenModel
     private let tripID: TripID
-    private let onSelectRoute: (RouteSummary) -> Void
     private let onClose: () -> Void
 
-    /// Reorder mode: a plain flag mapped to `\.editMode` on iOS, because that environment key is
-    /// unavailable on the macOS host the package's `swift test` also builds for.
-    @State private var isReordering = false
     @State private var renameShown = false
     @State private var renameDraft = ""
     @State private var deleteDialogShown = false
@@ -27,9 +22,6 @@ public struct TripDetailView: View {
     /// Upload tapped with the catalog re-read in flight: it debounces the button until the sheet's
     /// driver exists.
     @State private var isPreparingUpload = false
-    /// A pending "remove the last stage": dissolving the trip needs an inline confirm, because a
-    /// trip is created with at least one route and emptying it removes it.
-    @State private var dissolveConfirmStage: RouteID?
     /// The full-screen interactive trip map.
     @State private var mapShown = false
 
@@ -38,17 +30,15 @@ public struct TripDetailView: View {
     public init(
         model: MainScreenModel,
         tripID: TripID,
-        onSelectRoute: @escaping (RouteSummary) -> Void = { _ in },
         onClose: @escaping () -> Void = {}
     ) {
         self.model = model
         self.tripID = tripID
-        self.onSelectRoute = onSelectRoute
         self.onClose = onClose
     }
 
-    private var trip: TripRecord? { model.trip(tripID) }
-    private var stages: [RouteSummary] { model.tripStages(tripID) }
+    private var trip: Trip? { model.trip(tripID) }
+    private var days: [RouteSummary] { model.tripDays(tripID).map { $0.summary(tripID: tripID) } }
 
     public var body: some View {
         List {
@@ -57,58 +47,17 @@ public struct TripDetailView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 8, trailing: 20))
 
-            ForEach(Array(stages.enumerated()), id: \.element.id) { index, stage in
-                Button { onSelectRoute(stage) } label: {
-                    RouteCard(
-                        route: stage,
-                        onDevice: model.onDeviceState(stage.id),
-                        stageAccent: OBCTheme.stageColor(index: index)
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("trip.stage.\(stage.id.rawValue)")
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 12, trailing: 20))
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) { attemptRemove(stage.id) } label: {
-                        Label("Remove", systemImage: "minus.circle")
-                    }
-                }
-                // Clip both long-press lift previews, the context menu's and the reorder drag's,
-                // to the card's own rounded shape, exactly as the main screen's route rows do.
-                // Without this the system snapshots the whole rectangular row and the card floats
-                // on a stark white slab. iOS-only kind; macOS is the test host.
-                #if os(iOS)
-                .contentShape(
-                    [.contextMenuPreview, .dragPreview],
-                    RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
-                )
-                #endif
-                // The same long-press affordance as the main screen's cards: a rounded lift with
-                // a small menu. The reorder drag still starts from the lift by moving.
-                .contextMenu {
-                    Button {
-                        onSelectRoute(stage)
-                    } label: {
-                        Label("Open route", systemImage: "map")
-                    }
-                    Button(role: .destructive) {
-                        attemptRemove(stage.id)
-                    } label: {
-                        Label("Remove from trip", systemImage: "minus.circle")
-                    }
-                }
+            ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
+                RouteCard(route: day, stageAccent: OBCTheme.stageColor(index: index))
+                    .accessibilityIdentifier("trip.day.\(index)")
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 12, trailing: 20))
             }
-            .onMove(perform: moveStages)
-            .onDelete(perform: deleteStages)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(OBCTheme.parchment.ignoresSafeArea())
-        #if os(iOS)
-        .environment(\.editMode, .constant(isReordering ? .active : .inactive))
-        #endif
         .navigationTitle(trip?.name ?? "Trip")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -129,31 +78,11 @@ public struct TripDetailView: View {
             isPresented: $deleteDialogShown,
             titleVisibility: .visible
         ) {
-            Button("Ungroup") {
-                model.ungroupTrip(tripID)
-                onClose()
-            }
-            Button("Delete trip & routes", role: .destructive) {
-                model.deleteTripAndRoutes(tripID)
+            Button("Delete trip", role: .destructive) {
+                model.deleteTrip(tripID)
                 onClose()
             }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Ungroup keeps the routes in your library. Delete trip & routes removes them too.")
-        }
-        .confirmationDialog(
-            "Remove the last stage?",
-            isPresented: dissolveConfirmBinding,
-            titleVisibility: .visible,
-            presenting: dissolveConfirmStage
-        ) { stage in
-            Button("Remove & dissolve trip", role: .destructive) {
-                _ = model.removeStage(stage, from: tripID)
-                onClose()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("The route goes back to your top-level list and the trip is dissolved.")
         }
         // The trip vanished under us, so leave the page.
         .onChange(of: model.trips) { _, _ in
@@ -171,10 +100,10 @@ public struct TripDetailView: View {
 
     // MARK: Header
 
-    /// The stages as coloured preview tracks: the shared input of the hero map and the full-screen
-    /// map, with the palette colour by stage index.
+    /// The days as coloured preview tracks: the shared input of the hero map and the full-screen
+    /// map, with the palette colour by day index.
     private var previewStages: [MultiTrackPreviewView.Stage] {
-        stages.enumerated().map { index, summary in
+        days.enumerated().map { index, summary in
             MultiTrackPreviewView.Stage(
                 coordinates: summary.trackPreview?.coordinates ?? [],
                 color: OBCTheme.stageColor(index: index)
@@ -188,7 +117,7 @@ public struct TripDetailView: View {
         isOnline && previewStages.contains { !$0.coordinates.isEmpty }
     }
 
-    /// The whole-trip hero map: every stage in its palette colour, above the stat strip. Tapping
+    /// The whole-trip hero map: every day in its palette colour, above the stat strip. Tapping
     /// it, online and with geometry, opens the full-screen interactive map, the same affordance as
     /// the route detail's hero.
     @ViewBuilder
@@ -211,25 +140,14 @@ public struct TripDetailView: View {
     }
 
     private var tripMapCover: some View {
-        // The interactive map draws each stage's full tracklog, never the downsampled preview when
-        // zooming is on offer, falling back to the preview's coordinates for a record whose
-        // geometry did not survive. The summaries ride along so a tap on a segment raises its
-        // callout, and Open route closes the cover and pushes the stage's ordinary detail page.
         TrackMapView(
-            stages: stages.enumerated().map { index, summary in
+            stages: model.tripDays(tripID).enumerated().map { index, day in
                 MultiTrackPreviewView.Stage(
-                    coordinates: model.plannedGeometry(for: summary.id)?.points.map(\.coordinate)
-                        ?? summary.trackPreview?.coordinates ?? [],
-                    color: OBCTheme.stageColor(index: index)
-                )
+                    coordinates: day.points.map(\.coordinate), color: OBCTheme.stageColor(index: index))
             },
-            stageSummaries: stages,
+            stageSummaries: days,
             title: trip?.name ?? "Trip",
-            onClose: { mapShown = false },
-            onOpenStage: { summary in
-                mapShown = false
-                onSelectRoute(summary)
-            }
+            onClose: { mapShown = false }
         )
     }
 
@@ -245,7 +163,7 @@ public struct TripDetailView: View {
                 OBCStat(
                     value: OBCFormat.climbValue(meters: stats.elevationGainMeters), unit: "m",
                     key: "Climb"),
-                OBCStat(value: "\(stats.stageCount)", key: stats.stageCount == 1 ? "Stage" : "Stages"),
+                OBCStat(value: "\(stats.dayCount)", key: stats.dayCount == 1 ? "Day" : "Days"),
             ])
             .accessibilityIdentifier("trip.stats")
 
@@ -285,14 +203,10 @@ public struct TripDetailView: View {
                 } label: { Label("Rename", systemImage: "pencil") }
                 .accessibilityIdentifier("trip.rename")
 
-                Button {
-                    withAnimation { isReordering.toggle() }
-                } label: {
-                    Label(
-                        isReordering ? "Done reordering" : "Reorder stages",
-                        systemImage: "arrow.up.arrow.down")
+                Button { model.reverseTrip(tripID) } label: {
+                    Label("Reverse", systemImage: "arrow.left.arrow.right")
                 }
-                .accessibilityIdentifier("trip.reorder")
+                .accessibilityIdentifier("trip.reverse")
 
                 Divider()
 
@@ -305,39 +219,6 @@ public struct TripDetailView: View {
             }
             .accessibilityIdentifier("trip.overflow")
         }
-    }
-
-    // MARK: Edits
-
-    private func moveStages(from source: IndexSet, to destination: Int) {
-        model.reorderTripStages(tripID, from: source, to: destination)
-    }
-
-    private func deleteStages(at offsets: IndexSet) {
-        // Resolve offsets to ids before mutating: `stages` is computed off the live model, so
-        // after the first removal the remaining offsets would point at shifted rows. Each id then
-        // goes through the same last-stage guard as the swipe action.
-        let ids = offsets.compactMap { $0 < stages.count ? stages[$0].id : nil }
-        for id in ids {
-            attemptRemove(id)
-        }
-    }
-
-    /// Remove a stage: directly when the trip keeps at least one, or through the inline dissolve
-    /// confirm when it is the last.
-    private func attemptRemove(_ routeID: RouteID) {
-        if (trip?.stageIDs.count ?? 0) <= 1 {
-            dissolveConfirmStage = routeID
-        } else {
-            _ = model.removeStage(routeID, from: tripID)
-        }
-    }
-
-    private var dissolveConfirmBinding: Binding<Bool> {
-        Binding(
-            get: { dissolveConfirmStage != nil },
-            set: { if !$0 { dissolveConfirmStage = nil } }
-        )
     }
 }
 
