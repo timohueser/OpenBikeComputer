@@ -1,0 +1,43 @@
+[package]
+name = "obc-sensor-sim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+device = []
+
+[[bin]]
+name = "obc-sensor-sim"
+path = "src/main.rs"
+required-features = ["device"]
+test = false
+bench = false
+
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time-driver-grtc", "time", "unstable-pac"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-sync = "0.8.0"
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-futures = "0.1"
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "peripheral", "central", "nrf54l15-app-s"] }
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "critical-section-impl"] }
+trouble-host = { version = "0.7.0", default-features = false, features = ["defmt", "peripheral", "gatt", "default-packet-pool-mtu-27"] }
+heapless = "0.9"
+static_cell = "2"
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+
+[dev-dependencies]
+obc-ble = { path = "../obc-ble" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = 2

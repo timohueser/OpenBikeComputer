@@ -46,6 +46,10 @@ STANDALONE_CLIPPY: dict[str, tuple[str, ...]] = {
         "cargo clippy --locked -- -D warnings",
         "cargo clippy --locked --features rtt -- -D warnings",
     ),
+    "firmware/obc-sensor-sim": (
+        "cargo clippy --locked --lib --tests -- -D warnings",
+        "cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings",
+    ),
     "apps/obc-desktop": ("cargo clippy --release --all-targets --locked -- -D warnings",),
 }
 
