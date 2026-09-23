@@ -192,6 +192,21 @@ def monaco_route(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
+def monaco_garden(stage: Stage) -> Staging:
+    """A short Monaco line past the pharmacy with split hours and a two-line name, so the Up-ahead
+    detail can show its fullest page. The track is replayed as well as imported.
+    """
+    where = stage.dir("monaco-garden")
+    track = where / "garden.gpx"
+    points = "".join(
+        f'<trkpt lat="43.73470" lon="{7.4110 + 0.002 * i:.4f}"><time>2025-01-06T09:{i:02d}:00Z</time></trkpt>'
+        for i in range(6)
+    )
+    track.write_text("<gpx><trk><trkseg>" + points + "</trkseg></trk></gpx>")
+    stage.run(["--import", str(track), "--routes-dir", str(where)])
+    return Staging(("--routes-dir", str(where), "--gpx", str(track)))
+
+
 def journey(stage: Stage) -> Staging:
     """A card carrying a real Cork destination and recording, so the ride recovery after a restart
     can reach the Journey resume card. The landmark script accepts a Visit, which persists both.
@@ -251,6 +266,7 @@ ENVIRONMENTS = {
     "day-route": day_route,
     "long-route": long_route,
     "monaco-route": monaco_route,
+    "monaco-garden": monaco_garden,
     "journey": journey,
     "elevation": elevation,
 }

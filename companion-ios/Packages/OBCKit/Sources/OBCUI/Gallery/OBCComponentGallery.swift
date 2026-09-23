@@ -1,6 +1,7 @@
 #if DEBUG
 import SwiftUI
 import OBCDomain
+import OBCTransport
 
 /// The component gallery: every kit component with sample data, for on-simulator
 /// screenshot review and quick visual checks. Debug-only; reach it with
@@ -13,6 +14,7 @@ public struct OBCComponentGallery: View {
     @State private var name = "Trailhead"
     @State private var progress = 0.62
     @State private var waypointsExpanded = true
+    @State private var rideLibrary = Self.sampleRideLibrary()
 
     public init() {}
 
@@ -80,6 +82,11 @@ public struct OBCComponentGallery: View {
                         tag: "Planned"
                     )
                 }
+                section("Ride Library Header") {
+                    RideLibraryHeader(model: rideLibrary) {}
+                        .task { await rideLibrary.loadMapLines() }
+                }
+
                 section("Skeleton Loader") {
                     RouteCardSkeleton()
                 }
@@ -244,6 +251,32 @@ public struct OBCComponentGallery: View {
             .map { RidePoint(timestamp: Date(), coordinate: $0, elevationMeters: $1) }
     ))
     #endif
+
+    /// Two seasons of loops around the sample track, so the chips and the year menu have choices.
+    static func sampleRideLibrary() -> RideLibraryModel {
+        let store = InMemoryLibraryStore()
+        let loop = TrackPreview.obcSample.coordinates
+        let rides: [(String, String, BikeType, Double)] = [
+            ("Kettle Moraine Loop", "2026-06-30T08:12:00Z", .gravel, 0),
+            ("Blue Mounds Backroads", "2026-05-17T07:40:00Z", .road, 0.03),
+            ("Sugar River Trail", "2026-04-02T09:05:00Z", .road, -0.02),
+            ("Emma Carlin Singletrack", "2025-09-20T15:00:00Z", .mtb, 0.05),
+        ]
+        for (name, iso, type, shift) in rides {
+            let date = ISO8601DateFormatter().date(from: iso)!
+            let points = loop.map {
+                RidePoint(timestamp: date, coordinate: Coordinate(latitude: $0.latitude + shift, longitude: $0.longitude + shift))
+            }
+            store.saveRide(Ride(
+                summary: RideSummary(id: RideID(name), name: name, date: date, distanceMeters: 42_300,
+                                     movingTime: 8_100, climbMeters: 520, bikeType: type),
+                points: points
+            ))
+        }
+        let model = RideLibraryModel(library: store)
+        model.rides = store.rideSummaries()
+        return model
+    }
 
     static let sampleWaypoints = [
         Waypoint(index: 0, name: "Ottawa Lake trailhead", note: "Start · parking & water", distanceAlongMeters: 0, coordinate: .init(latitude: 42.9, longitude: -88.6)),

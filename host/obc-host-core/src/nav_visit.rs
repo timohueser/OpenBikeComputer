@@ -178,12 +178,9 @@ impl VisitPlan {
         }
     }
     fn start_leg(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), NavigatorError> {
-        if matches!(self.context.purpose, ReviewPurpose::Easier(_)) {
-            self.choice.search_easier()
-        } else {
-            self.choice.search()
-        }
-        .map_err(|_| NavigatorError::Unavailable)?;
+        self.choice
+            .search(!matches!(self.context.purpose, ReviewPurpose::Easier(_)))
+            .map_err(|_| NavigatorError::Unavailable)?;
         let mut plan = NavPlan::start(&obc_app::NavRequest::new(from, to, "Visit leg"), self.context.profile);
         plan.set_attribution_map(self.context.map);
         if let ReviewPurpose::Easier(objective) = self.context.purpose {

@@ -158,7 +158,13 @@ impl VisitHarness {
                 ));
             }
             assert!(self.visit.accepts(&effect, &self.h.app), "{effect:?}");
-            if let Some(answer) = self.visit.accept(effect, &mut self.h.app, self.h.store, &mut self.h.guard) {
+            if let Some(answer) = self.visit.accept(
+                effect,
+                &mut self.h.app,
+                self.h.store,
+                &mut self.h.guard,
+                &mut obc_elevation::NullElevation,
+            ) {
                 self.outcomes.navigator.try_put(answer).unwrap();
             }
         }

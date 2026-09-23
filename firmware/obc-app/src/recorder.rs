@@ -1474,6 +1474,20 @@ mod tests {
     }
 
     #[test]
+    fn a_storage_recovery_pass_preserves_pending_save_and_samples() {
+        let mut rec = ridden(3);
+        let staged = rec.staged().to_vec();
+        rec.request(RecorderIntent::Save);
+
+        assert!(rec.next_effect(NO_STORE, at(3_000)).is_none(), "the recovery pass issues no store effect");
+        assert_eq!(rec.staged(), staged, "accepted samples remain pending");
+        assert!(
+            matches!(rec.next_effect(CAN_RECORD, at(3_001)), Some(RecorderEffect::Append { samples: 3, .. })),
+            "the next normal pass resumes Save in its existing order"
+        );
+    }
+
+    #[test]
     fn save_and_restart_opens_the_new_ride_behind_the_close() {
         let mut rec = recording();
         let first = rec.session();
