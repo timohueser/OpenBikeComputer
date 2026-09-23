@@ -186,7 +186,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     public func rideMapLine(_ id: RideID) -> RideMapLine? {
         guard let manifest = rideManifest(id) else { return nil }
         let url = rideLineURL(id)
-        if let file: RideMapLineFile = read(url), file.pointsFile == manifest.pointsFile {
+        if let file: RideMapLineFile = read(url), file.pointsFile == manifest.pointsFile,
+           file.version == RideMapLine.formatVersion {
             return file.domain(id)
         }
         guard let points = ridePoints(id) else { return nil }
@@ -299,8 +300,9 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     public func deleteRide(_ id: RideID) {
         guard rideManifest(id) != nil else { return }
-        try? FileManager.default.removeItem(at: rideDir(id))
+        // The line first: a stop before the folder goes leaves a ride that rebuilds its line.
         try? FileManager.default.removeItem(at: rideLineURL(id))
+        try? FileManager.default.removeItem(at: rideDir(id))
     }
 
     public func syncedRideIDs() -> Set<RideID> {
@@ -742,6 +744,7 @@ private struct RidePointsFile: Codable {
 }
 
 private struct RideMapLineFile: Codable {
+    var version = RideMapLine.formatVersion
     var pointsFile: String
     /// Each piece is latitude, longitude pairs, flattened.
     var pieces: [[Double]]

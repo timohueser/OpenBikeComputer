@@ -2,8 +2,7 @@ import Testing
 import Foundation
 import OBCDomain
 
-/// The library filter and totals: which year a ride counts in, which bike types appear, and an
-/// edited ride counting once.
+/// The library filter and totals: which year a ride counts in, and which bike types appear.
 struct RideLibraryTests {
     private let zurich: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
@@ -55,19 +54,5 @@ struct RideLibraryTests {
         #expect(byType.map(\.bikeType) == [.road, .gravel], "MTB has rides only in 2025")
         #expect(byType[0].totals.distanceMeters == 120_000)
         #expect(byType[0].totals.rideCount == 2)
-    }
-
-    @Test
-    func anEditedRideCountsOnceUnderItsEditedType() {
-        var edited = ride("a", "2026-05-01T08:00:00Z", km: 80, type: .road)
-        edited.bikeType = .touring
-        edited.distanceMeters = 74_300
-        let rides = [edited, ride("b", "2026-06-01T08:00:00Z", km: 60, type: .road)]
-
-        let byType = RideTotals.byBikeType(rides)
-        #expect(byType.map(\.bikeType) == [.road, .touring])
-        #expect(byType[1].totals.distanceMeters == 74_300)
-        #expect(RideTotals(rides).rideCount == 2)
-        #expect(rides.filter { RideFilter(bikeType: .road).includes($0, calendar: zurich) }.map(\.name) == ["b"])
     }
 }

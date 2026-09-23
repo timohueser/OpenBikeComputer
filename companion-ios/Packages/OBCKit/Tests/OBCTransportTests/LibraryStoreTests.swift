@@ -302,6 +302,21 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("ride-lines/ride-1.json").path))
     }
 
+    /// A line cached by another build of the simplifier rebuilds from the points.
+    func testRideMapLineFromAnotherFormatRebuilds() throws {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        try store.saveRide(ride)
+        _ = store.rideMapLine(ride.id)
+        let url = dir.appendingPathComponent("ride-lines/ride-1.json")
+        var cached = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        cached["version"] = RideMapLine.formatVersion + 1
+        cached["pieces"] = [[0.0, 0.0, 1.0, 1.0]]
+        try JSONSerialization.data(withJSONObject: cached).write(to: url)
+
+        XCTAssertEqual(store.rideMapLine(ride.id)?.pieces, [ride.points.map(\.coordinate)])
+    }
+
     func testMissingPointsFileKeepsTheSummaryRow() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()

@@ -53,15 +53,26 @@ struct RideMapLineTests {
     }
 
     @Test
-    func aTapSelectsTheNearestLineWithinTheRadius() {
+    func aTapFindsEveryRideWithinTheRadiusNearestFirst() {
         let lines = RideMapLines([
             RideMapLine(id: RideID("south"), points: ridePoints([(0, 0), (1000, 0)])),
             RideMapLine(id: RideID("north"), points: ridePoints([(0, 100), (1000, 100)])),
         ])
         let tap = point(500, 70)
-        #expect(lines.ride(nearest: tap, withinMeters: 40, metersPerPoint: 2) == RideID("north"))
-        #expect(lines.ride(nearest: tap, withinMeters: 20, metersPerPoint: 2) == nil)
+        #expect(lines.rides(near: tap, withinMeters: 80, metersPerPoint: 2) == [RideID("north"), RideID("south")])
+        #expect(lines.rides(near: tap, withinMeters: 20, metersPerPoint: 2).isEmpty)
         let southOnly = lines.restricted(to: [RideID("south")])
-        #expect(southOnly.ride(nearest: tap, withinMeters: 80, metersPerPoint: 2) == RideID("south"))
+        #expect(southOnly.rides(near: tap, withinMeters: 80, metersPerPoint: 2) == [RideID("south")])
+    }
+
+    @Test
+    func ridesOnTheSameRoadAllMatch() {
+        let road = [(0.0, 0.0), (1000.0, 0.0)]
+        let lines = RideMapLines([
+            RideMapLine(id: RideID("monday"), points: ridePoints(road)),
+            RideMapLine(id: RideID("friday"), points: ridePoints(road)),
+        ])
+        let found = lines.rides(near: point(500, 5), withinMeters: 20, metersPerPoint: 1)
+        #expect(Set(found) == [RideID("monday"), RideID("friday")])
     }
 }
