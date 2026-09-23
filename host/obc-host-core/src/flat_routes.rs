@@ -18,6 +18,8 @@ pub struct FlatRouteStore {
     nav_id: Option<ObjectId>,
     unaccepted: u64,
     internal_routes: u64,
+    /// The built trip day, as a catalog bit: at most one is set.
+    built_day: u64,
 }
 
 impl FlatRouteStore {
@@ -36,6 +38,7 @@ impl FlatRouteStore {
             nav_id: None,
             unaccepted: 0,
             internal_routes: 0,
+            built_day: 0,
         };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
@@ -43,9 +46,8 @@ impl FlatRouteStore {
                     break;
                 }
                 let source = repo.owner.open(meta.id, meta.revision)?;
-                let (summary, candidate) =
-                    RouteSummary::read_with_candidate(&source).map_err(|_| StoreError::Invalid)?;
-                repo.publish(meta, summary, candidate);
+                let (summary, flags) = RouteSummary::read_with_flags(&source).map_err(|_| StoreError::Invalid)?;
+                repo.publish(meta, summary, flags);
             }
         }
         for bytes in routes {
@@ -71,8 +73,7 @@ impl FlatRouteStore {
     }
 
     fn write(&mut self, bytes: &[u8], previous: Option<(ObjectId, Revision)>) -> Result<ObjectId, ImportError> {
-        let (summary, candidate) =
-            RouteSummary::read_with_candidate(&SliceSource(bytes)).map_err(|_| StoreError::Invalid)?;
+        let (summary, flags) = RouteSummary::read_with_flags(&SliceSource(bytes)).map_err(|_| StoreError::Invalid)?;
         let meta = self.owner.import(
             ObjectKind::Route,
             previous,
@@ -81,11 +82,14 @@ impl FlatRouteStore {
             DisplayName::default(),
         )?;
         // No read or open can turn a committed write into a reported failure.
-        self.publish(meta, summary, candidate);
+        self.publish(meta, summary, flags);
         Ok(meta.id)
     }
 
-    fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, candidate: bool) {
+    fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, flags: u8) {
+        use obc_formats::obcr::{FLAG_ASSISTANT_CANDIDATE, FLAG_BUILT_DAY};
+        let candidate = flags & FLAG_ASSISTANT_CANDIDATE != 0;
+        let built = flags & FLAG_BUILT_DAY != 0;
         let i = if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
             self.revisions[i] = meta.revision;
             self.catalog[i] = summary;
@@ -99,8 +103,12 @@ impl FlatRouteStore {
         };
         if i < 64 {
             self.internal_routes &= !(1 << i);
-            if candidate {
+            self.built_day &= !(1 << i);
+            if candidate || built {
                 self.internal_routes |= 1 << i;
+            }
+            if built {
+                self.built_day |= 1 << i;
             }
             self.unaccepted &= !(1 << i);
             if candidate && !meta.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
@@ -171,16 +179,21 @@ impl RouteRepository for FlatRouteStore {
         let mut revisions = Vec::new();
         let mut unaccepted = 0u64;
         let mut internal_routes = 0u64;
+        let mut built_day = 0u64;
         for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
             if ids.len() == obc_app::MAX_ROUTES {
                 break;
             }
-            let (summary, candidate) = store
-                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_candidate(source))
+            let (summary, flags) = store
+                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_flags(source))
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
-            if candidate {
+            let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+            if candidate || flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
                 internal_routes |= 1 << ids.len();
+            }
+            if flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
+                built_day |= 1 << ids.len();
             }
             if candidate && !entry.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
                 unaccepted |= 1 << ids.len();
@@ -197,6 +210,7 @@ impl RouteRepository for FlatRouteStore {
         self.revisions = revisions;
         self.unaccepted = unaccepted;
         self.internal_routes = internal_routes;
+        self.built_day = built_day;
         Ok(Some(start))
     }
     fn write_checkpoint(
@@ -247,9 +261,14 @@ impl RouteRepository for FlatRouteStore {
     }
 
     fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<crate::RoutePublication> {
-        let (summary, candidate) = RouteSummary::read_with_candidate(&SliceSource(bytes)).ok()?;
-        let meta = self.owner.import_computed_route(bytes).ok()?;
-        self.publish(meta, summary, candidate);
+        let (summary, flags) = RouteSummary::read_with_flags(&SliceSource(bytes)).ok()?;
+        // A built day replaces the one before it in place, so a card holds at most one.
+        let previous = (flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 && self.built_day != 0).then(|| {
+            let i = self.built_day.trailing_zeros() as usize;
+            (ObjectId(self.ids[i]), self.revisions[i])
+        });
+        let meta = self.owner.import_computed_route(bytes, previous).ok()?;
+        self.publish(meta, summary, flags);
         Some(crate::RoutePublication {
             id: meta.id.0,
             revision: meta.revision.0,
@@ -262,14 +281,14 @@ impl RouteRepository for FlatRouteStore {
         bytes: &[u8],
     ) -> Result<crate::RoutePublication, obc_app::navigator::NavigatorError> {
         use obc_app::navigator::NavigatorError;
-        let (summary, candidate) =
-            RouteSummary::read_with_candidate(&SliceSource(bytes)).map_err(|_| NavigatorError::Unavailable)?;
-        let meta = self.owner.import_computed_route(bytes).map_err(|error| match error {
+        let (summary, flags) =
+            RouteSummary::read_with_flags(&SliceSource(bytes)).map_err(|_| NavigatorError::Unavailable)?;
+        let meta = self.owner.import_computed_route(bytes, None).map_err(|error| match error {
             crate::flat_store::ImportError::Storage(StoreError::Media | StoreError::ReadOnly)
             | crate::flat_store::ImportError::RemountRequired => NavigatorError::DurabilityUnknown,
             _ => NavigatorError::Store,
         })?;
-        self.publish(meta, summary, candidate);
+        self.publish(meta, summary, flags);
         Ok(crate::RoutePublication {
             id: meta.id.0,
             revision: meta.revision.0,
