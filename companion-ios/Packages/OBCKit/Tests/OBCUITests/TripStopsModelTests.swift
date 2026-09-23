@@ -28,6 +28,7 @@ struct TripStopsModelTests {
             id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
     }
 
+    /// Each ask is three Apple Maps requests, so the moves cost twelve.
     @Test
     func tenMovesOverTheSameFiveKilometresAskFourTimes() async throws {
         let search = MockStopSearch(stops: [])
@@ -72,14 +73,13 @@ struct TripStopsModelTests {
         #expect(abs(model.stops[1].offset - 400) < 1)
     }
 
-    /// Apple Maps answers recorded at a real day end near Haslach im Kinzigtal. The town lies
-    /// 3.4 km away; some answers lie beyond the radius.
-    @Test
-    func theSheetKeepsRecordedAppleMapsStopsWithinTheRadius() async throws {
-        let url = try #require(Bundle.module.url(forResource: "haslach-stops", withExtension: "json", subdirectory: "Fixtures"))
-        let recorded = try JSONDecoder().decode([RecordedStop].self, from: Data(contentsOf: url)).map(\.stop)
-        // Two days along a meridian, the first ending at the recorded day end.
-        let end = Coordinate(latitude: 48.2919, longitude: 8.126544)
+    /// The sheet at a real day end, over the three Apple Maps answers recorded there: the
+    /// points-of-interest request, then the "hotel" and "camping" text searches. The trip runs
+    /// along a meridian and its first day ends at `end`.
+    private func recordedSheet(_ name: String, end: Coordinate) async throws -> [String] {
+        let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
+        let answers = try JSONDecoder().decode([String: [RecordedStop]].self, from: Data(contentsOf: url))
+        let merged = try Stop.merging(["nearby", "hotels", "campsites"].map { .success(answers[$0, default: []].map(\.stop)) })
         let day = { (from: Double) in
             stride(from: from, through: from + 11_000, by: 100).map {
                 RoutePoint(coordinate: Coordinate(latitude: end.latitude - $0 / 111_320, longitude: end.longitude))
@@ -88,15 +88,43 @@ struct TripStopsModelTests {
         let trip = Trip.joining(
             [day(-11_000), day(0)], id: TripID("t"), name: "T", bikeType: .gravel, now: Date(timeIntervalSince1970: 0))
         let model = TripStopsModel(
-            trip: trip, day: 0, finder: StopFinder(search: MockStopSearch(stops: recorded)), isOnline: true,
+            trip: trip, day: 0, finder: StopFinder(search: MockStopSearch(stops: merged)), isOnline: true,
             onPick: { _ in })
         await model.load()
-        #expect(Set(model.stops.map(\.stop.name)) == [
-            "Fuxxbau", "Landhaus Hechtsberg", "Wohnmobil Stellplatz", "Schlossberghof", "Ramsteinerhof",
-            "Gasthaus Aiple", "Stadthotel Haslach", "Mosers Blume Relax & Genuss Hotel", "Haus Zum Hobel",
-            "Ferienwohnung Hinterer Strickerhof", "Gasthof Blume", "Hohengasthaus Nillhofe",
+        return model.stops.map(\.stop.name)
+    }
+
+    /// Near Haslach im Kinzigtal the town lies 3.4 km from the day end: only the text searches
+    /// reach it, and only the points-of-interest request finds the two farms near the day end.
+    @Test
+    func aDayEndAtTheEdgeOfATownListsTheNearFarmsAndTheTown() async throws {
+        let names = try await recordedSheet("haslach-stops", end: Coordinate(latitude: 48.2919, longitude: 8.126544))
+        #expect(names.count == Set(names).count, "Fuxxbau is in two answers and shows once")
+        #expect(Set(names) == [
+            "Fuxxbau", "Bühlhof", "Wilhelmshütte", "Landhaus Hechtsberg", "Wohnmobil Stellplatz", "Schlossberghof",
+            "Ramsteinerhof", "Gasthaus Aiple", "Stadthotel Haslach", "Mosers Blume Relax & Genuss Hotel",
+            "Haus Zum Hobel", "Ferienwohnung Hinterer Strickerhof", "Gasthof Blume", "Hohengasthaus Nillhofe",
             "Hausach Home Bahnhofsnähe", "Brucherhof", "Gasthaus Käppelehof",
         ], "Hotel-Restaurant Alte Bauernschanke lies 5.4 km away")
+    }
+
+    /// In Titisee the "hotel" search stops at its 25 results and misses hotels 150 m from the day
+    /// end, which the points-of-interest request finds.
+    @Test
+    func aDayEndInATownKeepsTheNearStopsTheTextSearchDrops() async throws {
+        let names = try await recordedSheet("titisee-stops", end: Coordinate(latitude: 47.903, longitude: 8.156))
+        #expect(names.filter { $0 == "Coucou Hotel" }.count == 1, "in two answers, shown once")
+        #expect(names.contains("Hotel Waldlust"), "147 m away, not among the 25 hotels")
+        #expect(names.contains("Hotel Imbery"), "3.8 km away, beyond the points-of-interest request")
+    }
+
+    @Test
+    func aFailedSearchKeepsTheOtherAnswersAndOnlyAllFailedFails() throws {
+        let camp = Stop(name: "Camp", coordinate: coordinate(0), kind: .campsite, mapItemID: "I1")
+        let hotel = Stop(name: "Hotel", coordinate: coordinate(100), kind: .hotel, mapItemID: "I2")
+        let offline = URLError(.notConnectedToInternet)
+        #expect(try Stop.merging([.success([camp, hotel]), .failure(offline), .success([hotel])]) == [camp, hotel])
+        #expect(throws: URLError.self) { try Stop.merging([.failure(offline), .failure(offline)]) }
     }
 
     @Test

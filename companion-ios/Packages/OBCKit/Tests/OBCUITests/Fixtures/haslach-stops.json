@@ -1,184 +1,211 @@
-[
- {
-  "kind": "campsite",
-  "latitude": 48.295736,
-  "longitude": 8.047877,
-  "mapItemID": "IBB226C076C120EA1",
-  "name": "Campingplatz Kinzigtal"
- },
- {
-  "kind": "campsite",
-  "latitude": 48.287296,
-  "longitude": 8.165349,
-  "mapItemID": "I499E9AE210876777",
-  "name": "Wohnmobil Stellplatz"
- },
- {
-  "kind": "campsite",
-  "latitude": 48.296122,
-  "longitude": 8.047318,
-  "mapItemID": "I7BC7548C2E6206B5",
-  "name": "Mobilheim Chalet Chicco"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.291874,
-  "longitude": 8.126314,
-  "mapItemID": "IB4C6370DA9834400",
-  "name": "Fuxxbau"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.276937,
-  "longitude": 8.086142,
-  "mapItemID": "IB82FAA341429C20B",
-  "name": "Stadthotel Haslach"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.285413,
-  "longitude": 8.081026,
-  "mapItemID": "IE9F643206D34624A",
-  "name": "Mosers Blume Relax & Genuss Hotel"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.277074,
-  "longitude": 8.086765,
-  "mapItemID": "I841A851178B9418E",
-  "name": "Gasthaus Aiple"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.30513,
-  "longitude": 8.191076,
-  "mapItemID": "I80C97E245888D080",
-  "name": "Gasthaus Käppelehof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.264257,
-  "longitude": 8.20186,
-  "mapItemID": "I2003588CEB4488C5",
-  "name": "Wäldebauernhof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.285477,
-  "longitude": 8.184917,
-  "mapItemID": "I16E6CFAF35ECA5FC",
-  "name": "Gasthof Blume"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.329169,
-  "longitude": 8.051994,
-  "mapItemID": "IA56EE8C79AEE1F8E",
-  "name": "Landhotel Gasthaus zum Pflug"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.27826,
-  "longitude": 8.082291,
-  "mapItemID": "ICF516CB054468551",
-  "name": "Haus Zum Hobel"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.281759,
-  "longitude": 8.139473,
-  "mapItemID": "IE6CF0C78E7EEB501",
-  "name": "Landhaus Hechtsberg"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.332896,
-  "longitude": 8.117674,
-  "mapItemID": "I26BD208D41D4FE0D",
-  "name": "Hohengasthaus Nillhofe"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.266168,
-  "longitude": 8.200912,
-  "mapItemID": "I104BBB5A3C12B3D",
-  "name": "Rotbauernhof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.325961,
-  "longitude": 8.085684,
-  "mapItemID": "I39908E85317F3B03",
-  "name": "Brucherhof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.343785,
-  "longitude": 8.064361,
-  "mapItemID": "IEFA78A52B7AFD6D9",
-  "name": "Haus Willmann"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.3054,
-  "longitude": 8.056502,
-  "mapItemID": "I66473532D87A1E99",
-  "name": "Hotel-Restaurant Alte Bauernschanke"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.299259,
-  "longitude": 8.168383,
-  "mapItemID": "IFA8E3CBDF94ECA41",
-  "name": "Ramsteinerhof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.28302,
-  "longitude": 8.194015,
-  "mapItemID": "I65C7FD2B7888C70F",
-  "name": "Gasthaus zum Hirsch"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.303407,
-  "longitude": 8.205037,
-  "mapItemID": "I4F40A217A4C02FF",
-  "name": "Dohlenbacherhof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.286613,
-  "longitude": 8.086579,
-  "mapItemID": "ID940391143119157",
-  "name": "Schlossberghof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.32116,
-  "longitude": 8.08774,
-  "mapItemID": "I7011B3C66654A850",
-  "name": "Ferienwohnung Hinterer Strickerhof"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.344315,
-  "longitude": 8.061432,
-  "mapItemID": "ID4892A66FE14974F",
-  "name": "Haus Daheim"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.283204,
-  "longitude": 8.188641,
-  "mapItemID": "I8D5D81666B45E626",
-  "name": "Hausach Home Bahnhofsnähe"
- },
- {
-  "kind": "hotel",
-  "latitude": 48.257455,
-  "longitude": 8.061302,
-  "mapItemID": "I9F6E502C3A83A189",
-  "name": "Drei Schneeballen Gästehaus"
- }
-]
+{
+ "campsites": [
+  {
+   "kind": "campsite",
+   "latitude": 48.295736,
+   "longitude": 8.047877,
+   "mapItemID": "IBB226C076C120EA1",
+   "name": "Campingplatz Kinzigtal"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 48.287296,
+   "longitude": 8.165349,
+   "mapItemID": "I499E9AE210876777",
+   "name": "Wohnmobil Stellplatz"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 48.296122,
+   "longitude": 8.047318,
+   "mapItemID": "I7BC7548C2E6206B5",
+   "name": "Mobilheim Chalet Chicco"
+  }
+ ],
+ "hotels": [
+  {
+   "kind": "hotel",
+   "latitude": 48.291874,
+   "longitude": 8.126314,
+   "mapItemID": "IB4C6370DA9834400",
+   "name": "Fuxxbau"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.276937,
+   "longitude": 8.086142,
+   "mapItemID": "IB82FAA341429C20B",
+   "name": "Stadthotel Haslach"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.277074,
+   "longitude": 8.086765,
+   "mapItemID": "I841A851178B9418E",
+   "name": "Gasthaus Aiple"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.285413,
+   "longitude": 8.081026,
+   "mapItemID": "IE9F643206D34624A",
+   "name": "Mosers Blume Relax & Genuss Hotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.30513,
+   "longitude": 8.191076,
+   "mapItemID": "I80C97E245888D080",
+   "name": "Gasthaus Käppelehof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.264257,
+   "longitude": 8.20186,
+   "mapItemID": "I2003588CEB4488C5",
+   "name": "Wäldebauernhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.285477,
+   "longitude": 8.184917,
+   "mapItemID": "I16E6CFAF35ECA5FC",
+   "name": "Gasthof Blume"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.329169,
+   "longitude": 8.051994,
+   "mapItemID": "IA56EE8C79AEE1F8E",
+   "name": "Landhotel Gasthaus zum Pflug"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.27826,
+   "longitude": 8.082291,
+   "mapItemID": "ICF516CB054468551",
+   "name": "Haus Zum Hobel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.332896,
+   "longitude": 8.117674,
+   "mapItemID": "I26BD208D41D4FE0D",
+   "name": "Hohengasthaus Nillhofe"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.281759,
+   "longitude": 8.139473,
+   "mapItemID": "IE6CF0C78E7EEB501",
+   "name": "Landhaus Hechtsberg"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.266168,
+   "longitude": 8.200912,
+   "mapItemID": "I104BBB5A3C12B3D",
+   "name": "Rotbauernhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.325961,
+   "longitude": 8.085684,
+   "mapItemID": "I39908E85317F3B03",
+   "name": "Brucherhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.343785,
+   "longitude": 8.064361,
+   "mapItemID": "IEFA78A52B7AFD6D9",
+   "name": "Haus Willmann"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.3054,
+   "longitude": 8.056502,
+   "mapItemID": "I66473532D87A1E99",
+   "name": "Hotel-Restaurant Alte Bauernschanke"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.28302,
+   "longitude": 8.194015,
+   "mapItemID": "I65C7FD2B7888C70F",
+   "name": "Gasthaus zum Hirsch"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.303407,
+   "longitude": 8.205037,
+   "mapItemID": "I4F40A217A4C02FF",
+   "name": "Dohlenbacherhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.299259,
+   "longitude": 8.168383,
+   "mapItemID": "IFA8E3CBDF94ECA41",
+   "name": "Ramsteinerhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.286613,
+   "longitude": 8.086579,
+   "mapItemID": "ID940391143119157",
+   "name": "Schlossberghof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.344315,
+   "longitude": 8.061432,
+   "mapItemID": "ID4892A66FE14974F",
+   "name": "Haus Daheim"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.283204,
+   "longitude": 8.188641,
+   "mapItemID": "I8D5D81666B45E626",
+   "name": "Hausach Home Bahnhofsnähe"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.32116,
+   "longitude": 8.08774,
+   "mapItemID": "I7011B3C66654A850",
+   "name": "Ferienwohnung Hinterer Strickerhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.257455,
+   "longitude": 8.061302,
+   "mapItemID": "I9F6E502C3A83A189",
+   "name": "Drei Schneeballen Gästehaus"
+  }
+ ],
+ "nearby": [
+  {
+   "kind": "hotel",
+   "latitude": 48.291874,
+   "longitude": 8.126314,
+   "mapItemID": "IB4C6370DA9834400",
+   "name": "Fuxxbau"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.2967,
+   "longitude": 8.12969,
+   "mapItemID": "IB1F96077D63B778C",
+   "name": "Bühlhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 48.289237,
+   "longitude": 8.117547,
+   "mapItemID": "I8AC6166228A4E093",
+   "name": "Wilhelmshütte"
+  }
+ ]
+}
