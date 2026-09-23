@@ -41,8 +41,6 @@ pub struct CorridorScratch {
     clock_key: Option<(bool, i16)>,
     local: Option<(u8, u16)>,
     recheck: bool,
-    /// The page boundary the next query starts past, and whether it pages backwards.
-    start: Option<(PlaceKey, bool)>,
     /// The key a snapshot is *wanted* for — `None` when nothing is asking (the normal state: no
     /// Up-ahead screen is up, so the query never runs and the host never builds a `Reader` for it).
     want: Option<CorridorKey>,
@@ -67,7 +65,6 @@ impl CorridorScratch {
             clock_key: None,
             local: None,
             recheck: false,
-            start: None,
         }
     }
 
@@ -86,16 +83,10 @@ impl CorridorScratch {
     pub fn invalidate(&mut self) {
         self.taken_for = None;
         self.recheck = false;
-        self.start = None;
         self.pois.clear();
         self.query = None;
         self.generation = self.generation.wrapping_add(1);
         self.status = QueryProgress::Unavailable;
-    }
-
-    /// Start the next query past `boundary`, so a later page does not first walk the earlier ones.
-    pub(crate) fn start_after(&mut self, boundary: PlaceKey, backwards: bool) {
-        self.start = Some((boundary, backwards));
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -191,6 +182,19 @@ impl CorridorScratch {
         local: Option<(u8, u16)>,
         to_m: u32,
     ) {
+        self.prepare_page(reader, route, local, to_m, None);
+    }
+
+    /// A new query starts past `start`, the page boundary and its direction, so a later page does
+    /// not first walk the earlier ones.
+    pub(crate) fn prepare_page(
+        &mut self,
+        reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        local: Option<(u8, u16)>,
+        to_m: u32,
+        start: Option<(PlaceKey, bool)>,
+    ) {
         let Some(key) = self.want else { return };
         if self.holds(key) && !self.recheck {
             return;
@@ -215,7 +219,7 @@ impl CorridorScratch {
                 local,
             )
             .with_hours_filter(key.hours_filter);
-            match self.start {
+            match start {
                 Some((boundary, backwards)) => query.starting_after(boundary, backwards),
                 None => query,
             }
