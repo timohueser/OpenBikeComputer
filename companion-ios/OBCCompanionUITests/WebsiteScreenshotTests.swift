@@ -236,6 +236,7 @@ final class WebsiteScreenshotTests: XCTestCase {
         // The profile and highlights fill when the live model starts, a beat after the stats line.
         waitFor(app, "detail.elevationProfile", "the ride's elevation profile did not arrive")
         waitFor(app, "detail.highlights", "the ride's highlights did not arrive")
+        waitFor(app, "quietRow.open", "the ride's photo offer did not arrive")
         // The services block is static markup on the tracked dressing.
         XCTAssertTrue(
             app.descendants(matching: .any)["detail.services"].firstMatch.exists,
