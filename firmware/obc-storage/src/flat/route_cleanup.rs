@@ -1,5 +1,34 @@
 //! Explicit age-based route cleanup. The caller supplies a confirmed cutoff and protects navigation.
-use super::{BlockDevice, FlatStore, Mutation, ObjectId, ObjectKind, Store, StoreError};
+use super::{
+    store::MAX_BATCH, BlockDevice, EntryFlags, FlatStore, Mutation, ObjectId, ObjectKind, Revision, Store, StoreError,
+};
+
+/// The removals for the candidate route heads in `heads` that are still safe to remove: the exact
+/// revision named is still the head, it is not flagged accepted, and the durable checkpoint does
+/// not name it. The protected routes are loaded once and the catalog is walked once.
+pub fn candidate_removals<D: BlockDevice>(
+    store: &FlatStore<D>,
+    heads: &[(ObjectId, Revision)],
+) -> Result<heapless::Vec<Mutation, MAX_BATCH>, StoreError> {
+    let protected = super::metadata::protected_routes(store).map_err(|error| match error {
+        super::metadata::Error::Store(error) => error,
+        super::metadata::Error::RemountRequired => StoreError::ReadOnly,
+        _ => StoreError::Invalid,
+    })?;
+    let mut batch = heapless::Vec::new();
+    for entry in store.entries().filter(|e| e.kind == ObjectKind::Route && e.flags.is_route_head()) {
+        if heads.contains(&(entry.id, entry.revision))
+            && !entry.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+            && !protected.contains(&Some(entry.id))
+        {
+            batch.push(Mutation::Remove { id: entry.id, revision: entry.revision }).map_err(|_| StoreError::Invalid)?;
+        }
+    }
+    if !store.entries_ok() {
+        return Err(StoreError::Media);
+    }
+    Ok(batch)
+}
 
 pub fn next<D: BlockDevice>(
     store: &FlatStore<D>,
@@ -73,6 +102,40 @@ mod tests {
         assert!(next(&store, 100, Some(active.id)).unwrap().is_none());
         assert!(store.entries().any(|e| e.id == recent.id));
         assert!(store.entries().any(|e| e.id == future.id));
+    }
+
+    #[test]
+    fn candidate_removals_skip_accepted_named_and_moved_heads() {
+        use crate::flat::metadata::{fingerprint, write_checkpoint};
+        let disk = SparseDisk::blank(200_000, 3);
+        let card = StoreId([5; 16]);
+        let store = FlatStore::initialize(&disk, card).unwrap();
+        let plain = route(&store, None);
+        let accepted = route(&store, None);
+        let named = route(&store, None);
+        let moved = route(&store, None);
+        let checkpoint = obc_formats::assistant::NavigatorCheckpoint {
+            route: fingerprint(accepted),
+            original: Some(fingerprint(named)),
+            progress_m: 0,
+            occurrence: 0,
+            lon: 0,
+            lat: 0,
+            phase: obc_formats::assistant::JourneyPhase::Following,
+            unresolved_avoidance: false,
+            selection: false,
+            lower_m: 0,
+            upper_m: 1,
+        };
+        write_checkpoint(&store, card, store.sequence(), None, Some(checkpoint)).unwrap();
+        let heads =
+            [(plain.id, Revision(1)), (accepted.id, Revision(1)), (named.id, Revision(1)), (moved.id, Revision(2))];
+        let batch = candidate_removals(&store, &heads).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert!(matches!(batch[0], Mutation::Remove { id, revision: Revision(1) } if id == plain.id));
+        store.commit(&batch).unwrap();
+        let heads = [(accepted.id, Revision(1)), (named.id, Revision(1)), (moved.id, Revision(1))];
+        assert_eq!(candidate_removals(&store, &heads).unwrap().len(), 1, "the moved revision alone was the block");
     }
 
     #[test]

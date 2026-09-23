@@ -344,6 +344,23 @@ impl RouteRepository for FlatRouteStore {
         }
     }
 
+    fn retract_reviews(&mut self, ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
+        let heads: Vec<_> = ids
+            .iter()
+            .filter_map(|id| self.ids.iter().position(|candidate| candidate == id))
+            .map(|index| (ObjectId(self.ids[index]), self.revisions[index]))
+            .take(obc_storage::flat::store::MAX_BATCH)
+            .collect();
+        match self.owner.remove_routes(&heads) {
+            Ok(()) => {
+                self.refresh_metadata().map_err(|_| CatalogError::Unreadable)?;
+                Ok(())
+            }
+            Err(StoreError::ReadOnly) => Err(CatalogError::RemountRequired),
+            Err(_) => Err(CatalogError::RemoveFailed),
+        }
+    }
+
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
         let previous = self
             .nav_id
@@ -376,13 +393,6 @@ impl RouteRepository for FlatRouteStore {
 
     fn active_source(&self) -> Option<&dyn ByteSource> {
         self.active.as_ref().map(|s| s as &dyn ByteSource)
-    }
-    fn pin_review(&self, source: obc_formats::obcr::RouteSourceKey) -> Option<crate::RouteLease> {
-        if self.store_scope()?.store.bytes() != source.store {
-            return None;
-        }
-        let source = self.owner.open(ObjectId(source.object), Revision(source.revision)).ok()?;
-        source.is_current().then_some(crate::RouteLease::Flat(source))
     }
     fn invalidate_active(&mut self) {
         self.active = None;

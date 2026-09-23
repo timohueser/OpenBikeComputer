@@ -279,13 +279,20 @@ any other length, which also rejects a torn write.
   same trip writes the same key. Device progress and rides refer to the key, not to the object id.
   Key 0 means "no trip" in those records, so a reader rejects a trip object with key 0. Reversing a
   trip makes a new trip with a new key, so its progress starts empty.
-- **Day names and stats.** The display name of a day ("Day 2 Ulrichen") is the OBCR name of its
-  route. Distance and climb come from the route's OBCR header. The trip object repeats neither.
+- **Day names and stats.** The display name of a day is the OBCR name of its route. The name is
+  the day's own name, such as the name of the route or file it came from. A day without one is
+  named after its number and end place ("Day 2 Ulrichen"). The day number itself comes from the
+  day's position in the trip. Distance and climb come from the route's OBCR header. The trip
+  object repeats neither.
 - **Main line.** A day that starts on the main line has `join_m = 0`. A day that ends on the main
   line has `leave_m` at or past the end of its route; readers clamp `leave_m` to the route length.
   Other values mark an out-and-back spur to a stop off the line. The device skips the spur when it
-  joins the rest of one day to the next day. The `leave_m` of day N−1 and the `join_m` of day N
-  name the same point on the main line.
+  joins the rest of one day to the next day. Unless a transfer lies between them, the `leave_m` of
+  day N−1 and the `join_m` of day N name the same point on the main line.
+- **Transfer.** A day end is a transfer when the next day's route starts more than
+  `TRANSFER_MIN_M` = 200 m, straight line, from the last point of the day's route. Readers derive
+  it from the two routes; the trip object has no field for it. The device never joins the rest of
+  a day to the next day across a transfer.
 - **Reference-only.** A day route is a route object id. A route that no stored trip references is a
   top-level route. Membership is one level deep: a route is in at most one trip, or standalone.
 - **Dangling refs are tolerated on read.** A day route deleted individually does not invalidate

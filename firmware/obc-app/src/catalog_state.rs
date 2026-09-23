@@ -15,7 +15,7 @@
 use obc_route::Profile;
 
 use crate::app::NAV_PREVIEW_MAX;
-use crate::device_core::derived::{DerivedInput, NavPreviewKey, RideTrackKey};
+use crate::device_core::derived::{DayProfileKey, DerivedInput, NavPreviewKey, RestStretch, RideTrackKey};
 use crate::device_core::Revision;
 use crate::placement::define_placement_constructors;
 use crate::ride::{RideCatalog, RideEntry, RideTrip, RideTrips, UI_RIDES_CAP};
@@ -63,6 +63,9 @@ pub(crate) struct CatalogState {
     /// the same key with `present == false`, so a dead file is answered once rather than
     /// re-streamed every pass.
     ride_profile_for: Option<RideTrackKey>,
+    /// The day-profile key the same buffer was answered for. At most one of the two is set: a
+    /// fill for either subject takes the buffer from the other.
+    day_profile_for: Option<DayProfileKey>,
     /// The viewed ride's decimated recorded-track shape, host-filled in the same drain as the
     /// profile.
     ride_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
@@ -85,6 +88,8 @@ pub(crate) struct CatalogState {
     /// The ride-track view generation, bumped when an in-place fill starts, so an abandoned fill
     /// leaves the need up instead of a half-written buffer answered.
     ride_track_view: Revision,
+    /// The day-profile view generation, bumped when an in-place fill starts.
+    day_profile_view: Revision,
     /// The nav-preview view generation, bumped by
     /// [`invalidate_nav_preview`](CatalogState::invalidate_nav_preview) so every committed plan
     /// starts preview-less even when the route identity and its bytes are unchanged.
@@ -143,12 +148,14 @@ impl CatalogState {
             ride_profile: Profile::EMPTY,
             ride_profile_present: false,
             ride_profile_for: None,
+            day_profile_for: None,
             ride_preview: heapless::Vec::new(),
             ride_preview_for: None,
             nav_preview: heapless::Vec::new(),
             nav_preview_route: None,
             source_revision: Revision::ZERO,
             ride_track_view: Revision::ZERO,
+            day_profile_view: Revision::ZERO,
             nav_preview_view: Revision::ZERO,
             detour_preview: heapless::Vec::new(),
             detour_preview_route: None,
@@ -349,8 +356,51 @@ impl CatalogState {
     /// abandoned fill leaves a need up rather than a half-written buffer marked answered.
     pub(crate) fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.ride_profile_present = false;
+        self.day_profile_for = None;
         self.ride_track_view = self.ride_track_view.next();
         &mut self.ride_profile
+    }
+
+    /// The derived day-profile key for tomorrow: day route `day` from `join_m`, after `rest`.
+    pub(crate) fn day_profile_key(
+        &self,
+        day: CatalogObjectId,
+        join_m: u32,
+        rest: Option<RestStretch>,
+    ) -> DayProfileKey {
+        DayProfileKey { day, join_m, rest, source: self.source_revision, view: self.day_profile_view }
+    }
+
+    pub(crate) fn day_profile_answered(&self, key: DayProfileKey) -> bool {
+        self.day_profile_for == Some(key)
+    }
+
+    /// Borrow the ride profile's buffer for an in-place day-profile fill, under the same rule as
+    /// [`begin_ride_profile_fill`](Self::begin_ride_profile_fill).
+    pub(crate) fn begin_day_profile_fill(&mut self) -> &mut Profile {
+        self.ride_profile_present = false;
+        self.ride_profile_for = None;
+        self.day_profile_view = self.day_profile_view.next();
+        &mut self.ride_profile
+    }
+
+    /// Accept a keyed day-profile answer under the ride profile's staleness rule.
+    pub(crate) fn accept_day_profile(
+        &mut self,
+        current: Option<DayProfileKey>,
+        input: DerivedInput<DayProfileKey>,
+    ) -> bool {
+        if current != Some(input.key) {
+            return false;
+        }
+        self.ride_profile_present = input.result.is_filled();
+        self.day_profile_for = Some(input.key);
+        true
+    }
+
+    /// The day profile only if it was answered for `key`.
+    pub(crate) fn day_profile_for(&self, key: Option<DayProfileKey>) -> Option<&Profile> {
+        (self.ride_profile_present && key.is_some() && self.day_profile_for == key).then_some(&self.ride_profile)
     }
 
     /// Accept a keyed ride-preview answer, truncated to [`NAV_PREVIEW_MAX`] points, under the same
@@ -394,7 +444,7 @@ impl CatalogState {
     /// detail exited or moved subjects. The key gate already makes them unreachable; dropping the
     /// keys is what lets the need re-fire when the rider comes back.
     pub(crate) fn drop_stale_ride_views(&mut self, key: Option<RideTrackKey>) {
-        if self.ride_profile_for != key {
+        if self.ride_profile_for.is_some() && self.ride_profile_for != key {
             self.ride_profile_present = false;
             self.ride_profile_for = None;
         }
@@ -484,9 +534,8 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
-    RemoveReview {
-        source: obc_formats::obcr::RouteSourceKey,
-    },
+    /// Remove unaccepted Assistant candidates no review holds, a commit's batch at a time.
+    RemoveOrphanReviews,
     CleanupRoutes {
         before_utc: u32,
         store: crate::device_core::StoreIdentity,
@@ -516,9 +565,8 @@ pub enum CatalogObjectKind {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
-    RemoveReview {
+    RemoveOrphanReviews {
         token: OperationToken<CatalogTag>,
-        source: obc_formats::obcr::RouteSourceKey,
     },
     CleanupRoute {
         token: OperationToken<CatalogTag>,
@@ -542,7 +590,7 @@ impl CatalogEffect {
             CatalogEffect::CleanupRoute { token, .. }
             | CatalogEffect::ReadCatalog { token }
             | CatalogEffect::RemoveObject { token, .. }
-            | CatalogEffect::RemoveReview { token, .. } => *token,
+            | CatalogEffect::RemoveOrphanReviews { token } => *token,
         }
     }
 }
@@ -561,9 +609,8 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
-    ReviewRemoved {
+    OrphanReviewsRemoved {
         token: OperationToken<CatalogTag>,
-        source: obc_formats::obcr::RouteSourceKey,
     },
     CleanupFinished {
         token: OperationToken<CatalogTag>,
@@ -597,7 +644,7 @@ impl CatalogOutcome {
             CatalogOutcome::CleanupFinished { token }
             | CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
-            | CatalogOutcome::ReviewRemoved { token, .. }
+            | CatalogOutcome::OrphanReviewsRemoved { token }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
         }
@@ -665,6 +712,11 @@ impl CatalogState {
         self.ops.is_current(outcome.token())
     }
 
+    /// The last catalog read failed and its retry waits.
+    pub(crate) fn read_deferred(&self) -> bool {
+        self.read_retry_at.is_some()
+    }
+
     pub(crate) fn defer_read(&mut self, now_ms: u32) {
         self.read_retry_at = Some(now_ms.wrapping_add(30_000));
     }
@@ -686,7 +738,7 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
-            CatalogIntent::RemoveReview { source } => CatalogEffect::RemoveReview { token: self.ops.issue(), source },
+            CatalogIntent::RemoveOrphanReviews => CatalogEffect::RemoveOrphanReviews { token: self.ops.issue() },
             CatalogIntent::CleanupRoutes { before_utc, store } => {
                 self.cleanup_running = true;
                 self.pending = Some(intent);
@@ -781,7 +833,7 @@ impl CatalogState {
                 self.read_retry_at = None;
                 None
             }
-            CatalogOutcome::ReviewRemoved { .. } => {
+            CatalogOutcome::OrphanReviewsRemoved { .. } => {
                 self.loaded_scope = None;
                 self.refresh_owed = true;
                 None
@@ -835,12 +887,14 @@ impl CatalogState {
             ride_profile,
             ride_profile_present,
             ride_profile_for,
+            day_profile_for,
             ride_preview,
             ride_preview_for,
             nav_preview,
             nav_preview_route,
             source_revision,
             ride_track_view,
+            day_profile_view,
             nav_preview_view,
             detour_preview,
             detour_preview_route,
@@ -860,10 +914,13 @@ impl CatalogState {
         assert!(rides.is_empty() && ride_trips.is_empty(), "no rides catalogued");
         assert_eq!(ride_profile.cols(), Profile::EMPTY.cols(), "the ride-profile buffer is the empty line");
         assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
+        assert!(day_profile_for.is_none(), "no day profile answered");
         assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");
         assert!(nav_preview.is_empty() && nav_preview_route.is_none(), "no route-shape preview cached");
         assert!(
-            [*source_revision, *ride_track_view, *nav_preview_view].iter().all(|r| *r == Revision::ZERO),
+            [*source_revision, *ride_track_view, *day_profile_view, *nav_preview_view]
+                .iter()
+                .all(|r| *r == Revision::ZERO),
             "the derived key revisions start at zero — nothing committed, nothing invalidated"
         );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
@@ -1099,7 +1156,9 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                    panic!("unexpected cleanup")
+                }
                 CatalogEffect::RemoveObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });

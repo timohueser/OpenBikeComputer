@@ -122,11 +122,13 @@ enum NavPhase {
     VisitSources,
 }
 
-/// The final emitter survives leg searches. Only the leg scratch and parsed sources overlap.
+/// The final emitter and an easier trial's measure survive leg searches. Only the leg scratch and
+/// parsed sources overlap.
 #[cfg(has_nav)]
 #[repr(C)]
 struct VisitArm {
     builder: MaybeUninit<obc_route::visit::VisitBuilder>,
+    measure: MaybeUninit<obc_route::easier::Measure>,
     work: VisitWork,
 }
 #[cfg(has_nav)]
@@ -350,6 +352,7 @@ impl NavGuard {
             revision: original.revision,
         };
         unsafe {
+            (*(arena_ptr() as *mut VisitArm)).measure.write(obc_route::easier::Measure::new());
             let slot = (*(arena_ptr() as *mut VisitArm)).builder.as_mut_ptr();
             if matches!(context.purpose, obc_app::navigator::ReviewPurpose::Easier(_)) {
                 obc_route::visit::VisitBuilder::init_easier_in_place(slot, key, context.map, context.progress_m)?;
@@ -435,6 +438,21 @@ impl NavGuard {
         let arm = unsafe { &mut *(arena_ptr() as *mut VisitArm) };
         let source = unsafe { &mut *core::ptr::addr_of_mut!(arm.work.sources).cast::<VisitSources>() };
         (unsafe { arm.builder.assume_init_mut() }, &mut source.original, &mut source.leg, &mut source.output)
+    }
+
+    /// [`visit_parts`](Self::visit_parts) with the trial's measure in place of the output stage.
+    pub(crate) fn visit_measure_parts(
+        &mut self,
+    ) -> (
+        &mut obc_route::visit::VisitBuilder,
+        &mut obc_route::RouteIndex,
+        &mut obc_route::RouteIndex,
+        &mut obc_route::easier::Measure,
+    ) {
+        assert!(self.phase == NavPhase::VisitSources);
+        let arm = unsafe { &mut *(arena_ptr() as *mut VisitArm) };
+        let source = unsafe { &mut *core::ptr::addr_of_mut!(arm.work.sources).cast::<VisitSources>() };
+        unsafe { (arm.builder.assume_init_mut(), &mut source.original, &mut source.leg, arm.measure.assume_init_mut()) }
     }
 
     pub(crate) fn visit_seal_request(
@@ -865,7 +883,11 @@ pub(crate) fn claim_peak(
 const _: () = {
     assert!(core::mem::size_of::<VisitArm>() <= RENDER_ARM_BYTES);
     assert!(core::mem::align_of::<VisitArm>() <= core::mem::align_of::<ScratchArena>());
-    assert!(core::mem::offset_of!(VisitArm, work) >= core::mem::size_of::<obc_route::visit::VisitBuilder>());
+    assert!(
+        core::mem::offset_of!(VisitArm, work)
+            >= core::mem::size_of::<obc_route::visit::VisitBuilder>()
+                + core::mem::size_of::<obc_route::easier::Measure>()
+    );
 };
 /// One synchronous decoder step. Drop before any source or display await.
 pub(crate) struct PhotoGuard {

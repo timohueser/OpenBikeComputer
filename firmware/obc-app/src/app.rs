@@ -807,7 +807,7 @@ impl App {
         use crate::find_place::{Action, State};
         matches!(self.top_screen(), Screen::FindPlace(screen) if screen.choices())
             && (matches!(self.ui.find.action, Action::Refresh | Action::Preview(_))
-                || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning | State::Releasing))
+                || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning))
     }
 
     /// A preview mode change waiting for the previous planner and catalog owners.
@@ -823,11 +823,7 @@ impl App {
             || (matches!(self.top_screen(), Screen::VisitReview(_))
                 && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
         {
-            Some(if self.requested_assistant_restore().is_some() {
-                Msg::AssistantLoadingRoute
-            } else {
-                Msg::AssistantPlanningRoute
-            })
+            Some(Msg::AssistantPlanningRoute)
         } else {
             None
         }
@@ -987,6 +983,7 @@ impl App {
                 Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len, navigator.internal_routes()),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
+                Screen::Arrival(a) => a.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
                 Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
                 Screen::Detour(d) => d.remap_routes(&remap),
@@ -1068,13 +1065,55 @@ impl App {
     /// What a ride that starts now records: the current bike type, and the trip day when the
     /// loaded route is one.
     pub(crate) fn ride_origin(&self) -> crate::RideOrigin {
-        let route = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
-        let route =
-            route.map(|id| self.navigator.lead_in().filter(|lead| lead.splice == id).map_or(id, |lead| lead.route));
-        crate::RideOrigin {
-            bike: self.settings.bike_type,
-            trip: route.and_then(|route| crate::trip::trip_day(self.trips(), route)),
+        crate::RideOrigin { bike: self.settings.bike_type, trip: self.loaded_trip_day() }
+    }
+
+    /// The trip day of the loaded route. A day built from the rest of the day before counts as the
+    /// day it leads into.
+    fn loaded_trip_day(&self) -> Option<obc_formats::ride::TripRef> {
+        let index = self.active_route_index()?;
+        let route = *self.route_ids().get(index)?;
+        if let Some(lead) = self.navigator.lead_in().filter(|lead| lead.splice == route) {
+            return crate::trip::trip_day(self.trips(), lead.route);
         }
+        // A reset drops the lead-in of a built day, but the open ride still names the day.
+        if self.navigator.internal_routes() & (1 << index) != 0 && self.recorder.recording() {
+            return self.recorder.ride_stats().trip;
+        }
+        crate::trip::trip_day(self.trips(), route)
+    }
+
+    /// The length of the loaded trip day's later days, or `None` when the loaded route is not a
+    /// trip day.
+    fn trip_later_m(&self) -> Option<u32> {
+        let day = self.loaded_trip_day()?;
+        let trip = self.trips().iter().find(|t| t.key == day.key())?;
+        Some(trip.later_m(u16::from(day.day_index()), self.catalogs.routes()))
+    }
+
+    /// The arrival view's level: from arrival at the end of the loaded route until the rider rides
+    /// on, while a ride records. A pause keeps the level up, so the view it already showed stays
+    /// shown; the card policy keeps the view off the Paused page.
+    fn arrival_view(&self) -> Option<screen::ArrivalView> {
+        let crate::navigator::Arrival::Arrived { end } = self.navigator.route_state().arrival else { return None };
+        if !self.recorder.recording() {
+            return None;
+        }
+        let loaded = u16::try_from(self.active_route_index()?).ok()?;
+        let day = self.loaded_trip_day();
+        let trip = day.and_then(|day| self.trips().iter().find(|t| t.key == day.key()));
+        let catalog_index = |k: u16| trip?.days().find(|&(day, _)| day == k).map(|(_, index)| index);
+        let this = day.map(|day| u16::from(day.day_index()));
+        // A derived route (the rest of the day before, a lead-in) is named for its day's own route.
+        let route = this.and_then(catalog_index).unwrap_or(loaded);
+        // Across a transfer the next day starts elsewhere, so Ride on is not offered.
+        let next = this.and_then(|day| catalog_index(day + 1)).filter(|&index| {
+            self.catalogs.routes().get(usize::from(index)).is_some_and(|next| {
+                obc_map_scene::ground_dist_m(end, (next.start_lon, next.start_lat))
+                    <= crate::trip::TRANSFER_MIN_M as f32
+            })
+        });
+        Some(screen::ArrivalView { route, day: this, next })
     }
 
     /// The device's trip progress records, at most one per trip key.
@@ -1113,12 +1152,17 @@ impl App {
     /// A saved ride on a trip day moves that trip's progress to where the ride ended.
     pub(crate) fn note_trip_finish(&mut self) {
         use crate::trip::TripPosition;
+        // Finish unloads the route before the store confirms the save. A save from recovery has no
+        // such record, and reads what is loaded.
+        let end = self.navigator.take_ride_end();
         let Some(ridden) = self.recorder.ride_stats().trip else { return };
         let Some(trip) = self.trips().iter().find(|t| t.key == ridden.key()) else { return };
         let day = u16::from(ridden.day_index());
         let Some(&route) = trip.stage_ids.get(usize::from(day)) else { return };
         let old = trip.progress_in(self.metadata.progress());
-        let active_index = self.active_route_index();
+        let active_index = end.map_or(self.active_route_index(), |end| Some(end.route));
+        let progress_m = end.map_or(self.progress_m(), |end| end.progress_m);
+        let arrived = end.map_or(self.navigator.route_state().arrival.arrived(), |end| end.arrived);
         let active = active_index.and_then(|i| self.route_ids().get(i).copied());
         // After a reset the adopted lead-in is gone, but a built day is still the internal route
         // the record and the line facts describe: its rest starts where the record stands.
@@ -1137,13 +1181,21 @@ impl App {
                     _ => None,
                 }
             });
-        let mut at = match lead.map(|lead| lead.position(self.progress_m())) {
+        // Ride on from the arrival view loads a later day of the trip during the ride.
+        let later = active
+            .and_then(|active| trip.stage_ids.iter().position(|&id| id == active))
+            .and_then(|k| u16::try_from(k).ok())
+            .filter(|&k| k > day);
+        let mut at = match lead.map(|lead| lead.position(progress_m)) {
             Some(Err(metres)) if day > 0 => {
                 TripPosition { day: day - 1, route: trip.stage_ids[usize::from(day) - 1], metres }
             }
             Some(Ok(metres)) => TripPosition { day, route, metres },
-            _ if active == Some(route) => TripPosition { day, route, metres: self.progress_m() },
-            _ => TripPosition { day, route, metres: 0 },
+            _ if active == Some(route) => TripPosition { day, route, metres: progress_m },
+            _ => match (later, active) {
+                (Some(k), Some(active)) => TripPosition { day: k, route: active, metres: progress_m },
+                _ => TripPosition { day, route, metres: 0 },
+            },
         };
         // Metres measured on geometry that a re-upload replaced during the ride mean nothing on the
         // new one.
@@ -1151,9 +1203,36 @@ impl App {
             at.metres = 0;
         }
         let today = if self.clock_trusted() { (self.wall_clock.unix_now(self.ui.now_ms) / 86_400) as u16 } else { 0 };
-        let record = trip.finish(old, day, at, today);
+        // A ride that arrived at the end of its route finishes the day it stands on, which Ride on
+        // can have moved past the day the ride started on.
+        let finished = if arrived { at.day } else { day };
+        let record = trip.finish(old, finished, at, today);
         let trips = self.catalogs.trips();
         self.metadata.owe_progress(record, |key| trips.iter().any(|t| t.key == key));
+    }
+
+    /// The card after the save of a ride on a trip day: DAY N DONE, or TRIP DONE after the last
+    /// day. A ride without a trip, or whose trip is gone or no longer has its day, stays on Home.
+    pub(crate) fn land_day_done(&mut self, ride: crate::CatalogObjectId, finished: &obc_route::RideStats) {
+        let Some(ridden) = finished.trip else { return };
+        let Some(trip) = self.trips().iter().find(|t| t.key == ridden.key()) else { return };
+        // A re-upload with fewer days during the ride leaves no day to report: the ride is saved,
+        // and no progress was written for it.
+        if usize::from(ridden.day_index()) >= trip.stage_ids.len() {
+            return;
+        }
+        let progress = trip.progress_in(self.metadata.progress());
+        let day = progress.and_then(|p| p.last_finished).unwrap_or(u16::from(ridden.day_index()));
+        let next = trip.next_day(progress);
+        let today = crate::screen::RideTotals {
+            distance_m: finished.distance_m,
+            moving_s: finished.moving_time_s,
+            climb_m: u32::from(finished.climb_m),
+        };
+        let card = crate::screen::DayDoneScreen::new(today, ride, trip.key, day, next);
+        screen::apply(&mut self.ui.stack, screen::Transition::Root(Screen::DayDone(card)));
+        self.ui.map_dirty = true;
+        self.ui.cancel_holds();
     }
 
     /// A route the open ride's trip day stands on was replaced: note it, so the Finish does not
@@ -1225,6 +1304,11 @@ impl App {
     /// answered.
     pub fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.catalogs.begin_ride_profile_fill()
+    }
+
+    /// Borrow the same buffer for an in-place day-profile fill, under the same rule.
+    pub fn begin_day_profile_fill(&mut self) -> &mut Profile {
+        self.catalogs.begin_day_profile_fill()
     }
 
     /// Open the on-glass DFU check flow from a remote BLE `installFw` request: push the checking
@@ -1379,6 +1463,10 @@ impl App {
             return;
         }
         match outcome {
+            NavigatorOutcome::ReviewReady { .. } if self.assistant_measuring() => {
+                self.navigator.measured();
+                self.end_plan(PlanFamily::Route, PlanPhase::Idle);
+            }
             NavigatorOutcome::ReviewReady { .. } => {
                 let Some(preview) = self.assistant_preview() else { return };
                 let index = self.route_ids().iter().position(|&id| id == preview.source.object);
@@ -1419,8 +1507,7 @@ impl App {
                 self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
-                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Releasing
-                {
+                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Planning {
                     self.ui.map_dirty = true;
                 }
             }
@@ -1719,7 +1806,8 @@ impl App {
     /// it needs. Called once per pass, and again after any host fact is posted, so an arriving
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
-        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
+        let arrival = self.arrival_view();
+        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival);
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
             self.ui.find.resume_route = self
@@ -2874,6 +2962,8 @@ impl App {
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
         let visit_target = self.assistant_visit_target();
+        let trip_later_m = self.trip_later_m();
+        let day_key = self.day_profile_key();
 
         let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
             if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
@@ -2938,9 +3028,11 @@ impl App {
             trips: catalogs.trips(),
             trip_progress: metadata.progress(),
             day_join: metadata.day_join(),
+            trip_later_m,
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
+            day_profile: catalogs.day_profile_for(day_key),
             climb,
             climbs: navigator.climbs(),
             waypoints: navigator.waypoints(),
@@ -3182,7 +3274,27 @@ impl App {
             .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))
             .flatten()
             .filter(|&key| !self.catalogs.nav_preview_answered(key));
-        DerivedNeeds { ride_track, nav_preview }
+        let day_profile = self.day_profile_key().filter(|&key| !self.catalogs.day_profile_answered(key));
+        DerivedNeeds { ride_track, nav_preview, day_profile }
+    }
+
+    /// Tomorrow's profile key while the day-done card is the view: the day as
+    /// [`load_day`](crate::trip::TripSummary::load_day) loads it, so the card and the start card's
+    /// day row read the same day.
+    fn day_profile_key(&self) -> Option<crate::device_core::DayProfileKey> {
+        use crate::trip::DayLoad;
+        let Some(Screen::DayDone(card)) = screen::base_screen(&self.ui.stack) else { return None };
+        let (key, day) = card.tomorrow()?;
+        let trip = self.trips().iter().find(|t| t.key == key)?;
+        let progress = trip.progress_in(self.metadata.progress());
+        let (join_m, rest) = match trip.load_day(day, progress, self.metadata.day_join().as_ref()) {
+            DayLoad::AsIs => (0, None),
+            DayLoad::Rest { from_m, to_m, join_m } => {
+                let route = *trip.stage_ids.get(usize::from(day.checked_sub(1)?))?;
+                (join_m, Some(crate::device_core::RestStretch { route, from_m, to_m }))
+            }
+        };
+        Some(self.catalogs.day_profile_key(*trip.stage_ids.get(usize::from(day))?, join_m, rest))
     }
 
     /// Accept keyed derived inputs. An input whose key is not the one the need currently carries
@@ -3228,6 +3340,11 @@ impl App {
         }
         if let Some(input) = inputs.nav_preview {
             if self.catalogs.accept_nav_preview(needs.nav_preview, input, targets.nav_preview) {
+                self.ui.map_dirty = true;
+            }
+        }
+        if let Some(input) = inputs.day_profile {
+            if self.catalogs.accept_day_profile(needs.day_profile, input) {
                 self.ui.map_dirty = true;
             }
         }
@@ -4728,7 +4845,7 @@ mod tests {
         assert!(matches!(app.planning_banner(), Some(Msg::AssistantFinding)));
         app.take_dirty();
         app.ui.find.action = Action::None;
-        for state in [State::Querying, State::Planning, State::Releasing] {
+        for state in [State::Querying, State::Planning] {
             app.ui.find.state = state;
             app.mode.search_started(PlanFamily::Route);
             assert!(!app.take_dirty().overlay, "a new candidate does not replace the banner");
@@ -6010,6 +6127,19 @@ mod tests {
         assert_eq!((record.day, record.day_route.id, record.metres, record.last_finished), (2, 30, 8_000, Some(2)));
     }
 
+    #[test]
+    fn a_built_day_continued_after_a_reset_stays_its_trip_day() {
+        let mut app = rest_ride_app();
+        app.set_internal_routes(1 << 2);
+        app.navigator.route_state_mut().active_route = Some(2);
+        assert_eq!(app.loaded_trip_day(), None, "without a ride, an internal route is no trip day");
+        app.test_start_ride();
+        let day3 = obc_formats::ride::TripRef::new(42, 2, 3);
+        app.recorder.set_origin(crate::RideOrigin { bike: obc_formats::bike::BikeType::Road, trip: day3 });
+        assert_eq!(app.loaded_trip_day(), day3);
+        assert_eq!(app.trip_later_m(), Some(0), "Day 3 is the last day");
+    }
+
     /// A re-upload of the day's route during the ride voids the metres measured on the old one.
     #[test]
     fn a_day_route_replaced_during_the_ride_voids_the_metres() {
@@ -6020,6 +6150,92 @@ mod tests {
         app.on_route_uploaded(30, true, None);
         let record = finish_at(&mut app, 25_000);
         assert_eq!((record.day, record.metres, record.last_finished), (2, 0, Some(2)));
+    }
+
+    /// The day-done card asks for tomorrow's profile as the start card's day row loads the day:
+    /// after an early stop, the rest of Day 2 and then Day 3 from where it joins the line; after a
+    /// full day, or a stop within the last 500 m, Day 3 alone.
+    #[test]
+    fn the_day_done_card_asks_for_the_day_the_start_card_loads() {
+        use crate::device_core::RestStretch;
+        let need = |metres: u32| {
+            let mut app = rest_ride_app();
+            let mut record = app.trip_progress()[0].clone();
+            record.metres = metres;
+            app.set_trip_progress([record]);
+            let today = crate::screen::RideTotals { distance_m: 0, moving_s: 0, climb_m: 0 };
+            let card = crate::screen::DayDoneScreen::new(today, 1, 42, 1, Some(2));
+            screen::apply(&mut app.ui.stack, screen::Transition::Root(Screen::DayDone(card)));
+            let key = app.derived_needs().day_profile.expect("the card asks for its profile");
+            (key.day, key.join_m, key.rest)
+        };
+        let rest = RestStretch { route: 20, from_m: 54_000, to_m: 74_000 };
+        assert_eq!(need(54_000), (30, 3_000, Some(rest)), "early stop");
+        assert_eq!(need(74_000), (30, 0, None), "full day");
+        assert_eq!(need(73_600), (30, 0, None), "a stop within 500 m of the end");
+    }
+
+    /// A Finish 20 km before the end of Day 2 lands a card whose tomorrow is the rest of Day 2 and
+    /// then Day 3, from the record the Finish writes and the line facts read before it. It does not
+    /// wait for the catalog read after the write.
+    #[test]
+    fn the_card_reads_tomorrow_from_the_finish_itself() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Day 2"), summary("Day 3")], &[20, 30]);
+        app.set_trips(&[crate::trip::TripInput {
+            id: 1,
+            key: 42,
+            name: "Alps",
+            start_date: 0,
+            stage_ids: &[10, 20, 30],
+        }]);
+        let yesterday = crate::trip::TripProgress {
+            key: 42,
+            day: 0,
+            day_route: crate::trip::RouteVersion { id: 10, revision: 1 },
+            metres: 0,
+            last_finished: Some(0),
+            dates: [0; obc_route::MAX_TRIP_DAYS],
+        };
+        app.set_trip_progress([yesterday]);
+        // Read while Day 2 was next: Day 2's own facts, and Day 3's one day on.
+        let join = crate::trip::DayJoin {
+            key: 42,
+            day: 1,
+            leave_m: 50_000,
+            join_m: 0,
+            gap_m: 0,
+            after: Some(crate::trip::Join { leave_m: 74_000, join_m: 3_000, gap_m: 0 }),
+        };
+        app.set_day_join(Some(join));
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.recorder.set_origin(crate::RideOrigin {
+            bike: obc_formats::bike::BikeType::Road,
+            trip: obc_formats::ride::TripRef::new(42, 1, 3),
+        });
+        finish_at(&mut app, 54_000);
+        let stats = app.recorder.ride_stats();
+        app.land_day_done(1, &stats);
+
+        let key = app.derived_needs().day_profile.expect("the card asks for tomorrow at once");
+        let rest = crate::device_core::RestStretch { route: 20, from_m: 54_000, to_m: 74_000 };
+        assert_eq!((key.day, key.join_m, key.rest), (30, 3_000, Some(rest)));
+    }
+
+    /// A re-upload with fewer days during the ride leaves the ride's day outside the trip: the ride
+    /// is saved, and no card lands.
+    #[test]
+    fn a_ride_on_a_day_the_trip_no_longer_has_lands_no_card() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Day 1"), summary("Day 2")], &[11, 22]);
+        app.set_trips(&[crate::trip::TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[11, 22] }]);
+        app.recorder.set_origin(crate::RideOrigin {
+            bike: obc_formats::bike::BikeType::Road,
+            trip: obc_formats::ride::TripRef::new(42, 2, 3),
+        });
+        let stats = app.recorder.ride_stats();
+        app.land_day_done(1, &stats);
+        assert!(!matches!(app.top_screen(), Screen::DayDone(_)));
     }
 
     /// Day 2 (route 20) ridden to 54 km of 74, then Day 3 (route 30) and its built rest (99) in the
@@ -6043,7 +6259,14 @@ mod tests {
             dates: [0; obc_route::MAX_TRIP_DAYS],
         };
         app.set_trip_progress([record]);
-        app.set_day_join(Some(crate::trip::DayJoin { key: 42, day: 2, leave_m: 74_000, join_m: 3_000 }));
+        app.set_day_join(Some(crate::trip::DayJoin {
+            key: 42,
+            day: 2,
+            leave_m: 74_000,
+            join_m: 3_000,
+            gap_m: 0,
+            after: None,
+        }));
         app
     }
 

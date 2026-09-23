@@ -25,6 +25,12 @@ const NAME_PREFIX: &str = "Detour · ";
 const APPROACH_PREFIX: &str = "To start · ";
 const REST_PREFIX: &str = "From stop · ";
 
+/// The name of the route a derived route was built on: `name` without its detour, approach or rest
+/// prefix.
+pub fn original_name(name: &str) -> &str {
+    [NAME_PREFIX, APPROACH_PREFIX, REST_PREFIX].iter().find_map(|prefix| name.strip_prefix(prefix)).unwrap_or(name)
+}
+
 /// What a planned leg does to the route it joins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leg {

@@ -440,6 +440,10 @@ pub(crate) enum Request {
         id: ObjectId,
         kind: obc_app::catalog_state::CatalogObjectKind,
     },
+    /// Remove candidate route heads in one commit; see `route_cleanup::candidate_removals`.
+    RemoveRoutes {
+        heads: heapless::Vec<(ObjectId, Revision), MAX_BATCH>,
+    },
     /// One atomic batch. Replies with the commit sequence.
     Commit {
         batch: heapless::Vec<Mutation, MAX_BATCH>,
@@ -1081,6 +1085,13 @@ fn serve(
             Ok(Outcome::CleanedRoute(Some(id)))
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveRoutes { heads } => {
+            let batch = obc_storage::flat::route_cleanup::candidate_removals(store, &heads)?;
+            if !batch.is_empty() {
+                store.commit(&batch)?;
+            }
+            Ok(Outcome::Done)
+        }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
@@ -1452,6 +1463,21 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
+/// The current heads of up to one commit's worth of `ids`, in one catalog walk.
+pub(crate) fn route_heads(
+    store: &FlatStore<FlatCard>,
+    ids: impl Iterator<Item = u64>,
+) -> heapless::Vec<(ObjectId, Revision), MAX_BATCH> {
+    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = ids.collect();
+    let mut heads = heapless::Vec::new();
+    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+        if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
+            break;
+        }
+    }
+    heads
+}
+
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,
@@ -1659,24 +1685,6 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
                 }
                 if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
-                    let source = obc_formats::obcr::RouteSourceKey {
-                        store: store.store_id().0,
-                        object: entry.id.0,
-                        revision: entry.revision.0,
-                    };
-                    if app.can_reconcile_reviews()
-                        && !app.retains_find_review(source)
-                        && store
-                            .with_source(entry.id, Some(entry.revision), |bytes| {
-                                obc_route::RouteObjectInfo::read(bytes).is_ok_and(|info| {
-                                    info.assistant_candidate
-                                        && info.attribution_map.is_some_and(|map| map.store == source.store)
-                                })
-                            })
-                            .unwrap_or(false)
-                    {
-                        app.reconcile_review_candidate(source);
-                    }
                 }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);
@@ -1814,6 +1822,23 @@ pub(crate) fn fill_ride_track(
     valid
 }
 
+/// Answer one keyed day-profile need into the app's resident profile buffer, one route object open
+/// at a time.
+#[inline(never)]
+pub(crate) fn fill_day_profile(
+    store: &'static FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+    key: obc_app::device_core::DayProfileKey,
+) -> bool {
+    let filled = obc_app::device_core::fill_day_profile(key, app.begin_day_profile_fill(), |id, body| {
+        store.with_source(ObjectId(id), None, |source| body(source)).unwrap_or(false)
+    });
+    if !filled {
+        defmt::warn!("flat: day profile fill for route {=u64} failed", key.day);
+    }
+    filled
+}
+
 /// Exact physical catalog identity, also used for admitted policy work.
 pub(crate) fn catalog_scope(store: &FlatStore<FlatCard>) -> obc_app::device_core::StoreRevision {
     obc_app::device_core::StoreRevision {
@@ -1869,15 +1894,34 @@ fn built_day_head(store: &FlatStore<FlatCard>) -> Result<Option<(ObjectId, Revis
 }
 
 /// Where the active trip's next day meets the day before: the day before's leave point, clamped to
-/// its route's length, and the day's join point.
+/// its route's length, the day's join point, and the gap from the day before's end to the day's
+/// start; and the same facts one day on.
 fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::trip::DayJoin> {
     let (trip, day) = app.next_trip_day()?;
+    // The first day has no day before, so while it is next the facts are the second day's.
+    let day = day.max(1);
     let read = |k| store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).ok()?.ok();
     let (before, this) = (read(day.checked_sub(1)?)?, read(day)?);
-    let length = store
-        .with_source(ObjectId(before.route), None, |source| obc_route::RouteObjectInfo::read(source))
-        .ok()?
-        .ok()?
-        .distance_m;
-    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
+    // Where `this` meets `before` on the line.
+    let meet = |before: obc_route::TripDay, this: obc_route::TripDay| {
+        let (length, end) = store
+            .with_source(ObjectId(before.route), None, |source| {
+                Ok::<_, obc_formats::io::Error>((
+                    obc_route::RouteObjectInfo::read(source)?.distance_m,
+                    obc_route::route_end(source)?,
+                ))
+            })
+            .ok()?
+            .ok()?;
+        let start =
+            store.with_source(ObjectId(this.route), None, |source| obc_route::RouteSummary::read(source)).ok()?.ok()?;
+        Some(obc_app::trip::Join {
+            leave_m: before.leave_m.min(length),
+            join_m: this.join_m,
+            gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
+        })
+    };
+    let obc_app::trip::Join { leave_m, join_m, gap_m } = meet(before, this)?;
+    let after = read(day + 1).and_then(|next| meet(this, next));
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m, join_m, gap_m, after })
 }

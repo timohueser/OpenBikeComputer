@@ -4,27 +4,25 @@ import OBCDomain
 /// The choice the shared trip picker returns: leave the route loose, file it in an
 /// existing trip, or start a new trip. Every filing flow resolves to one of these.
 public enum TripSelection: Equatable, Sendable {
-    /// Do not file the route. The route menus never offer this; Remove is separate.
+    /// Do not file the route.
     case none
-    /// File into an existing trip. A route sits in at most one trip, so this is an
-    /// implicit move when it already sits in another.
+    /// Add the route to an existing trip as its new last day.
     case existing(TripID)
-    /// Start a new trip with this trimmed, non-empty name and file the route as its
-    /// first stage.
+    /// Start a new trip with this trimmed, non-empty name, with the route as its first day.
     case new(String)
 }
 
-/// A light projection of a `TripRecord` for the picker's rows, so the picker never
+/// A light projection of a `Trip` for the picker's rows, so the picker never
 /// depends on the whole library type.
 public struct TripPickerItem: Identifiable, Equatable, Sendable {
     public let id: TripID
     public let name: String
-    public let stageCount: Int
+    public let dayCount: Int
 
-    public init(id: TripID, name: String, stageCount: Int) {
+    public init(id: TripID, name: String, dayCount: Int) {
         self.id = id
         self.name = name
-        self.stageCount = stageCount
+        self.dayCount = dayCount
     }
 }
 
@@ -71,7 +69,7 @@ public struct TripPickerSheet: View {
                                     icon: "folder",
                                     iconColor: OBCTheme.wood,
                                     label: item.name,
-                                    value: "\(item.stageCount) \(item.stageCount == 1 ? "stage" : "stages")",
+                                    value: "\(item.dayCount) \(item.dayCount == 1 ? "day" : "days")",
                                     showsDivider: item.id != trips.last?.id || allowsNone,
                                     action: { pick(.existing(item.id)) },
                                     trailing: {
@@ -171,8 +169,8 @@ public struct TripPickerSheet: View {
         TripPickerSheet(
             title: "Add to trip",
             trips: [
-                TripPickerItem(id: TripID("a"), name: "Driftless Weekender", stageCount: 2),
-                TripPickerItem(id: TripID("b"), name: "Alpine Traverse", stageCount: 5),
+                TripPickerItem(id: TripID("a"), name: "Driftless Weekender", dayCount: 2),
+                TripPickerItem(id: TripID("b"), name: "Alpine Traverse", dayCount: 5),
             ],
             allowsNone: true,
             onPick: { _ in }

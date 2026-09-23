@@ -17,7 +17,7 @@ fn route(points: Vec<(i32, i32, i16)>, waypoints: &[WpRec<'_>], distance: u32) -
     })
     .0
 }
-fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut VecSink) {
+fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut dyn obc_formats::io::ByteSink) {
     let source = SliceSource(bytes);
     let index = RouteIndex::read(&source).unwrap();
     let reader = RouteReader::new(&index, &source);
@@ -82,12 +82,13 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!(seen, 48);
     let facts = RouteReader::new(&index, &emitted).interval_facts(0, stats.total_distance_m).unwrap();
     assert_eq!((facts.ascent_m, facts.descent_m), (stats.total_ascent_m, stats.total_descent_m));
-    let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+    let costs = VisitCosts::read(&emitted, [0, 111], Some([0, 222])).unwrap();
     assert_eq!(costs.arrival_ascent_m, 20);
     assert!(costs.arrival_elevation_complete && costs.complete_elevation);
+    assert_eq!((costs.legs_m, costs.legs_ascent_m), (Some(222), Some(20)), "out climbs 20 m and back descends it");
     let mut corrupt = sink.buf.clone();
     corrupt[40..44].copy_from_slice(&999u32.to_le_bytes());
-    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111]).is_err());
+    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111], None).is_err());
 }
 #[test]
 fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
@@ -312,7 +313,7 @@ fn quantized_return_seam_is_coalesced_but_a_disconnected_tail_is_rejected() {
         let visit = reader.visit_descriptor().unwrap().unwrap();
         assert_eq!(visit.original_anchors_m, [0; 3]);
         assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
-        let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+        let costs = VisitCosts::read(&emitted, [0, 111], None).unwrap();
         assert!(costs.arrival_elevation_complete);
         assert!(!costs.complete_elevation);
     }
@@ -356,7 +357,7 @@ fn imported_route_connections_are_retained_measured_and_bounded() {
             assert_eq!(descriptor.original_anchors_m, [0, anchor, anchor]);
             assert!((anchor + 443..=anchor + 445).contains(&descriptor.accepted_anchors_m[2]));
             assert!((777..=779).contains(&composed.total_distance_m), "composed {} m", composed.total_distance_m);
-            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]], None).unwrap();
             assert!(!costs.arrival_elevation_complete && !costs.complete_elevation);
         }
     }
@@ -452,6 +453,67 @@ fn easier_composition_preserves_access_order_full_metadata_and_clean_provenance(
     let index = RouteIndex::read(&out).unwrap();
     let accepted = RouteReader::new(&index, &out);
     builder.prepare_easier(&accepted).unwrap(); // A clean accepted route permits another comparison.
+}
+
+/// A trial keeps no bytes, so what it measures from the stream must be what the store would read
+/// back: the stored copy's costs and its CRC-32. The legs span several output chunks, and waypoint
+/// records follow the first header patch.
+#[test]
+fn a_measured_trial_is_its_stored_copy() {
+    use obc_formats::io::{ByteSink, Error};
+    use obc_route::easier::{Costs, Measure, MeasureSink};
+    struct Tee<'a>(VecSink, MeasureSink<'a>);
+    impl ByteSink for Tee<'_> {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            self.0.write(bytes)?;
+            self.1.write(bytes)
+        }
+        fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+            self.0.write(body)?;
+            self.1.write_chunk(anchor, body)
+        }
+        fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
+            self.0.patch_at(offset, bytes)?;
+            self.1.patch_at(offset, bytes)
+        }
+    }
+    struct Hills;
+    impl obc_route::ElevationSource for Hills {
+        fn sample(&mut self, lat: i32, lon: i32) -> Option<i16> {
+            Some((500 + (lon / 7 % 40) * 3 + lat / 20) as i16)
+        }
+    }
+    let wps = [(55, 450, 500, 17, 4, 4, -50, b"Cafe" as &[u8]), (166, 1400, 400, 19, 1, 4, 40, b"Shop" as &[u8])];
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let mut slot = Box::<VisitBuilder>::new_uninit();
+    let mut builder = unsafe {
+        VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+        slot.assume_init()
+    };
+    builder.prepare_easier(&original).unwrap();
+    let (mut measure, mut hills) = (Measure::new(), Hills);
+    let mut tee = Tee(VecSink::default(), MeasureSink::new(&mut measure, &mut hills));
+    builder.begin(&mut tee).unwrap();
+    while let Some((from, to)) = builder.easier_leg(&original, (0, 0)).unwrap() {
+        let points = (0..=200)
+            .map(|i| (from.0 + (to.0 - from.0) * i / 200, from.1 + 300 * i * (200 - i) / 10_000, 10 + i as i16))
+            .collect();
+        append(&mut builder, &route(points, &[], 100), &mut tee);
+        builder.finish_easier_leg(&original).unwrap();
+    }
+    let stats = loop {
+        if let Some(stats) = builder.finish_step(&original, &mut tee).unwrap() {
+            break stats;
+        }
+    };
+    let Tee(stored, _) = tee;
+    assert!(stats.chunk_count > 1 && stats.waypoint_count == 2);
+    let (_, costs) = Costs::candidate(&SliceSource(&stored.buf), [0, stats.total_distance_m], &mut Hills).unwrap();
+    assert!(costs.ascent_m > 0 && costs.distance_m > 0);
+    assert_eq!(measure.finish(&mut Hills).unwrap(), (costs, obc_crc::crc32(&stored.buf)));
 }
 
 #[test]

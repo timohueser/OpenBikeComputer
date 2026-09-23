@@ -65,6 +65,14 @@ impl NavPlan {
         self.sink.bytes()
     }
 
+    /// The graph coordinates the endpoints snapped to, once the search has run.
+    pub fn snapped_start(&self) -> (i32, i32) {
+        self.planner.snapped_start()
+    }
+    pub fn snapped_goal(&self) -> (i32, i32) {
+        self.planner.snapped_goal()
+    }
+
     /// The plan's cumulative graph-chunk and route-index cache counters.
     pub fn tile_stats(&self) -> obc_reader::NavCacheStats {
         self.tiles.stats()
@@ -163,17 +171,33 @@ pub fn rest_ready(
 }
 
 /// Where the active trip's next day meets the day before, for [`App::set_day_join`]: the day
-/// before's leave point, clamped to its route's length, and the day's join point.
+/// before's leave point, clamped to its route's length, the day's join point, and the gap from the
+/// day before's end to the day's start; and the same facts one day on.
 pub fn day_join(
     app: &obc_app::App,
     routes: &dyn crate::RouteRepository,
     trips: &dyn crate::TripCatalog,
 ) -> Option<obc_app::trip::DayJoin> {
+    use obc_formats::io::SliceSource;
     let (trip, day) = app.next_trip_day()?;
+    // The first day has no day before, so while it is next the facts are the second day's.
+    let day = day.max(1);
     let (before, this) = (trips.day(trip.key, day.checked_sub(1)?)?, trips.day(trip.key, day)?);
-    let bytes = routes.route_bytes(before.route)?;
-    let length = obc_route::RouteObjectInfo::read(&obc_formats::io::SliceSource(&bytes)).ok()?.distance_m;
-    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
+    // Where `this` meets `before` on the line.
+    let meet = |before: obc_route::TripDay, this: obc_route::TripDay| {
+        let bytes = routes.route_bytes(before.route)?;
+        let length = obc_route::RouteObjectInfo::read(&SliceSource(&bytes)).ok()?.distance_m;
+        let end = obc_route::route_end(&SliceSource(&bytes)).ok()?;
+        let start = obc_route::RouteSummary::read(&SliceSource(&routes.route_bytes(this.route)?)).ok()?;
+        Some(obc_app::trip::Join {
+            leave_m: before.leave_m.min(length),
+            join_m: this.join_m,
+            gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
+        })
+    };
+    let obc_app::trip::Join { leave_m, join_m, gap_m } = meet(before, this)?;
+    let after = trips.day(trip.key, day + 1).and_then(|next| meet(this, next));
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m, join_m, gap_m, after })
 }
 
 impl DetourReady {

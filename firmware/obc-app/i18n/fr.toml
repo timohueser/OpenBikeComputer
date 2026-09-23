@@ -145,6 +145,7 @@ elevation = "Altitude"
 ride_time = "Durée"
 time_to_go = "Temps restant"
 eta = "Arrivée"
+trip_to_go = "Reste voyage"
 clock = "Heure"
 next_waypoint = "Point suiv."
 waypoint_list = "Liste PT"
@@ -163,6 +164,7 @@ grade = "PENTE"
 elev = "ALT "
 ride = "DURÉE"
 eta = "ARRIVÉE"
+trip = "VOY. "
 time = "HEURE"
 next_wpt = "PT SUIV"
 waypoints = "POINTS"
@@ -461,6 +463,18 @@ join_nearest = "Rejoindre le tracé"
 away_at = " de là, au "
 cancel = "Annuler"
 
+# --- Arrival at the end of the route ---
+[arrival]
+title = "ARRIVÉE"
+end_of = "Fin de "
+end_of_day = ", fin du "
+finish = "Finir la sortie"
+finish_hint = "Enregistrer"
+ride_on = "Continuer : "
+to = " jusqu'à "
+keep_riding = "Rouler encore"
+keep_riding_hint = "Fermer cette vue"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSE"
@@ -470,6 +484,19 @@ discard = "Abandonner"
 ride_time = "DURÉE"
 distance = "DISTANCE"
 climb = "MONTÉE"
+
+# --- The card after Finish on a trip day ---
+[day_done]
+# The title "DAY 2 DONE": the day number goes between the two words.
+day = "JOUR"
+done = "TERMINÉ"
+# The title after the last day of a trip.
+trip_done = "VOYAGE TERMINÉ"
+# The caption over tomorrow's day, and the title of page 2.
+tomorrow = "DEMAIN"
+# After the time estimate: "~3:30 h est."
+est = "est."
+ok = "OK"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]
@@ -687,7 +714,6 @@ return_extra = "Avec le retour"
 direct = "Destination"
 calculating = "Prépare trajet"
 planning_route = "Calcul du trajet"
-loading_route = "Chargement trajet"
 add_stop = "Détour"
 go_here = "Aller ici"
 saving = "Enregistrement"

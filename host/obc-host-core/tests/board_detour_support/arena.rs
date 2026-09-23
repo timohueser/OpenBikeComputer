@@ -21,6 +21,7 @@ pub struct NavGuard {
     sealed: Box<Option<SealedAllocation<'static>>>,
     preview_chunk: usize,
     visit: Option<Box<obc_route::visit::VisitBuilder>>,
+    measure: Box<obc_route::easier::Measure>,
 }
 pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
     Ok(NavGuard {
@@ -33,6 +34,7 @@ pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
         sealed: Box::new(None),
         preview_chunk: 0,
         visit: None,
+        measure: Box::default(),
     })
 }
 impl Drop for NavGuard {
@@ -153,6 +155,7 @@ impl NavGuard {
             }
             self.visit = Some(slot.assume_init());
         }
+        *self.measure = obc_route::easier::Measure::new();
         self.begin_sources();
         Ok(())
     }
@@ -178,6 +181,11 @@ impl NavGuard {
     ) -> (&mut obc_route::visit::VisitBuilder, &mut RouteIndex, &mut RouteIndex, &mut [u8; NAV_OUTPUT_STAGE_BYTES])
     {
         (self.visit.as_mut().unwrap(), &mut self.original, &mut self.leg, &mut self.output)
+    }
+    pub fn visit_measure_parts(
+        &mut self,
+    ) -> (&mut obc_route::visit::VisitBuilder, &mut RouteIndex, &mut RouteIndex, &mut obc_route::easier::Measure) {
+        (self.visit.as_mut().unwrap(), &mut self.original, &mut self.leg, &mut self.measure)
     }
     pub fn visit_seal_request(&mut self, allocation: Allocation) -> Request {
         self.seal_request(allocation)

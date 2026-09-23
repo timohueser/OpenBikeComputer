@@ -458,8 +458,15 @@ impl UiRuntime {
     /// It is deliberately not covered by a render key. The scheduler already answers "did anything
     /// visible move" at this one door, including for host seams that run between two passes, where
     /// a stack-local key comparison sees nothing.
-    pub(crate) fn run_card_sweep(&mut self, catalogs: &CatalogState, tracking: bool) {
-        let ctx = CardCtx { now_ms: self.now_ms, hold_charging: self.hold_charging(), catalogs, tracking };
+    pub(crate) fn run_card_sweep(
+        &mut self,
+        catalogs: &CatalogState,
+        tracking: bool,
+        panning: bool,
+        arrival: Option<crate::screen::ArrivalView>,
+    ) {
+        let hold_charging = self.hold_charging();
+        let ctx = CardCtx { now_ms: self.now_ms, hold_charging, catalogs, tracking, panning, arrival };
         if self.cards.sweep(&mut self.stack, &ctx) {
             self.map_dirty = true;
         }

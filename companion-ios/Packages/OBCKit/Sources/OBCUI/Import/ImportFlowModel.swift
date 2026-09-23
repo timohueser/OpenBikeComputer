@@ -28,6 +28,14 @@ public final class ImportFlowModel {
     public var newRouteName = ""
     /// The "couldn't read that file" alert.
     public var importFailed = false
+    /// Several files that arrived together, behind the "Make a trip" sheet; nil closes it.
+    public var pendingJoin: PendingJoin?
+
+    /// A share of several files arrives as one URL at a time. URLs closer together than this
+    /// are one share.
+    private let batchWindow: Duration
+    @ObservationIgnored private var batch: [URL] = []
+    @ObservationIgnored private var batchTask: Task<Void, Never>?
 
     // MARK: Injected seams
 
@@ -43,12 +51,54 @@ public final class ImportFlowModel {
         decode: @escaping (Data, String) throws -> ImportedRoute,
         library: any LibraryStore,
         isBonded: @escaping () -> Bool,
-        lastBikeType: LastBikeTypeStore = LastBikeTypeStore()
+        lastBikeType: LastBikeTypeStore = LastBikeTypeStore(),
+        batchWindow: Duration = .milliseconds(400)
     ) {
+        self.batchWindow = batchWindow
         self.decode = decode
         self.library = library
         self.isBonded = isBonded
         self.lastBikeType = lastBikeType
+    }
+
+    // MARK: Opening files
+
+    /// One shared file URL. URLs that arrive within ``batchWindow`` of each other open together.
+    public func receive(_ url: URL) {
+        batch.append(url)
+        guard batchTask == nil else { return }
+        batchTask = Task { [weak self, batchWindow] in
+            try? await Task.sleep(for: batchWindow)
+            guard let self else { return }
+            let urls = batch
+            batch = []
+            batchTask = nil
+            await openFiles(at: urls)
+        }
+    }
+
+    /// Picked or shared files. One file opens the landing; several open the "Make a trip" sheet.
+    /// When one of several does not decode, nothing opens and the rider sees the alert.
+    public func openFiles(at urls: [URL]) async {
+        guard urls.count > 1 else {
+            if let url = urls.first { await openFile(at: url) }
+            return
+        }
+        var files: [PendingImport] = []
+        for url in urls {
+            guard let data = await Self.read(url), let route = try? decode(data, url.lastPathComponent) else {
+                importFailed = true
+                return
+            }
+            files.append(PendingImport(
+                route: route, fileName: url.lastPathComponent, fileData: data,
+                noDevicePaired: !isBonded(), bikeType: lastBikeType.value))
+        }
+        pendingJoin = PendingJoin(files: files)
+    }
+
+    public func closeJoin() {
+        pendingJoin = nil
     }
 
     // MARK: Opening a file
@@ -59,12 +109,7 @@ public final class ImportFlowModel {
     /// until the download lands, and that must not freeze the UI. An unreadable file fails the
     /// same way an undecodable one does.
     public func openFile(at url: URL) async {
-        let data = await Task.detached(priority: .userInitiated) { () -> Data? in
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            return try? Data(contentsOf: url)
-        }.value
-        guard let data else {
+        guard let data = await Self.read(url) else {
             importFailed = true
             return
         }
@@ -145,6 +190,14 @@ public final class ImportFlowModel {
 
     public func cancelAddAsNew() {
         addAsNewPrompt = nil
+    }
+
+    private static func read(_ url: URL) async -> Data? {
+        await Task.detached(priority: .userInitiated) { () -> Data? in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            return try? Data(contentsOf: url)
+        }.value
     }
 
     // MARK: Closing the cover
@@ -240,6 +293,16 @@ public struct PendingImport: Identifiable, Sendable {
             deviceLink: replacing?.deviceLink,
             uploadedCRC32: replacing?.uploadedCRC32
         )
+    }
+}
+
+/// Several route files that arrived together, in arrival order.
+public struct PendingJoin: Identifiable, Sendable {
+    public let id = UUID()
+    public let files: [PendingImport]
+
+    public init(files: [PendingImport]) {
+        self.files = files
     }
 }
 

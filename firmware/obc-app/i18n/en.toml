@@ -167,6 +167,7 @@ elevation = "Elevation"
 ride_time = "Ride time"
 time_to_go = "Time to go"
 eta = "ETA"
+trip_to_go = "Trip to go"
 clock = "Clock"
 next_waypoint = "Next waypoint"
 waypoint_list = "Waypoint list"
@@ -188,6 +189,7 @@ ride = "RIDE"
 # (`h TO GO`), the same caption idiom `dist_to_go` uses (`km TO GO`) — a single tile fits 8 Label
 # glyphs, so a spelled-out caption would be ellipsised.
 eta = "ETA"
+trip = "TRIP "
 time = "TIME"
 next_wpt = "NEXT WPT"
 waypoints = "WAYPOINTS"
@@ -496,6 +498,18 @@ join_nearest = "Join nearest"
 away_at = " away, at "
 cancel = "Cancel"
 
+# --- Arrival at the end of the route ---
+[arrival]
+title = "ARRIVED"
+end_of = "End of "
+end_of_day = ", end of "
+finish = "Finish ride"
+finish_hint = "Save today"
+ride_on = "Ride on: "
+to = " to "
+keep_riding = "Keep riding"
+keep_riding_hint = "Close this view"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSED"
@@ -505,6 +519,19 @@ discard = "Discard"
 ride_time = "RIDE TIME"
 distance = "DISTANCE"
 climb = "CLIMB"
+
+# --- The card after Finish on a trip day ---
+[day_done]
+# The title "DAY 2 DONE": the day number goes between the two words.
+day = "DAY"
+done = "DONE"
+# The title after the last day of a trip.
+trip_done = "TRIP DONE"
+# The caption over tomorrow's day, and the title of page 2.
+tomorrow = "TOMORROW"
+# After the time estimate: "~3:30 h est."
+est = "est."
+ok = "OK"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]
@@ -728,7 +755,6 @@ return_extra = "Extra incl. return"
 direct = "Direct destination"
 calculating = "Preparing route"
 planning_route = "Planning route"
-loading_route = "Loading route"
 add_stop = "Add detour"
 go_here = "Route here"
 saving = "Saving"

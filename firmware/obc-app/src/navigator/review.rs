@@ -107,6 +107,9 @@ impl ReviewedRoute {
             None
         };
         let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
+        // The excursion starts where the retained prefix ends and ends at the accepted rejoin.
+        let legs =
+            info.visit.zip(visit_anchors_m).map(|(d, a)| [d.original_anchors_m[1] - d.original_anchors_m[0], a[2]]);
         let (visit_costs, easier) = match context.purpose {
             ReviewPurpose::Easier(_) => {
                 let (facts, costs) = obc_route::easier::Costs::candidate(bytes, arrival, elev)
@@ -114,7 +117,10 @@ impl ReviewedRoute {
                 (Some(facts), Some(costs))
             }
             ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute => (
-                Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?),
+                Some(
+                    obc_route::visit::VisitCosts::read(bytes, arrival, legs)
+                        .map_err(|_| NavigatorError::Unavailable)?,
+                ),
                 None,
             ),
         };
@@ -171,7 +177,8 @@ pub(super) enum AfterCheckpoint {
 pub(super) struct ReviewState {
     pub store: Option<StoreIdentity>,
     pub context: Option<ReviewContext>,
-    pub restore: Option<RouteSourceKey>,
+    /// The request measures its legs only; nothing is composed, published or previewed.
+    pub measure: bool,
     pub preview: Option<ReviewedRoute>,
     pub preview_index: Option<usize>,
     pub unaccepted: u64,
@@ -192,7 +199,7 @@ impl ReviewState {
         Self {
             store: None,
             context: None,
-            restore: None,
+            measure: false,
             preview: None,
             preview_index: None,
             unaccepted: 0,
@@ -216,7 +223,13 @@ use crate::metadata::{MetadataError, MetadataOutcome};
 use obc_formats::assistant::JourneyPhase;
 
 impl NavigatorMachine {
-    pub(crate) fn request_review(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
+    /// A measuring request starts its leg wherever the caller says; a route starts at the rider.
+    pub(crate) fn request_review(
+        &mut self,
+        request: crate::activity::NavRequest,
+        context: ReviewContext,
+        measure: bool,
+    ) {
         if (self.active_visit() && context.purpose != ReviewPurpose::ReturnToRoute)
             || self.review.change.is_some()
             || self.review.preview.is_some()
@@ -225,14 +238,16 @@ impl NavigatorMachine {
         {
             return;
         }
-        if context.facts_policy != REVIEW_FACTS_POLICY || context.unresolved_avoidance || request.from != context.origin
+        if context.facts_policy != REVIEW_FACTS_POLICY
+            || context.unresolved_avoidance
+            || (request.from != context.origin && !measure)
         {
             self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
             return;
         }
         self.review.store = Some(context.store);
         self.review.context = Some(context);
-        self.review.restore = None;
+        self.review.measure = measure;
         self.review.status = ReviewStatus::Planning;
         self.route_request = Some(request);
         self.route = PlanPhase::Requested;
@@ -328,6 +343,14 @@ impl NavigatorMachine {
     pub(crate) fn reviewed(&mut self, preview: ReviewedRoute) {
         self.review.preview = Some(preview);
         self.review.status = ReviewStatus::Preview;
+    }
+
+    /// The measured legs are with their requester; the review has nothing left to hold.
+    pub(crate) fn measured(&mut self) {
+        self.review.measure = false;
+        self.review.context = None;
+        self.route_request = None;
+        self.review.status = if self.review.checkpoint.is_some() { ReviewStatus::Accepted } else { ReviewStatus::Idle };
     }
 
     pub(crate) fn review_failed(&mut self, error: NavigatorError) {
@@ -429,7 +452,7 @@ impl NavigatorMachine {
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
-        self.review.restore = None;
+        self.review.measure = false;
     }
 
     pub(super) fn prepare_ordinary_route(&mut self) -> bool {
@@ -651,8 +674,58 @@ impl crate::App {
         outcome
     }
     pub fn plan_assistant(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
-        self.navigator.request_review(request, context);
+        self.navigator.request_review(request, context, false);
         self.ui.map_dirty = true;
+    }
+    /// The executor's answer to a measuring request. The figures go to the Find list; the outcome
+    /// ends the operation without a commit.
+    pub fn assistant_measured_outcome(
+        &mut self,
+        token: OperationToken<crate::device_core::NavigatorTag>,
+        legs: obc_route::visit::VisitLegs,
+    ) -> super::NavigatorOutcome {
+        let outcome = super::NavigatorOutcome::ReviewReady { token };
+        if !self.navigator.accepts(&outcome) || !self.navigator.review.measure || self.ui.find.measured.is_some() {
+            return super::NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged };
+        }
+        self.ui.find.measured = Some(legs);
+        outcome
+    }
+    pub(crate) fn assistant_measuring(&self) -> bool {
+        self.navigator.review.measure
+    }
+    /// Unaccepted candidates no review holds are what an interrupted review left on the card.
+    /// Each effect removes a commit's batch of them; a search in progress owns its candidate, so
+    /// the removal waits for it and never the other way round.
+    pub(crate) fn cleanup_orphan_reviews(&mut self) {
+        if self.ui.find.owns_pages()
+            || !self.catalogs.can_admit_intent()
+            || !self.assistant_planner_released()
+            || self.assistant_needs_recovery()
+            || self.assistant_preview().is_some()
+            || self.navigator.review.change.is_some()
+            || !matches!(
+                self.assistant_review_status(),
+                ReviewStatus::Idle | ReviewStatus::Accepted | ReviewStatus::ResumeAvailable
+            )
+        {
+            return;
+        }
+        if self.orphan_reviews().next().is_some()
+            && self.catalogs.admit_intent(crate::catalog_state::CatalogIntent::RemoveOrphanReviews).is_ok()
+        {
+            self.ui.next_wake_ms = Some(1);
+        }
+    }
+    /// The unaccepted candidates the standing checkpoint does not name.
+    pub fn orphan_reviews(&self) -> impl Iterator<Item = crate::CatalogObjectId> + '_ {
+        let held =
+            self.assistant_checkpoint().map_or([None; 2], |c| [Some(c.route.object), c.original.map(|o| o.object)]);
+        self.route_ids()
+            .iter()
+            .enumerate()
+            .filter(move |(index, id)| self.route_unaccepted(*index) && !held.contains(&Some(**id)))
+            .map(|(_, id)| *id)
     }
     pub fn accept_assistant(&mut self, origin: ReviewOrigin) {
         self.admit_navigator_intent(super::NavigatorIntent::AcceptAssistant {
@@ -832,22 +905,6 @@ impl crate::App {
     }
     pub fn assistant_review_context(&self) -> Option<ReviewContext> {
         self.navigator.review.context
-    }
-    pub fn requested_assistant_restore(&self) -> Option<RouteSourceKey> {
-        self.navigator.review.restore
-    }
-    pub fn restore_visit(
-        &mut self,
-        target: obc_route::visit::VisitTarget,
-        context: ReviewContext,
-        source: RouteSourceKey,
-    ) -> bool {
-        if !self.plan_visit(target, context) {
-            return false;
-        }
-        self.navigator.review.context = Some(context);
-        self.navigator.review.restore = Some(source);
-        true
     }
     pub fn assistant_preview(&self) -> Option<ReviewedRoute> {
         self.navigator.review.preview

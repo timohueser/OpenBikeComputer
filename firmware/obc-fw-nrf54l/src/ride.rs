@@ -1111,26 +1111,20 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
-                    CatalogEffect::RemoveReview { token, source } => {
-                        let result = if source.store != flat.store_id().0 {
-                            Err(obc_storage::flat::StoreError::NotFound)
+                    CatalogEffect::RemoveOrphanReviews { token } => {
+                        let heads = crate::flat_store::route_heads(flat, app.orphan_reviews());
+                        let result = if heads.is_empty() {
+                            Ok(())
                         } else if let Some(writer) = crate::flat_store::writer() {
                             writer
-                                .call(
-                                    crate::flat_store::Request::RemoveComputedRoute {
-                                        id: obc_storage::flat::ObjectId(source.object),
-                                        revision: obc_storage::flat::Revision(source.revision),
-                                    },
-                                    &CATALOG_STORE_REPLY,
-                                )
+                                .call(crate::flat_store::Request::RemoveRoutes { heads }, &CATALOG_STORE_REPLY)
                                 .await
+                                .map(|_| ())
                         } else {
                             Err(obc_storage::flat::StoreError::ReadOnly)
                         };
                         let outcome = match result {
-                            Ok(_) | Err(obc_storage::flat::StoreError::NotFound) => {
-                                CatalogOutcome::ReviewRemoved { token, source }
-                            }
+                            Ok(()) => CatalogOutcome::OrphanReviewsRemoved { token },
                             Err(_) => CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
@@ -1418,27 +1412,34 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
                 #[cfg(has_nav)]
-                let source_error =
-                    if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                        && (app.assistant_visit_target().is_some()
-                            || app
-                                .assistant_review_context()
-                                .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
-                    {
-                        let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
-                        let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
-                        let avoidance = id.is_some_and(|id| {
-                            flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
-                                obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
-                            })
-                            .ok()
-                            .and_then(Result::ok)
-                            .unwrap_or(true)
-                        });
-                        !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
-                    } else {
-                        false
-                    };
+                let composes = matches!(
+                    effect,
+                    NavigatorEffect::Acquire {
+                        work: PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_),
+                        ..
+                    }
+                );
+                #[cfg(has_nav)]
+                let source_error = if composes
+                    && (app.assistant_visit_target().is_some()
+                        || app
+                            .assistant_review_context()
+                            .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
+                {
+                    let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+                    let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
+                    let avoidance = id.is_some_and(|id| {
+                        flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
+                            obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
+                        })
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(true)
+                    });
+                    !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
+                } else {
+                    false
+                };
                 #[cfg(not(has_nav))]
                 let source_error = false;
                 if source_error {
@@ -1571,7 +1572,7 @@ pub(crate) async fn run_app(
                         }
                         NavigatorEffect::Acquire {
                             token,
-                            work: PlannerWork::Detour(_) | PlannerWork::RestoreReview(_),
+                            work: PlannerWork::Detour(_) | PlannerWork::MeasureLegs(_) | PlannerWork::MeasureRoute(_),
                         }
                         | NavigatorEffect::CommitDetour { token } => {
                             defmt::warn!(
@@ -1586,13 +1587,7 @@ pub(crate) async fn run_app(
                         NavigatorEffect::Release { token, retain_result, .. } => {
                             #[cfg(has_nav)]
                             if nav_run.is_none() && !retain_result {
-                                if let Some(source) = review_publication.filter(|source| {
-                                    !app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                                        store: flat.store_id().0,
-                                        object: source.object,
-                                        revision: source.revision,
-                                    })
-                                }) {
+                                if let Some(source) = review_publication {
                                     if let Some(writer) = crate::flat_store::writer() {
                                         let result = writer
                                             .call(
@@ -1639,12 +1634,7 @@ pub(crate) async fn run_app(
                                 exec.nav_token = Some(token);
                                 if let Some(run) = nav_run.as_mut() {
                                     if let NavIo::Published(id) = run.io {
-                                        run.io = if retain_result
-                                            || app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                                                store: flat.store_id().0,
-                                                object: id.0,
-                                                revision: 1,
-                                            }) {
+                                        run.io = if retain_result {
                                             NavIo::Complete
                                         } else {
                                             NavIo::NeedPublishCompensation(id)
@@ -2151,16 +2141,6 @@ pub(crate) async fn run_app(
                     }
                 }
                 if search_ended {
-                    if review_publication.is_some_and(|source| {
-                        app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                            store: flat.store_id().0,
-                            object: source.object,
-                            revision: source.revision,
-                        })
-                    }) && app.assistant_review_status() != obc_app::navigator::ReviewStatus::Preview
-                    {
-                        review_publication = None;
-                    }
                     crate::assistant::release_original(
                         flat,
                         &mut review_original,
@@ -2365,6 +2345,22 @@ pub(crate) async fn run_app(
                             });
                         }
                         _ => defmt::info!("derived: the ride-track subject moved under the read — re-asking next pass"),
+                    }
+                } else if let Some(key) = exec.needs.day_profile {
+                    // Tomorrow's profile for the day-done card, into the same resident buffer. As
+                    // above, a subject that moved under the read is answered by not answering.
+                    let filled = crate::flat_store::fill_day_profile(flat, app, key);
+                    match app.derived_needs().day_profile {
+                        Some(now) if (now.day, now.join_m, now.rest) == (key.day, key.join_m, key.rest) => {
+                            derived.day_profile = Some(if filled {
+                                obc_app::device_core::DerivedInput::filled(now)
+                            } else {
+                                obc_app::device_core::DerivedInput::failed(now)
+                            });
+                        }
+                        _ => {
+                            defmt::info!("derived: the day-profile subject moved under the read — re-asking next pass")
+                        }
                     }
                 } else if let Some(key) = exec.needs.nav_preview {
                     // The Route overview's shape preview. The previewed route is the active one, and

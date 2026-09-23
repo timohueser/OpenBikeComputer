@@ -177,6 +177,34 @@ impl RouteObjectInfo {
     }
 }
 
+/// The last route point, `(lon, lat)` µdeg. It reads the header, the last chunk meta and that
+/// chunk's point records in small blocks, never the whole index or a decoded chunk.
+pub fn route_end(src: &dyn ByteSource) -> Result<(i32, i32), Error> {
+    let h = read_header(src)?;
+    let Some(last) = h.chunk_count.checked_sub(1) else { return Ok((h.start_lon, h.start_lat)) };
+    let off = last
+        .checked_mul(CHUNK_META_LEN as u32)
+        .and_then(|rel| h.index_offset.checked_add(rel))
+        .ok_or(Error::BadOffset)?;
+    let mut meta = [0u8; CHUNK_META_LEN];
+    src.read_at(off.into(), &mut meta)?;
+    let cm = parse_chunk_meta(&meta, src.len())?;
+    let (mut lon, mut lat) = (cm.anchor_lon, cm.anchor_lat);
+    const BLOCK: usize = 16 * POINT_RECORD_LEN;
+    let mut block = [0u8; BLOCK];
+    let (mut at, end) = (u64::from(cm.byte_offset), u64::from(cm.byte_offset) + u64::from(cm.byte_len));
+    while at < end {
+        let bytes = &mut block[..(end - at).min(BLOCK as u64) as usize];
+        src.read_at(at, bytes)?;
+        for p in bytes.as_chunks::<POINT_RECORD_LEN>().0 {
+            lon = lon.wrapping_add(rd_i16(p, 0).into());
+            lat = lat.wrapping_add(rd_i16(p, 2).into());
+        }
+        at += bytes.len() as u64;
+    }
+    Ok((lon, lat))
+}
+
 /// The resident, source-independent parse of a route: the header fields plus the chunk index and
 /// its segment prefix sums. [`read`](Self::read) pays the route's only up-front cost, the header
 /// read and the full chunk-meta walk.
@@ -858,13 +886,7 @@ pub(crate) fn decode_chunk_from(
     n: usize,
     out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 ) -> Result<(), Error> {
-    let _ = out.push(RoutePoint {
-        lon: m.anchor_lon,
-        lat: m.anchor_lat,
-        ele: m.anchor_ele,
-        surface: 0,
-        elevation_incomplete: false,
-    });
+    let _ = out.push(chunk_anchor((m.anchor_lon, m.anchor_lat, m.anchor_ele)));
 
     // The points after the anchor are fixed 7-byte records, read in one go.
     let want = (n - 1) * POINT_RECORD_LEN;
@@ -873,24 +895,31 @@ pub(crate) fn decode_chunk_from(
     if want > 0 {
         src.read_at(m.byte_offset.into(), bytes)?;
     }
+    decode_records((m.anchor_lon, m.anchor_lat), bytes, |p| {
+        let _ = out.push(p);
+    })
+}
 
-    let (mut lon, mut lat) = (m.anchor_lon, m.anchor_lat);
-    let mut o = 0;
-    for _ in 1..n {
-        lon += rd_i16(bytes, o) as i32;
-        lat += rd_i16(bytes, o + 2) as i32;
-        let ele = rd_i16(bytes, o + 4);
-        if bytes[o + 6] & !15 != 0 {
+/// A chunk's first point. The format stores no surface for it.
+pub(crate) fn chunk_anchor((lon, lat, ele): (i32, i32, i16)) -> RoutePoint {
+    RoutePoint { lon, lat, ele, surface: 0, elevation_incomplete: false }
+}
+
+/// The points of one chunk body after its anchor: fixed 7-byte records, each a delta from the
+/// point before it.
+pub(crate) fn decode_records(anchor: (i32, i32), bytes: &[u8], mut visit: impl FnMut(RoutePoint)) -> Result<(), Error> {
+    let (records, rest) = bytes.as_chunks::<POINT_RECORD_LEN>();
+    if !rest.is_empty() {
+        return Err(Error::BadOffset);
+    }
+    let (mut lon, mut lat) = anchor;
+    for r in records {
+        lon += rd_i16(r, 0) as i32;
+        lat += rd_i16(r, 2) as i32;
+        if r[6] & !15 != 0 {
             return Err(Error::BadOffset);
         }
-        o += POINT_RECORD_LEN;
-        let _ = out.push(RoutePoint {
-            lon,
-            lat,
-            ele,
-            surface: bytes[o - 1] & 7,
-            elevation_incomplete: bytes[o - 1] & 8 != 0,
-        });
+        visit(RoutePoint { lon, lat, ele: rd_i16(r, 4), surface: r[6] & 7, elevation_incomplete: r[6] & 8 != 0 });
     }
     Ok(())
 }
