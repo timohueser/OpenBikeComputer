@@ -36,7 +36,7 @@ struct TripStopsTests {
     }
 
     @Test
-    func placeGivesTheDistanceAlongAndTheOffsetInLineOrder() {
+    func placeGivesTheDistanceAlongAndTheOffset() {
         let placed = trip().place([stop("Hotel", 9_600, 400), stop("Camp", 10_300, 50)], near: 10_000)
         #expect(placed.map(\.stop.name) == ["Hotel", "Camp"])
         #expect(abs(placed[0].distance - 9_600) < 1)

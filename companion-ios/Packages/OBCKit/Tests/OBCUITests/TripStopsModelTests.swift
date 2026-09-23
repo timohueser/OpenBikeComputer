@@ -73,6 +73,20 @@ struct TripStopsModelTests {
     }
 
     @Test
+    func aSearchKeepsAppleMapsOrderAndMeasuresEachPlace() async {
+        let far = Stop(name: "Camping Eggishorn", coordinate: coordinate(19_960, 600), kind: .campsite)
+        let near = Stop(name: "Camping riverside", coordinate: coordinate(4_000, 500), kind: .campsite)
+        let model = TripStopsModel(
+            trip: trip(), day: 0, finder: StopFinder(search: MockStopSearch(stops: [far, near, campsite])),
+            isOnline: true, onPick: { _ in })
+        model.query = "camping "
+        await model.search()
+        #expect(model.results?.map(\.stop.name) == ["Camping Eggishorn", "Camping riverside"])
+        #expect(model.results.map { $0.map { ($0.distance / 100).rounded() * 100 } } == [20_000, 4_000])
+        #expect(model.results.map { $0.map(model.canPick) } == [false, true], "day 1 ends at least 100 m before day 2")
+    }
+
+    @Test
     func pickingAnOnLineStopMovesAndNamesTheDayEnd() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
