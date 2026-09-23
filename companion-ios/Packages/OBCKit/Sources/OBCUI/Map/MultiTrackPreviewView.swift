@@ -98,9 +98,9 @@ public struct MultiTrackPreviewView: View {
                     image.shading = .color(pin.color)
                     context.draw(image, in: CGRect(x: point.x - 6, y: point.y - 6, width: 12, height: 12))
                 } else {
-                    let dot = Path(ellipseIn: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
+                    let dot = Path(ellipseIn: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8))
                     context.fill(dot, with: .color(pin.color))
-                    context.stroke(dot, with: .color(.white), lineWidth: 1.5)
+                    context.stroke(dot, with: .color(.white), lineWidth: 1.2)
                 }
             }
         }
@@ -180,8 +180,8 @@ private struct PinMark: View {
                 .overlay(Circle().strokeBorder(OBCTheme.lineStrong))
         } else {
             Circle().fill(pin.color)
-                .frame(width: 10, height: 10)
-                .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                .frame(width: 8, height: 8)
+                .overlay(Circle().strokeBorder(.white, lineWidth: 1.2))
         }
     }
 }
