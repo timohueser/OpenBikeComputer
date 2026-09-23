@@ -911,7 +911,9 @@ screens! {
     /// The recorded sibling of the Route overview: the tracked ride's elevation band, a stat
     /// ledger, and the guarded Delete-ride row.
     RideDetail(RideDetailScreen) => Caps::nav(),
-    RouteOverview(RouteOverviewScreen) => Caps::nav(),
+    /// The route on the device map over its stats, then the full-height profile. A map base
+    /// for the map band, but a static page: it is no ride view and redraws on no fix.
+    RouteOverview(RouteOverviewScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
     /// START RIDE away from the route start: Ride to start, Join nearest, or Cancel.
     StartAway(StartAwayScreen) => Caps::nav(),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt(),
@@ -1061,6 +1063,15 @@ impl Screen {
             Screen::DetourPreview(s) => s.prepare(px),
             Screen::StartAway(s) => s.prepare(px),
             _ => {}
+        }
+    }
+
+    /// The rectangle this screen's hold fill draws in, for a region-only repaint of a hold step.
+    /// `None` on a screen that has not declared one, which a host then repaints in full.
+    pub(crate) fn hold_fill_region(&self, w: i32, h: i32) -> Option<Rectangle> {
+        match self {
+            Screen::RouteOverview(_) => Some(RouteOverviewScreen::hold_fill_region(w, h)),
+            _ => None,
         }
     }
 
@@ -1273,6 +1284,10 @@ pub mod palette {
     /// Navy: the recorded breadcrumb, stroked over the route and under the marker. Recessive, so
     /// the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
+    /// Dark green: the start dot of a previewed track.
+    pub const TRACK_START: u16 = rgb565(0, 90, 0); // → (0,85,0) dark green
+    /// Dark red: the end dot of a previewed route. It stays apart from the magenta line it ends.
+    pub const TRACK_END: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
 }
 
 /// One RGB222 channel level, stepped down. Index by the channel's stored level (0-3); the result is
@@ -1356,8 +1371,11 @@ mod tests {
                 }
             }
             if c.base != BaseContent::Chrome {
+                assert!(!c.idle_exempt, "{name}: a map or riding base is not a modal exemption");
+            }
+            // A static page may draw a map, so the base content alone does not make a live view.
+            if c.base != BaseContent::Chrome && c.render_key != RenderKeyKind::Static {
                 assert!(c.ride_view, "{name}: a live-data base must be a ride view");
-                assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
 
             if c.browse_exempt {
@@ -1410,7 +1428,17 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Landmarks", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview", "Easier"],
+            [
+                "Map",
+                "Landmarks",
+                "LandmarkPhoto",
+                "Detour",
+                "DetourPreview",
+                "FindPlace",
+                "VisitReview",
+                "Easier",
+                "RouteOverview"
+            ],
             "streamed map and prepared photo pixels stay unchanged while covered"
         );
     }

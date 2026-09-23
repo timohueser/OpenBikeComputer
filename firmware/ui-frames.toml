@@ -841,22 +841,40 @@ args = ["--dfu", "failed=notstarted"]
 # does a hold charge the delete. While the route is the active ride's the row is hidden entirely (no
 # greyed face); that state is unreachable by gesture (the active route's overview never opens from
 # the menu), so it has no frame — the route_overview guard tests pin it.
-# Entry shows the content-paired pager's page A (owner review round 3): the route's track-shape
-# preview (host-decimated, start disc + destination diamond) over its DISTANCE row.
+# Entry shows page 1: the Grimsel climb on the device map with its bike-type chip, over DISTANCE,
+# CLIMB and EST TIME.
 [[frame]]
 name = "routeoverview"
+map = "{grimsel}"
+env = "eta-route"
+script = "p p p"
+expect = "RouteOverview"
+
+# Page 2 after the 5 s dwell (each `w` elapses ~800 ms; seven cross the flip): the full-height
+# profile with its peak, over one climb and descent line. START stays in its slot.
+[[frame]]
+name = "routeoverview-elevation"
+map = "{grimsel}"
+env = "eta-route"
+script = "p p p w*7"
+expect = "RouteOverview"
+
+# Page 1 for a route outside the loaded map (the vector loop near Freiburg on the Grimsel map):
+# the same path as no map at all, so the track draws on the plain page in the same box.
+[[frame]]
+name = "routeoverview-nomap"
 map = "{grimsel}"
 env = "routes"
 script = "p p p"
 expect = "RouteOverview"
 
-# Page B after the 5 s dwell (each `w` elapses ~800 ms; seven cross the flip): the elevation band
-# over CLIMB + DESCENT — the same band slot, so nothing jumps.
+# Page 1 for a day of about 80 km: the fit is past the band's map scale ceiling, so the track draws
+# on the plain page, as it does without a map.
 [[frame]]
-name = "routeoverview-elevation"
+name = "routeoverview-long"
 map = "{grimsel}"
-env = "routes"
-script = "p p p w*7"
+env = "long-route"
+script = "p p p"
 expect = "RouteOverview"
 
 # The cursor on the Delete row (idle): `d` moves the selection onto it, nothing charging.
@@ -868,11 +886,12 @@ script = "p p p d"
 expect = "RouteOverview"
 
 # The Delete row charging: `p p p d H` selects it, then partial-holds Select, so the
-# warning-red row fill draws under the "Delete route" label.
+# warning-red row fill draws under the "Delete route" label, below the map band. On the board a
+# hold step repaints only this row.
 [[frame]]
 name = "routeoverview-delete"
 map = "{grimsel}"
-env = "routes"
+env = "eta-route"
 script = "p p p d H"
 expect = "RouteOverview"
 
@@ -1057,15 +1076,8 @@ script = "p*4 b"
 expect = "Statistics"
 args = ["--clock", "2025-06-29T14:40", "--stat-fields", "time-to-go,eta,dist-to-go,to-climb,speed,ride-time", "--gpx", "{gpx}", "--at", "30"]
 
-# The same pair as the Route overview's EST TIME row sees them (page A of the content-paired pager,
-# alongside DISTANCE): the whole-route estimate before the ride starts.
-[[frame]]
-name = "routeoverview-est-time"
-map = "{grimsel}"
-env = "eta-route"
-script = "p p p"
-expect = "RouteOverview"
-
+# The Route overview's EST TIME row for the zero-elevation twin: the whole-route estimate before
+# the ride starts, with no climb term. The Grimsel climb's own figure is on `routeoverview`.
 [[frame]]
 name = "routeoverview-est-time-flat"
 map = "{grimsel}"
@@ -1717,7 +1729,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "routeoverview"
 map = "{grimsel}"
-env = "routes"
+env = "eta-route"
 script = "p p p"
 expect = "RouteOverview"
 langs = ["de", "fr", "es"]

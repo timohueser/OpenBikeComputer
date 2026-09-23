@@ -324,6 +324,11 @@ impl GuardedRowsGeometry {
     pub(crate) fn panel(w: i32, top: i32, row_h: i32, gap: i32) -> Self {
         GuardedRowsGeometry { x: 14, w: w - 28, top, row_h, gap, label_dx: 12, label_dy: 5 }
     }
+
+    /// Row `i`'s rectangle.
+    pub(crate) fn row(&self, i: usize) -> Rectangle {
+        rect(self.x, self.top + i as i32 * (self.row_h + self.gap), self.w, self.row_h)
+    }
 }
 
 /// Draw a guarded-action menu's option rows: each [`MenuItem`] gets its [`confirm_row`] background
@@ -337,12 +342,11 @@ pub(crate) fn draw_guarded_rows(
     geo: GuardedRowsGeometry,
 ) {
     for (i, item) in items.iter().enumerate() {
-        let y = geo.top + i as i32 * (geo.row_h + geo.gap);
-        let row = rect(geo.x, y, geo.w, geo.row_h);
+        let row = geo.row(i);
         confirm_row(cv, row, i == selected, item.guard, hold_progress, fill, 6);
         cv.text(
             item.label,
-            Point::new(geo.x + geo.label_dx, y + geo.label_dy),
+            Point::new(row.top_left.x + geo.label_dx, row.top_left.y + geo.label_dy),
             Font::Body,
             TextAlign::Left,
             palette::INK,

@@ -14,3 +14,4 @@ pub(crate) mod rows;
 pub(crate) mod sheet;
 pub(crate) mod spinner;
 pub(crate) mod tiles;
+pub(crate) mod track_map;
