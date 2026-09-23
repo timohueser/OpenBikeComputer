@@ -2,13 +2,13 @@
   "schema": 3,
   "package": "sim-grimsel",
   "archive": {
-    "bytes": 4203356,
-    "sha256": "1dfe2ef77041f26d54315f713d213832e8806731601899efe23c96d42f7851f3"
+    "bytes": 4203402,
+    "sha256": "4fb839c470a3fd42fefdc506ad930a991e9a88573114a6da504ddfaea4a8b065"
   },
   "producer": {
-    "source_commit": "8ce3bf86b",
+    "source_commit": "e0a047c6c",
     "executables_sha256": {
-      "obc-pack": "4f81fe1de4b10370f84a2e217acae9c69a2408f70243d464710d1f7e4637421a"
+      "obc-pack": "a73373000d77ec3ed7be073fd32d364b5557dca5be1647050de2e08025a48d68"
     }
   },
   "bounds_lon_lat": [
@@ -28,8 +28,8 @@
     "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
   },
   "map": {
-    "bytes": 4800448,
-    "sha256": "198afebe5d2f9264030cea1f93d3e91b2368db5a7f68080481190ddfa85924f5",
+    "bytes": 4801424,
+    "sha256": "8b7b72c99286e86a89bb25398e0b646eb55d1a4f0e69ee36ce730fafc90bf712",
     "obcm_version": 18,
     "settlement_records": 19,
     "landmark_records": 7,

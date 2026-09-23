@@ -3,11 +3,11 @@
   "artifact": "apps/obc-sim/assets/grimsel-demo.obcm",
   "obcm_version": 18,
   "map": {
-    "bytes": 10082816,
-    "sha256": "087f531f4a37b9174d91f1ffeac350670d48db8e4182f1373f8b6ec5d4367088"
+    "bytes": 10083328,
+    "sha256": "802e112298388a7145538569498b2e29a753b803d5fa32b327b286db93408377"
   },
-  "producer_commit": "8ce3bf86b",
-  "obc_pack_sha256": "4f81fe1de4b10370f84a2e217acae9c69a2408f70243d464710d1f7e4637421a",
+  "producer_commit": "e0a047c6c",
+  "obc_pack_sha256": "a73373000d77ec3ed7be073fd32d364b5557dca5be1647050de2e08025a48d68",
   "source_packages": {
     "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
     "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",

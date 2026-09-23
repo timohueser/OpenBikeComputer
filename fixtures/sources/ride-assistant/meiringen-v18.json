@@ -2,13 +2,13 @@
   "schema": 3,
   "package": "sim-assistant-meiringen",
   "archive": {
-    "bytes": 34580251,
-    "sha256": "d4f92c64a66da2f1588d22b099752868429b2836bd98830e758cf5e500ba182e"
+    "bytes": 34580406,
+    "sha256": "067c2780d4742b0567eef3ae829e555f5e9bcd3943395d1aa2bbcd3aa4abe0d0"
   },
   "producer": {
-    "source_commit": "8ce3bf86b",
+    "source_commit": "e0a047c6c",
     "executables_sha256": {
-      "obc-bake": "17a0579932606996dd003aa6d94aa14bd44e858d35e7ce8f4b54ec77bfa58b0a",
+      "obc-bake": "8a0432cd30a86388bccf99afea28e53eacd34f851aa947735e6b59fe4b86618f",
       "obc-dem": "ee482ccc01ca46f2a494d1031764b4785d1c0d1dabeea3f9e5cbbddda5da2c6f",
       "obcm-assemble": "9b40f409db738018228bab6c1ce6b37139aecace78422dfa01f3951bce62e9a6"
     }
@@ -32,8 +32,8 @@
     "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
   },
   "map": {
-    "bytes": 49718544,
-    "sha256": "ed646943ddb381538088019208e267ee7a300d0b0daedfb49fb2c2cdad905f17",
+    "bytes": 49725904,
+    "sha256": "74ae2223de9d7df4d6d77281a184c1d8919c73a60193cbf2d12df457a928efe4",
     "obcm_version": 18
   },
   "land_source": {
@@ -76,7 +76,7 @@
   "recipe": "python3 fixtures/build-assistant-package.py meiringen",
   "packaged_build": {
     "bytes": 13362,
-    "sha256": "29f90fe9ee8cb2af2d7e9468278e1b2ea0602beeae3a33bc567d29fe5bba26ec",
+    "sha256": "d72469d7f26bb122d20adfca8f516eff9545328926d8c52510c27c839271a2b2",
     "note": "The packaged build.json holds the bake commands, executable digests and content counts."
   },
   "terrain": {
