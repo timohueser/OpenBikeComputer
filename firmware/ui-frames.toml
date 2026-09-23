@@ -50,7 +50,7 @@ wptgpx = "{repo}/fixtures/sources/vector/vector-loop-replay.gpx"
 peak = "B d d d p f"
 peak_article = "{peak} p f p f"
 place_detail = "A p d d d p u p f p f"
-landmarks = "A d d d d d p f"
+landmarks = "A d d d p f"
 detour_pre = "p p p p T"
 dfu_pre = "B u p d d d d p d d d p p"
 up_base = "p p p p T A d p f p f*8"
@@ -308,6 +308,15 @@ name = "assistant"
 map = "{grimsel}"
 script = "A"
 expect = "Assistant"
+
+# What's next's hint answers from the route's resident climbs: the climb starts ahead of the fix.
+[[frame]]
+name = "assistant-climb-hint"
+map = "{grimsel}"
+env = "eta-route"
+script = "p*4 f d p A w"
+expect = "Assistant"
+args = ["--gpx", "{gpx}", "--at", "10"]
 
 [[frame]]
 name = "poi-list"
