@@ -94,6 +94,17 @@ struct TripReviewTests {
     }
 
     @Test
+    func aSparseTrackCoversTheLineInOnePart() throws {
+        let trip = trip([(0, 10)])
+        // A sample every 1 km, farther apart than the join allowance alone.
+        let sparse = stride(from: 0.0, through: 10_000, by: 1_000).map { coordinate($0) }
+        let review = try #require(TripReview(
+            trip: trip, rides: [ride("d1", day: 0, of: trip)], tracks: [RideID("d1"): sparse]))
+        #expect(review.ridden.count == 1)
+        #expect(abs(review.ridden[0].upperBound - 10_000) < 1)
+    }
+
+    @Test
     func anEarlyStopOffersToEvenOutTheDaysUpToTheNextTransfer() throws {
         // Days 1–3 on one piece, then a train, then days 4–5.
         let trip = trip([(0, 10), (10, 20), (20, 30), (31, 41), (41, 51)])
