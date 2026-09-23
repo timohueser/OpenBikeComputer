@@ -62,7 +62,8 @@ struct RootView: View {
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
         placeName: (@Sendable (Coordinate) async -> String?)? = nil,
-        stopSearch: (any StopSearch)? = nil
+        stopSearch: (any StopSearch)? = nil,
+        legRouter: (any LegRouter)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -90,7 +91,8 @@ struct RootView: View {
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
             transferActivity: transferActivity,
             placeName: placeName,
-            stopSearch: stopSearch
+            stopSearch: stopSearch,
+            legRouter: legRouter
         ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model

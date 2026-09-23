@@ -50,6 +50,10 @@ public final class LineMarkerEditorModel {
     private var pendingWindow: ClosedRange<Double>?
     /// Known stops near the line: small pins on the map.
     public var stops: [PlacedStop] = []
+    /// Lines off the main line: the map draws them over it.
+    public private(set) var branches: [LineBranch] = []
+    /// Stretches of the line nobody rides any more, drawn dashed in a faint colour.
+    public private(set) var oldSections: [ClosedRange<Double>] = []
     @ObservationIgnored public var onEvent: (LineMarkerEvent) -> Void
     /// A finger that touched a handle and lifted without moving it.
     @ObservationIgnored public var onTap: (LineMarker.ID) -> Void = { _ in }
@@ -97,6 +101,34 @@ public final class LineMarkerEditorModel {
         restingMarkers = self.markers
         self.segmentColors = segmentColors
         self.dashedSegments = dashedSegments
+    }
+
+    /// Replace the branches and the old sections.
+    public func setBranches(_ branches: [LineBranch], oldSections: [ClosedRange<Double>]) {
+        if branches != self.branches { self.branches = branches }
+        if oldSections != self.oldSections { self.oldSections = oldSections }
+    }
+
+    /// The colour runs the map and the profile draw for markers at `splits`: one per segment,
+    /// with each old section cut out and dashed in a faint colour.
+    func runs(splits: [Double]) -> (splits: [Double], colors: [Color], dashed: Set<Int>) {
+        guard !oldSections.isEmpty else { return (splits, segmentColors, dashedSegments) }
+        let cuts = (splits + oldSections.flatMap { [$0.lowerBound, $0.upperBound] }).sorted()
+        let bounds = [0] + cuts + [line.length]
+        var colors: [Color] = []
+        var dashed = Set<Int>()
+        for run in 0..<(bounds.count - 1) {
+            let middle = (bounds[run] + bounds[run + 1]) / 2
+            if oldSections.contains(where: { $0.contains(middle) }) {
+                colors.append(OBCTheme.inkFaint)
+                dashed.insert(run)
+            } else {
+                let segment = min(splits.filter { $0 <= middle }.count, segmentColors.count - 1)
+                colors.append(segmentColors[segment])
+                if dashedSegments.contains(segment) { dashed.insert(run) }
+            }
+        }
+        return (cuts, colors, dashed)
     }
 
     // MARK: The profile window
@@ -272,5 +304,18 @@ public final class LineMarkerEditorModel {
 
     private func index(of id: LineMarker.ID) -> Int? {
         markers.firstIndex { $0.id == id }
+    }
+}
+
+/// A line drawn beside the main line: a spur to a stop, a via's new section or a straight gap.
+public struct LineBranch: Equatable, Sendable {
+    public var coordinates: [Coordinate]
+    public var color: Color
+    public var isDashed: Bool
+
+    public init(coordinates: [Coordinate], color: Color, isDashed: Bool = false) {
+        self.coordinates = coordinates
+        self.color = color
+        self.isDashed = isDashed
     }
 }
