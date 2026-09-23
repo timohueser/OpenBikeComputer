@@ -12,14 +12,14 @@ extension Trip {
     public static let viaReachMeters = 2_000.0
 
     /// Where `day` leaves the line: its end, or where its via leaves.
-    func lineEnd(of day: Int) -> Double {
+    public func lineEnd(of day: Int) -> Double {
         if case .via(_, _, let leave, _)? = dayEnds[day].stopRoute { return leave }
         return dayEnds[day].distance
     }
 
     /// Where `day` rides onto the line: the line start, the day end before it, or where the via
     /// of the day before rejoins.
-    func lineStart(of day: Int) -> Double {
+    public func lineStart(of day: Int) -> Double {
         guard day > 0 else { return 0 }
         if case .via(_, _, _, let rejoin)? = dayEnds[day - 1].stopRoute { return rejoin }
         return dayEnds[day - 1].distance
@@ -48,7 +48,7 @@ extension Trip {
         let spur = try await router.route(
             from: dayEnds[day].coordinate, to: stop.coordinate, bikeType: bikeType, onDownload: onDownload)
         guard spur.count > 1 else { throw LegRouteFailure.noRoad }
-        return .outAndBack(spur: spur)
+        return .outAndBack(spur: [measuredLine.point(at: dayEnds[day].distance)] + spur)
     }
 
     /// Route a via through `day`'s stop: one leg from the line before the stop to the stop, one
@@ -64,7 +64,9 @@ extension Trip {
             from: stop.coordinate, to: measured.coordinate(at: ends.rejoin), bikeType: bikeType, onDownload: onDownload)
         let legs = try await (toStop, fromStop)
         guard legs.0.count > 1, legs.1.count > 1 else { throw LegRouteFailure.noRoad }
-        return .via(toStop: legs.0, fromStop: legs.1, leave: ends.leave, rejoin: ends.rejoin)
+        return .via(
+            toStop: [measured.point(at: ends.leave)] + legs.0, fromStop: legs.1 + [measured.point(at: ends.rejoin)],
+            leave: ends.leave, rejoin: ends.rejoin)
     }
 
     /// Reach `day`'s stop by `route`, or end the day on the line with nil. False, and no change,
@@ -108,13 +110,13 @@ extension StopRoute {
     func change(on line: MeasuredLine, junction: Double) -> (end: StopRouteChange, start: StopRouteChange) {
         switch self {
         case .outAndBack(let spur):
-            let out = MeasuredLine(routePoints: [line.point(at: junction)] + spur)
+            let out = MeasuredLine(routePoints: spur)
             return (
                 StopRouteChange(distance: out.length, climb: out.climb(from: 0, to: out.length)),
                 StopRouteChange(distance: out.length, climb: out.descent(from: 0, to: out.length)))
         case .via(let toStop, let fromStop, let leave, let rejoin):
-            let to = MeasuredLine(routePoints: [line.point(at: leave)] + toStop)
-            let from = MeasuredLine(routePoints: fromStop + [line.point(at: rejoin)])
+            let to = MeasuredLine(routePoints: toStop)
+            let from = MeasuredLine(routePoints: fromStop)
             return (
                 StopRouteChange(
                     distance: to.length - (junction - leave),
