@@ -303,7 +303,7 @@ impl<'a> Reader<'a> {
             super::places::PlaceWindow::Corridor {
                 from_m: progress_m,
                 to_m: u32::MAX,
-                half_width_m: crate::corridor::CORRIDOR_HALF_WIDTH_M as u16,
+                half_width_m: crate::corridor::CORRIDOR_HALF_WIDTH_M,
             },
             None,
         );
