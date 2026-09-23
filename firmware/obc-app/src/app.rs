@@ -28,9 +28,6 @@ use crate::wall_clock::WallClock;
 use crate::{DeviceStatus, Msg};
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
-/// The app holds no trip progress record, so every trip reads as not started.
-const NO_TRIP_PROGRESS: &[crate::trip::TripProgress] = &[];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
     /// The camera tracks the user: every fix recenters the map.
@@ -2433,7 +2430,7 @@ impl App {
         // The detour level before the screen speaks, so a cancellation takes the preview with it.
         let detour_planned_before = self.navigator.detour_planned();
         let backlight_available = self.backlight_available;
-        let App { state, activity, settings, catalogs, recorder, ui, navigator, dfu, storage, .. } = self;
+        let App { state, activity, settings, catalogs, recorder, ui, navigator, dfu, storage, metadata, .. } = self;
         let mut cx = Ctx {
             find: &mut ui.find,
             landmarks: &mut ui.landmarks,
@@ -2450,7 +2447,7 @@ impl App {
             routes: catalogs.routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
-            trip_progress: NO_TRIP_PROGRESS,
+            trip_progress: metadata.progress(),
             backlight: backlight_available,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
@@ -2806,6 +2803,7 @@ impl App {
             map_name,
             map_obcm_version,
             storage,
+            metadata,
             ..
         } = self;
         // The shape previews draw only for the subject they were decimated for — a stale key
@@ -2846,7 +2844,7 @@ impl App {
             internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
-            trip_progress: NO_TRIP_PROGRESS,
+            trip_progress: metadata.progress(),
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
