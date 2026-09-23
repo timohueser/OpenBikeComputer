@@ -889,7 +889,8 @@ impl RecorderMachine {
 
     /// Scroll the effort history to this pass and zone the latest values against the limits.
     pub(crate) fn advance_effort(&mut self, limits: Limits) {
-        self.effort.advance(self.sensor_now_ms, limits, self.hr_last);
+        let power = self.power_last.map(|_| self.effort.power());
+        self.effort.advance(self.sensor_now_ms, limits, self.hr_last, power);
     }
 
     pub(crate) fn record_cadence(&mut self, rpm: u8, now_ms: u32) {
