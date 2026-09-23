@@ -15,6 +15,18 @@ public enum OBCFormat {
         return "\(value) km"
     }
 
+    /// "480 m" under a kilometre, in steps of 10 m; ``distance(meters:locale:)`` above.
+    public static func shortDistance(meters: Double, locale: Locale = .current) -> String {
+        let meters = abs(meters)
+        guard meters < 1000 else { return distance(meters: meters, locale: locale) }
+        return "\(Int((meters / 10).rounded()) * 10) m"
+    }
+
+    /// "on the line" or "430 m off the line": how far a stop is from a trip line.
+    public static func stopOffset(meters: Double, locale: Locale = .current) -> String {
+        meters <= Trip.onLineMeters ? "on the line" : "\(shortDistance(meters: meters, locale: locale)) off the line"
+    }
+
     /// "840 m ↑" or "1,240 m ↑": climb with grouping.
     public static func climb(meters: Double, locale: Locale = .current) -> String {
         let formatter = numberFormatter(locale: locale)

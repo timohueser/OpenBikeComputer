@@ -12,6 +12,7 @@ struct LineMarkerMapView: UIViewRepresentable {
     let markers: [LineMarker]
     let activeID: LineMarker.ID?
     let segmentColors: [Color]
+    let stops: [PlacedStop]
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -38,6 +39,11 @@ struct LineMarkerMapView: UIViewRepresentable {
             splits: markers.map(\.distance),
             colors: segmentColors.map { UIColor($0).cgColor }
         )
+        if coordinator.stops != stops {
+            mapView.removeAnnotations(mapView.annotations.filter { $0 is StopAnnotation })
+            mapView.addAnnotations(stops.map(StopAnnotation.init))
+            coordinator.stops = stops
+        }
         // Diff the annotations by marker id: a marker added, removed or replaced from outside
         // gets its handle without touching the others.
         var present: [LineMarker.ID: MarkerAnnotation] = [:]
@@ -76,6 +82,8 @@ struct LineMarkerMapView: UIViewRepresentable {
         weak var mapView: MKMapView?
         var renderer: SegmentedLineRenderer?
         private(set) var lineVersion = -1
+        /// The stops the map shows pins for.
+        var stops: [PlacedStop] = []
         /// The finger on the map, or none: a second finger is ignored until this one lets go.
         private var drag: Drag?
 
@@ -98,6 +106,7 @@ struct LineMarkerMapView: UIViewRepresentable {
             releaseDrag()
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations)
+            stops = []
             renderer = nil
             let overlay = SegmentedLineOverlay(line: line)
             mapView.addOverlay(overlay, level: .aboveRoads)
@@ -124,6 +133,13 @@ struct LineMarkerMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: any MKAnnotation) -> MKAnnotationView? {
+            if let stop = annotation as? StopAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: "stop") as? StopAnnotationView
+                    ?? StopAnnotationView(annotation: stop, reuseIdentifier: "stop")
+                view.annotation = stop
+                view.configure(kind: stop.kind)
+                return view
+            }
             guard let annotation = annotation as? MarkerAnnotation else { return nil }
             let identifier = "marker"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MarkerAnnotationView
@@ -305,6 +321,46 @@ final class MarkerAnnotationView: MKAnnotationView {
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         if let touch = touches.first { onDrag?(.ended, touch) }
+    }
+}
+
+/// A known stop near the line.
+final class StopAnnotation: NSObject, MKAnnotation {
+    let kind: Stop.Kind
+    let coordinate: CLLocationCoordinate2D
+
+    init(_ placed: PlacedStop) {
+        kind = placed.stop.kind
+        coordinate = clLocation(placed.stop.coordinate)
+    }
+}
+
+/// A small round pin for a stop. It takes no touches, so it never steals a handle's drag, and
+/// it sits under the handles.
+final class StopAnnotationView: MKAnnotationView {
+    private static let size: CGFloat = 20
+    private let host = UIHostingController(rootView: AnyView(EmptyView()))
+
+    override init(annotation: (any MKAnnotation)?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        bounds = CGRect(x: 0, y: 0, width: Self.size, height: Self.size)
+        host.view.backgroundColor = .clear
+        host.view.frame = bounds
+        addSubview(host.view)
+        isUserInteractionEnabled = false
+        // Below required, MapKit hides a pin that meets a handle's wide label frame.
+        displayPriority = .required
+        zPriority = .min
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(kind: Stop.Kind) {
+        host.rootView = AnyView(
+            StopIcon(kind: kind, size: Self.size - 2, isRound: true)
+                .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 1.5))
+                .frame(width: Self.size, height: Self.size)
+        )
     }
 }
 

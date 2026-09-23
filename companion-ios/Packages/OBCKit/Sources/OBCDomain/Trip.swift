@@ -22,12 +22,17 @@ public struct DayEnd: Equatable, Sendable {
     /// Metres along the trip line. The stored value is the hint for the next projection, which
     /// keeps a day end on its own leg of an out-and-back or a loop.
     public var distance: Double
+    /// The stop the rider ended the day at. The day end sits on the line point nearest it.
+    public var stop: Stop?
 
-    public init(coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double) {
+    public init(
+        coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double, stop: Stop? = nil
+    ) {
         self.coordinate = coordinate
         self.name = name
         self.title = title
         self.distance = distance
+        self.stop = stop
     }
 }
 
@@ -65,6 +70,8 @@ public struct Trip: Identifiable, Equatable, Sendable {
     public internal(set) var pieceStarts: [Int]
     /// One per day, in ride order. The last one sits at the end of the line.
     public internal(set) var dayEnds: [DayEnd]
+    /// The waypoints of the route files the line was joined from.
+    public internal(set) var waypoints: [Stop]
     /// The name of the place where the line starts. A reverse swaps it with the last day end's
     /// name, so no name is lost.
     public internal(set) var startName: String?
@@ -93,6 +100,7 @@ public struct Trip: Identifiable, Equatable, Sendable {
         line: [RoutePoint] = [],
         pieceStarts: [Int] = [],
         dayEnds: [DayEnd] = [],
+        waypoints: [Stop] = [],
         startName: String? = nil,
         dayCopies: [TripDayCopy?] = [],
         deviceLink: DeviceRouteLink? = nil,
@@ -109,6 +117,7 @@ public struct Trip: Identifiable, Equatable, Sendable {
         self.line = line
         self.pieceStarts = pieceStarts
         self.dayEnds = dayEnds
+        self.waypoints = waypoints
         self.startName = startName
         self.dayCopies = dayCopies
         self.deviceLink = deviceLink

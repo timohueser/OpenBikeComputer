@@ -116,4 +116,22 @@ final class TripTests: XCTestCase {
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists)
     }
+
+    /// Day 1 ends at a transfer: Day 2 starts 35 km away. The stops sheet lists the fixture
+    /// campground, says why the day end stays, and does not offer the pick.
+    @MainActor
+    func testStopsAtATransferAreShownButNotPicked() {
+        let app = launch()
+        openTrip(app)
+
+        day(app, 0).press(forDuration: 1)
+        let stops = app.buttons["trip.day.stops"]
+        XCTAssertTrue(stops.waitForExistence(timeout: 5), "day menu did not open")
+        stops.tap()
+        let camp = app.buttons["stops.row"].firstMatch
+        XCTAssertTrue(camp.waitForExistence(timeout: 10), "no stop in the sheet")
+        XCTAssertTrue(app.staticTexts["Devil's Lake State Park Campgrounds"].exists)
+        XCTAssertTrue(app.staticTexts["This day ends at a transfer."].exists)
+        XCTAssertFalse(camp.isEnabled, "a pick would put the gap inside a day")
+    }
 }

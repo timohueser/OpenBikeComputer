@@ -58,7 +58,8 @@ struct RootView: View {
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
-        placeName: (@Sendable (Coordinate) async -> String?)? = nil
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
+        stopSearch: (any StopSearch)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -84,7 +85,8 @@ struct RootView: View {
             // config disagrees, which heals a rename whose write never landed.
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
             transferActivity: transferActivity,
-            placeName: placeName
+            placeName: placeName,
+            stopSearch: stopSearch
         ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
@@ -317,7 +319,8 @@ struct RootView: View {
                 mainModel.noteTooShort(short.map(\.fileName))
                 let tripID = mainModel.createTrip(
                     name: "New trip", files: ordered.map(\.points),
-                    dayNames: ordered.map { ($0.fileName as NSString).deletingPathExtension })
+                    dayNames: ordered.map { ($0.fileName as NSString).deletingPathExtension },
+                    waypoints: ordered.map { join.files[$0.id].route.waypoints })
                 importModel.closeJoin()
                 if let tripID { path = [.trip(id: tripID)] }
             },

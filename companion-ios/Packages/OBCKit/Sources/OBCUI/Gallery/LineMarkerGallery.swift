@@ -35,6 +35,10 @@ private struct TripEditorSample: View {
             ],
             segmentColors: (0..<3).map { OBCTheme.stageColor(index: $0) }
         )!)
+        model.stops = GalleryStops.nearby.map { stop in
+            let projection = line.projection(of: stop.coordinate, near: 0, window: line.length)
+            return PlacedStop(stop: stop, distance: projection.distance, offset: projection.error)
+        }
     }
 
     var body: some View {

@@ -38,6 +38,8 @@ public final class LineMarkerEditorModel {
     public private(set) var segmentColors: [Color]
     /// The marker under a finger, or under VoiceOver's adjustment. One at a time.
     public private(set) var activeID: LineMarker.ID?
+    /// Known stops near the line: small pins on the map and marks along the top of the profile.
+    public var stops: [PlacedStop] = []
     @ObservationIgnored public var onEvent: (LineMarkerEvent) -> Void
 
     /// The profile resampled by distance, so a 50,000-point line draws as a few hundred.

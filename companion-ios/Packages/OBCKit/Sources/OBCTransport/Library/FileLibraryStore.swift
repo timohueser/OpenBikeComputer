@@ -358,7 +358,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     /// Trips version independently of planned routes, and the version is used on both the write
     /// and the read side, so a future planned-route bump cannot silently stop stored trips from
     /// loading.
-    fileprivate static let tripSchemaVersion = 2
+    fileprivate static let tripSchemaVersion = 3
     fileprivate static let journalSchemaVersion = 1
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
@@ -503,6 +503,7 @@ private struct TripFile: Codable {
     var line: ImportedRouteDTO
     var pieceStarts: [Int]
     var dayEnds: [DayEndDTO]
+    var waypoints: [StopDTO]
     var startName: String?
     var dayCopies: [DeviceCopyDTO?]
     var device: DeviceCopyDTO?
@@ -520,6 +521,7 @@ private struct TripFile: Codable {
         line = ImportedRouteDTO(ImportedRoute(points: trip.line))
         pieceStarts = trip.pieceStarts
         dayEnds = trip.dayEnds.map(DayEndDTO.init)
+        waypoints = trip.waypoints.map(StopDTO.init)
         startName = trip.startName
         uploadedKey = trip.uploadedKey
         dayCopies = trip.dayCopies.map { $0.map { DeviceCopyDTO(link: $0.link, crc32: $0.uploadedCRC32) } }
@@ -538,6 +540,7 @@ private struct TripFile: Codable {
             line: line.domain.points,
             pieceStarts: pieceStarts,
             dayEnds: dayEnds.map(\.domain),
+            waypoints: waypoints.map(\.domain),
             startName: startName,
             dayCopies: dayCopies.map { $0.map { TripDayCopy(link: $0.link, uploadedCRC32: $0.crc32) } },
             deviceLink: device?.link,
@@ -555,6 +558,7 @@ private struct DayEndDTO: Codable {
     var name: String?
     var title: String?
     var distance: Double
+    var stop: StopDTO?
 
     init(_ end: DayEnd) {
         lat = end.coordinate.latitude
@@ -562,10 +566,35 @@ private struct DayEndDTO: Codable {
         name = end.name
         title = end.title
         distance = end.distance
+        stop = end.stop.map(StopDTO.init)
     }
 
     var domain: DayEnd {
-        DayEnd(coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance)
+        DayEnd(
+            coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance,
+            stop: stop?.domain)
+    }
+}
+
+private struct StopDTO: Codable {
+    var name: String
+    var lat: Double
+    var lon: Double
+    var kind: String
+    var mapItemID: String?
+
+    init(_ stop: Stop) {
+        name = stop.name
+        lat = stop.coordinate.latitude
+        lon = stop.coordinate.longitude
+        kind = stop.kind.rawValue
+        mapItemID = stop.mapItemID
+    }
+
+    var domain: Stop {
+        Stop(
+            name: name, coordinate: Coordinate(latitude: lat, longitude: lon),
+            kind: Stop.Kind(rawValue: kind) ?? .place, mapItemID: mapItemID)
     }
 }
 

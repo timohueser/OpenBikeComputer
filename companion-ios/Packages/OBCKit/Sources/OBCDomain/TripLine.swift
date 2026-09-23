@@ -10,19 +10,27 @@ extension Trip {
     /// this to the previous day end or to the line end would make one, so that day end is
     /// dropped.
     public static let minimumDayMeters = 100.0
+    /// Two waypoints with one name this close are one stop: files that meet often both carry
+    /// the place where they meet.
+    public static let sameWaypointMeters = 10.0
     /// The window of the second, local projection pass. It re-centres the planar maths on the
     /// candidate, so the drop check measures true metres on a long line.
     static let refineWindowMeters = 2_000.0
 
     /// A new trip from route files in ride order: one day per file, the day ends on the file
     /// boundaries. A file shorter than ``minimumDayMeters`` adds nothing.
-    /// `names` gives each file's day its own name, by index; a missing or blank name leaves the
-    /// day to "Day N ‹place›".
+    /// `names` gives each file's day its own name, and `waypoints` each file's waypoints, by
+    /// index; a missing or blank name leaves the day to "Day N ‹place›".
     public static func joining(
-        _ files: [[RoutePoint]], names: [String?] = [], id: TripID, name: String, bikeType: BikeType, now: Date
+        _ files: [[RoutePoint]], names: [String?] = [], waypoints: [[Waypoint]] = [],
+        id: TripID, name: String, bikeType: BikeType, now: Date
     ) -> Trip {
         var trip = Trip(id: id, name: name, bikeType: bikeType, addedAt: now)
-        for (index, file) in files.enumerated() { trip.append(file, name: index < names.count ? names[index] : nil) }
+        for (index, file) in files.enumerated() {
+            trip.append(
+                file, name: index < names.count ? names[index] : nil,
+                waypoints: index < waypoints.count ? waypoints[index] : [])
+        }
         return trip
     }
 
@@ -41,10 +49,16 @@ extension Trip {
     /// Add a file as a new last day. The old line end becomes a day end. A file that starts
     /// exactly where the line ends continues the piece; any other start opens a new piece, so
     /// the gap sits at the day end and the next day starts where the file starts. A file that is
-    /// not a day changes nothing. Returns the day ends the change dropped.
+    /// not a day changes nothing. The file's waypoints become stops of the trip, once each.
+    /// Returns the day ends the change dropped.
     @discardableResult
-    public mutating func append(_ file: [RoutePoint], name: String? = nil) -> [DayEnd] {
+    public mutating func append(_ file: [RoutePoint], name: String? = nil, waypoints: [Waypoint] = []) -> [DayEnd] {
         guard Self.isDay(file) else { return [] }
+        for waypoint in waypoints.map(Stop.init(waypoint:)) where !self.waypoints.contains(where: {
+            $0.name == waypoint.name && $0.coordinate.distance(to: waypoint.coordinate) <= Self.sameWaypointMeters
+        }) {
+            self.waypoints.append(waypoint)
+        }
         var points = file
         if let end = line.last {
             if points[0].coordinate == end.coordinate {
@@ -75,7 +89,9 @@ extension Trip {
         // Old day k becomes day n-1-k, and now ends where it used to start.
         let titles = Array(dayEnds.map(\.title).reversed())
         let interior = dayEnds.dropLast().reversed().enumerated().map { day, end in
-            DayEnd(coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance)
+            DayEnd(
+                coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance,
+                stop: end.stop)
         }
         let endName = dayEnds.last?.name
         dayEnds = interior + [DayEnd(

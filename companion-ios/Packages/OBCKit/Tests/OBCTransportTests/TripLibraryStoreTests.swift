@@ -3,7 +3,7 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// Trip persistence: a trip round-trips its line, pieces, day ends and device copies through
+/// Trip persistence: a trip round-trips its line, pieces, day ends, stops and device copies through
 /// both conformers, and a trip owns its line, so no route change touches it.
 struct TripLibraryStoreTests {
     enum StoreKind: CaseIterable { case inMemory, file }
@@ -25,7 +25,10 @@ struct TripLibraryStoreTests {
 
     private func trip(_ id: String, addedAt: Date = Date(timeIntervalSince1970: 1_000)) -> Trip {
         Trip.joining(
-            [file([8.00, 8.01, 8.02]), file([8.03, 8.04], ele: nil)],
+            [file([8.00, 8.01, 8.02]), file([8.02, 8.03, 8.04], ele: nil)],
+            waypoints: [[Waypoint(
+                index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: Coordinate(latitude: 46.5, longitude: 8.01),
+                category: .water)]],
             id: TripID(id), name: id, bikeType: .gravel, now: addedAt)
     }
 
@@ -33,6 +36,10 @@ struct TripLibraryStoreTests {
     func roundTripsTheWholeTrip(_ kind: StoreKind) {
         let store = makeStore(kind)
         var t = trip("t1")
+        let camp = Stop(
+            name: "Camp", coordinate: Coordinate(latitude: 46.501, longitude: 8.015), kind: .campsite, mapItemID: "I1")
+        let ended = t.endDay(0, at: t.place([camp])[0])
+        #expect(ended)
         t.namePlace(1, to: "Brig")
         t.reverse()
         t.renameDay(0, to: "Andermatt")
