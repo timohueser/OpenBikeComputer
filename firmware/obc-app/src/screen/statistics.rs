@@ -345,6 +345,7 @@ impl StatisticsScreen {
                     area,
                     &rx.marquee,
                     &cell.caption,
+                    cell.caption_climb.as_deref(),
                     &cell.value,
                     cell.arrow,
                     cell.value_align,

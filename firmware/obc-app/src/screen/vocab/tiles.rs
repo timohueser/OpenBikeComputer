@@ -9,19 +9,22 @@ use obc_render::{
 };
 
 use super::marquee::{fit, MarqueeFrame};
+use crate::screen::route_overview::{climb_arrow, ARROW_W};
 use crate::screen::{palette, poi_menu};
 use crate::{t, Msg};
 
 /// Draw one stat tile: a rounded pane in `bg` with a caption over a big `value_color` value. Set
 /// `arrow` to prefix a climb figure with an up-triangle, because the panel font has no ↑ glyph.
-/// `value_align` is Right for a wide value, so it hugs the far edge clear of the caption. The
-/// caption and value block is vertically centred, whatever height the pane has.
+/// `value_align` is Right for a wide value, so it hugs the far edge clear of the caption. A
+/// `caption_climb` follows the caption behind a climb arrow. The caption and value block is
+/// vertically centred, whatever height the pane has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tile(
     cv: &mut impl Surface,
     area: Rectangle,
     marquee: &MarqueeFrame,
     label: &str,
+    caption_climb: Option<&str>,
     value: &str,
     arrow: bool,
     value_align: TextAlign,
@@ -38,6 +41,11 @@ pub(crate) fn tile(
     let caption_row = rect(x + 5, cy, caption_budget, Font::Label.line_height() as i32);
     let label = marquee.fit_once(label, caption_budget, Font::Label, caption_row);
     cv.text(&label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    if let Some(climb) = caption_climb {
+        let ax = x + 5 + text_width(&label, Font::Label) as i32 + 6;
+        climb_arrow(cv, ax, cy, true, SUBTEXT);
+        cv.text(climb, Point::new(ax + ARROW_W + 3, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    }
     let vy = cy + 18;
     match value_align {
         TextAlign::Right => {
@@ -217,6 +225,7 @@ mod tests {
             bike_type: crate::settings::BikeType::Road,
             language: crate::settings::Language::En,
             next_ahead: EMPTY_CACHE,
+            trip: None,
         }
     }
 

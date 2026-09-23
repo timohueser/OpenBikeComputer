@@ -152,6 +152,7 @@ impl ClimbScreen {
                 rect(x, y, col_w, row_h),
                 &rx.marquee,
                 &cell.caption,
+                None,
                 &cell.value,
                 cell.arrow,
                 TextAlign::Left,
