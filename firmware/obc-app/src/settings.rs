@@ -460,6 +460,10 @@ settings_table! {
         /// Bit positions follow PoiCategory::ALL, not the wire category IDs.
         map_poi_categories: u8 = 0x7f, since(22), range(0, 0x7f);
         theme: Theme = Theme::Light, since(23);
+        /// The rider's maximum heart rate (bpm) and FTP (W), which the effort zones are taken
+        /// from. `0` is not set, and then that metric has no zones.
+        max_hr: u8 = 0, since(24), sanitize_with(crate::effort::sanitize_max_hr);
+        ftp_w: u16 = 0, since(24), sanitize_with(crate::effort::sanitize_ftp);
     }
 
     pub const DEFAULT;
@@ -489,7 +493,7 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
 /// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
 /// struct widens every one of those.
-const _: () = assert!(core::mem::size_of::<Settings>() == 120, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 122, "Settings grew — was that deliberate?");
 
 impl Settings {
     pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
@@ -501,6 +505,10 @@ impl Settings {
         }
     }
 
+    pub(crate) fn effort_limits(&self) -> crate::effort::Limits {
+        crate::effort::Limits { max_hr: self.max_hr, ftp_w: self.ftp_w }
+    }
+
     /// The local wall-clock set-point the device shows: the UTC [`clock`](Settings::clock) anchor
     /// shifted by [`utc_offset_min`](Settings::utc_offset_min), so a shift across midnight rolls
     /// the date too.
@@ -509,7 +517,7 @@ impl Settings {
     }
 }
 
-pub const VERSION: u8 = 23;
+pub const VERSION: u8 = 24;
 
 /// The oldest layout [`decode`] accepts. An older blob resets to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
@@ -555,7 +563,9 @@ const _: () = {
     assert!(off::find_hide_closed == 113);
     assert!(off::find_results == 114);
     assert!(off::theme == 119);
-    assert!(PAYLOAD_LEN == 120, "the CRC moved");
+    assert!(off::max_hr == 120);
+    assert!(off::ftp_w == 121);
+    assert!(PAYLOAD_LEN == 123, "the CRC moved");
     assert!(ENCODED_LEN == 128, "the blob is no longer 8 RRAM lines");
 };
 
@@ -625,6 +635,8 @@ mod tests {
             find_hide_closed: false,
             find_results: FindResults::Six,
             theme: Theme::Dark,
+            max_hr: 185,
+            ftp_w: 250,
 
             brightness: 1,
         }

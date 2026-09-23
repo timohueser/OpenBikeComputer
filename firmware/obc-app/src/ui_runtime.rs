@@ -569,6 +569,16 @@ impl UiRuntime {
         }
     }
 
+    /// Ask for a repaint contained in `r`. Before the first frame the panel size is unknown, so the
+    /// whole frame repaints.
+    pub(crate) fn request_region(&mut self, r: Rectangle) {
+        if self.frame_size.0 == 0 {
+            self.map_dirty = true;
+            return;
+        }
+        self.region_dirty = Some(self.region_dirty.map_or(r, |acc| union_rect(acc, r)));
+    }
+
     /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`].
     /// The host calls this once per frame and then renders each plane only when its flag is set.
     ///

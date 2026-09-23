@@ -648,6 +648,7 @@ impl App {
                 self.recorder.record_cadence(rpm, now_ms);
             }
         }
+        self.recorder.advance_effort(self.settings.effort_limits());
         // GPS can establish UTC before a position fix is available.
         if let Some(t) = clock.and_then(|c| c.poll()) {
             // GPS carries no timezone, so `None` leaves the persisted offset untouched.

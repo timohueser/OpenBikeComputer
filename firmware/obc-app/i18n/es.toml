@@ -156,6 +156,9 @@ waypoint_list = "Lista pts"
 heart_rate = "Frec. card."
 power = "Potencia"
 cadence = "Cadencia"
+kj = "Energía"
+hr_graph = "Gráfico FC"
+power_graph = "Gráfico W"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
@@ -174,6 +177,8 @@ next_wpt = "PTO SIG"
 waypoints = "PUNTOS"
 hr = "FC"
 pwr = "POT"
+# The power graph block leaves three glyphs beside the zone.
+pwr_short = "POT"
 rpm = "CAD"
 
 # --- The Climb (ClimbPro) riding screen ---
@@ -227,6 +232,9 @@ pages = "Auto-cambio"
 climb = "Subida"
 waypoints = "Puntos"
 bike_type = "Tipo de bici"
+max_hr = "FC máx."
+ftp = "FTP"
+not_set = "Sin fijar"
 
 # --- Display settings screen ---
 [display]

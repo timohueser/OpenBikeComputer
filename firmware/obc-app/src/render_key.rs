@@ -17,6 +17,7 @@
 //! resolves is drawn by the frame that produced it. What a key names there is the request, because
 //! the query runs only during a render.
 
+use crate::effort::{Gauge, Metric, Reading};
 use crate::screen::{RenderKeyKind, Screen, ScreenRow, MAX_DEPTH};
 use crate::App;
 
@@ -95,9 +96,15 @@ pub(crate) struct StatsKey {
     no_fix: bool,
     active_climb: Option<u32>,
     next_waypoint: Option<u32>,
-    /// The displayed heart-rate, power and cadence values, each `None` unless its field is on the
-    /// grid, so an unconfigured sensor forces no render at its notification rate.
-    live: (Option<u16>, Option<u16>, Option<u8>),
+    /// The displayed heart rate and power with their zones, and the cadence, each `None` unless a
+    /// field showing it is on the grid, so an unconfigured sensor forces no render at its
+    /// notification rate.
+    live: (Option<Reading>, Option<Reading>, Option<u8>),
+    /// The ride's kJ, `Some` only while the KJ tile is on the grid.
+    kj: Option<u32>,
+    /// The effort history's open bucket, `Some` only while a graph field is on the grid: the bars
+    /// change only when it moves.
+    graph_bucket: Option<u32>,
     /// The climb done and the current elevation, each `Some` only while its own tile is on the
     /// grid, exactly as the live sensor values are gated: a tile nobody pinned draws nothing, so
     /// its metres must force no render.
@@ -181,6 +188,36 @@ pub(crate) struct RenderKey {
 
     up_ahead: Option<UpAheadKey>,
     drawer: Option<DrawerKey>,
+    /// The Map's effort gauge, `Some` only while it shows. It is apart from [`MapKey`], because
+    /// every other map base shares that kind and draws no gauge, and because a gauge that moved
+    /// alone repaints only its band.
+    gauge: Option<Gauge>,
+}
+
+/// How much of the frame a moved key repaints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Repaint {
+    Nothing,
+    /// Only the effort band moved, and it showed before and after.
+    GaugeBand,
+    Full,
+}
+
+impl RenderKey {
+    /// What moved between `before` and this key. It takes `self` by value, so the comparison needs
+    /// no second copy of a key on the ride loop's stack.
+    pub(crate) fn repaint_since(mut self, before: &RenderKey) -> Repaint {
+        if self == *before {
+            return Repaint::Nothing;
+        }
+        if self.gauge.is_some() && before.gauge.is_some() {
+            self.gauge = before.gauge;
+            if self == *before {
+                return Repaint::GaugeBand;
+            }
+        }
+        Repaint::Full
+    }
 }
 
 const _: () =
@@ -208,6 +245,7 @@ impl App {
 
             up_ahead: None,
             drawer: None,
+            gauge: None,
         };
         // Drawing starts at the lowest opaque screen: anything below it is covered and draws
         // nothing, so it is not part of the frame and not part of the key.
@@ -229,7 +267,13 @@ impl App {
             match caps.render_key {
                 RenderKeyKind::Static => {}
                 RenderKeyKind::Home => key.home = Some(self.home_key(screen)),
-                RenderKeyKind::Map => key.map = Some(self.map_key(no_fix)),
+                RenderKeyKind::Map => {
+                    key.map = Some(self.map_key(no_fix));
+                    if matches!(screen, Screen::Map(_)) {
+                        let w = self.ui.frame_size.0 as i32;
+                        key.gauge = crate::screen::gauge_cue(&self.recorder, self.state.pan.is_some(), w);
+                    }
+                }
                 RenderKeyKind::Statistics => key.stats = Some(self.stats_key(no_fix)),
                 RenderKeyKind::Climb => key.climb = Some(self.climb_key()),
                 RenderKeyKind::SensorSettings => key.sensors = Some(self.sensors_key()),
@@ -307,6 +351,7 @@ impl App {
     fn stats_key(&self, no_fix: bool) -> StatsKey {
         use crate::stat_fields::StatField;
         let fields = &self.settings().stat_fields;
+        let shown = |a, b| fields.contains(a) || fields.contains(b);
         let navigation = self.navigator.route_state();
         StatsKey {
             fix: FixKey::of(self.state.user_fix),
@@ -316,10 +361,12 @@ impl App {
             active_climb: navigation.active_climb.map(|i| i as u32),
             next_waypoint: navigation.next_waypoint.map(|i| i as u32),
             live: (
-                fields.contains(StatField::HeartRate).then(|| self.recorder.live_hr_display()).flatten(),
-                fields.contains(StatField::Power).then(|| self.recorder.live_power_display()).flatten(),
+                shown(StatField::HeartRate, StatField::HrGraph).then(|| self.recorder.reading(Metric::Hr)).flatten(),
+                shown(StatField::Power, StatField::PowerGraph).then(|| self.recorder.reading(Metric::Power)).flatten(),
                 fields.contains(StatField::Cadence).then(|| self.recorder.live_cadence_display()).flatten(),
             ),
+            kj: fields.contains(StatField::Kj).then(|| self.recorder.kj()).flatten(),
+            graph_bucket: shown(StatField::HrGraph, StatField::PowerGraph).then(|| self.recorder.effort().bucket()),
             climb_m: fields.contains(StatField::Climbed).then(|| self.recorder.climb_m().to_bits()),
             elevation_m: fields
                 .contains(StatField::Elevation)
@@ -457,6 +504,36 @@ mod tests {
         let before = map.render_key();
         map.state.device.battery_pct = 42;
         assert_eq!(map.render_key(), before, "a level a map base never draws costs it no render");
+    }
+
+    /// The effort gauge is a fact of the Map alone, and a gauge that moves while the map holds
+    /// still repaints only the band it covers.
+    #[test]
+    fn a_gauge_that_moves_alone_repaints_only_its_band() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        app.ui.frame_size = (240, 320);
+        let power = |app: &mut App, watts: u16, now_ms: u32| {
+            app.recorder.record_power(watts, now_ms);
+            app.recorder.note_sensor_clock(now_ms);
+            app.recorder.advance_effort(crate::effort::Limits { max_hr: 0, ftp_w: 250 });
+        };
+        power(&mut app, 200, 1_000);
+        let shown = app.render_key();
+        assert!(shown.gauge.is_some(), "live power and an FTP put the band up");
+
+        power(&mut app, 300, 2_000);
+        let moved = app.render_key();
+        assert_ne!(moved.gauge, shown.gauge, "the 10 s average moved the fill");
+        assert_eq!(moved.clone().repaint_since(&shown), Repaint::GaugeBand);
+
+        app.state.cam_lon += 5_000;
+        assert_eq!(app.render_key().repaint_since(&shown), Repaint::Full, "a moved map repaints it all");
+        assert_eq!(app.render_key().repaint_since(&app.render_key()), Repaint::Nothing);
+
+        app.recorder.note_sensor_clock(10_000);
+        let gone = app.render_key();
+        assert!(gone.gauge.is_none(), "a stale meter takes the band down");
+        assert_eq!(gone.repaint_since(&moved), Repaint::Full, "the chips step down with it");
     }
 
     /// A helper: `[Home, Map]` with the quick drawer squeezed open on top.

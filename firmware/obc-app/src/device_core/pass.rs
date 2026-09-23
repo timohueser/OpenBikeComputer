@@ -5,6 +5,7 @@ use crate::catalog_state::CatalogIntent;
 use crate::device_core::connections::{ActiveRouteRemoved, RideFinalized};
 use crate::dirty::Dirty;
 use crate::input::Gesture;
+use crate::render_key::Repaint;
 use crate::App;
 
 use super::connections::Connections;
@@ -231,8 +232,13 @@ impl App {
         self.stage_faults();
         // Every stage has run, so what the visible screens draw is final for this frame. A moved
         // key is a repaint, folded in before the plan stage drains the demand.
-        if self.render_key() != key_before {
-            self.ui.map_dirty = true;
+        match self.render_key().repaint_since(&key_before) {
+            Repaint::Nothing => {}
+            Repaint::GaugeBand => {
+                let (w, h) = (self.ui.frame_size.0 as i32, self.ui.frame_size.1 as i32);
+                self.ui.request_region(crate::screen::gauge_region(w, h));
+            }
+            Repaint::Full => self.ui.map_dirty = true,
         }
         let plan = self.stage_plan(now, effects);
 

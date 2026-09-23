@@ -1,8 +1,8 @@
 //! The Map screen, the Riding view. The camera lives in [`AppState`](crate::AppState); the screen
 //! itself holds only a [`MinuteTicker`] for the clock overlay and the browse-map start hint. `draw`
 //! renders the base map plus the route, travel chevrons, breadcrumb, user marker, and the map
-//! chrome: the clock digits, one bottom chip slot, a bottom-left scale bar, a low-battery cue and
-//! the pan HUD.
+//! chrome: the clock digits, one bottom chip slot, a bottom-left scale bar, a low-battery cue, the
+//! effort band along the bottom edge and the pan HUD.
 //!
 //! Bindings depend on whether a ride is being tracked. While tracking, `press` pauses into Ride
 //! control and `back` swaps to the sibling Statistics view. On the route-less browse map, `press`
@@ -25,6 +25,7 @@ use obc_render::{
 use obc_route::WptEntry;
 
 use crate::app::{step_zoom, Pan, PanBasis, PanTool, MAX_ZOOM, MIN_ZOOM};
+use crate::effort::Gauge;
 use crate::input::Gesture;
 use crate::settings::{DateTime, Units, WaypointMode};
 use crate::wall_clock::MinuteTicker;
@@ -222,6 +223,9 @@ impl MapScreen {
     {
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
         let panning = rx.state.pan.is_some();
+        // The effort band takes the bottom rows, so the bottom chrome stands on top of it.
+        let gauge = gauge_cue(rx.recorder, panning, rx.w);
+        let h = if gauge.is_some() { rx.h - GAUGE_H } else { rx.h };
 
         // Which bottom chip is up, and therefore where the scale bar sits, is decided before the
         // scene draws: the settlement names inside it reserve the bar's live box, not every box it
@@ -245,7 +249,7 @@ impl MapScreen {
             0
         };
         let scale_bar = if rx.settings.map_scale_bar {
-            ScaleBar::new(rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units)
+            ScaleBar::new(h, chip_band, vp.meters_per_pixel(), rx.settings.units)
         } else {
             None
         };
@@ -256,7 +260,8 @@ impl MapScreen {
         let clock_up = clock_cue(rx.settings.map_clock, panning);
         let low_battery = low_battery_cue(rx.state.device.battery_pct);
         let pan_hud = pan_hud_boxes(rx.w, rx.h, rx.state.pan, &vp, rx.state.user_fix);
-        let chrome = map_chrome(rx.w, rx.h, chip_band, scale_bar.as_ref(), &pan_hud, clock_up, low_battery);
+        let band = gauge.map(|_| gauge_region(rx.w, rx.h));
+        let chrome = map_chrome(rx.w, h, chip_band, scale_bar.as_ref(), &pan_hud, clock_up, low_battery, band);
         let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas. The
@@ -273,9 +278,9 @@ impl MapScreen {
         // cross-track distance is meaningless.
         if warning_up {
             if rx.no_fix {
-                draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
+                draw_status_chip(cv, rx.w, h, rx.t(Msg::MapNoGpsFix));
             } else if rx.navigation.dist_to_route_m == u32::MAX {
-                draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapOffRoute).trim_end());
+                draw_status_chip(cv, rx.w, h, rx.t(Msg::MapOffRoute).trim_end());
             } else {
                 let mut s: heapless::String<20> = heapless::String::new();
                 super::vocab::fmt::write_distance_coarse(
@@ -284,7 +289,7 @@ impl MapScreen {
                     rx.navigation.dist_to_route_m,
                     rx.settings.units,
                 );
-                draw_status_chip(cv, rx.w, rx.h, &s);
+                draw_status_chip(cv, rx.w, h, &s);
             }
         }
 
@@ -292,13 +297,13 @@ impl MapScreen {
         // warning chip is down, so the two never collide.
         if let Some((k, dist_to_go)) = wpt_chip {
             let dist = super::vocab::fmt::distance_short(dist_to_go, rx.settings.units);
-            draw_waypoint_chip(cv, rx.w, rx.h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
+            draw_waypoint_chip(cv, rx.w, h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
         }
 
         // The lowest-priority bottom chip: dropped whenever a warning or waypoint chip wants the
         // slot. Its own timer drives the auto-hide; this only reads its state.
         if hint_up {
-            draw_hint_chip(cv, rx.w, rx.h, rx.t(Msg::MapPressToStart));
+            draw_hint_chip(cv, rx.w, h, rx.t(Msg::MapPressToStart));
         }
 
         // The bar steps above the chip band while a bottom chip is up, so a wide chip never runs
@@ -306,6 +311,10 @@ impl MapScreen {
         // corner.
         if let Some(bar) = &scale_bar {
             draw_scale_bar(cv, bar);
+        }
+
+        if let Some(g) = gauge {
+            draw_gauge(cv, rx.w, rx.h, g);
         }
 
         // Drawn last, so the HUD sits over the map and the marker.
@@ -483,10 +492,11 @@ where
 /// Side (px) of the box the rider mark owns. The chevron reaches 12 px ahead and 8 px out.
 const RIDER_BOX_PX: i32 = 24;
 
-/// The most chrome boxes one screen hands to [`label_reserved`]. A panning Map frame is the widest,
-/// at five: the pan HUD's three, the low-battery cue and the scale bar. It cannot hold more, because
-/// pan mode suppresses the clock and every bottom pill. An attached frame comes to four and draws no
-/// HUD. No other screen asks for more.
+/// The most chrome boxes one screen hands to [`label_reserved`]. Two Map frames are the widest, at
+/// five. A panning frame holds the pan HUD's three, the low-battery cue and the scale bar; pan mode
+/// suppresses the clock, every bottom pill and the effort band. An attached frame holds the clock,
+/// the low-battery cue, a bottom pill, the scale bar and the effort band. No other screen asks for
+/// more.
 pub(crate) const MAX_CHROME: usize = 5;
 
 /// A screen's own chrome boxes, as [`label_reserved`] takes them.
@@ -724,6 +734,7 @@ pub(crate) fn pan_hud_boxes(
 /// Everything the Map screen will ink over the map after the settlement names. Each argument is the
 /// very thing that draws, so a piece of chrome the frame leaves out reserves nothing. The widest set
 /// is [`MAX_CHROME`]; a box past it is dropped, which would be a name over the chrome.
+#[allow(clippy::too_many_arguments)] // one argument per piece of chrome
 fn map_chrome(
     w: i32,
     h: i32,
@@ -732,6 +743,7 @@ fn map_chrome(
     pan_hud: &[Rectangle],
     clock: bool,
     low_battery: bool,
+    gauge: Option<Rectangle>,
 ) -> Chrome {
     let mut boxes: Chrome = heapless::Vec::new();
     let mut push = |r| {
@@ -753,6 +765,9 @@ fn map_chrome(
     }
     for r in pan_hud {
         push(*r);
+    }
+    if let Some(r) = gauge {
+        push(r);
     }
     boxes
 }
@@ -912,6 +927,38 @@ fn draw_low_battery(cv: &mut impl Surface) {
     cv.round_outline(rect(x, y, bw, bh), 3, WARNING);
     cv.round(rect(x + bw, y + bh / 3, nub, bh / 3), 1, WARNING);
     cv.round(rect(x + 3, y + 3, bw - 6, bh - 6), 1, WARNING);
+}
+
+/// The effort band's height: a 2 px black rule over 12 px of gauge.
+pub(crate) const GAUGE_H: i32 = 14;
+
+/// The effort gauge the Map draws this frame, or `None`. Pan mode drops it, because the pan HUD owns
+/// the bottom edge. The one home of that rule, so the band drawn and the render key cannot disagree.
+pub(crate) fn gauge_cue(recorder: &crate::recorder::RecorderMachine, panning: bool, w: i32) -> Option<Gauge> {
+    if panning {
+        return None;
+    }
+    recorder.gauge(w)
+}
+
+/// The rows the effort band covers. A gauge that moves alone repaints only these.
+pub(crate) fn gauge_region(w: i32, h: i32) -> Rectangle {
+    rect(0, h - GAUGE_H, w, GAUGE_H)
+}
+
+/// Draw the effort band: five equal zone slots split by 2 px black gaps, filled to the rider's
+/// position through the zones in the current zone's colour.
+fn draw_gauge(cv: &mut impl Surface, w: i32, h: i32, g: Gauge) {
+    use super::palette::*;
+    cv.fill(gauge_region(w, h), HUD);
+    let top = h - GAUGE_H + 2;
+    if g.fill_px > 0 {
+        cv.fill(rect(0, top, g.fill_px as i32, GAUGE_H - 2), ZONE[g.zone as usize]);
+    }
+    let slot = w / 5;
+    for i in 1..5 {
+        cv.fill(rect(i * slot - 1, top, 2, GAUGE_H - 2), HUD);
+    }
 }
 
 /// Largest on-screen width (px) the scale bar may reach: the chosen round distance is the biggest
@@ -1554,7 +1601,12 @@ mod tests {
         let clear = rect(72, 150, 96, 24);
         let placer = |pan| {
             let hud = pan_hud_boxes(240, 320, pan, &vp, None);
-            PointPlacement::new(&label_reserved(&vp, None, &[], &map_chrome(240, 320, 0, None, &hud, false, false)))
+            PointPlacement::new(&label_reserved(
+                &vp,
+                None,
+                &[],
+                &map_chrome(240, 320, 0, None, &hud, false, false, None),
+            ))
         };
 
         for (name, pan) in [("free vertical", vertical), ("zoom", zoom)] {
@@ -1606,7 +1658,7 @@ mod tests {
                 &vp,
                 None,
                 &[],
-                &map_chrome(240, 320, 0, None, &hud, clock, low_battery),
+                &map_chrome(240, 320, 0, None, &hud, clock, low_battery, None),
             ))
         };
         // One name under each piece of top chrome, each clear of the other two.
@@ -1722,7 +1774,7 @@ mod tests {
 
         for (name, pan) in pan_states() {
             let hud = pan_hud_boxes(240, 320, Some(pan), &vp, Some(away));
-            let chrome = map_chrome(240, 320, 0, None, &hud, false, false);
+            let chrome = map_chrome(240, 320, 0, None, &hud, false, false, None);
             let mut place = PointPlacement::new(&label_reserved(&vp, Some(away), &[], &chrome));
             assert!(!place.try_place(under_marker, 0), "{name}: a name under the marker is refused");
             assert!(place.try_place(clear, 0), "{name}: one clear of it is placed");
@@ -1739,8 +1791,10 @@ mod tests {
     fn max_chrome_holds_the_widest_frame() {
         let vp = Viewport::new(240.0, 320.0, 0, 0, 1.0);
         let bar = ScaleBar::new(320, CHIP_H, 10.0, Units::Metric).expect("a real zoom yields a bar");
-        // Attached: the clock digits, the low-battery cue, a bottom pill's band and the scale bar.
-        assert_eq!(map_chrome(240, 320, CHIP_H, Some(&bar), &[], true, true).len(), 4);
+        // Attached: the clock digits, the low-battery cue, a bottom pill's band, the scale bar and
+        // the effort band.
+        let band = Some(gauge_region(240, 320));
+        assert_eq!(map_chrome(240, 320, CHIP_H, Some(&bar), &[], true, true, band).len(), 5);
         // Panning: the whole HUD, the low-battery cue and the bar. Zoom is the widest HUD, and the
         // clock and every pill are suppressed.
         let zoom = pan_states().into_iter().find(|(name, _)| *name == "zoom").expect("a zoom state").1;
@@ -1748,7 +1802,7 @@ mod tests {
         let hud = pan_hud_boxes(240, 320, Some(zoom), &vp, Some(away));
         assert_eq!(hud.len(), 3, "two Up/Down cues and the marker");
         // Literals, so raising the constant does not make the claim true by itself.
-        assert_eq!(map_chrome(240, 320, 0, Some(&bar), &hud, false, true).len(), 5);
+        assert_eq!(map_chrome(240, 320, 0, Some(&bar), &hud, false, true, None).len(), 5);
         assert_eq!(MAX_CHROME, 5);
     }
 
