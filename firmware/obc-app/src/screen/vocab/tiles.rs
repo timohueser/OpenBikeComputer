@@ -100,8 +100,8 @@ const GRAPH_BLOCK_W: i32 = 78;
 const GRAPH_FRAME: i32 = 2;
 
 /// A graph field: the zone-tinted number block on the left, continuing as a frame around a white
-/// panel of the last five minutes. Tan without a zone, and olive bars with no Z4 line without a
-/// limit.
+/// panel of the last five minutes. Tan without a zone, and olive bars without a limit.
+#[allow(clippy::too_many_arguments)] // the field's whole state, spelled out
 pub(crate) fn graph_tile(
     cv: &mut impl Surface,
     area: Rectangle,
@@ -110,6 +110,7 @@ pub(crate) fn graph_tile(
     zone: Option<u8>,
     effort: &Effort,
     m: Metric,
+    limit: Option<u32>,
 ) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
@@ -118,16 +119,15 @@ pub(crate) fn graph_tile(
     cv.round(area, 5, zone.map_or(PARCHMENT_SHADE, |z| ZONE[z as usize]));
     cv.round(rect(x + left, y + b, w - left - b, h - 2 * b), 3, PARCHMENT);
     effort_block(cv, rect(x, y, left, h), caption, value, zone);
-    history_bars(cv, rect(x + left + 3, y + b + 1, w - left - b - 6, h - 2 * b - 2), effort, m);
+    history_bars(cv, rect(x + left + 3, y + b + 1, w - left - b - 6, h - 2 * b - 2), effort, m, limit);
 }
 
 /// One bar per 5 s bucket, oldest on the left, each in its bucket's zone. The scale is the metric's
 /// graph span of the limit; without a limit, the history's own peak stands in for it.
-fn history_bars(cv: &mut impl Surface, area: Rectangle, effort: &Effort, m: Metric) {
+fn history_bars(cv: &mut impl Surface, area: Rectangle, effort: &Effort, m: Metric, limit: Option<u32>) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     let (w, h) = (area.size.width as i32, area.size.height as i32);
-    let limit = effort.limits().of(m);
     let reference = limit.unwrap_or_else(|| effort.history(m).max().unwrap_or(0) as u32).max(1);
     let (lo, hi) = m.graph_span();
     let gh = h - 5;
@@ -140,13 +140,6 @@ fn history_bars(cv: &mut impl Surface, area: Rectangle, effort: &Effort, m: Metr
         if bh > 0 {
             let ink = limit.map_or(SUBTEXT, |l| ZONE[m.zone_of(v as u32, l) as usize]);
             cv.fill(rect(x0 + i as i32 * bw, base - bh, bw, bh), ink);
-        }
-    }
-    if limit.is_some() {
-        // The Z4 floor, dotted: two pixels on, three off.
-        let ly = base - height(m.z4_floor() as f32);
-        for k in (0..w).step_by(5) {
-            cv.fill(rect(x + k, ly, 2.min(w - k), 1), INK);
         }
     }
 }

@@ -179,6 +179,7 @@ hr = "FC"
 pwr = "POT"
 # The power graph block leaves three glyphs beside the zone.
 pwr_short = "POT"
+kj = "KJ"
 rpm = "CAD"
 
 # --- The Climb (ClimbPro) riding screen ---

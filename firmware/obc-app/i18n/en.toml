@@ -204,6 +204,7 @@ hr = "HR"
 pwr = "PWR"
 # The power graph block leaves three glyphs beside the zone.
 pwr_short = "PWR"
+kj = "KJ"
 rpm = "RPM"
 
 # --- The Climb (ClimbPro) riding screen ---

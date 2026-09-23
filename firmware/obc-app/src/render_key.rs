@@ -102,8 +102,8 @@ pub(crate) struct StatsKey {
     live: (Option<Reading>, Option<Reading>, Option<u8>),
     /// The ride's kJ, `Some` only while the KJ tile is on the grid.
     kj: Option<u32>,
-    /// The effort history's open bucket, `Some` only while a graph field is on the grid: the bars
-    /// change only when it moves.
+    /// The effort history's open bucket, `Some` only while a graph field on the grid can move: the
+    /// bars change only when it does, and an empty graph with no live sensor never does.
     graph_bucket: Option<u32>,
     /// The climb done and the current elevation, each `Some` only while its own tile is on the
     /// grid, exactly as the live sensor values are gated: a tile nobody pinned draws nothing, so
@@ -271,7 +271,8 @@ impl App {
                     key.map = Some(self.map_key(no_fix));
                     if matches!(screen, Screen::Map(_)) {
                         let w = self.ui.frame_size.0 as i32;
-                        key.gauge = crate::screen::gauge_cue(&self.recorder, self.state.pan.is_some(), w);
+                        let limits = self.settings().effort_limits();
+                        key.gauge = crate::screen::gauge_cue(&self.recorder, limits, self.state.pan.is_some(), w);
                     }
                 }
                 RenderKeyKind::Statistics => key.stats = Some(self.stats_key(no_fix)),
@@ -366,7 +367,10 @@ impl App {
                 fields.contains(StatField::Cadence).then(|| self.recorder.live_cadence_display()).flatten(),
             ),
             kj: fields.contains(StatField::Kj).then(|| self.recorder.kj()).flatten(),
-            graph_bucket: shown(StatField::HrGraph, StatField::PowerGraph).then(|| self.recorder.effort().bucket()),
+            graph_bucket: [(StatField::HrGraph, Metric::Hr), (StatField::PowerGraph, Metric::Power)]
+                .into_iter()
+                .filter(|(f, _)| fields.contains(*f))
+                .find_map(|(_, m)| self.recorder.graph_bucket(m)),
             climb_m: fields.contains(StatField::Climbed).then(|| self.recorder.climb_m().to_bits()),
             elevation_m: fields
                 .contains(StatField::Elevation)
@@ -512,10 +516,12 @@ mod tests {
     fn a_gauge_that_moves_alone_repaints_only_its_band() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
         app.ui.frame_size = (240, 320);
+        app.set_settings(crate::settings::Settings { ftp_w: 250, ..Default::default() });
         let power = |app: &mut App, watts: u16, now_ms: u32| {
-            app.recorder.record_power(watts, now_ms);
+            app.recorder.record_power(watts, now_ms, false);
             app.recorder.note_sensor_clock(now_ms);
-            app.recorder.advance_effort(crate::effort::Limits { max_hr: 0, ftp_w: 250 });
+            let limits = app.settings().effort_limits();
+            app.recorder.advance_effort(limits);
         };
         power(&mut app, 200, 1_000);
         let shown = app.render_key();

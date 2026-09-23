@@ -224,7 +224,7 @@ impl MapScreen {
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
         let panning = rx.state.pan.is_some();
         // The effort band takes the bottom rows, so the bottom chrome stands on top of it.
-        let gauge = gauge_cue(rx.recorder, panning, rx.w);
+        let gauge = gauge_cue(rx.recorder, rx.settings.effort_limits(), panning, rx.w);
         let h = if gauge.is_some() { rx.h - GAUGE_H } else { rx.h };
 
         // Which bottom chip is up, and therefore where the scale bar sits, is decided before the
@@ -262,7 +262,13 @@ impl MapScreen {
         let pan_hud = pan_hud_boxes(rx.w, rx.h, rx.state.pan, &vp, rx.state.user_fix);
         let band = gauge.map(|_| gauge_region(rx.w, rx.h));
         let chrome = map_chrome(rx.w, h, chip_band, scale_bar.as_ref(), &pan_hud, clock_up, low_battery, band);
-        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else { return };
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None, &chrome) else {
+            // A frame with no map is the opaque effort band's own repaint.
+            if let Some(g) = gauge {
+                draw_gauge(cv, rx.w, rx.h, g);
+            }
+            return;
+        };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas. The
         // low-battery cue shows in pan mode too, because the top centre belongs to the pan HUD.
@@ -934,14 +940,20 @@ pub(crate) const GAUGE_H: i32 = 14;
 
 /// The effort gauge the Map draws this frame, or `None`. Pan mode drops it, because the pan HUD owns
 /// the bottom edge. The one home of that rule, so the band drawn and the render key cannot disagree.
-pub(crate) fn gauge_cue(recorder: &crate::recorder::RecorderMachine, panning: bool, w: i32) -> Option<Gauge> {
+pub(crate) fn gauge_cue(
+    recorder: &crate::recorder::RecorderMachine,
+    limits: crate::effort::Limits,
+    panning: bool,
+    w: i32,
+) -> Option<Gauge> {
     if panning {
         return None;
     }
-    recorder.gauge(w)
+    recorder.gauge(limits, w)
 }
 
-/// The rows the effort band covers. A gauge that moves alone repaints only these.
+/// The rows the effort band covers. The band is opaque, so a gauge that moves alone repaints only
+/// these, with no map under them.
 pub(crate) fn gauge_region(w: i32, h: i32) -> Rectangle {
     rect(0, h - GAUGE_H, w, GAUGE_H)
 }

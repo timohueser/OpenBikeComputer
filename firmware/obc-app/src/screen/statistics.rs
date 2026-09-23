@@ -338,7 +338,8 @@ impl StatisticsScreen {
             // the caption, so it has its own drawer. An effort tile with a zone takes its tint.
             match (placed.field.graph(), placed.field.category(), cell.zone) {
                 (Some(m), ..) => {
-                    graph_tile(cv, area, &cell.caption, &cell.value, cell.zone, rx.recorder.effort(), m);
+                    let limit = rx.settings.effort_limits().of(m);
+                    graph_tile(cv, area, &cell.caption, &cell.value, cell.zone, rx.recorder.effort(), m, limit);
                 }
                 (None, Some(cat), _) => {
                     category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, SUBTEXT, INK);
