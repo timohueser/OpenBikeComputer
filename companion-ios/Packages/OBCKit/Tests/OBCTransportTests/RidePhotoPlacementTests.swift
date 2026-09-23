@@ -10,18 +10,18 @@ struct RidePhotoPlacementTests {
 
     /// `ys` are metres north of the start and `xs` metres east, one point per 10 s. The point at
     /// `gap` resumes the recording 10 minutes later.
-    private func points(_ ys: [Double], xs: [Double]? = nil, gapAt gap: Int? = nil) -> [RidePoint] {
+    private func points(_ ys: [Double], xs: [Double]? = nil, gapAt gap: Int? = nil, step: Double = 10) -> [RidePoint] {
         ys.enumerated().map { index, y in
             let pause = gap.map { index >= $0 ? 600.0 : 0 } ?? 0
             return RidePoint(
-                timestamp: time(Double(index) * 10 + pause), coordinate: place(north: y, east: xs?[index] ?? 0),
+                timestamp: time(Double(index) * step + pause), coordinate: place(north: y, east: xs?[index] ?? 0),
                 segmentStart: index == gap
             )
         }
     }
 
-    private func straight() -> [RidePoint] {
-        points((0...100).map { Double($0) * 10 })
+    private func straight(step: Double = 10) -> [RidePoint] {
+        points((0...100).map { Double($0) * 10 }, step: step)
     }
 
     private func time(_ seconds: Double) -> Date { Self.start.addingTimeInterval(seconds) }
@@ -70,14 +70,18 @@ struct RidePhotoPlacementTests {
         #expect(placed.locationOffTrack)
     }
 
-    @Test func aPhotoOutsideTheRideIsNotOffered() {
+    /// Ten minutes either side of the ride belong to it, at its start or its end.
+    @Test func theMarginSitsAtTheStartAndTheEnd() {
+        let ride = straight()
         let placed = place(
-            [PhotoCandidate(assetID: "early", takenAt: time(-1)), PhotoCandidate(assetID: "late", takenAt: time(1_001)),
-             PhotoCandidate(assetID: "first", takenAt: time(0)), PhotoCandidate(assetID: "last", takenAt: time(1_000))],
-            on: straight()
+            [PhotoCandidate(assetID: "tooEarly", takenAt: time(-601)), PhotoCandidate(assetID: "early", takenAt: time(-600)),
+             PhotoCandidate(assetID: "late", takenAt: time(1_600)), PhotoCandidate(assetID: "tooLate", takenAt: time(1_601))],
+            on: ride
         )
 
-        #expect(placed.map(\.photo.assetID) == ["first", "last"])
+        #expect(placed.map(\.photo.assetID) == ["early", "late"])
+        #expect(placed.map(\.distanceMeters) == [0, MeasuredLine(ridePoints: ride).length])
+        #expect(placed.map(\.coordinate) == [ride[0].coordinate, ride[100].coordinate])
     }
 
     @Test func aPhotoInARecordingPauseSitsWhereTheRiderStopped() throws {
@@ -89,32 +93,33 @@ struct RidePhotoPlacementTests {
         #expect(placed.coordinate == ride[49].coordinate)
     }
 
-    /// A trim keeps the photos in the kept part at their places and drops the rest.
+    /// A trim keeps the photos in the kept part at their places and drops the rest. One point a
+    /// minute, so the trimmed parts are longer than the margin.
     @Test func aTrimMovesNoPhotoAndDropsTheTrimmedOnes() {
-        let photos = [100.0, 500, 900].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
-        let ride = straight()
-        let trimmed = Array(ride[20...80])
+        let photos = [600.0, 3_000, 5_400].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
+        let ride = straight(step: 60)
+        let trimmed = Array(ride[30...70])
 
         let before = RidePhotoPlacement.place(photos, on: ride, line: MeasuredLine(ridePoints: ride))
         let after = RidePhotoPlacement.place(photos, on: trimmed, line: MeasuredLine(ridePoints: trimmed))
 
-        #expect(after.map(\.id) == ["500"])
+        #expect(after.map(\.id) == ["3000"])
         #expect(after.first?.coordinate == before[1].coordinate)
-        #expect(abs((after.first?.distanceMeters ?? 0) - 300) < 1)
+        #expect(abs((after.first?.distanceMeters ?? 0) - 200) < 1)
     }
 
     /// A split part keeps the photos of its own time.
     @Test func eachSplitPartGetsItsPhotos() {
-        let photos = [100.0, 500, 900].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
-        let ride = straight()
-        let first = Array(ride[...60]), second = Array(ride[60...])
+        let photos = [600.0, 3_000, 5_400].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
+        let ride = straight(step: 60)
+        let first = Array(ride[...20]), second = Array(ride[21...])
 
         let placedFirst = RidePhotoPlacement.place(photos, on: first, line: MeasuredLine(ridePoints: first))
         let placedSecond = RidePhotoPlacement.place(photos, on: second, line: MeasuredLine(ridePoints: second))
 
-        #expect(placedFirst.map(\.id) == ["100", "500"])
-        #expect(placedSecond.map(\.id) == ["900"])
-        #expect(abs((placedSecond.first?.distanceMeters ?? 0) - 300) < 1)
+        #expect(placedFirst.map(\.id) == ["600"])
+        #expect(placedSecond.map(\.id) == ["3000", "5400"])
+        #expect(abs((placedSecond.first?.distanceMeters ?? 0) - 290) < 1)
     }
 
     @Test func photosComeBackInTimeOrder() {

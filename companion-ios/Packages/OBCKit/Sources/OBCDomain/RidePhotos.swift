@@ -37,6 +37,8 @@ public struct PhotoCandidate: Equatable, Sendable {
 public enum RidePhotoPlacement {
     /// A geotag farther than this from the photo's place on the ride is "off the track".
     public static let offTrackMeters = 300.0
+    /// A photo taken this long before the start or after the end sits at the start or the end.
+    public static let margin: TimeInterval = 10 * 60
 
     public struct Placed: Identifiable, Equatable, Sendable {
         public let photo: RidePhoto
@@ -55,14 +57,14 @@ public enum RidePhotoPlacement {
         }
     }
 
-    /// The times a photo can have: the ride's first point to its last.
-    public static func span(of points: [RidePoint]) -> ClosedRange<Date>? {
+    /// The times a photo can have: the ride's first point to its last, widened by `margin`.
+    public static func window(of points: [RidePoint]) -> ClosedRange<Date>? {
         guard let first = points.first?.timestamp, let last = points.last?.timestamp, first <= last
         else { return nil }
-        return first...last
+        return first.addingTimeInterval(-margin)...last.addingTimeInterval(margin)
     }
 
-    /// The candidates taken during the ride, placed and in time order. `line` is the ride's
+    /// The candidates taken in the ride's window, placed and in time order. `line` is the ride's
     /// `MeasuredLine`; each photo costs one binary search.
     public static func place(_ candidates: [PhotoCandidate], on points: [RidePoint], line: MeasuredLine) -> [Placed] {
         candidates
@@ -78,15 +80,17 @@ public enum RidePhotoPlacement {
             .sorted { $0.photo.takenAt < $1.photo.takenAt }
     }
 
-    /// The ride's added photos on its current points. A photo outside them drops out.
+    /// The ride's added photos on its current points. A photo outside their window drops out.
     public static func place(_ photos: [RidePhoto], on points: [RidePoint], line: MeasuredLine) -> [Placed] {
         place(photos.map { PhotoCandidate(assetID: $0.assetID, takenAt: $0.takenAt) }, on: points, line: line)
     }
 
-    /// Where the rider was at `time`, interpolated between points; nil outside the ride. A time in
-    /// a recording pause is where the rider stopped.
+    /// Where the rider was at `time`, interpolated between points; nil outside `window`. A time in
+    /// a recording pause is where the rider stopped, and a time in the margin is the start or the end.
     static func position(at time: Date, points: [RidePoint], line: MeasuredLine) -> (Double, Coordinate)? {
-        guard let span = span(of: points), span.contains(time) else { return nil }
+        guard let window = window(of: points), window.contains(time) else { return nil }
+        if time <= points[0].timestamp { return (0, points[0].coordinate) }
+        if time >= points[points.count - 1].timestamp { return (line.length, points[points.count - 1].coordinate) }
         var low = 0
         var high = points.count - 1
         while high - low > 1 {
