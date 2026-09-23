@@ -2,8 +2,8 @@
   "schema": 3,
   "package": "sim-assistant-west-cork",
   "archive": {
-    "bytes": 2471294,
-    "sha256": "fc404bb72c741f2c88e72673a17c1b937d429ea8b253ea778b1b490bc2788d33"
+    "bytes": 2471292,
+    "sha256": "24ead56c03001e62c3534e237286e8c3eddcee7a914c238000fc6abfdf7cb32a"
   },
   "producer": {
     "source_commit": "e0a047c6c",

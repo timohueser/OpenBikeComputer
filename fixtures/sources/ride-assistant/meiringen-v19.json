@@ -2,8 +2,8 @@
   "schema": 3,
   "package": "sim-assistant-meiringen",
   "archive": {
-    "bytes": 34580039,
-    "sha256": "c61df031d79242faa46371009a4aa050598a869e33bc597fa3c10d7baf0ebf15"
+    "bytes": 34580069,
+    "sha256": "57d6c24d8b23c3a7fba4959f77314a6c869f6a3907c32654dee46e2afccd6ed8"
   },
   "producer": {
     "source_commit": "e0a047c6c",
