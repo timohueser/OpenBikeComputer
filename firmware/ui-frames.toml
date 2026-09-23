@@ -969,7 +969,7 @@ script = "p p p p f p"
 expect = "NavPlanning"
 args = ["--center", "8298495,46625396", "--heading", "0", "--hold", "detour"]
 
-# No way to the start: Join nearest (the cursor) and Cancel. This fix is 4.1 km east of km 12.
+# No connection to the start: Start without directions is selected; Join nearest remains available.
 [[frame]]
 name = "start-away-noroute"
 map = "{grimsel}"

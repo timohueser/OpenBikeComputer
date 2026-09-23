@@ -667,7 +667,7 @@ fn ride_to_start_splices_the_leg_and_starts_the_ride_on_it() {
 
     app.apply_gesture(Gesture::Press); // Ride to start
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "the shared planning spinner");
-    assert_eq!(detour_req(&mut app, &mut host), Some(DetourRequest::approach(0, (fix.lon, fix.lat))));
+    assert_eq!(detour_req(&mut app, &mut host), Some(DetourRequest::approach(0, (fix.lon, fix.lat), 0)));
     answer_plan(
         &mut app,
         &mut host,
@@ -684,38 +684,104 @@ fn ride_to_start_splices_the_leg_and_starts_the_ride_on_it() {
     assert_eq!(host.retained_result(&mut app), Some(true), "the release keeps the spliced route");
 }
 
-/// With no way to the start, the prompt keeps Join nearest and Cancel. Join nearest starts the
-/// route and follows it from the nearest point, not from wherever the first far fix locks.
-#[test]
-fn join_nearest_follows_the_route_from_its_nearest_point() {
-    let obcr = road_obcr();
-    let src = SliceSource(&obcr[..]);
-    let idx = RouteIndex::read(&src).unwrap();
-    let route = RouteReader::new(&idx, &src);
-    let mut host = Planner::on(&route);
-    let mut app = start_away(away_fix());
-    // A frame with the route open projects the fix onto it.
+fn prepare_start_away(app: &mut App, route: &RouteReader) {
     let map = crate::common::build_min_obcm(0xF800);
     let (map_src, cache) = (SliceSource(&map[..]), obc_reader::MapCache::new());
     let tables = obc_reader::MapTables::parse(&map_src).unwrap();
     let reader = obc_reader::Reader::new(&map_src, &tables, &cache);
     let mut buf = crate::common::Buf::new(240, 320);
-    app.render_frame(None, &mut buf, &reader, Some(&route), 240.0, 320.0, rgb);
+    app.render_frame(None, &mut buf, &reader, Some(route), 240.0, 320.0, rgb);
+}
 
-    app.apply_gesture(Gesture::Press); // Ride to start
-    answer_plan(&mut app, &mut host, Err(NavError::NoPath));
-    assert!(matches!(app.top_screen(), Screen::StartAway(_)), "no way: back on the prompt");
-    assert_eq!(app.active_route_index(), Some(0), "nothing was adopted");
+#[test]
+fn join_nearest_plans_a_connection_and_starts_on_the_splice() {
+    let obcr = road_obcr();
+    let src = SliceSource(&obcr);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+    let mut host = Planner::on(&route);
+    let fix = away_fix();
+    let mut app = start_away(fix);
+    prepare_start_away(&mut app, &route);
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press);
+    let request = detour_req(&mut app, &mut host).unwrap();
+    let target = route.total_distance_m * 6 / 10;
+    assert!(request.target_m.abs_diff(target) < 30);
+    assert_eq!(request, DetourRequest::approach(0, (fix.lon, fix.lat), request.target_m));
+    assert_eq!(request.progress_m, request.target_m, "a connection excludes no route corridor");
+    assert!(!app.recording());
+    answer_plan(
+        &mut app,
+        &mut host,
+        Ok(DetourPreview { cost_delta_m: 300, total_distance_m: 300, rejoin_m: request.target_m, ascent_m: None }),
+    );
+    assert!(host.took_commit(&mut app));
+    app.set_routes_with_ids(&[summary("Road"), summary("To route · Road")], &[7, 9]);
+    answer_commit(&mut app, &mut host, Ok(9));
+    assert!(app.recording());
+    assert_eq!(app.active_route_index(), Some(1));
+    assert_eq!(app.ride_name(), Some("Road"));
+    assert_eq!(host.retained_result(&mut app), Some(true));
+}
 
-    app.apply_gesture(Gesture::Press); // the cursor is on Join nearest
-    assert!(app.recording(), "Join nearest starts the ride");
-    tick(&mut app, 0, None, Some(&route));
-    let expected = route.total_distance_m * 6 / 10;
-    assert!(app.progress_m().abs_diff(expected) < 30, "the ride joins at {expected} m, not {}", app.progress_m());
+#[test]
+fn either_connection_failure_offers_an_unguided_start_on_the_original_route() {
+    let obcr = road_obcr();
+    let src = SliceSource(&obcr);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+    for choice in [0, 1] {
+        for error in [NavError::NoPath, NavError::Exhausted] {
+            let mut host = Planner::on(&route);
+            let mut app = start_away(away_fix());
+            prepare_start_away(&mut app, &route);
+            app.apply_gesture(Gesture::Step(choice));
+            app.apply_gesture(Gesture::Press);
+            assert!(detour_req(&mut app, &mut host).is_some());
+            answer_plan(&mut app, &mut host, Err(error));
+            assert!(matches!(app.top_screen(), Screen::StartAway(_)));
+            assert!(!app.recording());
+            if choice == 0 {
+                // A failed start connection must not disable routing to the nearest point.
+                app.apply_gesture(Gesture::Step(-1));
+                app.apply_gesture(Gesture::Press);
+                let request = detour_req(&mut app, &mut host).unwrap();
+                assert!(request.target_m > 0);
+                answer_plan(&mut app, &mut host, Err(error));
+                assert!(matches!(app.top_screen(), Screen::StartAway(_)));
+            }
+            app.apply_gesture(Gesture::Press); // Start without directions
+            assert!(app.recording());
+            assert_eq!(app.active_route_index(), Some(0));
+            tick(&mut app, 0, Some(away_fix()), Some(&route));
+            assert!(app.off_route());
+            tick(&mut app, 1_000, Some(road_at(0.6)), Some(&route));
+            assert!(app.progress_m().abs_diff(route.total_distance_m * 6 / 10) < 30);
+        }
+    }
+}
+
+#[test]
+fn joining_while_already_on_the_route_needs_no_connection() {
+    let obcr = road_obcr();
+    let src = SliceSource(&obcr);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+    let mut host = Planner::on(&route);
+    let mut app = start_away(road_at(0.6));
+    prepare_start_away(&mut app, &route);
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press);
+    assert!(app.recording());
+    assert!(detour_req(&mut app, &mut host).is_none());
+    tick(&mut app, 0, Some(road_at(0.6)), Some(&route));
+    tick(&mut app, 1_000, Some(road_at(0.5)), Some(&route));
+    assert!(app.progress_m().abs_diff(route.total_distance_m / 2) < 30);
 }
 
 /// Without a routing graph the device never plans: Ride to start lands on the no-route prompt at
-/// once, and Join nearest starts the ride.
+/// once, and Start without directions starts the ride.
 #[test]
 fn without_a_routing_graph_ride_to_start_fails_at_once() {
     let obcr = road_obcr();
@@ -727,13 +793,13 @@ fn without_a_routing_graph_ride_to_start_fails_at_once() {
     app.apply_gesture(Gesture::Press); // Ride to start
     assert!(matches!(app.top_screen(), Screen::StartAway(_)));
     assert!(detour_req(&mut app, &mut host).is_none(), "no plan without a graph");
-    app.apply_gesture(Gesture::Press); // the cursor is on Join nearest
-    assert!(app.recording(), "Join nearest starts the ride");
+    app.apply_gesture(Gesture::Press); // the cursor is on Start without directions
+    assert!(app.recording(), "Start without directions starts the ride");
 }
 
 /// A failure leaves a row that starts the ride, also when the join point is inside the first km.
 #[test]
-fn a_failure_near_the_start_still_offers_join_nearest() {
+fn a_failure_near_the_start_still_offers_an_unguided_start() {
     let obcr = road_obcr();
     let src = SliceSource(&obcr[..]);
     let idx = RouteIndex::read(&src).unwrap();
@@ -745,7 +811,7 @@ fn a_failure_near_the_start_still_offers_join_nearest() {
     answer_plan(&mut app, &mut host, Err(NavError::NoPath));
     assert!(matches!(app.top_screen(), Screen::StartAway(_)));
     app.apply_gesture(Gesture::Press);
-    assert!(app.recording(), "the cursor is on Join nearest, and it starts the ride");
+    assert!(app.recording(), "the cursor is on Start without directions, and it starts the ride");
 }
 
 /// The escape chord drops Ride to start at any point before the ride: nothing is adopted, no ride

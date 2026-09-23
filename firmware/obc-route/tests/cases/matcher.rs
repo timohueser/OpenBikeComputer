@@ -483,8 +483,7 @@ fn single_teleport_spike_does_not_lurch_progress() {
     assert!(after.progress_m.abs_diff(want) <= 5, "recovered progress {} ~ {want}", after.progress_m);
 }
 
-/// Going backwards within the `BACK_SEGS` = 3 slack: progress descends onto the earlier segment,
-/// so "distance ridden" follows a rider who briefly reverses.
+/// Progress follows a rider who reverses across individual segments.
 #[test]
 fn small_backward_step_descends_progress() {
     let bytes = convert("Zig", &zigzag_gpx(6));
@@ -515,29 +514,86 @@ fn small_backward_step_descends_progress() {
     assert_eq!(prev, 0, "walking all the way back reaches the route start (0 m)");
 }
 
-/// A backward jump past `BACK_SEGS` leaves the backward window, so the nearest in-window segment
-/// is far away: the matcher reports off-route and freezes instead of teleporting the cursor back.
+/// Backtracking crosses chunk boundaries in fixes that each span more than three segments.
 #[test]
-fn backward_jump_beyond_back_segs_freezes() {
-    let bytes = convert("Zig", &zigzag_gpx(12));
+fn sustained_backtracking_and_forward_recovery_keep_the_route_position() {
+    let bytes = convert("Long ride", &sawtooth_gpx(1_500));
     let src = SliceSource(&bytes);
-    let ridx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&ridx, &src);
-    let pts = decode_all(&r);
-    assert!(pts.len() >= 12, "need a long zigzag, got {}", pts.len());
-
-    let mut m = RouteMatch::new();
-    for p in &pts[..=8] {
-        m.update(p.lon, p.lat, &r);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+    let mut matcher = RouteMatch::new();
+    for progress in
+        (0..=10_000).step_by(50).chain((8_000..10_000).step_by(50).rev()).chain((8_000..=10_500).step_by(50))
+    {
+        let p = route.position_at(progress).unwrap();
+        let matched = matcher.update(p.lon, p.lat, &route);
+        assert!(!matched.off_route, "on the route at {progress}: {matched:?}");
+        assert!(matched.progress_m.abs_diff(progress) <= 3, "at {progress}: {matched:?}");
     }
-    let at8 = m.update(pts[8].lon, pts[8].lat, &r);
-    assert!(!at8.off_route);
-    let frozen = at8.progress_m;
+    matcher.relock_wide();
+    let p = route.position_at(8_500).unwrap();
+    let matched = matcher.update(p.lon, p.lat, &route);
+    assert!(!matched.off_route && matched.progress_m.abs_diff(8_500) <= 3);
+}
 
-    // Vertex 2 is 6 segments behind, well past BACK_SEGS = 3.
-    let jumped = m.update(pts[2].lon, pts[2].lat, &r);
-    assert!(jumped.off_route, "a 6-segment backward jump is outside the slack → off-route");
-    assert_eq!(jumped.progress_m, frozen, "progress freezes; the cursor must not snap backwards");
+#[test]
+fn a_far_first_fix_does_not_lock_the_search_to_the_start() {
+    let bytes = convert("Long ride", &sawtooth_gpx(1_500));
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+    let mut matcher = RouteMatch::new();
+    let p = route.position_at(10_000).unwrap();
+    for _ in 0..3 {
+        assert!(matcher.update(p.lon, p.lat + north_ud(500.0), &route).off_route);
+        assert!(!matcher.started());
+    }
+    let matched = matcher.update(p.lon, p.lat, &route);
+    assert!(!matched.off_route && matched.progress_m.abs_diff(10_000) <= 3);
+}
+
+#[test]
+fn repeated_sections_follow_the_current_pass_in_both_directions() {
+    // Both laps use exactly the same geometry, with the same travel direction.
+    let mut points = Vec::new();
+    for i in 0..=40 {
+        let a = (i % 20) as f64 / 20.0 * std::f64::consts::TAU;
+        points.push((0.008 * a.sin(), 0.008 * a.cos(), 100.0));
+    }
+    let bytes = convert("Two laps", &gpx_from(&points));
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+    let mut matcher = RouteMatch::new();
+    for progress in (0..=7_000)
+        .step_by(25)
+        .chain((6_000..7_000).step_by(25).rev())
+        .chain((6_000..route.total_distance_m).step_by(25))
+    {
+        let p = route.position_at(progress).unwrap();
+        // A small cross-track error must not select the other lap.
+        let matched = matcher.update(p.lon + 15, p.lat - 15, &route);
+        assert!(!matched.off_route && matched.progress_m.abs_diff(progress) <= 5, "at {progress}: {matched:?}");
+    }
+}
+
+#[test]
+fn exact_out_and_back_advances_at_the_turnaround() {
+    let bytes = convert("Return", &gpx_from(&[(0.0, 0.0, 0.0), (0.01, 0.0, 0.0), (0.0, 0.0, 0.0)]));
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+    let mut matcher = RouteMatch::new();
+    let turn = route.position_at(route.total_distance_m / 2).unwrap();
+    for progress in (0..turn.progress_m)
+        .step_by(20)
+        .chain([turn.progress_m])
+        .chain((turn.progress_m + 20..route.total_distance_m).step_by(20))
+    {
+        let p = route.position_at(progress).unwrap();
+        let matched = matcher.update(p.lon, p.lat, &route);
+        assert!(!matched.off_route && matched.progress_m.abs_diff(progress) <= 3, "at {progress}: {matched:?}");
+    }
 }
 
 /// A hairpin whose out and back legs are metres apart, so at the apex two segments are almost

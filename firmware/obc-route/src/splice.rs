@@ -23,12 +23,16 @@ pub(crate) const SPLICE_CHUNKS_PER_STEP: usize = 1;
 /// stacking prefixes.
 const NAME_PREFIX: &str = "Detour · ";
 const APPROACH_PREFIX: &str = "To start · ";
+const JOIN_PREFIX: &str = "To route · ";
 const REST_PREFIX: &str = "From stop · ";
 
 /// The name of the route a derived route was built on: `name` without its detour, approach or rest
 /// prefix.
 pub fn original_name(name: &str) -> &str {
-    [NAME_PREFIX, APPROACH_PREFIX, REST_PREFIX].iter().find_map(|prefix| name.strip_prefix(prefix)).unwrap_or(name)
+    [NAME_PREFIX, APPROACH_PREFIX, JOIN_PREFIX, REST_PREFIX]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .unwrap_or(name)
 }
 
 /// What a planned leg does to the route it joins.
@@ -36,7 +40,7 @@ pub fn original_name(name: &str) -> &str {
 pub enum Leg {
     /// Leaves the route, skips a span of it and rejoins it.
     Detour,
-    /// Leads to the route's start. The whole route follows it.
+    /// Leads to a join point. The route follows it from `rejoin_m`.
     Approach,
     /// The rest of the previous trip day: its stored route over `[from_m, to_m]`, verbatim. The
     /// route follows it from its join point.
@@ -132,9 +136,8 @@ impl Splicer {
     /// facts and the final geometry determine the output, so the distance and elevation hints in
     /// the call shape are unused. `orig_name` supplies the derived route name.
     ///
-    /// An [`Leg::Approach`] is the way to the start, then the whole route: it splits and rejoins at
-    /// 0 and skips nothing, so it adds no avoidance. Its heights take one offset, which lands its end
-    /// on the start's height, and every waypoint moves behind it.
+    /// A [`Leg::Approach`] leads to `rejoin_m`, then follows the route from there. It adds no
+    /// avoidance. One height offset aligns its end with the join point. Tail waypoints follow it.
     ///
     /// A [`Leg::Rest`] is a stored route, so its heights stay as stored. The route follows from
     /// `rejoin_m`, and the output is a built day. The rest's waypoints are not kept.
@@ -148,18 +151,18 @@ impl Splicer {
     ) -> Splicer {
         let (split_m, rejoin_m) = match leg {
             Leg::Detour => (split_m, rejoin_m),
-            Leg::Approach => (0, 0),
+            Leg::Approach => (0, rejoin_m),
             Leg::Rest { .. } => (0, rejoin_m),
         };
         let mut name = heapless::String::new();
         let prefix = match leg {
             Leg::Detour => Some(NAME_PREFIX),
-            Leg::Approach => Some(APPROACH_PREFIX),
+            Leg::Approach => Some(if rejoin_m == 0 { APPROACH_PREFIX } else { JOIN_PREFIX }),
             Leg::Rest { .. } => Some(REST_PREFIX),
         };
-        if let Some(prefix) = prefix
-            .filter(|_| ![NAME_PREFIX, APPROACH_PREFIX, REST_PREFIX].iter().any(|prefix| orig_name.starts_with(prefix)))
-        {
+        if let Some(prefix) = prefix.filter(|_| {
+            ![NAME_PREFIX, APPROACH_PREFIX, JOIN_PREFIX, REST_PREFIX].iter().any(|prefix| orig_name.starts_with(prefix))
+        }) {
             let _ = name.push_str(prefix);
         }
         for ch in orig_name.chars() {

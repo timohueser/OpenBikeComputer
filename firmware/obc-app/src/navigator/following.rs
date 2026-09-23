@@ -117,7 +117,9 @@ const CLIMB_EXIT_MARGIN_M: u32 = 30;
 fn resolve_active_climb(climbs: &Climbs, progress: u32, prev: Option<usize>) -> Option<usize> {
     if let Some(i) = prev {
         if let Some(seg) = climbs.as_slice().get(i) {
-            if progress <= seg.end_m.saturating_add(CLIMB_EXIT_MARGIN_M) {
+            if progress >= seg.start_m.saturating_sub(CLIMB_ENTER_MARGIN_M + CLIMB_EXIT_MARGIN_M)
+                && progress <= seg.end_m.saturating_add(CLIMB_EXIT_MARGIN_M)
+            {
                 return Some(i);
             }
         }
@@ -134,16 +136,21 @@ pub(crate) const WAYPOINT_LINGER_M: u32 = 100;
 
 /// The next-waypoint index, as a pure function of the resident table, the matched progress and the
 /// previously-resolved index. The next waypoint is the first entry whose linger band is still open.
-/// `prev` only keeps the index from regressing on a progress dip; `None` once every one is passed.
+/// Hold passed waypoints through GPS jitter, but restore them when the rider backtracks.
 fn resolve_next_waypoint(wpts: &Waypoints, progress_m: u32, prev: Option<usize>) -> Option<usize> {
     let ahead = wpts.as_slice().iter().position(|w| progress_m < w.dist_along_m.saturating_add(WAYPOINT_LINGER_M));
     match ahead {
         // Past every waypoint's linger — the chip / fields go empty even if one was held.
         None => None,
-        // Hold the furthest-reached index against a jittering cursor (never un-pass a waypoint).
-        // A stale `prev` (≥ len, after a table shrink) falls through to `a`.
+        // The entry and exit bands differ, so a small progress dip cannot flap the chip.
         Some(a) => match prev {
-            Some(p) if p > a && p < wpts.len() => Some(p),
+            Some(p)
+                if p > a
+                    && p < wpts.len()
+                    && progress_m >= wpts.as_slice()[a].dist_along_m.saturating_sub(WAYPOINT_LINGER_M) =>
+            {
+                Some(p)
+            }
             _ => Some(a),
         },
     }
@@ -217,21 +224,11 @@ impl NavigatorMachine {
         &self.waypoints
     }
 
-    /// Make the next fresh ride follow the active route from `progress_m`: a forward-only floor
-    /// there, as a seam gives.
-    pub(crate) fn join_at(&mut self, progress_m: u32) {
-        self.join_m = Some(progress_m);
-    }
-
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.
     pub(crate) fn reset_ride(&mut self) {
         self.route_match.reset();
         self.ride_end = None;
-        self.following.seam_request = self
-            .join_m
-            .take()
-            .zip(self.following.active_route)
-            .map(|(anchor_m, route)| SeamRequest { route: RouteIndex::new(route), anchor_m });
+        self.following.seam_request = None;
         self.following.progress_m = 0;
         self.following.off_route = false;
         self.following.dist_to_route_m = 0;
@@ -297,6 +294,7 @@ impl NavigatorMachine {
             let loaded = self.following.active_route.zip(route);
             self.waypoints = loaded.map_or_else(Waypoints::new, |(_, r)| r.load_waypoints(0));
             self.waypoints_route = loaded.map(|(index, _)| index);
+            self.waypoints_from_m = 0;
             self.following.next_waypoint = None; // a fresh table — re-derive the next waypoint on the next match
         }
         self.following.waypoint_count = self.waypoints.len();
@@ -390,24 +388,25 @@ impl NavigatorMachine {
         Some((prev, next))
     }
 
-    /// Recompute the next waypoint from the freshly-matched progress, and slide a truncated table's
-    /// window forward when the rider passes its tail. Returns whether the next waypoint changed.
-    ///
-    /// The re-window is gated on [`truncated`](obc_route::Waypoints), so a normal route never
-    /// re-streams, and it starts strictly past the old window, so it cannot re-fire next tick.
-    /// Off-route, `progress_m` is frozen, so the index self-freezes and is left alone.
+    /// Recompute the next waypoint and refill a resident window when progress leaves its span.
+    /// Off-route fixes freeze both progress and the window.
     pub(crate) fn update_next_waypoint(&mut self, route: &RouteReader) -> bool {
         if self.following.off_route {
             return false;
         }
-        // Slide a truncated window forward once its whole resident span is behind the rider.
-        if self.waypoints.truncated {
-            if let Some(last) = self.waypoints.as_slice().last() {
-                if self.following.progress_m >= last.dist_along_m.saturating_add(WAYPOINT_LINGER_M) {
-                    self.waypoints = route.load_waypoints(self.following.progress_m);
-                    self.following.next_waypoint = None; // the window slid — re-derive against it below
-                }
-            }
+        let progress = self.following.progress_m;
+        let before = progress < self.waypoints_from_m;
+        let after = self.waypoints.truncated
+            && self
+                .waypoints
+                .as_slice()
+                .last()
+                .is_some_and(|w| progress >= w.dist_along_m.saturating_add(WAYPOINT_LINGER_M));
+        if before || after {
+            // Keep room behind the rider so backward travel does not reload the table every fix.
+            self.waypoints_from_m = if before { progress.saturating_sub(1_000) } else { progress };
+            self.waypoints = route.load_waypoints(self.waypoints_from_m);
+            self.following.next_waypoint = None;
         }
         self.following.waypoint_count = self.waypoints.len();
         let prev = self.following.next_waypoint;
@@ -466,6 +465,7 @@ impl NavigatorMachine {
         self.following.active_climb = None;
         self.waypoints = Waypoints::new();
         self.waypoints_route = None;
+        self.waypoints_from_m = 0;
         self.following.next_waypoint = None;
         self.following.waypoint_count = 0;
         self.following.progress_m = 0;
@@ -509,6 +509,7 @@ impl NavigatorMachine {
         self.waypoints_route = old_wpts.and_then(remap);
         if old_wpts.is_some() && self.waypoints_route.is_none() {
             self.waypoints = Waypoints::new();
+            self.waypoints_from_m = 0;
             self.following.next_waypoint = None;
             self.following.waypoint_count = 0;
         }
@@ -702,6 +703,37 @@ mod tests {
         assert_eq!(resolve_active_climb(&cs, 3010, Some(0)), Some(0));
         // Past climb 0's exit band: re-arms straight onto climb 1.
         assert_eq!(resolve_active_climb(&cs, 3040, Some(0)), Some(1));
+    }
+
+    #[test]
+    fn backtracking_restores_earlier_climbs_and_waypoints() {
+        let cs = climbs(&[(1000, 3000), (4000, 6000)]);
+        assert_eq!(resolve_active_climb(&cs, 2500, Some(1)), Some(0));
+        assert_eq!(resolve_active_climb(&cs, 800, Some(0)), None);
+        let w = wpts(&[(1000, "A"), (2000, "B")]);
+        assert_eq!(resolve_next_waypoint(&w, 1100, Some(0)), Some(1));
+        assert_eq!(resolve_next_waypoint(&w, 1050, Some(1)), Some(1));
+        assert_eq!(resolve_next_waypoint(&w, 850, Some(1)), Some(0));
+        assert_eq!(resolve_next_waypoint(&w, 1800, None), Some(1));
+    }
+
+    #[test]
+    fn backtracking_restores_waypoints_from_an_earlier_window() {
+        use obc_formats::io::SliceSource;
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../specs/vectors/route-waypoints.obcr"));
+        let source = SliceSource(bytes);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut nav = NavigatorMachine::new();
+        nav.waypoints_from_m = route.total_distance_m;
+        nav.waypoints = route.load_waypoints(nav.waypoints_from_m);
+        nav.following.progress_m = 0;
+        nav.update_next_waypoint(&route);
+        assert_eq!(nav.waypoints_from_m, 0);
+        assert_eq!(nav.waypoints.len(), route.load_waypoints(0).len());
+        assert!(!nav.waypoints.is_empty());
+        assert_eq!(nav.following.next_waypoint, Some(0));
+        assert!(!nav.update_next_waypoint(&route));
     }
 
     /// A stale index (the list shrank under the previous active climb) does not strand the resolver:
