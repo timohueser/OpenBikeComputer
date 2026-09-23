@@ -349,7 +349,6 @@ struct RootView: View {
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
-                    onBikeTypeChange: { mainModel.setBikeType(id, to: $0) },
                     // Reverse lands a flipped copy alongside the original and opens it.
                     onReverse: {
                         if let reversedID = mainModel.reverseRoute(id) {
