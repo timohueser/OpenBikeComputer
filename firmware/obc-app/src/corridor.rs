@@ -2,8 +2,8 @@
 //! Entry, filter and route changes define a new generation. Progress and clock ticks do not
 //! rerank that generation; only current opening status changes. Errors settle as failures.
 
-use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
-use obc_reader::{CorridorPoi, PoiCategorySet, Reader, RoutePath};
+use obc_reader::reader::places::{PlaceKey, PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+use obc_reader::{CorridorPoi, PoiCategorySet, Reader, RoutePath, CORRIDOR_HALF_WIDTH_M};
 use obc_route::RouteReader;
 
 /// What a corridor snapshot is *for*: the category filter and the along-route progress it was
@@ -41,6 +41,8 @@ pub struct CorridorScratch {
     clock_key: Option<(bool, i16)>,
     local: Option<(u8, u16)>,
     recheck: bool,
+    /// The page boundary the next query starts past, and whether it pages backwards.
+    start: Option<(PlaceKey, bool)>,
     /// The key a snapshot is *wanted* for — `None` when nothing is asking (the normal state: no
     /// Up-ahead screen is up, so the query never runs and the host never builds a `Reader` for it).
     want: Option<CorridorKey>,
@@ -65,6 +67,7 @@ impl CorridorScratch {
             clock_key: None,
             local: None,
             recheck: false,
+            start: None,
         }
     }
 
@@ -83,10 +86,16 @@ impl CorridorScratch {
     pub fn invalidate(&mut self) {
         self.taken_for = None;
         self.recheck = false;
+        self.start = None;
         self.pois.clear();
         self.query = None;
         self.generation = self.generation.wrapping_add(1);
         self.status = QueryProgress::Unavailable;
+    }
+
+    /// Start the next query past `boundary`, so a later page does not first walk the earlier ones.
+    pub(crate) fn start_after(&mut self, boundary: PlaceKey, backwards: bool) {
+        self.start = Some((boundary, backwards));
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -99,18 +108,9 @@ impl CorridorScratch {
         self.recheck = false;
     }
 
-    pub fn next_page(&mut self, key: obc_reader::reader::places::PlaceKey) {
+    pub fn next_page(&mut self, key: PlaceKey) {
         if let Some(query) = &mut self.query {
             query.next_page(key);
-            self.pois.clear();
-            self.taken_for = None;
-            self.status = QueryProgress::Pending;
-        }
-    }
-
-    pub(crate) fn previous_page(&mut self, key: obc_reader::reader::places::PlaceKey) {
-        if let Some(query) = &mut self.query {
-            query.previous_page(key);
             self.pois.clear();
             self.taken_for = None;
             self.status = QueryProgress::Pending;
@@ -166,9 +166,10 @@ impl CorridorScratch {
         self.status
     }
 
+    /// Opening hours change only on quarter hours, so a new minute inside one changes nothing.
     pub(crate) fn clock_changed(&mut self, local: Option<(u8, u16)>, offset: i16) -> bool {
         let authority = (local.is_some(), offset);
-        let changed = self.local != local || self.clock_key.is_some_and(|key| key != authority);
+        let changed = quarter(self.local) != quarter(local) || self.clock_key.is_some_and(|key| key != authority);
         if self.query.is_some() && self.clock_key.is_some_and(|key| key != authority) {
             self.cancel();
         } else if self.query.is_some() {
@@ -207,13 +208,17 @@ impl CorridorScratch {
         }
         let path: &dyn RoutePath = route;
         let query = self.query.get_or_insert_with(|| {
-            PlaceQuery::new(
+            let query = PlaceQuery::new(
                 self.generation,
                 key.filter,
-                PlaceWindow::Corridor { from_m: key.anchor_m, to_m, half_width_m: 300 },
+                PlaceWindow::Corridor { from_m: key.anchor_m, to_m, half_width_m: CORRIDOR_HALF_WIDTH_M },
                 local,
             )
-            .with_hours_filter(key.hours_filter)
+            .with_hours_filter(key.hours_filter);
+            match self.start {
+                Some((boundary, backwards)) => query.starting_after(boundary, backwards),
+                None => query,
+            }
         });
         for _ in 0..64 {
             self.status = query.step(reader, Some(path), self.generation, &mut self.pois);
@@ -227,6 +232,11 @@ impl CorridorScratch {
             }
         }
     }
+}
+
+/// The weekday and quarter hour that opening status depends on.
+pub(crate) fn quarter(local: Option<(u8, u16)>) -> Option<(u8, u16)> {
+    local.map(|(weekday, minute)| (weekday, minute / 15))
 }
 
 impl Default for CorridorScratch {

@@ -3,7 +3,7 @@
 //! of the riding waypoint cache, so browsing cannot change guidance or truncate the timeline.
 
 use crate::{
-    corridor::{CorridorKey, CorridorScratch, UpAheadScope},
+    corridor::{quarter, CorridorKey, CorridorScratch, UpAheadScope},
     settings::UpAheadSource,
 };
 use core::cmp::Ordering;
@@ -97,7 +97,9 @@ pub struct AheadState {
     scope: Option<UpAheadScope>,
     boundary: Option<Key>,
     backwards: bool,
-    seek: bool,
+    /// The settled Overview's place status and the quarter hour it was taken at. It outlives a
+    /// visit to the Timeline, so Back shows the Overview without a new query.
+    overview: Option<(QueryProgress, Option<(u8, u16)>)>,
     cursor: Option<WaypointCursor>,
     ordinal: u16,
     authored_done: bool,
@@ -125,7 +127,7 @@ impl AheadState {
             scope: None,
             boundary: None,
             backwards: false,
-            seek: false,
+            overview: None,
             cursor: None,
             ordinal: 0,
             authored_done: false,
@@ -152,6 +154,18 @@ impl AheadState {
         self.boundary = None;
         self.backwards = false;
         self.dirty = true;
+    }
+    pub(crate) fn back(&mut self) {
+        self.page = Page::Overview;
+        self.rows.clear();
+        if let Some((status, _)) = self.overview {
+            self.status = status;
+            self.authored_done = true;
+            self.places_done = true;
+            self.settled = true;
+        } else if !self.stale {
+            self.dirty = true;
+        }
     }
     pub(crate) fn refresh(&mut self, anchor: u32) {
         self.stale = false;
@@ -197,7 +211,7 @@ impl AheadState {
         self.dirty || !self.authored_done || !self.places_done
     }
     pub(crate) fn request(&self, scope: UpAheadScope) -> Option<CorridorKey> {
-        if self.stale {
+        if self.stale || (self.page == Page::Overview && self.overview.is_some()) {
             return None;
         }
         let filter = if self.page == Page::Overview {
@@ -254,53 +268,26 @@ impl AheadState {
             return;
         }
         let Some(route) = route else {
-            self.window = None;
-            self.rows.clear();
-            self.totals = None;
-            self.status = QueryProgress::Unavailable;
-            self.dirty = false;
-            self.authored_done = true;
-            self.places_done = true;
-            scratch.disarm();
-            return;
+            return self.fail(QueryProgress::Unavailable, scratch);
         };
         let window = RouteWindow::new(route, self.anchor, self.range);
         if self.window != Some(window) {
             self.boundary = None;
             self.backwards = false;
+            self.overview = None;
             self.dirty = true;
-            let totals = match window.facts(route) {
-                Ok(f) => f.complete_elevation().then_some((f.ascent_m, f.descent_m)),
-                Err(e) => {
-                    self.rows.clear();
-                    self.totals = None;
-                    self.next_waypoint = None;
-                    scratch.disarm();
-                    self.status = QueryProgress::Failed(obc_reader::Error::Source(e));
-                    self.dirty = false;
-                    self.authored_done = true;
-                    self.places_done = true;
-                    return;
-                }
-            };
-            let next_waypoint = match window.next_waypoint(route) {
-                Ok(w) => w.map(entry),
-                Err(e) => {
-                    self.rows.clear();
-                    self.next_waypoint = None;
-                    self.totals = None;
-                    scratch.disarm();
-                    self.status = QueryProgress::Failed(obc_reader::Error::Source(e));
-                    self.dirty = false;
-                    self.authored_done = true;
-                    self.places_done = true;
-                    return;
-                }
+            let facts = window.facts(route).and_then(|f| Ok((f, window.next_waypoint(route)?)));
+            let (facts, next_waypoint) = match facts {
+                Ok(facts) => facts,
+                Err(e) => return self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)), scratch),
             };
             self.window = Some(window);
-            self.totals = totals;
-            self.next_waypoint = next_waypoint;
+            self.totals = facts.complete_elevation().then_some((facts.ascent_m, facts.descent_m));
+            self.next_waypoint = next_waypoint.map(entry);
             self.climb = window.climb(climbs).copied();
+        }
+        if self.page == Page::Overview && self.overview.is_some_and(|(_, at)| at != quarter(local)) {
+            self.dirty = true;
         }
         if self.settled
             && self.request(scope).is_some()
@@ -310,16 +297,11 @@ impl AheadState {
             self.status = scratch.status();
             if matches!(self.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
                 self.rows.retain(|row| !matches!(row.item, Item::Place(_)));
-                self.water = None;
-                self.shop = None;
                 self.selected = self.selected.min(self.rows.len().saturating_sub(1));
             } else {
                 let selected = self.rows.get(self.selected).map(|row| row.key);
                 self.rows.retain(|row| selected == Some(row.key) || !matches!(row.item, Item::Place(i) if scratch.entries().get(i as usize).is_none_or(|p| p.poi.opening == OpeningStatus::Closed)));
                 self.selected = selected.and_then(|key| self.rows.iter().position(|row| row.key == key)).unwrap_or(0);
-                if self.page == Page::Overview {
-                    self.dirty = true;
-                }
             }
         }
         if self.scope != Some(scope) {
@@ -334,31 +316,32 @@ impl AheadState {
             self.selected = 0;
             self.more = false;
             self.ordinal = 0;
-            match route.waypoint_cursor() {
-                Ok(cursor) => self.cursor = Some(cursor),
-                Err(e) => {
-                    self.status = QueryProgress::Failed(obc_reader::Error::Source(e));
-                    self.dirty = false;
-                    self.authored_done = true;
-                    self.places_done = true;
-                    return;
+            // The Overview shows no authored rows, so only the Timeline walks them.
+            let overview = self.page == Page::Overview;
+            if overview {
+                self.overview = None;
+                self.water = None;
+                self.shop = None;
+            } else {
+                match route.waypoint_cursor() {
+                    Ok(cursor) => self.cursor = Some(cursor),
+                    Err(e) => return self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)), scratch),
                 }
             }
-            self.authored_done = false;
+            self.authored_done = overview;
             self.places_done = false;
-            self.water = None;
-            self.shop = None;
-            self.seek = self.boundary.is_some();
             scratch.invalidate();
             if let Some(key) = self.request(scope) {
                 scratch.arm(key);
+                if let Some(boundary) = self.boundary {
+                    scratch.start_after(boundary.place_boundary(window.start_m), self.backwards);
+                }
             } else {
                 scratch.disarm();
                 self.places_done = true;
             }
             self.status = QueryProgress::Pending;
-            if self.page != Page::Overview && scope.source == UpAheadSource::Both && scope.filter == PoiCategorySet::ALL
-            {
+            if !overview && scope.source == UpAheadSource::Both && scope.filter == PoiCategorySet::ALL {
                 for (i, c) in climbs.as_slice().iter().enumerate() {
                     if window.contains(c.start_m) {
                         self.insert(Row { key: Key::Climb(c.start_m, i as u8), item: Item::Climb(*c), ascent_m: None });
@@ -370,11 +353,11 @@ impl AheadState {
         if !self.authored_done {
             for _ in 0..16 {
                 match route.next_waypoint(self.cursor.as_mut().unwrap()) {
-                    Ok(Some(w)) => {
+                    // Waypoints are sorted by distance, so the first one past the window ends the walk.
+                    Ok(Some(w)) if w.dist_along_m <= window.end_m => {
                         let index = self.ordinal;
                         self.ordinal += 1;
-                        if self.page != Page::Overview
-                            && window.contains(w.dist_along_m)
+                        if window.contains(w.dist_along_m)
                             && scope.source.shows_waypoints()
                             && w.category().map_or(scope.filter == PoiCategorySet::ALL, |c| scope.filter.contains(c))
                         {
@@ -385,17 +368,11 @@ impl AheadState {
                             });
                         }
                     }
-                    Ok(None) => {
+                    Ok(_) => {
                         self.authored_done = true;
                         break;
                     }
-                    Err(e) => {
-                        self.rows.clear();
-                        self.status = QueryProgress::Failed(obc_reader::Error::Source(e));
-                        self.authored_done = true;
-                        self.places_done = true;
-                        return;
-                    }
+                    Err(e) => return self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)), scratch),
                 }
             }
         }
@@ -409,17 +386,6 @@ impl AheadState {
             scratch.prepare_to(reader, Some(route), local, window.end_m);
             self.status = scratch.status();
             if let QueryProgress::Ready { more, .. } = self.status {
-                if self.seek {
-                    self.seek = false;
-                    let key = self.boundary.unwrap().place_boundary(window.start_m);
-                    if self.backwards {
-                        scratch.previous_page(key);
-                    } else {
-                        scratch.next_page(key);
-                    }
-                    self.status = QueryProgress::Pending;
-                    return;
-                }
                 if self.page == Page::Overview {
                     for p in scratch.entries().iter().filter(|p| p.poi.opening != OpeningStatus::Closed) {
                         match obc_formats::obcm::poi_category_of(p.poi.subtype) {
@@ -455,6 +421,11 @@ impl AheadState {
         }
         if self.authored_done && self.places_done && !self.settled {
             self.settled = true;
+            if self.page == Page::Overview {
+                self.overview = Some((self.status, quarter(local)));
+                scratch.disarm();
+                return;
+            }
             if self.backwards && self.rows.is_empty() {
                 self.boundary = None;
                 self.backwards = false;
@@ -464,17 +435,28 @@ impl AheadState {
             if self.backwards {
                 self.selected = self.rows.len().saturating_sub(1);
             }
-            for row in &mut self.rows {
-                row.ascent_m = route
-                    .interval_facts(window.start_m, row.key.distance())
-                    .ok()
-                    .filter(|f| f.complete_elevation())
-                    .map(|f| f.ascent_m);
+            let ends: Vec<u32, 4> = self.rows.iter().map(|row| row.key.distance()).collect();
+            let facts = route.interval_facts_to::<4>(window.start_m, &ends);
+            for (i, row) in self.rows.iter_mut().enumerate() {
+                let facts = facts.as_ref().ok().and_then(|facts| facts.get(i));
+                row.ascent_m = facts.filter(|f| f.complete_elevation()).map(|f| f.ascent_m);
             }
             if self.request(scope).is_none() {
                 self.status = QueryProgress::Ready { more: self.more, coverage_complete: true };
             }
         }
+    }
+    /// A read failure or a missing route shows no window. The next prepare starts it again.
+    fn fail(&mut self, status: QueryProgress, scratch: &mut CorridorScratch) {
+        self.window = None;
+        self.rows.clear();
+        self.totals = None;
+        self.next_waypoint = None;
+        self.status = status;
+        self.dirty = false;
+        self.authored_done = true;
+        self.places_done = true;
+        scratch.disarm();
     }
 }
 impl Default for AheadState {
@@ -828,6 +810,50 @@ mod tests {
         assert_eq!(a.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), [selected, survivor]);
         assert_eq!(a.rows[a.selected].key, selected);
         assert_eq!(scratch.entries()[0].poi.opening, OpeningStatus::Closed);
+    }
+
+    #[test]
+    fn back_keeps_the_overview_until_the_quarter_hour_changes() {
+        let bytes = route(false);
+        let source = SliceSource(&bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut first_hour = [0; 29];
+        first_hour[2] = 4;
+        let pois = [(3_000, 0), (6_000, u16::MAX)]
+            .into_iter()
+            .map(|(lon, payload)| PoiSpec { lat: 100, lon, subtype: 1, name: format!("Water {lon}"), payload })
+            .collect();
+        let bytes =
+            obcm_testkit::build_poi_map_with_hours((-1000, -1000, 150_000, 1000), 512, &[(1, pois)], &[first_hour]);
+        let source = obc_reader::SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let map = Reader::new(&source, &tables, &cache);
+        let scope = scope(UpAheadSource::Both);
+        let mut a = AheadState::new();
+        let mut scratch = CorridorScratch::new();
+        let settle = |a: &mut AheadState, scratch: &mut CorridorScratch, local| {
+            for _ in 0..100 {
+                a.prepare(Some(&map), Some(&route), &Climbs::default(), scope, scratch, Some(local));
+                if !a.pending() {
+                    return;
+                }
+            }
+            panic!("window did not settle");
+        };
+        settle(&mut a, &mut scratch, (0, 30));
+        let (water, status) = (a.water, a.status);
+        assert!(water.is_some_and(|d| d < 400), "the nearer water is open in the first hour");
+        a.explore();
+        settle(&mut a, &mut scratch, (0, 30));
+        a.back();
+        assert!(!a.pending() && a.request(scope).is_none(), "Back takes no new query");
+        assert_eq!((a.water, a.status), (water, status));
+        a.prepare(Some(&map), Some(&route), &Climbs::default(), scope, &mut scratch, Some((0, 44)));
+        assert!(!a.pending(), "a new minute inside the quarter hour changes no opening status");
+        settle(&mut a, &mut scratch, (0, 90));
+        assert!(a.water.is_some_and(|d| d > 400), "the nearer water closed after the first hour");
     }
 
     #[test]

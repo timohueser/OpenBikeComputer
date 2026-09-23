@@ -34,7 +34,7 @@ mod scene;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
-pub use corridor::{CorridorPoi, PoiCategorySet, RoutePath, MAX_CORRIDOR_RESULTS};
+pub use corridor::{CorridorPoi, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M, MAX_CORRIDOR_RESULTS};
 pub use hours::{weekday_from_ymd, Interval, WeeklySchedule};
 // The byte-I/O seam is owned by `obc-formats`, re-exported here because the reader's public API
 // traffics in it. Its `Error` is not re-exported, because it would shadow the map-parse [`Error`].

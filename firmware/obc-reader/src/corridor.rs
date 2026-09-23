@@ -21,7 +21,7 @@ use obc_map_scene::{cos_lat, delta_m, BBox, M_PER_DEG};
 /// Lateral half-width of the route corridor, in ground metres: a POI farther than this from the
 /// route line is somewhere else, not up ahead. The one knob that trades list noise against missed
 /// water.
-pub(crate) const CORRIDOR_HALF_WIDTH_M: f32 = 300.0;
+pub const CORRIDOR_HALF_WIDTH_M: u16 = 300;
 
 /// Max results one corridor snapshot returns. The query fills the caller's `Vec` ascending by
 /// [`dist_along_m`](CorridorPoi::dist_along_m) and never exceeds it: it is a list a rider reads,
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn inflate_pads_both_axes_in_ground_meters() {
         let b = BBox { min_lon: 7_000_000, min_lat: LAT, max_lon: 7_010_000, max_lat: LAT + 10_000 };
-        let g = inflate_bbox(b, CORRIDOR_HALF_WIDTH_M);
+        let g = inflate_bbox(b, CORRIDOR_HALF_WIDTH_M as f32);
         let lat_pad = b.min_lat - g.min_lat;
         let lon_pad = b.min_lon - g.min_lon;
         assert!((lat_pad as f32 * 1e-6 * M_PER_DEG as f32 - 300.0).abs() < 1.0);
