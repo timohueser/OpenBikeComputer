@@ -2,18 +2,21 @@
 import SwiftUI
 import OBCDomain
 
-/// The day editor on the sample Alps line: split mode, where one file becomes the trip and the
-/// stepper cuts it, and edit mode on the two-day trip with its stops.
+/// The day editor's sheet on the sample Alps line: split mode, where one file becomes the trip
+/// and the stepper cuts it, and edit mode on the two-day trip with its stops. The map behind the
+/// sheet is the shared marker map; the gallery shows the sheet alone.
 struct TripDayEditorGallerySection: View {
     @State private var split = Self.model(GalleryStops.oneFile(), isSplitMode: true)
     @State private var edit = Self.model(GalleryStops.trip(waypoints: true), isSplitMode: false)
+    @State private var discardShown = false
+    @State private var dayMenu: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             OBCEyebrow("Split mode")
-            editor(split)
+            sheet(split)
             OBCEyebrow("Edit mode")
-            editor(edit)
+            sheet(edit)
         }
     }
 
@@ -25,13 +28,12 @@ struct TripDayEditorGallerySection: View {
         )!
     }
 
-    private func editor(_ model: TripDayEditorModel) -> some View {
-        NavigationStack {
-            TripDayEditorView(model: model, onClose: {})
-        }
-        .frame(height: 720)
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.line))
+    private func sheet(_ model: TripDayEditorModel) -> some View {
+        DayEditorSheet(model: model, discardShown: $discardShown, dayMenu: $dayMenu, onClose: {})
+            .frame(height: 560)
+            .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.line))
+            .onAppear { model.loadStops() }
     }
 }
 #endif

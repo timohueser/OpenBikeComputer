@@ -14,10 +14,22 @@ struct LineMarkerMapView: UIViewRepresentable {
     let segmentColors: [Color]
     let dashedSegments: Set<Int>
     let stops: [PlacedStop]
+    /// The line fits and focuses above this much of the bottom: the part a sheet covers.
+    var bottomInset: CGFloat = 0
+    /// A tap on the line places a marker.
+    var isPlacing = false
+
+    /// Stop pins show only while the map spans less than this: a whole-trip view stays clean.
+    static let stopsSpanMeters = 40_000.0
 
     func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView()
+        let mapView = FittingMapView()
+        mapView.onFirstLayout = { [weak coordinator = context.coordinator] in coordinator?.fit() }
         mapView.delegate = context.coordinator
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.placeTapped(_:)))
+        tap.isEnabled = false
+        mapView.addGestureRecognizer(tap)
+        context.coordinator.placementTap = tap
         mapView.isRotateEnabled = false
         mapView.isPitchEnabled = false
         mapView.showsCompass = false
@@ -36,15 +48,23 @@ struct LineMarkerMapView: UIViewRepresentable {
         if coordinator.lineVersion != lineVersion {
             coordinator.install(line: model.line, version: lineVersion, in: mapView, fit: false)
         }
-        coordinator.renderer?.set(
-            splits: markers.map(\.distance),
-            colors: segmentColors.map { UIColor($0).cgColor },
-            dashed: dashedSegments
-        )
+        // The colour runs follow the markers at rest: a drag moves the handle alone, and the
+        // line recolours when the finger lets go, so no tile re-rasterises mid-drag.
+        if activeID == nil {
+            coordinator.renderer?.set(
+                splits: markers.map(\.distance),
+                colors: segmentColors.map { UIColor($0).cgColor },
+                dashed: dashedSegments
+            )
+        }
+        coordinator.placementTap?.isEnabled = isPlacing
         if coordinator.stops != stops {
-            mapView.removeAnnotations(mapView.annotations.filter { $0 is StopAnnotation })
-            mapView.addAnnotations(stops.map(StopAnnotation.init))
             coordinator.stops = stops
+            coordinator.showStops(in: mapView)
+        }
+        if let focus = model.mapFocus, focus.version != coordinator.focusVersion {
+            coordinator.focusVersion = focus.version
+            coordinator.show(focus.range, in: mapView)
         }
         // Diff the annotations by marker id: a marker added, removed or replaced from outside
         // gets its handle without touching the others.
@@ -84,8 +104,11 @@ struct LineMarkerMapView: UIViewRepresentable {
         weak var mapView: MKMapView?
         var renderer: SegmentedLineRenderer?
         private(set) var lineVersion = -1
-        /// The stops the map shows pins for.
+        /// The known stops; pins for them show while the map is zoomed in enough.
         var stops: [PlacedStop] = []
+        private var stopsShown = false
+        var focusVersion = 0
+        var placementTap: UITapGestureRecognizer?
         /// The finger on the map, or none: a second finger is ignored until this one lets go.
         private var drag: Drag?
 
@@ -115,12 +138,72 @@ struct LineMarkerMapView: UIViewRepresentable {
             lineVersion = version
             if fit {
                 // A padded rect, not edge padding: the view has no size yet, and MapKit fits a
-                // rect to the final bounds on its own.
+                // rect to the final bounds on its own. `fit()` does it again with the real
+                // bounds and the sheet's inset once the view is laid out.
                 let bounds = overlay.boundingMapRect
                 mapView.setVisibleMapRect(
                     bounds.insetBy(dx: -bounds.width * 0.18, dy: -bounds.height * 0.3), animated: false
                 )
             }
+        }
+
+        /// The whole line above the sheet, once the view has its size.
+        func fit() {
+            guard let mapView, let overlay = mapView.overlays.first as? SegmentedLineOverlay else { return }
+            mapView.setVisibleMapRect(overlay.boundingMapRect, edgePadding: padding, animated: false)
+        }
+
+        /// The part of the line between two distances, above the sheet.
+        func show(_ range: ClosedRange<Double>, in mapView: MKMapView) {
+            guard let overlay = mapView.overlays.first as? SegmentedLineOverlay else { return }
+            mapView.setVisibleMapRect(
+                overlay.rect(between: range.lowerBound, and: range.upperBound), edgePadding: padding, animated: true)
+        }
+
+        private var padding: UIEdgeInsets {
+            UIEdgeInsets(top: 72, left: 36, bottom: parent.bottomInset + 36, right: 36)
+        }
+
+        /// Stop pins come and go with the zoom.
+        func showStops(in mapView: MKMapView) {
+            let wanted = Self.spanMeters(of: mapView) < LineMarkerMapView.stopsSpanMeters && !stops.isEmpty
+            mapView.removeAnnotations(mapView.annotations.filter { $0 is StopAnnotation })
+            if wanted { mapView.addAnnotations(stops.map(StopAnnotation.init)) }
+            stopsShown = wanted
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            let wanted = Self.spanMeters(of: mapView) < LineMarkerMapView.stopsSpanMeters && !stops.isEmpty
+            if wanted != stopsShown { showStops(in: mapView) }
+        }
+
+        /// The width of the visible map in metres.
+        private static func spanMeters(of mapView: MKMapView) -> Double {
+            mapView.visibleMapRect.width / MKMapPointsPerMeterAtLatitude(mapView.centerCoordinate.latitude)
+        }
+
+        /// The callout's one button: the stop's action.
+        func mapView(
+            _ mapView: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl
+        ) {
+            guard let stop = view.annotation as? StopAnnotation else { return }
+            mapView.deselectAnnotation(stop, animated: true)
+            parent.model.onStopAction(stop.placed)
+        }
+
+        /// A tap while placing: the nearest point of the line under the finger, within a
+        /// finger's width of it, becomes the new marker.
+        @objc func placeTapped(_ recognizer: UITapGestureRecognizer) {
+            guard let mapView, parent.model.isPlacing else { return }
+            let point = recognizer.location(in: mapView)
+            let target = mapView.convert(point, toCoordinateFrom: mapView)
+            let line = parent.model.line
+            let projection = line.projection(
+                of: Coordinate(latitude: target.latitude, longitude: target.longitude), near: 0, window: line.length)
+            let metersPerPoint = mapView.region.span.latitudeDelta * 111_320 / Double(mapView.bounds.height)
+            guard projection.error <= 30 * metersPerPoint else { return }
+            parent.model.moveGhost(to: projection.distance)
+            parent.model.place()
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: any MKOverlay) -> MKOverlayRenderer {
@@ -140,7 +223,7 @@ struct LineMarkerMapView: UIViewRepresentable {
                 let view = mapView.dequeueReusableAnnotationView(withIdentifier: "stop") as? StopAnnotationView
                     ?? StopAnnotationView(annotation: stop, reuseIdentifier: "stop")
                 view.annotation = stop
-                view.configure(kind: stop.kind)
+                view.configure(kind: stop.kind, action: parent.model.stopActionTitle(stop.placed))
                 return view
             }
             guard let annotation = annotation as? MarkerAnnotation else { return nil }
@@ -329,19 +412,37 @@ final class MarkerAnnotationView: MKAnnotationView {
     }
 }
 
-/// A known stop near the line.
+/// A known stop near the line, with the callout text: "Hotel · 290 m off the line".
 final class StopAnnotation: NSObject, MKAnnotation {
+    let placed: PlacedStop
     let kind: Stop.Kind
     let coordinate: CLLocationCoordinate2D
+    let title: String?
+    let subtitle: String?
 
     init(_ placed: PlacedStop) {
+        self.placed = placed
         kind = placed.stop.kind
         coordinate = clLocation(placed.stop.coordinate)
+        title = placed.stop.name
+        subtitle = "\(StopIcon.name(placed.stop.kind)) · \(OBCFormat.stopOffset(meters: placed.offset))"
     }
 }
 
-/// A small round pin for a stop. It takes no touches, so it never steals a handle's drag, and
-/// it sits under the handles.
+/// An `MKMapView` that says when it first has a size, so the line can be fitted above the sheet.
+private final class FittingMapView: MKMapView {
+    var onFirstLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.height > 0, let onFirstLayout else { return }
+        self.onFirstLayout = nil
+        onFirstLayout()
+    }
+}
+
+/// A small round pin for a stop, under the handles. With an action it takes a tap and shows a
+/// callout with one button; without one it takes no touches, so it never steals a handle's drag.
 final class StopAnnotationView: MKAnnotationView {
     private static let size: CGFloat = 20
     private let host = UIHostingController(rootView: AnyView(EmptyView()))
@@ -351,8 +452,8 @@ final class StopAnnotationView: MKAnnotationView {
         bounds = CGRect(x: 0, y: 0, width: Self.size, height: Self.size)
         host.view.backgroundColor = .clear
         host.view.frame = bounds
+        host.view.isUserInteractionEnabled = false
         addSubview(host.view)
-        isUserInteractionEnabled = false
         // Below required, MapKit hides a pin that meets a handle's wide label frame.
         displayPriority = .required
         zPriority = .min
@@ -360,12 +461,25 @@ final class StopAnnotationView: MKAnnotationView {
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(kind: Stop.Kind) {
+    func configure(kind: Stop.Kind, action: String?) {
         host.rootView = AnyView(
             StopIcon(kind: kind, size: Self.size - 2, isRound: true)
                 .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 1.5))
                 .frame(width: Self.size, height: Self.size)
         )
+        isUserInteractionEnabled = action != nil
+        canShowCallout = action != nil
+        rightCalloutAccessoryView = action.map { title in
+            var configuration = UIButton.Configuration.filled()
+            configuration.title = title
+            configuration.baseBackgroundColor = UIColor(OBCTheme.forest)
+            configuration.baseForegroundColor = .white
+            configuration.cornerStyle = .medium
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
+            let button = UIButton(configuration: configuration)
+            button.accessibilityIdentifier = "map.stopAction"
+            return button
+        }
     }
 }
 

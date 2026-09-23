@@ -2,11 +2,19 @@ import SwiftUI
 import Observation
 import OBCDomain
 
+/// The figures of the days a drag in flight changes, published apart from the editor model so
+/// a frame re-renders the two rows that read them and nothing else.
+@MainActor @Observable
+public final class LiveDayFigures {
+    /// By day index; empty between drags.
+    public internal(set) var days: [Int: DayStats] = [:]
+}
+
 /// The state under the day editor: a draft of the trip, the handle control that moves its day
-/// ends, the live day figures, and one undo step per change. Views drive it and Done hands the
+/// ends, the day figures, and one undo step per change. Views drive it and Done hands the
 /// draft back through `onSave`; nothing is saved before.
 ///
-/// A drag is live in `stats` on every frame and reaches the trip once, when the finger lets
+/// A drag is live in ``live`` on every frame and reaches the trip once, when the finger lets
 /// go. Balancing runs twice per tap: at once with the stops already known, then again when
 /// Apple Maps answers for the new day ends, so the stepper responds under the finger and the
 /// snap follows a moment later.
@@ -15,11 +23,15 @@ public final class TripDayEditorModel {
     public private(set) var trip: Trip
     /// The day-end handles on the map and the profile. Colours follow the day index.
     public let handles: LineMarkerEditorModel
-    /// The figures of every day for the handle positions of this frame.
+    /// The figures of every day for the day ends as committed.
     public private(set) var stats: [DayStats] = []
+    /// The figures of the days under a drag, per frame.
+    public let live = LiveDayFigures()
     /// Per day, why its end cannot be removed; nil when it can. Worked out once per change, so
     /// a drag frame costs no line walk.
     public private(set) var removeBlockers: [String?] = []
+    /// The day whose end the profile and the map are focused on. Nil shows the whole line.
+    public private(set) var selectedDay: Int?
     /// One long file became this trip: a stepper sets the day count.
     public let isSplitMode: Bool
     /// The trips before each committed change, newest last.
@@ -54,6 +66,11 @@ public final class TripDayEditorModel {
         self.placeName = placeName
         self.onSave = onSave
         handles.onEvent = { [weak self] event in self?.handle(event) }
+        handles.onPlace = { [weak self] distance in self?.place(at: distance) }
+        handles.stopActionTitle = { [weak self] stop in
+            self?.trip.day(thatCanEndAt: stop).map { "End Day \($0 + 1) here" }
+        }
+        handles.onStopAction = { [weak self] stop in self?.endDay(at: stop) }
         handles.stops = trip.place(trip.waypoints)
         syncHandles()
     }
@@ -74,6 +91,30 @@ public final class TripDayEditorModel {
     }
     /// The most days the stepper offers for this line.
     public var maxDays: Int { Trip.maxSplitDays(forLength: line.length) }
+    /// The day the handle belongs to.
+    public func day(of handle: LineMarker.ID) -> Int? { handleIDs.firstIndex(of: handle) }
+    public var isPlacing: Bool { handles.isPlacing }
+
+    // MARK: Selection
+
+    /// Focus the profile and the map on `day`'s end. The last day ends at the line end and has
+    /// no handle, so it shows the whole line.
+    public func select(_ day: Int?) {
+        settle()
+        selectedDay = day
+        if let day, handleIDs.indices.contains(day) {
+            handles.focus(on: handleIDs[day])
+        } else {
+            handles.showWholeLine()
+        }
+    }
+
+    /// The stops near every day end, for the map and the profile. Asked once when the editor
+    /// opens; a balance asks again for its new ends.
+    public func loadStops() {
+        let ends = trip.dayEnds.dropLast().map(\.distance)
+        Task { [weak self] in _ = await self?.candidates(near: ends) }
+    }
 
     // MARK: Changes
 
@@ -88,23 +129,40 @@ public final class TripDayEditorModel {
         balance { trip, candidates in trip.evenOut(candidates: candidates) }
     }
 
-    /// A new day end in the middle of the longest day. Returns the new day's index.
+    /// Arm placement: the next finger on the line, on the map or the profile, puts a new day
+    /// end where it lifts.
+    public func beginPlacing() {
+        settle()
+        select(nil)
+        handles.beginPlacing()
+    }
+
+    public func cancelPlacing() {
+        handles.cancelPlacing()
+    }
+
+    /// A new day end at `distance`, selected so the rider can move it on.
     @discardableResult
-    public func addDayEnd() -> Int? {
+    public func place(at distance: Double) -> Int? {
+        settle()
         var added: Int?
         commit { trip in
-            added = trip.addDayEnd()
+            added = trip.addDayEnd(at: distance)
             return added != nil
         }
-        if let added { handleIDs.insert(takeHandleID(), at: added) }
+        guard let added else { return nil }
+        handleIDs.insert(takeHandleID(), at: added)
         syncHandles()
+        select(added)
         return added
     }
 
     /// Remove `day`'s end, so the day joins the next one.
     public func removeDayEnd(_ day: Int) {
+        settle()
         guard commit({ $0.removeDayEnd(day) }) else { return }
         handleIDs.remove(at: day)
+        if selectedDay == day { selectedDay = nil }
         syncHandles()
     }
 
@@ -113,6 +171,14 @@ public final class TripDayEditorModel {
             trip.renameDay(day, to: title)
             return true
         }
+    }
+
+    /// End the day nearest `stop` there: the map callout's action.
+    public func endDay(at stop: PlacedStop) {
+        settle()
+        guard let day = trip.day(thatCanEndAt: stop) else { return }
+        commit { $0.endDay(day, at: stop) }
+        syncHandles()
     }
 
     /// The stops near `day`'s end, for the stops sheet. A pick ends the day at the stop.
@@ -125,27 +191,44 @@ public final class TripDayEditorModel {
     }
 
     public func undo() {
+        settle()
         guard let previous = undone.popLast() else { return }
         snapTask?.cancel()
+        handles.cancelPlacing()
         trip = previous
+        if let day = selectedDay, day >= trip.dayCount - 1 { selectedDay = nil }
         syncHandles()
     }
 
     public func save() {
+        settle()
         snapTask?.cancel()
         onSave(trip)
     }
 
     // MARK: Mechanics
 
+    /// A finger still on a handle lifts first: its move commits before any other change, so
+    /// the change applies to the day ends the rider sees.
+    private func settle() {
+        handles.end()
+    }
+
     private func handle(_ event: LineMarkerEvent) {
         switch event {
-        case .began:
-            break
-        case .moved:
-            stats = line.dayStats(ends: handles.markers.map(\.distance), bikeType: trip.bikeType)
+        case .began(let id):
+            if let day = day(of: id) {
+                selectedDay = day
+                handles.focus(on: id)
+            }
+        case .moved(let id, _):
+            // Only the day that ends here and the day after it change.
+            guard let day = day(of: id) else { return }
+            let all = line.dayStats(ends: handles.markers.map(\.distance), bikeType: trip.bikeType)
+            live.days = [day: all[day], day + 1: all[day + 1]]
         case .ended(let id, let distance):
-            guard let day = handleIDs.firstIndex(of: id) else { return }
+            guard let day = day(of: id) else { return }
+            live.days = [:]
             commit { $0.moveDayEnd(day, to: distance) }
             syncHandles(animated: false)
         }
@@ -164,8 +247,10 @@ public final class TripDayEditorModel {
 
     /// Balance at once with the stops known now, then again with the stops near the new day
     /// ends once they arrive. One undo step for both. The second pass lands only while the day
-    /// ends still sit where the first put them; a place name written meanwhile does not count.
+    /// ends still sit where the first put them and no finger holds a handle; a place name
+    /// written meanwhile does not count.
     private func balance(_ apply: @escaping (inout Trip, [PlacedStop]) -> Void) {
+        settle()
         snapTask?.cancel()
         let known = handles.stops
         commit { trip in
@@ -177,7 +262,8 @@ public final class TripDayEditorModel {
         snapTask = Task { [weak self] in
             guard let self else { return }
             let found = await self.candidates(near: Array(ends.dropLast()))
-            guard !Task.isCancelled, self.trip.dayEnds.map(\.distance) == ends else { return }
+            guard !Task.isCancelled, self.handles.activeID == nil, self.trip.dayEnds.map(\.distance) == ends
+            else { return }
             self.commit(undoable: false) { trip in
                 apply(&trip, found)
                 return true
@@ -201,8 +287,10 @@ public final class TripDayEditorModel {
     }
 
     /// The handles follow the trip. A balance, an undo, an add or a remove glides; a release
-    /// leaves the handle where the finger left it.
+    /// leaves the handle where the finger left it. A finger still on a handle lifts first, so
+    /// its move is in the trip the handles are read from.
     private func syncHandles(animated: Bool = true) {
+        handles.end()
         if handleIDs.count != trip.dayCount - 1 { handleIDs = (1..<max(trip.dayCount, 1)).map { _ in takeHandleID() } }
         removeBlockers = (0..<trip.dayCount).map { trip.removeDayEndBlocker($0, on: line) }
         let markers = trip.dayEnds.dropLast().enumerated().map { day, end in
@@ -216,9 +304,6 @@ public final class TripDayEditorModel {
         }
         stats = line.dayStats(ends: markers.map(\.distance), bikeType: trip.bikeType)
     }
-
-    /// The day the handle belongs to.
-    public func day(of handle: LineMarker.ID) -> Int? { handleIDs.firstIndex(of: handle) }
 
     private func takeHandleID() -> Int {
         defer { nextHandleID += 1 }

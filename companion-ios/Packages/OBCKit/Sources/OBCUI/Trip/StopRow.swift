@@ -33,6 +33,16 @@ public struct StopIcon: View {
         }
     }
 
+    /// The kind as a word: "Hotel".
+    static func name(_ kind: Stop.Kind) -> String {
+        switch kind {
+        case .campsite: "Campsite"
+        case .hotel: "Hotel"
+        case .waypoint: "Waypoint"
+        case .place: "Place"
+        }
+    }
+
     static func color(_ kind: Stop.Kind) -> Color {
         switch kind {
         case .campsite: OBCTheme.forest
