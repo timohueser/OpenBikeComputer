@@ -615,6 +615,7 @@ fn an_approach_splice_is_the_leg_then_the_whole_route() {
     let spliced = RouteReader::new(&idx, &src);
     assert_eq!(idx.name(), "To start · Road trip", "the Routes list tells it from the route");
     assert!(!idx.has_unresolved_avoidance(), "an approach avoids nothing");
+    assert_eq!(idx.bike_type(), BikeType::Touring, "an approach keeps the route's type, not the leg's");
     assert!(
         stats.total_distance_m.abs_diff(leg_m + route_m) <= 2,
         "length {} is the leg {leg_m} plus the route {route_m}",
