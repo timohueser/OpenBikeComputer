@@ -48,7 +48,7 @@ pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &m
 }
 
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
-    app.set_rides(rides.catalog());
+    app.set_rides(rides.catalog(), rides.trip_names());
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 

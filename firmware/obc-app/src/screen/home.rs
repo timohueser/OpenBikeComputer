@@ -9,7 +9,6 @@
 use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
-use obc_reader::weekday_from_ymd;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -19,16 +18,10 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::settings::DateTime;
 use crate::wall_clock::MinuteTicker;
-use crate::Msg;
 
 use super::vocab::chrome::{ble_glyph, BLE_GLYPH_W};
-use super::vocab::fmt::{clock_hm, DATE_MONTHS};
+use super::vocab::fmt::{clock_hm, write_date_weekday};
 use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
-
-/// The seven weekday-abbreviation catalog keys, Monday-first: the order [`weekday_from_ymd`]
-/// returns.
-const DATE_WEEKDAYS: [Msg; 7] =
-    [Msg::DateMon, Msg::DateTue, Msg::DateWed, Msg::DateThu, Msg::DateFri, Msg::DateSat, Msg::DateSun];
 
 #[derive(Debug, Default)]
 pub struct HomeScreen {
@@ -86,9 +79,7 @@ impl HomeScreen {
         // no trusted time behind it misleads.
         if rx.clock_set {
             let mut date: heapless::String<16> = heapless::String::new();
-            let wd = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day) as usize;
-            let mon = (rx.now.month.clamp(1, 12) - 1) as usize;
-            let _ = write!(date, "{} {} {}", rx.t(DATE_WEEKDAYS[wd]), rx.now.day, rx.t(DATE_MONTHS[mon]));
+            write_date_weekday(&mut date, &rx.now, rx.settings.language);
             let date_y = clock_top + Font::Huge.cap_bottom() as i32 + 6;
             cv.text(&date, Point::new(w / 2, date_y), Font::Label, TextAlign::Center, palette::CONTOUR);
         }
