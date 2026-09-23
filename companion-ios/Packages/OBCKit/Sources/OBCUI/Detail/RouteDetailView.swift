@@ -65,8 +65,9 @@ public struct RouteDetailView: View {
 
                 OBCStatStrip(model.stats)
 
-                if case .planned = model.dressing {
-                    bikeTypeRow
+                switch model.dressing {
+                case .planned, .tracked: bikeTypeRow
+                case .imported: EmptyView()
                 }
 
                 if !model.sensorRows.isEmpty {
