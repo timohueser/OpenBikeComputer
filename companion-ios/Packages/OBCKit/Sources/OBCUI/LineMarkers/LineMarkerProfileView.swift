@@ -144,7 +144,9 @@ struct LineMarkerProfileView: View {
 
             var line = Path()
             line.addLines(points)
-            context.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+            let dash: [CGFloat] = model.dashedSegments.contains(segment) ? [4, 6] : []
+            context.stroke(line, with: .color(color), style: StrokeStyle(
+                lineWidth: 2.2, lineCap: .round, lineJoin: .round, dash: dash))
         }
     }
 }
