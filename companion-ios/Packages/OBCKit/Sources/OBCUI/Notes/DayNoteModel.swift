@@ -99,13 +99,14 @@ public final class DayNoteModel {
         library.saveRideJournal(journal, thumbnails: [:], for: ride.id)
     }
 
-    /// The day's start and end places: the trip's day ends when the phone has the trip, else the
-    /// localities of the ride's first and last points.
+    /// The day's start and end places: the trip's names when the phone has the trip, else the
+    /// localities of the ride's first and last points. A day after a transfer starts at the
+    /// ride's own start.
     private func places() async -> (String?, String?) {
         var from: String?, to: String?
         if let day = ride.trip, let trip = library.trips().first(where: { $0.key == day.key }),
            day.dayIndex < trip.dayEnds.count {
-            from = day.dayIndex == 0 ? trip.startName : trip.dayEnds[day.dayIndex - 1].name
+            from = trip.dayStart(day.dayIndex)?.name
             to = trip.dayEnds[day.dayIndex].name
         }
         if let placeName, let first = points.first, let last = points.last {
