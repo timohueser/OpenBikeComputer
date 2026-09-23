@@ -65,6 +65,10 @@ final class RideEditTests: XCTestCase {
         drag(app.otherElements["Trim end"].firstMatch, by: -30)
         XCTAssertTrue(app.staticTexts["rideEdit.summary"].label.hasPrefix("Keeps "))
         snap(app, "edit-trim")
+        app.buttons["rideEdit.merge"].tap()
+        XCTAssertTrue(app.buttons["rideEdit.mergeConfirm"].waitForExistence(timeout: 5), "the toolbar expands")
+        snap(app, "edit-merge-expanded")
+        app.buttons["rideEdit.mergeCancel"].tap()
         app.buttons["rideEdit.split"].tap()
         XCTAssertTrue(app.staticTexts["rideEdit.summary"].label.hasPrefix("Splits at "))
         snap(app, "edit-split")
@@ -88,9 +92,9 @@ final class RideEditTests: XCTestCase {
         // Merge from the suggestion: the second ride joins this one.
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
         suggestion.tap()
-        let merge = app.buttons["Merge"]
-        XCTAssertTrue(merge.waitForExistence(timeout: 5), "the merge asks first")
-        snap(app, "merge-confirm")
+        let merge = app.buttons["detail.mergeSuggestion.merge"]
+        XCTAssertTrue(merge.waitForExistence(timeout: 5), "the row expands and asks first")
+        snap(app, "detail-merge-expanded")
         merge.tap()
         XCTAssertTrue(app.staticTexts["detail.statsLine"].waitForExistence(timeout: 5))
         XCTAssertFalse(suggestion.exists, "the merged ride has no next ride to merge")
