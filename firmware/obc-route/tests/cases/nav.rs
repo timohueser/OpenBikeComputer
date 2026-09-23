@@ -1297,6 +1297,29 @@ fn terrain_fills_every_point_and_the_header_stats() {
     assert_eq!(route.total_distance_m, 4474);
 }
 
+/// An imported copy of a plan measures what the plan measures, whatever heights it carries, so an
+/// easier comparison finds no saving on the same road.
+#[test]
+fn an_imported_copy_of_a_plan_measures_what_the_plan_measured() {
+    use crate::common::{build_obcr, ChunkIn, RouteSpec};
+    use obc_route::easier::Costs;
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
+    let (plan, obcr) = plan_with_elevation(&bytes, &mut Ridge);
+    let (_, planned) = Costs::candidate(&SliceSource(&obcr), [0, plan.total_distance_m], &mut Ridge).unwrap();
+    let points = route_points(&obcr).iter().map(|p| (p.lon, p.lat, 0)).collect();
+    let (imported, _) = build_obcr(&RouteSpec {
+        chunks: &[ChunkIn { points, cum_distance_m: 0, cum_ascent_m: 0 }],
+        totals: (plan.total_distance_m, 0, 0),
+        ..RouteSpec::default()
+    });
+    let source = SliceSource(&imported);
+    let index = RouteIndex::read(&source).unwrap();
+    let map = obc_formats::obcr::RouteSourceKey { store: [0; 16], object: 1, revision: 1 };
+    let copy = Costs::remaining(&RouteReader::new(&index, &source), 0, map, &mut Ridge).unwrap();
+    assert!(planned.elevation_complete && planned.ascent_m > 0);
+    assert_eq!((copy.distance_m, copy.ascent_m), (planned.distance_m, planned.ascent_m));
+}
+
 /// Densification is bounded by ground distance, not by vertex count, so the bound is asserted on
 /// the sampling rather than on the points that survive the decimator.
 #[test]
