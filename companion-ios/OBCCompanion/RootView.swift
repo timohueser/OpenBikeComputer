@@ -379,8 +379,8 @@ struct RootView: View {
                     activity: transferActivity,
                     dressing: .tracked(ride),
                     bikeType: ride.bikeType,
-                    // The full tracklog: the interactive map draws this, never the preview.
-                    rideGeometry: tracked?.points.map(\.coordinate),
+                    // The full tracklog: the interactive map and the profile use it, never the preview.
+                    ridePoints: tracked?.points ?? [],
                     deviceName: mainModel.deviceName,
                     // Phone-side only: the ride stays on the device's card and lands in Recently Deleted.
                     onDelete: {

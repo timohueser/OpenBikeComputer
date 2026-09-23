@@ -20,8 +20,10 @@ public struct RouteStats: Equatable, Sendable {
     /// Grades are measured over windows at least this long, so a single noisy sample cannot
     /// spike the MAX stat.
     public static let gradeWindowMeters = 100.0
+    /// Samples in a profile card.
+    public static let profileSampleCount = 64
 
-    public static func compute(from points: [RoutePoint], profileSampleCount: Int = 64) -> RouteStats {
+    public static func compute(from points: [RoutePoint], profileSampleCount: Int = profileSampleCount) -> RouteStats {
         var cumulative: [Double] = [0]
         cumulative.reserveCapacity(points.count)
         for i in 1..<max(points.count, 1) {
