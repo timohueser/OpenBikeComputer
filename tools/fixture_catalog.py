@@ -133,6 +133,7 @@ def web_assemble() -> dict[str, bytes]:
 
     sidecar = json.loads((ASSEMBLE_FIXTURE / "cells.json").read_text())
     skin_doc = json.loads((ASSEMBLE_FIXTURE / "skin.json").read_text())
+    dusk_doc = json.loads((ASSEMBLE_FIXTURE / "dark-skin.json").read_text())
     terrain_doc = json.loads((ASSEMBLE_FIXTURE / "terrain.json").read_text())
     objects: dict[str, bytes] = {}
 
@@ -150,21 +151,35 @@ def web_assemble() -> dict[str, bytes]:
     )
     schema["routing"] = {**schema.get("routing", {}), "profiles": []}
 
-    skin = {
-        "id": "fixture",
+    def hosted_style(feature_type: str, style: dict) -> dict:
+        def color(value: int | str) -> int:
+            return int(value, 0) if isinstance(value, str) else value
+
+        return {
+            "feature_type": feature_type,
+            "color": color(style["color"]), "weight": style["weight"], "z_index": style["z_index"],
+            "priority": style.get("priority", 1),
+            "line_style": style.get("line_style", "solid"),
+            "fixed_width": style.get("fixed_width", False),
+            "terrain_layer": style.get("terrain_layer", False),
+            "color2": color(style["color2"]) if style.get("color2") is not None else None,
+        }
+
+    light_skin = {
+        "id": "default",
         "name": skin_doc["name"],
         "description": "The cut's own styling, which is what the expected map was stamped with.",
         "version": 1,
         "marker_color": skin_doc["marker_color"],
+        "styles": [hosted_style(FEATURE_TYPES[s["id"]], s) for s in styles],
+    }
+    dark_skin = {
+        "id": dusk_doc["id"], "name": dusk_doc["name"],
+        "description": "The authored dark styling carried by the checked bridge fixture.",
+        "version": 1, "marker_color": dusk_doc["marker_color"],
         "styles": [
-            {
-                "feature_type": FEATURE_TYPES[s["id"]],
-                "color": s["color"], "weight": s["weight"], "z_index": s["z_index"],
-                "priority": s["priority"], "line_style": s["line_style"],
-                "fixed_width": s["fixed_width"], "terrain_layer": s["terrain_layer"],
-                "color2": s["color2"],
-            }
-            for s in styles
+            hosted_style(FEATURE_TYPES[s["id"]], s)
+            for s in sorted(dusk_doc["styles"], key=lambda style: style["id"])
         ],
     }
 
@@ -246,7 +261,7 @@ def web_assemble() -> dict[str, bytes]:
             "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
         },
         "schema": schema,
-        "skins": [skin],
+        "skins": [light_skin, dark_skin],
         "regions": [region],
         "cell_index": cell_index,
         "terrain": terrain,

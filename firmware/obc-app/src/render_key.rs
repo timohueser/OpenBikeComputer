@@ -172,6 +172,7 @@ pub(crate) struct DrawerKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderKey {
     shape: ShapeKey,
+    theme: Option<crate::settings::Theme>,
     home: Option<HomeKey>,
     map: Option<MapKey>,
     stats: Option<StatsKey>,
@@ -198,6 +199,7 @@ impl App {
     pub(crate) fn render_key(&self) -> RenderKey {
         let mut key = RenderKey {
             shape: ShapeKey::new(),
+            theme: None,
             home: None,
             map: None,
             stats: None,
@@ -214,6 +216,9 @@ impl App {
         for screen in self.ui.stack.iter().skip(base) {
             // Cannot overflow: the stack itself is `MAX_DEPTH` long.
             let _ = key.shape.push(screen.row());
+        }
+        if self.ui.stack.iter().skip(base).any(|screen| !matches!(screen, Screen::Home(_))) {
+            key.theme = Some(self.settings().theme);
         }
         if let Some(drawer) = self.drawer_key() {
             key.drawer = Some(drawer);
@@ -391,6 +396,20 @@ mod tests {
     fn an_unchanged_device_answers_the_same_key() {
         let app = App::new(AppState::new(0, 0, 1.0));
         assert_eq!(app.render_key(), app.render_key(), "reading the key must not change it");
+    }
+
+    #[test]
+    fn theme_moves_the_key_only_when_a_themed_layer_is_visible() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.ui.stack.truncate(1);
+        let light_home = app.render_key();
+        app.set_settings(crate::settings::Settings { theme: crate::settings::Theme::Dark, ..*app.settings() });
+        assert_eq!(app.render_key(), light_home, "Home has one fixed screensaver palette");
+
+        let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+        let dark_menu = app.render_key();
+        app.set_settings(crate::settings::Settings { theme: crate::settings::Theme::Light, ..*app.settings() });
+        assert_ne!(app.render_key(), dark_menu, "a themed screen redraws when its palette changes");
     }
 
     /// The same-kind move is the one that needs the shape: swapping the Map for the Detour chooser

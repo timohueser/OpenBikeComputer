@@ -65,6 +65,24 @@ struct TripDayEditsTests {
     }
 
     @Test
+    func editsCarryTheTransferOfADayEnd() {
+        var trip = withTransfer()
+        trip.setTransfer(0, to: .train)
+        trip.evenOut(candidates: [])
+        #expect(trip.dayEnds[0].transfer == .train, "even out leaves the day end at the transfer as it is")
+        trip.addDayEnd(at: 5_000)
+        #expect(trip.dayEnds[1].transfer == .train, "the transfer moves with its day end")
+        trip.moveDayEnd(2, to: 26_000)
+        #expect(trip.dayEnds[1].transfer == .train)
+        var stored = withTransfer()
+        stored.replaceDayEnds(from: trip)
+        #expect(stored.dayEnds.map(\.transfer) == [nil, .train, nil, nil], "Done carries it into the stored trip")
+        var split = trip
+        split.split(into: 2, candidates: [])
+        #expect(split.dayEnds.map(\.transfer) == [nil, nil], "a split makes new days without transfers")
+    }
+
+    @Test
     func evenOutFromAPositionLeavesTheDaysBeforeIt() {
         var trip = threeDays()
         trip.moveDayEnd(0, to: 12_000)

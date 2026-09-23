@@ -57,6 +57,10 @@ map_pois = "POI mapa"
 metric = "Métrico"
 imperial = "Imperial"
 
+[theme]
+light = "Claro"
+dark = "Oscuro"
+
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
 off = "Desact."
@@ -229,6 +233,7 @@ bike_type = "Tipo de bici"
 title = "PANTALLA"
 idle = "Espera"
 brightness = "Brillo"
+theme = "Tema"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]

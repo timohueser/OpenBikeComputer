@@ -742,9 +742,7 @@ test *args:
         ;;
     esac
 
-# The workspace excludes three crates, and rustfmt walks up from each file to find its
-# own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
-# Format everything: the workspace + board crate + bootloader + desktop app (four-step).
+# Format the workspace and each standalone Cargo root.
 [group('build')]
 fmt:
     #!/usr/bin/env bash
@@ -754,6 +752,7 @@ fmt:
     _run cargo fmt --all
     _run cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
+    _run cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
     _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 
 # Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.
@@ -821,6 +820,7 @@ check *args:
       step "fmt (workspace)"   cargo fmt --all --check
       step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
       step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
+      step "fmt (sensor mock)" cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml
       step "fmt (desktop app)" cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \

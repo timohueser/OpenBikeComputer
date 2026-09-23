@@ -27,10 +27,9 @@ pub(super) fn draw_side_arrow(cv: &mut impl Surface, at: Point, to_right: bool, 
 
 /// The climb figure on a Label line at `y`: a filled up-triangle at `x`, then `value`. The triangle
 /// is drawn because the device font has no arrow glyph.
-pub(super) fn draw_climb_figure(cv: &mut impl Surface, x: i32, y: i32, value: &str) {
-    use super::palette::INK;
-    cv.triangle(Point::new(x, y + 18), Point::new(x + 7, y + 6), Point::new(x + 14, y + 18), INK);
-    cv.text(value, Point::new(x + CLIMB_TEXT_DX, y), Font::Label, TextAlign::Left, INK);
+pub(super) fn draw_climb_figure(cv: &mut impl Surface, x: i32, y: i32, value: &str, color: u16) {
+    cv.triangle(Point::new(x, y + 18), Point::new(x + 7, y + 6), Point::new(x + 14, y + 18), color);
+    cv.text(value, Point::new(x + CLIMB_TEXT_DX, y), Font::Label, TextAlign::Left, color);
 }
 
 /// The climb figure's text offset from its triangle's left edge.

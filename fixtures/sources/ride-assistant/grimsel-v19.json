@@ -1,0 +1,106 @@
+{
+  "schema": 3,
+  "package": "sim-grimsel",
+  "archive": {
+    "bytes": 4203719,
+    "sha256": "52f5ef7d1f6ab92d7a05183c5e4c026dab4e0c751c0ec48829d7ffad6e849092"
+  },
+  "producer": {
+    "source_commit": "e0a047c6c",
+    "executables_sha256": {
+      "obc-pack": "a73373000d77ec3ed7be073fd32d364b5557dca5be1647050de2e08025a48d68"
+    }
+  },
+  "bounds_lon_lat": [
+    8.15034,
+    46.48261,
+    8.46007,
+    46.7207
+  ],
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+  },
+  "source_pbf": {
+    "path": "switzerland.osm.pbf",
+    "bytes": 545916978,
+    "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
+  },
+  "map": {
+    "bytes": 4802025,
+    "sha256": "0c9703fd13c193c4508ea62db4949b92bddb99d9a8b3ba9ac6627b132c849c17",
+    "obcm_version": 19,
+    "settlement_records": 19,
+    "landmark_records": 7,
+    "landmark_article_variants": 17,
+    "landmark_photos": 2,
+    "peak_associations": [
+      {
+        "osm_node_id": 1372219824,
+        "name": "M\u00f6nch",
+        "variants": 4,
+        "photo": true
+      }
+    ],
+    "format_upgrade": {
+      "input_sha256": "8b7b72c99286e86a89bb25398e0b646eb55d1a4f0e69ee36ce730fafc90bf712",
+      "input_obcm_version": 18,
+      "dark_skin": {
+        "path": "builder/presets/skins/dusk.json",
+        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+      },
+      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
+      "transformer": {
+        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
+        "name": "upgrade_obcm_v18_to_v19.py"
+      }
+    }
+  },
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
+  "recipe": "OBC_GRIMSEL_LANDMARKS=LANDMARKS/content.json OBC_GRIMSEL_PEAKS=PEAKS/peaks.json OBC_FIXTURE_BUILD_DIR=OUTPUT fixtures/build-map-package.sh grimsel PINNED/switzerland.osm.pbf",
+  "landmark_content_sha256": "07a318fa4c1891960d04e9c86b0ee0e24259cdc3f44058815b77db1e02675dc2",
+  "peak_content_sha256": "5674902c8beade7683787cc157618ed60636517dd012643f49cc8b97a2ab9b66",
+  "terrain": {
+    "bytes": 786560,
+    "sha256": "ebc0d3972d9a6faa74708ce6478223e61351cba5167a66c097e066a62995a96f",
+    "source_package_sha256": "30b6db6e9a79f96ff0ad236646b7cf5fd73b41b3b0a01c54c0d659991bd7d7c7",
+    "policy": "Byte-identical sidecar to the prior registered map."
+  }
+}

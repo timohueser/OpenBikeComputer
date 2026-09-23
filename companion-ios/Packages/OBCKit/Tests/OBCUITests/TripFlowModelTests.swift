@@ -47,6 +47,31 @@ struct TripFlowModelTests {
         #expect(model.plannedItems.map(\.id).contains("trip:\(id.rawValue)"))
     }
 
+    /// The trip review's offer evens out the days after where the ride ended: the day ends before
+    /// it stay, and the rest share the line.
+    @Test
+    func evenOutDaysFromAPositionBalancesTheRest() async {
+        let (model, _) = makeModel()
+        let points = stride(from: 0.0, through: 30_000, by: 100).map {
+            RoutePoint(coordinate: Coordinate(latitude: 46.5, longitude: 8 + $0 / (111_320 * cos(46.5 * Double.pi / 180))))
+        }
+        let id = model.createTrip(name: "Long", files: [points])!
+        let editor = model.dayEditor(id, isSplitMode: true)!
+        editor.setDayCount(3)
+        let first = editor.handles.markers[0].id
+        editor.handles.begin(first)
+        editor.handles.move(first, to: 12_000)
+        editor.handles.end()
+        editor.save()
+        #expect(abs(model.trip(id)!.dayEnds[0].distance - 12_000) < 1)
+
+        await model.evenOutDays(id, from: 12_000)
+        let ends = model.trip(id)!.dayEnds.map(\.distance)
+        #expect(abs(ends[0] - 12_000) < 1, "the day that ended early stays")
+        #expect(abs(ends[1] - 21_000) < 1, "the rest is shared equally")
+        #expect(ends.count == 3)
+    }
+
     /// Done writes the editor's day ends into the trip as it is then: a change that landed while
     /// the editor was open stays.
     @Test

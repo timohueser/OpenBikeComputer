@@ -461,6 +461,8 @@ struct RootView: View {
                         path.removeSubrange(index...)
                     }
                 },
+                onOpenRide: { path.append(.ride(id: $0)) },
+                onEvenOut: { offer in Task { await mainModel.evenOutDays(id, from: offer.fixedBefore) } },
                 onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) }
             )
         case .dayEditor(let id, let isSplitMode):

@@ -338,7 +338,7 @@ impl StatisticsScreen {
             // the caption, so it has its own drawer.
             match placed.field.category() {
                 Some(cat) => {
-                    category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, INK);
+                    category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, SUBTEXT, INK);
                 }
                 None => tile(
                     cv,
@@ -349,6 +349,7 @@ impl StatisticsScreen {
                     cell.arrow,
                     cell.value_align,
                     PARCHMENT_SHADE,
+                    SUBTEXT,
                     INK,
                 ),
             }

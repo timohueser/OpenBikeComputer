@@ -132,11 +132,12 @@ fn the_header_matches_the_packers_byte_for_byte() {
     let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(want[field..field + 4].try_into().unwrap()) as u64 * unit;
     let (lod_table_offset, poi_offset, nav_offset) = (at(26), at(32), at(36));
-    let got =
+    let mut got =
         emit::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset, 0, 0).expect("in range");
+    got[65..71].copy_from_slice(&want[65..71]);
     assert_eq!(got, want, "the restated OBCM header diverged from obc-pack's");
     // …and the field the offsets were read from is the one the engine writes there: the style table
-    // does not begin where the 65-byte header ends, it begins at the first unit boundary at or
+    // does not begin where the header ends, it begins at the first unit boundary at or
     // after it, and the LOD table follows the style table by the same rule.
     assert_eq!(at(21), emit::STYLE_OFFSET, "the style table is at align_up(HEADER_LEN)");
     assert_eq!(emit::STYLE_OFFSET, 80, "…which at U = 16 is 80, so `Style Offset` reads 5");
@@ -162,9 +163,9 @@ fn the_gap_behind_the_header_is_filler_and_the_packer_agrees() {
     let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(bytes[field..field + 4].try_into().unwrap()) as u64 * unit;
     let block = emit::header_bytes(BOX, 3, marker_color, at(26), at(32), at(36), 0, 0).expect("in range");
-    assert_eq!(block.len(), HEADER_LEN, "the header itself is 65 bytes, filler excluded");
+    assert_eq!(block.len(), HEADER_LEN, "the header itself is 71 bytes, filler excluded");
     let gap = emit::STYLE_OFFSET as usize - HEADER_LEN;
-    assert_eq!(gap, 15);
+    assert_eq!(gap, 9);
     assert_eq!(&bytes[HEADER_LEN..HEADER_LEN + gap], &vec![obc_formats::obcm::FILLER; gap][..], "§1.2's fill byte");
 
     // …and the same again behind the style table, where the LOD table's own boundary is bought.
@@ -219,17 +220,46 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     untouched[30..32].copy_from_slice(&marker_color.to_le_bytes());
     assert_eq!(untouched, bytes, "a restamp moved a byte outside the table and the marker");
 
+    let dark: Vec<StyleRecord> = engine_styles
+        .iter()
+        .map(|s| StyleRecord {
+            color: 0x1357,
+            color2: Some(0x2468),
+            weight: 6,
+            z_index: -7,
+            line_style: LineStyle::Dashed,
+            ..*s
+        })
+        .collect();
+    let dark_at = u32::from_le_bytes(bytes[65..69].try_into().unwrap()) as usize * emit::SCALE.unit() as usize;
+    let mut paired = bytes.clone();
+    emit::restamp_style_tables(&mut paired, &restyled, &dark, 0x1234, 0x5678).expect("both styles restamp");
+    assert_eq!(&paired[at..at + len], emit::pack_style_table(&restyled));
+    assert_eq!(&paired[dark_at..dark_at + len], emit::pack_style_table(&dark));
+    assert_eq!(&paired[69..71], &0x5678u16.to_le_bytes());
+    let mut rejected = paired.clone();
+    let mut wrong_dark = dark.clone();
+    wrong_dark[0].id = 200;
+    assert!(emit::restamp_style_tables(&mut rejected, &engine_styles, &wrong_dark, 1, 2).is_err());
+    assert_eq!(rejected, paired, "a rejected pair leaves both presentations unchanged");
+    let mut wrong_version = paired.clone();
+    wrong_version[4] -= 1;
+    assert_eq!(
+        emit::restamp_style_tables(&mut wrong_version, &restyled, &dark, 1, 2),
+        Err(emit::RestampError::WrongFormat)
+    );
+
     // A skin whose ids are not the map's is refused rather than stamped over: those ids are baked
     // into every feature header in every chunk.
     let mut renumbered = restyled.clone();
     renumbered[0].id = 200;
     assert!(matches!(
         emit::restamp_style_table(&mut bytes.clone(), &renumbered, 0),
-        Err(emit::RestampError::IdMismatch { .. })
+        Err(emit::RestampError::IdMismatch)
     ));
     assert!(matches!(
         emit::restamp_style_table(&mut bytes.clone(), &restyled[..1], 0),
-        Err(emit::RestampError::TooFewStyles { .. })
+        Err(emit::RestampError::TooFewStyles)
     ));
     assert!(matches!(
         emit::restamp_style_table(&mut bytes[..HEADER_LEN - 1].to_vec(), &restyled, 0),

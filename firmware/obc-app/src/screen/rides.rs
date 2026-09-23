@@ -204,14 +204,20 @@ impl RidesScreen {
                         INK,
                     );
                     if ride.synced {
-                        row_check(cv, mark, if row.selected { INK } else { LINE2 });
+                        row_check(cv, mark, if row.selected { ON_ACCENT } else { LINE2 });
                     }
                     let mut dist: heapless::String<12> = heapless::String::new();
                     write_distance_spaced(&mut dist, ride.distance_m, units);
                     push_item(&mut line2, &dist, two_line::line2_right(&row) - x);
                 }
             }
-            cv.text(&line2, Point::new(x, two_line::line2_y(&row)), LINE2_FONT, TextAlign::Left, LINE2);
+            cv.text(
+                &line2,
+                Point::new(x, two_line::line2_y(&row)),
+                LINE2_FONT,
+                TextAlign::Left,
+                two_line::row_color(&row, LINE2),
+            );
         });
     }
 }

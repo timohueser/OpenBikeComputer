@@ -207,7 +207,7 @@ impl PeakViewScreen {
         draw_compass(cv, rx.w, heading_q4, profile.horizontal_fov_q4(), mode);
         if matches!(self.status, Status::Building(_)) {
             for x in [rx.w - 18, rx.w - 13, rx.w - 8] {
-                cv.fill(rect(x, COMPASS_H - 8, 2, 2), palette::PARCHMENT);
+                cv.fill(rect(x, COMPASS_H - 8, 2, 2), palette::BAR_TEXT);
             }
         }
         let chart_bottom = rx.h - LEDGER_H;
@@ -277,7 +277,7 @@ fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32, mode: 
             _ => None,
         };
         if let Some(label) = cardinal {
-            cv.text(label, Point::new(x, 2), Font::Label, TextAlign::Center, palette::PARCHMENT);
+            cv.text(label, Point::new(x, 2), Font::Label, TextAlign::Center, palette::BAR_TEXT);
         } else {
             cv.vline(x, 22, 7, 1, palette::WOOD_LIGHT);
         }
@@ -285,7 +285,7 @@ fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32, mode: 
     let mut heading: heapless::String<8> = heapless::String::new();
     let _ = write!(heading, "{:03}°", (heading_q4 as u32 + 2) / 4 % 360);
     cv.fill(rect(w / 2 - 27, 0, 54, 24), palette::AMBER);
-    cv.text(&heading, Point::new(w / 2, 1), Font::Label, TextAlign::Center, palette::INK);
+    cv.text(&heading, Point::new(w / 2, 1), Font::Label, TextAlign::Center, palette::ON_ACCENT);
     cv.triangle(
         Point::new(w / 2, COMPASS_H - 1),
         Point::new(w / 2 - 5, COMPASS_H - 8),
@@ -294,7 +294,7 @@ fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32, mode: 
     );
     if let Some(mode) = mode {
         cv.fill(rect(0, 0, w / 2 - 28, 24), palette::WOOD);
-        cv.text(mode, Point::new(4, 1), Font::Label, TextAlign::Left, palette::PARCHMENT);
+        cv.text(mode, Point::new(4, 1), Font::Label, TextAlign::Left, palette::BAR_TEXT);
     }
 }
 
@@ -385,7 +385,7 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
     let name_budget = ledger_budget - if info { 2 * Font::Label.char_width() as i32 } else { 0 };
     if info {
         cv.disc(Point::new(rx.w - 16, top + 17), 9, palette::WOOD);
-        cv.text("i", Point::new(rx.w - 16, top + 5), Font::Label, TextAlign::Center, palette::PARCHMENT);
+        cv.text("i", Point::new(rx.w - 16, top + 5), Font::Label, TextAlign::Center, palette::BAR_TEXT);
     }
     let name_row = rect(10, top + 5, rx.w - if info { 44 } else { 20 }, Font::Label.line_height() as i32);
     let name = rx.marquee.fit(peak.name.as_str(), name_budget, Font::Label, Some(name_row));

@@ -5,14 +5,15 @@ import { openLiveSkinPreview, renderSkinPreviewFrames, type LiveSkinPreview } fr
 import { canonicalSchema, canonicalSkin } from "./testdata";
 import { cloneSkin } from "./custom";
 
-const bridge = vi.hoisted(() => ({ open: vi.fn(), setSkin: vi.fn() }));
+const bridge = vi.hoisted(() => ({ open: vi.fn(), setStyles: vi.fn(), setTheme: vi.fn() }));
 vi.mock("./pkg/obc_skin_preview.js", () => ({
     default: vi.fn(),
     SkinPreview: class {
         width = 2;
         height = 2;
         constructor() { bridge.open(); }
-        set_skin = bridge.setSkin;
+        set_styles = bridge.setStyles;
+        set_theme = bridge.setTheme;
     },
 }));
 
@@ -27,10 +28,11 @@ function fakePreview(): LiveSkinPreview & { shared: Uint8ClampedArray } {
         width: 2,
         height: 2,
         shared,
-        setSkin(next) {
+        setStyles(next) {
             skin = next;
             shared.fill(next.includes('"id":"blue"') ? 0x22 : 0x11);
         },
+        setTheme: vi.fn(),
         panBy: vi.fn(),
         zoomAt: vi.fn(),
         resetCamera: vi.fn(),
@@ -93,7 +95,7 @@ describe("renderSkinPreviewFrames", () => {
         expect(openEmpty).not.toHaveBeenCalled();
 
         const preview = fakePreview();
-        preview.setSkin = () => {
+        preview.setStyles = () => {
             throw new Error("bad saved skin");
         };
         await expect(renderSkinPreviewFrames("schema", [skin("bad")], { open: async () => preview })).rejects.toThrow(
@@ -110,12 +112,12 @@ describe("live preview skin admission", () => {
         const fetchImpl = vi.fn();
         const draft = cloneSkin(canonicalSkin);
         draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 128;
-        await expect(openLiveSkinPreview(JSON.stringify(canonicalSchema), JSON.stringify(draft), { fetchImpl }))
+        await expect(openLiveSkinPreview(JSON.stringify(canonicalSchema), JSON.stringify(draft), JSON.stringify(canonicalSkin), { fetchImpl }))
             .rejects.toThrow(/drawing order/i);
         expect(bridge.open).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
         for (const unknown of [{ ...canonicalSchema, id: "unknown" }, { ...canonicalSchema, revision: 2 }]) {
-            await expect(openLiveSkinPreview(JSON.stringify(unknown), JSON.stringify(canonicalSkin), { fetchImpl }))
+            await expect(openLiveSkinPreview(JSON.stringify(unknown), JSON.stringify(canonicalSkin), JSON.stringify(canonicalSkin), { fetchImpl }))
                 .rejects.toThrow(/unavailable for this map schema/);
         }
         expect(bridge.open).not.toHaveBeenCalled();
@@ -123,20 +125,20 @@ describe("live preview skin admission", () => {
     });
 
     it("keeps the last accepted skin when a drawing order is out of range", async () => {
-        bridge.setSkin.mockClear();
-        const preview = await openLiveSkinPreview(JSON.stringify({ schema: canonicalSchema }), JSON.stringify(canonicalSkin), { map: new Uint8Array() });
+        bridge.setStyles.mockClear();
+        const preview = await openLiveSkinPreview(JSON.stringify({ schema: canonicalSchema }), JSON.stringify(canonicalSkin), JSON.stringify(canonicalSkin), { map: new Uint8Array() });
         const draft = cloneSkin(canonicalSkin);
         const water = draft.styles.find((style) => style.feature_type === "natural.water")!;
         water.z_index = 16;
-        preview.setSkin(JSON.stringify(draft));
-        expect(bridge.setSkin).toHaveBeenCalledTimes(1);
+        preview.setStyles(JSON.stringify(draft), JSON.stringify(canonicalSkin));
+        expect(bridge.setStyles).toHaveBeenCalledTimes(1);
         for (const z of [-129, 128, 1.5]) {
             water.z_index = z;
-            expect(() => preview.setSkin(JSON.stringify(draft))).toThrow(/drawing order/i);
+            expect(() => preview.setStyles(JSON.stringify(draft), JSON.stringify(canonicalSkin))).toThrow(/drawing order/i);
         }
-        expect(bridge.setSkin).toHaveBeenCalledTimes(1);
+        expect(bridge.setStyles).toHaveBeenCalledTimes(1);
         water.z_index = -128;
-        preview.setSkin(JSON.stringify(draft));
-        expect(bridge.setSkin).toHaveBeenCalledTimes(2);
+        preview.setStyles(JSON.stringify(draft), JSON.stringify(canonicalSkin));
+        expect(bridge.setStyles).toHaveBeenCalledTimes(2);
     });
 });

@@ -6,6 +6,8 @@
 //! one implementor of, so helpers take `&mut impl Surface` and never see the generics. The host
 //! constructs one [`Canvas`] per frame.
 
+use core::cell::Cell;
+
 use embedded_graphics::{prelude::*, primitives::Rectangle};
 
 /// A [`Rectangle`] from top-left `(x, y)` and size `(w, h)`. Negative sizes clamp to 0.
@@ -19,6 +21,9 @@ pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle {
 pub struct Canvas<'a, D, F> {
     target: &'a mut D,
     color_fn: &'a F,
+    /// Optional switch owned by the host's colour policy. Authored raster and map content turn
+    /// it off while it uses the same target conversion, then UI chrome turns it back on.
+    policy_enabled: Option<&'a Cell<bool>>,
     /// Region-scoped repaint bound, `None` on a normal full frame. When set, the
     /// [`Surface`](crate::Surface) impl rejects whole primitives whose bounds miss it before any
     /// rasterizing runs, which is what a pixel-level clip cannot skip. Rejection only, never pixel
@@ -29,7 +34,22 @@ pub struct Canvas<'a, D, F> {
 
 impl<'a, D, F> Canvas<'a, D, F> {
     pub fn new(target: &'a mut D, color_fn: &'a F) -> Self {
-        Canvas { target, color_fn, clip: None }
+        Canvas { target, color_fn, policy_enabled: None, clip: None }
+    }
+
+    /// Construct a canvas whose host colour policy can be bypassed for authored content.
+    pub fn with_policy_switch(target: &'a mut D, color_fn: &'a F, policy_enabled: &'a Cell<bool>) -> Self {
+        Canvas { target, color_fn, policy_enabled: Some(policy_enabled), clip: None }
+    }
+
+    /// Select whether the host's optional UI colour policy applies to subsequent draws.
+    ///
+    /// This does not change the target's required colour conversion. It only controls policy
+    /// captured by `color_fn`, and is a no-op for canvases constructed with [`Canvas::new`].
+    pub fn set_color_policy_enabled(&self, enabled: bool) {
+        if let Some(switch) = self.policy_enabled {
+            switch.set(enabled);
+        }
     }
 
     /// Set or clear the region-scoped repaint bound for the draws that follow. The caller owns the
@@ -57,5 +77,45 @@ impl<'a, D, F> Canvas<'a, D, F> {
     /// policy to [`RenderScratch`](crate::RenderScratch) directly.
     pub fn split(&mut self) -> (&mut D, &F) {
         (self.target, self.color_fn)
+    }
+
+    /// Split out the target, colour conversion, and optional host policy switch.
+    pub fn split_with_policy_switch(&mut self) -> (&mut D, &F, Option<&Cell<bool>>) {
+        (self.target, self.color_fn, self.policy_enabled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use embedded_graphics::{
+        mock_display::MockDisplay,
+        pixelcolor::{raw::RawU16, Rgb565},
+    };
+
+    #[test]
+    fn authored_color_can_bypass_a_ui_policy_collision() {
+        let enabled = Cell::new(true);
+        let authored = Rgb565::new(3, 7, 3);
+        let themed = Rgb565::new(28, 56, 28);
+        let policy = |color| {
+            if enabled.get() && color == authored.into_storage() {
+                themed
+            } else {
+                Rgb565::from(RawU16::new(color))
+            }
+        };
+        let mut target = MockDisplay::new();
+        target.set_allow_overdraw(true);
+        let mut canvas = Canvas::with_policy_switch(&mut target, &policy, &enabled);
+
+        canvas.set_color_policy_enabled(false);
+        canvas.fill(rect(0, 0, 1, 1), authored.into_storage());
+        canvas.set_color_policy_enabled(true);
+        canvas.fill(rect(1, 0, 1, 1), authored.into_storage());
+
+        assert_eq!(target.get_pixel(Point::new(0, 0)), Some(authored));
+        assert_eq!(target.get_pixel(Point::new(1, 0)), Some(themed));
     }
 }

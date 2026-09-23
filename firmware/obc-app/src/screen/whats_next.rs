@@ -85,7 +85,7 @@ impl WhatsNextScreen {
             Font::Label
         };
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        label(cv, &title, 12, if font == Font::Body { 6 } else { 8 }, font, PARCHMENT);
+        label(cv, &title, 12, if font == Font::Body { 6 } else { 8 }, font, BAR_TEXT);
         if a.window.is_none() {
             empty_message(
                 cv,
@@ -123,11 +123,12 @@ fn distance(m: u32, units: crate::settings::Units) -> heapless::String<24> {
     s
 }
 fn icon(cv: &mut impl Surface, category: Option<PoiCategory>, x: i32, y: i32, bg: u16) {
+    let ink = if bg == AMBER { ON_ACCENT } else { INK };
     if let Some(c) = category {
-        super::poi_menu::draw_category_icon(cv, c, Point::new(x, y), INK, bg);
+        super::poi_menu::draw_category_icon(cv, c, Point::new(x, y), ink, bg);
     } else {
-        cv.triangle(Point::new(x, y - 6), Point::new(x - 5, y), Point::new(x + 5, y), WOOD);
-        cv.triangle(Point::new(x, y + 6), Point::new(x - 5, y), Point::new(x + 5, y), WOOD);
+        cv.triangle(Point::new(x, y - 6), Point::new(x - 5, y), Point::new(x + 5, y), ink);
+        cv.triangle(Point::new(x, y + 6), Point::new(x - 5, y), Point::new(x + 5, y), ink);
     }
 }
 fn overview(cv: &mut impl Surface, rx: &Render) {
@@ -137,8 +138,8 @@ fn overview(cv: &mut impl Surface, rx: &Render) {
         label(cv, rx.t(Msg::AheadReadFailed), 14, 108, Font::Body, INK);
         return;
     }
-    cv.triangle(Point::new(217, 18), Point::new(227, 18), Point::new(222, 11), PARCHMENT);
-    cv.triangle(Point::new(217, 25), Point::new(227, 25), Point::new(222, 32), PARCHMENT);
+    cv.triangle(Point::new(217, 18), Point::new(227, 18), Point::new(222, 11), BAR_TEXT);
+    cv.triangle(Point::new(217, 25), Point::new(227, 25), Point::new(222, 32), BAR_TEXT);
     for (x, down) in [(12, false), (130, true)] {
         let mut s = heapless::String::<24>::new();
         if let Some((up, dn)) = a.totals {
@@ -237,7 +238,7 @@ fn overview(cv: &mut impl Surface, rx: &Render) {
         label(cv, text, x + 16, 256, Font::Label, INK);
     }
     cv.round(rect(8, 284, 224, 32), 6, AMBER);
-    cv.text(rx.t(Msg::AheadExplore), Point::new(120, 286), Font::Body, TextAlign::Center, INK);
+    cv.text(rx.t(Msg::AheadExplore), Point::new(120, 286), Font::Body, TextAlign::Center, ON_ACCENT);
 }
 fn row_name<'a>(row: &'a Row, rx: &'a Render) -> &'a str {
     match &row.item {
@@ -263,7 +264,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         cv.fill(rect(208, 20, 4, 8), AMBER);
     }
     if !matches!(a.status, QueryProgress::Ready { coverage_complete: true, .. }) {
-        cv.text("?", Point::new(228, 8), Font::Label, TextAlign::Right, PARCHMENT);
+        cv.text("?", Point::new(228, 8), Font::Label, TextAlign::Right, BAR_TEXT);
     }
     if a.pending() {
         empty_message(cv, rx.t(Msg::AheadLoading), rx.w);
@@ -283,6 +284,8 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         let y = 44 + i as i32 * 67;
         let selected = i == a.selected;
         let bg = if selected { AMBER } else { PARCHMENT };
+        let ink = if selected { ON_ACCENT } else { INK };
+        let subtext = if selected { SUBTEXT_ON_ACCENT } else { SUBTEXT };
         if selected {
             cv.round(rect(8, y, 224, 63), 6, bg);
         }
@@ -296,10 +299,10 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         icon(cv, category, 23, y + 19, bg);
         let name_row = selected.then(|| rect(40, y + 3, 184, Font::Body.line_height() as i32));
         let name = rx.marquee.fit(row_name(row, rx), 184, Font::Body, name_row);
-        label(cv, &name, 40, y + 3, Font::Body, INK);
+        label(cv, &name, 40, y + 3, Font::Body, ink);
         let passed = row.key.distance() < rx.navigation.progress_m;
         if passed {
-            label(cv, rx.t(Msg::AheadPassed), 12, y + 33, Font::Label, SUBTEXT);
+            label(cv, rx.t(Msg::AheadPassed), 12, y + 33, Font::Label, subtext);
         } else {
             label(
                 cv,
@@ -307,7 +310,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
                 12,
                 y + 33,
                 Font::Label,
-                INK,
+                ink,
             );
         }
         let offset = match &row.item {
@@ -319,15 +322,15 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
             .then(|| (distance(offset.unsigned_abs(), rx.settings.units), offset > 0));
         if let Some((d, right)) = &offset {
             let at = Point::new(offset_left(d), y + 33 + Font::Label.cap_mid() as i32);
-            super::poi_display::draw_side_arrow(cv, at, *right, INK);
-            cv.text(d, Point::new(FIGURE_RIGHT, y + 33), Font::Label, TextAlign::Right, INK);
+            super::poi_display::draw_side_arrow(cv, at, *right, ink);
+            cv.text(d, Point::new(FIGURE_RIGHT, y + 33), Font::Label, TextAlign::Right, ink);
         }
         // A climb under 5 m is noise, an unknown climb shows nothing, and the climb to a passed
         // place means nothing.
         if let Some(m) = row.ascent_m.filter(|m| *m >= 5 && !passed) {
             let climb = super::vocab::fmt::elevation_short(Some(m), rx.settings.units);
             if climb_fits(&climb, offset.as_ref().map(|(d, _)| d.as_str())) {
-                super::poi_display::draw_climb_figure(cv, CLIMB_X, y + 33, &climb);
+                super::poi_display::draw_climb_figure(cv, CLIMB_X, y + 33, &climb, ink);
             }
         }
     }

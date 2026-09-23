@@ -128,17 +128,13 @@ fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
     // table is allowed to be a prefix of the schema's assignment; see the module header.
     restamp_style_table(&mut map, &styles, skin.marker_color).map_err(|e| match e {
         RestampError::ShorterThanHeader => "Teningen preview fixture is shorter than the OBCM header".to_string(),
+        RestampError::WrongFormat => "Teningen preview fixture is not the current OBCM format".to_string(),
         RestampError::BadStyleOffset => "Teningen preview fixture has a bad style offset".to_string(),
         RestampError::TableOverflows => "Teningen preview style table overflows".to_string(),
         RestampError::TableTruncated => "Teningen preview style table runs past the file".to_string(),
-        RestampError::TooFewStyles { count, resolved } => {
-            format!("Teningen preview fixture has {count} styles, but skin {:?} resolves to only {resolved}", skin.id)
-        }
-        RestampError::LengthMismatch { count, packed } => {
-            format!("Teningen preview fixture's {count}-style table is not {packed} bytes")
-        }
-        RestampError::IdMismatch { have, want } => {
-            format!("Teningen preview fixture style ids {have:?} do not match skin {:?}'s {want:?}", skin.id)
+        RestampError::TooFewStyles => format!("Teningen preview fixture has more styles than skin {:?}", skin.id),
+        RestampError::IdMismatch => {
+            format!("Teningen preview fixture style ids do not match skin {:?}", skin.id)
         }
     })?;
 

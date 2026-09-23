@@ -1,8 +1,6 @@
 <script lang="ts">
-    // Step 2 on the cell catalog: which skin the assembly is stamped with.
-    // A skin is ~2 KB of style table applied at
-    // assembly time — the one fact worth a line here is that choosing one
-    // never changes the downloaded cells.
+    // Step 2 on the cell catalog: the Light and Dark style tables stamped into
+    // every map. Editing either never changes the downloaded cells.
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import SkinEditor from "../skin/SkinEditor.svelte";
@@ -16,6 +14,9 @@
     let previewUrls = $state<Record<string, string>>({});
     let customPreviewFrames = $state<Record<string, SkinPreviewFrame>>({});
     let editing = $state<SkinEntry | null>(null);
+    let mode = $state<"light" | "dark">("light");
+    const visibleSkins = $derived(mode === "light" ? store.lightSkins : store.darkSkins);
+    const selected = $derived(mode === "light" ? store.lightSkin : store.darkSkin);
 
     $effect(() => {
         let live = true;
@@ -67,21 +68,31 @@
     });
 
     async function removeSelected() {
-        if (!isCustomSkinId(store.skin.id)) return;
-        const doomed = store.skin;
+        if (!isCustomSkinId(selected.id)) return;
+        const doomed = selected;
         const ok = await confirmAction({
             title: `Delete “${doomed.name}”?`,
-            body: "This removes the custom skin from this browser. Hosted skins and downloaded maps are unchanged.",
-            confirmLabel: "Delete skin",
+            body: "This removes the custom style from this browser. Hosted styles and downloaded maps are unchanged.",
+            confirmLabel: "Delete style",
             destructive: true,
         });
         if (ok) store.deleteCustomSkin(doomed.id);
     }
 </script>
 
+<div class="theme-tabs" aria-label="Map style theme">
+    <button type="button" aria-pressed={mode === "light"} class:active={mode === "light"} onclick={() => (mode = "light")}>Light</button>
+    <button type="button" aria-pressed={mode === "dark"} class:active={mode === "dark"} onclick={() => (mode = "dark")}>Dark</button>
+</div>
+<p class="small faint theme-note">Both styles are included. The device follows its display theme.</p>
 <div class="cards">
-    {#each store.skins as skin (skin.id)}
-        <button type="button" class="skin" class:selected={store.skinId === skin.id} onclick={() => (store.skinId = skin.id)}>
+    {#each visibleSkins as skin (skin.id)}
+        <button
+            type="button"
+            class="skin"
+            class:selected={selected.id === skin.id}
+            onclick={() => mode === "light" ? (store.lightSkinId = skin.id) : (store.darkSkinId = skin.id)}
+        >
             {#if isCustomSkinId(skin.id)}
                 {#if customPreviewFrames[skin.id]}
                     <span class="shot">
@@ -113,17 +124,17 @@
     {/each}
 </div>
 <div class="actions">
-    <p class="small faint note">Skins restyle the same cells — changing one never re-downloads anything.</p>
-    {#if isCustomSkinId(store.skin.id)}
+    <p class="small faint note">Styles reuse the same cells — edits never re-download anything.</p>
+    {#if isCustomSkinId(selected.id)}
         <button type="button" class="text-action danger" onclick={removeSelected}>Delete</button>
     {/if}
-    <button type="button" class="btn ghost customize" onclick={() => (editing = store.skin)}>
-        {isCustomSkinId(store.skin.id) ? "Edit skin" : "Customize"}
+    <button type="button" class="btn ghost customize" onclick={() => (editing = selected)}>
+        {isCustomSkinId(selected.id) ? `Edit ${mode}` : `Customize ${mode}`}
     </button>
 </div>
 
 {#if editing}
-    <SkinEditor {store} base={editing} onclose={() => (editing = null)} />
+    <SkinEditor {store} base={editing} theme={mode === "light" ? "Light" : "Dark"} onclose={() => (editing = null)} />
 {/if}
 
 <style>
@@ -131,6 +142,34 @@
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
         gap: 10px;
+    }
+
+    .theme-tabs {
+        display: inline-flex;
+        padding: 3px;
+        border: 1px solid var(--parchment-3);
+        border-radius: 9px;
+        background: var(--parchment-2);
+    }
+
+    .theme-tabs button {
+        min-width: 72px;
+        padding: 6px 12px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--ink-faint);
+        font-weight: 600;
+    }
+
+    .theme-tabs button.active {
+        color: var(--ink);
+        background: var(--panel);
+        box-shadow: 0 1px 4px rgba(27, 36, 23, 0.12);
+    }
+
+    .theme-note {
+        margin: 7px 0 10px;
     }
 
     .skin {

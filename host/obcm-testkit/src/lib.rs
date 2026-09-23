@@ -50,12 +50,14 @@ pub use obc_formats::obcm::{
 };
 use obc_formats::obcm::{
     CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    HEADER_TERRAIN_LENGTH_OFF, HEADER_TERRAIN_OFFSET_OFF, MAGIC, OFFSET_SCALE_DEFAULT, STYLE_DASHED_BIT,
-    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
+    HEADER_DARK_MARKER_COLOR_OFF, HEADER_DARK_STYLE_OFFSET_OFF, HEADER_TERRAIN_LENGTH_OFF, HEADER_TERRAIN_OFFSET_OFF,
+    MAGIC, OFFSET_SCALE_DEFAULT, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
 };
 /// Distinctive (non-default) marker color baked into [`build_file`]'s header, so the
 /// reader's round-trip test is meaningful.
 pub const MARKER: u16 = 0xABCD;
+/// Distinctive dark marker used by the default paired test maps.
+pub const DARK_MARKER: u16 = 0x1234;
 
 // The three helpers below are the whole of the scaled-offset addressing, transcribed from the spec
 // rather than imported from `serialize.rs`: the packer's `align_up`, `filler_len` and `scaled` are
@@ -127,7 +129,7 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
-/// The 49-byte OBCM header, shared by both file builders. The version byte is `VERSION`, so this
+/// The fixed OBCM header, shared by both file builders. The version byte is `VERSION`, so this
 /// builds whatever the reader currently reads.
 ///
 /// `<4sBiiiiIBIHIIBII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
@@ -167,8 +169,23 @@ fn obcm_header(
     f.extend_from_slice(&scaled(terrain_off).to_le_bytes());
     f.extend_from_slice(&scaled(terrain_len).to_le_bytes());
     f.extend_from_slice(&[0; 16]);
+    // The dark presentation is appended after the rest of the map and patched there.
+    f.extend_from_slice(&0u32.to_le_bytes());
+    f.extend_from_slice(&DARK_MARKER.to_le_bytes());
     assert_eq!(f.len(), HEADER_LEN, "header length follows the normative constant");
     f
+}
+
+/// Append a dark style table and patch its header pointer and marker. The default builders call
+/// this with the light styles, while format tests can replace either argument to forge a distinct
+/// but structurally valid presentation.
+pub fn append_dark_styles(map: &mut Vec<u8>, styles: &[Style], marker: u16) -> usize {
+    map.resize(align_up(map.len()), FILLER);
+    let offset = map.len();
+    map.extend_from_slice(&style_table(styles));
+    map[HEADER_DARK_STYLE_OFFSET_OFF..HEADER_DARK_STYLE_OFFSET_OFF + 4].copy_from_slice(&scaled(offset).to_le_bytes());
+    map[HEADER_DARK_MARKER_COLOR_OFF..HEADER_DARK_MARKER_COLOR_OFF + 2].copy_from_slice(&marker.to_le_bytes());
+    offset
 }
 
 /// The header plus the filler that carries it to the style table's unit boundary — the first
@@ -648,6 +665,7 @@ pub fn build_poi_map_with_hours(
     let nav_section_off = f.len();
     f[36..40].copy_from_slice(&scaled(nav_section_off).to_le_bytes());
     f.extend_from_slice(&empty_nav_directory(nav_section_off));
+    append_dark_styles(&mut f, styles, DARK_MARKER);
     f
 }
 
@@ -750,6 +768,7 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
     f.extend_from_slice(&payload);
     f.extend_from_slice(&poi_dir);
     f.extend_from_slice(&empty_nav_directory(nav_section_off));
+    append_dark_styles(&mut f, styles, DARK_MARKER);
     f
 }
 
@@ -810,6 +829,7 @@ pub fn build_priority_tree(
     f.extend_from_slice(&chunk_bytes);
     f.extend_from_slice(&poi_dir);
     f.extend_from_slice(&empty_nav_directory(nav_section_off));
+    append_dark_styles(&mut f, styles, DARK_MARKER);
     f
 }
 

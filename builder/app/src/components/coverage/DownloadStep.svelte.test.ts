@@ -389,7 +389,8 @@ describe("direct assembler delivery", () => {
             terrain: null,
             client: { fetchImpl: globalThis.fetch },
             selection: { parts: [] },
-            skin: { name: "Default" },
+            lightSkin: { name: "Default" },
+            darkSkin: { name: "Dusk" },
             rootBody: "{}",
             holeCells: () => [],
         };
@@ -987,7 +988,8 @@ const store = {
     terrain: null,
     client: { fetchImpl: globalThis.fetch },
     selection: { parts: [] },
-    skin: { name: "Default" },
+    lightSkin: { name: "Default" },
+    darkSkin: { name: "Dusk" },
     rootBody: "{}",
     holeCells: () => [],
 };
