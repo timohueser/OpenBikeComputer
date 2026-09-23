@@ -409,6 +409,14 @@ mod tests {
         // A finish without a trusted clock carries the last dated day forward.
         let p = progress(2, Some(1), &[MON + 1]);
         assert_eq!(trip(0).day_date(2, Some(&p)), Some(MON + 3));
+        // A month-long trip: a Finish past the 32 stored dates stores none, and the day's date
+        // follows the last stored one.
+        let at = TripPosition { day: 40, route: 10, metres: 0 };
+        let mut dates = [0; MAX_TRIP_DAYS];
+        dates[31] = MON + 31;
+        let late = trip(0).finish(Some(&TripProgress { dates, ..progress(0, None, &[]) }), 40, at, MON + 45);
+        assert_eq!(late.dates, dates, "no date past the last slot");
+        assert_eq!(trip(0).day_date(40, Some(&late)), Some(MON + 40));
     }
 
     #[test]
