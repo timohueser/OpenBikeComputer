@@ -23,9 +23,9 @@ extension Trip {
     /// index; a missing or blank name leaves the day to "Day N ‹place›".
     public static func joining(
         _ files: [[RoutePoint]], names: [String?] = [], waypoints: [[Waypoint]] = [],
-        id: TripID, name: String, bikeType: BikeType, now: Date
+        id: TripID, key: UInt64 = Trip.newKey(), name: String, bikeType: BikeType, now: Date
     ) -> Trip {
-        var trip = Trip(id: id, name: name, bikeType: bikeType, addedAt: now)
+        var trip = Trip(id: id, key: key, name: name, bikeType: bikeType, addedAt: now)
         for (index, file) in files.enumerated() {
             trip.append(
                 file, name: index < names.count ? names[index] : nil,

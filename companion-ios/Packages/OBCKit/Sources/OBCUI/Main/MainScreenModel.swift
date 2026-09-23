@@ -928,6 +928,18 @@ public final class MainScreenModel {
         nameDayEnds(id)
     }
 
+    /// Label the transfer after a day, or clear it. Phone-only: no upload carries it.
+    public func setTripTransfer(_ id: TripID, day: Int, to kind: TransferKind?) {
+        guard var trip = trip(id) else { return }
+        trip.setTransfer(day, to: kind)
+        saveEditedTrip(trip)
+    }
+
+    /// The trip review of a trip over the rides as the list shows them. It loads on `start()`.
+    public func tripJournal(_ id: TripID) -> TripJournalModel? {
+        trip(id).map { TripJournalModel(trip: $0, rides: rides, library: library, placeName: placeName) }
+    }
+
     /// The stops of one day end, for the stops sheet. Nil for the last day, which ends at the line
     /// end.
     public func tripStops(_ id: TripID, day: Int, isOnline: Bool) -> TripStopsModel? {

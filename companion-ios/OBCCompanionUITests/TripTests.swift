@@ -64,18 +64,42 @@ final class TripTests: XCTestCase {
         snap(app, "TR6-trip-card")
     }
 
-    /// Tapping the trip card opens the trip page with both days and the Upload trip action,
-    /// enabled because the connected device holds no copy of this trip yet.
+    /// Tapping the trip card opens the trip page with both days, the transfer line between them, and
+    /// the Upload trip action, enabled because the connected device holds no copy of this trip yet.
     @MainActor
     func testDrillIntoTripPage() {
         let app = launch()
         openTrip(app)
 
         XCTAssertTrue(day(app, 1).exists, "second day row missing")
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.transfer.0"].exists, "the two days have a transfer between them")
         let upload = app.buttons["trip.upload"]
         XCTAssertTrue(upload.exists, "Upload trip action missing")
         XCTAssertTrue(upload.isEnabled, "Upload trip must be enabled on a connected device (TR8)")
         snap(app, "TR6-trip-page")
+    }
+
+    /// A tap on the transfer line labels it; None takes the label off again.
+    @MainActor
+    func testLabelATransfer() {
+        let app = launch()
+        openTrip(app)
+
+        let line = app.descendants(matching: .any)["trip.transfer.0"].firstMatch
+        XCTAssertTrue(line.label.hasPrefix("Transfer · "), "an unlabelled transfer: \(line.label)")
+        line.tap()
+        app.buttons["Train"].firstMatch.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Train · '")).firstMatch
+                .waitForExistence(timeout: 5), "the line reads Train")
+        snap(app, "trip-transfer-train")
+
+        app.descendants(matching: .any)["trip.transfer.0"].firstMatch.tap()
+        app.buttons["None"].firstMatch.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Transfer · '")).firstMatch
+                .waitForExistence(timeout: 5), "the label is off again")
     }
 
     /// Rename the trip through the overflow menu.
