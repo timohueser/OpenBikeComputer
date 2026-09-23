@@ -17,6 +17,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::ride::{RideEntry, RideTrip};
 use crate::settings::{DateTime, Units};
+use crate::trip::TripSummary;
 use crate::{CatalogObjectId, Msg, UI_RIDES_CAP};
 
 use super::vocab::chrome::{empty_state, row_check, title_frame, ROW_CHECK_HALF};
@@ -93,6 +94,12 @@ impl RidesScreen {
         self.pin(rides, &rows);
     }
 
+    /// Whether this is a trip's page whose trip has no ride left. The app removes it on a rescan,
+    /// so a delete of the trip's last ride lands on the ride list.
+    pub(crate) fn trip_is_gone(&self, rides: &[RideEntry]) -> bool {
+        matches!(self.scope, Scope::Trip { key } if Folder::gone(rides, key))
+    }
+
     fn pin(&mut self, rides: &[RideEntry], rows: &[Row]) {
         self.sel_id = rows.get(self.selected).map(|&r| identity(rides, r));
     }
@@ -140,10 +147,11 @@ impl RidesScreen {
         match self.scope {
             Scope::TopLevel => title_frame(cv, w, h, rx.t(Msg::RidesTitle), &counter),
             Scope::Trip { key } => {
-                let trip = Folder::of(rides, rx.ride_trips, key);
+                let trip = Folder::of(rides, key);
+                let name = trip_name(rx.trips, rx.ride_trips, key).unwrap_or(rx.t(Msg::RidesTrip));
                 // The title and the counter both keep 14 px from the bar's ends, and 8 px apart.
                 let counter_w = if counter.is_empty() { 0 } else { text_width(&counter, Font::Label) as i32 + 8 };
-                let title = fit(trip.as_ref().map_or("", |t| t.name), w - 28 - counter_w, Font::Body);
+                let title = fit(name, w - 28 - counter_w, Font::Body);
                 title_frame(cv, w, h, &title, &counter);
                 if let Some(trip) = trip {
                     draw_header(cv, w, &trip, units);
@@ -163,11 +171,10 @@ impl RidesScreen {
             let mut line2: heapless::String<48> = heapless::String::new();
             match rows[row.index] {
                 Row::Folder(i) => {
-                    let Some(folder) = rides[i].summary.trip.and_then(|t| Folder::of(rides, rx.ride_trips, t.key()))
-                    else {
-                        return;
-                    };
-                    two_line::name_line(cv, &row, &rx.marquee, folder.name, (x, two_line::name_right(&row)), INK);
+                    let Some(key) = rides[i].summary.trip.map(|t| t.key()) else { return };
+                    let Some(folder) = Folder::of(rides, key) else { return };
+                    let name = trip_name(rx.trips, rx.ride_trips, key).unwrap_or(rx.t(Msg::RidesTrip));
+                    two_line::name_line(cv, &row, &rx.marquee, name, (x, two_line::name_right(&row)), INK);
                     let days = rx.t(if folder.day_count == 1 { Msg::RouteMenuDayOne } else { Msg::RidesDays });
                     let _ = write!(line2, "{} {} {} {days}", folder.days_ridden, rx.t(Msg::RidesOf), folder.day_count);
                     push_item(&mut line2, &whole_distance(folder.distance_m, units), two_line::line2_right(&row) - x);
@@ -232,55 +239,64 @@ fn identity(rides: &[RideEntry], row: Row) -> SelId {
     }
 }
 
-/// Which ride of its trip day the ride at `i` is, in the order of start: 1 for the first.
+/// Which ride of its trip day the ride at `i` is, in the order of start: 1 for the first. Only the
+/// rides of the same plan count, because a re-planned trip keeps its key.
 fn day_ordinal(rides: &[RideEntry], i: usize) -> usize {
     let (ride, id) = (&rides[i].summary, rides[i].id);
     let Some(trip) = ride.trip else { return 1 };
     let earlier = rides
         .iter()
-        .filter(|r| r.summary.trip.is_some_and(|t| t.key() == trip.key() && t.day_index() == trip.day_index()))
+        .filter(|r| r.summary.trip == Some(trip))
         .filter(|r| (r.summary.start_time, r.id) < (ride.start_time, id))
         .count();
     earlier + 1
 }
 
+/// The name of trip `key`: the device's trip, then the ride footers' table. `None` when neither
+/// has it; a day ride's own name is never the trip's.
+fn trip_name<'a>(device: &'a [TripSummary], table: &'a [RideTrip], key: u64) -> Option<&'a str> {
+    let stored = || table.iter().find(|t| t.key == key).map(|t| t.name.as_str());
+    device.iter().find(|t| t.key == key).map(|t| t.name.as_str()).or_else(stored)
+}
+
 /// The facts of one trip folder, over the rides the catalog holds.
-struct Folder<'a> {
-    /// The trip's name, or the newest ride's name when the trip table has none.
-    name: &'a str,
+struct Folder {
+    /// The distinct days ridden of the newest ride's plan.
     days_ridden: u32,
-    /// The day count the newest ride stored.
+    /// The day count the newest ride stored. A re-planned trip keeps its key, so a ride of an
+    /// older plan counts in the totals but not in the days.
     day_count: u8,
     distance_m: u32,
     climb_m: u32,
 }
 
-impl<'a> Folder<'a> {
+impl Folder {
     /// The catalog index of the newest ride of trip `key`.
     fn newest(rides: &[RideEntry], key: u64) -> Option<usize> {
         rides.iter().position(|r| r.summary.trip.is_some_and(|t| t.key() == key))
     }
 
-    fn of(rides: &'a [RideEntry], trips: &'a [RideTrip], key: u64) -> Option<Folder<'a>> {
+    fn of(rides: &[RideEntry], key: u64) -> Option<Folder> {
         let newest = &rides[Self::newest(rides, key)?].summary;
-        let name = trips.iter().find(|t| t.key == key).map_or(newest.name.as_str(), |t| t.name.as_str());
-        let mut folder = Folder {
-            name,
-            days_ridden: 0,
-            day_count: newest.trip.map_or(0, |t| t.day_count()),
-            distance_m: 0,
-            climb_m: 0,
-        };
+        let day_count = newest.trip.map_or(0, |t| t.day_count());
+        let mut folder = Folder { days_ridden: 0, day_count, distance_m: 0, climb_m: 0 };
         let mut days = [0u64; 4];
         for ride in rides.iter().map(|r| &r.summary) {
             let Some(trip) = ride.trip.filter(|t| t.key() == key) else { continue };
-            let day = usize::from(trip.day_index());
-            days[day / 64] |= 1 << (day % 64);
+            if trip.day_count() == day_count {
+                let day = usize::from(trip.day_index());
+                days[day / 64] |= 1 << (day % 64);
+            }
             folder.distance_m = folder.distance_m.saturating_add(ride.distance_m);
             folder.climb_m += u32::from(ride.climb_m);
         }
         folder.days_ridden = days.iter().map(|d| d.count_ones()).sum();
         Some(folder)
+    }
+
+    /// Whether the rides screen of trip `key` has lost its last ride.
+    fn gone(rides: &[RideEntry], key: u64) -> bool {
+        Self::newest(rides, key).is_none()
     }
 }
 
@@ -341,16 +357,20 @@ mod tests {
         }
     }
 
-    /// Five rides, newest first: a loose ride, the second ride of day 2 (index 1), a loose ride,
-    /// the first ride of day 2, and day 1. The trip has three days.
-    fn five() -> [RideEntry; 5] {
+    /// Seven rides, newest first: a loose ride, the second ride of day 2 (index 1), a loose ride,
+    /// the first ride of day 2, and day 1 of the three-day plan. Then two rides of the trip's
+    /// earlier five-day plan, under the same key: day 2 and day 4.
+    fn journal() -> [RideEntry; 7] {
         let day = |d| TripRef::new(ALPS, d, 3);
+        let old = |d| TripRef::new(ALPS, d, 5);
         [
             ride(50, "Evening loop", 5_000, None),
             ride(40, "Day 2 Ulrichen", 4_000, day(1)),
             ride(30, "Commute", 3_000, None),
             ride(20, "Day 2 Ulrichen", 2_000, day(1)),
             ride(10, "Day 1 Andermatt", 1_000, day(0)),
+            ride(8, "Day 2 Ulrichen", 800, old(1)),
+            ride(6, "Day 4 Brig", 600, old(3)),
         ]
     }
 
@@ -363,31 +383,45 @@ mod tests {
 
     #[test]
     fn a_trip_groups_into_one_folder_at_its_newest_ride() {
-        let rides = five();
+        let rides = journal();
         assert_eq!(
             rows(&rides, Scope::TopLevel).as_slice(),
             [Row::Ride(0), Row::Folder(1), Row::Ride(2)],
             "the folder sorts by its newest ride among the loose rides"
         );
-        assert_eq!(rows(&rides, Scope::Trip { key: ALPS }).as_slice(), [Row::Ride(1), Row::Ride(3), Row::Ride(4)]);
+        let trip_rows = rows(&rides, Scope::Trip { key: ALPS });
+        assert_eq!(trip_rows.as_slice(), [Row::Ride(1), Row::Ride(3), Row::Ride(4), Row::Ride(5), Row::Ride(6)]);
 
-        let trips = [RideTrip { key: ALPS, name: heapless::String::try_from("Alps traverse").unwrap() }];
-        let folder = Folder::of(&rides, &trips, ALPS).unwrap();
-        assert_eq!((folder.name, folder.days_ridden, folder.day_count), ("Alps traverse", 2, 3), "2 of 3 days");
-        assert_eq!((folder.distance_m, folder.climb_m), (120_000, 1_500), "the sums of the three rides");
-        assert_eq!(Folder::of(&rides, &[], ALPS).unwrap().name, "Day 2 Ulrichen", "no trip name: the newest ride's");
+        let folder = Folder::of(&rides, ALPS).unwrap();
+        assert_eq!((folder.days_ridden, folder.day_count), (2, 3), "2 of 3 days: the old plan's days do not count");
+        assert_eq!((folder.distance_m, folder.climb_m), (200_000, 2_500), "the sums of all five rides");
+    }
+
+    #[test]
+    fn a_folder_takes_the_device_trip_s_name_then_the_stored_one() {
+        let name = |s: &str| heapless::String::try_from(s).unwrap();
+        // The table is full with keys 1 to 8; the device holds trips 3 and 9.
+        let table: heapless::Vec<RideTrip, 8> = (1..=8).map(|key| RideTrip { key, name: name("Stored") }).collect();
+        let device = [(3, "Renamed"), (9, "Ninth")].map(|(key, trip)| {
+            let input = crate::trip::TripInput { id: key, key, name: trip, start_date: 0, stage_ids: &[] };
+            TripSummary::resolve(&input, &[], &[])
+        });
+        assert_eq!(trip_name(&device, &table, 3), Some("Renamed"), "the device's trip first");
+        assert_eq!(trip_name(&device, &table, 5), Some("Stored"), "then the ride footers' name");
+        assert_eq!(trip_name(&device, &table, 9), Some("Ninth"), "a trip past the table still has its name");
+        assert_eq!(trip_name(&device, &table, 10), None, "never a day ride's name");
     }
 
     #[test]
     fn a_second_ride_of_a_day_takes_its_order_of_start() {
-        let rides = five();
-        let ordinals: heapless::Vec<usize, 5> = (0..rides.len()).map(|i| day_ordinal(&rides, i)).collect();
-        assert_eq!(ordinals.as_slice(), [1, 2, 1, 1, 1], "only the later ride of day 2 is \"(2)\"");
+        let rides = journal();
+        let ordinals: heapless::Vec<usize, 7> = (0..rides.len()).map(|i| day_ordinal(&rides, i)).collect();
+        assert_eq!(ordinals.as_slice(), [1, 2, 1, 1, 1, 1, 1], "only the later ride of day 2 of one plan is \"(2)\"");
     }
 
     #[test]
     fn press_opens_a_folder_then_the_ride_detail() {
-        let rides = five();
+        let rides = journal();
         let mut act = Activity::new(Mode::Idle);
         let mut top = RidesScreen::new();
         run(&mut top, &mut act, &rides, Gesture::Step(1));
@@ -412,7 +446,7 @@ mod tests {
 
     #[test]
     fn remap_follows_identity_and_clamps_on_vanish() {
-        let rides = five();
+        let rides = journal();
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RidesScreen::new();
         run(&mut scr, &mut act, &rides, Gesture::Step(2)); // "Commute"

@@ -359,6 +359,7 @@ no_rides = "Sin salidas"
 no_rides_sub = "Graba una salida"
 of = "de"
 days = "días"
+trip = "Viaje"
 
 # --- Ride detail screen ---
 [ride_detail]

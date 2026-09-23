@@ -15,6 +15,28 @@ use obc_route::{Profile, Window};
 use crate::screen::palette;
 use crate::settings::Units;
 
+/// A whole route's or ride's profile in `area`: the shaded fill, the amber top stroke and the peak
+/// label over the apex, in the headroom above `area`. Without a profile, because the track still
+/// streams in, `loading` holds the band's place, so the page does not jump.
+pub(crate) fn draw_profile(
+    cv: &mut impl Surface,
+    profile: Option<&Profile>,
+    area: Rectangle,
+    units: Units,
+    loading: &str,
+) {
+    let Some(profile) = profile else {
+        let bot = area.top_left.y + area.size.height as i32 - 1;
+        let at = Point::new(area.top_left.x + area.size.width as i32 / 2, (area.top_left.y + bot) / 2 - 9);
+        cv.text(loading, at, Font::Label, TextAlign::Center, palette::SUBTEXT);
+        return;
+    };
+    let band = ElevationBand::whole_route(profile, area);
+    band.fill(cv, palette::PARCHMENT_SHADE);
+    band.stroke(cv, palette::AMBER);
+    band.peak_label(cv, units);
+}
+
 /// How far above the apex (px) the over-the-peak label's text box starts. The caller leaves this
 /// much headroom above the band.
 const PEAK_LABEL_LIFT: i32 = 22;

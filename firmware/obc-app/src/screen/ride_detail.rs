@@ -17,7 +17,7 @@ use obc_render::{
     Canvas, Surface,
 };
 
-use super::vocab::band::ElevationBand;
+use super::vocab::band::draw_profile;
 use super::vocab::chrome::{empty_state, title_chrome, title_frame};
 use super::vocab::fmt::{duration_hms, write_date_weekday};
 use super::vocab::marquee::fit;
@@ -30,7 +30,7 @@ use crate::screen::ScreenTick;
 use crate::settings::{DateTime, Language, Units};
 use crate::{t, Msg};
 
-use super::{palette, Ctx, Render, RenderFrame, Transition};
+use super::{palette, Ctx, RenderFrame, Transition};
 
 /// Page 1's date line under the title bar, and the map band under it.
 const DATE_Y: i32 = 40;
@@ -134,7 +134,9 @@ impl RideDetailScreen {
         let top = rows_top(values.len());
         if profile_page {
             title_frame(cv, w, h, &title, "");
-            draw_profile(cv, rx, top + 4);
+            let area = rect(12, PROFILE_TOP, w - 24, top + 4 - PROFILE_TOP + 1);
+            let loading = rx.t(Msg::RouteOverviewLoadingProfile);
+            draw_profile(cv, rx.ride_profile, area, units, loading);
         } else {
             let track = Track { points: rx.ride_preview, color: TRAIL, end_dot: false };
             draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, top + 4 - MAP_TOP), track, None);
@@ -221,27 +223,6 @@ fn page_two_rows(ride: &RideSummary, units: Units, lang: Language, out: &mut Row
     }
     if let Some(power) = ride.avg_power {
         let _ = out.push((caption(&[avg, t(Msg::TilePwr, lang)]), number(power), "W", None));
-    }
-}
-
-/// The whole ride's profile from [`PROFILE_TOP`] to `bot`, with the high point over its apex.
-fn draw_profile(cv: &mut impl Surface, rx: &Render, bot: i32) {
-    use palette::*;
-    let (x, w) = (12, rx.w - 24);
-    if let Some(profile) = rx.ride_profile {
-        let band = ElevationBand::whole_route(profile, rect(x, PROFILE_TOP, w, bot - PROFILE_TOP + 1));
-        band.fill(cv, PARCHMENT_SHADE);
-        band.stroke(cv, AMBER);
-        band.peak_label(cv, rx.settings.units);
-    } else {
-        // The track still streams in. Keep the band's footprint so the page does not jump.
-        cv.text(
-            rx.t(Msg::RouteOverviewLoadingProfile),
-            Point::new(rx.w / 2, (PROFILE_TOP + bot) / 2 - 9),
-            Font::Label,
-            TextAlign::Center,
-            SUBTEXT,
-        );
     }
 }
 

@@ -1204,6 +1204,8 @@ impl App {
             }
         }
         self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
+        let rides = self.catalogs.rides();
+        self.ui.stack.retain(|s| !matches!(s, Screen::Rides(m) if m.trip_is_gone(rides)));
         self.ui.map_dirty = true;
     }
     /// Apply an exact durable archive row after the complete catalog and metadata reads succeed.
@@ -5626,6 +5628,23 @@ mod tests {
         app.test_start_ride();
         assert!(!app.open_remote_dfu_check(), "deferred while recording");
         assert_eq!(drain_dfu(&mut app), None);
+    }
+
+    #[test]
+    fn deleting_the_last_ride_of_a_trip_returns_to_the_ride_list() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut ride = ride_summary("Day 1 Andermatt");
+        ride.trip = obc_formats::ride::TripRef::new(5, 0, 2);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride }], &[]);
+        let _ = app.ui.stack.push(Screen::Rides(crate::screen::RidesScreen::new()));
+        app.apply_gesture(Gesture::Press); // the folder: the trip's rides
+        app.apply_gesture(Gesture::Press); // the ride detail
+        app.apply_gesture(Gesture::Hold); // the delete, back on the trip's rides
+        assert_eq!(app.activity.take_ride_delete(), Some(0));
+        let depth = app.ui.stack.len();
+        app.set_rides(&[], &[]); // the host's rescan after the delete
+        assert_eq!(app.ui.stack.len(), depth - 1, "the emptied trip page is gone");
+        assert!(matches!(app.top_screen(), Screen::Rides(_)), "the ride list is on top");
     }
 
     #[test]
