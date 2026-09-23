@@ -107,7 +107,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     // MARK: Tracked rides
 
-    public func rideSummaries() -> [RideSummary] {
+    public func archivedRideSummaries() -> [RideSummary] {
         contents(of: ridesDir)
             .compactMap { url -> RideSummary? in
                 guard url.hasDirectoryPath,
@@ -119,26 +119,35 @@ public struct FileLibraryStore: LibraryStore, Sendable {
             .sorted { $0.date > $1.date }
     }
 
-    public func ridePoints(_ id: RideID) -> [RidePoint]? {
+    public func archivedRidePoints(_ id: RideID) -> [RidePoint]? {
         guard let manifest = rideManifest(id),
               let file: RidePointsFile = read(rideDir(id).appendingPathComponent(manifest.pointsFile)),
               file.version == Self.rideSchemaVersion else { return nil }
         return file.points.map(\.domain)
     }
 
-    /// The cache lives outside the ride's archive directory, which holds only archive files, and
-    /// names the points file it was built from: a re-archived ride rebuilds it.
+    /// The cache lives outside the ride's archive directory, which holds only archive files. Its
+    /// key names the points files and the time ranges it was built from, so a re-archived or an
+    /// edited ride rebuilds it.
     public func rideMapLine(_ id: RideID) -> RideMapLine? {
-        guard let manifest = rideManifest(id) else { return nil }
+        let slices = rideViews().first { $0.id == id }?.slices
+        var parts: [String] = []
+        for source in slices?.map(\.source) ?? [id] {
+            guard let manifest = rideManifest(source) else { return nil }
+            parts.append(manifest.pointsFile)
+        }
+        if let slices {
+            parts = zip(parts, slices).map { "\($0) \($1.start.timeIntervalSince1970) \($1.end.timeIntervalSince1970)" }
+        }
+        let key = parts.joined(separator: " | ")
         let url = rideLineURL(id)
-        if let file: RideMapLineFile = read(url), file.pointsFile == manifest.pointsFile,
-           file.version == RideMapLine.formatVersion {
+        if let file: RideMapLineFile = read(url), file.key == key, file.version == RideMapLine.formatVersion {
             return file.domain(id)
         }
         guard let points = ridePoints(id) else { return nil }
         let line = RideMapLine(id: id, points: points)
         ensure(url.deletingLastPathComponent())
-        write(RideMapLineFile(line, pointsFile: manifest.pointsFile), to: url, formatting: [.sortedKeys])
+        write(RideMapLineFile(line, key: key), to: url, formatting: [.sortedKeys])
         return line
     }
 
@@ -234,7 +243,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         }
     }
 
-    public func saveRideSummary(_ summary: RideSummary) {
+    public func saveArchivedRideSummary(_ summary: RideSummary) {
         guard var manifest = rideManifest(summary.id) else { return }
         // A local rename cannot change the archived device identity.
         var updated = summary
@@ -243,7 +252,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         write(manifest, to: rideDir(summary.id).appendingPathComponent("summary.json"))
     }
 
-    public func deleteRide(_ id: RideID) {
+    public func deleteArchivedRide(_ id: RideID) {
         guard rideManifest(id) != nil else { return }
         // The line first: a stop before the folder goes leaves a ride that rebuilds its line.
         try? FileManager.default.removeItem(at: rideLineURL(id))
@@ -307,6 +316,35 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     private func thumbnailURL(_ assetID: String, of id: RideID) -> URL {
         rideDir(id).appendingPathComponent("photo-\(Self.fileSafe(assetID)).jpg")
+    }
+
+    public func rideViews() -> [RideView] {
+        guard let file: RideViewsFile = read(viewsURL), file.version == Self.rideSchemaVersion else { return [] }
+        return file.views.map(\.domain)
+    }
+
+    public func saveRideViews(_ views: [RideView]) {
+        // A removed edit that was no synced ride leaves no line cache behind.
+        let kept = Set(views.map(\.id))
+        for old in rideViews() where !kept.contains(old.id) && rideManifest(old.id) == nil {
+            try? FileManager.default.removeItem(at: rideLineURL(old.id))
+        }
+        ensure(directory)
+        write(RideViewsFile(version: Self.rideSchemaVersion, views: views.map(RideViewDTO.init)), to: viewsURL)
+    }
+
+    public func dismissedMerges() -> Set<RidePair> {
+        guard let file: DismissedMergesFile = read(dismissedMergesURL), file.version == Self.schemaVersion
+        else { return [] }
+        return Set(file.pairs.compactMap { $0.count == 2 ? RidePair(first: RideID($0[0]), second: RideID($0[1])) : nil })
+    }
+
+    public func dismissMerge(_ pair: RidePair) {
+        var pairs = dismissedMerges()
+        guard pairs.insert(pair).inserted else { return }
+        ensure(directory)
+        let rows = pairs.map { [$0.first.rawValue, $0.second.rawValue] }.sorted { $0.lexicographicallyPrecedes($1) }
+        write(DismissedMergesFile(version: Self.schemaVersion, pairs: rows), to: dismissedMergesURL)
     }
 
     public func syncedRideIDs() -> Set<RideID> {
@@ -394,6 +432,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     private var syncedURL: URL { directory.appendingPathComponent("synced-rides.json") }
     private var deletedURL: URL { directory.appendingPathComponent("deleted-rides.json") }
     private var trashedURL: URL { directory.appendingPathComponent("trashed-rides.json") }
+    private var viewsURL: URL { directory.appendingPathComponent("ride-views.json") }
+    private var dismissedMergesURL: URL { directory.appendingPathComponent("dismissed-merges.json") }
 
     private func rideDir(_ id: RideID) -> URL {
         ridesDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true)
@@ -826,12 +866,12 @@ private struct RidePointsFile: Codable {
 
 private struct RideMapLineFile: Codable {
     var version = RideMapLine.formatVersion
-    var pointsFile: String
+    var key: String
     /// Each piece is latitude, longitude pairs, flattened.
     var pieces: [[Double]]
 
-    init(_ line: RideMapLine, pointsFile: String) {
-        self.pointsFile = pointsFile
+    init(_ line: RideMapLine, key: String) {
+        self.key = key
         pieces = line.pieces.map { $0.flatMap { [$0.latitude, $0.longitude] } }
     }
 
@@ -980,4 +1020,38 @@ private struct TrashedRidesFile: Codable {
 
     var version: Int
     var entries: [Entry]
+}
+
+private struct RideViewsFile: Codable {
+    var version: Int
+    var views: [RideViewDTO]
+}
+
+private struct RideViewDTO: Codable {
+    struct Slice: Codable {
+        var source: String
+        var start: Date
+        var end: Date
+    }
+
+    var summary: RideSummaryDTO
+    var slices: [Slice]
+
+    init(_ view: RideView) {
+        summary = RideSummaryDTO(view.summary)
+        slices = view.slices.map { Slice(source: $0.source.rawValue, start: $0.start, end: $0.end) }
+    }
+
+    var domain: RideView {
+        RideView(
+            summary: summary.domain,
+            slices: slices.map { RideSlice(source: RideID($0.source), start: $0.start, end: $0.end) }
+        )
+    }
+}
+
+private struct DismissedMergesFile: Codable {
+    var version: Int
+    /// Each pair is the first ride's id, then the second's.
+    var pairs: [[String]]
 }
