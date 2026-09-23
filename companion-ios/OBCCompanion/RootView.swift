@@ -25,6 +25,8 @@ struct RootView: View {
 
     private let transport: any DeviceTransport
     private let bondStore: any BondStore
+    private let library: any LibraryStore
+    private let photoLibrary: any PhotoLibrary
     /// The proactive-update preferences: the auto-check toggle, the answered ledger and the
     /// last-seen device. Shared with the Settings toggle, so the switch silences what it names.
     private let updateSurface: any UpdateSurfaceStore
@@ -45,6 +47,7 @@ struct RootView: View {
         transport: any DeviceTransport,
         bondStore: any BondStore,
         library: any LibraryStore = InMemoryLibraryStore(),
+        photoLibrary: any PhotoLibrary = PhotoKitLibrary(),
         lastBikeType: LastBikeTypeStore = LastBikeTypeStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
@@ -59,6 +62,8 @@ struct RootView: View {
     ) {
         self.transport = transport
         self.bondStore = bondStore
+        self.library = library
+        self.photoLibrary = photoLibrary
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
@@ -414,6 +419,7 @@ struct RootView: View {
                     // The full tracklog: the interactive map and the profile use it, never the preview.
                     ridePoints: tracked?.points ?? [],
                     rides: mainModel.rides,
+                    photos: (library, photoLibrary),
                     deviceName: mainModel.deviceName,
                     // Phone-side only: the ride stays on the device's card and lands in Recently Deleted.
                     onDelete: {
@@ -424,6 +430,10 @@ struct RootView: View {
                     onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) },
                     rideShareMenu: tracked.map(rideShareMenu(for:))
                 )
+                // The screen's models hold the points they were built with, so an edit of the
+                // ride's points builds them again.
+                .id(tracked.map { [Double($0.points.count), $0.points.first?.timestamp.timeIntervalSince1970 ?? 0,
+                                   $0.points.last?.timestamp.timeIntervalSince1970 ?? 0] })
             }
         case .trip(let id):
             TripDetailView(

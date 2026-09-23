@@ -109,6 +109,8 @@ struct RouteDetailScreen: View {
     private let onAddToTrip: ((TripSelection) -> Void)?
     /// The share button, rides with a tracklog only.
     private let rideShareMenu: RideShareMenu?
+    /// A tracked ride's photos.
+    @State private var photos: RidePhotosModel?
 
     init(
         transport: any DeviceTransport,
@@ -119,6 +121,7 @@ struct RouteDetailScreen: View {
         bikeType: BikeType = .road,
         ridePoints: [RidePoint] = [],
         rides: [RideSummary] = [],
+        photos: (library: any LibraryStore, photoLibrary: any PhotoLibrary)? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
@@ -148,7 +151,16 @@ struct RouteDetailScreen: View {
         self.tripPickerItems = tripPickerItems
         self.onAddToTrip = onAddToTrip
         self.rideShareMenu = rideShareMenu
-        if case .tracked = dressing { isRide = true } else { isRide = false }
+        if case .tracked(let ride) = dressing {
+            isRide = true
+            if let photos {
+                _photos = State(initialValue: RidePhotosModel(
+                    rideID: ride.id, points: ridePoints, library: photos.library, photoLibrary: photos.photoLibrary
+                ))
+            }
+        } else {
+            isRide = false
+        }
     }
 
     var body: some View {
@@ -175,7 +187,8 @@ struct RouteDetailScreen: View {
             onDelete: onDelete,
             onRename: onRename,
             onReverse: onReverse,
-            onBikeTypeChange: onBikeTypeChange
+            onBikeTypeChange: onBikeTypeChange,
+            photos: photos
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
@@ -186,7 +199,7 @@ struct RouteDetailScreen: View {
                 }
             }
             if let rideShareMenu {
-                ToolbarItem(placement: .primaryAction) { rideShareMenu }
+                ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
             }
         }
         .sheet(item: $uploadRequest) { request in
