@@ -29,17 +29,17 @@ route per day. Each day route has the trip's bike type and a name such as "Day 2
 the phone writes a small trip object that lists the day routes in ride order. The navigator on the
 device sees only ordinary routes, so every route feature works on a trip day without extra code.
 The phone sends only the day routes that changed, and it sends the trip object last. An
-interrupted upload thus never leaves a trip that points at nothing.
+interrupted upload so never leaves a trip that points at nothing.
 
 ### Day ends are places
 
 The phone stores a day end as a coordinate with a name, not as a distance. After each change to
-the line (a join, a reverse, a re-route) it projects each day end onto the new line again, near its
-old distance. The old distance keeps a day end on its own leg of an out-and-back line or a loop. A
+the line (a join or a reverse) it projects each day end onto the new line again, near its old
+distance. The old distance keeps a day end on its own leg of an out-and-back line or a loop. A
 day end that is now far from the line is removed.
 
-Reverse turns the direction and the order of the days. Each day end keeps its place and its name,
-with no extra code. A reversed trip is a new trip with its own key, so its progress starts empty.
+Reverse turns the direction and the order of the days. Each day end keeps its place and its name.
+A reversed trip is a new trip with its own key, so its progress starts empty.
 
 ## Planning a trip
 
@@ -68,7 +68,7 @@ The editor has one rule: each action has exactly one way to do it.
   not zoom or scroll. When a loop or an out-and-back shows both legs, the profile shows only the leg
   nearest the map centre.
 - **A day end moves only on the profile.** The rider drags its pin. The pin stays inside the
-  visible stretch and between its neighbours, and the map stands still. To move it further, the
+  visible stretch and between its neighbours, and the map stands still. To move it farther, the
   rider zooms the map out. The figures of the two changed days update during the drag.
 - **A drag on the map pans the map.** Map pins do not move. This keeps the two gestures apart.
 - **Each day has one menu** (the ··· button, or a long press): End at a stop, Rename, Split this
@@ -104,35 +104,27 @@ The trip has one of four fixed bike types, and each day route carries it. The ph
 use the same estimate table for each bike type. So the phone's day estimate is the device's
 estimate for the same day route.
 
-### One router
-
-When the phone must make a new piece of route, it uses the device's router,
-[`obc-route`](src:firmware/obc-route), through
-[`obc-companion-core`](src:apps/obc-companion-core). A route made on the phone is thus the route
-the device would make. The phone does not keep a map. It downloads only the few map cells around
-the request, checks them, assembles a small map in memory and routes over it. The cost is a larger
-app and a download of a few cells the first time the phone routes in an area. A cache keeps the
-cells, so the same area routes again without a connection.
-
 ## Riding a trip on the device
 
 ### The next day
 
 The device keeps one progress record per trip. It writes the record when the rider finishes a ride
 on a trip day: where the ride stopped on the line, the last finished day, and the date of each
-finish. The record never crosses the wire, and a re-upload of the same trip keeps it.
+finish. The record never crosses the wire, and a re-upload of the same trip keeps it. A ride that
+starts on a trip day also makes that trip the active trip.
 
 The next day is the day after the last finished day, or the day of the last position when that is
-further on. The route list shows the trip as one row ("Day 2 next · 3 days", then "Done · 3 days").
-The start card shows the bike type, Start ride and a row for the next day, such as "Day 3 Brig",
-with "Show route" and its distance. That row opens the day's route detail.
+later. The route list shows the trip as one row ("Day 2 next · 3 days", then "Done · 3 days").
+The start card shows the bike type, Start ride and a row for the active trip's next day, such as
+"Day 3 Brig", with "Show route" and its distance. That row opens the day's route detail. After an
+early stop, the row first builds the joined route.
 
 ### Stopping early
 
 A rider does not always reach the planned day end. When the rider finishes 20 km before the end of
 Day 2, Day 3 is next. The device then builds the next day itself: the rest of Day 2, then Day 3. It
-uses the same splice code as detours and visits ([`splice.rs`](src:firmware/obc-route/src/splice.rs)),
-so the navigator receives an ordinary route.
+uses the same splice code as detours and visits
+([`splice.rs`](src:firmware/obc-route/src/splice.rs)), so the navigator receives an ordinary route.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -168,18 +160,18 @@ so the navigator receives an ordinary route.
 <figcaption>The device makes one ordinary route from the early stop to the end of Day 3. A stop within the last 500 m of a day, or a transfer after it, gives the next day as it is.</figcaption>
 </figure>
 
-The alternative was one long route with a window on it. Every consumer of a route total would then
-have to know about the window, so it is not used.
+The device does not load one long route with a window on it: every consumer of a route total
+would then have to know the window.
 
-Other cases follow the same rule. When the rider rides past the day end into Day 3 and finishes
-there, Day 3 is next with less to ride. When a ride on "rest of Day 2 plus Day 3" ends before it
-reaches Day 3, it finishes Day 2, and Day 3 stays next. Across a transfer the device never joins two days: the
-next day loads as it is.
+When the rider keeps riding past the day end onto Day 3's route and finishes there, the position
+moves onto Day 3. Day 3 is next and loads as it is. When a ride on "rest of Day 2 plus Day 3" ends
+before it reaches Day 3, it finishes Day 2, and Day 3 stays next. Across a transfer the device
+never joins two days: the next day loads as it is.
 
 ### Arriving at the end
 
-Nothing appears on the device without a cause. The device shows a new view only after Finish, or
-when the rider reaches the end of the loaded route. The arrival view then offers three rows:
+The arrival view appears only when the rider reaches the end of the loaded route during a
+recording. It offers three rows:
 
 - **Finish ride** saves today. It is a hold, as on the Paused page.
 - **Ride on: Day N** loads the next day's route while the recording continues. It shows only on a
@@ -193,13 +185,13 @@ closes by itself when the rider rides on past the end.
 
 After Finish on a trip day, the device shows a card in place of Home. **DAY N DONE** shows today's
 ledger, then TOMORROW with the next day's name, distance, climb and estimate. A second page shows
-tomorrow's profile. After an early stop, tomorrow is the built day, so the card agrees with the
-start card. After the last day, **TRIP DONE** shows today's ledger, the trip name, the day count
+tomorrow's profile. After an early stop, tomorrow is the rest of Day 2 and Day 3, as the start
+card loads it. After the last day, **TRIP DONE** shows today's ledger, the trip name, the day count
 and the totals of the trip's rides.
 
-The opt-in data field **TRIP KM** shows the rest of the loaded day plus the routes of the later
-days. A transfer is not ridden, so it does not count. The rider adds the field in the data-field
-editor.
+The opt-in data field **Trip to go** (tile caption TRIP KM) shows the rest of the loaded day plus
+the routes of the later days. A transfer is not ridden, so it does not count. The rider adds the
+field in the data-field editor.
 
 Each ride records its trip key, its day, the trip name and the bike type in its footer. So the
 device and the phone group the rides of a trip without dates, and the device's ride list shows
@@ -256,6 +248,6 @@ The rides list has a year menu and bike-type filters, a totals card, and a map w
 it. The rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
 keeps the ride's bike type and opens as an import, so it can become the next day of a trip.
 
-The rider can trim a ride, split it, or merge it with the next ride. When the next ride starts soon after
-and near the end of a ride, on the same trip day, the ride detail offers to merge them. Photos stay with their time, and the day note stays with
-its day.
+The rider can trim a ride, split it, or merge it with the next ride. When the next ride starts
+soon after and near the end of a ride, on the same trip day, the ride detail offers to merge them.
+Photos stay with their time, and the day note stays with its day.
