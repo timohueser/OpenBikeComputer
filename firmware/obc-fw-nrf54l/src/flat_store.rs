@@ -1870,15 +1870,28 @@ fn built_day_head(store: &FlatStore<FlatCard>) -> Result<Option<(ObjectId, Revis
 }
 
 /// Where the active trip's next day meets the day before: the day before's leave point, clamped to
-/// its route's length, and the day's join point.
+/// its route's length, the day's join point, and the gap from the day before's end to the day's
+/// start.
 fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::trip::DayJoin> {
     let (trip, day) = app.next_trip_day()?;
     let read = |k| store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).ok()?.ok();
     let (before, this) = (read(day.checked_sub(1)?)?, read(day)?);
-    let length = store
-        .with_source(ObjectId(before.route), None, |source| obc_route::RouteObjectInfo::read(source))
+    let (length, end) = store
+        .with_source(ObjectId(before.route), None, |source| {
+            Ok::<_, obc_formats::io::Error>((
+                obc_route::RouteObjectInfo::read(source)?.distance_m,
+                obc_route::route_end(source)?,
+            ))
+        })
         .ok()?
-        .ok()?
-        .distance_m;
-    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
+        .ok()?;
+    let start =
+        store.with_source(ObjectId(this.route), None, |source| obc_route::RouteSummary::read(source)).ok()?.ok()?;
+    Some(obc_app::trip::DayJoin {
+        key: trip.key,
+        day,
+        leave_m: before.leave_m.min(length),
+        join_m: this.join_m,
+        gap_m: obc_map_scene::ground_dist_m(end, (start.start_lon, start.start_lat)) as u32,
+    })
 }

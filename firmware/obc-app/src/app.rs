@@ -6023,7 +6023,7 @@ mod tests {
             dates: [0; obc_route::MAX_TRIP_DAYS],
         };
         app.set_trip_progress([record]);
-        app.set_day_join(Some(crate::trip::DayJoin { key: 42, day: 2, leave_m: 74_000, join_m: 3_000 }));
+        app.set_day_join(Some(crate::trip::DayJoin { key: 42, day: 2, leave_m: 74_000, join_m: 3_000, gap_m: 0 }));
         app
     }
 
