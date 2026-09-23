@@ -25,6 +25,7 @@ pub struct Controls {
 
 pub fn init(spawner: Spawner) -> (sdc::SoftdeviceController<'static>, Controls, [u8; 6]) {
     let mut config = config::Config::default();
+    config.clock_speed = config::ClockSpeed::CK128;
     config.hfclk_source = config::HfclkSource::ExternalXtal;
     // MPSL calibrates the RC; no LFXO load-capacitor setup is required.
     config.lfclk_source = config::LfclkSource::InternalRC;
