@@ -121,4 +121,26 @@ final class TripFlowTests: XCTestCase {
             .matching(NSPredicate(format: "label CONTAINS 'Schwarzwald'")).firstMatch.exists,
             "the imported route must not also be a route card")
     }
+
+    /// A trip is a Planned row of its own: with no loose route left, the list still shows the
+    /// trip card, not the empty state.
+    @MainActor
+    func testATripWithoutLooseRoutesStaysListed() {
+        let app = launch(fixtures: "empty", importSample: "gpx")
+
+        let row = app.buttons["import.startTrip"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "import Start a trip row missing")
+        row.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 10),
+            "Start a trip must open the new trip's page")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        waitForMain(app)
+        let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'main.trip.'"))
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 5), "the trip card is missing")
+        XCTAssertEqual(cards.count, 1, "one trip must show one card")
+        XCTAssertFalse(app.staticTexts["No planned routes yet"].exists, "a trip is not an empty list")
+        snap(app, "trip-only-list")
+    }
 }
