@@ -169,6 +169,15 @@ public struct OBCComponentGallery: View {
                     }
                 }
 
+                section("Trip Day Rows") {
+                    OBCGroupedSection {
+                        TripDayRow(color: OBCTheme.stageColor(index: 0), title: "Day 1 · to Andermatt",
+                                   detail: "Mon 29 Sep · 82.0 km · 1,640 m ↑ · 5h 10m")
+                        TripDayRow(color: OBCTheme.stageColor(index: 1), title: "Day 2",
+                                   detail: "Tue 30 Sep · 74.0 km · 2,100 m ↑ · 5h 0m", showsDivider: false)
+                    }
+                }
+
                 section("Connected Services") {
                     OBCConnectedServicesBlock(services: [
                         OBCServiceStatus(name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.coral, state: .uploaded("Uploaded on import")),

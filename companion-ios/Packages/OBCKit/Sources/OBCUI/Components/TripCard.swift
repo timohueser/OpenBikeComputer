@@ -10,17 +10,21 @@ import OBCDomain
 public struct TripCard: View {
     let name: String
     let subtitle: String
+    /// The trip's date range, when it has a start date.
+    let dateLine: String?
     let stages: [MultiTrackPreviewView.Stage]
     let onDevice: OnDeviceState
 
     public init(
         name: String,
         subtitle: String,
+        dateLine: String? = nil,
         stages: [MultiTrackPreviewView.Stage],
         onDevice: OnDeviceState = .notOnDevice
     ) {
         self.name = name
         self.subtitle = subtitle
+        self.dateLine = dateLine
         self.stages = stages
         self.onDevice = onDevice
     }
@@ -31,6 +35,7 @@ public struct TripCard: View {
         name: String,
         stats: TripStats,
         daySummaries: [RouteSummary],
+        dateLine: String? = nil,
         onDevice: OnDeviceState = .notOnDevice
     ) {
         self.init(
@@ -40,6 +45,7 @@ public struct TripCard: View {
                 distanceMeters: stats.distanceMeters,
                 elevationGainMeters: stats.elevationGainMeters
             ),
+            dateLine: dateLine,
             stages: daySummaries.enumerated().map { index, summary in
                 MultiTrackPreviewView.Stage(
                     coordinates: summary.trackPreview?.coordinates ?? [],
@@ -76,6 +82,13 @@ public struct TripCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .accessibilityIdentifier("tripCard.stats")
+                if let dateLine {
+                    Text(dateLine)
+                        .font(.obcMono(size: 12))
+                        .foregroundStyle(OBCTheme.inkFaint)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("tripCard.dates")
+                }
             }
             .padding(15)
         }
@@ -101,6 +114,7 @@ public struct TripCard: View {
             TripCard(
                 name: "Driftless Weekender",
                 subtitle: "2 days · 141 km · 2,050 m ↑",
+                dateLine: "Sat 3 Oct – Sun 4 Oct",
                 stages: [
                     .init(coordinates: a, color: OBCTheme.stageColor(index: 0)),
                     .init(coordinates: b, color: OBCTheme.stageColor(index: 1)),

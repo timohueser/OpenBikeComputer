@@ -496,6 +496,24 @@ public final class MainScreenModel {
 
     public func tripStats(_ id: TripID) -> TripStats { TripStats(days: tripDays(id)) }
 
+    /// The date of each day. A synced ride of a day moves the dates of the days after it.
+    public func tripDayDates(_ id: TripID) -> [CivilDay?] {
+        guard let trip = trip(id) else { return [] }
+        var finished: [Int: CivilDay] = [:]
+        for ride in rideSummaries.values.sorted(by: { $0.date < $1.date }) {
+            guard let day = ride.trip, day.key == trip.key else { continue }
+            finished[day.dayIndex] = CivilDay(ride.date)
+        }
+        return trip.dayDates(finished: finished)
+    }
+
+    /// The trip's date range for its card, when its days have dates.
+    public func tripDateLine(_ id: TripID) -> String? {
+        let dates = tripDayDates(id)
+        guard let first = dates.first ?? nil, let last = dates.last ?? nil else { return nil }
+        return OBCFormat.tripDates(first, last)
+    }
+
     /// The cut and the encode run once per change of the line, the day ends or the bike type.
     private func dayRoutes(of trip: Trip) -> [TripDayRoute] {
         if let cached = tripDayCache[trip.id], cached.trip.line == trip.line,

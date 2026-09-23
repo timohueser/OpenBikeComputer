@@ -421,6 +421,7 @@ public struct MainScreenView: View {
                             name: trip.name,
                             stats: model.tripStats(trip.id),
                             daySummaries: model.tripDays(trip.id).map { $0.summary(tripID: trip.id) },
+                            dateLine: model.tripDateLine(trip.id),
                             onDevice: model.tripOnDeviceState(trip.id)
                         )
                     }

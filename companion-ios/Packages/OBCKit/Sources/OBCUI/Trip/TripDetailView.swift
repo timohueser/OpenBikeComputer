@@ -2,9 +2,9 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The trip page, behind a trip card in the routes list. The header carries the trip name, the
-/// totals and the Upload trip action; below it the days appear as route cards, each tinted with
-/// its palette colour. The overflow menu carries Rename, Reverse and Delete trip.
+/// The trip page, behind a trip card in the routes list: the map in day colours, the totals, the
+/// Upload trip action, one row per day, then the start date and the bike type. A tap on a day
+/// renames it. The overflow menu carries Rename, Reverse and Delete trip.
 ///
 /// Driven straight off `MainScreenModel`: the model owns the trip edits and the library, and this
 /// view binds them. It pops itself the moment the trip is deleted.
@@ -22,6 +22,9 @@ public struct TripDetailView: View {
     /// Upload tapped with the catalog re-read in flight: it debounces the button until the sheet's
     /// driver exists.
     @State private var isPreparingUpload = false
+    @State private var dayRename: Int?
+    @State private var dayDraft = ""
+    @State private var startDateShown = false
     /// The full-screen interactive trip map.
     @State private var mapShown = false
 
@@ -41,22 +44,27 @@ public struct TripDetailView: View {
     private var days: [RouteSummary] { model.tripDays(tripID).map { $0.summary(tripID: tripID) } }
 
     public var body: some View {
-        List {
-            header
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 8, trailing: 20))
-
-            ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
-                RouteCard(route: day, stageAccent: OBCTheme.stageColor(index: index))
-                    .accessibilityIdentifier("trip.day.\(index)")
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 12, trailing: 20))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                dayRows
+                    .padding(.top, 14)
+                OBCGroupedSection {
+                    OBCListRow(
+                        label: "Start date",
+                        value: trip?.startDay.map { OBCFormat.tripDay($0) } ?? "None",
+                        showsChevron: true
+                    ) { startDateShown = true }
+                    .accessibilityIdentifier("trip.startDate")
+                    OBCBikeTypeRow(type: trip?.bikeType ?? .road) { model.setTripBikeType(tripID, to: $0) }
+                        .accessibilityIdentifier("trip.bikeType")
+                }
+                .padding(.top, 14)
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .background(OBCTheme.parchment.ignoresSafeArea())
         .navigationTitle(trip?.name ?? "Trip")
         #if os(iOS)
@@ -83,6 +91,17 @@ public struct TripDetailView: View {
                 onClose()
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .obcRenameAlert(
+            "Rename day",
+            isPresented: Binding(get: { dayRename != nil }, set: { if !$0 { dayRename = nil } }),
+            name: $dayDraft,
+            onSave: {
+                if let day = dayRename { model.renameTripDay(tripID, day: day, to: dayDraft) }
+            }
+        )
+        .sheet(isPresented: $startDateShown) {
+            TripStartDateSheet(startDay: trip?.startDay) { model.setTripStartDay(tripID, to: $0) }
         }
         // The trip vanished under us, so leave the page.
         .onChange(of: model.trips) { _, _ in
@@ -149,6 +168,29 @@ public struct TripDetailView: View {
             title: trip?.name ?? "Trip",
             onClose: { mapShown = false }
         )
+    }
+
+    /// One row per day: "Day 2 · to Ulrichen", then the date, when the trip has one, and the
+    /// day's stats.
+    private var dayRows: some View {
+        let routes = model.tripDays(tripID)
+        let dates = model.tripDayDates(tripID)
+        return OBCGroupedSection {
+            ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
+                let place = trip?.dayEnds[safe: index]?.name
+                TripDayRow(
+                    color: OBCTheme.stageColor(index: index),
+                    title: place.map { "Day \(index + 1) · to \($0)" } ?? "Day \(index + 1)",
+                    detail: ([dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) }]
+                        + [OBCFormat.plannedSubtitle(day)]).compactMap { $0 }.joined(separator: " · "),
+                    showsDivider: index < routes.count - 1
+                ) {
+                    dayDraft = place ?? ""
+                    dayRename = index
+                }
+                .accessibilityIdentifier("trip.day.\(index)")
+            }
+        }
     }
 
     private var header: some View {
@@ -225,4 +267,10 @@ public struct TripDetailView: View {
 extension String {
     /// The string wrapped in typographic double quotes, the dialog-title idiom.
     fileprivate var quoted: String { "\u{201C}\(self)\u{201D}" }
+}
+
+extension Array {
+    fileprivate subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
 }
