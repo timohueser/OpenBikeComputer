@@ -25,6 +25,15 @@ pub(crate) enum Phase {
     /// The rider or the route moved on, so the comparison no longer applies.
     Stale,
 }
+impl Phase {
+    fn after(error: crate::navigator::NavigatorError) -> Self {
+        if error == crate::navigator::NavigatorError::Movement {
+            Self::Stale
+        } else {
+            Self::Failed
+        }
+    }
+}
 /// A deterministic winner; the owner reconstructs its exact candidate before review.
 #[derive(Clone, Copy)]
 pub(crate) struct Candidate {
@@ -226,8 +235,7 @@ impl App {
         }
         if let (Phase::Ready, ReviewStatus::Failed(error)) = (self.easier.phase, self.assistant_review_status()) {
             self.cancel_easier();
-            self.easier.phase =
-                if error == crate::navigator::NavigatorError::Movement { Phase::Stale } else { Phase::Failed };
+            self.easier.phase = Phase::after(error);
         }
         match self.easier.phase {
             Phase::Trials | Phase::Rebuild => match self.assistant_review_status() {
@@ -283,7 +291,11 @@ impl App {
                     self.cancel_easier();
                     self.easier.phase = Phase::Releasing;
                 }
-                ReviewStatus::Failed(_) | ReviewStatus::Unresolved => {
+                ReviewStatus::Failed(error) => {
+                    self.cancel_easier();
+                    self.easier.phase = Phase::after(error);
+                }
+                ReviewStatus::Unresolved => {
                     self.cancel_easier();
                     self.easier.phase = Phase::Failed;
                 }

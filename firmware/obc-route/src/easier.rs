@@ -24,7 +24,7 @@ pub enum Goal {
 impl Goal {
     pub const ALL: [Self; 3] = [Self::LessClimb, Self::Smoother, Self::Shorter];
     /// The goal a trial weights. `Profile` weights none and serves every goal.
-    pub fn of(objective: Objective) -> Option<Self> {
+    fn of(objective: Objective) -> Option<Self> {
         match objective {
             Objective::Profile => None,
             Objective::LessClimb | Objective::LeastClimb => Some(Self::LessClimb),
