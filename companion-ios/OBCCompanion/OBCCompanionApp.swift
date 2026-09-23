@@ -4,10 +4,10 @@ import UserNotifications
 import OBCDomain
 import OBCTransport
 import OBCUI
+import OBCRouting
 
 #if DEBUG
 import OBCMock
-import OBCRouting
 #endif
 
 /// Composition root. The single place allowed to choose a `DeviceTransport` conformer;
