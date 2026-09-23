@@ -560,11 +560,13 @@ fn corrupt_checkpoint_metadata_does_not_block_unrelated_ride_mutations() {
     assert!(crate::flat::route_cleanup::next(&store, 20, None).is_err());
 }
 
+use obc_formats::trip_progress::RouteVersion;
+
 fn progress(key: u64) -> TripProgress {
     TripProgress {
         key,
         day: 1,
-        day_route: obc_formats::trip_progress::RouteVersion { id: 7, revision: 2 },
+        day_route: RouteVersion { id: 7, revision: 0 },
         metres: 20_000,
         last_finished: Some(0),
         dates: [0; obc_formats::trip_progress::MAX_DAYS],
@@ -577,20 +579,23 @@ fn progress_records_survive_row_and_checkpoint_edits_and_a_remount() {
     let store = FlatStore::initialize(&disk, CARD).unwrap();
     let route = publish(&store, ObjectKind::Route, b"route");
     let ride = publish(&store, ObjectKind::Ride, b"ride");
-    let records = [progress(3), progress(1)];
-    write_progress(&store, &records).unwrap();
+    let at_route = |key| TripProgress { day_route: RouteVersion { id: route.id.0, revision: 9 }, ..progress(key) };
+    write_progress(&store, progress(3), |_| true).unwrap();
+    write_progress(&store, at_route(1), |_| true).unwrap();
     write_proof(&store, ride).unwrap();
     write_checkpoint(&store, CARD, store.sequence(), None, Some(checkpoint(route, None))).unwrap();
     disk.reboot();
     let store = FlatStore::mount(&disk);
     let mut read = Vec::new();
     read_progress(&store, |p| read.push(p)).unwrap();
-    assert_eq!(read, records, "write order stays");
+    let stamped = TripProgress { day_route: RouteVersion { id: route.id.0, revision: 1 }, ..progress(1) };
+    let gone = TripProgress { metres: 0, day_route: RouteVersion { id: 7, revision: 0 }, ..progress(3) };
+    assert_eq!(read, [gone.clone(), stamped.clone()], "write order stays; a record takes its route's Revision");
     let mut bytes = [0; MAX_LEN];
     let mut image = Metadata::new(&store).load(&store, &mut bytes).unwrap();
     assert_eq!(image.rows().count(), 1);
     image.set_checkpoint(None).unwrap();
-    assert_eq!(image.progress().collect::<Vec<_>>(), records);
+    assert_eq!(image.progress().map(|p| p.key).collect::<Vec<_>>(), [3, 1]);
     assert_eq!(image.set_progress(&[progress(3), progress(3)]), Err(Error::Invalid), "one record per key");
 
     let len = image.bytes().len();
