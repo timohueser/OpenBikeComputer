@@ -118,11 +118,11 @@ struct TripFlowModelTests {
         var clock = Date().addingTimeInterval(3_600)
         let (model, _) = makeModel(now: { clock })
         let other = model.groupIntoTrip([kettle], name: "Other")!
-        #expect(model.lastEditedTrip?.id == other)
+        #expect(model.tripPickerItems.first?.id == other)
 
         clock += 60
         model.setTripStartDay(tripID, to: CivilDay(daysSince1970: 20_725))
-        #expect(model.lastEditedTrip?.id == tripID)
+        #expect(model.tripPickerItems.first?.id == tripID)
         #expect(model.trip(tripID)?.startDay == CivilDay(daysSince1970: 20_725))
     }
 

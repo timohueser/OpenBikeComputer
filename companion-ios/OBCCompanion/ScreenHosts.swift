@@ -217,71 +217,45 @@ struct RouteDetailScreen: View {
     }
 }
 
-/// Owns a stable model for the presented import cover, and turns Save into the summary the main
-/// model lands in Planned. Upload presents the upload sheet: a completed upload also saves the
-/// route, and the cover closes once the sheet does.
+/// Owns a stable model for the presented import cover. The three rows land the route: as a new
+/// route, as the last day of a trip, or as the first day of a new trip.
 struct ImportLandingHost: View {
     @State private var model: RouteDetailModel
-    @State private var uploadRequest: UploadRequest?
-    @State private var uploadCompleted = false
-    /// The optional "Add to trip" choice for this import, opt-in and default none, and the shared
-    /// picker's presentation.
-    @State private var tripSelection: TripSelection = .none
     @State private var tripPickerShown = false
-    private let transport: any DeviceTransport
-    /// The in-flight ledger the upload sheet claims a token from.
-    private let activity: TransferActivity?
     private let deviceName: String
     private let noDevicePaired: Bool
-    /// Existing trips for the import row's picker. Empty means no trips yet, and the row still
-    /// offers a new one.
-    private let tripPickerItems: [TripPickerItem]
+    /// The trips the route can join, most recently edited first.
+    private let trips: [TripPickerItem]
     private let onSave: (RouteDetail, TripSelection) -> Void
-    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void
-    private let onPair: (RouteDetail, TripSelection) -> Void
+    private let onPair: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
     init(
         transport: any DeviceTransport,
-        activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
         source: ImportSource,
         bikeType: BikeType,
         deviceName: String,
         noDevicePaired: Bool,
-        tripPickerItems: [TripPickerItem] = [],
-        // When this import replaces an existing route, the landing reuses its id and device link,
-        // so a save or upload updates that route in place instead of adding a duplicate. The old
-        // fingerprint is what makes the button read "Update".
+        trips: [TripPickerItem] = [],
+        // When this import replaces an existing route, the landing reuses its id, so New route
+        // updates that route in place instead of adding a duplicate.
         replacing: PlannedRouteRecord? = nil,
-        // The replace-by-id target for an upload from this landing. The caller derives it through
-        // the scope-gated helper, so a link minted on another device or era can never aim the
-        // upload at the wrong object.
-        replacingDeviceObjectID: DeviceObjectID? = nil,
-        // The proven-held CRC of the route being replaced: the button reads "up to date" only on
-        // the same proof the list badge uses, never on a stale link.
-        replacingProvenCRC: UInt32? = nil,
         onSave: @escaping (RouteDetail, TripSelection) -> Void,
-        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void,
-        onPair: @escaping (RouteDetail, TripSelection) -> Void,
+        onPair: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
             dressing: .imported(route, fileName: fileName, source: source),
             bikeType: bikeType,
-            deviceObjectID: replacingDeviceObjectID,
-            provenCommittedCRC: replacingProvenCRC,
             importedRouteID: replacing?.id
         ))
-        self.transport = transport
-        self.activity = activity
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
-        self.tripPickerItems = tripPickerItems
+        self.trips = trips
         self.onSave = onSave
-        self.onUploaded = onUploaded
         self.onPair = onPair
         self.onCancel = onCancel
     }
@@ -290,66 +264,39 @@ struct ImportLandingHost: View {
         ImportLandingView(
             model: model,
             deviceName: deviceName,
-            onUpload: {
-                uploadRequest = UploadRequest(model: UploadSheetModel(
-                    transport: transport,
-                    blob: model.makeUploadBlob(),
-                    deviceName: deviceName,
-                    // Normally the sheet self-dismisses; parked under the hold flag, so a capture
-                    // cannot lose the sheet.
-                    timing: OBCCompanionApp.launchUploadTiming(),
-                    activity: activity,
-                    onCompleted: { [model] objectID, crc in
-                        uploadCompleted = true
-                        if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded(model.makeDetail(), tripSelection, objectID, crc)
-                    }
-                ))
-            },
-            onSave: { onSave(model.makeDetail(), tripSelection) },
             onCancel: onCancel,
             noDevicePaired: noDevicePaired,
-            onPair: { onPair(model.makeDetail(), tripSelection) },
-            importAccessory: AnyView(tripRow)
+            onPair: { onPair(model.makeDetail()) },
+            importAccessory: AnyView(rows)
         )
-        .sheet(
-            item: $uploadRequest,
-            // The route is already in Planned, saved on completion, so closing the confirm sheet
-            // also closes the landing. A cancelled upload stays on the landing, still unsaved.
-            onDismiss: { if uploadCompleted { onCancel() } }
-        ) { request in
-            UploadSheetView(model: request.model)
-        }
         .sheet(isPresented: $tripPickerShown) {
-            TripPickerSheet(
-                title: "Add to trip",
-                trips: tripPickerItems,
-                allowsNone: true,
-                onPick: { tripSelection = $0 }
-            )
+            TripPickerSheet(title: "Add to trip", trips: trips, onPick: save)
         }
     }
 
-    /// The optional "Add to trip" row: opt-in, default None. It opens the shared picker and shows
-    /// the current choice.
-    private var tripRow: some View {
-        OBCDisclosureRow(
-            systemImage: "folder.badge.plus",
-            label: "Add to trip",
-            value: tripSelectionLabel,
-            accessibilityID: "import.addToTrip",
-            action: { tripPickerShown = true }
-        )
-        .padding(.bottom, 2)
+    /// New route, Add to ‹trip› (or Add to trip with a picker when there are several), Start a
+    /// trip.
+    private var rows: some View {
+        OBCGroupedSection {
+            OBCListRow(label: "New route", showsChevron: true) { save(.none) }
+                .accessibilityIdentifier("import.newRoute")
+            if trips.count == 1, let trip = trips.first {
+                OBCListRow(label: "Add to \(trip.name)", detail: "Becomes Day \(trip.dayCount + 1)", showsChevron: true) {
+                    save(.existing(trip.id))
+                }
+                .accessibilityIdentifier("import.addToTrip")
+            } else if trips.count > 1 {
+                OBCListRow(label: "Add to trip", showsChevron: true) { tripPickerShown = true }
+                    .accessibilityIdentifier("import.addToTrip")
+            }
+            OBCListRow(label: "Start a trip", showsChevron: true, showsDivider: false) {
+                save(.new(model.name))
+            }
+            .accessibilityIdentifier("import.startTrip")
+        }
     }
 
-    /// The current import trip choice as a row value: None, an existing trip's name, or the new
-    /// trip's name.
-    private var tripSelectionLabel: String {
-        switch tripSelection {
-        case .none: "None"
-        case .existing(let id): tripPickerItems.first { $0.id == id }?.name ?? "Trip"
-        case .new(let name): name
-        }
+    private func save(_ selection: TripSelection) {
+        onSave(model.makeDetail(), selection)
     }
 }

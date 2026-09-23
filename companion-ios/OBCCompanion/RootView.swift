@@ -268,44 +268,26 @@ struct RootView: View {
     private func importLanding(for pending: PendingImport) -> some View {
         ImportLandingHost(
             transport: transport,
-            activity: transferActivity,
             route: pending.route,
             fileName: pending.fileName,
             source: pending.source,
             bikeType: pending.bikeType,
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
-                    // A trip is app-local, so the picker works with no device paired just the same.
-            tripPickerItems: mainModel.tripPickerItems,
+            // A trip is app-local, so the trip rows work with no device paired just the same.
+            trips: mainModel.tripPickerItems,
             replacing: pending.replacing,
-                    // Replace by id only when the replaced route's link is valid for this device.
-            replacingDeviceObjectID: pending.replacing.flatMap {
-                mainModel.plannedDeviceObjectID(for: $0.id)
-            },
-            replacingProvenCRC: pending.replacing.flatMap {
-                mainModel.plannedProvenCommittedCRC(for: $0.id)
-            },
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
-                    // Move it into the chosen trip as its last day; `.none` leaves it a route.
-                mainModel.fileRoute(detail.summary.id, into: tripSelection)
+                // A trip choice moves the route into the trip and opens the trip page.
+                if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
+                    path = [.trip(id: tripID)]
+                }
                 importModel.closeImport()
             },
-                    // Uploading saves it too: the route lands in Planned the moment the upload
-                    // completes, under the id the device assigned, and the cover closes after it.
-                    // The model scopes the recorded link to the connected device's identity.
-            onUploaded: { detail, tripSelection, objectID, crc in
+            // Save first, so a pairing detour does not cost the import, then start the scan.
+            onPair: { detail in
                 mainModel.addImportedRoute(pending.record(for: detail))
-                mainModel.fileRoute(detail.summary.id, into: tripSelection)
-                if let objectID {
-                    mainModel.markRouteUploaded(
-                        detail.summary.id, objectID: objectID, crc32: crc)
-                }
-            },
-                    // Save first, so a pairing detour does not cost the import, then start the scan.
-            onPair: { detail, tripSelection in
-                mainModel.addImportedRoute(pending.record(for: detail))
-                mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 importModel.closeImport()
                 launchModel.startPairing()
             },
