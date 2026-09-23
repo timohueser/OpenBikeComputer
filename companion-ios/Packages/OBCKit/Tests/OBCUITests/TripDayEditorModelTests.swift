@@ -45,13 +45,20 @@ struct TripDayEditorModelTests {
         let first = model.handles.markers[0].id
 
         model.handles.begin(first)
+        #expect(model.selectedDay == 0, "a grab selects the day")
+        #expect(model.handles.window.lowerBound == 0 && abs(model.handles.window.upperBound - 20_000) < 1,
+                "the profile focuses on the days around the handle")
         model.handles.move(first, to: 12_000)
-        #expect(abs(model.stats[0].distanceMeters - 12_000) < 1, "the day figures follow the finger")
-        #expect(abs(model.stats[1].distanceMeters - 8_000) < 1)
+        #expect(abs((model.live.days[0]?.distanceMeters ?? 0) - 12_000) < 1, "the live figures follow the finger")
+        #expect(abs((model.live.days[1]?.distanceMeters ?? 0) - 8_000) < 1)
+        #expect(model.live.days.keys.sorted() == [0, 1], "only the two days at the handle")
+        #expect(abs(model.stats[0].distanceMeters - 10_000) < 1, "the committed figures wait for the release")
         #expect(abs(model.trip.dayEnds[0].distance - 10_000) < 1, "the trip waits for the release")
         #expect(!model.canUndo)
 
         model.handles.end()
+        #expect(model.live.days.isEmpty)
+        #expect(abs(model.stats[0].distanceMeters - 12_000) < 1)
         #expect(abs(model.trip.dayEnds[0].distance - 12_000) < 1)
         #expect(model.trip.dayEnds[0].title == "A")
         #expect(model.hasChanges)
@@ -101,24 +108,54 @@ struct TripDayEditorModelTests {
     }
 
     @Test
-    func addAndRemoveKeepTheHandlesAligned() {
+    func placementAddsADayEndWhereTheFingerLiftsAndSelectsIt() {
         let model = editor(threeDays())
-        let first = model.handles.markers[0].id
-        model.handles.begin(first)
-        model.handles.move(first, to: 7_000)
-        model.handles.end()
         let ids = model.handles.markers.map(\.id)
 
-        #expect(model.addDayEnd() == 1, "Day 2 (13 km) is the longest")
+        model.beginPlacing()
+        #expect(model.isPlacing)
+        #expect(model.handles.ghostDistance == nil)
+        model.handles.moveGhost(to: 13_500)
+        #expect(model.handles.ghostDistance == 13_500)
+        model.handles.place()
+        #expect(!model.isPlacing)
         #expect(model.trip.dayCount == 4)
+        #expect(abs(model.trip.dayEnds[1].distance - 13_500) < 1)
+        #expect(model.selectedDay == 1, "the new end is selected, ready to move on")
         #expect(model.handles.markers.count == 3)
         #expect([model.handles.markers[0].id, model.handles.markers[2].id] == ids, "the old handles keep their ids")
+
+        model.beginPlacing()
+        model.cancelPlacing()
+        #expect(!model.isPlacing)
+        #expect(model.trip.dayCount == 4, "a cancelled placement adds nothing")
 
         #expect(model.removeBlocker(3) != nil, "the last day ends the trip")
         model.removeDayEnd(1)
         #expect(model.trip.dayCount == 3)
         #expect(model.handles.markers.map(\.id) == ids)
-        #expect(zip(model.handles.markers.map(\.distance), [7_000, 20_000]).allSatisfy { abs($0 - $1) < 1 })
+        #expect(model.selectedDay == nil)
+    }
+
+    @Test
+    func aStopCalloutEndsTheNearestDayThatMay() {
+        let model = editor(threeDays())
+        let camp = PlacedStop(stop: Stop(name: "Camp", coordinate: coordinate(10_500, 50), kind: .campsite), distance: 10_500, offset: 50)
+        #expect(model.handles.stopActionTitle(camp) == "End Day 1 here")
+        model.handles.onStopAction(camp)
+        #expect(model.trip.dayEnds[0].stop == camp.stop)
+        #expect(abs(model.handles.markers[0].distance - 10_500) < 1)
+        #expect(model.canUndo)
+    }
+
+    @Test
+    func selectingADayFocusesTheProfileOnItsNeighbours() {
+        let model = editor(threeDays())
+        model.select(1)
+        #expect(abs(model.handles.window.lowerBound - 10_000) < 1 && abs(model.handles.window.upperBound - 30_000) < 1)
+        #expect(model.handles.mapFocus?.range == model.handles.window)
+        model.select(nil)
+        #expect(model.handles.window == 0...model.handles.line.length)
     }
 
     /// The snap pass lands after the stops arrive, even though the geocoder has written place
@@ -137,6 +174,25 @@ struct TripDayEditorModelTests {
         #expect(model.handles.stops.map(\.stop) == [camp], "the map and the profile show the stop")
         model.undo()
         #expect(model.trip.dayCount == 1, "both passes are one undo step")
+    }
+
+    /// A snap pass that arrives while a finger holds a handle is dropped: the finger wins, and
+    /// the drag goes on.
+    @Test
+    func theSnapPassNeverLandsOnAFinger() async {
+        let camp = Stop(name: "Camp", coordinate: coordinate(10_500, 50), kind: .campsite)
+        let model = editor(trip([file(0, 30_000)]), isSplitMode: true, stops: [camp])
+        model.setDayCount(3)
+        let first = model.handles.markers[0].id
+        model.handles.begin(first)
+        model.handles.move(first, to: 12_000)
+        await model.snapTask?.value
+        #expect(model.handles.activeID == first, "the drag goes on")
+        #expect(model.trip.dayEnds[0].stop == nil, "the snap was dropped")
+        model.handles.move(first, to: 13_000)
+        model.handles.end()
+        #expect(abs(model.trip.dayEnds[0].distance - 13_000) < 1)
+        #expect(model.trip.dayEnds[0].stop == nil)
     }
 
     @Test

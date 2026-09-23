@@ -40,11 +40,27 @@ public final class LineMarkerEditorModel {
     public private(set) var dashedSegments: Set<Int>
     /// The marker under a finger, or under VoiceOver's adjustment. One at a time.
     public private(set) var activeID: LineMarker.ID?
+    /// The markers as they stood before the drag in flight: what the static profile layer and
+    /// the map's colour runs draw until the finger lets go.
+    public private(set) var restingMarkers: [LineMarker]
+    /// The part of the line the profile shows. The whole line until a focus or a pinch.
+    public private(set) var window: ClosedRange<Double>
     /// Known stops near the line: small pins on the map and marks along the top of the profile.
     public var stops: [PlacedStop] = []
+    /// Placement of a new marker: the finger's spot on the line, shown as a ghost pin, until it
+    /// lifts. Nil when nothing is being placed.
+    public private(set) var ghostDistance: Double?
+    public private(set) var isPlacing = false
+    /// The part of the line the map should show, counted up on every focus.
+    public private(set) var mapFocus: (range: ClosedRange<Double>, version: Int)?
     @ObservationIgnored public var onEvent: (LineMarkerEvent) -> Void
     /// A finger that touched a handle and lifted without moving it.
     @ObservationIgnored public var onTap: (LineMarker.ID) -> Void = { _ in }
+    /// A placement that ended: the distance the ghost pin stood at.
+    @ObservationIgnored public var onPlace: (Double) -> Void = { _ in }
+    /// The title of the one action a stop's map callout offers, or nil for no action.
+    @ObservationIgnored public var stopActionTitle: (PlacedStop) -> String? = { _ in nil }
+    @ObservationIgnored public var onStopAction: (PlacedStop) -> Void = { _ in }
 
     /// The profile resampled by distance, so a 50,000-point line draws as a few hundred.
     private(set) var profile: [ProfileSample] = []
@@ -60,8 +76,11 @@ public final class LineMarkerEditorModel {
     ) {
         guard line.vertices.count > 1 else { return nil }
         precondition(segmentColors.count == markers.count + 1, "one colour per segment")
+        let ordered = Self.ordered(markers, on: line)
         self.line = line
-        self.markers = Self.ordered(markers, on: line)
+        self.markers = ordered
+        restingMarkers = ordered
+        window = 0...max(line.length, 1)
         self.segmentColors = segmentColors
         self.dashedSegments = dashedSegments
         self.onEvent = onEvent
@@ -75,8 +94,96 @@ public final class LineMarkerEditorModel {
         precondition(segmentColors.count == markers.count + 1, "one colour per segment")
         end()
         self.markers = Self.ordered(markers, on: line)
+        restingMarkers = self.markers
         self.segmentColors = segmentColors
         self.dashedSegments = dashedSegments
+    }
+
+    // MARK: The profile window
+
+    /// The shortest window a pinch reaches, and the reach of a focus around a marker with no
+    /// neighbour on one side.
+    public static let minWindowMeters = 2_000.0
+    public static let focusReachMeters = 22_000.0
+
+    /// Show the part of the line around `id`: from the marker before it to the marker after it,
+    /// or ``focusReachMeters`` on a side with no neighbour.
+    public func focus(on id: LineMarker.ID) {
+        guard let index = index(of: id) else { return }
+        let low = index > 0 ? markers[index - 1].distance : max(markers[index].distance - Self.focusReachMeters, 0)
+        let high = index + 1 < markers.count
+            ? markers[index + 1].distance : min(markers[index].distance + Self.focusReachMeters, line.length)
+        setWindow(low...high)
+        mapFocus = (low...high, (mapFocus?.version ?? 0) + 1)
+    }
+
+    public func showWholeLine() {
+        setWindow(0...line.length)
+    }
+
+    /// Scale the window by `factor` around `pivot`, a distance in the window.
+    public func zoom(by factor: Double, around pivot: Double) {
+        let span = max(min((window.upperBound - window.lowerBound) / factor, line.length), Self.minWindowMeters)
+        let share = (pivot - window.lowerBound) / max(window.upperBound - window.lowerBound, 1)
+        setWindow((pivot - span * share)...(pivot + span * (1 - share)))
+    }
+
+    /// Slide the window along the line.
+    public func pan(by meters: Double) {
+        setWindow((window.lowerBound + meters)...(window.upperBound + meters))
+    }
+
+    /// The window held inside the line and no shorter than ``minWindowMeters``; the elevation
+    /// scale follows it.
+    public func setWindow(_ range: ClosedRange<Double>) {
+        let span = min(max(range.upperBound - range.lowerBound, min(Self.minWindowMeters, line.length)), line.length)
+        let low = min(max(range.lowerBound, 0), line.length - span)
+        window = low...(low + span)
+        let inside = profile.filter { window.contains($0.distance) }.map(\.elevation)
+        let edges = [line.elevation(at: window.lowerBound), line.elevation(at: window.upperBound)]
+        let lo = (inside + edges).min() ?? 0
+        let hi = (inside + edges).max() ?? 0
+        elevationRange = lo...max(hi, lo + 1)
+    }
+
+    /// Keep a moving marker in the window: when it nears an edge, the window slides with it.
+    private func follow(_ distance: Double) {
+        let span = window.upperBound - window.lowerBound
+        guard span < line.length else { return }
+        let margin = span * 0.08
+        if distance > window.upperBound - margin {
+            pan(by: distance - (window.upperBound - margin))
+        } else if distance < window.lowerBound + margin {
+            pan(by: distance - (window.lowerBound + margin))
+        }
+    }
+
+    // MARK: Placement
+
+    /// Arm placement: the next finger on the line places a marker where it lifts.
+    public func beginPlacing() {
+        end()
+        isPlacing = true
+        ghostDistance = nil
+    }
+
+    public func cancelPlacing() {
+        isPlacing = false
+        ghostDistance = nil
+    }
+
+    /// The finger over the line while placing.
+    public func moveGhost(to distance: Double) {
+        guard isPlacing else { return }
+        ghostDistance = min(max(distance, 0), line.length)
+    }
+
+    /// The finger lifted: the ghost pin's place becomes the new marker's.
+    public func place() {
+        guard isPlacing, let distance = ghostDistance else { return }
+        isPlacing = false
+        ghostDistance = nil
+        onPlace(distance)
     }
 
     /// A new line (a join, a reverse, a reroute) with its markers. Ignored for a line with
@@ -103,11 +210,12 @@ public final class LineMarkerEditorModel {
     }
 
     private func resample() {
-        let count = min(max(line.vertices.count, 2), 320)
+        let count = min(max(line.vertices.count, 2), 1_200)
         profile = (0..<count).map { i -> ProfileSample in
             let distance = line.length * Double(i) / Double(count - 1)
             return ProfileSample(distance: distance, elevation: line.elevation(at: distance))
         }
+        window = 0...max(line.length, 1)
         let lo = profile.map(\.elevation).min() ?? 0
         let hi = profile.map(\.elevation).max() ?? 0
         elevationRange = lo...max(hi, lo + 1)
@@ -180,6 +288,7 @@ public final class LineMarkerEditorModel {
         let clamped = LineMarker.clamp(distance, forMarkerAt: index, in: markers, length: line.length)
         guard clamped != markers[index].distance else { return }
         markers[index].distance = clamped
+        follow(clamped)
         onEvent(.moved(id, distance: clamped))
     }
 
@@ -195,6 +304,7 @@ public final class LineMarkerEditorModel {
     public func end() {
         guard let id = activeID, let marker = marker(id) else { return }
         activeID = nil
+        restingMarkers = markers
         onEvent(.ended(id, distance: marker.distance))
     }
 

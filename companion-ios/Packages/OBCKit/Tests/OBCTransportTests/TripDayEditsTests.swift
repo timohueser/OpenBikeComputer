@@ -74,14 +74,26 @@ struct TripDayEditsTests {
     }
 
     @Test
-    func addDayEndSplitsTheLongestDayInTheMiddle() {
+    func addDayEndGoesWhereTheRiderPutIt() {
         var trip = threeDays()
-        trip.moveDayEnd(0, to: 7_000)
-        let day = trip.addDayEnd()
-        #expect(day == 1, "Day 2 (13 km) is the longest")
+        let day = trip.addDayEnd(at: 13_500)
+        #expect(day == 1, "inside Day 2")
         #expect(trip.dayCount == 4)
         #expect(abs(trip.dayEnds[1].distance - 13_500) < 1)
         #expect(trip.dayEnds.map(\.title) == ["A", nil, "B", "C"], "the name stays with the day's end")
+        #expect(trip.addDayEnd(at: 19_990) == 2, "held inside the day it cuts")
+        #expect(abs(trip.dayEnds[2].distance - (20_000 - Trip.minimumDayMeters)) < 1)
+        #expect(trip.addDayEnd(at: 40_000) == nil, "past the line end")
+    }
+
+    @Test
+    func theDayThatCanEndAtAStopIsTheNearestOneThatMay() {
+        let trip = withTransfer()
+        #expect(trip.day(thatCanEndAt: camp("Camp", 19_500)) == 1)
+        #expect(trip.day(thatCanEndAt: camp("Camp", 10_500)) == 1, "Day 1 ends at a transfer and cannot take it; Day 2 can")
+        #expect(trip.day(thatCanEndAt: camp("Camp", 10_050)) == nil, "too close to the transfer for Day 2")
+        #expect(trip.day(thatCanEndAt: camp("Camp", 25_000)) == 1)
+        #expect(threeDays().day(thatCanEndAt: camp("Camp", 10_500)) == 0)
     }
 
     @Test

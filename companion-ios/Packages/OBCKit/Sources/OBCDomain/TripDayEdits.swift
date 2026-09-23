@@ -57,22 +57,25 @@ extension Trip {
         }
     }
 
-    /// A new day end in the middle, by riding time, of the longest day. Returns the index of the
-    /// new day, or nil when no day has room for two.
+    /// A new day end where the rider put it, held ``minimumDayMeters`` inside the day it cuts.
+    /// Returns the index of the new day, or nil when that day has no room for two.
     @discardableResult
-    public mutating func addDayEnd() -> Int? {
-        let measured = measuredLine
-        let stats = measured.dayStats(ends: dayEnds.dropLast().map(\.distance), bikeType: bikeType)
-        guard let day = stats.indices.max(by: { stats[$0].duration < stats[$1].duration }) else { return nil }
+    public mutating func addDayEnd(at distance: Double) -> Int? {
+        guard let day = dayEnds.firstIndex(where: { $0.distance > distance }) else { return nil }
         let from = day > 0 ? dayEnds[day - 1].distance : 0
         let to = dayEnds[day].distance
         guard to - from >= 2 * Self.minimumDayMeters else { return nil }
-        let middle = (measured.cost(to: from, bikeType: bikeType) + measured.cost(to: to, bikeType: bikeType)) / 2
-        let distance = min(
-            max(measured.distance(atCost: middle, bikeType: bikeType), from + Self.minimumDayMeters),
-            to - Self.minimumDayMeters)
-        dayEnds.insert(DayEnd(coordinate: measured.coordinate(at: distance), distance: distance), at: day)
+        let held = min(max(distance, from + Self.minimumDayMeters), to - Self.minimumDayMeters)
+        dayEnds.insert(DayEnd(coordinate: measuredLine.coordinate(at: held), distance: held), at: day)
         return day
+    }
+
+    /// The day whose end a stop can take: the nearest end along the line among those it may
+    /// move. Nil when no day can end there.
+    public func day(thatCanEndAt stop: PlacedStop) -> Int? {
+        (0..<dayCount)
+            .filter { endRange(of: $0)?.contains(stop.distance) ?? false }
+            .min { abs(dayEnds[$0].distance - stop.distance) < abs(dayEnds[$1].distance - stop.distance) }
     }
 
     /// Why `day`'s end cannot be removed, or nil when it can. The last day ends at the line end.
