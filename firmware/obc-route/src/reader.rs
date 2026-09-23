@@ -177,6 +177,34 @@ impl RouteObjectInfo {
     }
 }
 
+/// The last route point, `(lon, lat)` µdeg. It reads the header, the last chunk meta and that
+/// chunk's point records in small blocks, never the whole index or a decoded chunk.
+pub fn route_end(src: &dyn ByteSource) -> Result<(i32, i32), Error> {
+    let h = read_header(src)?;
+    let Some(last) = h.chunk_count.checked_sub(1) else { return Ok((h.start_lon, h.start_lat)) };
+    let off = last
+        .checked_mul(CHUNK_META_LEN as u32)
+        .and_then(|rel| h.index_offset.checked_add(rel))
+        .ok_or(Error::BadOffset)?;
+    let mut meta = [0u8; CHUNK_META_LEN];
+    src.read_at(off.into(), &mut meta)?;
+    let cm = parse_chunk_meta(&meta, src.len())?;
+    let (mut lon, mut lat) = (cm.anchor_lon, cm.anchor_lat);
+    const BLOCK: usize = 16 * POINT_RECORD_LEN;
+    let mut block = [0u8; BLOCK];
+    let (mut at, end) = (u64::from(cm.byte_offset), u64::from(cm.byte_offset) + u64::from(cm.byte_len));
+    while at < end {
+        let bytes = &mut block[..(end - at).min(BLOCK as u64) as usize];
+        src.read_at(at, bytes)?;
+        for p in bytes.as_chunks::<POINT_RECORD_LEN>().0 {
+            lon = lon.wrapping_add(rd_i16(p, 0).into());
+            lat = lat.wrapping_add(rd_i16(p, 2).into());
+        }
+        at += bytes.len() as u64;
+    }
+    Ok((lon, lat))
+}
+
 /// The resident, source-independent parse of a route: the header fields plus the chunk index and
 /// its segment prefix sums. [`read`](Self::read) pays the route's only up-front cost, the header
 /// read and the full chunk-meta walk.

@@ -146,6 +146,10 @@ impl DayLoad {
 /// a Finish a few metres before the day's end.
 pub const REST_MIN_M: u32 = 500;
 
+/// A day that starts more than this, straight line, from the end of the day before follows a
+/// transfer (spec §7.7). The phone uses the same value.
+pub const TRANSFER_MIN_M: u32 = 200;
+
 /// Where the active trip's next day meets the day before on the trip's line. The host reads it from
 /// the trip object and the day before's route after each catalog read; without it the next day
 /// loads as it is.
@@ -158,6 +162,17 @@ pub struct DayJoin {
     pub leave_m: u32,
     /// Where the next day joins the line.
     pub join_m: u32,
+    /// Straight-line metres from the last point of the day before to the first point of the day:
+    /// [`gap_m`].
+    pub gap_m: u32,
+}
+
+/// The straight-line gap from `end` to `start`, `(lon, lat)` µdeg, rounded up so a gap a fraction
+/// past [`TRANSFER_MIN_M`] is a transfer, as the phone reads it.
+pub fn gap_m(end: (i32, i32), start: (i32, i32)) -> u32 {
+    let d = obc_map_scene::ground_dist_m(end, start);
+    let m = d as u32;
+    m + u32::from((m as f32) < d)
 }
 
 /// A position on a trip: a day, that day's route, and metres into it.
@@ -250,13 +265,18 @@ impl TripSummary {
     }
 
     /// How day `day` loads. When the position is on the day before, more than [`REST_MIN_M`] before
-    /// it leaves the line, the day is the rest of that day and then this day. Otherwise it is this
-    /// day's route as it is.
+    /// it leaves the line, and no transfer lies between the two days, the day is the rest of that
+    /// day and then this day. Otherwise it is this day's route as it is.
     pub fn load_day(&self, day: u16, progress: Option<&TripProgress>, join: Option<&DayJoin>) -> DayLoad {
         let from_m = self.position_m(progress);
         let join = join.filter(|j| j.key == self.key && j.day == day);
         match (self.own(progress).and_then(|p| self.in_trip(p.day)), join) {
-            (Some(at), Some(join)) if at + 1 == day && from_m > 0 && from_m + REST_MIN_M < join.leave_m => {
+            (Some(at), Some(join))
+                if at + 1 == day
+                    && from_m > 0
+                    && from_m + REST_MIN_M < join.leave_m
+                    && join.gap_m <= TRANSFER_MIN_M =>
+            {
                 DayLoad::Rest { from_m, to_m: join.leave_m, join_m: join.join_m }
             }
             _ => DayLoad::AsIs,
@@ -353,7 +373,7 @@ mod tests {
     fn a_day_after_an_early_stop_is_the_rest_of_the_day_before_and_the_day() {
         let t = trip(0);
         // Day 2 leaves the line at 74 km, and Day 3 joins it 3 km in from a camp.
-        let join = DayJoin { key: KEY, day: 2, leave_m: 74_000, join_m: 3_000 };
+        let join = DayJoin { key: KEY, day: 2, leave_m: 74_000, join_m: 3_000, gap_m: 0 };
         assert_eq!(t.load_day(0, None, Some(&join)), DayLoad::AsIs, "no progress: the day as it is");
         // Stopped 20 km before the end of Day 2 and finished: Day 3 starts with the rest of Day 2.
         let early = progress(1, Some(1), &[]);
@@ -369,6 +389,20 @@ mod tests {
         assert_eq!(t.load_day(2, Some(&TripProgress { metres: 0, ..early.clone() }), Some(&join)), DayLoad::AsIs);
         assert_eq!(t.load_day(0, Some(&early), Some(&join)), DayLoad::AsIs);
         assert_eq!(t.load_day(2, Some(&early), None), DayLoad::AsIs);
+    }
+
+    #[test]
+    fn a_day_after_an_early_stop_before_a_transfer_loads_as_it_is() {
+        let t = trip(0);
+        let early = progress(1, Some(1), &[]);
+        let at =
+            |gap_m| t.load_day(2, Some(&early), Some(&DayJoin { key: KEY, day: 2, leave_m: 74_000, join_m: 0, gap_m }));
+        assert_eq!(at(TRANSFER_MIN_M), DayLoad::Rest { from_m: 54_000, to_m: 74_000, join_m: 0 });
+        assert_eq!(at(TRANSFER_MIN_M + 1), DayLoad::AsIs, "a train from the end of Day 2 to the start of Day 3");
+        // 1,801 µdeg of latitude is 200.5 m.
+        let (end, start) = ((8_000_000, 46_000_000), (8_000_000, 46_001_801));
+        assert!((200.4..200.6).contains(&obc_map_scene::ground_dist_m(end, start)));
+        assert_eq!(at(gap_m(end, start)), DayLoad::AsIs, "200.5 m is a transfer");
     }
 
     #[test]
