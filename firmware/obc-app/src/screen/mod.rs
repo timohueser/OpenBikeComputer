@@ -84,7 +84,7 @@ pub use journey::JourneyScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
 pub(crate) use landmarks::source_layout;
 pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
-pub(crate) use map::low_battery_cue;
+pub(crate) use map::{gauge_cue, gauge_region, low_battery_cue};
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
@@ -646,7 +646,7 @@ pub enum RenderKeyKind {
     SensorSettings,
 
     /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
-    /// the rows are merged from. The Assistant list shares it for its What's next hint.
+    /// the rows are merged from.
     UpAhead,
     Drawer,
 }
@@ -882,7 +882,7 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map(),
-    Assistant(AssistantScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
+    Assistant(AssistantScreen) => Caps::nav(),
     Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     PeakArticle(PeakArticleScreen) => Caps::nav().reader(ReaderNeed::Articles),

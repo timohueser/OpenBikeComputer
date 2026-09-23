@@ -54,13 +54,13 @@ final class TripFlowTests: XCTestCase {
         snap(app, "TR7-multiselect")
         group.tap()
 
-        let alert = app.alerts["Name the trip"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "name prompt missing")
-        let field = alert.textFields.firstMatch
-        field.tap()
+        let field = app.textFields["rename.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "name prompt missing")
+        // Tap past the text's right end: clearing only deletes backwards from the caret.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
         field.clearText()
         field.typeText("Northwoods Weekend")
-        alert.buttons["Create"].tap()
+        app.buttons["rename.save"].tap()
 
         // The trip card appears, and the two grouped routes left the list.
         XCTAssertTrue(app.staticTexts["Northwoods Weekend"].waitForExistence(timeout: 5), "new trip card missing")
@@ -120,5 +120,28 @@ final class TripFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'main.card.'"))
             .matching(NSPredicate(format: "label CONTAINS 'Schwarzwald'")).firstMatch.exists,
             "the imported route must not also be a route card")
+    }
+
+    /// Two files that arrive together become one trip through Make trip. A trip is a Planned row
+    /// of its own: with no loose route left, the list still shows the trip card, not the empty
+    /// state.
+    @MainActor
+    func testATripFromSeveralFilesStaysListed() {
+        let app = launch(fixtures: "empty", importSample: "trip")
+
+        let makeTrip = app.buttons["join.makeTrip"]
+        XCTAssertTrue(makeTrip.waitForExistence(timeout: 10), "the Make a trip sheet is missing")
+        makeTrip.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.day.1"].firstMatch.waitForExistence(timeout: 10),
+            "Make trip must open the new two-day trip's page")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        waitForMain(app)
+        let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'main.trip.'"))
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 5), "the trip card is missing")
+        XCTAssertEqual(cards.count, 1, "one trip must show one card")
+        XCTAssertFalse(app.staticTexts["No planned routes yet"].exists, "a trip is not an empty list")
+        snap(app, "trip-only-list")
     }
 }

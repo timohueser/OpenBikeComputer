@@ -11,7 +11,7 @@ import OBCTransport
 /// closure over the composition root's importer, and only the flow lives here. The bond check is
 /// likewise a narrow closure, because the flow needs only the framing bit.
 ///
-/// The view binds `pendingImport`, `collision`, `addAsNewPrompt` with `newRouteName`, and
+/// The view binds `pendingImport`, `collision`, `addAsNewPrompt` seeded by `newRouteName`, and
 /// `importFailed`; every transition between them goes through the methods below.
 @MainActor @Observable
 public final class ImportFlowModel {
@@ -24,8 +24,8 @@ public final class ImportFlowModel {
     /// "Add as a new route" chosen from the collision dialog; it holds the import while the
     /// distinct-name prompt is up.
     public var addAsNewPrompt: PendingImport?
-    /// The rename prompt's text field.
-    public var newRouteName = ""
+    /// The name the rename prompt starts with.
+    public private(set) var newRouteName = ""
     /// The "couldn't read that file" alert.
     public var importFailed = false
     /// Several files that arrived together, behind the "Make a trip" sheet; nil closes it.
@@ -77,24 +77,37 @@ public final class ImportFlowModel {
         }
     }
 
-    /// Picked or shared files. One file opens the landing; several open the "Make a trip" sheet.
-    /// When one of several does not decode, nothing opens and the rider sees the alert.
+    /// Picked or shared files, read as `openFile(at:)` reads one, then `open(files:)`.
     public func openFiles(at urls: [URL]) async {
-        guard urls.count > 1 else {
-            if let url = urls.first { await openFile(at: url) }
-            return
-        }
-        var files: [PendingImport] = []
+        var files: [(data: Data, fileName: String)] = []
         for url in urls {
-            guard let data = await Self.read(url), let route = try? decode(data, url.lastPathComponent) else {
+            guard let data = await Self.read(url) else {
                 importFailed = true
                 return
             }
-            files.append(PendingImport(
-                route: route, fileName: url.lastPathComponent, fileData: data,
+            files.append((data, url.lastPathComponent))
+        }
+        open(files: files)
+    }
+
+    /// Route files in hand: one opens the landing; several open the "Make a trip" sheet, or the
+    /// alert when one does not decode.
+    public func open(files: [(data: Data, fileName: String)]) {
+        guard files.count > 1 else {
+            if let file = files.first { open(data: file.data, fileName: file.fileName) }
+            return
+        }
+        var pending: [PendingImport] = []
+        for file in files {
+            guard let route = try? decode(file.data, file.fileName) else {
+                importFailed = true
+                return
+            }
+            pending.append(PendingImport(
+                route: route, fileName: file.fileName, fileData: file.data,
                 noDevicePaired: !isBonded(), bikeType: lastBikeType.value))
         }
-        pendingJoin = PendingJoin(files: files)
+        pendingJoin = PendingJoin(files: pending)
     }
 
     public func closeJoin() {
@@ -174,17 +187,17 @@ public final class ImportFlowModel {
 
     // MARK: The "Add as a new route" prompt
 
-    /// Whether the prompt's current name can be accepted: non-empty, and unlike every saved
-    /// route's, because a duplicate would just re-collide.
-    public var isNewRouteNameValid: Bool {
-        let trimmed = newRouteName.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Whether the prompt can accept `name`: non-empty, and unlike every saved route's, because a
+    /// duplicate would just re-collide.
+    public func isValidNewRouteName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty && plannedRoute(named: trimmed) == nil
     }
 
     /// Accept the prompt's name and open the landing as a plain new import, not a replace.
-    public func confirmNewName() {
-        guard let pending = addAsNewPrompt, isNewRouteNameValid else { return }
-        pendingImport = pending.renamed(to: newRouteName.trimmingCharacters(in: .whitespacesAndNewlines))
+    public func confirmNewName(_ name: String) {
+        guard let pending = addAsNewPrompt, isValidNewRouteName(name) else { return }
+        pendingImport = pending.renamed(to: name.trimmingCharacters(in: .whitespacesAndNewlines))
         addAsNewPrompt = nil
     }
 

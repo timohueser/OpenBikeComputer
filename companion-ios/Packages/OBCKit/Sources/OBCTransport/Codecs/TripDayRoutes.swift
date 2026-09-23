@@ -28,6 +28,14 @@ extension TripDayRoute {
             pointCount: points.count,
             trackPreview: TrackPreview.normalizing(points.map(\.coordinate)))
     }
+
+    /// The day as the route detail shows it, with the profile and the steepest grade of its cut.
+    public func detail(tripID: TripID) -> RouteDetail {
+        let stats = RouteStats.compute(from: points)
+        return RouteDetail(
+            summary: summary(tripID: tripID), elevationProfile: stats.elevationProfile,
+            maxGradePercent: stats.maxGradePercent)
+    }
 }
 
 extension Trip {

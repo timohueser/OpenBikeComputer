@@ -1,8 +1,8 @@
 //! The Route overview: the look-before-you-ride page between picking a route and tracking it.
 //!
 //! It shows the route's name and two pages that flip on a dwell. Page 1 is the route on the device
-//! map, with the route's bike type in the map's corner, over DISTANCE, CLIMB and EST TIME. Page 2
-//! is the full-height elevation profile over one climb and descent line. Neither band is
+//! map, with the route's bike type in the map's corner, over one distance and estimated-time line.
+//! Page 2 is the full-height elevation profile over one climb and descent line. Neither band is
 //! interactive. Below the pages is a START RIDE row and, when the route is deletable, the guarded
 //! Delete-route row under it. Entry selects START RIDE; up and down toggle the two rows; press
 //! starts the session only from the START row; hold charges the delete only from the Delete row;
@@ -27,7 +27,7 @@ use super::vocab::chrome::{empty_state, stroke2, title_chrome, title_frame, LIST
 use super::vocab::fmt::{duration_hms, write_distance_split};
 use super::vocab::marquee::{fit, Fitted};
 use super::vocab::pager::ContentPager;
-use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{detail_totals, draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use super::vocab::track_map::{draw_track_map, Track};
 use crate::input::Gesture;
 use crate::navigator::RouteState;
@@ -42,12 +42,7 @@ const SIDE_MARGIN: i32 = 12;
 /// Page 1's map band: the frame's inside, from under the title bar to the rule at [`MAP_BOT`].
 const MAP_X: i32 = 5;
 const MAP_TOP: i32 = 4 + TITLE_BAR_H;
-const MAP_BOT: i32 = 113;
-
-/// Page 1's ledger: DISTANCE, CLIMB and EST TIME, each over a rule.
-const ROWS_TOP: i32 = 109;
-const ROW_PITCH: i32 = 36;
-const ROW_RULE: i32 = 40;
+const MAP_BOT: i32 = PROFILE_BOT;
 
 /// Page 2's profile band, with the headroom above it for the peak label, and the climb and descent
 /// line under it.
@@ -232,16 +227,7 @@ impl RouteOverviewScreen {
             // Totals come from the opened route once it has streamed in, and from the catalog
             // summary before that, so the row never has to show a placeholder.
             let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), route_bike_type(rx));
-            let rows: [(&str, &str, &str, Option<bool>); 3] = [
-                (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
-                (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
-                (rx.t(Msg::RouteOverviewEstTime), &est, "h", None),
-            ];
-            for (i, (caption, value, unit, arrow)) in rows.into_iter().enumerate() {
-                let y = ROWS_TOP + i as i32 * ROW_PITCH;
-                ledger_row(cv, w, y, caption, value, unit, arrow);
-                cv.hline(16, y + ROW_RULE, w - 32, RULE);
-            }
+            detail_totals(cv, w, TOTALS_Y, &dist, dist_unit, &est);
         }
 
         // The Pause-menu row family: plain labels, the selected row in the amber fill, and the

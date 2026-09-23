@@ -10,6 +10,9 @@ public struct RouteDetailView: View {
     private let onUpload: () -> Void
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    /// Set by a host that rebuilds this view while it is on screen: the host presents the rename
+    /// sheet above the rebuild, because a rebuild closes a sheet presented from inside it.
+    private let onRenameTap: (() -> Void)?
     private let onReverse: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
     private let noDevicePaired: Bool
@@ -24,7 +27,6 @@ public struct RouteDetailView: View {
     private let quietRows: AnyView?
 
     @State private var renameShown = false
-    @State private var renameDraft = ""
     @State private var deleteConfirmShown = false
     @State private var waypointsExpanded = false
     @State private var mapShown = false
@@ -37,6 +39,7 @@ public struct RouteDetailView: View {
         onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onRenameTap: (() -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
         noDevicePaired: Bool = false,
@@ -51,6 +54,7 @@ public struct RouteDetailView: View {
         self.onUpload = onUpload
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onRenameTap = onRenameTap
         self.onReverse = onReverse
         self.onBikeTypeChange = onBikeTypeChange
         self.noDevicePaired = noDevicePaired
@@ -157,12 +161,12 @@ public struct RouteDetailView: View {
         #else
         .sheet(isPresented: $mapShown) { trackMapCover }
         #endif
-        .obcRenameAlert(
+        .obcRenameSheet(
             renameTitle,
             isPresented: $renameShown,
-            name: $renameDraft,
+            name: model.name,
             onSave: {
-                if model.rename(to: renameDraft) { onRename?(model.name) }
+                if model.rename(to: $0) { onRename?(model.name) }
             }
         )
         .task { model.start() }
@@ -236,8 +240,7 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.title")
                 if model.isRenamable {
                     Button {
-                        renameDraft = model.name
-                        renameShown = true
+                        if let onRenameTap { onRenameTap() } else { renameShown = true }
                     } label: {
                         Image(systemName: "pencil")
                             .font(.system(size: 15, weight: .medium))
@@ -344,6 +347,9 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.pairDevice")
             case .imported:
                 // The rows under the stats land the route; upload is on the route or trip page.
+                EmptyView()
+            case .tripDay:
+                // The trip page uploads and deletes the whole trip.
                 EmptyView()
             case .tracked:
                 // The services block above carries the per-ride upload.
