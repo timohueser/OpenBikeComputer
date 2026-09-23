@@ -4,7 +4,7 @@ import OBCDomain
 @testable import OBCUI
 
 /// The state under the day editor: a drag is live in the stats and reaches the trip on release,
-/// the stepper and Even out balance the days, split and join keep the handles aligned, undo
+/// the stepper balances the days, split and join keep the handles aligned, undo
 /// steps back one change, and Done hands the draft back.
 @MainActor
 struct TripDayEditorModelTests {
@@ -97,22 +97,6 @@ struct TripDayEditorModelTests {
         #expect(model.trip.dayCount == 3, "one stepper tap is one undo step")
     }
 
-    @Test
-    func evenOutRebalancesAfterADrag() {
-        let model = editor(threeDays())
-        let first = model.handles.markers[0].id
-        model.handles.begin(first)
-        model.handles.move(first, to: 15_000)
-        model.handles.end()
-
-        model.evenOut()
-        #expect(abs(model.trip.dayEnds[0].distance - 10_000) < 1)
-        #expect(model.trip.dayEnds.map(\.title) == ["A", "B", "C"])
-        model.undo()
-        #expect(abs(model.trip.dayEnds[0].distance - 15_000) < 1)
-    }
-
-    /// The stepper is split mode's alone: after that, the day count changes with Split and Join.
     @Test
     func theStepperWorksOnlyInSplitMode() {
         let model = editor(threeDays())

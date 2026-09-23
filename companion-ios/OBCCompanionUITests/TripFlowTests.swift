@@ -122,25 +122,20 @@ final class TripFlowTests: XCTestCase {
         let day3 = app.buttons["dayEditor.day.2"].firstMatch
         XCTAssertTrue(day3.waitForExistence(timeout: 5), "two stepper taps must make three days")
         XCTAssertTrue(
-            app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '3 DAYS'")).firstMatch.exists,
+            app.staticTexts["dayEditor.summary"].label.hasPrefix("3 days"),
             "the header counts the days")
         snap(app, "DE-split-3")
 
-        // A drag on the profile handle moves the day end; Even out balances again; Undo steps back.
+        // A drag on the profile handle moves the day end; Undo steps back.
         let handle = profileHandle(app, "Day 2 end")
         XCTAssertTrue(handle.exists, "the profile handle is missing")
         let balanced = day3.label
         let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 70, dy: 0)))
         XCTAssertNotEqual(day3.label, balanced, "the drag must move the day end")
-        let dragged = day3.label
         snap(app, "DE-split-dragged")
-        app.buttons["dayEditor.evenOut"].tap()
-        XCTAssertNotEqual(day3.label, dragged, "Even out must move the day end again")
         app.buttons["dayEditor.undo"].tap()
-        XCTAssertEqual(day3.label, dragged, "Undo must step back to the dragged position")
-        app.buttons["dayEditor.undo"].tap()
-        XCTAssertEqual(day3.label, balanced, "a second Undo steps back the drag")
+        XCTAssertEqual(day3.label, balanced, "Undo steps back the drag")
         app.buttons["dayEditor.done"].tap()
 
         XCTAssertTrue(
@@ -194,7 +189,6 @@ final class TripFlowTests: XCTestCase {
 
         let day1 = app.buttons["dayEditor.day.0"].firstMatch
         XCTAssertTrue(day1.waitForExistence(timeout: 10), "the day editor is missing")
-        XCTAssertTrue(app.buttons["dayEditor.evenOut"].exists, "Even out days is in the header")
         XCTAssertFalse(app.buttons["dayEditor.days-Increment"].exists, "edit mode has no stepper")
         XCTAssertTrue(day1.label.hasSuffix("transfer"), "a day end at a transfer says so: \(day1.label)")
         snap(app, "DE-edit")
@@ -250,6 +244,39 @@ final class TripFlowTests: XCTestCase {
         alert.buttons["Discard"].tap()
         XCTAssertTrue(app.buttons["trip.editDays"].waitForExistence(timeout: 5), "Discard must return to the trip page")
         XCTAssertFalse(app.descendants(matching: .any)["trip.day.2"].firstMatch.exists, "the discarded day end must not be saved")
+    }
+
+    /// At the middle height a swipe on the day list scrolls the list and leaves the sheet where
+    /// it is; the grab handle still moves the sheet, down to the one-line summary.
+    @MainActor
+    func testTheDayListScrollsAtTheMiddleHeight() {
+        let app = launch(fixtures: "trips", importSample: "gpx")
+        let row = app.buttons["import.startTrip"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "import Start a trip row missing")
+        row.tap()
+        let increment = app.buttons["dayEditor.days-Increment"]
+        XCTAssertTrue(increment.waitForExistence(timeout: 10), "the day editor is missing")
+        for _ in 0..<7 { increment.tap() }
+        let first = app.buttons["dayEditor.day.0"].firstMatch
+        let summary = app.staticTexts["dayEditor.summary"]
+        XCTAssertTrue(summary.label.hasPrefix("8 days"), "eight days: \(summary.label)")
+        let headerY = summary.frame.minY
+        let last = app.buttons["dayEditor.day.7"].firstMatch
+        XCTAssertFalse(last.exists && last.isHittable, "the last day starts below the fold")
+
+        first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
+        XCTAssertEqual(summary.frame.minY, headerY, accuracy: 2, "the sheet stays at the middle height")
+        XCTAssertTrue(last.waitForExistence(timeout: 2) && last.isHittable, "the list scrolls to the last day")
+        snap(app, "DE-list-scrolled")
+
+        let grabber = app.buttons["Sheet Grabber"].firstMatch
+        grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.99)))
+        XCTAssertTrue(summary.waitForExistence(timeout: 2))
+        XCTAssertGreaterThan(summary.frame.minY, headerY + 100, "the grab handle lowers the sheet")
+        Thread.sleep(forTimeInterval: 1)
+        snap(app, "DE-peek-split")
     }
 
     /// A day end's drag band on the profile.
