@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// The grab mark for one marker, drawn the same on the profile and on the map: a pin in the
-/// colour of the day it ends, with its tip on the line.
+/// colour of the day it ends, with its tip on the line. A fixed marker's pin is faded.
 struct MarkerHandleView: View {
     let color: Color
     let isActive: Bool
+    var isFixed = false
 
     /// The view's frame; the tip sits at the bottom centre.
     static let size = CGSize(width: 24, height: 30)
@@ -17,6 +18,7 @@ struct MarkerHandleView: View {
             .overlay(PinShape().stroke(OBCTheme.panel, lineWidth: 2))
             .frame(width: isActive ? 20 : 16, height: isActive ? 27 : 22)
             .shadow(color: OBCTheme.ink.opacity(0.22), radius: isActive ? 4 : 1.5, y: 1)
+            .opacity(isFixed ? 0.45 : 1)
             .frame(width: Self.size.width, height: Self.size.height, alignment: .bottom)
             .animation(.snappy(duration: 0.16), value: isActive)
     }

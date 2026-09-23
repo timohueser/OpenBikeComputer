@@ -62,7 +62,7 @@ struct LineMarkerProfileView: View {
             }
             .stroke(isActive ? OBCTheme.forest : OBCTheme.ink, lineWidth: isActive ? 1.5 : 1)
             .allowsHitTesting(false)
-            MarkerHandleView(color: model.color(endingAt: marker.id), isActive: isActive)
+            MarkerHandleView(color: model.color(endingAt: marker.id), isActive: isActive, isFixed: marker.isFixed)
                 .position(x: x, y: y - MarkerHandleView.size.height / 2)
                 .allowsHitTesting(false)
             ProfileGrabBand(model: model, marker: marker, plot: plot)
@@ -180,7 +180,7 @@ private struct ProfileGrabBand: View {
             .onChange(of: isPressed) { _, pressed in
                 if !pressed { release() }
             }
-            .onDisappear(perform: release)
+            .onDisappear { if grab != nil { release() } }
             .accessibilityElement()
             .accessibilityLabel(marker.name)
             .accessibilityValue("km \(OBCFormat.distanceValue(meters: marker.distance))")
@@ -210,8 +210,11 @@ private struct ProfileGrabBand: View {
     }
 
     private func release() {
-        guard grab != nil else { return }
-        grab = nil
+        guard let grab else {
+            model.tap(marker.id)
+            return
+        }
+        self.grab = nil
         model.end()
     }
 }

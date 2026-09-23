@@ -158,6 +158,7 @@ struct LineMarkerMapView: UIViewRepresentable {
             view.configure(
                 color: parent.model.color(endingAt: annotation.id),
                 isActive: isActive,
+                isFixed: parent.model.marker(annotation.id)?.isFixed ?? false,
                 label: isActive ? parent.model.label(for: annotation.id) : nil
             )
         }
@@ -201,6 +202,7 @@ struct LineMarkerMapView: UIViewRepresentable {
             case .ended:
                 guard let current = drag, current.annotation === annotation else { return }
                 releaseDrag()
+                if current.id == nil { parent.model.tap(annotation.id) }
             }
         }
 
@@ -286,11 +288,11 @@ final class MarkerAnnotationView: MKAnnotationView {
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(color: Color, isActive: Bool, label: String?) {
+    func configure(color: Color, isActive: Bool, isFixed: Bool, label: String?) {
         host.rootView = AnyView(
             VStack(spacing: 4) {
                 if let label { MarkerLabel(text: label).fixedSize() }
-                MarkerHandleView(color: color, isActive: isActive)
+                MarkerHandleView(color: color, isActive: isActive, isFixed: isFixed)
             }
             .frame(width: Self.hostSize.width, height: Self.hostSize.height, alignment: .bottom)
         )
