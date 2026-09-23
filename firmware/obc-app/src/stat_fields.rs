@@ -11,6 +11,7 @@ use obc_reader::PoiCategory;
 use obc_render::text::TextAlign;
 use obc_route::{Profile, RouteReader, Waypoints};
 
+use crate::effort::{Metric, Reading};
 use crate::i18n::{t, Msg};
 use crate::navigator::RouteState;
 use crate::screen::vocab::fmt;
@@ -115,6 +116,11 @@ stat_field_table! {
     HeartRate = 12, StatfieldHeartRate, 1, 1, None;
     Power = 13, StatfieldPower, 1, 1, None;
     Cadence = 14, StatfieldCadence, 1, 1, None;
+    /// The ride's energy from power, in kJ.
+    Kj = 24, StatfieldKj, 1, 1, None;
+    /// Live heart rate beside its last five minutes.
+    HrGraph = 25, StatfieldHrGraph, 2, 1, None;
+    PowerGraph = 26, StatfieldPowerGraph, 2, 1, None;
 }
 
 impl StatField {
@@ -125,6 +131,15 @@ impl StatField {
 
     pub const fn slots(self) -> usize {
         self.span() as usize * self.rows() as usize
+    }
+
+    /// The metric a graph field plots, or `None` for every other field.
+    pub const fn graph(self) -> Option<Metric> {
+        match self {
+            StatField::HrGraph => Some(Metric::Hr),
+            StatField::PowerGraph => Some(Metric::Power),
+            _ => None,
+        }
     }
 
     /// The rendered tile content: a caption, the number-only value, and whether to prefix an
@@ -246,16 +261,15 @@ impl StatField {
                 // caption + value shape of a `StatCell`. This arm only keeps `cell` total.
                 StatCell::new(cap(t(Msg::TileWaypoints, lang), ""), fmt::dashes(), false)
             }
-            StatField::HeartRate => {
-                // `_display` judges freshness on the ride clock the sample recorded on, not on
-                // this render's clock. The two differ in the sim during a GPX replay.
-                let v = cx.recorder.live_hr_display().map(|bpm| bpm as u32);
-                StatCell::new(cap(t(Msg::TileHr, lang), ""), fmt::integer_opt(v), false)
+            // A graph field's block is the tile of its metric. Freshness is judged on the ride clock
+            // the sample recorded on, not on this render's clock: the two differ in the sim during a
+            // GPX replay.
+            StatField::HeartRate | StatField::HrGraph => {
+                effort_cell(cx.recorder.reading(Metric::Hr), t(Msg::TileHr, lang))
             }
-            StatField::Power => {
-                let v = cx.recorder.live_power_display().map(|w| w as u32);
-                StatCell::new(cap(t(Msg::TilePwr, lang), ""), fmt::integer_opt(v), false)
-            }
+            StatField::Power => effort_cell(cx.recorder.reading(Metric::Power), t(Msg::TilePwr, lang)),
+            StatField::PowerGraph => effort_cell(cx.recorder.reading(Metric::Power), t(Msg::TilePwrShort, lang)),
+            StatField::Kj => StatCell::new(cap("KJ", ""), fmt::integer_opt(cx.recorder.kj()), false),
             StatField::Cadence => {
                 // A fresh `0` (coasting) is a real reading and shows `0`; only an absent or
                 // stale value reads `--`.
@@ -323,13 +337,22 @@ pub struct StatCell {
     pub value: heapless::String<10>,
     pub arrow: bool,
     pub value_align: TextAlign,
+    /// The effort zone that tints the tile, or `None` for a plain tile.
+    pub zone: Option<u8>,
 }
 
 impl StatCell {
     fn new(caption: heapless::String<24>, value: impl AsRef<str>, arrow: bool) -> Self {
         let value = heapless::String::try_from(value.as_ref()).expect("stat values fit the value buffer");
-        StatCell { caption, value, arrow, value_align: TextAlign::Left }
+        StatCell { caption, value, arrow, value_align: TextAlign::Left, zone: None }
     }
+}
+
+/// A heart-rate or power tile: the live value, tinted by its zone.
+fn effort_cell(reading: Option<Reading>, caption: &str) -> StatCell {
+    let mut cell = StatCell::new(cap(caption, ""), fmt::integer_opt(reading.map(|r| r.value as u32)), false);
+    cell.zone = reading.and_then(|r| r.zone);
+    cell
 }
 
 /// Glue two caption fragments into a tile caption, such as `"AVG "` + `Units::speed_label()`.
@@ -784,6 +807,9 @@ mod tests {
             (HeartRate, 12, Msg::StatfieldHeartRate, 1, 1, None),
             (Power, 13, Msg::StatfieldPower, 1, 1, None),
             (Cadence, 14, Msg::StatfieldCadence, 1, 1, None),
+            (Kj, 24, Msg::StatfieldKj, 1, 1, None),
+            (HrGraph, 25, Msg::StatfieldHrGraph, 2, 1, None),
+            (PowerGraph, 26, Msg::StatfieldPowerGraph, 2, 1, None),
         ];
         assert_eq!(StatField::ALL, expected.map(|(field, ..)| field), "picker order");
         for (field, id, name, span, rows, category) in expected {
@@ -794,7 +820,7 @@ mod tests {
                 assert_eq!(field.name(lang), t(name, lang), "{field:?} in {lang:?}");
             }
         }
-        for byte in 24..=u8::MAX {
+        for byte in 27..=u8::MAX {
             assert_eq!(StatField::from_u8(byte), None, "unknown persisted ID {byte}");
         }
         let list = StatFieldList::decode(1, &[10]);

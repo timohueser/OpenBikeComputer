@@ -275,6 +275,18 @@ fn ghost_value(
         F::HeartRate => "152",
         F::Power => "210",
         F::Cadence => "88",
+        F::Kj => "1840",
+        // A graph field previews as a wide tile under its picker name, which tells it from the
+        // plain tile of the same metric.
+        F::HrGraph | F::PowerGraph => {
+            cell.caption.clear();
+            let _ = cell.caption.push_str(field.name(lang));
+            if field == F::HrGraph {
+                "152"
+            } else {
+                "210"
+            }
+        }
         // Handled above. They are spelled out to keep the match exhaustive.
         F::NextWater | F::NextCampsite | F::NextLodging | F::NextResupply | F::NextPharmacy | F::NextBikeShop => return,
     };
