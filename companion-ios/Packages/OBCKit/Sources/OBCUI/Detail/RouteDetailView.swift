@@ -251,24 +251,10 @@ public struct RouteDetailView: View {
 
     private var bikeTypeRow: some View {
         OBCGroupedSection {
-            Menu {
-                Picker("Bike type", selection: Binding(
-                    get: { model.bikeType },
-                    set: { type in
-                        model.setBikeType(type)
-                        onBikeTypeChange?(type)
-                    }
-                )) {
-                    ForEach(BikeType.allCases, id: \.self) { Text($0.name).tag($0) }
-                }
-            } label: {
-                OBCListRow(label: "Bike type", value: model.bikeType.name, showsDivider: false) {
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(OBCTheme.inkFaint)
-                }
+            OBCBikeTypeRow(type: model.bikeType) { type in
+                model.setBikeType(type)
+                onBikeTypeChange?(type)
             }
-            .buttonStyle(.plain)
             .accessibilityIdentifier("detail.bikeType")
         }
         .padding(.top, 12)

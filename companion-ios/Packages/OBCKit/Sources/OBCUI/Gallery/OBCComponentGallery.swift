@@ -163,6 +163,10 @@ public struct OBCComponentGallery: View {
                         OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.wood, label: "Firmware update", comingSoon: true)
                         OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.warning, label: "Forget this device", showsDivider: false) { confirmShown = true }
                     }
+                    OBCGroupedSection {
+                        OBCListRow(label: "Add to Alps traverse", detail: "Becomes Day 4", showsChevron: true) {}
+                        OBCBikeTypeRow(type: .gravel) { _ in }
+                    }
                 }
 
                 section("Connected Services") {
