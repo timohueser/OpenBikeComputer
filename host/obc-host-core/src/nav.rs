@@ -163,17 +163,27 @@ pub fn rest_ready(
 }
 
 /// Where the active trip's next day meets the day before, for [`App::set_day_join`]: the day
-/// before's leave point, clamped to its route's length, and the day's join point.
+/// before's leave point, clamped to its route's length, the day's join point, and the gap from the
+/// day before's end to the day's start.
 pub fn day_join(
     app: &obc_app::App,
     routes: &dyn crate::RouteRepository,
     trips: &dyn crate::TripCatalog,
 ) -> Option<obc_app::trip::DayJoin> {
+    use obc_formats::io::SliceSource;
     let (trip, day) = app.next_trip_day()?;
     let (before, this) = (trips.day(trip.key, day.checked_sub(1)?)?, trips.day(trip.key, day)?);
     let bytes = routes.route_bytes(before.route)?;
-    let length = obc_route::RouteObjectInfo::read(&obc_formats::io::SliceSource(&bytes)).ok()?.distance_m;
-    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
+    let length = obc_route::RouteObjectInfo::read(&SliceSource(&bytes)).ok()?.distance_m;
+    let end = obc_route::route_end(&SliceSource(&bytes)).ok()?;
+    let start = obc_route::RouteSummary::read(&SliceSource(&routes.route_bytes(this.route)?)).ok()?;
+    Some(obc_app::trip::DayJoin {
+        key: trip.key,
+        day,
+        leave_m: before.leave_m.min(length),
+        join_m: this.join_m,
+        gap_m: obc_map_scene::ground_dist_m(end, (start.start_lon, start.start_lat)) as u32,
+    })
 }
 
 impl DetourReady {
