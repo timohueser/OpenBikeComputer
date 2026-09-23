@@ -111,6 +111,8 @@ struct RouteDetailScreen: View {
     private let rideShareMenu: RideShareMenu?
     /// A tracked ride's photos.
     @State private var photos: RidePhotosModel?
+    /// A tracked ride's day note.
+    @State private var dayNote: DayNoteModel?
 
     init(
         transport: any DeviceTransport,
@@ -122,6 +124,7 @@ struct RouteDetailScreen: View {
         ridePoints: [RidePoint] = [],
         rides: [RideSummary] = [],
         photos: (library: any LibraryStore, photoLibrary: any PhotoLibrary)? = nil,
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
@@ -157,6 +160,9 @@ struct RouteDetailScreen: View {
                 _photos = State(initialValue: RidePhotosModel(
                     rideID: ride.id, points: ridePoints, library: photos.library, photoLibrary: photos.photoLibrary
                 ))
+                _dayNote = State(initialValue: DayNoteModel(
+                    ride: ride, points: ridePoints, library: photos.library, placeName: placeName
+                ))
             }
         } else {
             isRide = false
@@ -188,7 +194,8 @@ struct RouteDetailScreen: View {
             onRename: onRename,
             onReverse: onReverse,
             onBikeTypeChange: onBikeTypeChange,
-            photos: photos
+            photos: photos,
+            dayNote: dayNote
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)

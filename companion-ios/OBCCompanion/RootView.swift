@@ -27,6 +27,8 @@ struct RootView: View {
     private let bondStore: any BondStore
     private let library: any LibraryStore
     private let photoLibrary: any PhotoLibrary
+    /// Names places from coordinates; nil in mock runs.
+    private let placeName: (@Sendable (Coordinate) async -> String?)?
     /// The proactive-update preferences: the auto-check toggle, the answered ledger and the
     /// last-seen device. Shared with the Settings toggle, so the switch silences what it names.
     private let updateSurface: any UpdateSurfaceStore
@@ -64,6 +66,7 @@ struct RootView: View {
         self.bondStore = bondStore
         self.library = library
         self.photoLibrary = photoLibrary
+        self.placeName = placeName
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
@@ -420,6 +423,7 @@ struct RootView: View {
                     ridePoints: tracked?.points ?? [],
                     rides: mainModel.rides,
                     photos: (library, photoLibrary),
+                    placeName: placeName,
                     deviceName: mainModel.deviceName,
                     // Phone-side only: the ride stays on the device's card and lands in Recently Deleted.
                     onDelete: {

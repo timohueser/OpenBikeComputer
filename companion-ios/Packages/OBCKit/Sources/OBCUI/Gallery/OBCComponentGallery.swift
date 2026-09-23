@@ -16,6 +16,7 @@ public struct OBCComponentGallery: View {
     @State private var waypointsExpanded = true
     @State private var rideLibrary = Self.sampleRideLibrary()
     @State private var selectedPhotos: Set<String> = ["p0", "p1", "p3", "p4", "p5"]
+    @State private var dayNote = Self.sampleDayNote()
 
     public init() {}
 
@@ -232,6 +233,17 @@ public struct OBCComponentGallery: View {
                 }
                 #endif
 
+                section("Day note") {
+                    // Live: the row opens the writer, and the entry shows what it saved.
+                    DayNoteOfferRow(model: dayNote, photos: nil)
+                    DayNoteEntry(model: dayNote, photos: nil)
+                    DayNoteText(
+                        header: "Tue 30 Sep · Andermatt → Ulrichen · 74 km",
+                        note: "Furka in the fog, then sun on the way down. Wild camp by the lake, storm at 3."
+                    )
+                }
+                .task { await dayNote.start() }
+
                 section("Empty / Error Layout") {
                     OBCEmptyStateView(
                         glyph: .trackTile,
@@ -312,6 +324,18 @@ public struct OBCComponentGallery: View {
         let model = RideLibraryModel(library: store)
         model.rides = store.rideSummaries()
         return model
+    }
+
+    /// A Day 2 ride in a fresh in-memory library, so the row and the writer run for real.
+    static func sampleDayNote() -> DayNoteModel {
+        let library = InMemoryLibraryStore()
+        let ride = RideSummary(
+            id: RideID("gallery-day-2"), name: "Ulrichen", date: Date(timeIntervalSince1970: 1_790_000_000),
+            distanceMeters: 74_300, trip: RideTrip(key: 7, dayIndex: 1, dayCount: 3, name: "Alps traverse")
+        )
+        let points = [RidePoint(timestamp: ride.date, coordinate: Coordinate(latitude: 46.6, longitude: 8.6))]
+        try? library.saveRide(Ride(summary: ride, points: points))
+        return DayNoteModel(ride: ride, points: points, library: library)
     }
 
     #if os(iOS)
