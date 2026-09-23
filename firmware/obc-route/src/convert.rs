@@ -667,7 +667,7 @@ impl Encoder {
         for &(x, y, _, _) in &self.cur {
             bbox_extend(&mut bbox, x, y);
         }
-        sink.write(&body)?;
+        sink.write_chunk((ax, ay, ae), &body)?;
         let meta = ChunkMeta {
             bbox,
             anchor_lon: ax,

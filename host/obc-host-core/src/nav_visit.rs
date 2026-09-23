@@ -57,6 +57,8 @@ enum Stage {
     Ready,
 }
 pub struct VisitPlan {
+    /// An easier trial: the composed bytes are measured and dropped, never published.
+    pub measure: bool,
     context: ReviewContext,
     target: Option<VisitTarget>,
     approach: (i32, i32),
@@ -104,6 +106,7 @@ impl VisitPlan {
         };
         let builder = Self::builder(context, target, approach, rejoin_m)?;
         let mut plan = Self {
+            measure: false,
             context,
             target,
             approach,

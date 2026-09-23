@@ -886,13 +886,7 @@ pub(crate) fn decode_chunk_from(
     n: usize,
     out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 ) -> Result<(), Error> {
-    let _ = out.push(RoutePoint {
-        lon: m.anchor_lon,
-        lat: m.anchor_lat,
-        ele: m.anchor_ele,
-        surface: 0,
-        elevation_incomplete: false,
-    });
+    let _ = out.push(chunk_anchor((m.anchor_lon, m.anchor_lat, m.anchor_ele)));
 
     // The points after the anchor are fixed 7-byte records, read in one go.
     let want = (n - 1) * POINT_RECORD_LEN;
@@ -901,24 +895,31 @@ pub(crate) fn decode_chunk_from(
     if want > 0 {
         src.read_at(m.byte_offset.into(), bytes)?;
     }
+    decode_records((m.anchor_lon, m.anchor_lat), bytes, |p| {
+        let _ = out.push(p);
+    })
+}
 
-    let (mut lon, mut lat) = (m.anchor_lon, m.anchor_lat);
-    let mut o = 0;
-    for _ in 1..n {
-        lon += rd_i16(bytes, o) as i32;
-        lat += rd_i16(bytes, o + 2) as i32;
-        let ele = rd_i16(bytes, o + 4);
-        if bytes[o + 6] & !15 != 0 {
+/// A chunk's first point. The format stores no surface for it.
+pub(crate) fn chunk_anchor((lon, lat, ele): (i32, i32, i16)) -> RoutePoint {
+    RoutePoint { lon, lat, ele, surface: 0, elevation_incomplete: false }
+}
+
+/// The points of one chunk body after its anchor: fixed 7-byte records, each a delta from the
+/// point before it.
+pub(crate) fn decode_records(anchor: (i32, i32), bytes: &[u8], mut visit: impl FnMut(RoutePoint)) -> Result<(), Error> {
+    let (records, rest) = bytes.as_chunks::<POINT_RECORD_LEN>();
+    if !rest.is_empty() {
+        return Err(Error::BadOffset);
+    }
+    let (mut lon, mut lat) = anchor;
+    for r in records {
+        lon += rd_i16(r, 0) as i32;
+        lat += rd_i16(r, 2) as i32;
+        if r[6] & !15 != 0 {
             return Err(Error::BadOffset);
         }
-        o += POINT_RECORD_LEN;
-        let _ = out.push(RoutePoint {
-            lon,
-            lat,
-            ele,
-            surface: bytes[o - 1] & 7,
-            elevation_incomplete: bytes[o - 1] & 8 != 0,
-        });
+        visit(RoutePoint { lon, lat, ele: rd_i16(r, 4), surface: r[6] & 7, elevation_incomplete: r[6] & 8 != 0 });
     }
     Ok(())
 }

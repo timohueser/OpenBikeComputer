@@ -15,6 +15,7 @@ struct VisitHarness {
     facts: ExternalFacts,
     now: u32,
     catalog: Option<obc_app::catalog_state::CatalogEffect>,
+    elev: Box<dyn obc_route::ElevationSource>,
 }
 impl VisitHarness {
     fn new() -> Self {
@@ -36,6 +37,7 @@ impl VisitHarness {
             facts: ExternalFacts::NONE,
             now: 0,
             catalog: None,
+            elev: Box::new(obc_elevation::NullElevation),
         };
         // The catalog scope and a matched fix are what a visit request needs.
         struct Here;
@@ -146,7 +148,10 @@ impl VisitHarness {
             assert!(self.catalog.replace(effect).is_none());
         }
         if let Some(effect) = plan.effects.navigator.take() {
-            if matches!(effect, Effect::Acquire { work: PlannerWork::AssistantRoute(_), .. }) {
+            if matches!(
+                effect,
+                Effect::Acquire { work: PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_), .. }
+            ) {
                 let id = self.h.app.active_route_index().map(|i| self.h.app.route_ids()[i]);
                 assert!(self.h.app.bind_visit_sources(
                     StoreRevision {
@@ -158,13 +163,9 @@ impl VisitHarness {
                 ));
             }
             assert!(self.visit.accepts(&effect, &self.h.app), "{effect:?}");
-            if let Some(answer) = self.visit.accept(
-                effect,
-                &mut self.h.app,
-                self.h.store,
-                &mut self.h.guard,
-                &mut obc_elevation::NullElevation,
-            ) {
+            if let Some(answer) =
+                self.visit.accept(effect, &mut self.h.app, self.h.store, &mut self.h.guard, &mut *self.elev)
+            {
                 self.outcomes.navigator.try_put(answer).unwrap();
             }
         }
@@ -176,7 +177,7 @@ impl VisitHarness {
             self.h.map.as_ref().unwrap(),
             &self.h.tables,
             &self.h.cache,
-            &mut obc_elevation::NullElevation,
+            &mut *self.elev,
             self.h.reply,
         ) {
             self.outcomes.navigator.try_put(answer).unwrap();
@@ -508,6 +509,53 @@ fn easier_uses_shared_board_owner_and_releases_each_leg_without_adding_avoidance
         h.settle(ReviewStatus::Idle);
         h.h.assert_clean();
     }
+}
+
+/// Every trial composes into the arena's measure: the card sees only its leg searches. Only the
+/// selected candidate is published, and its stored copy matches what its trial measured, or the
+/// comparison would fail instead of showing it.
+#[test]
+fn easier_publishes_only_the_selected_candidate() {
+    struct Flat;
+    impl obc_route::ElevationSource for Flat {
+        fn sample(&mut self, _: i32, _: i32) -> Option<i16> {
+            Some(0)
+        }
+    }
+    struct Start;
+    impl obc_ports::LocationSource for Start {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            Some(obc_ports::Fix::at(500_000, 500_000))
+        }
+    }
+    // A detour the map's roads cut short: the planned candidate saves about 4 km.
+    let gpx = br#"<gpx><trk><trkseg><trkpt lon="0.500" lat="0.500"/><trkpt lon="0.500" lat="0.530"/><trkpt lon="0.530" lat="0.530"/><trkpt lon="0.530" lat="0.500"/></trkseg></trk></gpx>"#;
+    let mut sink = obc_host_core::VecSink::default();
+    obc_route::gpx_to_obcr(&SliceSource(gpx), "Long way", &mut sink).unwrap();
+    let mut h = VisitHarness::with_route(sink.bytes());
+    h.bound_context();
+    h.elev = Box::new(Flat);
+    let (sequence, completed) = (h.h.store.sequence(), h.h.writer.transport().completed.borrow().len());
+    h.h.app.open_easier_routes(flat_store::planner_map_key(h.h.store)).unwrap();
+    for _ in 0..2000 {
+        if h.h.writer.pending().is_some() {
+            h.h.writer.complete();
+        }
+        h.pass_with(&mut Start, true);
+        if h.h.app.assistant_review_status() == ReviewStatus::Preview && !h.visit.active() {
+            break;
+        }
+    }
+    assert_eq!(h.h.app.assistant_review_status(), ReviewStatus::Preview);
+    assert!(matches!(h.h.app.top_screen(), obc_app::screen::Screen::Easier(_)));
+    let kinds = h.h.writer.transport().completed.borrow()[completed..].to_vec();
+    let count = |kind| kinds.iter().filter(|&&k| k == kind).count();
+    assert!(count(Kind::Seal) > 1, "several trials ran");
+    assert_eq!((count(Kind::Publish), count(Kind::Remove)), (1, 0));
+    assert_eq!(h.h.store.sequence(), sequence + 1, "one commit: the selected candidate");
+    h.h.app.apply_gesture(obc_app::Gesture::Back);
+    h.settle(ReviewStatus::Idle);
+    h.h.assert_clean();
 }
 
 #[test]
