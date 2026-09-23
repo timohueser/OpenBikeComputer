@@ -136,15 +136,13 @@ public struct TripDayEditorView: View {
 struct DayEditorSheet: View {
     let model: TripDayEditorModel
     @Binding var discardShown: Bool
-    /// Reported to the host: the sheet's height and its lowest detent.
+    /// Reported to the host: the sheet's height, and its lowest detent, the header's height.
     @Binding var sheetHeight: CGFloat
     @Binding var peekHeight: CGFloat
     let onClose: () -> Void
 
     @State private var stopsModel: TripStopsModel?
     @State private var dayRename: Int?
-    @State private var headerHeight: CGFloat = 0
-    @State private var bottomSafeArea: CGFloat = 0
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -156,24 +154,17 @@ struct DayEditorSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 18)
                 .padding(.bottom, 12)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                    headerHeight = $0
-                    peekHeight = headerHeight + bottomSafeArea
-                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { peekHeight = $0 }
             LineMarkerProfileView(model: model.handles, height: 150, showsAxis: true)
                 .padding(.horizontal, 20)
             list
         }
-        // A short sheet cuts the bottom, never the header.
-        .frame(maxHeight: .infinity, alignment: .top)
+        // A short sheet cuts the bottom, never the header: without the zero minimum the frame
+        // grows to the content and the sheet centres it.
+        .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .clipped()
         .background(OBCTheme.parchment)
-        .onGeometryChange(for: EdgeInsets.self) { proxy in
-            EdgeInsets(top: proxy.size.height, leading: 0, bottom: proxy.safeAreaInsets.bottom, trailing: 0)
-        } action: { measured in
-            bottomSafeArea = measured.bottom
-            sheetHeight = measured.top + measured.bottom
-            peekHeight = headerHeight + bottomSafeArea
-        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height + $0.safeAreaInsets.bottom } action: { sheetHeight = $0 }
         .alert("Discard changes?", isPresented: $discardShown) {
             Button("Discard", role: .destructive, action: onClose)
             Button("Keep Editing", role: .cancel) {}
