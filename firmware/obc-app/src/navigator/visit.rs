@@ -354,7 +354,7 @@ impl crate::App {
         self.navigator.visit.catalog_revision = scope.revision.raw();
         self.navigator.visit.requested_route = original;
         self.navigator.visit.needs_bind = true;
-        self.plan_assistant(crate::NavRequest::new(origin.fix, destination, "Easier route"), context);
+        self.measure_easier(crate::NavRequest::new(origin.fix, destination, "Easier route"), context);
         if self.assistant_review_status() == ReviewStatus::Planning {
             Ok(())
         } else {

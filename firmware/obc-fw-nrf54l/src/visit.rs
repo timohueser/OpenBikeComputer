@@ -98,6 +98,8 @@ pub(crate) struct Executor {
     returning: bool,
     /// The measured outbound leg, while the leg back is searched.
     outbound: Option<LegCost>,
+    /// An easier trial: the composition goes to the arena's measure, never to the card.
+    measuring: bool,
     published: Option<(ObjectId, Revision)>,
     uncertain: bool,
     validated: Option<(u64, u32)>,
@@ -117,6 +119,7 @@ impl Executor {
             return_to: (0, 0),
             returning: false,
             outbound: None,
+            measuring: false,
             published: None,
             uncertain: false,
             validated: None,
@@ -134,10 +137,12 @@ impl Executor {
                     | NavigatorEffect::Release { family: PlanFamily::Route, .. }
             ))
             || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::MeasureLegs(_), .. })
-            || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                && app.assistant_review_context().is_some_and(|c| {
-                    matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
-                })
+            || matches!(
+                effect,
+                NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_), .. }
+            ) && app.assistant_review_context().is_some_and(|c| {
+                matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
+            })
     }
     pub(crate) fn original_current(&self) -> bool {
         self.original.as_ref().is_some_and(StoreSource::is_current)
@@ -236,7 +241,10 @@ impl Executor {
                 self.phase = Phase::Ready(Work::Measure);
                 self.token.take().map(|token| NavigatorOutcome::Acquired { token })
             }
-            NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. } => {
+            NavigatorEffect::Acquire {
+                work: work @ (PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_)),
+                ..
+            } => {
                 self.validated = None;
                 self.token = Some(token);
                 if !matches!(self.phase, Phase::Empty) || guard.is_some() {
@@ -274,7 +282,8 @@ impl Executor {
                     return self.fail(NavigatorError::Unavailable);
                 }
                 self.choice = VisitChoice::new();
-                self.phase = Phase::AllocateA;
+                self.measuring = matches!(work, PlannerWork::MeasureRoute(_));
+                self.phase = if self.measuring { Phase::Step(Work::Begin) } else { Phase::AllocateA };
                 None
             }
             NavigatorEffect::Step { .. } => {
@@ -429,38 +438,31 @@ impl Executor {
                         }
                     };
                     (done, sink.appended, sink.patch_len)
+                } else if self.measuring {
+                    let (builder, original, leg, measure) = g.visit_measure_parts();
+                    let mut sink = obc_route::easier::MeasureSink::new(measure, &mut *elev);
+                    // The pace of a staged flush, with nothing to flush.
+                    let done = loop {
+                        let done = match self.compose(work, builder, original, leg, store, &mut sink) {
+                            Ok(done) => done,
+                            Err(error) => return self.fail(error),
+                        };
+                        if !matches!(done, Done::Running)
+                            || sink.appended + builder.step_bound()
+                                > crate::arena::NAV_OUTPUT_STAGE_BYTES - HEADER_FULL_LEN
+                        {
+                            break done;
+                        }
+                    };
+                    (done, 0, 0)
                 } else {
                     let (builder, original, leg, output) = g.visit_parts();
                     let mut sink = crate::ride::NavStageSink { stage: output, appended: 0, patch_len: 0 };
                     // Copy steps fill the stage before one flush; a header patch ends the batch.
                     let done = loop {
-                        let result = match work {
-                            Work::Begin => builder.begin(&mut sink).map(|_| Done::Begin),
-                            Work::Prefix => builder
-                                .append_prefix_step(
-                                    &RouteReader::new(original, self.original.as_ref().unwrap()),
-                                    &mut sink,
-                                )
-                                .map(|done| if done { Done::Prefix } else { Done::Running }),
-                            Work::Append => {
-                                let Some(sealed) = self.leg.as_ref() else { return self.fail(NavigatorError::Store) };
-                                let source = store.sealed_source(sealed);
-                                builder.append_leg_step(&RouteReader::new(leg, &source), &mut sink).map(|done| {
-                                    if done {
-                                        Done::Append
-                                    } else {
-                                        Done::Running
-                                    }
-                                })
-                            }
-                            Work::Finish => builder
-                                .finish_step(&RouteReader::new(original, self.original.as_ref().unwrap()), &mut sink)
-                                .map(|done| done.map_or(Done::Running, Done::Finish)),
-                            Work::Leg | Work::Measure => unreachable!(),
-                        };
-                        let done = match result {
+                        let done = match self.compose(work, builder, original, leg, store, &mut sink) {
                             Ok(done) => done,
-                            Err(_) => return self.fail(NavigatorError::Unavailable),
+                            Err(error) => return self.fail(error),
                         };
                         if !matches!(done, Done::Running)
                             || sink.patch_len != 0
@@ -473,7 +475,7 @@ impl Executor {
                     (done, sink.appended, sink.patch_len)
                 };
                 if appended == 0 && patch == 0 {
-                    return self.after_flush(work, done, app, g);
+                    return self.after_flush(work, done, app, g, elev);
                 }
                 self.phase = Phase::Flush(work, done, appended, patch);
             }
@@ -527,7 +529,45 @@ impl Executor {
         }
         None
     }
-    fn after_flush(&mut self, work: Work, done: Done, app: &mut App, guard: &mut NavGuard) -> Option<NavigatorOutcome> {
+    /// One composition step of `work` into `sink`.
+    fn compose(
+        &self,
+        work: Work,
+        builder: &mut obc_route::visit::VisitBuilder,
+        original: &obc_route::RouteIndex,
+        leg: &obc_route::RouteIndex,
+        store: &'static FlatStore<FlatCard>,
+        sink: &mut dyn ByteSink,
+    ) -> Result<Done, NavigatorError> {
+        let original = RouteReader::new(original, self.original.as_ref().ok_or(NavigatorError::Store)?);
+        match work {
+            Work::Begin => builder.begin(sink).map(|_| Done::Begin),
+            Work::Prefix => {
+                builder.append_prefix_step(&original, sink).map(|done| if done { Done::Prefix } else { Done::Running })
+            }
+            Work::Append => {
+                let source = store.sealed_source(self.leg.as_ref().ok_or(NavigatorError::Store)?);
+                builder.append_leg_step(&RouteReader::new(leg, &source), sink).map(|done| {
+                    if done {
+                        Done::Append
+                    } else {
+                        Done::Running
+                    }
+                })
+            }
+            Work::Finish => builder.finish_step(&original, sink).map(|done| done.map_or(Done::Running, Done::Finish)),
+            Work::Leg | Work::Measure => unreachable!(),
+        }
+        .map_err(|_| NavigatorError::Unavailable)
+    }
+    fn after_flush(
+        &mut self,
+        work: Work,
+        done: Done,
+        app: &mut App,
+        guard: &mut NavGuard,
+        elev: &mut dyn obc_route::ElevationSource,
+    ) -> Option<NavigatorOutcome> {
         match done {
             Done::Begin => {
                 self.phase = Phase::Step(Work::Prefix);
@@ -568,14 +608,19 @@ impl Executor {
                 let token = self.token.take()?;
                 self.phase = Phase::Stopped;
                 Some(
-                    if app.assistant_review_context().is_some_and(|c| {
+                    if !(app.assistant_review_context().is_some_and(|c| {
                         matches!(c.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
                             && c.required_anchors_m == anchors
-                    }) || app.assistant_visit_variant(token, anchors)
+                    }) || app.assistant_visit_variant(token, anchors))
                     {
-                        NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
-                    } else {
                         NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
+                    } else if self.measuring {
+                        match core::mem::take(guard.visit_measure_parts().3).finish(elev) {
+                            Ok((costs, crc)) => app.assistant_easier_measured(token, costs, crc),
+                            Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Unavailable },
+                        }
+                    } else {
+                        NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
                     },
                 )
             }
@@ -632,7 +677,7 @@ impl Executor {
                 }
                 self.phase = Phase::Stopped;
                 if !releasing {
-                    return self.after_flush(work, done, app, guard.as_mut()?);
+                    return self.after_flush(work, done, app, guard.as_mut()?, elev);
                 }
             }
             (After::Seal, Ok(Outcome::Done)) => {

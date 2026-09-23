@@ -1,6 +1,8 @@
-//! Sequential, immutable easier-route trials through Navigator's ordinary review lifecycle.
+//! Sequential easier-route trials, measured and never stored. Only the candidate the rider
+//! selects goes through Navigator's review and is published.
 use crate::{
-    navigator::{ReviewContext, ReviewPurpose, ReviewStatus, VisitUnavailable},
+    device_core::{NavigatorTag, OperationToken},
+    navigator::{NavigatorError, NavigatorOutcome, ReviewContext, ReviewPurpose, ReviewStatus, VisitUnavailable},
     App, NavRequest,
 };
 use obc_formats::obcr::RouteSourceKey;
@@ -198,10 +200,47 @@ impl App {
             })
             && !self.active_visit()
     }
-    fn start_easier_trial(&mut self, objective: Objective) {
+    /// A trial is measured, never stored. Only the selected candidate is composed again and
+    /// published.
+    fn start_easier_trial(&mut self, objective: Objective, measure: bool) {
         let Some(mut context) = self.easier.context else { return };
         context.purpose = ReviewPurpose::Easier(objective);
-        self.plan_assistant(NavRequest::new(context.origin, self.easier.destination, "Easier route"), context);
+        let request = NavRequest::new(context.origin, self.easier.destination, "Easier route");
+        if measure {
+            self.measure_easier(request, context);
+        } else {
+            self.plan_assistant(request, context);
+        }
+    }
+    pub(crate) fn measure_easier(&mut self, request: NavRequest, context: ReviewContext) {
+        self.navigator.request_review(request, context, true);
+        self.ui.map_dirty = true;
+    }
+    /// The executor's answer to a trial: the costs and the stored checksum of the candidate it
+    /// composed into a measuring sink.
+    pub fn assistant_easier_measured(
+        &mut self,
+        token: OperationToken<NavigatorTag>,
+        costs: Costs,
+        crc: u32,
+    ) -> NavigatorOutcome {
+        let outcome = NavigatorOutcome::ReviewReady { token };
+        if !self.navigator.accepts(&outcome) || !self.assistant_measuring() || self.easier.phase != Phase::Trials {
+            return NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged };
+        }
+        let objective = Objective::TRIALS[self.easier.trial as usize];
+        let current = self.easier.current;
+        for (i, goal) in Goal::ALL.iter().enumerate() {
+            if goal.eligible(current, costs)
+                && self.easier.choices[i]
+                    .is_none_or(|old| goal.saving(current, costs) > goal.saving(current, old.costs))
+            {
+                self.easier.choices[i] = Some(Candidate { objective, costs, crc });
+            }
+        }
+        self.easier.next = next_trial(self.easier.trial as usize, Some(costs), current);
+        self.easier.phase = Phase::Releasing;
+        outcome
     }
     pub(crate) fn advance_easier(&mut self) {
         if self.easier.phase == Phase::Idle {
@@ -248,37 +287,15 @@ impl App {
         }
         match self.easier.phase {
             Phase::Trials | Phase::Rebuild => match self.assistant_review_status() {
-                ReviewStatus::Preview => {
+                ReviewStatus::Preview if self.easier.phase == Phase::Rebuild => {
                     let Some(preview) = self.assistant_preview() else { return };
-                    let Some(costs) = preview.easier else {
+                    let expected = self.easier.choices[self.easier.selected as usize];
+                    self.easier.context = self.assistant_review_context();
+                    if expected.is_some_and(|r| r.crc == preview.source.crc && Some(r.costs) == preview.easier) {
+                        self.easier.phase = Phase::Ready;
+                    } else {
                         self.cancel_easier();
                         self.easier.phase = Phase::Failed;
-                        return;
-                    };
-                    self.easier.context = self.assistant_review_context();
-                    if self.easier.phase == Phase::Rebuild {
-                        let expected = self.easier.choices[self.easier.selected as usize];
-                        if expected.is_some_and(|r| r.crc == preview.source.crc && r.costs == costs) {
-                            self.easier.phase = Phase::Ready;
-                        } else {
-                            self.cancel_easier();
-                            self.easier.phase = Phase::Failed;
-                        }
-                    } else {
-                        let objective = Objective::TRIALS[self.easier.trial as usize];
-                        for (i, goal) in Goal::ALL.iter().enumerate() {
-                            if goal.eligible(self.easier.current, costs)
-                                && self.easier.choices[i].is_none_or(|old| {
-                                    goal.saving(self.easier.current, costs)
-                                        > goal.saving(self.easier.current, old.costs)
-                                })
-                            {
-                                self.easier.choices[i] = Some(Candidate { objective, costs, crc: preview.source.crc });
-                            }
-                        }
-                        self.easier.next = next_trial(self.easier.trial as usize, Some(costs), self.easier.current);
-                        self.cancel_easier();
-                        self.easier.phase = Phase::Releasing;
                     }
                 }
                 ReviewStatus::Failed(crate::navigator::NavigatorError::Plan(error))
@@ -303,13 +320,13 @@ impl App {
                 _ => {}
             },
             Phase::SelectRelease if self.assistant_planner_released() => {
-                self.start_easier_trial(self.easier.choices[self.easier.selected as usize].unwrap().objective);
+                self.start_easier_trial(self.easier.choices[self.easier.selected as usize].unwrap().objective, false);
                 self.easier.phase = Phase::Rebuild;
             }
             Phase::Releasing if self.assistant_planner_released() => {
                 if let Some(next) = self.easier.next {
                     self.easier.trial = next as u8;
-                    self.start_easier_trial(Objective::TRIALS[next]);
+                    self.start_easier_trial(Objective::TRIALS[next], true);
                     self.easier.phase = Phase::Trials;
                 } else {
                     for i in 0..3 {
@@ -326,7 +343,7 @@ impl App {
                         self.easier.selected = i as u8;
                         // A trial's plan error no longer describes what follows.
                         self.easier.failure = None;
-                        self.start_easier_trial(self.easier.choices[i].unwrap().objective);
+                        self.start_easier_trial(self.easier.choices[i].unwrap().objective, false);
                         self.easier.phase = Phase::Rebuild;
                     } else if self.easier.failure.is_some() {
                         self.easier.phase = Phase::Failed;
