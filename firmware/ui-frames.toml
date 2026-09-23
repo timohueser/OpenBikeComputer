@@ -263,7 +263,7 @@ script = "B d w p p"
 expect = "Rides"
 
 # The Ride detail of Day 2: the date line, the ridden track on the Grimsel map in the trail red with
-# its start dot, DISTANCE, RIDE TIME and CLIMBED, and the plain Delete-ride row.
+# its start dot, one distance and ride-time line, and the plain Delete-ride row.
 [[frame]]
 name = "ride-detail"
 map = "{grimsel}"
@@ -271,7 +271,7 @@ env = "tracks"
 script = "B d w p p p"
 expect = "RideDetail"
 
-# Page 2 after the 5 s dwell (seven `w` ticks): the profile with its high point, AVG SPEED and the
+# Page 2 after the 5 s dwell (seven `w` ticks): the profile with its high point and climb total, AVG SPEED and the
 # one sensor Day 2 recorded, AVG HR.
 [[frame]]
 name = "ride-detail-elevation"
@@ -334,12 +334,12 @@ map = "{grimsel}"
 script = "A"
 expect = "Assistant"
 
-# What's next's hint answers from the route's resident climbs: the climb starts ahead of the fix.
+# The last, inactive action stays visible and selectable while a route is active.
 [[frame]]
-name = "assistant-climb-hint"
+name = "assistant-riding"
 map = "{grimsel}"
 env = "eta-route"
-script = "p*4 f d p A w"
+script = "p*4 f d p A w d*6"
 expect = "Assistant"
 args = ["--gpx", "{gpx}", "--at", "10"]
 
@@ -895,8 +895,8 @@ args = ["--dfu", "failed=notstarted"]
 # does a hold charge the delete. While the route is the active ride's the row is hidden entirely (no
 # greyed face); that state is unreachable by gesture (the active route's overview never opens from
 # the menu), so it has no frame — the route_overview guard tests pin it.
-# Entry shows page 1: the Grimsel climb on the device map with its bike-type chip, over DISTANCE,
-# CLIMB and EST TIME.
+# Entry shows page 1: the Grimsel climb on the device map with its bike-type chip, over one
+# distance and estimated-time line.
 [[frame]]
 name = "routeoverview"
 map = "{grimsel}"
@@ -922,8 +922,7 @@ env = "routes"
 script = "p p p"
 expect = "RouteOverview"
 
-# Page 1 for a day of about 80 km: the fit is past the band's map scale ceiling, so the track draws
-# on the plain page, as it does without a map.
+# Page 1 for a day of about 80 km: the tall map band fits the full track.
 [[frame]]
 name = "routeoverview-long"
 map = "{grimsel}"
@@ -2444,3 +2443,9 @@ map = "{cork}"
 script = "{theme_dark} {landmarks} p f u f"
 expect = "LandmarkPhoto"
 args = ["--heading", "0", "--center", "-9829419,51482665"]
+
+[[frame]]
+name = "dark-assistant"
+map = "{grimsel}"
+script = "{theme_dark} A"
+expect = "Assistant"
