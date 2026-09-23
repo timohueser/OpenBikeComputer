@@ -565,27 +565,21 @@ map = "{grimsel}"
 script = "B u p p p"
 expect = "StatFields"
 
-# The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
-# six steps reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
-# five steps to `Waypoint list` (the last hidden non-sensor entry) and press. The page-sized panel lands on
-# its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
+# The full-page waypoint list added through the picker lands on its own editor page.
 [[frame]]
 name = "fields-wpt-panel"
 map = "{grimsel}"
-script = "B u p p p d*6 p d*6 p"
+script = "B u p p p d*6 p d*8 p"
 expect = "StatFields"
 
-# The six `Next: <category>` fields (epic #946, U5). `B u p p p` is Home -> Settings -> Ride ->
-# Data fields (the Fields grid). (a) the Add-field picker scrolled onto the new group: six rows
-# wearing the category's own row icon in place of a span badge, directly under `Next waypoint`.
+# The picker shows single-cell, full-row and full-page footprints together.
 [[frame]]
-name = "addfield-next-category"
+name = "addfield-sizes"
 map = "{grimsel}"
-script = "B u p p p d*6 p d*6"
+script = "B u p p p d*6 p d*8"
 expect = "AddField"
 
-# (b) three of them placed, drawn by the WYSIWYG editor's ghost: icon + the localized category word
-# + a per-category sample distance (the editor has no route, so the live cell would read `--`).
+# Category fields in a saved layout show their icon, localized name and sample distance.
 [[frame]]
 name = "fields-next-category"
 map = "{grimsel}"
@@ -1869,13 +1863,13 @@ args = ["--stat-fields", "next-campsite,next-lodging,next-bike-shop"]
 langs = ["de", "fr", "es"]
 
 [[frame]]
-name = "addfield-next-category"
+name = "addfield-sizes"
 map = "{grimsel}"
-script = "B u p p p d*6 p d*11"
+script = "B u p p p d*6 p d*8"
 expect = "AddField"
 langs = ["de", "fr", "es"]
 
-# The Trip to go row of the Add-field picker: its name fits beside the span badge.
+# Long translated names stay clear of the size badge.
 [[frame]]
 name = "addfield-trip"
 map = "{grimsel}"
