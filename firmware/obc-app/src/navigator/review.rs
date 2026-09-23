@@ -729,15 +729,16 @@ impl crate::App {
             && self.navigator.review.change.is_none()
             && !self.assistant_needs_recovery();
         let checkpoint = self.assistant_checkpoint();
+        let active = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
+        let ending = self.navigator.ride_end.and_then(|end| self.route_ids().get(end.route).copied());
         let held = [
             checkpoint.map(|c| c.route.object),
             checkpoint.and_then(|c| c.original.map(|o| o.object)),
-            self.active_route_index().and_then(|i| self.route_ids().get(i).copied()),
+            active,
+            ending,
             self.navigator
                 .lead_in()
-                .filter(|lead| {
-                    self.active_route_index().and_then(|i| self.route_ids().get(i).copied()) == Some(lead.splice)
-                })
+                .filter(|lead| Some(lead.splice) == active || Some(lead.splice) == ending)
                 .map(|lead| lead.route),
         ];
         self.route_ids()
@@ -1599,6 +1600,11 @@ mod tests {
         assert_eq!(app.orphan_routes().count(), 0);
         app.navigator.review.checkpoint = None;
         assert_eq!(app.orphan_routes().collect::<std::vec::Vec<_>>(), [4, 5]);
+        app.navigator.note_ride_end();
+        app.activate_route(usize::MAX);
+        assert_eq!(app.orphan_routes().collect::<std::vec::Vec<_>>(), [4, 5], "a pending ride save keeps its sources");
+        app.navigator.take_ride_end();
+        assert_eq!(app.orphan_routes().count(), 4, "save completion releases the finished route");
         app.activate_route(0);
         assert_eq!(app.orphan_routes().collect::<std::vec::Vec<_>>(), [5, 6, 7], "a stale lead-in holds nothing");
         app.cleanup_orphan_routes();
