@@ -85,9 +85,14 @@ mod tests {
 
     /// A route through `points`, `(lon, lat)` in thousandths of a degree (about 111 m at 0°).
     fn route_named(name: &str, points: &[(i32, i32)]) -> Vec<u8> {
+        route_udeg(name, &points.iter().map(|&(lon, lat)| (lon * 1_000, lat * 1_000)).collect::<Vec<_>>())
+    }
+
+    /// A route through `points`, `(lon, lat)` in µdeg.
+    fn route_udeg(name: &str, points: &[(i32, i32)]) -> Vec<u8> {
         let mut gpx = String::from("<gpx><trk><trkseg>");
         for (lon, lat) in points {
-            gpx += &format!("<trkpt lon=\"{}\" lat=\"{}\"/>", *lon as f64 / 1000.0, *lat as f64 / 1000.0);
+            gpx += &format!("<trkpt lon=\"{:.6}\" lat=\"{:.6}\"/>", *lon as f64 / 1e6, *lat as f64 / 1e6);
         }
         gpx += "</trkseg></trk></gpx>";
         let mut sink = VecSink::default();
@@ -102,6 +107,11 @@ mod tests {
     /// Ten points north along lon 0: 1.1 km, ending at lat 10 000 µdeg.
     fn line() -> Vec<u8> {
         route(&(0..=10).map(|k| (0, k)).collect::<Vec<_>>())
+    }
+
+    /// The line ridden back south: it starts where [`line`] ends.
+    fn back() -> Vec<u8> {
+        route(&(0..=10).rev().map(|k| (0, k)).collect::<Vec<_>>())
     }
 
     struct Once(Option<Fix>);
@@ -362,8 +372,12 @@ mod tests {
         let src = SliceSource(&bytes);
         let index = RouteIndex::read(&src).unwrap();
         let route = RouteReader::new(&index, &src);
+        let back = back();
+        let back_src = SliceSource(&back);
+        let back_index = RouteIndex::read(&back_src).unwrap();
+        let back_route = RouteReader::new(&back_index, &back_src);
         let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
-        let mut app = recording_on(&[(route.summary(), 7), (route.summary(), 8)], &[trip], 0, |_| {});
+        let mut app = recording_on(&[(route.summary(), 7), (back_route.summary(), 8)], &[trip], 0, |_| {});
 
         ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
         assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next: Some(1) }));
@@ -390,20 +404,25 @@ mod tests {
         let src = SliceSource(&bytes);
         let index = RouteIndex::read(&src).unwrap();
         let route = RouteReader::new(&index, &src);
+        // Day 1 rides north, Day 2 rides back south, Day 3 north again.
+        let back = back();
+        let back_src = SliceSource(&back);
+        let back_index = RouteIndex::read(&back_src).unwrap();
+        let back_route = RouteReader::new(&back_index, &back_src);
         let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8, 9] };
-        let routes = [(route.summary(), 7), (route.summary(), 8), (route.summary(), 9)];
+        let routes = [(route.summary(), 7), (back_route.summary(), 8), (route.summary(), 9)];
         let mut app = recording_on(&routes, &[trip], 0, |_| {});
 
         ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
         press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
         assert_eq!(app.active_route_index(), Some(1), "Day 2 is loaded");
-        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+        ride(&mut app, &back_route, &[(0, 10_000), (0, 5_000), (0, 100)]);
         assert_eq!(view(&app), Some(ArrivalView { route: 1, day: Some(1), next: Some(2) }));
-        press(&mut app, &route, &[Gesture::Hold]);
+        press(&mut app, &back_route, &[Gesture::Hold]);
 
-        let written = save(&mut app, &route);
+        let written = save(&mut app, &back_route);
         assert_eq!((written.day, written.day_route.id, written.last_finished), (1, 8, Some(1)), "Day 2 is done");
-        assert_eq!(written.metres, route.total_distance_m);
+        assert_eq!(written.metres, back_route.total_distance_m);
         let trip = &app.trips()[0];
         assert_eq!(trip.next_day(Some(&written)), Some(2), "Day 3 is next");
     }
@@ -430,24 +449,31 @@ mod tests {
     }
 
     #[test]
-    fn across_a_transfer_the_view_offers_no_ride_on() {
+    fn ride_on_is_offered_up_to_a_transfer() {
+        use crate::trip::TRANSFER_MIN_M;
         let bytes = line();
         let src = SliceSource(&bytes);
         let index = RouteIndex::read(&src).unwrap();
         let route = RouteReader::new(&index, &src);
-        // Day 2 starts 3.3 km north of where Day 1 ends.
-        let far = route_named("Day 2 Brig", &[(0, 40), (0, 45)]);
-        let far_src = SliceSource(&far);
-        let far_index = RouteIndex::read(&far_src).unwrap();
-        let far_route = RouteReader::new(&far_index, &far_src);
-        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
-        let mut app = recording_on(&[(route.summary(), 7), (far_route.summary(), 8)], &[trip], 0, |_| {});
+        let end = route.position_at(route.total_distance_m).map(|end| (end.lon, end.lat)).unwrap();
+        // The next day starts due north of where this day ends, 200 m and 201 m away.
+        let north = |m: f32| (0..).find(|&k| obc_map_scene::ground_dist_m(end, (end.0, end.1 + k)) > m).unwrap();
+        for (gap, offered) in [(north(TRANSFER_MIN_M as f32) - 1, true), (north(TRANSFER_MIN_M as f32 + 1.0), false)] {
+            let start = end.1 + gap;
+            let next = route_udeg("Day 2 Brig", &[(end.0, start), (end.0, start + 5_000)]);
+            let next_src = SliceSource(&next);
+            let next_index = RouteIndex::read(&next_src).unwrap();
+            let next_route = RouteReader::new(&next_index, &next_src);
+            let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
+            let mut app = recording_on(&[(route.summary(), 7), (next_route.summary(), 8)], &[trip], 0, |_| {});
 
-        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
-        assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next: None }));
-        press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
-        assert_eq!(app.active_route_index(), Some(0), "the second row is Keep riding");
-        assert!(matches!(app.top_screen(), Screen::Map(_)));
+            ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+            let next = offered.then_some(1);
+            assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next }), "{gap} µdeg");
+            press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
+            let loaded = if offered { 1 } else { 0 };
+            assert_eq!(app.active_route_index(), Some(loaded), "the second row is Ride on only below a transfer");
+        }
     }
 
     #[test]
