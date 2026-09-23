@@ -1066,6 +1066,15 @@ impl Screen {
         }
     }
 
+    /// The rectangle this screen's hold fill draws in, for a region-only repaint of a hold step.
+    /// `None` on a screen that has not declared one, which a host then repaints in full.
+    pub(crate) fn hold_fill_region(&self, w: i32, h: i32) -> Option<Rectangle> {
+        match self {
+            Screen::RouteOverview(_) => Some(RouteOverviewScreen::hold_fill_region(w, h)),
+            _ => None,
+        }
+    }
+
     /// Whether this screen's `draw` would fill a live hold bar for its current selection. A
     /// render-on-demand host repaints a charging hold only when the fill would actually draw.
     /// Intentionally partial: most screens draw nothing hold-driven.

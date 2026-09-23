@@ -15,7 +15,7 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -120,6 +120,12 @@ impl RouteOverviewScreen {
         routes: &[RouteSummary],
     ) -> bool {
         self.selected == DELETE && self.delete_enabled(navigation, recording, routes)
+    }
+
+    /// The Delete row, the one rectangle a hold step repaints on this page. It lies under the map
+    /// band, so a clipped repaint of it renders no map.
+    pub(crate) fn hold_fill_region(w: i32, h: i32) -> Rectangle {
+        action_rows(w, h).row(DELETE)
     }
 
     /// Flip the two pages on the shared dwell. The computed page has a single fixed layout and no
@@ -243,7 +249,7 @@ impl RouteOverviewScreen {
         // the route is the active ride's the Delete row is not drawn at all, because a state that
         // cannot act does not show. Both pages and both row counts keep START in the same slot, so
         // nothing jumps on a flip or when the Delete row re-arms.
-        let geo = GuardedRowsGeometry::panel(w, action_rows_top(h), OPTION_ROW_H, OPTION_GAP);
+        let geo = action_rows(w, h);
         let items = [
             MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
@@ -344,9 +350,9 @@ fn draw_computed(cv: &mut impl Surface, rx: &Render, summary: &RouteSummary) {
     draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
 }
 
-/// Top of the two-row action block. Fixed at the two-row position whether or not Delete is drawn.
-fn action_rows_top(h: i32) -> i32 {
-    h - 10 - 2 * OPTION_ROW_H - OPTION_GAP
+/// The two-row action block. Fixed at the two-row position whether or not Delete is drawn.
+fn action_rows(w: i32, h: i32) -> GuardedRowsGeometry {
+    GuardedRowsGeometry::panel(w, h - 10 - 2 * OPTION_ROW_H - OPTION_GAP, OPTION_ROW_H, OPTION_GAP)
 }
 
 fn route_total_m(rx: &Render, summary: &RouteSummary) -> u32 {

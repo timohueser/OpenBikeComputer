@@ -886,11 +886,12 @@ script = "p p p d"
 expect = "RouteOverview"
 
 # The Delete row charging: `p p p d H` selects it, then partial-holds Select, so the
-# warning-red row fill draws under the "Delete route" label.
+# warning-red row fill draws under the "Delete route" label, below the map band. On the board a
+# hold step repaints only this row.
 [[frame]]
 name = "routeoverview-delete"
 map = "{grimsel}"
-env = "routes"
+env = "eta-route"
 script = "p p p d H"
 expect = "RouteOverview"
 
