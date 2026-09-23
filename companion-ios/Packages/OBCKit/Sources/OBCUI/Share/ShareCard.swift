@@ -22,7 +22,8 @@ public struct ShareCardContent {
             OBCStat(value: OBCFormat.climbValue(meters: summary.climbMeters), unit: "m", key: "Climb"),
         ]
         coordinates = ride.points.map(\.coordinate)
-        elevations = ride.points.compactMap(\.elevationMeters)
+        // The detail screen's profile, on the same distance axis.
+        elevations = MeasuredLine.elevationProfile(ridePoints: ride.points)
     }
 
     var hasProfile: Bool { elevations.count > 1 }

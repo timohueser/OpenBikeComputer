@@ -67,9 +67,8 @@ public struct RouteDetailView: View {
                     OBCStatStrip(model.stats)
                 }
 
-                switch model.dressing {
-                case .planned, .tracked: bikeTypeRow
-                case .imported: EmptyView()
+                if case .planned = model.dressing {
+                    bikeTypeRow
                 }
 
                 if !model.waypoints.isEmpty {
@@ -112,6 +111,8 @@ public struct RouteDetailView: View {
                 }
 
                 if case .tracked = model.dressing {
+                    // Ride detail B: the ride's facts first, then sensors, bike type and services.
+                    bikeTypeRow
                     servicesBlock
                 }
                 actions
