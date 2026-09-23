@@ -61,6 +61,23 @@ impl Profile {
         peak_col: 0,
     };
 
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a complete profile.
+    pub unsafe fn init_in_place(slot: *mut Self) {
+        use core::ptr::addr_of_mut;
+        unsafe {
+            for i in 0..PROFILE_COLS {
+                addr_of_mut!((*slot).cols).cast::<(i16, i16)>().add(i).write((i16::MAX, i16::MIN));
+            }
+            addr_of_mut!((*slot).cum_ascent).write_bytes(0, 1);
+            addr_of_mut!((*slot).grades).write_bytes(i8::MIN as u8, 1);
+            addr_of_mut!((*slot).min_ele_m).write(0);
+            addr_of_mut!((*slot).max_ele_m).write(0);
+            addr_of_mut!((*slot).peak_col).write(0);
+            let Self { cols: _, cum_ascent: _, grades: _, min_ele_m: _, max_ele_m: _, peak_col: _ } = &*slot;
+        }
+    }
+
     fn reset(&mut self) {
         self.cols.fill((i16::MAX, i16::MIN));
         self.cum_ascent.fill(0);
@@ -181,10 +198,29 @@ impl RouteReader<'_> {
     /// converter did, so column placement matches the format exactly. Each chunk is read once, so
     /// cache the result rather than calling this per frame.
     pub fn elevation_profile(&self) -> Profile {
+        let mut profile = Profile::EMPTY;
+        self.elevation_profile_into(&mut profile);
+        profile
+    }
+
+    /// Fill resident profile storage without returning a large temporary.
+    pub fn elevation_profile_into(&self, profile: &mut Profile) {
+        self.build_profile(profile, false);
+    }
+
+    /// Derive both route summaries from one geometry pass.
+    pub fn elevation_profile_and_climbs_into(&self, profile: &mut Profile) -> crate::Climbs {
+        self.build_profile(profile, true)
+    }
+
+    fn build_profile(&self, profile: &mut Profile, include_climbs: bool) -> crate::Climbs {
         // An empty column carries the sentinel `min > max`.
-        let mut cols = [(i16::MAX, i16::MIN); PROFILE_COLS];
+        profile.reset();
+        let Profile { cols, grades, .. } = profile;
         let mut gaps = [false; PROFILE_COLS];
-        let mut grades = [i8::MIN; PROFILE_COLS];
+        let mut detector = include_climbs.then(crate::climb::ClimbDetector::new);
+        let mut smooth = DeadBand::<f32>::new();
+        let mut profile_ok = true;
         let mut previous_sample: Option<(RoutePoint, usize)> = None;
         // The running ascent at the last point of each ascent column, carried forward and scaled
         // into `cum_ascent` below.
@@ -196,56 +232,70 @@ impl RouteReader<'_> {
         // The integrator runs across chunk seams: a shared seam point compares equal to itself
         // and contributes nothing, so this stays one continuous pass.
         let mut ascent = DeadBand::<f32>::new();
-        let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
         let n = self.chunks().len();
         for k in 0..n {
-            if self.decode_chunk(k, &mut buf).is_err() {
-                return Profile::EMPTY;
-            }
             // Like the converter, the small per-segment `f32` distances accumulate into an
             // `f64` total, so a long route's column placement cannot drift.
             let mut dist = self.chunks()[k].cum_distance_m as f64;
             let mut prev: Option<(i32, i32)> = None;
-            for p in &buf {
-                if let Some(pr) = prev {
-                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
-                }
-                prev = Some((p.lon, p.lat));
-                let frac = dist / total;
-                let col = ((frac * base_last as f64) as usize).min(base_last);
-                if let Some((a, prev_col)) = previous_sample {
-                    let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
-                    let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
-                    if length > 0.0 {
-                        let grade =
-                            libm::roundf((p.ele as f32 - a.ele as f32) * 100.0 / length).clamp(-127.0, 127.0) as i8;
-                        for c in prev_col..=col {
-                            if known {
-                                grades[c] = grade;
-                            } else {
-                                gaps[c] = true;
-                                grades[c] = i8::MIN;
+            let decoded = self.with_chunk(k, |points| {
+                for p in points {
+                    if let Some(pr) = prev {
+                        dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
+                    }
+                    prev = Some((p.lon, p.lat));
+                    if let Some(detector) = &mut detector {
+                        let ele_m = if p.elevation().is_none() || p.elevation_incomplete {
+                            smooth.pause();
+                            f32::NAN
+                        } else {
+                            smooth.push(p.ele as f32);
+                            smooth.smoothed().unwrap_or(p.ele as f32)
+                        };
+                        detector.push(crate::climb::ElePt { dist_m: dist, ele_m });
+                    }
+                    let frac = dist / total;
+                    let col = ((frac * base_last as f64) as usize).min(base_last);
+                    if let Some((a, prev_col)) = previous_sample {
+                        let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
+                        let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
+                        if length > 0.0 {
+                            let grade =
+                                libm::roundf((p.ele as f32 - a.ele as f32) * 100.0 / length).clamp(-127.0, 127.0) as i8;
+                            for c in prev_col..=col {
+                                if known {
+                                    grades[c] = grade;
+                                } else {
+                                    gaps[c] = true;
+                                    grades[c] = i8::MIN;
+                                }
                             }
                         }
                     }
+                    previous_sample = Some((*p, col));
+                    if p.elevation().is_none() {
+                        gaps[col] = true;
+                        ascent.pause();
+                        continue;
+                    }
+                    let slot = &mut cols[col];
+                    slot.0 = slot.0.min(p.ele);
+                    slot.1 = slot.1.max(p.ele);
+                    // A later point in the same column overwrites this, so the column ends on the
+                    // correct value.
+                    let acol = ((frac * asc_last as f64) as usize).min(asc_last);
+                    if p.elevation_incomplete {
+                        ascent.pause();
+                    }
+                    ascent.push(p.ele as f32);
+                    casc[acol] = ascent.ascent();
                 }
-                previous_sample = Some((*p, col));
-                if p.elevation().is_none() {
-                    gaps[col] = true;
-                    ascent.pause();
-                    continue;
+            });
+            if decoded.is_err() {
+                profile_ok = false;
+                if !include_climbs {
+                    break;
                 }
-                let slot = &mut cols[col];
-                slot.0 = slot.0.min(p.ele);
-                slot.1 = slot.1.max(p.ele);
-                // A later point in the same column overwrites this, so the column ends on the
-                // correct value.
-                let acol = ((frac * asc_last as f64) as usize).min(asc_last);
-                if p.elevation_incomplete {
-                    ascent.pause();
-                }
-                ascent.push(p.ele as f32);
-                casc[acol] = ascent.ascent();
             }
         }
 
@@ -259,7 +309,14 @@ impl RouteReader<'_> {
         let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
         let peak_col = peak_column(&cols[..PROFILE_COLS]);
 
-        Profile { cols, cum_ascent, grades, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
+        profile.cum_ascent = cum_ascent;
+        profile.min_ele_m = self.min_ele_m;
+        profile.max_ele_m = self.max_ele_m;
+        profile.peak_col = peak_col;
+        if !profile_ok {
+            profile.reset();
+        }
+        detector.map_or_else(crate::Climbs::new, |d| d.finish())
     }
 }
 

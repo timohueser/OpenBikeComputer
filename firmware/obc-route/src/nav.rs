@@ -538,9 +538,9 @@ pub struct NavPlanner {
     hop: u16,
     total_m: u32,
     last: Option<(i32, i32)>,
-    /// Created on entering the emit phase, which is where the reserved header is written, and
-    /// consumed by the finish. The planner's one large field, about 9 kB.
-    em: Option<ObcrEmitter>,
+    /// Initialized with the planner; its stream starts only after the search succeeds.
+    em: ObcrEmitter,
+    emit_started: bool,
     /// The detour blacklist, `Some` only for [`new_detour`](Self::new_detour) plans. It is read on
     /// every settle, so it lives here rather than in a step frame.
     corridor: Option<Corridor>,
@@ -587,47 +587,97 @@ impl NavPlanner {
     /// [`step`](NavPlanner::step) resets the caller's scratch and tile cache, resolves the profile
     /// and starts snapping.
     pub fn new(from: (i32, i32), to: (i32, i32), name: &str, bike: BikeType) -> Self {
-        let mut nm = heapless::String::new();
-        for ch in name.chars() {
-            if nm.push(ch).is_err() {
-                break;
-            }
-        }
-        NavPlanner {
-            phase: PhaseState::SnapFrom,
-            from,
-            to,
-            name: nm,
-            bike,
-            mult: ProfileMult::NEUTRAL,
-            objective: Objective::Profile,
-            start_id: 0,
-            start_c: (0, 0),
-            goal_id: 0,
-            goal_c: (0, 0),
-            start_edge: None,
-            goal_edge: None,
-            snap_best: None,
-            snap_ordinal: 0,
-            settles: 0,
-            rung: 0,
-            table_full: false,
-            chain_len: 0,
-            hop: 0,
-            total_m: 0,
-            last: None,
-            em: None,
-            corridor: None,
-            ele: EleFill::new(),
-            map_source: None,
-            unresolved_avoidance: false,
-            assistant_candidate: false,
+        let mut slot = core::mem::MaybeUninit::uninit();
+        // SAFETY: the local slot is aligned, writable and exclusively owned.
+        unsafe {
+            Self::init_in_place(slot.as_mut_ptr(), from, to, name, bike, None);
+            slot.assume_init()
         }
     }
 
-    /// A detour planner: like [`new`](Self::new), but the search skips every edge the `corridor`
-    /// blacklists. The exemption discs around the two snapped endpoints are set once the snap
-    /// phases resolve.
+    /// Initialize the planner and its emitter without a by-value workspace.
+    ///
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a complete planner.
+    #[inline(never)]
+    pub unsafe fn init_in_place(
+        slot: *mut Self,
+        from: (i32, i32),
+        to: (i32, i32),
+        name: &str,
+        bike: BikeType,
+        corridor: Option<Corridor>,
+    ) {
+        unsafe {
+            core::ptr::addr_of_mut!((*slot).phase).write(PhaseState::SnapFrom);
+            core::ptr::addr_of_mut!((*slot).from).write(from);
+            core::ptr::addr_of_mut!((*slot).to).write(to);
+            core::ptr::addr_of_mut!((*slot).name).write(heapless::String::new());
+            core::ptr::addr_of_mut!((*slot).bike).write(bike);
+            core::ptr::addr_of_mut!((*slot).mult).write(ProfileMult::NEUTRAL);
+            core::ptr::addr_of_mut!((*slot).objective).write(Objective::Profile);
+            core::ptr::addr_of_mut!((*slot).start_id).write(0);
+            core::ptr::addr_of_mut!((*slot).start_c).write((0, 0));
+            core::ptr::addr_of_mut!((*slot).goal_id).write(0);
+            core::ptr::addr_of_mut!((*slot).goal_c).write((0, 0));
+            core::ptr::addr_of_mut!((*slot).start_edge).write(None);
+            core::ptr::addr_of_mut!((*slot).goal_edge).write(None);
+            core::ptr::addr_of_mut!((*slot).snap_best).write(None);
+            core::ptr::addr_of_mut!((*slot).snap_ordinal).write(0);
+            core::ptr::addr_of_mut!((*slot).settles).write(0);
+            core::ptr::addr_of_mut!((*slot).rung).write(0);
+            core::ptr::addr_of_mut!((*slot).table_full).write(false);
+            core::ptr::addr_of_mut!((*slot).chain_len).write(0);
+            core::ptr::addr_of_mut!((*slot).hop).write(0);
+            core::ptr::addr_of_mut!((*slot).total_m).write(0);
+            core::ptr::addr_of_mut!((*slot).last).write(None);
+            core::ptr::addr_of_mut!((*slot).emit_started).write(false);
+            core::ptr::addr_of_mut!((*slot).corridor).write(corridor);
+            core::ptr::addr_of_mut!((*slot).ele).write(EleFill::new());
+            core::ptr::addr_of_mut!((*slot).map_source).write(None);
+            core::ptr::addr_of_mut!((*slot).unresolved_avoidance).write(false);
+            core::ptr::addr_of_mut!((*slot).assistant_candidate).write(false);
+            ObcrEmitter::init_in_place(core::ptr::addr_of_mut!((*slot).em));
+            let Self {
+                phase: _,
+                from: _,
+                to: _,
+                name: _,
+                bike: _,
+                mult: _,
+                objective: _,
+                start_id: _,
+                start_c: _,
+                goal_id: _,
+                goal_c: _,
+                start_edge: _,
+                goal_edge: _,
+                snap_best: _,
+                snap_ordinal: _,
+                settles: _,
+                rung: _,
+                table_full: _,
+                chain_len: _,
+                hop: _,
+                total_m: _,
+                last: _,
+                emit_started: _,
+                corridor: _,
+                ele: _,
+                map_source: _,
+                unresolved_avoidance: _,
+                assistant_candidate: _,
+                em: _,
+            } = &*slot;
+            for ch in name.chars() {
+                if (*slot).name.push(ch).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// A planner that skips the edges blacklisted by `corridor`.
     pub fn new_detour(from: (i32, i32), to: (i32, i32), name: &str, bike: BikeType, corridor: Corridor) -> Self {
         let mut p = Self::new(from, to, name, bike);
         p.corridor = Some(corridor);
@@ -907,7 +957,7 @@ impl NavPlanner {
                 Step::Running
             }
             PhaseState::Emit => {
-                if self.em.is_none() {
+                if !self.emit_started {
                     match self.arm_emitter(scratch, elev, sink) {
                         Ok(true) => return Step::Running,
                         Ok(false) => {}
@@ -945,10 +995,6 @@ impl NavPlanner {
     /// Arm the emitter. Its constructor writes the reserved OBCR header, which is the plan's first
     /// sink write. Returns `Ok(true)` when the single-point route was emitted whole and the phase
     /// advanced to Finish.
-    ///
-    /// Must stay `#[inline(never)]`: the ~9 kB emitter construction temporary has to live in this
-    /// immediately-popped frame. Inlined, it holds a slot in the step frame for every step and
-    /// overflows the device stack.
     #[inline(never)]
     fn arm_emitter<const N: usize>(
         &mut self,
@@ -956,20 +1002,21 @@ impl NavPlanner {
         elev: &mut dyn ElevationSource,
         sink: &mut dyn ByteSink,
     ) -> Result<bool, NavError> {
-        let mut em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
+        ObcrEmitter::begin(sink).map_err(|_| NavError::NoPath)?;
+        let em = &mut self.em;
         em.set_attribution_map(self.map_source);
         em.set_bike_type(self.bike);
         em.set_flags(
             if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
                 | if self.unresolved_avoidance { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 },
         );
-        self.em = Some(em);
+        self.emit_started = true;
         if self.chain_len == 1 {
             let e = &scratch.entries[scratch.heap[0] as usize];
             let (lon, lat) = (e.lon, e.lat);
             // One point needs no densification, only its height.
             let ele = self.ele.resolve(elev.sample(lat, lon));
-            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, ele).is_err()) {
+            if self.em.push(sink, lon, lat, ele).is_err() {
                 return Err(NavError::NoPath);
             }
             self.phase = PhaseState::Finish;
@@ -984,9 +1031,10 @@ impl NavPlanner {
     /// planner step frame.
     #[inline(never)]
     fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
-        let Some(em) = self.em.as_mut() else {
+        if !self.emit_started {
             return Err(NavError::NoPath);
-        };
+        }
+        let em = &mut self.em;
         em.finish(sink, &self.name, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
     }
 
@@ -1046,7 +1094,10 @@ impl NavPlanner {
         } else {
             None
         };
-        let em = self.em.as_mut().ok_or(NavError::NoPath)?;
+        if !self.emit_started {
+            return Err(NavError::NoPath);
+        }
+        let em = &mut self.em;
         let (surface, elevation_complete) = reader.nav_edge_facts(cur.edge_used).ok_or(NavError::NoPath)?;
         em.set_surface(surface);
         em.set_elevation_incomplete(!elevation_complete);
