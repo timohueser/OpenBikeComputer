@@ -200,6 +200,18 @@ pub fn ensure_storage() -> bool {
 static FAILURES: AtomicU8 = AtomicU8::new(0);
 static OPENED_AT_MS: AtomicU32 = AtomicU32::new(0);
 
+// One dedicated recovery pass: the panel's declared scan deadline, Default-Speed re-identification,
+// and four successful single-attempt reads (two superblocks and two catalog gates). The 24 s value
+// is the board watchdog contract also checked by `obc_storage::health`.
+const RECOVERY_SUCCESS_BOUND_MS: u64 = crate::ls021_flpr::FRAME_DEADLINE.as_millis()
+    + crate::semmc::RECOVERY_REIDENTIFY_BOUND_MS as u64
+    + 4 * crate::semmc::RECOVERY_BLOCK_READ_BOUND_MS as u64;
+/// Do not start another identity command after this point in the dedicated pass. A worst failed
+/// command then ends by 21.7 s, leaving 2.3 s for loop and interrupt overhead before the watchdog.
+pub const RECOVERY_READ_START_CUTOFF_MS: u64 = 18_000;
+const _: () = assert!(RECOVERY_SUCCESS_BOUND_MS < 24_000);
+const _: () = assert!(RECOVERY_READ_START_CUTOFF_MS + (crate::semmc::RECOVERY_BLOCK_FAILURE_BOUND_MS as u64) < 24_000);
+
 fn breaker() -> Breaker {
     Breaker::restore(FAILURES.load(Ordering::Relaxed), OPENED_AT_MS.load(Ordering::Relaxed))
 }
@@ -215,6 +227,57 @@ pub fn storage_latched() -> bool {
     breaker().open()
 }
 
+/// Whether a background read may become the transport's next operation.
+///
+/// It stays false for the complete latch, including the half-open edge. Only the dedicated ride
+/// recovery pass may probe after the cool-down.
+pub fn storage_admitted() -> bool {
+    breaker().background_admitted()
+}
+
+/// Whether a watchdog-fed ride pass must be reserved for one recovery probe.
+pub fn storage_recovery_due(watchdog_fed: bool) -> bool {
+    let b = breaker();
+    b.recovery_due(watchdog_fed, Instant::now().as_millis() as u32)
+}
+
+/// Re-identify the card and validate the retained store inside its dedicated ride pass.
+///
+/// Success clears the breaker only after `validate` accepts the media. Every failure restarts the
+/// cool-down. The caller must end the pass either way, so no retained operation follows this work
+/// before the watchdog is fed again.
+pub fn recover_storage(validate: impl FnOnce(&mut Semmc, Instant) -> Result<(), SemmcError>) -> Result<(), SemmcError> {
+    let before = breaker();
+    if !before.open() || !before.admits(Instant::now().as_millis() as u32) {
+        return Err(SemmcError::Unhealthy);
+    }
+
+    let started = Instant::now();
+    crate::ls021_flpr::wait_scan_settled();
+    let result = with_semmc(|sd| {
+        sd.reidentify()?;
+        validate(sd, started)
+    })
+    .unwrap_or(Err(SemmcError::NotInitialised));
+
+    let after = before.record(
+        if result.is_ok() { Outcome::Success } else { Outcome::TransportFault },
+        Instant::now().as_millis() as u32,
+    );
+    store_breaker(after);
+    match result {
+        Ok(()) => {
+            MODE.store(Mode::Storage as u8, Ordering::Relaxed);
+            warn!("flpr_mux: the card and retained store match — the transport is back");
+        }
+        Err(error) => {
+            MODE.store(Mode::Unknown as u8, Ordering::Relaxed);
+            warn!("flpr_mux: storage recovery failed ({}) — cool-down restarted", error);
+        }
+    }
+    result
+}
+
 /// Run one synchronous storage operation with the FLPR in storage mode.
 ///
 /// The single door the `BlockDevice` impl uses: it pairs the mode guarantee with the driver borrow,
@@ -227,18 +290,15 @@ pub fn storage_latched() -> bool {
 /// ([`SemmcError::is_transport_fault`]) is weighed as [`Outcome::Refused`] and moves nothing.
 ///
 /// While the breaker is open every call returns [`SemmcError::Unhealthy`] at once, without a mode
-/// switch, a boot attempt or a bus cycle, and one operation per cool-down is let through to find
-/// out whether the card came back. That is what bounds a ride-loop pass.
+/// switch, a boot attempt or a bus cycle. The ride loop owns the one recovery probe after each
+/// cool-down, in a pass that cannot also run an ordinary operation.
 pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> Result<R, SemmcError>) -> Result<R, SemmcError> {
     let before = breaker();
-    if !before.admits(Instant::now().as_millis() as u32) {
+    if before.open() {
         return Err(SemmcError::Unhealthy);
     }
-    let r = if ensure_storage() {
-        with_semmc(f).unwrap_or(Err(SemmcError::NotInitialised))
-    } else {
-        Err(SemmcError::NoBoot)
-    };
+    let ready = ensure_storage();
+    let r = if ready { with_semmc(f).unwrap_or(Err(SemmcError::NotInitialised)) } else { Err(SemmcError::NoBoot) };
     let outcome = match &r {
         Ok(_) => Outcome::Success,
         Err(e) if e.is_transport_fault() => Outcome::TransportFault,
@@ -254,8 +314,6 @@ pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> Result<R, SemmcError>) -> R
             Breaker::LIMIT,
             Breaker::COOL_DOWN_MS / 1000
         );
-    } else if before.open() && !after.open() {
-        warn!("flpr_mux: the storage probe found the card working again — the transport is back");
     }
     r
 }

@@ -194,6 +194,21 @@ const CMD8_DELIVER: Duration = Duration::from_micros(3000);
 /// plus 74 clocks. This runs only at [`Semmc::start`], and is deliberately absent from the
 /// per-switch [`Semmc::enter_storage_mode`] path, where the card needs nothing.
 const CARD_SETTLE: Duration = Duration::from_millis(10);
+
+/// Conservative command-ladder bound for Default-Speed card re-identification.
+///
+/// The deadline path is 0.56 s boot/enable/settle + 1.3 s for two CMD0 commands + 1.553 s for the
+/// CMD8 timeout/recovery/abort sequence + 2.8 s for ACMD41's permitted final poll + 2.6 s for
+/// CMD2/3/9/7 + 0.4 s status + 1.3 s bus-width switch. CMD8 can add another 1.1 s recovery after
+/// its ignored final close result. A later command failure can replace its 0.65 s success with
+/// 1.7 s including full recovery: 12.663 s, rounded up here.
+pub const RECOVERY_REIDENTIFY_BOUND_MS: u32 = 12_800;
+/// One successful recovery-only block read: 0.1 s start barriers + 2 s data + 0.05 s close, then
+/// 0.1 s start + 0.25 s status + 0.05 s close.
+pub const RECOVERY_BLOCK_READ_BOUND_MS: u32 = 2_550;
+/// One failed recovery-only read: a 2.15 s data success followed by a 1.45 s status timeout and
+/// full 1.1 s firmware recovery, rounded up for the host-side steps around the commands.
+pub const RECOVERY_BLOCK_FAILURE_BOUND_MS: u32 = 3_700;
 /// ACMD41 poll interval while the card powers up.
 const POWERUP_POLL: Duration = Duration::from_millis(10);
 /// Re-check granularity in [`Semmc::wait_completion`]: about 5 µs at the core clock. See that
@@ -275,6 +290,8 @@ pub enum SemmcError {
     CardBusy,
     /// Card identification did not complete — no card, an unpowered socket, or a broken bus.
     NoCard,
+    /// Re-identification found a different mounted flat-store identity or catalog.
+    MediaChanged,
     /// The card is not an SDHC or SDXC card. SDSC is byte-addressed and caps at 2 GB, and nothing
     /// this device stores fits on one, so it is rejected rather than half-supported.
     UnsupportedCard,
@@ -312,6 +329,7 @@ impl SemmcError {
             | SemmcError::CardStatus(_)
             | SemmcError::CardBusy
             | SemmcError::NoCard
+            | SemmcError::MediaChanged
             | SemmcError::UnsupportedCard => true,
         }
     }
@@ -527,7 +545,24 @@ impl Semmc {
         self.cold_boot()?;
         self.enable()?;
         block_for(CARD_SETTLE);
-        self.init_card()
+        self.init_card(true)
+    }
+
+    /// Re-identify a card after the transport breaker admits its recovery probe.
+    ///
+    /// Recovery stays at Default Speed. Skipping the optional High-Speed negotiation and its two
+    /// golden reads keeps the dedicated recovery pass inside the watchdog deadline. Ordinary boot
+    /// still qualifies and uses High Speed.
+    pub fn reidentify(&mut self) -> Result<CardInfo, SemmcError> {
+        // A deferred write belonged to the transport session that failed. Re-identification starts
+        // a new session and must not join that command against newly inserted media.
+        self.pending_write_blocks = 0;
+        park_hart();
+        configure_storage_pads();
+        self.warm_boot()?;
+        self.enable()?;
+        block_for(CARD_SETTLE);
+        self.init_card(false)
     }
 
     /// Cold boot: copy the vendored image into the carve and start it. About 47 µs.
@@ -939,7 +974,7 @@ impl Semmc {
     /// against a Default-Speed golden read of sector 0 before it is trusted.
     ///
     /// It runs once per power-on, not per mode switch: the card keeps its state across a park.
-    fn init_card(&mut self) -> Result<CardInfo, SemmcError> {
+    fn init_card(&mut self, try_high_speed: bool) -> Result<CardInfo, SemmcError> {
         self.card = None;
         self.rca = 0;
         self.bus_width = 1;
@@ -995,19 +1030,21 @@ impl Semmc {
         self.read_clk_hz = CLK_DS_HZ;
         self.write_clk_hz = CLK_WRITE_MAX_HZ;
 
-        // A Default-Speed golden read is what the High-Speed rung is checked against: 32 MHz that
-        // returns different bytes is worse than 21.3 MHz that returns the right ones.
-        let mut golden = AlignedBlock([0; BLOCK_BYTES]);
-        self.read_one(0, &mut golden)?;
+        if try_high_speed {
+            // A Default-Speed golden read is what the High-Speed rung is checked against: 32 MHz
+            // that returns different bytes is worse than 21.3 MHz that returns the right ones.
+            let mut golden = AlignedBlock([0; BLOCK_BYTES]);
+            self.read_one(0, &mut golden)?;
 
-        if self.cmd6_high_speed().unwrap_or(false) {
-            self.clk_hz = CLK_HS_HZ;
-            let mut check = AlignedBlock([0; BLOCK_BYTES]);
-            if self.read_one(0, &mut check).is_ok() && check.0 == golden.0 {
-                self.read_clk_hz = CLK_HS_HZ;
-            } else {
-                warn!("sEMMC: High Speed accepted but 32 MHz reads are not stable — staying at 21.3 MHz");
-                self.clk_hz = CLK_DS_HZ;
+            if self.cmd6_high_speed().unwrap_or(false) {
+                self.clk_hz = CLK_HS_HZ;
+                let mut check = AlignedBlock([0; BLOCK_BYTES]);
+                if self.read_one(0, &mut check).is_ok() && check.0 == golden.0 {
+                    self.read_clk_hz = CLK_HS_HZ;
+                } else {
+                    warn!("sEMMC: High Speed accepted but 32 MHz reads are not stable — staying at 21.3 MHz");
+                    self.clk_hz = CLK_DS_HZ;
+                }
             }
         }
 
@@ -1094,6 +1131,22 @@ impl Semmc {
                 result => return result,
             }
         }
+    }
+
+    /// Read one identity block during a dedicated recovery pass, without the ordinary abort replay.
+    ///
+    /// A failure ends the probe. The next cool-down re-identifies the card before another command,
+    /// so this path does not issue a cleanup command against uncertain media state. This bound is
+    /// what permits all four identity blocks to fit in one watchdog-fed pass.
+    pub fn read_recovery_block(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), SemmcError> {
+        let n = self.check_request(buf.as_ptr() as usize, buf.len(), lba)?;
+        if n != 1 {
+            return Err(SemmcError::BadBuffer);
+        }
+        self.clk_hz = self.read_clk_hz;
+        let data = Some((buf.as_mut_ptr() as u32, BLOCK_BYTES as u32, 1));
+        self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE)?;
+        self.check_after_transfer()
     }
 
     /// Start writing `buf.len() / 512` blocks at `lba`, leaving the data phase in flight.
