@@ -181,6 +181,21 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         return file.points.map(\.domain)
     }
 
+    /// The cache lives outside the ride's archive directory, which holds only archive files, and
+    /// names the points file it was built from: a re-archived ride rebuilds it.
+    public func rideMapLine(_ id: RideID) -> RideMapLine? {
+        guard let manifest = rideManifest(id) else { return nil }
+        let url = rideLineURL(id)
+        if let file: RideMapLineFile = read(url), file.pointsFile == manifest.pointsFile {
+            return file.domain(id)
+        }
+        guard let points = ridePoints(id) else { return nil }
+        let line = RideMapLine(id: id, points: points)
+        ensure(url.deletingLastPathComponent())
+        write(RideMapLineFile(line, pointsFile: manifest.pointsFile), to: url, formatting: [.sortedKeys])
+        return line
+    }
+
     public func saveRide(_ ride: Ride) throws {
         try commitRide(ride, downloaded: false)
     }
@@ -285,6 +300,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     public func deleteRide(_ id: RideID) {
         guard rideManifest(id) != nil else { return }
         try? FileManager.default.removeItem(at: rideDir(id))
+        try? FileManager.default.removeItem(at: rideLineURL(id))
     }
 
     public func syncedRideIDs() -> Set<RideID> {
@@ -373,6 +389,10 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     private func rideDir(_ id: RideID) -> URL {
         ridesDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true)
+    }
+
+    private func rideLineURL(_ id: RideID) -> URL {
+        directory.appendingPathComponent("ride-lines/\(Self.fileSafe(id.rawValue)).json")
     }
 
     /// The sidecar keeps the original extension so a saved GPX/TCX stays
@@ -719,6 +739,23 @@ private struct RidePointsFile: Codable {
     var version = FileLibraryStore.rideSchemaVersion
     var points: [RidePointDTO]
     init(_ points: [RidePoint]) { self.points = points.map(RidePointDTO.init) }
+}
+
+private struct RideMapLineFile: Codable {
+    var pointsFile: String
+    /// Each piece is latitude, longitude pairs, flattened.
+    var pieces: [[Double]]
+
+    init(_ line: RideMapLine, pointsFile: String) {
+        self.pointsFile = pointsFile
+        pieces = line.pieces.map { $0.flatMap { [$0.latitude, $0.longitude] } }
+    }
+
+    func domain(_ id: RideID) -> RideMapLine {
+        RideMapLine(id: id, pieces: pieces.map { flat in
+            stride(from: 0, to: flat.count - 1, by: 2).map { Coordinate(latitude: flat[$0], longitude: flat[$0 + 1]) }
+        })
+    }
 }
 
 private struct RidePointDTO: Codable {
