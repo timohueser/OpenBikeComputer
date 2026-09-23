@@ -118,6 +118,18 @@ impl TripSummary {
     }
 }
 
+impl TripSummary {
+    /// The length of the routes of the days after day `day`: `catalog[i]` is the route at catalog
+    /// index `i`. Transfers between days are not ridden, so they do not count. The catalog holds
+    /// whole kilometres, so each later day adds up to 500 m of error.
+    pub fn later_m(&self, day: u16, catalog: &[RouteSummary]) -> u32 {
+        self.days()
+            .filter(|&(k, _)| k > day)
+            .filter_map(|(_, i)| catalog.get(usize::from(i)))
+            .fold(0, |m, r| m.saturating_add(r.distance_km.saturating_mul(1000)))
+    }
+}
+
 /// How a trip day loads: [`TripSummary::load_day`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DayLoad {
@@ -392,6 +404,22 @@ mod tests {
         assert_eq!(next(&[alps_day2.clone(), jura_done.clone()]), None, "the last ride finished its trip");
         assert_eq!(next(&[jura_done, alps_day2]), Some((KEY, 1, 1)));
         assert_eq!(next(&[]), None);
+    }
+
+    #[test]
+    fn later_days_count_after_the_day_and_skip_a_dangling_one() {
+        let route = |distance_km| RouteSummary {
+            name: Default::default(),
+            distance_km,
+            climb_m: 0,
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+            start_lon: 0,
+            start_lat: 0,
+        };
+        let catalog = [route(74), route(61), route(50)];
+        let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 99, 30] };
+        let t = TripSummary::resolve(&input, &catalog, &[10, 20, 30]);
+        assert_eq!([0, 1, 3].map(|day| t.later_m(day, &catalog)), [111_000, 50_000, 0]);
     }
 
     #[test]
