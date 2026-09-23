@@ -388,6 +388,8 @@ no_rides_sub = "Record a ride"
 # The trip folder's line 2: "2 of 3 days · 156 km".
 of = "of"
 days = "days"
+# A trip folder whose trip name is unknown.
+trip = "Trip"
 
 # --- Ride detail screen ---
 [ride_detail]

@@ -360,6 +360,7 @@ no_rides = "Keine Fahrten"
 no_rides_sub = "Fahrt aufzeichnen"
 of = "von"
 days = "Tagen"
+trip = "Reise"
 
 # --- Ride detail screen ---
 [ride_detail]

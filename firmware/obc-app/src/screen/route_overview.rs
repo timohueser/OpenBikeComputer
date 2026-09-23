@@ -22,7 +22,7 @@ use obc_render::{
     Canvas, Surface,
 };
 
-use super::vocab::band::ElevationBand;
+use super::vocab::band::draw_profile;
 use super::vocab::chrome::{empty_state, stroke2, title_chrome, title_frame, LIST_TOP, TITLE_BAR_H};
 use super::vocab::fmt::{duration_hms, write_distance_split};
 use super::vocab::marquee::{fit, Fitted};
@@ -277,23 +277,8 @@ fn elevation_value(units: crate::settings::Units, m: u32) -> heapless::String<8>
 fn draw_profile_page(cv: &mut impl Surface, rx: &Render, climb: &str) {
     use palette::*;
     let w = rx.w;
-    let chart_w = w - 2 * SIDE_MARGIN;
-    if let Some(profile) = rx.profile {
-        let band =
-            ElevationBand::whole_route(profile, rect(SIDE_MARGIN, PROFILE_TOP, chart_w, PROFILE_BOT - PROFILE_TOP + 1));
-        band.fill(cv, PARCHMENT_SHADE);
-        band.stroke(cv, AMBER);
-        band.peak_label(cv, rx.settings.units);
-    } else {
-        // While the route still streams open, keep the band's footprint so the page does not jump.
-        cv.text(
-            rx.t(Msg::RouteOverviewLoadingProfile),
-            Point::new(w / 2, (PROFILE_TOP + PROFILE_BOT) / 2 - 9),
-            Font::Label,
-            TextAlign::Center,
-            SUBTEXT,
-        );
-    }
+    let area = rect(SIDE_MARGIN, PROFILE_TOP, w - 2 * SIDE_MARGIN, PROFILE_BOT - PROFILE_TOP + 1);
+    draw_profile(cv, rx.profile, area, rx.settings.units, rx.t(Msg::RouteOverviewLoadingProfile));
 
     let units = rx.settings.units;
     let desc = match rx.route {
@@ -394,9 +379,8 @@ const PREVIEW_H: i32 = 90;
 /// Draw a track's shape preview: the host-decimated polyline, aspect-fit into the
 /// [`PREVIEW_W`]×[`PREVIEW_H`] box with the longitude scaled by cos(mid-latitude) so the shape
 /// keeps its ground aspect. A filled disc marks the start and a hollow diamond the end. An empty or
-/// short slice draws nothing and leaves the box empty. Shared with the Ride detail's recorded-track
-/// page, so the two sketches cannot drift.
-pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
+/// short slice draws nothing and leaves the box empty.
+fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
     use palette::*;
     if pts.len() < 2 {
         return;
