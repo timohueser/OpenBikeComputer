@@ -722,6 +722,12 @@ impl<D: BlockDevice> FlatStore<D> {
         self.store
     }
 
+    /// The identity and catalog marks that make this retained mount safe to reuse.
+    pub fn mounted_media_state(&self) -> super::MountedMediaState {
+        let served = self.served.get();
+        super::MountedMediaState { store: self.store, sequence: served.sequence, high_water: served.high_water }
+    }
+
     /// The catalog commit sequence — the staleness hint a client compares its listing against.
     pub fn sequence(&self) -> u64 {
         self.served.get().sequence
