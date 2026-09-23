@@ -1266,9 +1266,32 @@ pub(crate) async fn run_app(
                 exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
             }
 
-            // The catalog and checkpoint calls share one physical reply slot.
+            // The catalog and metadata calls share one physical reply slot.
             if exec.catalog.is_none() && exec.outcomes.metadata.is_empty() {
-                if let Some(effect) = exec.effects.metadata.take() {
+                if let Some(effect) = exec
+                    .effects
+                    .metadata
+                    .take_if(|effect| matches!(effect, obc_app::metadata::MetadataEffect::WriteProgress { .. }))
+                {
+                    use obc_app::metadata::MetadataOutcome;
+                    let token = effect.token();
+                    let current =
+                        effect.scope().is_some_and(|scope| scope.store == crate::flat_store::catalog_scope(flat).store);
+                    let outcome = match app.trip_progress_payload(token).filter(|_| current) {
+                        Some(record) => {
+                            let request = crate::flat_store::Request::WriteProgress {
+                                record: record.clone(),
+                                keys: app.trips().iter().map(|trip| trip.key).collect(),
+                            };
+                            match metadata_call(request).await {
+                                Ok(()) => MetadataOutcome::ProgressWritten { token },
+                                Err(error) => MetadataOutcome::Failed { token, error },
+                            }
+                        }
+                        None => MetadataOutcome::Cancelled { token },
+                    };
+                    RideExec::deliver(&mut exec.outcomes.metadata, outcome, "metadata");
+                } else if let Some(effect) = exec.effects.metadata.take() {
                     use obc_app::metadata::MetadataOutcome;
                     let token = effect.token();
                     #[cfg(has_nav)]
@@ -1876,6 +1899,7 @@ pub(crate) async fn run_app(
                                             original: review_original
                                                 .as_ref()
                                                 .map(|source| (source.id(), source.revision())),
+                                            built_day: false,
                                         },
                                         None => {
                                             publishing = false;

@@ -286,7 +286,7 @@ public enum RouteObjectCodec {
         guard version == RouteObjectCodec.version else { throw DeviceError.readFailed }
         guard data.count >= headerLength else { throw DeviceError.readFailed }
         let flags = try reader.u8(at: 5)
-        guard flags & ~15 == 0, try reader.u8(at: 119) == 0,
+        guard flags & ~31 == 0, try reader.u8(at: 119) == 0,
             let bikeType = BikeType(rawValue: try reader.u8(at: 7)) else { throw DeviceError.readFailed }
         let mapBytes = try reader.bytes(at: 128, count: 32)
         if flags & 4 == 0 {

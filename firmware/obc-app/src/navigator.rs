@@ -258,6 +258,40 @@ enum OperationPhase {
 const _: () = assert!(core::mem::size_of::<(OperationPhase, u8)>() == core::mem::size_of::<[bool; 2]>());
 const _: () = assert!(core::mem::align_of::<(OperationPhase, u8)>() == core::mem::align_of::<[bool; 2]>());
 
+/// A lead-in plan: its leg, and once the preview is in, the leg's length and where it joins the
+/// route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LeadPlan {
+    leg: obc_route::Leg,
+    lead_m: u32,
+    join_m: u32,
+}
+
+/// A route the device spliced in front of a stored route: Ride to start, or the rest of the day
+/// before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeadIn {
+    pub splice: crate::CatalogObjectId,
+    pub route: crate::CatalogObjectId,
+    /// Metres of the splice before it joins `route`, and metres into `route` where it joins.
+    pub lead_m: u32,
+    pub join_m: u32,
+    /// Where the rest of the day before starts on that day's route. `None` for Ride to start.
+    pub rest_from_m: Option<u32>,
+}
+
+impl LeadIn {
+    /// Where splice metres `m` lie: `Ok` metres into the route, or `Err` metres into the day
+    /// before, for a rest. Ride to start is not on the route yet, so its lead reads as the route
+    /// start.
+    pub fn position(&self, m: u32) -> Result<u32, u32> {
+        match self.rest_from_m {
+            Some(from_m) if m < self.lead_m => Err(from_m + m),
+            _ => Ok(self.join_m + m.saturating_sub(self.lead_m)),
+        }
+    }
+}
+
 /// The domain that owns active-route following, route planning, detour planning, preview, and
 /// commit.
 ///
@@ -291,11 +325,12 @@ pub struct NavigatorMachine {
     // Bits 0–1: family cleanup owed. Bit 2: outstanding release retains a preview.
     cancel_mask: u8,
     detour_commit: bool,
-    /// The detour-family plan is Ride to start. It outlives the request, which leaves at Acquire.
-    approach: bool,
-    /// The last adopted Ride-to-start splice and the route it leads to, by durable id. A ride on the
-    /// splice is saved under the route's name.
-    approach_route: Option<(crate::CatalogObjectId, crate::CatalogObjectId)>,
+    /// The detour-family plan leads into a stored route: Ride to start, or the rest of the day before.
+    /// It outlives the request, which leaves at Acquire.
+    lead_plan: Option<LeadPlan>,
+    /// The last adopted lead-in. A ride on its splice is saved under the route's name, and counts
+    /// as a ride on that route.
+    lead_in: Option<LeadIn>,
     following: RouteState,
     /// Resident per-route caches, each with its own build key.
     profile: Option<Profile>,
@@ -335,8 +370,8 @@ impl NavigatorMachine {
             phase: OperationPhase::Idle,
             cancel_mask: 0,
             detour_commit: false,
-            approach: false,
-            approach_route: None,
+            lead_plan: None,
+            lead_in: None,
             following: RouteState::new(),
             profile: None,
             profile_route: None,
@@ -382,14 +417,18 @@ impl NavigatorMachine {
                     return;
                 }
                 self.supersede(PlanFamily::Detour);
-                self.approach = request.leg == obc_route::Leg::Approach;
+                self.lead_plan = (request.leg != obc_route::Leg::Detour).then_some(LeadPlan {
+                    leg: request.leg,
+                    lead_m: 0,
+                    join_m: 0,
+                });
                 self.detour_request = Some(request);
                 self.detour = PlanPhase::Requested;
             }
             NavigatorIntent::CancelDetour => {
                 self.detour_request = None;
                 self.detour_commit = false;
-                self.approach = false;
+                self.lead_plan = None;
                 self.supersede(PlanFamily::Detour);
                 self.detour = PlanPhase::Idle;
             }
@@ -598,17 +637,36 @@ impl NavigatorMachine {
         self.detour != PlanPhase::Idle
     }
 
-    /// Whether the detour-family plan is Ride to start.
-    pub(crate) fn approach(&self) -> bool {
-        self.approach
+    /// What the detour-family plan leads into a route with: Ride to start's approach, or the rest of
+    /// the day before. `None` for a detour.
+    pub(crate) fn lead_leg(&self) -> Option<obc_route::Leg> {
+        self.lead_plan.map(|plan| plan.leg)
     }
 
-    pub(crate) fn adopt_approach(&mut self, splice: crate::CatalogObjectId, route: crate::CatalogObjectId) {
-        self.approach_route = Some((splice, route));
+    /// The planned lead's length, and where it joins the route, from the plan's preview.
+    pub(crate) fn note_lead_preview(&mut self, preview: &crate::host::DetourPreview) {
+        if let Some(plan) = &mut self.lead_plan {
+            plan.lead_m = preview.total_distance_m;
+            plan.join_m = preview.rejoin_m;
+        }
     }
 
-    pub(crate) fn approach_route(&self) -> Option<(crate::CatalogObjectId, crate::CatalogObjectId)> {
-        self.approach_route
+    /// The planned lead is spliced as `splice` in front of `route`.
+    pub(crate) fn adopt_lead_in(&mut self, splice: crate::CatalogObjectId, route: crate::CatalogObjectId) {
+        self.lead_in = self.lead_plan.map(|plan| LeadIn {
+            splice,
+            route,
+            lead_m: plan.lead_m,
+            join_m: plan.join_m,
+            rest_from_m: match plan.leg {
+                obc_route::Leg::Rest { from_m, .. } => Some(from_m),
+                _ => None,
+            },
+        });
+    }
+
+    pub(crate) fn lead_in(&self) -> Option<LeadIn> {
+        self.lead_in
     }
 
     /// Whether the in-flight detour operation is the splice rather than the search — the two have
@@ -680,7 +738,7 @@ impl NavigatorMachine {
         if self.detour == PlanPhase::Active {
             return;
         }
-        self.approach = false;
+        self.lead_plan = None;
         self.supersede(PlanFamily::Detour);
         self.detour = PlanPhase::Idle;
     }
@@ -706,8 +764,8 @@ impl NavigatorMachine {
             phase,
             cancel_mask,
             detour_commit,
-            approach,
-            approach_route,
+            lead_plan,
+            lead_in,
             following,
             profile,
             profile_route,
@@ -729,7 +787,7 @@ impl NavigatorMachine {
         assert!(*route == PlanPhase::Idle && *detour == PlanPhase::Idle, "neither family has been asked");
         assert!(route_request.is_none() && detour_request.is_none(), "no request waiting");
         assert!(*phase == OperationPhase::Idle && *cancel_mask == 0 && !*detour_commit, "no physical work pending");
-        assert!(!*approach && approach_route.is_none(), "no Ride to start is planned or adopted");
+        assert!(lead_plan.is_none() && lead_in.is_none(), "no lead-in is planned or adopted");
         following.assert_boot_state();
         assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");

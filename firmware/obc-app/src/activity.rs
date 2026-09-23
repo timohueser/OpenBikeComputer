@@ -50,6 +50,18 @@ impl DetourRequest {
     pub fn approach(route: usize, from: (i32, i32)) -> Self {
         DetourRequest { route, from, progress_m: 0, target_m: 0, leg: obc_route::Leg::Approach }
     }
+
+    /// The rest of the day before `route`, `[from_m, to_m]` on that day's route, then `route` from
+    /// `join_m`.
+    pub fn rest(route: usize, from_m: u32, to_m: u32, join_m: u32) -> Self {
+        DetourRequest {
+            route,
+            from: (0, 0),
+            progress_m: 0,
+            target_m: join_m,
+            leg: obc_route::Leg::Rest { from_m, to_m },
+        }
+    }
 }
 
 /// Which phase of the firmware update [`DfuState`](crate::dfu::DfuState) asks the board
