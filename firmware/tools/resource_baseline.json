@@ -65,7 +65,7 @@
         "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
         "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
       },
-      "_app_note": "60,984 B on the `--features resource-report` link of this head. The persisted theme takes 8 B of it, and the effort state (zones, the 10 s power window and the 5-minute history) with the recorder energy total takes 168 B. RAM, stack and flash ceilings stay unchanged.",
+      "_app_note": "60,984 B on head d8755449b in CI run 35893128960, embedded resource-report build. The persisted theme takes 8 B of it, and the effort state (zones, the 10 s power window and the 5-minute history) with the recorder energy total takes 168 B. RAM, stack and flash ceilings stay unchanged.",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,
