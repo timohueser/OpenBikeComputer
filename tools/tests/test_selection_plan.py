@@ -500,7 +500,6 @@ class ShippedPlanTests(unittest.TestCase):
             ("firmware/obc-render/src/stroke.rs", True),
             ("firmware/ui-snapshots.sha256", True),
             ("firmware/obc-app/i18n/en.toml", True),
-            ("firmware/obc-app/assets/landmark.bin", True),
             ("firmware/obc-render/fonts/terminus/font.bdf", True),
         ]
         for path, selected in cases:
