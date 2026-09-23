@@ -409,6 +409,27 @@ mod tests {
     }
 
     #[test]
+    fn finish_from_the_paused_page_records_where_the_rider_stopped() {
+        let bytes = line();
+        let src = SliceSource(&bytes);
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
+        let mut app = recording_on(&[(route.summary(), 7), (route.summary(), 8)], &[trip], 0, |_| {});
+
+        ride(&mut app, &route, &[(0, 0), (0, 2_500), (0, 5_000)]);
+        let stopped = app.progress_m();
+        assert!(stopped > 500 && !arrival(&app).arrived());
+        press(&mut app, &route, &[Gesture::Press, Gesture::Step(1)]);
+        assert!(matches!(app.top_screen(), Screen::RideControl(_)), "paused, the cursor on Finish");
+        press(&mut app, &route, &[Gesture::Hold]);
+
+        let written = save(&mut app, &route);
+        assert_eq!((written.day, written.day_route.id, written.metres), (0, 7, stopped), "not 0 m");
+        assert_eq!(written.last_finished, Some(0));
+    }
+
+    #[test]
     fn across_a_transfer_the_view_offers_no_ride_on() {
         let bytes = line();
         let src = SliceSource(&bytes);
