@@ -5,15 +5,26 @@ import UIKit
 /// The ride detail's share button: the GPX file, the share image, and save as route.
 public struct RideShareMenu: View {
     private let gpx: RideGPXFile
-    private let photos: [UIImage]
+    private var photos: [SharePhoto] = []
     /// Nil when the ride cannot become a route; see `Ride.plannedRoute()`.
     private let onSaveAsRoute: (() -> Void)?
     @State private var imageShown = false
 
-    public init(gpx: RideGPXFile, photos: [UIImage] = [], onSaveAsRoute: (() -> Void)?) {
+    public init(gpx: RideGPXFile, onSaveAsRoute: (() -> Void)?) {
         self.gpx = gpx
-        self.photos = photos
         self.onSaveAsRoute = onSaveAsRoute
+    }
+
+    /// The share image offers the ride's photos.
+    public func photos(from model: RidePhotosModel?) -> RideShareMenu {
+        var menu = self
+        menu.photos = (model?.photos ?? []).compactMap { photo in
+            guard let data = model?.thumbnails[photo.assetID], let thumbnail = UIImage(data: data) else { return nil }
+            return SharePhoto(thumbnail: thumbnail) {
+                (try? await model?.fullImage(photo.assetID)).flatMap { $0 }.flatMap(UIImage.init(data:))
+            }
+        }
+        return menu
     }
 
     public var body: some View {
