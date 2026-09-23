@@ -2479,10 +2479,10 @@ impl App {
             if let Some(Screen::Assistant(screen)) = self.ui.stack.last() {
                 let selected = screen.selected;
                 let before = self.ui.stack.len();
-                match selected {
-                    0 => self.open_find_place(),
-                    1 => self.open_whats_next(),
-                    2 => {
+                match screen::assistant::QUESTIONS[selected] {
+                    Msg::AssistantFind => self.open_find_place(),
+                    Msg::AssistantNext => self.open_whats_next(),
+                    Msg::AssistantEasier => {
                         let result = self
                             .place_map_key()
                             .ok_or(crate::navigator::VisitUnavailable::SourceChanged)
@@ -2493,7 +2493,7 @@ impl App {
                             }
                         }
                     }
-                    5 => self.open_landmarks(),
+                    Msg::AssistantLandmarks => self.open_landmarks(),
                     _ => {}
                 }
                 return self.ui.stack.len() != before;
@@ -2939,6 +2939,7 @@ impl App {
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
             climb,
+            climbs: navigator.climbs(),
             waypoints: navigator.waypoints(),
             breadcrumb: &recorder.breadcrumb,
             recording: recorder.recording(),
