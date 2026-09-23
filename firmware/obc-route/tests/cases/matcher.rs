@@ -764,3 +764,26 @@ fn recovery_scans_the_phase_and_refuses_repeated_occurrences() {
     let matched = matcher.recover(0, 100_000, &route, 0, route.total_distance_m).unwrap();
     assert!(matched.progress_m > 10_000, "recovery is not limited to the live forward segment window");
 }
+
+/// The index-free scan finds the point the join scan finds, across chunk seams.
+#[test]
+fn nearest_along_agrees_with_the_join_scan() {
+    let pts: Vec<(f64, f64, f64)> = (0..1_200)
+        .map(|i| {
+            let x = i as f64;
+            (48.0 + 0.0004 * (x / 2.5).sin(), 7.8 + x * 0.0003, 200.0)
+        })
+        .collect();
+    let bytes = convert("Wiggle", &gpx_from(&pts));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    assert!(r.chunks().len() > 1, "the route spans chunk seams");
+    for p in decode_all(&r).iter().step_by(11) {
+        let fix = (p.lon + 150, p.lat + north_ud(20.0));
+        let scan = RouteMatch::nearest(fix.0, fix.1, &r, 0.0).unwrap();
+        let (along, away) = obc_route::nearest_along(&src, fix).unwrap().unwrap();
+        assert!(along.abs_diff(scan.progress_m) <= 1, "{along} m against {} m", scan.progress_m);
+        assert_eq!(away as u32, scan.dist_m);
+    }
+}

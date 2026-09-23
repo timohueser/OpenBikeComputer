@@ -359,6 +359,10 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   rider instead rides 20 km into Day 3, Day 3 is next with 20 km less to ride.
   A ride on the rest of Day 2 plus Day 3 that ends before it joins Day 3 finishes Day 2, not
   Day 3. The position stays on Day 2, so Day 3 is still next.
+- **Rode on.** A Finish after the rider arrived at the end of the loaded route and rode on past
+  it writes the position at that end, unless the last fix lies within 50 m of the route of the
+  next day. Then the position is the point of that route nearest the fix, in the next day. The
+  device projects that one fix once, when it writes the record.
 - **Active trip.** The trip of the latest record, while it has a next day. A start record moves the
   trip's record to the end, so the trip of a started ride is active before its Finish.
 - **Ticks.** A day is ticked when it is at or before the last finished day, or when it is before

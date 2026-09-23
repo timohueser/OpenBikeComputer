@@ -64,6 +64,8 @@ pub(crate) struct MetadataMachine {
     progress: Records,
     /// A Finish's record that the store does not hold yet.
     progress_owed: Option<TripProgress>,
+    /// The owed Finish rode on past the end of its day.
+    rode_on: Option<crate::trip::RodeOn>,
     /// The write in flight is the owed record.
     writing_progress: bool,
     /// Where the active trip's next day meets the day before, from the last catalog read.
@@ -80,6 +82,7 @@ impl MetadataMachine {
             blocked: false,
             progress: Records::new(),
             progress_owed: None,
+            rode_on: None,
             writing_progress: false,
             day_join: None,
             replaced: heapless::Vec::new(),
@@ -105,6 +108,10 @@ impl MetadataMachine {
     pub(crate) fn progress_payload(&self, token: OperationToken<MetadataTag>) -> Option<&TripProgress> {
         self.progress_owed.as_ref().filter(|_| self.writing_progress && self.ops.is_current(token))
     }
+    /// The owed record's ride on past the end of its day, while `token` is the write in flight.
+    pub(crate) fn progress_rode_on(&self, token: OperationToken<MetadataTag>) -> Option<crate::trip::RodeOn> {
+        self.progress_payload(token).and(self.rode_on)
+    }
     pub(crate) fn apply_outcome(&mut self, outcome: MetadataOutcome) -> bool {
         if !self.inflight || !self.ops.is_current(outcome.token()) {
             return false;
@@ -116,6 +123,7 @@ impl MetadataMachine {
         );
         if core::mem::take(&mut self.writing_progress) && !retry {
             self.progress_owed = None;
+            self.rode_on = None;
         }
         self.ops.invalidate();
         self.inflight = false;
@@ -123,14 +131,20 @@ impl MetadataMachine {
         true
     }
     /// A Finish's record. The resident records take it at once; the store takes it when it can.
-    pub(crate) fn owe_progress(&mut self, record: TripProgress, stored: impl Fn(u64) -> bool) {
+    pub(crate) fn owe_progress(
+        &mut self,
+        record: TripProgress,
+        rode_on: Option<crate::trip::RodeOn>,
+        stored: impl Fn(u64) -> bool,
+    ) {
         obc_formats::trip_progress::record(&mut self.progress, record.clone(), stored);
         self.progress_owed = Some(record);
+        self.rode_on = rode_on;
     }
     /// A start's record. It never displaces a Finish's record that the store does not hold yet.
     pub(crate) fn owe_start(&mut self, record: TripProgress, stored: impl Fn(u64) -> bool) {
         if self.progress_owed.is_none() {
-            self.owe_progress(record, stored);
+            self.owe_progress(record, None, stored);
         }
     }
     pub(crate) fn progress(&self) -> &[TripProgress] {
@@ -177,6 +191,7 @@ impl MetadataMachine {
                 && !self.blocked
                 && self.progress.is_empty()
                 && self.progress_owed.is_none()
+                && self.rode_on.is_none()
                 && !self.writing_progress
                 && self.day_join.is_none()
                 && self.replaced.is_empty()

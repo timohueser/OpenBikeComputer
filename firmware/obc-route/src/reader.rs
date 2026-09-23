@@ -205,6 +205,47 @@ pub fn route_end(src: &dyn ByteSource) -> Result<(i32, i32), Error> {
     Ok((lon, lat))
 }
 
+/// The route point nearest `p`, `(lon, lat)` µdeg, as `(metres along, metres away)`. It walks every
+/// chunk through one small block, so it needs no [`RouteIndex`]. The earliest of equal distances
+/// wins. `None` for a route without a segment.
+pub fn nearest_along(src: &dyn ByteSource, p: (i32, i32)) -> Result<Option<(u32, f32)>, Error> {
+    use crate::geo::project_to_segment;
+    use obc_map_scene::{cos_lat, ground_dist_m_cl};
+    let h = read_header(src)?;
+    let mut best: Option<(u32, f32)> = None;
+    const BLOCK: usize = 16 * POINT_RECORD_LEN;
+    let mut block = [0u8; BLOCK];
+    for c in 0..h.chunk_count {
+        let off = c
+            .checked_mul(CHUNK_META_LEN as u32)
+            .and_then(|rel| h.index_offset.checked_add(rel))
+            .ok_or(Error::BadOffset)?;
+        let mut meta = [0u8; CHUNK_META_LEN];
+        src.read_at(off.into(), &mut meta)?;
+        let cm = parse_chunk_meta(&meta, src.len())?;
+        let cl = cos_lat(cm.anchor_lat);
+        let mut a = (cm.anchor_lon, cm.anchor_lat);
+        let mut along = cm.cum_distance_m as f32;
+        let (mut at, end) = (u64::from(cm.byte_offset), u64::from(cm.byte_offset) + u64::from(cm.byte_len));
+        while at < end {
+            let bytes = &mut block[..(end - at).min(BLOCK as u64) as usize];
+            src.read_at(at, bytes)?;
+            decode_records(a, bytes, |point| {
+                let b = (point.lon, point.lat);
+                let seg = ground_dist_m_cl(a, b, cl);
+                let (t, dist) = project_to_segment(a, b, p, cl);
+                if best.is_none_or(|(_, nearest)| dist < nearest) {
+                    best = Some(((along + t * seg) as u32, dist));
+                }
+                along += seg;
+                a = b;
+            })?;
+            at += bytes.len() as u64;
+        }
+    }
+    Ok(best)
+}
+
 /// The resident, source-independent parse of a route: the header fields plus the chunk index and
 /// its segment prefix sums. [`read`](Self::read) pays the route's only up-front cost, the header
 /// read and the full chunk-meta walk.
