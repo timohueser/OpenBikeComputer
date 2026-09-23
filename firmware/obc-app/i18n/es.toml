@@ -461,6 +461,18 @@ join_nearest = "Punto más cercano"
 away_at = " lejos, en "
 cancel = "Cancelar"
 
+# --- Arrival at the end of the route ---
+[arrival]
+title = "LLEGADA"
+end_of = "Fin de "
+end_of_day = ", fin del "
+finish = "Terminar salida"
+finish_hint = "Guardar hoy"
+ride_on = "Seguir: "
+to = " hasta "
+keep_riding = "Seguir rodando"
+keep_riding_hint = "Cerrar esta vista"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSA"

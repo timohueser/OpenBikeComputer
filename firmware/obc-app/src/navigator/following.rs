@@ -4,6 +4,7 @@ use core::num::NonZeroUsize;
 
 use obc_route::{Climbs, RouteReader, Waypoints};
 
+use super::arrival::Arrival;
 use super::NavigatorMachine;
 
 /// A route-catalog index stored as `index + 1`, so [`Option`] gets a compact empty state. Catalog
@@ -41,6 +42,7 @@ pub struct RouteState {
     pub(crate) active_climb: Option<usize>,
     pub(crate) next_waypoint: Option<usize>,
     pub(crate) waypoint_count: usize,
+    pub(crate) arrival: Arrival,
     seam_request: Option<SeamRequest>,
 }
 
@@ -55,6 +57,7 @@ impl RouteState {
             active_climb: None,
             next_waypoint: None,
             waypoint_count: 0,
+            arrival: Arrival::Riding,
             seam_request: None,
         }
     }
@@ -86,6 +89,7 @@ impl RouteState {
             "all route counters start at zero"
         );
         assert!(!self.off_route, "an unloaded route is not off-route");
+        assert_eq!(self.arrival, Arrival::Riding, "nothing has arrived");
     }
 }
 
@@ -222,6 +226,7 @@ impl NavigatorMachine {
         self.following.dist_to_route_m = 0;
         self.following.active_climb = None;
         self.following.next_waypoint = None;
+        self.following.arrival = Arrival::Riding;
     }
 
     /// Discard the matcher's forward-only floor when a ride session opens or closes.
@@ -245,6 +250,7 @@ impl NavigatorMachine {
             // it must survive into. Stale seams die on the request's own route-key check.
             self.route_match.reset();
             self.matched_route = self.following.active_route;
+            self.following.arrival = Arrival::Riding;
             dirty = true; // route load / swap repaints the route line + recenters
         }
         let route_total_before = self.following.route_total_m;
@@ -277,11 +283,26 @@ impl NavigatorMachine {
 
     /// Snap a fresh fix onto the active route: run the matcher and store the result on
     /// [`RouteState`]. Called once per fresh fix, never on a dropout, so progress is not re-derived
-    /// from a stale position.
+    /// from a stale position. After [`Arrival`] the matcher stands still and progress holds at the
+    /// route end. An Assistant visit has its own arrival at its stop, so the route end does not
+    /// arrive while one is under way.
     pub(crate) fn match_fix(&mut self, fix: obc_ports::Fix, route: &RouteReader) {
+        let at = (fix.lon, fix.lat);
+        if self.following.arrival != Arrival::Riding {
+            self.following.arrival = self.following.arrival.on_fix(at, route, &self.following);
+            return;
+        }
         let m = self.route_match.update_to(fix.lon, fix.lat, route, self.visit_ceiling().unwrap_or(u32::MAX));
         self.following.apply_match(m);
-        self.advance_visit((fix.lon, fix.lat), route);
+        self.advance_visit(at, route);
+        if self.active_visit() {
+            return;
+        }
+        self.following.arrival = Arrival::Riding.on_fix(at, route, &self.following);
+        if self.following.arrival != Arrival::Riding {
+            let end = obc_route::Match { progress_m: route.total_distance_m, off_route: false, dist_m: 0 };
+            self.following.apply_match(end);
+        }
     }
 
     /// A fresh fix went unmatched. The Recalculating freeze holds the matcher for the length of a
@@ -425,6 +446,7 @@ impl NavigatorMachine {
         self.following.progress_m = 0;
         self.following.off_route = false;
         self.following.dist_to_route_m = 0;
+        self.following.arrival = Arrival::Riding;
         self.following.seam_request = None;
     }
 

@@ -983,6 +983,7 @@ impl App {
                 Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len, navigator.internal_routes()),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
+                Screen::Arrival(a) => a.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
                 Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
                 Screen::Detour(d) => d.remap_routes(&remap),
@@ -1064,13 +1065,32 @@ impl App {
     /// What a ride that starts now records: the current bike type, and the trip day when the
     /// loaded route is one.
     pub(crate) fn ride_origin(&self) -> crate::RideOrigin {
-        let route = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
-        let route =
-            route.map(|id| self.navigator.lead_in().filter(|lead| lead.splice == id).map_or(id, |lead| lead.route));
-        crate::RideOrigin {
-            bike: self.settings.bike_type,
-            trip: route.and_then(|route| crate::trip::trip_day(self.trips(), route)),
+        crate::RideOrigin { bike: self.settings.bike_type, trip: self.loaded_trip_day() }
+    }
+
+    /// The trip day of the loaded route. A day built from the rest of the day before counts as the
+    /// day it leads into.
+    fn loaded_trip_day(&self) -> Option<obc_formats::ride::TripRef> {
+        let route = self.active_route_index().and_then(|i| self.route_ids().get(i).copied())?;
+        let route = self.navigator.lead_in().filter(|lead| lead.splice == route).map_or(route, |lead| lead.route);
+        crate::trip::trip_day(self.trips(), route)
+    }
+
+    /// The arrival view's level: from arrival at the end of the loaded route until the rider rides
+    /// on, while a ride records and is not paused.
+    fn arrival_view(&self) -> Option<screen::ArrivalView> {
+        let arrived = matches!(self.navigator.route_state().arrival, crate::navigator::Arrival::Arrived { .. });
+        if !arrived || !self.recorder.recording() || self.activity.mode != Mode::Riding {
+            return None;
         }
+        let route = u16::try_from(self.active_route_index()?).ok()?;
+        let day = self.loaded_trip_day();
+        let next = day.and_then(|day| {
+            let trip = self.trips().iter().find(|t| t.key == day.key())?;
+            let next = u16::from(day.day_index()) + 1;
+            trip.days().find(|&(k, _)| k == next).map(|(_, index)| index)
+        });
+        Some(screen::ArrivalView { route, day: day.map(|day| u16::from(day.day_index())), next })
     }
 
     /// The device's trip progress records, at most one per trip key.
@@ -1718,7 +1738,8 @@ impl App {
     /// it needs. Called once per pass, and again after any host fact is posted, so an arriving
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
-        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
+        let arrival = self.arrival_view();
+        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival);
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
             self.ui.find.resume_route = self
