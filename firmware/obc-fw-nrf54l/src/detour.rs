@@ -165,10 +165,14 @@ impl Executor {
                 self.progress_m = request.progress_m;
                 self.rejoin_m = request.target_m;
                 self.kind = request.leg;
-                if let obc_route::Leg::Rest { from_m, .. } = request.leg {
-                    if self.begin_rest(app, store, id, from_m).is_err() {
+                // A rest is the stored day before over the span the request names, so there is
+                // nothing to plan.
+                if let obc_route::Leg::Rest { from_m, to_m } = request.leg {
+                    if self.rest_route(app).is_none() {
                         return self.fail(NavigatorError::SourceChanged);
                     }
+                    self.length_m = to_m.saturating_sub(from_m);
+                    self.has_elevation = true;
                     self.phase = Phase::Ready(Work::Plan);
                     return self.token.take().map(|token| NavigatorOutcome::Acquired { token });
                 }
@@ -267,37 +271,6 @@ impl Executor {
         let day = obc_app::trip::trip_day(app.trips(), self.original.as_ref()?.id().0)?;
         let trip = app.trips().iter().find(|trip| trip.key == day.key())?;
         trip.stage_ids.get(usize::from(day.day_index()).checked_sub(1)?).map(|&id| ObjectId(id))
-    }
-    /// The rest of the day before `route`, from `from_m`: read where the days leave and join the
-    /// trip's line. At or past the leave point the rest is empty, and the whole day follows it.
-    #[inline(never)]
-    fn begin_rest(
-        &mut self,
-        app: &App,
-        store: &'static FlatStore<FlatCard>,
-        route: u64,
-        from_m: u32,
-    ) -> Result<(), ()> {
-        let day = obc_app::trip::trip_day(app.trips(), route).ok_or(())?;
-        let trip = app.trips().iter().find(|trip| trip.key == day.key()).ok_or(())?;
-        let k = u16::from(day.day_index()).checked_sub(1).ok_or(())?;
-        let read = |k| {
-            store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).map_err(|_| ())
-        };
-        let (before, this) = (read(k)?.map_err(|_| ())?, read(k + 1)?.map_err(|_| ())?);
-        let length_m = store
-            .with_source(ObjectId(before.route), None, |source| obc_route::RouteObjectInfo::read(source))
-            .map_err(|_| ())?
-            .map_err(|_| ())?
-            .distance_m;
-        let leave_m = before.leave_m.min(length_m);
-        let (to_m, rejoin_m) = if from_m < leave_m { (leave_m, this.join_m) } else { (from_m, 0) };
-        self.kind = obc_route::Leg::Rest { from_m, to_m };
-        self.progress_m = 0;
-        self.rejoin_m = rejoin_m;
-        self.length_m = to_m - from_m;
-        self.has_elevation = true;
-        Ok(())
     }
     fn parse_sources(&self, app: &App, store: &FlatStore<FlatCard>, guard: &mut NavGuard) -> Result<(), ()> {
         let rest = self.rest_route(app);

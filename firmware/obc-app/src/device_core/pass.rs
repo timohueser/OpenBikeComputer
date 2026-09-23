@@ -549,6 +549,7 @@ impl App {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.recorder.set_origin(self.ride_origin());
+            self.metadata.begin_ride();
             self.navigator.reset_detour();
             // Only a measured anchor re-joins the route. A plain route selection records no
             // progress, so re-anchoring a fresh ride to it would drag the matcher back to the route

@@ -66,6 +66,11 @@ pub(crate) struct MetadataMachine {
     progress_owed: Option<TripProgress>,
     /// The write in flight is the owed record.
     writing_progress: bool,
+    /// Where the active trip's next day meets the day before, from the last catalog read.
+    day_join: Option<crate::trip::DayJoin>,
+    /// The open ride's day routes that a re-upload replaced since the ride started: the day and the
+    /// day before, so at most two.
+    replaced: heapless::Vec<crate::CatalogObjectId, 2>,
 }
 impl MetadataMachine {
     pub const fn new() -> Self {
@@ -76,6 +81,8 @@ impl MetadataMachine {
             progress: Records::new(),
             progress_owed: None,
             writing_progress: false,
+            day_join: None,
+            replaced: heapless::Vec::new(),
         }
     }
     fn issue(&mut self) -> Option<OperationToken<MetadataTag>> {
@@ -123,6 +130,24 @@ impl MetadataMachine {
     pub(crate) fn progress(&self) -> &[TripProgress] {
         &self.progress
     }
+    pub(crate) fn day_join(&self) -> Option<crate::trip::DayJoin> {
+        self.day_join
+    }
+    pub(crate) fn note_replaced_during_ride(&mut self, id: crate::CatalogObjectId) {
+        if !self.replaced.contains(&id) {
+            let _ = self.replaced.push(id);
+        }
+    }
+    pub(crate) fn replaced_during_ride(&self, id: crate::CatalogObjectId) -> bool {
+        self.replaced.contains(&id)
+    }
+    /// A fresh ride starts on the geometry the store holds now.
+    pub(crate) fn begin_ride(&mut self) {
+        self.replaced.clear();
+    }
+    pub(crate) fn set_day_join(&mut self, join: Option<crate::trip::DayJoin>) {
+        self.day_join = join;
+    }
     /// The catalog read's records replace the resident ones.
     pub(crate) fn set_progress(&mut self, records: impl IntoIterator<Item = TripProgress>) {
         self.progress.clear();
@@ -147,6 +172,8 @@ impl MetadataMachine {
                 && self.progress.is_empty()
                 && self.progress_owed.is_none()
                 && !self.writing_progress
+                && self.day_join.is_none()
+                && self.replaced.is_empty()
         );
     }
 }

@@ -122,10 +122,42 @@ impl TripSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DayLoad {
     AsIs,
-    /// The rest of the day before, from `from_m` on its route, and then the day.
+    /// The rest of the day before, `[from_m, to_m]` on its route, and then the day from `join_m`.
     Rest {
         from_m: u32,
+        to_m: u32,
+        join_m: u32,
     },
+}
+
+impl DayLoad {
+    /// The loaded route's length, in km, for a day whose own route is `day_km` long.
+    pub fn distance_km(self, day_km: u32) -> u32 {
+        match self {
+            DayLoad::AsIs => day_km,
+            DayLoad::Rest { from_m, to_m, join_m } => {
+                ((to_m - from_m) + (day_km * 1000).saturating_sub(join_m) + 500) / 1000
+            }
+        }
+    }
+}
+
+/// A rest of the day before this short counts as ridden, so the next day loads as it is. It covers
+/// a Finish a few metres before the day's end.
+pub const REST_MIN_M: u32 = 500;
+
+/// Where the active trip's next day meets the day before on the trip's line. The host reads it from
+/// the trip object and the day before's route after each catalog read; without it the next day
+/// loads as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayJoin {
+    pub key: u64,
+    /// The next day.
+    pub day: u16,
+    /// Where the day before leaves the line, clamped to the length of its route.
+    pub leave_m: u32,
+    /// Where the next day joins the line.
+    pub join_m: u32,
 }
 
 /// A position on a trip: a day, that day's route, and metres into it.
@@ -217,12 +249,16 @@ impl TripSummary {
         }
     }
 
-    /// How day `day` loads. When the position is inside the day before, the day is the rest of that
-    /// day from the position and then this day; otherwise it is this day's route as it is.
-    pub fn load_day(&self, day: u16, progress: Option<&TripProgress>) -> DayLoad {
-        let metres = self.position_m(progress);
-        match self.own(progress).and_then(|p| self.in_trip(p.day)) {
-            Some(at) if at + 1 == day && metres > 0 => DayLoad::Rest { from_m: metres },
+    /// How day `day` loads. When the position is on the day before, more than [`REST_MIN_M`] before
+    /// it leaves the line, the day is the rest of that day and then this day. Otherwise it is this
+    /// day's route as it is.
+    pub fn load_day(&self, day: u16, progress: Option<&TripProgress>, join: Option<&DayJoin>) -> DayLoad {
+        let from_m = self.position_m(progress);
+        let join = join.filter(|j| j.key == self.key && j.day == day);
+        match (self.own(progress).and_then(|p| self.in_trip(p.day)), join) {
+            (Some(at), Some(join)) if at + 1 == day && from_m > 0 && from_m + REST_MIN_M < join.leave_m => {
+                DayLoad::Rest { from_m, to_m: join.leave_m, join_m: join.join_m }
+            }
             _ => DayLoad::AsIs,
         }
     }
@@ -316,16 +352,23 @@ mod tests {
     #[test]
     fn a_day_after_an_early_stop_is_the_rest_of_the_day_before_and_the_day() {
         let t = trip(0);
-        assert_eq!(t.load_day(0, None), DayLoad::AsIs, "no progress: the day as it is");
-        // Stopped 20 km before the end of Day 2 and finished it: Day 3 starts with the rest of Day 2.
+        // Day 2 leaves the line at 74 km, and Day 3 joins it 3 km in from a camp.
+        let join = DayJoin { key: KEY, day: 2, leave_m: 74_000, join_m: 3_000 };
+        assert_eq!(t.load_day(0, None, Some(&join)), DayLoad::AsIs, "no progress: the day as it is");
+        // Stopped 20 km before the end of Day 2 and finished: Day 3 starts with the rest of Day 2.
         let early = progress(1, Some(1), &[]);
-        assert_eq!(t.load_day(2, Some(&early)), DayLoad::Rest { from_m: 54_000 });
+        let rest = t.load_day(2, Some(&early), Some(&join));
+        assert_eq!(rest, DayLoad::Rest { from_m: 54_000, to_m: 74_000, join_m: 3_000 });
+        assert_eq!(rest.distance_km(61), 78, "20 km of Day 2, then 58 km of Day 3");
+        // Rode Day 2 to its end, or a few metres short of it: Day 3 as it is.
+        let full = TripProgress { metres: 73_700, ..early.clone() };
+        assert_eq!(t.load_day(2, Some(&full), Some(&join)), DayLoad::AsIs);
         // Rode 20 km into Day 3: Day 3 as it is, and the ride joins it where the rider is.
-        assert_eq!(t.load_day(2, Some(&progress(2, Some(1), &[]))), DayLoad::AsIs);
-        // At the start of Day 2 (a replaced route reads as 0 m): Day 3 as it is.
-        assert_eq!(t.load_day(2, Some(&TripProgress { metres: 0, ..early.clone() })), DayLoad::AsIs);
-        // A day far ahead or behind: as it is.
-        assert_eq!(t.load_day(0, Some(&early)), DayLoad::AsIs);
+        assert_eq!(t.load_day(2, Some(&progress(2, Some(1), &[])), Some(&join)), DayLoad::AsIs);
+        // A voided position, a day far ahead, or no line facts for the day: as it is.
+        assert_eq!(t.load_day(2, Some(&TripProgress { metres: 0, ..early.clone() }), Some(&join)), DayLoad::AsIs);
+        assert_eq!(t.load_day(0, Some(&early), Some(&join)), DayLoad::AsIs);
+        assert_eq!(t.load_day(2, Some(&early), None), DayLoad::AsIs);
     }
 
     #[test]
