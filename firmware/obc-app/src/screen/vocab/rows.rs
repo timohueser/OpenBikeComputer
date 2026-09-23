@@ -257,15 +257,21 @@ pub(crate) fn ledger_row(
     // The Display and Label caps both bottom out at `y + 32`, so the baselines agree.
     cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
     cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
-    let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
-    let vx = w - 16 - unit_w - 6;
-    cv.text(value, Point::new(vx, y + 6), Font::Display, TextAlign::Right, INK);
+    cv.text(value, Point::new(value_right(w, unit), y + 6), Font::Display, TextAlign::Right, INK);
     if let Some(up) = arrow {
-        let value_w = value.chars().count() as i32 * Font::Display.char_width() as i32;
-        let ax = vx - value_w - 18;
+        let ax = ledger_value_left(w, value, unit) - 18;
         let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
         cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
     }
+}
+
+/// The left edge of a [`ledger_row`] value, which a mark drawn beside the value must clear.
+pub(crate) fn ledger_value_left(w: i32, value: &str, unit: &str) -> i32 {
+    value_right(w, unit) - value.chars().count() as i32 * Font::Display.char_width() as i32
+}
+
+fn value_right(w: i32, unit: &str) -> i32 {
+    w - 16 - unit.chars().count() as i32 * Font::Label.char_width() as i32 - 6
 }
 
 /// One option in a guarded-action menu. `guard` marks an irreversible option, which needs a hold

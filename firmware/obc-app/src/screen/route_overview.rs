@@ -346,7 +346,7 @@ fn draw_computed(cv: &mut impl Surface, rx: &Render, summary: &RouteSummary) {
     ledger_row(cv, w, rows_top + COMPUTED_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
     draw_profile_label(cv, w, rx, rows_top + 2 * COMPUTED_PITCH);
     // The shape preview fills the middle between the ledger and the START bar.
-    draw_route_preview(cv, w, rows_top + 3 * COMPUTED_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
+    draw_route_preview(cv, w, rows_top + 3 * COMPUTED_PITCH, start_button_top(h), rx.nav_preview);
     draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
 }
 
@@ -442,12 +442,17 @@ pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i
     cv.line(Point::new(d.x - k, d.y), Point::new(d.x, d.y - k), INK);
 }
 
+/// The top of the [`draw_start_button`] bar, which the content above it must clear.
+pub(super) fn start_button_top(h: i32) -> i32 {
+    h - 10 - BUTTON_H
+}
+
 /// START RIDE at the screen-bottom anchor: the computed-route variant and the POI detail's
 /// `Route here` footer are exactly this bar, so the two cannot drift. Always armed, because these
 /// pages have a single action and no cursor.
 pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
     use palette::*;
-    let by = h - 10 - BUTTON_H;
+    let by = start_button_top(h);
     let bar = rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H);
     cv.round(bar, 8, AMBER);
     let tx = w / 2 + 8;
