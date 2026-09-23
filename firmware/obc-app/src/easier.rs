@@ -5,9 +5,9 @@ use crate::{
 };
 use obc_formats::obcr::RouteSourceKey;
 use obc_route::{
-    easier::{Choice, Costs, Goal},
+    easier::{next_trial, Costs, Goal},
     nav::Objective,
-    RouteReader,
+    ElevationSource, RouteReader,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -18,11 +18,16 @@ pub(crate) enum Phase {
     SelectRelease,
     Rebuild,
     Ready,
-    Unavailable,
+    /// The search could not run, or it failed.
+    Failed,
+    /// Every evaluable goal was searched and none improved.
+    NoBetter,
 }
+/// A deterministic winner; the owner reconstructs its exact candidate before review.
 #[derive(Clone, Copy)]
 pub(crate) struct Candidate {
-    pub choice: Choice,
+    pub objective: Objective,
+    pub costs: Costs,
     pub crc: u32,
 }
 pub(crate) struct State {
@@ -32,6 +37,8 @@ pub(crate) struct State {
     pub bounds: obc_map_scene::BBox,
     pub phase: Phase,
     pub trial: u8,
+    /// The trial to run after the current one, chosen from its result.
+    next: Option<usize>,
     pub selected: u8,
     pub review: bool,
     pub failure: Option<obc_route::NavError>,
@@ -53,6 +60,7 @@ impl State {
             bounds: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
             phase: Phase::Idle,
             trial: 0,
+            next: None,
             selected: 0,
             review: false,
             failure: None,
@@ -110,7 +118,12 @@ impl App {
         Ok(())
     }
     /// Called by either executor after its exact original-source and map checks.
-    pub fn assistant_easier_original(&mut self, context: ReviewContext, route: &RouteReader) -> bool {
+    pub fn assistant_easier_original(
+        &mut self,
+        context: ReviewContext,
+        route: &RouteReader,
+        elev: &mut dyn ElevationSource,
+    ) -> bool {
         if !matches!(context.purpose, ReviewPurpose::Easier(_)) {
             return true;
         }
@@ -130,13 +143,13 @@ impl App {
         if let Some(original) = frozen.original {
             return context.original == Some(original) && context.map == frozen.map;
         }
-        let Ok(facts) = route.interval_facts(context.progress_m, route.total_distance_m) else {
+        let Ok(current) = Costs::remaining(route, context.progress_m, context.map, elev) else {
             return false;
         };
         let Some(end) = route.position_at(route.total_distance_m) else {
             return false;
         };
-        self.easier.current = Costs::from_facts(facts, context.map);
+        self.easier.current = current;
         self.easier.context = Some(context);
         self.easier.destination = (end.lon, end.lat);
         let mut bounds = obc_map_scene::BBox { min_lon: end.lon, max_lon: end.lon, min_lat: end.lat, max_lat: end.lat };
@@ -151,13 +164,14 @@ impl App {
         self.easier.bounds = bounds;
         true
     }
-    /// Use the exact candidate index bounds, not extrema from its decimated display shape.
+    /// Use the exact candidate index bounds, not extrema from its decimated display shape. Only the
+    /// selected candidate widens the map, so it holds still while trials run.
     pub fn assistant_easier_bounds(
         &mut self,
         source: obc_formats::assistant::PayloadFingerprint,
         bounds: obc_map_scene::BBox,
     ) {
-        if self.easier.phase == Phase::Trials && self.assistant_preview().is_some_and(|p| p.source == source) {
+        if self.easier.phase == Phase::Rebuild && self.assistant_preview().is_some_and(|p| p.source == source) {
             let b = &mut self.easier.bounds;
             b.min_lon = b.min_lon.min(bounds.min_lon);
             b.max_lon = b.max_lon.max(bounds.max_lon);
@@ -201,15 +215,16 @@ impl App {
             self.ui.map_dirty = true;
             return;
         }
-        if !self.easier_current()
+        if self.easier.phase != Phase::NoBetter
+            && !self.easier_current()
             && !matches!(self.assistant_review_status(), ReviewStatus::Saving | ReviewStatus::Unresolved)
         {
             self.cancel_easier();
-            self.easier.phase = Phase::Unavailable;
+            self.easier.phase = Phase::Failed;
         }
         if self.easier.phase == Phase::Ready && matches!(self.assistant_review_status(), ReviewStatus::Failed(_)) {
             self.cancel_easier();
-            self.easier.phase = Phase::Unavailable;
+            self.easier.phase = Phase::Failed;
         }
         match self.easier.phase {
             Phase::Trials | Phase::Rebuild => match self.assistant_review_status() {
@@ -217,7 +232,7 @@ impl App {
                     let Some(preview) = self.assistant_preview() else { return };
                     let Some(facts) = preview.visit_costs else {
                         self.cancel_easier();
-                        self.easier.phase = Phase::Unavailable;
+                        self.easier.phase = Phase::Failed;
                         return;
                     };
                     let costs = Costs {
@@ -231,26 +246,25 @@ impl App {
                     self.easier.context = self.assistant_review_context();
                     if self.easier.phase == Phase::Rebuild {
                         let expected = self.easier.choices[self.easier.selected as usize];
-                        if expected.is_some_and(|r| r.crc == preview.source.crc && r.choice.costs == costs) {
+                        if expected.is_some_and(|r| r.crc == preview.source.crc && r.costs == costs) {
                             self.easier.phase = Phase::Ready;
                         } else {
                             self.cancel_easier();
-                            self.easier.phase = Phase::Unavailable;
+                            self.easier.phase = Phase::Failed;
                         }
                     } else {
+                        let objective = Objective::TRIALS[self.easier.trial as usize];
                         for (i, goal) in Goal::ALL.iter().enumerate() {
                             if goal.eligible(self.easier.current, costs)
                                 && self.easier.choices[i].is_none_or(|old| {
                                     goal.saving(self.easier.current, costs)
-                                        > goal.saving(self.easier.current, old.choice.costs)
+                                        > goal.saving(self.easier.current, old.costs)
                                 })
                             {
-                                self.easier.choices[i] = Some(Candidate {
-                                    choice: Choice { objective: Objective::TRIALS[self.easier.trial as usize], costs },
-                                    crc: preview.source.crc,
-                                });
+                                self.easier.choices[i] = Some(Candidate { objective, costs, crc: preview.source.crc });
                             }
                         }
+                        self.easier.next = next_trial(self.easier.trial as usize, Some(costs), self.easier.current);
                         self.cancel_easier();
                         self.easier.phase = Phase::Releasing;
                     }
@@ -261,31 +275,32 @@ impl App {
                     if self.easier.failure != Some(obc_route::NavError::Exhausted) {
                         self.easier.failure = Some(error);
                     }
+                    self.easier.next = next_trial(self.easier.trial as usize, None, self.easier.current);
                     self.easier.context = self.assistant_review_context();
                     self.cancel_easier();
                     self.easier.phase = Phase::Releasing;
                 }
                 ReviewStatus::Failed(_) | ReviewStatus::Unresolved => {
                     self.cancel_easier();
-                    self.easier.phase = Phase::Unavailable;
+                    self.easier.phase = Phase::Failed;
                 }
                 _ => {}
             },
             Phase::SelectRelease if self.assistant_planner_released() => {
-                self.start_easier_trial(self.easier.choices[self.easier.selected as usize].unwrap().choice.objective);
+                self.start_easier_trial(self.easier.choices[self.easier.selected as usize].unwrap().objective);
                 self.easier.phase = Phase::Rebuild;
             }
             Phase::Releasing if self.assistant_planner_released() => {
-                self.easier.trial += 1;
-                if self.easier.trial < Objective::TRIALS.len() as u8 {
-                    self.start_easier_trial(Objective::TRIALS[self.easier.trial as usize]);
+                if let Some(next) = self.easier.next {
+                    self.easier.trial = next as u8;
+                    self.start_easier_trial(Objective::TRIALS[next]);
                     self.easier.phase = Phase::Trials;
                 } else {
                     for i in 0..3 {
                         for j in 0..i {
                             if self.easier.choices[i]
                                 .zip(self.easier.choices[j])
-                                .is_some_and(|(a, b)| a.crc == b.crc || a.choice.costs == b.choice.costs)
+                                .is_some_and(|(a, b)| a.crc == b.crc || a.costs == b.costs)
                             {
                                 self.easier.choices[i] = None;
                             }
@@ -293,10 +308,12 @@ impl App {
                     }
                     if let Some(i) = self.easier.choices.iter().position(Option::is_some) {
                         self.easier.selected = i as u8;
-                        self.start_easier_trial(self.easier.choices[i].unwrap().choice.objective);
+                        self.start_easier_trial(self.easier.choices[i].unwrap().objective);
                         self.easier.phase = Phase::Rebuild;
+                    } else if self.easier.failure.is_some() {
+                        self.easier.phase = Phase::Failed;
                     } else {
-                        self.easier.phase = Phase::Unavailable;
+                        self.easier.phase = Phase::NoBetter;
                     }
                 }
             }

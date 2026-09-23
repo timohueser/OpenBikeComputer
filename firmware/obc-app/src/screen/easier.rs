@@ -5,7 +5,6 @@ use crate::{
     navigator::ReviewStatus,
     Gesture, Msg,
 };
-use core::fmt::Write;
 use embedded_graphics::prelude::*;
 use obc_map_scene::BBox;
 use obc_render::{
@@ -31,7 +30,8 @@ pub struct EasierScreen {
     review: bool,
     saving: bool,
     unresolved: bool,
-    unavailable: bool,
+    failed: bool,
+    no_better: bool,
     failure: Option<obc_route::NavError>,
 }
 impl EasierScreen {
@@ -49,14 +49,27 @@ impl EasierScreen {
             review: false,
             saving: false,
             unresolved: false,
-            unavailable: false,
+            failed: false,
+            no_better: false,
             failure: None,
         }
+    }
+    /// A finished comparison of an original with terrain, and with surface or not, for the
+    /// copy-fit gate.
+    #[cfg(test)]
+    pub(crate) fn sample(phase: Phase, surface: bool) -> Self {
+        let mut state = State::new();
+        state.phase = phase;
+        state.current.elevation_complete = true;
+        state.current.surface_attributed = surface;
+        let mut screen = Self::new();
+        screen.update(&state, ReviewStatus::Idle);
+        screen
     }
     pub(crate) fn update(&mut self, state: &State, status: ReviewStatus) -> bool {
         let before = *self;
         self.current = state.current;
-        self.next = state.choices[state.selected as usize].map(|r| r.choice.costs);
+        self.next = state.choices[state.selected as usize].map(|r| r.costs);
         self.bounds = state.bounds;
         self.progress_m = state.context.map_or(0, |c| c.progress_m);
         self.goal = state.selected;
@@ -66,7 +79,8 @@ impl EasierScreen {
         self.ready = state.phase == Phase::Ready && status == ReviewStatus::Preview;
         self.saving = status == ReviewStatus::Saving;
         self.unresolved = status == ReviewStatus::Unresolved;
-        self.unavailable = state.phase == Phase::Unavailable;
+        self.failed = state.phase == Phase::Failed;
+        self.no_better = state.phase == Phase::NoBetter;
         self.failure = state.failure;
         *self != before
     }
@@ -80,7 +94,7 @@ impl EasierScreen {
     {
         if let Some(next) = self.next.filter(|_| self.review) {
             cv.clear(PARCHMENT);
-            header(cv, rx.t(NAMES[self.goal as usize]), rx.w, None);
+            super::landmarks::header(cv, rx.t(NAMES[self.goal as usize]), None, None);
             benefit(cv, self.current, next, self.goal as usize, rect(8, 46, rx.w - 16, 70), false, rx);
             cv.text(rx.t(Msg::AssistantCurrent), Point::new(146, 129), Font::Label, TextAlign::Right, SUBTEXT);
             cv.text(rx.t(Msg::AssistantNew), Point::new(236, 129), Font::Label, TextAlign::Right, SUBTEXT);
@@ -166,22 +180,31 @@ impl EasierScreen {
                 }
             }
         }
-        header(cv, rx.t(Msg::AssistantEasier), rx.w, self.ready.then_some((self.ordinal, self.count)));
+        let count = self.ready.then_some((u16::from(self.ordinal), u16::from(self.count)));
+        super::landmarks::header(cv, rx.t(Msg::AssistantEasier), count, None);
         cv.fill(super::find_place::panel(rx.w, rx.h, PANEL_TOP), PARCHMENT);
         if let Some(next) = self.next.filter(|_| self.ready) {
             benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true, rx);
             button(cv, rx.t(Msg::AssistantPreviewRoute));
+        } else if self.no_better && Goal::LessClimb.evaluable(self.current) {
+            // Name what was compared, so "nothing" reads as a result and not as an error.
+            let checked = if Goal::Smoother.evaluable(self.current) {
+                [Msg::AssistantCheckedAll, Msg::AssistantCheckedAllGoals]
+            } else {
+                [Msg::AssistantCheckedSome, Msg::AssistantCheckedSomeGoals]
+            };
+            cv.text(rx.t(Msg::AssistantNoEasier), Point::new(14, 198), Font::Body, TextAlign::Left, INK);
+            for (i, line) in checked.into_iter().enumerate() {
+                cv.text(rx.t(line), Point::new(14, 236 + 24 * i as i32), Font::Label, TextAlign::Left, SUBTEXT);
+            }
         } else {
             cv.text(
-                if self.unavailable {
-                    match self.failure {
-                        Some(obc_route::NavError::Exhausted) => rx.t(Msg::AssistantSearchLimit),
-                        Some(obc_route::NavError::NoPath) => rx.t(Msg::AssistantNoConnection),
-                        None if !self.current.elevation_complete => rx.t(Msg::AssistantNoComparison),
-                        None => rx.t(Msg::AssistantNoUsefulRoute),
-                    }
-                } else {
-                    rx.t(Msg::AssistantComparing)
+                match (self.failed, self.failure) {
+                    (true, Some(obc_route::NavError::Exhausted)) => rx.t(Msg::AssistantSearchLimit),
+                    (true, Some(obc_route::NavError::NoPath)) => rx.t(Msg::AssistantNoConnection),
+                    (true, _) => rx.t(Msg::AssistantSearchFailed),
+                    (false, _) if self.no_better => rx.t(Msg::AssistantNoComparison),
+                    (false, _) => rx.t(Msg::AssistantComparing),
                 },
                 Point::new(rx.w / 2, 223),
                 Font::Label,
@@ -189,15 +212,6 @@ impl EasierScreen {
                 INK,
             );
         }
-    }
-}
-fn header(cv: &mut impl Surface, title: &str, w: i32, count: Option<(u8, u8)>) {
-    cv.round(rect(4, 4, w - 8, 34), 6, INK);
-    cv.text(title, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
-    if let Some((index, count)) = count {
-        let mut s = heapless::String::<8>::new();
-        let _ = write!(s, "{index}/{count}");
-        cv.text(&s, Point::new(w - 12, 9), Font::Label, TextAlign::Right, PARCHMENT);
     }
 }
 fn button(cv: &mut impl Surface, text: &str) {
@@ -331,7 +345,8 @@ mod tests {
         state.review = true;
         state.phase = Phase::Ready;
         state.choices[0] = Some(crate::easier::Candidate {
-            choice: obc_route::easier::Choice { objective: obc_route::nav::Objective::Profile, costs: state.current },
+            objective: obc_route::nav::Objective::Profile,
+            costs: state.current,
             crc: 1,
         });
         let mut screen = EasierScreen::new();
@@ -341,7 +356,7 @@ mod tests {
         assert!(screen.saving && !screen.ready);
         screen.update(&state, ReviewStatus::Unresolved);
         assert!(screen.unresolved && !screen.ready && !screen.saving);
-        state.phase = Phase::Unavailable;
+        state.phase = Phase::Failed;
         screen.update(&state, ReviewStatus::Idle);
         assert!(screen.review && screen.next.is_some());
         assert!(!screen.ready && !screen.saving && !screen.unresolved);

@@ -679,7 +679,7 @@ impl HostLoop {
         self.plan_token = Some(token);
         let failed = |error| Some(NavigatorOutcome::Failed { token, error });
         match effect {
-            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, map),
+            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, map, elev),
             NavigatorEffect::Step { .. } => {
                 if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
                     return failed(NavigatorError::SourceChanged);
@@ -834,6 +834,7 @@ impl HostLoop {
         work: PlannerWork,
         routes: &dyn RouteRepository,
         map: &crate::flat_map::FlatMap,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let failed = |error| Some(NavigatorOutcome::Failed { token, error });
         if self.plan.is_some() || self.sources.is_some() {
@@ -926,7 +927,7 @@ impl HostLoop {
                             return failed(NavigatorError::Unavailable);
                         };
                         let route = obc_route::RouteReader::new(index, source);
-                        if !app.assistant_easier_original(context, &route) {
+                        if !app.assistant_easier_original(context, &route, elev) {
                             return failed(NavigatorError::Unavailable);
                         }
                         match crate::nav_visit::VisitPlan::start(context, app.assistant_visit_target(), &route) {
@@ -1458,7 +1459,8 @@ mod tests {
                 tokens.issue(),
                 PlannerWork::AssistantRoute(active_request),
                 &routes,
-                &map
+                &map,
+                &mut obc_route::NullElevation
             ),
             Some(NavigatorOutcome::Failed { .. })
         ));
@@ -1617,7 +1619,8 @@ mod tests {
                     tokens.issue(),
                     PlannerWork::AssistantRoute(active_request),
                     &routes,
-                    &map
+                    &map,
+                    &mut obc_route::NullElevation
                 ),
                 Some(NavigatorOutcome::Failed { .. })
             ),

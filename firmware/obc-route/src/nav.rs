@@ -189,14 +189,15 @@ pub enum Objective {
     Shortest,
 }
 impl Objective {
+    /// Each strong trial runs directly before its milder twin, so the owner can skip the twin.
     pub const TRIALS: [Self; 7] = [
         Self::Profile,
-        Self::LessClimb,
         Self::LeastClimb,
-        Self::Smoother,
+        Self::LessClimb,
         Self::Smoothest,
-        Self::Shorter,
+        Self::Smoother,
         Self::Shortest,
+        Self::Shorter,
     ];
 }
 
@@ -1132,7 +1133,7 @@ fn fill_segment(
 
 /// How many equal pieces a segment is split into to keep every emitted step at or under
 /// [`ELE_SAMPLE_STEP_M`]. Capped at [`ELE_MAX_DENSIFY_STEPS`].
-fn densify_steps(dist_m: f32) -> u32 {
+pub(crate) fn densify_steps(dist_m: f32) -> u32 {
     // `is_none_or` states the NaN case: a length that is not a number densifies nothing.
     if dist_m.partial_cmp(&ELE_SAMPLE_STEP_M).is_none_or(|o| o != core::cmp::Ordering::Greater) {
         return 1;
@@ -1142,7 +1143,7 @@ fn densify_steps(dist_m: f32) -> u32 {
 
 /// The point `k/den` of the way from `a` to `b`, interpolated in microdegrees. Integer-only, so it
 /// is deterministic across hosts; the truncation is at most 1 microdegree, about 11 cm.
-fn lerp_udeg(a: (i32, i32), b: (i32, i32), k: u32, den: u32) -> (i32, i32) {
+pub(crate) fn lerp_udeg(a: (i32, i32), b: (i32, i32), k: u32, den: u32) -> (i32, i32) {
     let f = |s: i32, e: i32| {
         let d = i64::from(e) - i64::from(s);
         (i64::from(s) + d * i64::from(k) / i64::from(den)) as i32

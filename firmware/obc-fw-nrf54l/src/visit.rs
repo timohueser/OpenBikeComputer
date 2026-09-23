@@ -177,6 +177,7 @@ impl Executor {
         app: &mut App,
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let token = effect.token();
         if matches!(self.phase, Phase::Await(..)) && !matches!(effect, NavigatorEffect::Release { .. }) {
@@ -226,7 +227,7 @@ impl Executor {
                 } else {
                     context.progress_m
                 };
-                if self.begin_route(app, guard.as_mut().unwrap()).is_err() {
+                if self.begin_route(app, guard.as_mut().unwrap(), elev).is_err() {
                     return self.fail(NavigatorError::Unavailable);
                 }
                 self.choice = VisitChoice::new();
@@ -349,14 +350,19 @@ impl Executor {
     }
 
     #[inline(never)]
-    fn begin_route(&mut self, app: &mut App, guard: &mut NavGuard) -> Result<(), ()> {
+    fn begin_route(
+        &mut self,
+        app: &mut App,
+        guard: &mut NavGuard,
+        elev: &mut dyn obc_route::ElevationSource,
+    ) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
         let target = app.assistant_visit_target();
         guard.begin_visit(c, target, self.rejoin).map_err(|_| ())?;
         let (builder, original, _, _) = guard.visit_parts();
         original.read_into(self.original.as_ref().ok_or(())?).map_err(|_| ())?;
         let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
-        if !app.assistant_easier_original(c, &route) {
+        if !app.assistant_easier_original(c, &route, elev) {
             return Err(());
         }
         if matches!(c.purpose, ReviewPurpose::Easier(_)) {
@@ -398,8 +404,7 @@ impl Executor {
                 (self.return_to, approach)
             }
         };
-        if matches!(c.purpose, ReviewPurpose::Easier(_)) { self.choice.search_easier() } else { self.choice.search() }
-            .map_err(|_| ())?;
+        self.choice.search(!matches!(c.purpose, ReviewPurpose::Easier(_))).map_err(|_| ())?;
         guard.visit_begin_plan(from, to, c);
         Ok(true)
     }
