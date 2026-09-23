@@ -381,6 +381,7 @@ struct RootView: View {
                     bikeType: ride.bikeType,
                     // The full tracklog: the interactive map and the profile use it, never the preview.
                     ridePoints: tracked?.points ?? [],
+                    rides: mainModel.rides,
                     deviceName: mainModel.deviceName,
                     // Phone-side only: the ride stays on the device's card and lands in Recently Deleted.
                     onDelete: {

@@ -63,25 +63,13 @@ public struct RouteDetailView: View {
 
                 titleBlock
 
-                OBCStatStrip(model.stats)
+                if !model.stats.isEmpty {
+                    OBCStatStrip(model.stats)
+                }
 
                 switch model.dressing {
                 case .planned, .tracked: bikeTypeRow
                 case .imported: EmptyView()
-                }
-
-                if !model.sensorRows.isEmpty {
-                    OBCGroupedSection {
-                        ForEach(model.sensorRows) { row in
-                            OBCListRow(
-                                label: row.label,
-                                value: row.value,
-                                showsDivider: row.id != model.sensorRows.last?.id
-                            )
-                        }
-                    }
-                    .padding(.top, 12)
-                    .accessibilityIdentifier("detail.sensorSummary")
                 }
 
                 if !model.waypoints.isEmpty {
@@ -103,6 +91,24 @@ public struct RouteDetailView: View {
                         .padding(.top, 18)
                         .padding(.bottom, 4)
                     ElevationProfileView(samples: model.elevationProfile)
+                }
+
+                if !model.highlights.isEmpty {
+                    highlightsLine
+                }
+
+                if !model.sensorRows.isEmpty {
+                    OBCGroupedSection {
+                        ForEach(model.sensorRows) { row in
+                            OBCListRow(
+                                label: row.label,
+                                value: row.value,
+                                showsDivider: row.id != model.sensorRows.last?.id
+                            )
+                        }
+                    }
+                    .padding(.top, 16)
+                    .accessibilityIdentifier("detail.sensorSummary")
                 }
 
                 if case .tracked = model.dressing {
@@ -218,9 +224,28 @@ public struct RouteDetailView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(OBCTheme.inkSoft)
             }
+            if let statsLine = model.statsLine {
+                Text(statsLine)
+                    .font(.obcMono(size: 15, weight: .medium))
+                    .foregroundStyle(OBCTheme.ink)
+                    .padding(.top, 6)
+                    .accessibilityIdentifier("detail.statsLine")
+            }
         }
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    private var highlightsLine: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            OBCEyebrow("Highlights")
+            Text(model.highlights.joined(separator: " · "))
+                .font(.obcMono(size: 13, weight: .medium))
+                .foregroundStyle(OBCTheme.inkSoft)
+        }
+        .padding(.top, 14)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("detail.highlights")
     }
 
     private var bikeTypeRow: some View {
