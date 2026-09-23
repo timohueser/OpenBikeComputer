@@ -1,4 +1,4 @@
-//! Recorded ride v4 contract: verbatim samples, one fixed footer, and footer-based readers.
+//! Recorded ride v5 contract: verbatim samples, one fixed footer, and footer-based readers.
 
 use core::cell::RefCell;
 
@@ -16,6 +16,7 @@ const STATS: RideStats = RideStats {
     moving_time_s: 9_000,
     avg_speed_cms: 472,
     climb_m: 200,
+    descent_m: 180,
     unix_at_anchor: 1_751_450_000,
     anchor_ms: 400_000,
     clock_trusted: true,
@@ -24,6 +25,7 @@ const STATS: RideStats = RideStats {
     avg_cadence: Some(85),
     avg_power: Some(210),
     max_power: Some(480),
+    energy_kj: Some(756),
     bike: BikeType::Mtb,
     trip: TripRef::new(7, 0, 2),
     trip_name: Name::EMPTY,
@@ -60,8 +62,8 @@ fn recorded_samples_are_the_served_bytes() {
         (2_224, 9_000, 472, 200, 2)
     );
     assert_eq!(
-        (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
-        (Some(142), Some(176), Some(85), Some(210), Some(480))
+        (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power, info.energy_kj),
+        (Some(142), Some(176), Some(85), Some(210), Some(480), Some(756))
     );
     assert_eq!((info.bike, info.trip, info.trip_name.as_str()), (BikeType::Mtb, STATS.trip, "Alpen"));
 }
@@ -91,7 +93,7 @@ fn list_summary_is_one_footer_only_random_read() {
 }
 
 #[test]
-fn exact_length_and_v4_are_mandatory() {
+fn exact_length_and_v5_are_mandatory() {
     let ride = ride_of(&[pt(1, 2, 3, 4, true)], "R", &STATS);
     assert!(RideInfo::read(&SliceSource(&ride[..ride.len() - 1])).is_err());
     let mut long = ride.clone();
@@ -100,7 +102,7 @@ fn exact_length_and_v4_are_mandatory() {
 
     let mut old = ride;
     let version = old.len() - FOOTER_LEN + 4;
-    old[version] = 3;
+    old[version] = 4;
     assert!(matches!(RideInfo::read(&SliceSource(&old)), Err(Error::BadVersion)));
 }
 

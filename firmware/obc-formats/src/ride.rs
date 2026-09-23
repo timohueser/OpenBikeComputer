@@ -1,4 +1,4 @@
-//! Recorded-ride v4: verbatim 20-byte samples followed by one fixed summary footer.
+//! Recorded-ride v5: verbatim 20-byte samples followed by one fixed summary footer.
 //!
 //! A recording appends [`crate::track::RECORD_LEN`]-byte samples directly to its final object.
 //! Finalize appends [`FOOTER_LEN`] bytes once. There is no leading header and no point rewrite:
@@ -6,18 +6,22 @@
 //! [`crate::track::encode_record`]. The fixed footer can be fetched alone at
 //! `object_len - FOOTER_LEN` for a ride-list row.
 
+use core::num::NonZeroU64;
+
 use crate::bike::BikeType;
 use crate::io::DecodeError;
 
 pub const MAGIC: [u8; 4] = *b"OBRF";
-pub const VERSION: u8 = 4;
-pub const FOOTER_LEN: usize = 144;
+pub const VERSION: u8 = 5;
+pub const FOOTER_LEN: usize = 150;
 pub const NAME_CAP: usize = 48;
 pub const SAMPLE_LEN: usize = crate::track::RECORD_LEN;
 
 pub use crate::track::{CAD_NONE, HR_NONE, PWR_NONE};
+/// The footer's energy sentinel: the ride has no power data.
+pub const KJ_NONE: u32 = u32::MAX;
 
-const NAME_AT: usize = 36;
+const NAME_AT: usize = 42;
 const TRIP_AT: usize = NAME_AT + NAME_CAP;
 const TRIP_NAME_AT: usize = TRIP_AT + 12;
 
@@ -67,7 +71,8 @@ impl Default for Name {
 /// The trip day a ride started on (`obc-ble-interface-spec.md` §7.7 names the trip key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripRef {
-    key: u64,
+    /// Nonzero, so an `Option<TripRef>` costs no tag.
+    key: NonZeroU64,
     day_index: u8,
     day_count: u8,
 }
@@ -76,15 +81,14 @@ impl TripRef {
     /// `None` unless the key is nonzero, because 0 means "no trip" on the wire, and the day lies
     /// inside the trip.
     pub const fn new(key: u64, day_index: u8, day_count: u8) -> Option<TripRef> {
-        if key != 0 && day_index < day_count {
-            Some(TripRef { key, day_index, day_count })
-        } else {
-            None
+        match NonZeroU64::new(key) {
+            Some(key) if day_index < day_count => Some(TripRef { key, day_index, day_count }),
+            _ => None,
         }
     }
 
     pub const fn key(&self) -> u64 {
-        self.key
+        self.key.get()
     }
 
     /// 0-based.
@@ -106,12 +110,16 @@ pub struct Footer {
     pub moving_time_s: u32,
     pub avg_speed_cms: u16,
     pub climb_m: u16,
+    /// Dead-banded like `climb_m`.
+    pub descent_m: u16,
     pub point_count: u32,
     pub avg_hr: Option<u8>,
     pub max_hr: Option<u8>,
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
     pub max_power: Option<u16>,
+    /// The ride's energy from power, or `None` when it has no power data.
+    pub energy_kj: Option<u32>,
     /// The bike type that was current when the ride started.
     pub bike: BikeType,
     name: Name,
@@ -120,7 +128,8 @@ pub struct Footer {
 }
 
 impl Footer {
-    /// Build a footer for a ride on `BikeType::Road` with no trip; long names are clipped.
+    /// Build a footer for a ride on `BikeType::Road` with no descent, no energy and no trip; long
+    /// names are clipped.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: &str,
@@ -142,12 +151,14 @@ impl Footer {
             moving_time_s,
             avg_speed_cms,
             climb_m,
+            descent_m: 0,
             point_count,
             avg_hr,
             max_hr,
             avg_cadence,
             avg_power,
             max_power,
+            energy_kj: None,
             bike: BikeType::Road,
             name: Name::new(name),
             trip: None,
@@ -188,16 +199,18 @@ pub fn encode_footer(footer: &Footer) -> [u8; FOOTER_LEN] {
     b[16..20].copy_from_slice(&footer.moving_time_s.to_le_bytes());
     b[20..22].copy_from_slice(&footer.avg_speed_cms.to_le_bytes());
     b[22..24].copy_from_slice(&footer.climb_m.to_le_bytes());
-    b[24..28].copy_from_slice(&footer.point_count.to_le_bytes());
-    b[28] = footer.avg_hr.unwrap_or(HR_NONE);
-    b[29] = footer.max_hr.unwrap_or(HR_NONE);
-    b[30] = footer.avg_cadence.unwrap_or(CAD_NONE);
-    // byte 31 is reserved and remains zero, aligning the following u16 values.
-    b[32..34].copy_from_slice(&footer.avg_power.unwrap_or(PWR_NONE).to_le_bytes());
-    b[34..36].copy_from_slice(&footer.max_power.unwrap_or(PWR_NONE).to_le_bytes());
+    b[24..26].copy_from_slice(&footer.descent_m.to_le_bytes());
+    b[26..30].copy_from_slice(&footer.point_count.to_le_bytes());
+    b[30] = footer.avg_hr.unwrap_or(HR_NONE);
+    b[31] = footer.max_hr.unwrap_or(HR_NONE);
+    b[32] = footer.avg_cadence.unwrap_or(CAD_NONE);
+    // byte 33 is reserved and remains zero, aligning the following u16 values.
+    b[34..36].copy_from_slice(&footer.avg_power.unwrap_or(PWR_NONE).to_le_bytes());
+    b[36..38].copy_from_slice(&footer.max_power.unwrap_or(PWR_NONE).to_le_bytes());
+    b[38..42].copy_from_slice(&footer.energy_kj.unwrap_or(KJ_NONE).to_le_bytes());
     b[NAME_AT..TRIP_AT].copy_from_slice(&footer.name.bytes);
     if let Some(trip) = footer.trip {
-        b[TRIP_AT..TRIP_AT + 8].copy_from_slice(&trip.key.to_le_bytes());
+        b[TRIP_AT..TRIP_AT + 8].copy_from_slice(&trip.key().to_le_bytes());
         b[TRIP_AT + 8] = trip.day_index;
         b[TRIP_AT + 9] = trip.day_count;
         b[TRIP_AT + 11] = footer.trip_name.len;
@@ -217,7 +230,7 @@ pub fn decode_footer(b: &[u8; FOOTER_LEN]) -> Result<Footer, DecodeError> {
     if b[4] != VERSION {
         return Err(DecodeError::Version);
     }
-    if u16::from_le_bytes([b[6], b[7]]) as usize != FOOTER_LEN || b[31] != 0 {
+    if u16::from_le_bytes([b[6], b[7]]) as usize != FOOTER_LEN || b[33] != 0 {
         return Err(DecodeError::Layout);
     }
     let name = Name::decode(b[5], &b[NAME_AT..TRIP_AT])?;
@@ -237,12 +250,14 @@ pub fn decode_footer(b: &[u8; FOOTER_LEN]) -> Result<Footer, DecodeError> {
         moving_time_s: u32::from_le_bytes(b[16..20].try_into().unwrap()),
         avg_speed_cms: u16::from_le_bytes(b[20..22].try_into().unwrap()),
         climb_m: u16::from_le_bytes(b[22..24].try_into().unwrap()),
-        point_count: u32::from_le_bytes(b[24..28].try_into().unwrap()),
-        avg_hr: opt_u8(b[28], HR_NONE),
-        max_hr: opt_u8(b[29], HR_NONE),
-        avg_cadence: opt_u8(b[30], CAD_NONE),
-        avg_power: opt_u16(u16::from_le_bytes(b[32..34].try_into().unwrap()), PWR_NONE),
-        max_power: opt_u16(u16::from_le_bytes(b[34..36].try_into().unwrap()), PWR_NONE),
+        descent_m: u16::from_le_bytes(b[24..26].try_into().unwrap()),
+        point_count: u32::from_le_bytes(b[26..30].try_into().unwrap()),
+        avg_hr: opt(b[30], HR_NONE),
+        max_hr: opt(b[31], HR_NONE),
+        avg_cadence: opt(b[32], CAD_NONE),
+        avg_power: opt(u16::from_le_bytes(b[34..36].try_into().unwrap()), PWR_NONE),
+        max_power: opt(u16::from_le_bytes(b[36..38].try_into().unwrap()), PWR_NONE),
+        energy_kj: opt(u32::from_le_bytes(b[38..42].try_into().unwrap()), KJ_NONE),
         bike,
         name,
         trip,
@@ -259,16 +274,12 @@ pub fn checked_object_len(point_count: u32) -> Result<u64, DecodeError> {
 }
 
 #[inline]
-fn opt_u8(v: u8, sentinel: u8) -> Option<u8> {
-    (v != sentinel).then_some(v)
-}
-
-#[inline]
-fn opt_u16(v: u16, sentinel: u16) -> Option<u16> {
+fn opt<T: PartialEq>(v: T, sentinel: T) -> Option<T> {
     (v != sentinel).then_some(v)
 }
 
 const _: () = assert!(SAMPLE_LEN == 20);
+const _: () = assert!(core::mem::size_of::<Option<TripRef>>() == core::mem::size_of::<TripRef>());
 const _: () = assert!(FOOTER_LEN == TRIP_NAME_AT + NAME_CAP);
 
 #[cfg(test)]
@@ -292,6 +303,8 @@ mod tests {
             Some(210),
             Some(480),
         );
+        footer.descent_m = 640;
+        footer.energy_kj = Some(756);
         footer.bike = BikeType::Gravel;
         footer.set_trip(Some(TRIP), Name::new("Alpen Traverse"));
         footer
@@ -301,12 +314,22 @@ mod tests {
     fn footer_round_trip_pins_layout() {
         let footer = example();
         let bytes = encode_footer(&footer);
-        assert_eq!(&bytes[..8], b"OBRF\x04\x0b\x90\0");
-        assert_eq!(&bytes[84..96], &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 1, 3, 1, 14]);
+        assert_eq!(&bytes[..8], b"OBRF\x05\x0b\x96\0");
+        assert_eq!(&bytes[22..30], &[0x2A, 3, 0x80, 2, 3, 0, 0, 0], "climb, descent, point count");
+        assert_eq!(&bytes[34..42], &[210, 0, 224, 1, 0xF4, 2, 0, 0], "power, then energy");
+        assert_eq!(&bytes[90..102], &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 1, 3, 1, 14]);
         assert_eq!(decode_footer(&bytes), Ok(footer));
         assert_eq!(footer.name(), "Sensor Ride");
         assert_eq!(footer.trip_name(), "Alpen Traverse");
-        assert_eq!(checked_object_len(3), Ok(3 * 20 + 144));
+        assert_eq!(checked_object_len(3), Ok(3 * 20 + 150));
+    }
+
+    #[test]
+    fn no_power_data_stays_apart_from_zero_kj() {
+        for energy_kj in [None, Some(0)] {
+            let footer = Footer { energy_kj, ..example() };
+            assert_eq!(decode_footer(&encode_footer(&footer)), Ok(footer));
+        }
     }
 
     #[test]
@@ -314,14 +337,15 @@ mod tests {
         let mut footer = example();
         footer.set_trip(None, Name::new("ignored"));
         let bytes = encode_footer(&footer);
-        assert!(bytes[84..94].iter().chain(&bytes[95..]).all(|&v| v == 0));
-        assert_eq!(bytes[94], BikeType::Gravel as u8);
+        assert!(bytes[90..100].iter().chain(&bytes[101..]).all(|&v| v == 0));
+        assert_eq!(bytes[100], BikeType::Gravel as u8);
         assert_eq!(decode_footer(&bytes).unwrap().trip(), None);
+        assert_eq!(TripRef::new(0, 0, 1), None, "key 0 is never a trip");
     }
 
     #[test]
-    fn committed_v4_vector_uses_the_production_footer_codec() {
-        let object = include_bytes!("../../../specs/vectors/ride-v4.bin");
+    fn committed_v5_vector_uses_the_production_footer_codec() {
+        let object = include_bytes!("../../../specs/vectors/ride-v5.bin");
         assert_eq!(object.len() as u64, checked_object_len(3).unwrap());
         let footer: &[u8; FOOTER_LEN] = object[object.len() - FOOTER_LEN..].try_into().unwrap();
         let decoded = decode_footer(footer).unwrap();
@@ -338,7 +362,7 @@ mod tests {
         let bytes = encode_footer(&example());
         // Magic, version, length, reserved, name padding, a day past the count, a bike type past
         // the four, and trip-name padding.
-        for (offset, value) in [(0, 0), (4, 3), (6, 84), (31, 1), (83, 1), (92, 3), (94, 4), (143, 1)] {
+        for (offset, value) in [(0, 0), (4, 4), (6, 148), (33, 1), (89, 1), (98, 3), (100, 4), (149, 1)] {
             let mut bad = bytes;
             bad[offset] = value;
             assert!(decode_footer(&bad).is_err(), "offset {offset}");
@@ -347,7 +371,7 @@ mod tests {
         no_trip.set_trip(None, Name::EMPTY);
         let no_trip = encode_footer(&no_trip);
         // A day index, a day count or a trip name without a trip key.
-        for offset in [92, 93, 95] {
+        for offset in [98, 99, 101] {
             let mut bad = no_trip;
             bad[offset] = 1;
             assert!(decode_footer(&bad).is_err(), "offset {offset}");
