@@ -959,6 +959,10 @@ impl App {
             self.ui.map_dirty = true;
         }
     }
+    /// Temporary directions can be retired after the ride and checkpoint release them.
+    pub fn set_temporary_routes(&mut self, mask: u64) {
+        self.navigator.set_temporary_routes(mask);
+    }
     pub fn set_unaccepted_routes(&mut self, mask: u64) {
         if self.navigator.unaccepted_routes() != mask {
             self.navigator.set_unaccepted_routes(mask);

@@ -21,6 +21,7 @@ use crate::{ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackR
 pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &mut dyn TraceSink) {
     app.set_routes_with_ids(routes.catalog(), routes.ids());
     app.set_internal_routes(routes.internal_routes());
+    app.set_temporary_routes(routes.temporary_routes());
     app.set_unaccepted_routes(routes.unaccepted_routes());
     trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), routes.catalog().len()));
 }
@@ -603,10 +604,10 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
     ) -> CatalogOutcome {
         match effect {
-            CatalogEffect::RemoveOrphanReviews { token } => {
-                let orphans: Vec<_> = app.orphan_reviews().collect();
-                match routes.retract_reviews(&orphans) {
-                    Ok(()) => CatalogOutcome::OrphanReviewsRemoved { token },
+            CatalogEffect::RemoveOrphanRoutes { token } => {
+                let orphans: Vec<_> = app.orphan_routes().collect();
+                match routes.retract_generated_routes(&orphans) {
+                    Ok(()) => CatalogOutcome::OrphanRoutesRemoved { token },
                     Err(error) => CatalogOutcome::Failed { token, error },
                 }
             }

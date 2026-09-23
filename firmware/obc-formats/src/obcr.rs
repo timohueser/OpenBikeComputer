@@ -28,6 +28,11 @@ pub const FLAG_ASSISTANT_CANDIDATE: u8 = 8;
 pub const FLAG_BUILT_DAY: u8 = 16;
 /// Generated navigation geometry. Saved-route lists do not show it.
 pub const FLAG_TEMPORARY: u8 = 32;
+
+/// Assistant candidates and built days have their own retention policy.
+pub const fn disposable_navigation(flags: u8) -> bool {
+    flags & FLAG_TEMPORARY != 0 && flags & (FLAG_ASSISTANT_CANDIDATE | FLAG_BUILT_DAY) == 0
+}
 pub const WAYPOINT_PROVENANCE_OFF: usize = 44;
 pub const VISIT_DESCRIPTOR_VERSION: u8 = 1;
 pub const VISIT_DESCRIPTOR_LEN: usize = 80;
