@@ -1,6 +1,6 @@
 //! The detail page of one recorded ride, the recorded twin of the route detail. Two pages flip on
-//! a dwell. Page 1 is the date line and the ridden track on the device map over DISTANCE, RIDE TIME
-//! and CLIMBED. Page 2 is the full-height profile over AVG SPEED and one row for each sensor the
+//! a dwell. Page 1 is the date line and the ridden track on the device map over one distance
+//! and ride-time line. Page 2 is the profile with its climb total over AVG SPEED and one row for each sensor the
 //! ride recorded. Both pages end with the guarded Delete-ride row, which is hidden while a ride
 //! records.
 //!
@@ -22,7 +22,7 @@ use super::vocab::chrome::{empty_state, title_chrome, title_frame};
 use super::vocab::fmt::{duration_hms, write_date_weekday};
 use super::vocab::marquee::fit;
 use super::vocab::pager::ContentPager;
-use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{detail_totals, draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use super::vocab::track_map::{draw_track_map, Track};
 use crate::input::Gesture;
 use crate::ride::RideSummary;
@@ -36,6 +36,8 @@ use super::{palette, Ctx, RenderFrame, Transition};
 const DATE_Y: i32 = 40;
 const MAP_X: i32 = 5;
 const MAP_TOP: i32 = 62;
+const MAP_BOT: i32 = 238;
+const TOTALS_Y: i32 = 244;
 
 /// Page 2's profile band. The peak label sits in the headroom above it.
 const PROFILE_TOP: i32 = 62;
@@ -128,25 +130,32 @@ impl RideDetailScreen {
         let profile_page = self.pager.on_second_page();
         if profile_page {
             page_two_rows(ride, units, lang, &mut values);
-        } else {
-            page_one_rows(ride, units, lang, &mut values);
         }
         let top = rows_top(values.len());
         if profile_page {
             title_frame(cv, w, h, &title, "");
-            let area = rect(12, PROFILE_TOP, w - 24, top + 4 - PROFILE_TOP + 1);
+            let area = rect(12, PROFILE_TOP, w - 24, top - 24 - PROFILE_TOP + 1);
             let loading = rx.t(Msg::RouteOverviewLoadingProfile);
             draw_profile(cv, rx.ride_profile, area, units, loading);
+            let climb = number((units.elev(ride.climb_m as f32) + 0.5) as u32);
+            let mut total = heapless::String::<16>::new();
+            let _ = write!(total, "{climb} {}", units.elev_label());
+            super::route_overview::climb_arrow(cv, 16, top - 20, true, INK);
+            cv.text(&total, Point::new(32, top - 20), Font::Label, TextAlign::Left, INK);
         } else {
             let track = Track { points: rx.ride_preview, color: TRAIL, end_dot: false };
-            draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, top + 4 - MAP_TOP), track, None);
+            draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, MAP_BOT - MAP_TOP), track, None);
             title_chrome(cv, w, h, &title);
-            cv.hline(MAP_X, top + 4, w - 2 * MAP_X, RULE);
+            cv.hline(MAP_X, MAP_BOT, w - 2 * MAP_X, RULE);
             let mut when: heapless::String<24> = heapless::String::new();
             let d = DateTime::from_unix(ride.start_time);
             write_date_weekday(&mut when, &d, lang);
             let _ = write!(when, " · {:02}:{:02}", d.hour, d.minute);
             cv.text(&when, Point::new(14, DATE_Y), Font::Label, TextAlign::Left, SUBTEXT);
+            let dist = number(format_args!("{:.1}", units.dist(ride.distance_m as f32 / 1000.0)));
+            let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+            let time = duration_hms(ride.moving_time_s as f32);
+            detail_totals(cv, w, TOTALS_Y, &dist, dist_unit, &time);
         }
 
         for (i, (caption, value, unit, arrow)) in values.iter().enumerate() {
@@ -190,17 +199,6 @@ fn caption(parts: &[&str]) -> heapless::String<16> {
         let _ = s.push_str(part);
     }
     s
-}
-
-/// DISTANCE, RIDE TIME and CLIMBED.
-fn page_one_rows(ride: &RideSummary, units: Units, lang: Language, out: &mut Rows) {
-    let dist = number(format_args!("{:.1}", units.dist(ride.distance_m as f32 / 1000.0)));
-    let dist_unit = if units.is_imperial() { "mi" } else { "km" };
-    let climb = number((units.elev(ride.climb_m as f32) + 0.5) as u32);
-    let time = duration_hms(ride.moving_time_s as f32);
-    let _ = out.push((caption(&[t(Msg::RideControlDistance, lang)]), dist, dist_unit, None));
-    let _ = out.push((caption(&[t(Msg::RideControlRideTime, lang)]), time, "h", None));
-    let _ = out.push((caption(&[t(Msg::TileClimbed, lang)]), climb, units.elev_label(), Some(true)));
 }
 
 /// The average speed, then one row for each sensor the ride recorded. The captions are the riding

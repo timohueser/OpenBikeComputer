@@ -278,6 +278,22 @@ pub(crate) fn ledger_row(
     }
 }
 
+/// Distance and duration under a route or ride map, aligned with the profile's totals.
+pub(crate) fn detail_totals(cv: &mut impl Surface, w: i32, y: i32, distance: &str, unit: &str, time: &str) {
+    use core::fmt::Write;
+    let mut left = heapless::String::<16>::new();
+    let mut right = heapless::String::<12>::new();
+    let _ = write!(left, "{distance} {unit}");
+    let _ = write!(right, "{time} h");
+    let font = if text_width(&left, Font::Label) + text_width(&right, Font::Label) + 12 > (w - 32) as u32 {
+        Font::Caption
+    } else {
+        Font::Label
+    };
+    cv.text(&left, Point::new(16, y), font, TextAlign::Left, palette::INK);
+    cv.text(&right, Point::new(w - 16, y), font, TextAlign::Right, palette::INK);
+}
+
 /// The left edge of a [`ledger_row`] value, which a mark drawn beside the value must clear.
 pub(crate) fn ledger_value_left(w: i32, value: &str, unit: &str) -> i32 {
     value_right(w, unit) - value.chars().count() as i32 * Font::Display.char_width() as i32
