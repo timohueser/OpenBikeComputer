@@ -84,8 +84,7 @@ expect = "RouteMenu"
 # The Route menu with a trip (the `trips` env): the "Alpen Traverse" row, its full name over
 # "Day 1 next · 3 days", above the loose grimsel route. `p p p` opens the trip's day list: the trip
 # name as the title, one row per resolvable day ("Day 1 Andermatt" over "Mon · 2 km ▲76 m"), the
-# cursor on the next day. No progress record reaches the app, so no day is ticked and the trip is
-# never done in these frames.
+# cursor on the next day. These frames have no progress record, so no day is ticked.
 [[frame]]
 name = "routemenu-trips"
 map = "{grimsel}"
@@ -99,6 +98,25 @@ map = "{grimsel}"
 env = "trips"
 script = "p p p"
 expect = "RouteMenu"
+
+# With a progress record (`--trip-progress DAY:METRES:LAST`): all three days finished, so the trip
+# row reads "Done · 3 days"; and Day 1 finished, so the day list ticks Day 1 and the cursor is on
+# Day 2.
+[[frame]]
+name = "routemenu-trip-done"
+map = "{grimsel}"
+env = "trips"
+script = "p p"
+expect = "RouteMenu"
+args = ["--trip-progress", "2:0:2"]
+
+[[frame]]
+name = "trip-stage-list-ticked"
+map = "{grimsel}"
+env = "trips"
+script = "p p p"
+expect = "RouteMenu"
+args = ["--trip-progress", "0:1000:0"]
 
 # A seven-day day list scrolls: the title bar cuts the trip name clear of the "1 / 7" counter.
 [[frame]]
