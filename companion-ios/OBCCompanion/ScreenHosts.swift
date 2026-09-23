@@ -113,6 +113,10 @@ struct RouteDetailScreen: View {
     @State private var photos: RidePhotosModel?
     /// A tracked ride's day note.
     @State private var dayNote: DayNoteModel?
+    /// The ⋯ menu with Edit ride and Revert to original, rides with a tracklog only.
+    private let rideEditMenu: RideEditMenu?
+    /// The quiet rows under a ride's stats line.
+    private let quietRows: AnyView?
 
     init(
         transport: any DeviceTransport,
@@ -135,7 +139,9 @@ struct RouteDetailScreen: View {
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         onAddToTrip: ((TripSelection) -> Void)? = nil,
-        rideShareMenu: RideShareMenu? = nil
+        rideShareMenu: RideShareMenu? = nil,
+        rideEditMenu: RideEditMenu? = nil,
+        quietRows: AnyView? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing, bikeType: bikeType,
@@ -154,6 +160,8 @@ struct RouteDetailScreen: View {
         self.tripPickerItems = tripPickerItems
         self.onAddToTrip = onAddToTrip
         self.rideShareMenu = rideShareMenu
+        self.rideEditMenu = rideEditMenu
+        self.quietRows = quietRows
         if case .tracked(let ride) = dressing {
             isRide = true
             if let photos {
@@ -195,7 +203,8 @@ struct RouteDetailScreen: View {
             onReverse: onReverse,
             onBikeTypeChange: onBikeTypeChange,
             photos: photos,
-            dayNote: dayNote
+            dayNote: dayNote,
+            quietRows: quietRows
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
@@ -207,6 +216,9 @@ struct RouteDetailScreen: View {
             }
             if let rideShareMenu {
                 ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
+            }
+            if let rideEditMenu {
+                ToolbarItem(placement: .primaryAction) { rideEditMenu }
             }
         }
         .sheet(item: $uploadRequest) { request in

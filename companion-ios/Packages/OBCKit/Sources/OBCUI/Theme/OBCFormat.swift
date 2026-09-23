@@ -231,6 +231,15 @@ public enum OBCFormat {
         return formatter.string(from: NSNumber(value: mps * 3.6)) ?? "\(mps * 3.6)"
     }
 
+    /// A time of day in the locale's short style: "13:40" or "1:40 PM".
+    public static func clock(_ date: Date, locale: Locale = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+
     /// The ride subtitle line: "Yesterday, 8:12 AM".
     public static func rideDateLine(
         _ date: Date,
@@ -238,13 +247,7 @@ public enum OBCFormat {
         calendar: Calendar = .current,
         locale: Locale = .current
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = calendar
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        let time = formatter.string(from: date)
-        return "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(time)"
+        "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(clock(date, locale: locale))"
     }
     /// "today", "in 1 day" or "in N days": the tail of the near-expiry phrase.
     private static func relativeExpiryPhrase(days: Int) -> String {

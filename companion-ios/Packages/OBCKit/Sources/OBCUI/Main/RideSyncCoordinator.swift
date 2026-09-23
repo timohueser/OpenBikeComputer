@@ -170,7 +170,7 @@ public final class RideSyncCoordinator {
 
     private func reconcileArchives() {
         guard syncState != .syncing, activeDownload == nil,
-              library.rideSummaries().contains(where: { $0.source != nil }) else { return }
+              library.archivedRideSummaries().contains(where: { $0.source != nil }) else { return }
         startSync(downloadMissing: false)
     }
 

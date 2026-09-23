@@ -39,6 +39,7 @@ public struct LineMarkerEditor: View {
                 markers: model.markers,
                 activeID: model.activeID,
                 segmentColors: model.segmentColors,
+                dashedSegments: model.dashedSegments,
                 stops: model.stops
             )
         } else {
