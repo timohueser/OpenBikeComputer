@@ -54,6 +54,18 @@ pub(crate) fn draw_track_map<D, F>(
     use palette::*;
     let (x0, y0) = (band.top_left.x, band.top_left.y);
     let (x1, y1) = (x0 + band.size.width as i32, y0 + band.size.height as i32);
+    let outside = |cv: &mut Canvas<D, F>, w: i32, h: i32| {
+        cv.fill(rect(0, 0, w, y0), PARCHMENT);
+        cv.fill(rect(0, y1, w, h - y1), PARCHMENT);
+        cv.fill(rect(0, y0, x0, y1 - y0), PARCHMENT);
+        cv.fill(rect(x1, y0, w - x1, y1 - y0), PARCHMENT);
+    };
+    // A region repaint that misses the band, such as a hold fill under it, leaves the band on the
+    // panel and renders no map.
+    if cv.rejects(&band) {
+        outside(cv, rx.w, rx.h);
+        return;
+    }
     let chip = rect(x0 + CHIP_INSET, y1 - 2 - CHIP_H, CHIP_W, CHIP_H);
     // The renderer collects what lies inside the viewport, so it ends at the band's bottom edge
     // and spends nothing on the page below.
@@ -65,11 +77,7 @@ pub(crate) fn draw_track_map<D, F>(
             && draw_track_scene(cv, rx, &vp, track.points, track.color)
     });
     if on_map {
-        let (w, h) = (rx.w, rx.h);
-        cv.fill(rect(0, 0, w, y0), PARCHMENT);
-        cv.fill(rect(0, y1, w, h - y1), PARCHMENT);
-        cv.fill(rect(0, y0, x0, y1 - y0), PARCHMENT);
-        cv.fill(rect(x1, y0, w - x1, y1 - y0), PARCHMENT);
+        outside(cv, rx.w, rx.h);
     } else {
         cv.clear(PARCHMENT);
         if let Some((vp, _)) = vp {

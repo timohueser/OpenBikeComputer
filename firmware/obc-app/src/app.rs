@@ -782,6 +782,18 @@ impl App {
         self.ui.base_draws_map()
     }
 
+    /// The one region a hold step repaints on a static map base, such as the Route overview's
+    /// Delete row, or `None`. Only there does a hold repaint without a map render: the region lies
+    /// outside the page's map band, and that page draws no live map. A live map base answers
+    /// `None` and keeps deferring its redraws while a hold charges.
+    pub fn hold_fill_region(&self) -> Option<Rectangle> {
+        if !self.ui.base_draws_map() || self.ui.base_draws_live_map() || !self.top_wants_hold_fill() {
+            return None;
+        }
+        let (w, h) = (i32::from(self.ui.frame_size.0), i32::from(self.ui.frame_size.1));
+        self.ui.stack.last().and_then(|s| s.hold_fill_region(w, h))
+    }
+
     /// Whether the Recalculating freeze is engaged: a host planner run is live and the base
     /// screen would draw the map. While it is, a render-on-demand host must skip the map redraw,
     /// leave the last frame on the glass, and paint only [`render_overlay`](App::render_overlay).
