@@ -53,7 +53,7 @@ final class RideEditTests: XCTestCase {
         app.buttons["Tracked"].tap()
         openDay2(app)
 
-        let suggestion = app.buttons["detail.mergeSuggestion"]
+        let suggestion = app.otherElements["detail.mergeSuggestion"].buttons["quietRow.open"]
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5), "the two Day 2 rides meet: a merge is suggested")
         snap(app, "detail-merge-suggestion")
 
@@ -87,7 +87,6 @@ final class RideEditTests: XCTestCase {
         app.buttons["detail.overflow"].tap()
         app.buttons["detail.revertRide"].tap()
         app.buttons["Revert"].tap()
-        XCTAssertTrue(app.buttons["detail.mergeSuggestion"].waitForExistence(timeout: 5))
 
         // Merge from the suggestion: the second ride joins this one.
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
