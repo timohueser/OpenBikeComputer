@@ -644,7 +644,8 @@ pub fn write_checkpoint<D: BlockDevice>(
 
 /// Write one trip progress record by the bound rules of
 /// [`record`](obc_formats::trip_progress::record); `stored` says whether a stored trip holds a key.
-/// The record takes the current Revision of its day route, so a later replace voids its metres.
+/// The record takes the current Revision of its day route, so a later replace voids its metres. A
+/// start record that finds its key's record moves that record as stored.
 #[inline(never)]
 pub fn write_progress<D: BlockDevice>(
     store: &FlatStore<D>,

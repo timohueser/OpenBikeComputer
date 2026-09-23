@@ -319,6 +319,17 @@ The device keeps one progress record per trip key. The record never crosses the 
 writes it at Finish of a ride on a trip day, and keeps it in the ride-archive Metadata object
 ([`Ride_Archive_Metadata.md`](Ride_Archive_Metadata.md)) with the navigator checkpoint.
 
+- **Start record.** The fresh start of a ride on a trip day, and the continuation of that ride
+  after a reset, write a start record for the trip: position day 0, the route ObjectId of day 0,
+  0 m, no last finished day, and all finish dates 0. The device writes no start record when the
+  trip's record is already the last record.
+- **A start record never replaces a record.** When the Metadata object holds a record for the
+  trip key, the write moves that record to the end, byte for byte. Its Revision stays, so its
+  metres read as 0 when its route has another Revision now. Only when the object holds no record
+  for the key does the start record go in, with the Revision the store holds for the route of
+  day 0. The store tells a start record by its missing last finished day; a Finish always writes
+  one. The store applies this rule, so a start is safe before the device has read the records.
+
 | Field | Meaning |
 | :-- | :-- |
 | position day | the day that contains the last matched position |
@@ -348,6 +359,14 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   rider instead rides 20 km into Day 3, Day 3 is next with 20 km less to ride.
   A ride on the rest of Day 2 plus Day 3 that ends before it joins Day 3 finishes Day 2, not
   Day 3. The position stays on Day 2, so Day 3 is still next.
+- **Rode on.** A Finish after the rider arrived at the end of the loaded route and rode on past
+  it writes the position at that end, unless the last fix lies within 50 m of the route of the
+  next day. Then the position is the point of that route nearest the fix, in the next day. A later
+  point of the route counts as nearer only when it is more than 8 m nearer than an earlier one, so
+  the outbound leg of an out-and-back wins. The device projects that one fix once, when it writes
+  the record.
+- **Active trip.** The trip of the latest record, while it has a next day. A start record moves the
+  trip's record to the end, so the trip of a started ride is active before its Finish.
 - **Ticks.** A day is ticked when it is at or before the last finished day, or when it is before
   the position day.
 - **Day dates.** Dates follow the rides. For day `k`, take the latest day `j ≤ k` with a finish

@@ -31,6 +31,8 @@ pub(crate) struct RideEnd {
     pub(crate) progress_m: u32,
     /// The rider had arrived at the route's end.
     pub(crate) arrived: bool,
+    /// The rider rode on past the route's end after arriving.
+    pub(crate) rode_on: bool,
 }
 
 /// A seam re-anchor waiting for the next tick with matching route geometry.
@@ -243,6 +245,7 @@ impl NavigatorMachine {
             route,
             progress_m: self.following.progress_m,
             arrived: self.following.arrival.arrived(),
+            rode_on: self.following.arrival == Arrival::RodeOn,
         });
     }
 

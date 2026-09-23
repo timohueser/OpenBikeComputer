@@ -580,8 +580,10 @@ fn progress_records_survive_row_and_checkpoint_edits_and_a_remount() {
     let route = publish(&store, ObjectKind::Route, b"route");
     let ride = publish(&store, ObjectKind::Ride, b"ride");
     let at_route = |key| TripProgress { day_route: RouteVersion { id: route.id.0, revision: 9 }, ..progress(key) };
-    write_progress(&store, progress(3), |_| true).unwrap();
     write_progress(&store, at_route(1), |_| true).unwrap();
+    write_progress(&store, progress(3), |_| true).unwrap();
+    let start = TripProgress { day: 0, metres: 0, last_finished: None, ..at_route(1) };
+    write_progress(&store, start, |_| true).unwrap();
     write_proof(&store, ride).unwrap();
     write_checkpoint(&store, CARD, store.sequence(), None, Some(checkpoint(route, None))).unwrap();
     disk.reboot();
@@ -590,7 +592,11 @@ fn progress_records_survive_row_and_checkpoint_edits_and_a_remount() {
     read_progress(&store, |p| read.push(p)).unwrap();
     let stamped = TripProgress { day_route: RouteVersion { id: route.id.0, revision: 1 }, ..progress(1) };
     let gone = TripProgress { metres: 0, day_route: RouteVersion { id: 7, revision: 0 }, ..progress(3) };
-    assert_eq!(read, [gone.clone(), stamped.clone()], "write order stays; a record takes its route's Revision");
+    assert_eq!(
+        read,
+        [gone.clone(), stamped.clone()],
+        "a record takes its route's Revision; a start moves the stored record as it is"
+    );
     let mut bytes = [0; MAX_LEN];
     let mut image = Metadata::new(&store).load(&store, &mut bytes).unwrap();
     assert_eq!(image.rows().count(), 1);

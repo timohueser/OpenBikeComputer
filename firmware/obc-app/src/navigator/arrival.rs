@@ -78,7 +78,7 @@ mod tests {
     use super::Arrival;
     use crate::activity::Mode;
     use crate::device_core::{DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs};
-    use crate::harness::support::{mount_store, quiet_pass, VecSink, EVERY_CAPABILITY};
+    use crate::harness::support::{VecSink, EVERY_CAPABILITY};
     use crate::screen::{self, ArrivalView, MapScreen, RouteSwapScreen, Screen, Transition, WarningFlags};
     use crate::trip::TripInput;
     use crate::{App, AppState, Gesture, RecorderIntent};
@@ -124,13 +124,15 @@ mod tests {
     std::thread_local! {
         /// The executor's answers to the last pass, delivered on the next one.
         static OUTCOMES: core::cell::RefCell<OutcomeSlots> = const { core::cell::RefCell::new(OutcomeSlots::new()) };
+        /// The store's revision. Each write moves it, and the app reads the catalog again.
+        static REVISION: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
     }
 
     /// One pass at `ms`, with a fresh fix at `(lon, lat)` µdeg when given. It answers the store work
     /// the pass asks for, as an executor would, and returns a trip progress record it writes.
     fn pass(
         app: &mut App,
-        route: &RouteReader,
+        route: Option<&RouteReader>,
         ms: u32,
         fix: Option<(i32, i32)>,
         gestures: &[Gesture],
@@ -140,7 +142,7 @@ mod tests {
         use crate::metadata::{MetadataEffect, MetadataOutcome};
         use crate::recorder::{CheckpointStatus, RecorderEffect, RecorderOutcome};
 
-        let scope = StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) };
+        let scope = StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(REVISION.get()) };
         let mut loc = Once(fix.map(|(lon, lat)| Fix::at(lat, lon)));
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(scope);
@@ -149,7 +151,7 @@ mod tests {
                 now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
                 gestures,
                 sensors: Sensors::new(&mut loc),
-                route: Some(route),
+                route,
                 support: EVERY_CAPABILITY,
                 outcomes,
                 facts: &mut facts,
@@ -172,6 +174,7 @@ mod tests {
             }
             let Some(MetadataEffect::WriteProgress { token, .. }) = plan.effects.metadata.take() else { return None };
             let _ = outcomes.metadata.try_put(MetadataOutcome::ProgressWritten { token });
+            REVISION.set(REVISION.get() + 1);
             app.trip_progress_payload(token).cloned()
         })
     }
@@ -180,15 +183,15 @@ mod tests {
     fn ride(app: &mut App, route: &RouteReader, fixes: &[(i32, i32)]) {
         for &fix in fixes {
             let ms = app.ui.now_ms + 1_000;
-            pass(app, route, ms, Some(fix), &[]);
+            pass(app, Some(route), ms, Some(fix), &[]);
         }
         let ms = app.ui.now_ms + 1_000;
-        pass(app, route, ms, None, &[]);
+        pass(app, Some(route), ms, None, &[]);
     }
 
     fn press(app: &mut App, route: &RouteReader, gestures: &[Gesture]) {
         let ms = app.ui.now_ms + 1_000;
-        pass(app, route, ms, None, gestures);
+        pass(app, Some(route), ms, None, gestures);
     }
 
     /// Recording on catalog route 0 of `routes`, on the Map.
@@ -207,14 +210,11 @@ mod tests {
         let (summaries, ids): (Vec<_>, Vec<_>) = routes.iter().cloned().unzip();
         app.set_routes_with_ids(&summaries, &ids);
         app.set_trips(trips);
-        mount_store(&mut app);
-        let store = crate::device_core::StoreIdentity::new(1);
-        let scope = crate::device_core::StoreRevision { store, revision: crate::device_core::Revision::new(1) };
-        app.catalogs.loaded_scope = Some(scope);
+        pass(&mut app, None, 0, None, &[]); // mounts the store, which answers the catalog read
         app.activate_route(first);
         prepare(&mut app);
         app.recorder.request(RecorderIntent::Start);
-        quiet_pass(&mut app, 1);
+        pass(&mut app, None, 1, None, &[]);
         assert!(app.recorder.recording());
         app.activity.mode = Mode::Riding;
         screen::apply(&mut app.ui.stack, Transition::Root(Screen::Map(MapScreen::new())));
@@ -393,7 +393,7 @@ mod tests {
         (0..40)
             .find_map(|_| {
                 let ms = app.ui.now_ms + 1_000;
-                pass(app, route, ms, None, &[])
+                pass(app, Some(route), ms, None, &[])
             })
             .expect("the Finish writes the trip progress")
     }
