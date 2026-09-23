@@ -83,7 +83,38 @@ fn commons_category_rejects_missing_or_unconsumed_pages() {
     let legacy = json!({"commons_categories":[{"title":"Category:Example","path":path}]});
     assert!(category_members(&root, &sources, &legacy, &["Category:Example".into()], 1)
         .unwrap_err()
-        .contains("legacy commons category is truncated"));
+        .contains("schema 1 cannot prove complete commons category coverage"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commons_category_rejects_a_page_after_the_terminal_response() {
+    let root = obcm_testkit::scratch::scratch_dir("landmarks", "page-after-terminal");
+    let captures = [
+        ("categories/category.json", json!({"query":{"categorymembers":[{"title":"File:A.jpg"}]}})),
+        ("categories/category-2.json", json!({"query":{"categorymembers":[{"title":"File:Injected.jpg"}]}})),
+    ];
+    let mut sources = Vec::new();
+    for (path, value) in &captures {
+        let bytes = serde_json::to_vec(value).unwrap();
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), &bytes).unwrap();
+        sources.push(Source {
+            path: (*path).into(),
+            sha256: hash(&bytes),
+            bytes: bytes.len() as u64,
+            url: "https://commons.wikimedia.org/w/api.php".into(),
+        });
+    }
+    let place = json!({"commons_categories":[{
+        "title":"Category:Example","complete":true,"pages":[
+            {"path":captures[0].0,"continuation":null},
+            {"path":captures[1].0,"continuation":null}
+        ]
+    }]});
+    assert!(category_members(&root, &sources, &place, &["Category:Example".into()], 2)
+        .unwrap_err()
+        .contains("page follows a terminal response"));
     fs::remove_dir_all(root).unwrap();
 }
 
