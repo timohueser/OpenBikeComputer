@@ -21,6 +21,8 @@ use obc_route::MAX_TRIP_DAYS;
 use crate::route::RouteSummary;
 use crate::CatalogObjectId;
 
+pub use obc_formats::trip_progress::{RouteVersion, TripProgress};
+
 /// Maximum trips the resident menu catalog holds. Each [`TripSummary`] costs a name and two small
 /// stage `Vec`s, so the table is a couple of KB of static RAM.
 pub const MAX_TRIPS: usize = 16;
@@ -122,31 +124,6 @@ pub fn trip_day(trips: &[TripSummary], route: CatalogObjectId) -> Option<TripRef
         let day = trip.stage_ids.iter().position(|&id| id == route)?;
         TripRef::new(trip.key, day as u8, trip.stage_ids.len() as u8)
     })
-}
-
-/// A route object as the store holds it. A replace keeps the id and bumps the revision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RouteVersion {
-    pub id: CatalogObjectId,
-    pub revision: u64,
-}
-
-/// The device's own progress through one trip: the device writes it at Finish and the phone never
-/// sees it. It is keyed on the trip key, so it survives a re-upload of the same trip.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TripProgress {
-    pub key: u64,
-    /// The day that contains the position.
-    pub day: u16,
-    /// That day's route when the record was written.
-    pub day_route: RouteVersion,
-    /// Metres into that day's route.
-    pub metres: u32,
-    /// The last finished day; `None` before the first Finish.
-    pub last_finished: Option<u16>,
-    /// The date each day was finished, in days since 1970-01-01; 0 = none. A finish without a
-    /// trusted clock records no date.
-    pub dates: [u16; MAX_TRIP_DAYS],
 }
 
 const _: () = assert!(MAX_TRIP_DAYS <= u32::BITS as usize, "TripSummary::resolved is a u32 day mask");
