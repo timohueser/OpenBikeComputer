@@ -65,7 +65,7 @@ pub use reader::{
     MAX_WAYPOINTS,
 };
 pub use ride::{encode_summary_footer, RideInfo, RideStats};
-pub use splice::{splice_detour, Leg, SpliceStep, Splicer};
+pub use splice::{original_name, splice_detour, Leg, SpliceStep, Splicer};
 pub use track::track_to_gpx;
 pub use trim::{trim_detour_to_tail, TrimOutcome, TrimStep, Trimmer};
 pub use trip::{

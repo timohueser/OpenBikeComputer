@@ -51,7 +51,7 @@ pub(crate) enum DfuLanding {
     InstallFailed(DfuInstallError),
 }
 
-/// The six host-pushed card families, in delivery order: every `High` row before every `Low` one.
+/// The seven scheduler card families, in delivery order: every `High` row before every `Low` one.
 /// The discriminant indexes [`POLICY`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Family {
@@ -61,6 +61,7 @@ enum Family {
     Upload = 3,
     Warning = 4,
     UpdateToast = 5,
+    Arrival = 6,
 }
 
 /// Delivery rank. `High` families land first within a sweep, and a `Low` family never covers the
@@ -84,22 +85,30 @@ struct Policy {
     /// hands the panel to a warm reset that never paints again. Deferring it would latch the
     /// animated "Preparing update…" spinner onto the MIP for the whole install.
     defer_on_hold: bool,
+    /// Whether the family lands only on a riding page with nothing over it and no pan: never over
+    /// a menu, a prompt, a pending confirmation, a warning or another card. It waits instead.
+    ///
+    /// True for the arrival view and only for it. It is the one view that opens unasked while a
+    /// ride records, so it must not take the screen from anything the rider is doing.
+    riding_page_only: bool,
 }
 
-/// The card policy, one row per family, read instead of six reconcilers.
+/// The card policy, one row per family, read instead of seven reconcilers.
 ///
 /// `priority` and `defer_on_hold` are what the sweep reads. The conflict rule and the revalidation
 /// are what each family's arm below does: they need the stack, the catalogs or the flag set, so
 /// they are code rather than data, and each arm names its row. The timeout is deliberately not a
 /// column: the 30 s deadline lives on the popup screens, which is also what arms the timed wake
 /// that gets a parked device back here, and a second copy would only ever disagree.
-const POLICY: [Policy; 6] = [
-    Policy { family: Family::Passkey, priority: Priority::High, defer_on_hold: true },
-    Policy { family: Family::MapTransfer, priority: Priority::High, defer_on_hold: true },
-    Policy { family: Family::DfuLanding, priority: Priority::High, defer_on_hold: false },
-    Policy { family: Family::Upload, priority: Priority::Low, defer_on_hold: true },
-    Policy { family: Family::Warning, priority: Priority::Low, defer_on_hold: true },
-    Policy { family: Family::UpdateToast, priority: Priority::Low, defer_on_hold: true },
+#[rustfmt::skip]
+const POLICY: [Policy; 7] = [
+    Policy { family: Family::Passkey, priority: Priority::High, defer_on_hold: true, riding_page_only: false },
+    Policy { family: Family::MapTransfer, priority: Priority::High, defer_on_hold: true, riding_page_only: false },
+    Policy { family: Family::DfuLanding, priority: Priority::High, defer_on_hold: false, riding_page_only: false },
+    Policy { family: Family::Upload, priority: Priority::Low, defer_on_hold: true, riding_page_only: false },
+    Policy { family: Family::Warning, priority: Priority::Low, defer_on_hold: true, riding_page_only: false },
+    Policy { family: Family::UpdateToast, priority: Priority::Low, defer_on_hold: true, riding_page_only: false },
+    Policy { family: Family::Arrival, priority: Priority::Low, defer_on_hold: true, riding_page_only: true },
 ];
 
 /// The whole pending state is resident on the board, so it stays register-sized per family. The DFU
@@ -127,6 +136,7 @@ enum CardKind {
     /// an incoming prompt replaces by the same rule.
     Upload,
     Warning,
+    Arrival,
     DfuCheck,
     DfuProgress,
     DfuInstalling,
@@ -142,6 +152,7 @@ fn kind_of(s: &Screen) -> Option<CardKind> {
             CardKind::Upload
         }
         Screen::Warning(_) => CardKind::Warning,
+        Screen::Arrival(_) => CardKind::Arrival,
         Screen::DfuCheck(_) => CardKind::DfuCheck,
         Screen::DfuProgress(_) => CardKind::DfuProgress,
         Screen::DfuInstalling(_) => CardKind::DfuInstalling,
@@ -224,10 +235,15 @@ pub(crate) struct CardCtx<'a> {
     pub(crate) catalogs: &'a CatalogState,
     /// Whether a ride is recording — which upload card a route commit becomes.
     pub(crate) tracking: bool,
+    /// The rider is panning the map, which is input in progress.
+    pub(crate) panning: bool,
+    /// The arrival level: `Some` from arrival at the route end until the rider rides on, finishes,
+    /// pauses or loads another route.
+    pub(crate) arrival: Option<screen::ArrivalView>,
 }
 
 /// The named pending slots plus the one sweep. One slot per family and no untyped queue, so what is
-/// waiting is answered by reading six fields.
+/// waiting is answered by reading its fields.
 pub(crate) struct CardScheduler {
     /// The desired passkey level, re-fed every pass: `Some` wants the card up, `None` wants it gone.
     passkey: Option<u32>,
@@ -251,6 +267,10 @@ pub(crate) struct CardScheduler {
     update: Option<BootUpdate>,
     /// The one terminal answer for the DFU wait currently on the stack.
     dfu: Option<DfuLanding>,
+    /// Whether the view for the [arrival level](CardCtx::arrival) landed. With the level still up
+    /// and the view gone, the rider closed it, so it does not land again. Cleared when the level
+    /// goes `None`.
+    arrival_delivered: bool,
 }
 
 impl CardScheduler {
@@ -264,6 +284,7 @@ impl CardScheduler {
             warned: WarningFlags::NONE,
             update: None,
             dfu: None,
+            arrival_delivered: false,
         }
     }
 
@@ -317,8 +338,11 @@ impl CardScheduler {
     /// always sees what the arm before it did.
     pub(crate) fn sweep(&mut self, stack: &mut Stack, ctx: &CardCtx) -> bool {
         let mut changed = false;
+        if ctx.arrival.is_none() {
+            self.arrival_delivered = false;
+        }
         if !ctx.hold_charging {
-            changed |= self.remove_vanished(stack);
+            changed |= self.remove_vanished(stack, ctx);
         }
         for row in POLICY.iter() {
             changed |= self.deliver(row, stack, ctx);
@@ -329,13 +353,15 @@ impl CardScheduler {
         changed
     }
 
-    /// The two level families: a level that went `None` takes its card off the stack wherever it
-    /// ended up.
-    fn remove_vanished(&mut self, stack: &mut Stack) -> bool {
+    /// The three level families: a level that went `None` takes its card off the stack wherever it
+    /// ended up. For the arrival view that is the close without a choice.
+    fn remove_vanished(&mut self, stack: &mut Stack, ctx: &CardCtx) -> bool {
         let mut changed = false;
-        for (level_present, kind) in
-            [(self.passkey.is_some(), CardKind::Passkey), (self.map_transfer.is_some(), CardKind::MapTransfer)]
-        {
+        for (level_present, kind) in [
+            (self.passkey.is_some(), CardKind::Passkey),
+            (self.map_transfer.is_some(), CardKind::MapTransfer),
+            (ctx.arrival.is_some(), CardKind::Arrival),
+        ] {
             if level_present {
                 continue;
             }
@@ -352,6 +378,9 @@ impl CardScheduler {
         if row.defer_on_hold && ctx.hold_charging {
             return false;
         }
+        if row.riding_page_only && !on_riding_page(stack, ctx) {
+            return false;
+        }
         // The rank gate: a `Low` family never covers the passkey card. What it does instead is its
         // own row's business. The upload prompt is dropped, because the object is in the menu
         // either way; the warning and the toast stay pending for a later pass.
@@ -363,6 +392,7 @@ impl CardScheduler {
             Family::Upload => self.deliver_upload(stack, ctx, outranked),
             Family::Warning => self.deliver_warning(stack, outranked),
             Family::UpdateToast => self.deliver_update(stack, outranked),
+            Family::Arrival => self.deliver_arrival(stack, ctx),
         }
     }
 
@@ -539,6 +569,24 @@ impl CardScheduler {
     }
 }
 
+impl CardScheduler {
+    /// Arrival. Conflict: none, because its row lands it only on a bare riding page. Revalidation:
+    /// the level, re-fed every pass; the view lands once for it.
+    fn deliver_arrival(&mut self, stack: &mut Stack, ctx: &CardCtx) -> bool {
+        let Some(view) = ctx.arrival else { return false };
+        if self.arrival_delivered {
+            return false;
+        }
+        self.arrival_delivered = land(stack, None, Screen::Arrival(screen::ArrivalScreen::new(view)));
+        self.arrival_delivered
+    }
+}
+
+/// The rider is on a riding page with nothing over it and is not panning the map.
+fn on_riding_page(stack: &Stack, ctx: &CardCtx) -> bool {
+    !ctx.panning && matches!(stack.last(), Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_)))
+}
+
 /// A timeout is a dismissal: an upload card past its deadline is removed exactly as Back would
 /// remove it, and nothing else changes. The deadline is the screen's, which is also what armed the
 /// timed wake that got a parked device to this line.
@@ -600,8 +648,17 @@ impl CardScheduler {
     /// [`new`](CardScheduler::new) state. The destructure is exhaustive, so a new slot must state
     /// its empty value here too.
     pub(crate) fn is_empty(&self) -> bool {
-        let CardScheduler { passkey, map_transfer, map_transfer_delivered, upload, warnings, warned, update, dfu } =
-            self;
+        let CardScheduler {
+            passkey,
+            map_transfer,
+            map_transfer_delivered,
+            upload,
+            warnings,
+            warned,
+            update,
+            dfu,
+            arrival_delivered,
+        } = self;
         passkey.is_none()
             && map_transfer.is_none()
             // Implied by the line above, and asserted anyway: the latch being cleared whenever the
@@ -612,6 +669,7 @@ impl CardScheduler {
             && *warned == WarningFlags::NONE
             && update.is_none()
             && dfu.is_none()
+            && !*arrival_delivered
     }
 }
 

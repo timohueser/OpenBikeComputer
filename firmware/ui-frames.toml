@@ -973,6 +973,26 @@ script = "p p p p f p w"
 expect = "StartAway"
 args = ["--center", "8377267,46608103", "--heading", "0", "--inject", "detour-fail=exhausted"]
 
+# The arrival view. The replay stands at the end of the Grimsel climb, so START RIDE asks how to
+# begin, Join nearest joins the route at its end, and the first route-aware tick arrives. On a plain
+# route the view offers Finish ride and Keep riding.
+[[frame]]
+name = "arrival-route"
+map = "{grimsel}"
+env = "eta-route"
+script = "p p p p f d p T f"
+expect = "Arrival"
+args = ["--gpx", "{gpx}", "--script-at", "5611", "--at", "5611"]
+
+# On Day 2 of a trip with a Day 3, the view names the place and the day, and offers Ride on.
+[[frame]]
+name = "arrival-trip"
+map = "{grimsel}"
+env = "arrival-trip"
+script = "p p p d p p f d p T f"
+expect = "Arrival"
+args = ["--gpx", "{gpx}", "--script-at", "5611", "--at", "5611"]
+
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —

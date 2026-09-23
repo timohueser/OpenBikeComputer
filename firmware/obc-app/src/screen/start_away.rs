@@ -189,13 +189,17 @@ impl StartAwayScreen {
         let mut options: heapless::Vec<PromptOption, 3> = heapless::Vec::new();
         for row in &rows {
             let option = match row {
-                Row::RideToStart => PromptOption { label: rx.t(Msg::StartAwayRideToStart), hint: Some(&to_start) },
-                Row::JoinNearest => PromptOption { label: rx.t(Msg::StartAwayJoinNearest), hint: join_hint },
-                Row::Cancel => PromptOption { label: rx.t(Msg::StartAwayCancel), hint: None },
+                Row::RideToStart => {
+                    PromptOption { label: rx.t(Msg::StartAwayRideToStart), hint: Some(&to_start), guard: false }
+                }
+                Row::JoinNearest => {
+                    PromptOption { label: rx.t(Msg::StartAwayJoinNearest), hint: join_hint, guard: false }
+                }
+                Row::Cancel => PromptOption { label: rx.t(Msg::StartAwayCancel), hint: None, guard: false },
             };
             let _ = options.push(option);
         }
-        draw_prompt(cv, w, &question, &options, self.cursor(&rows));
+        draw_prompt(cv, w, &question, &options, self.cursor(&rows), 0.0);
     }
 }
 
