@@ -583,14 +583,28 @@ def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str
     Returns the number of originals acquired."""
     images = {(place["qid"], image["metadata_path"]): (place, image) for place in places for image in place["images"]}
     tried, acquired, requested = set(), 0, 0
+    affected = None
     for _ in range(1 + max((len(place["images"]) for place in places), default=0)):
         write_manifest()
         with tempfile.TemporaryDirectory(prefix="obc-photo-selection-") as temporary:
-            subprocess.run([str(executable.resolve()), subcommand, "--photo-requests", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
-            requests = json.loads((Path(temporary) / document).read_text()).get("photo_requests", [])
+            output = Path(temporary) / "out"
+            output.mkdir()
+            command = [str(executable.resolve()), subcommand, "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", str(output)]
+            if subcommand == "landmark-photo-requests":
+                if affected is not None:
+                    qids = Path(temporary) / "qids.json"
+                    qids.write_text(json.dumps(affected))
+                    command += ["--qids", str(qids)]
+                key = "requests"
+            else:
+                command.insert(2, "--photo-requests")
+                key = "photo_requests"
+            subprocess.run(command, check=True)
+            requests = json.loads((output / document).read_text()).get(key, [])
         fresh = [r for r in requests if (r["qid"], r["metadata_path"]) not in tried and (r["qid"], r["metadata_path"]) in images]
         if not fresh:
             break
+        affected = list(dict.fromkeys(request["qid"] for request in fresh))
         requested += len(fresh)
         for request in fresh:
             key = (request["qid"], request["metadata_path"])
@@ -744,7 +758,7 @@ def run(args) -> int:
             captured[place["qid"]] = place
             print(f"place {len(captured)}/{len(selected)}: {place['qid']} articles={len(place['articles'])} images={len(place['images'])}", flush=True)
         places = [captured.get(p["qid"], dict(p, outcomes=[dict(asset="site", status="excluded-by-production-selection")])) for p in places]
-    acquire_requested_photos(capture, args.select_with, "landmark-content", "content.json", args.out / "manifest.json", args.boundary, places, lambda: manifest(True))
+    acquire_requested_photos(capture, args.select_with, "landmark-photo-requests", "photo-requests.json", args.out / "manifest.json", args.boundary, places, lambda: manifest(True))
     coverage = manifest(True)
     print(json.dumps(coverage, indent=2), flush=True)
     return 0 if coverage["country_complete"] else 2
