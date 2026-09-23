@@ -101,6 +101,8 @@ place, with the same object ID and the next revision.
 
 A temporary navigation route contains generated directions, including connections and detours.
 Saved-route lists do not show it. The device can store it to follow or resume the ride.
+The device removes temporary directions when no active route or recovery checkpoint needs them.
+Assistant candidates and built trip days use their own retention rules.
 
 ### 1.2 Bike type and estimated time
 
