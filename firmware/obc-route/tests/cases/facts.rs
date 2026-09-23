@@ -73,6 +73,13 @@ fn clipping_conserves_integer_facts_across_chunks_and_surface_boundaries() {
     }
     assert_eq!(whole.ascent_m, r.total_ascent_m);
     assert_eq!(whole.descent_m, r.total_descent_m);
+    // A walk that stops after its farthest end gives each end the facts of a whole walk.
+    let start = 55;
+    let ends = [110, r.chunks()[1].cum_distance_m, start, 1777];
+    let each = r.interval_facts_to::<4>(start, &ends).unwrap();
+    for (facts, end) in each.iter().zip(ends) {
+        assert_eq!(*facts, r.interval_facts(start, end).unwrap());
+    }
 }
 
 #[test]

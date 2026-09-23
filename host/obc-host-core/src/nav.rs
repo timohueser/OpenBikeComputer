@@ -145,6 +145,54 @@ pub struct DetourReady {
     has_elevation: bool,
 }
 
+/// The rest of the day before a trip day, ready to splice in front of it. `request` names the day's
+/// route, its leg the span on the day before, and its target where the day joins the line.
+pub fn rest_ready(
+    app: &obc_app::App,
+    request: &obc_app::DetourRequest,
+    routes: &dyn crate::RouteRepository,
+) -> Option<DetourReady> {
+    let obc_route::Leg::Rest { from_m, to_m } = request.leg else { return None };
+    let route = *app.route_ids().get(request.route)?;
+    let day = obc_app::trip::trip_day(app.trips(), route)?;
+    let trip = app.trips().iter().find(|trip| trip.key == day.key())?;
+    let before = *trip.stage_ids.get(usize::from(day.day_index()).checked_sub(1)?)?;
+    Some(DetourReady {
+        bytes: routes.route_bytes(before)?,
+        detour_len_m: to_m.checked_sub(from_m)?,
+        progress_m: 0,
+        rejoin_m: request.target_m,
+        leg: request.leg,
+        has_elevation: true,
+    })
+}
+
+/// Where the active trip's next day meets the day before, for [`App::set_day_join`]: the day
+/// before's leave point, clamped to its route's length, and the day's join point.
+pub fn day_join(
+    app: &obc_app::App,
+    routes: &dyn crate::RouteRepository,
+    trips: &dyn crate::TripCatalog,
+) -> Option<obc_app::trip::DayJoin> {
+    let (trip, day) = app.next_trip_day()?;
+    let (before, this) = (trips.day(trip.key, day.checked_sub(1)?)?, trips.day(trip.key, day)?);
+    let bytes = routes.route_bytes(before.route)?;
+    let length = obc_route::RouteObjectInfo::read(&obc_formats::io::SliceSource(&bytes)).ok()?.distance_m;
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
+}
+
+impl DetourReady {
+    /// The preview a lead-in answers with: the leg's length and where it joins the route.
+    pub fn lead_preview(&self) -> obc_app::DetourPreview {
+        obc_app::DetourPreview {
+            cost_delta_m: 0,
+            total_distance_m: self.detour_len_m,
+            rejoin_m: self.rejoin_m,
+            ascent_m: None,
+        }
+    }
+}
+
 /// The detour plan finished: the preview figures the typed
 /// [`NavigatorOutcome::DetourFinished`](obc_app::navigator::NavigatorOutcome) carries
 /// (`cost = detour length − skipped span length`, signed), the decimated detour polyline, and the

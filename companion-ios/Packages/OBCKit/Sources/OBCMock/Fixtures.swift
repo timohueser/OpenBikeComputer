@@ -145,25 +145,17 @@ public struct RouteEntry: Sendable {
 public struct RideEntry: Sendable {
     public var summary: RideSummary
     public var points: [RidePoint]
-    public var elevationProfile: [Double]
     public var downloadByteCount: Int
 
     public init(
         summary: RideSummary,
         points: [RidePoint] = [],
-        elevationProfile: [Double] = [],
         downloadByteCount: Int? = nil
     ) {
         self.summary = summary
         self.points = points
-        self.elevationProfile = elevationProfile
         // Tracklogs are chunkier than routes; ~20 B/m gives a believable sync size.
         self.downloadByteCount = downloadByteCount ?? max(1, Int(summary.distanceMeters) * 20)
-    }
-
-    /// What `rideDetail(_:)` serves for this ride.
-    public func detail() -> RideDetail {
-        RideDetail(summary: summary, elevationProfile: elevationProfile)
     }
 
     /// The canonical full ride, which `downloadRides` encodes into the payload, so a sync
@@ -451,9 +443,7 @@ private struct RideDTO: Decodable {
             RidePoint(timestamp: date.addingTimeInterval(Double(index) * step),
                       coordinate: geo.coordinate, elevationMeters: geo.ele)
         }
-        return RideEntry(summary: summary, points: points,
-                         elevationProfile: track.compactMap(\.ele),
-                         downloadByteCount: payloadBytes)
+        return RideEntry(summary: summary, points: points, downloadByteCount: payloadBytes)
     }
 }
 #endif

@@ -63,25 +63,12 @@ public struct RouteDetailView: View {
 
                 titleBlock
 
-                OBCStatStrip(model.stats)
-
-                switch model.dressing {
-                case .planned, .tracked: bikeTypeRow
-                case .imported: EmptyView()
+                if !model.stats.isEmpty {
+                    OBCStatStrip(model.stats)
                 }
 
-                if !model.sensorRows.isEmpty {
-                    OBCGroupedSection {
-                        ForEach(model.sensorRows) { row in
-                            OBCListRow(
-                                label: row.label,
-                                value: row.value,
-                                showsDivider: row.id != model.sensorRows.last?.id
-                            )
-                        }
-                    }
-                    .padding(.top, 12)
-                    .accessibilityIdentifier("detail.sensorSummary")
+                if case .planned = model.dressing {
+                    bikeTypeRow
                 }
 
                 if !model.waypoints.isEmpty {
@@ -105,7 +92,27 @@ public struct RouteDetailView: View {
                     ElevationProfileView(samples: model.elevationProfile)
                 }
 
+                if !model.highlights.isEmpty {
+                    highlightsLine
+                }
+
+                if !model.sensorRows.isEmpty {
+                    OBCGroupedSection {
+                        ForEach(model.sensorRows) { row in
+                            OBCListRow(
+                                label: row.label,
+                                value: row.value,
+                                showsDivider: row.id != model.sensorRows.last?.id
+                            )
+                        }
+                    }
+                    .padding(.top, 16)
+                    .accessibilityIdentifier("detail.sensorSummary")
+                }
+
                 if case .tracked = model.dressing {
+                    // Ride detail B: the ride's facts first, then sensors, bike type and services.
+                    bikeTypeRow
                     servicesBlock
                 }
                 actions
@@ -218,9 +225,28 @@ public struct RouteDetailView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(OBCTheme.inkSoft)
             }
+            if let statsLine = model.statsLine {
+                Text(statsLine)
+                    .font(.obcMono(size: 15, weight: .medium))
+                    .foregroundStyle(OBCTheme.ink)
+                    .padding(.top, 6)
+                    .accessibilityIdentifier("detail.statsLine")
+            }
         }
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    private var highlightsLine: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            OBCEyebrow("Highlights")
+            Text(model.highlights.joined(separator: " · "))
+                .font(.obcMono(size: 13, weight: .medium))
+                .foregroundStyle(OBCTheme.inkSoft)
+        }
+        .padding(.top, 14)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("detail.highlights")
     }
 
     private var bikeTypeRow: some View {
@@ -471,7 +497,6 @@ private struct PreviewNoopTransport: DeviceLink, DeviceObjects {
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
 }
 #endif

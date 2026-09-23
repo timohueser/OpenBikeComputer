@@ -511,6 +511,7 @@ impl Executor {
                         allocation,
                         name: obc_storage::flat::DisplayName::new("Visit").unwrap(),
                         original,
+                        built_day: false,
                     },
                     reply,
                 ) {

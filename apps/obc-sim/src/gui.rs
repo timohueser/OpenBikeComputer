@@ -444,6 +444,9 @@ impl SimGui {
         gui.note_card_commit();
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
+        gui.app.set_trip_progress(gui.trip_store.progress().iter().cloned());
+        let join = obc_host_core::day_join(&gui.app, &gui.store, &gui.trip_store);
+        gui.app.set_day_join(join);
         gui.app.set_rides(gui.ride_store.catalog());
 
         // `--gpx` opens with a track loaded, paused at the start.

@@ -120,12 +120,13 @@ pub struct Trimmer {
 }
 
 impl Trimmer {
-    /// An approach is never trimmed: it has no tail to meet before the start.
+    /// Only a detour is trimmed: an approach has no tail to meet before the start, and a rest is
+    /// a stored route that ends where it should.
     pub fn new(leg: crate::splice::Leg, target_m: u32, has_elevation: bool) -> Self {
         Self {
             phase: match leg {
-                crate::splice::Leg::Approach => Phase::Terminal(TrimStep::Done(None)),
                 crate::splice::Leg::Detour => Phase::Tail,
+                _ => Phase::Terminal(TrimStep::Done(None)),
             },
             target_m,
             has_elevation,

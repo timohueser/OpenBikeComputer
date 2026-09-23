@@ -144,7 +144,7 @@ final class RouteDetailTests: XCTestCase {
 
     // MARK: Tracked dressing
 
-    /// Ride stats, the tracked tag, and the coming-soon services block.
+    /// The ride's stats line, the tracked tag, and the coming-soon services block.
     @MainActor
     func testTrackedDetailShowsRideStatsAndServices() {
         let app = launch()
@@ -158,8 +158,9 @@ final class RouteDetailTests: XCTestCase {
         card.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
 
-        XCTAssertTrue(app.staticTexts["58.2 km"].waitForExistence(timeout: 5), "ride distance stat missing")
-        XCTAssertTrue(app.staticTexts["2:51"].exists, "moving-time stat missing")
+        let stats = app.staticTexts["detail.statsLine"]
+        XCTAssertTrue(stats.waitForExistence(timeout: 5), "ride stats line missing")
+        XCTAssertTrue(stats.label.hasPrefix("58.2 km · 2:51 · "), "distance and moving time lead: \(stats.label)")
         XCTAssertTrue(app.staticTexts["Strava"].exists, "services block missing")
         XCTAssertTrue(app.staticTexts["Komoot"].exists)
         XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")

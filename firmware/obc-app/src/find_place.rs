@@ -1411,7 +1411,8 @@ mod tests {
             app.ui.find.local = local;
             app.ui.find.results.push(1).unwrap();
             source.fail.set(true);
-            app.stamp_clock_ble(1_727_000_060, 0);
+            // Opening status changes only on a new quarter hour.
+            app.stamp_clock_ble(1_727_000_900, 0);
             app.prepare_find(Some(&reader), Some(&route));
             assert_eq!(app.find_place_state(), State::Failed);
             assert!(app.ui.find.results.is_empty());
