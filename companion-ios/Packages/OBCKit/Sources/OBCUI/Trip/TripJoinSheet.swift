@@ -123,7 +123,7 @@ public struct TripJoinSheet: View {
     /// "joins" when the day before ends within 200 m of this start, else "gap 3.4 km".
     private func joinLine(from previous: File, to file: File) -> some View {
         let gap = TripJoin.gaps([previous.joinFile, file.joinFile])[0]
-        let joins = gap <= TripJoin.joinMeters
+        let joins = gap <= Trip.transferMinMeters
         return Text(joins ? "joins" : "gap \(OBCFormat.distance(meters: gap))")
             .font(.obcMono(size: 12))
             .foregroundStyle(joins ? OBCTheme.forest : OBCTheme.coral)
