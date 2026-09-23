@@ -18,6 +18,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::settings::BikeType;
+use crate::trip::DayLoad;
 use crate::Msg;
 
 use super::context_drawer::{ContextDrawerScreen, ContextValue};
@@ -62,6 +63,8 @@ const ROWS: [Row; 4] = [Row::Bike, Row::Start, Row::Day, Row::Back];
 #[derive(Debug)]
 pub struct RideStartScreen {
     selected: Row,
+    /// The route loaded before the day row loaded its day, for the day's detail to restore.
+    prev_active: Option<usize>,
 }
 
 impl Default for RideStartScreen {
@@ -72,7 +75,11 @@ impl Default for RideStartScreen {
 
 impl RideStartScreen {
     pub fn new() -> Self {
-        RideStartScreen { selected: Row::Start }
+        RideStartScreen { selected: Row::Start, prev_active: None }
+    }
+
+    pub(crate) fn prev_active(&self) -> Option<usize> {
+        self.prev_active
     }
 
     fn rows(day: bool) -> impl Iterator<Item = Row> {
@@ -95,10 +102,21 @@ impl RideStartScreen {
                 )),
                 Row::Start => super::start_ride_routeless(cx),
                 Row::Day => match next {
-                    Some((_, _, route)) => {
+                    Some((trip, day, route)) => {
                         let route = usize::from(route);
                         let prev = cx.navigator.replace_active_route(route);
-                        Transition::Push(Screen::RouteOverview(super::RouteOverviewScreen::new(route, prev)))
+                        match trip.load_day(day, trip.progress_in(cx.trip_progress)) {
+                            DayLoad::AsIs => {
+                                Transition::Push(Screen::RouteOverview(super::RouteOverviewScreen::new(route, prev)))
+                            }
+                            DayLoad::Rest { from_m } => {
+                                self.prev_active = prev;
+                                let request = crate::DetourRequest::rest(route, from_m);
+                                cx.navigator.admit_intent(crate::navigator::NavigatorIntent::PlanDetour(request));
+                                let name = cx.routes.get(route).map_or("", |r| r.name.as_str());
+                                Transition::Push(Screen::NavPlanning(super::NavPlanningScreen::day(name)))
+                            }
+                        }
                     }
                     None => Transition::None,
                 },
@@ -262,7 +280,7 @@ mod tests {
             key: 9,
             day: 0,
             day_route: crate::trip::RouteVersion { id: 70, revision: 0 },
-            metres: 5_000,
+            metres: 0,
             last_finished: Some(0),
             dates: [0; obc_route::MAX_TRIP_DAYS],
         };
@@ -286,6 +304,21 @@ mod tests {
             panic!("the bike row opens the editor");
         };
         assert!(editor.draws_hero());
+
+        // Stopped 5 km into Day 1: Day 2 is built from the rest of Day 1 first.
+        let early = [TripProgress { metres: 5_000, ..records[0].clone() }];
+        let mut cx = Ctx {
+            navigator: &mut navigator,
+            routes: &routes,
+            trips: &trips,
+            trip_progress: &early,
+            ..test_ctx(&mut st, &mut act, &mut settings)
+        };
+        let mut scr = RideStartScreen::new();
+        scr.handle(Gesture::Step(1), &mut cx);
+        assert!(matches!(scr.handle(Gesture::Press, &mut cx), Transition::Push(Screen::NavPlanning(_))));
+        let request = cx.navigator.pending_detour_request().expect("the rest is asked for");
+        assert_eq!((request.route, request.leg), (1, obc_route::Leg::Rest { from_m: 5_000, to_m: u32::MAX }));
 
         let mut cx = Ctx { trips: &trips, ..test_ctx(&mut st, &mut act, &mut settings) };
         let mut scr = RideStartScreen::new();

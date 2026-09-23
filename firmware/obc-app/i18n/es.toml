@@ -492,6 +492,7 @@ fix = "fijo"
 searching = "buscando.."
 battery = "Batería"
 show_route = "Ver ruta"
+loading_day = "Cargando día..."
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]

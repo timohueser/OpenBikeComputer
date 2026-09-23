@@ -140,6 +140,46 @@ pub struct DetourReady {
     has_elevation: bool,
 }
 
+/// The rest of the day before a trip day, ready to splice in front of it. `request` names the day's
+/// route, and its leg the metres on the day before where the rest starts. At or past the day
+/// before's leave point the rest is empty, and the whole day follows it.
+pub fn rest_ready(
+    app: &obc_app::App,
+    request: &obc_app::DetourRequest,
+    routes: &dyn crate::RouteRepository,
+    trips: &dyn crate::TripCatalog,
+) -> Option<DetourReady> {
+    let obc_route::Leg::Rest { from_m, .. } = request.leg else { return None };
+    let route = *app.route_ids().get(request.route)?;
+    let day = obc_app::trip::trip_day(app.trips(), route)?;
+    let k = u16::from(day.day_index()).checked_sub(1)?;
+    let (before, this) = (trips.day(day.key(), k)?, trips.day(day.key(), k + 1)?);
+    let bytes = routes.route_bytes(before.route)?;
+    let length = obc_route::RouteIndex::read(&obc_formats::io::SliceSource(&bytes)).ok()?.total_distance_m;
+    let leave_m = before.leave_m.min(length);
+    let (to_m, rejoin_m) = if from_m < leave_m { (leave_m, this.join_m) } else { (from_m, 0) };
+    Some(DetourReady {
+        bytes,
+        detour_len_m: to_m - from_m,
+        progress_m: 0,
+        rejoin_m,
+        leg: obc_route::Leg::Rest { from_m, to_m },
+        has_elevation: true,
+    })
+}
+
+impl DetourReady {
+    /// The preview a lead-in answers with: the leg's length and where it joins the route.
+    pub fn lead_preview(&self) -> obc_app::DetourPreview {
+        obc_app::DetourPreview {
+            cost_delta_m: 0,
+            total_distance_m: self.detour_len_m,
+            rejoin_m: self.rejoin_m,
+            ascent_m: None,
+        }
+    }
+}
+
 /// The detour plan finished: the preview figures the typed
 /// [`NavigatorOutcome::DetourFinished`](obc_app::navigator::NavigatorOutcome) carries
 /// (`cost = detour length − skipped span length`, signed), the decimated detour polyline, and the

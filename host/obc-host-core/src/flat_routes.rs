@@ -276,6 +276,13 @@ impl RouteRepository for FlatRouteStore {
             store: self.store_scope().map(|scope| scope.store),
         })
     }
+    fn route_bytes(&self, id: CatalogObjectId) -> Option<Vec<u8>> {
+        use obc_formats::io::ByteSource;
+        let source = self.source(id).ok()?;
+        let mut bytes = vec![0; usize::try_from(source.len()).ok()?];
+        source.read_at(0, &mut bytes).ok()?;
+        Some(bytes)
+    }
     fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
         self.owner
             .entries()

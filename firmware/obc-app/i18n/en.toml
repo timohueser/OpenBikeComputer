@@ -527,6 +527,8 @@ searching = "searching.."
 battery = "Battery"
 # The trip day row's second line, before the day's distance.
 show_route = "Show route"
+# The spinner while the rest of the day before joins the next day.
+loading_day = "Loading day..."
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]

@@ -55,7 +55,14 @@ impl Planner {
         let token = self.tokens.issue();
         let answer = self
             .host
-            .serve_navigator(&mut self.app, build(token), &mut self.routes, &self.map, &mut obc_route::NullElevation)
+            .serve_navigator(
+                &mut self.app,
+                build(token),
+                &mut self.routes,
+                &(),
+                &self.map,
+                &mut obc_route::NullElevation,
+            )
             .unwrap();
         assert_eq!(answer.token(), token);
         answer

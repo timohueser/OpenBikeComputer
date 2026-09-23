@@ -1013,8 +1013,8 @@ impl App {
         let active = self.active_route_index()?;
         let ids = self.route_ids();
         let name = |i: usize| self.routes().get(i).map(|r| r.name.as_str());
-        let origin = match self.navigator.approach_route() {
-            Some((splice, route)) if ids.get(active) == Some(&splice) => ids.iter().position(|&id| id == route),
+        let origin = match self.navigator.lead_in() {
+            Some(lead) if ids.get(active) == Some(&lead.splice) => ids.iter().position(|&id| id == lead.route),
             _ => None,
         };
         origin.and_then(name).or_else(|| name(active))
@@ -1069,6 +1069,8 @@ impl App {
     /// loaded route is one.
     pub(crate) fn ride_origin(&self) -> crate::RideOrigin {
         let route = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
+        let route =
+            route.map(|id| self.navigator.lead_in().filter(|lead| lead.splice == id).map_or(id, |lead| lead.route));
         crate::RideOrigin {
             bike: self.settings.bike_type,
             trip: route.and_then(|route| crate::trip::trip_day(self.trips(), route)),
@@ -1100,8 +1102,17 @@ impl App {
         let Some(trip) = self.trips().iter().find(|t| t.key == ridden.key()) else { return };
         let day = u16::from(ridden.day_index());
         let Some(&route) = trip.stage_ids.get(usize::from(day)) else { return };
-        let on_day = self.active_route_index().and_then(|i| self.route_ids().get(i)) == Some(&route);
-        let at = crate::trip::TripPosition { day, route, metres: if on_day { self.progress_m() } else { 0 } };
+        let active = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
+        let lead = self.navigator.lead_in().filter(|lead| Some(lead.splice) == active && lead.route == route);
+        let at = match lead.map(|lead| lead.position(self.progress_m())) {
+            Some(Err(metres)) if day > 0 => {
+                let before = trip.stage_ids[usize::from(day) - 1];
+                crate::trip::TripPosition { day: day - 1, route: before, metres }
+            }
+            Some(Ok(metres)) => crate::trip::TripPosition { day, route, metres },
+            _ if active == Some(route) => crate::trip::TripPosition { day, route, metres: self.progress_m() },
+            _ => crate::trip::TripPosition { day, route, metres: 0 },
+        };
         let today = if self.clock_trusted() { (self.wall_clock.unix_now(self.ui.now_ms) / 86_400) as u16 } else { 0 };
         let record = trip.finish(trip.progress_in(self.metadata.progress()), day, at, today);
         let trips = self.catalogs.trips();
@@ -1283,7 +1294,7 @@ impl App {
         if self.navigator.plan_awaits_rider(PlanFamily::Detour)
             && !self.ui.stack.iter().any(|s| {
                 matches!(s, Screen::Detour(_) | Screen::DetourPreview(_))
-                    || matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Approach)
+                    || matches!(s, Screen::NavPlanning(p) if matches!(p.kind(), crate::screen::PlanKind::Approach | crate::screen::PlanKind::Day))
             })
         {
             self.admit_navigator_intent(NavigatorIntent::CancelDetour);
@@ -1442,11 +1453,14 @@ impl App {
         use obc_route::nav::NavError;
         // The run is over — see `land_route_plan` for the late-answer case.
         self.end_plan(PlanFamily::Detour, if result.is_ok() { PlanPhase::PreviewReady } else { PlanPhase::Failed });
-        // Ride to start has no preview to look at: its leg goes straight to the splice.
-        if self.navigator.approach() {
-            match (self.approach_planning(), result) {
-                (Some(_), Ok(_)) => self.admit_navigator_intent(NavigatorIntent::CommitDetour),
-                (Some(slot), Err(_)) => self.land_approach_failure(slot),
+        // A lead-in has no preview to look at: its leg goes straight to the splice.
+        if self.navigator.lead_leg().is_some() {
+            match (self.lead_in_planning(), result) {
+                (Some(_), Ok(preview)) => {
+                    self.navigator.note_lead_preview(&preview);
+                    self.admit_navigator_intent(NavigatorIntent::CommitDetour)
+                }
+                (Some(slot), Err(_)) => self.land_lead_in_failure(slot),
                 (None, _) => self.admit_navigator_intent(NavigatorIntent::CancelDetour),
             }
             return;
@@ -1486,10 +1500,11 @@ impl App {
     fn land_detour_commit(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
         self.navigator.note_commit(result.is_ok());
         let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(obc_route::nav::NavError::NoPath));
-        if self.navigator.approach() {
-            match (self.approach_planning(), resolved) {
+        if let Some(leg) = self.navigator.lead_leg() {
+            match (self.lead_in_planning(), resolved) {
+                (Some(slot), Ok(idx)) if matches!(leg, obc_route::Leg::Rest { .. }) => self.land_day(slot, idx),
                 (Some(_), Ok(idx)) => self.ride_approach(idx),
-                (Some(slot), Err(_)) => self.land_approach_failure(slot),
+                (Some(slot), Err(_)) => self.land_lead_in_failure(slot),
                 // The rider escaped the spinner, so the ride they asked for is no longer wanted:
                 // the cancel makes the release retract the publication.
                 (None, _) => {
@@ -1530,12 +1545,11 @@ impl App {
         }
     }
 
-    /// The stack slot of the Ride-to-start spinner, while it waits for its plan or its splice.
-    fn approach_planning(&self) -> Option<usize> {
-        self.ui
-            .stack
-            .iter()
-            .position(|s| matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Approach))
+    /// The stack slot of the lead-in spinner, while it waits for its plan or its splice.
+    fn lead_in_planning(&self) -> Option<usize> {
+        self.ui.stack.iter().position(|s| {
+            matches!(s, Screen::NavPlanning(p) if matches!(p.kind(), crate::screen::PlanKind::Approach | crate::screen::PlanKind::Day))
+        })
     }
 
     /// Ride to start is spliced: start the ride on the approach and the route, as START RIDE does.
@@ -1545,7 +1559,7 @@ impl App {
             _ => None,
         });
         if let (Some(origin), Some(&splice)) = (origin, self.catalogs.route_ids().get(idx)) {
-            self.navigator.adopt_approach(splice, origin);
+            self.navigator.adopt_lead_in(splice, origin);
         }
         self.drop_route_derived_state();
         self.catalogs.note_commit();
@@ -1558,9 +1572,29 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// Ride to start found no way: drop the spinner at `slot` and leave the prompt it came from
-    /// with Join nearest and Cancel.
-    fn land_approach_failure(&mut self, slot: usize) {
+    /// The day is spliced from the rest of the day before: the spinner at `slot` becomes the
+    /// spliced route's detail, as the day's own detail would be.
+    fn land_day(&mut self, slot: usize, idx: usize) {
+        let day = self.navigator.route_state().active_route;
+        if let (Some(route), Some(&splice)) =
+            (day.and_then(|i| self.catalogs.route_ids().get(i).copied()), self.catalogs.route_ids().get(idx))
+        {
+            self.navigator.adopt_lead_in(splice, route);
+        }
+        self.drop_route_derived_state();
+        self.catalogs.note_commit();
+        let prev = self.ui.stack.iter().rev().find_map(|s| match s {
+            Screen::RideStart(start) => Some(start.prev_active()),
+            _ => None,
+        });
+        self.navigator.set_active_route(Some(idx));
+        self.ui.stack[slot] = Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(idx, prev.flatten()));
+        self.ui.map_dirty = true;
+    }
+
+    /// A lead-in found no way: drop the spinner at `slot`. Ride to start leaves the prompt it came
+    /// from with Join nearest and Cancel.
+    fn land_lead_in_failure(&mut self, slot: usize) {
         self.ui.stack.truncate(slot.max(1));
         if let Some(Screen::StartAway(prompt)) = self.ui.stack.last_mut() {
             prompt.set_no_route();
@@ -5861,6 +5895,33 @@ mod tests {
 
         let _ = app.ui.stack.push(overview()); // …and comes back
         assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
+    }
+
+    /// A ride on the spliced rest of Day 2 and Day 3 is a ride on Day 3, and where it ends maps
+    /// back onto the days: inside the rest it is a place on Day 2, past the join a place on Day 3.
+    #[test]
+    fn a_ride_on_the_rest_of_the_day_before_counts_for_the_day() {
+        use crate::navigator::NavigatorIntent;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Day 2"), summary("Day 3"), summary("Day 3")], &[20, 30, 99]);
+        app.set_trips(&[crate::trip::TripInput {
+            id: 1,
+            key: 42,
+            name: "Alps",
+            start_date: 0,
+            stage_ids: &[10, 20, 30],
+        }]);
+        app.navigator.admit_intent(NavigatorIntent::PlanDetour(crate::DetourRequest::rest(1, 54_000)));
+        let preview =
+            crate::host::DetourPreview { cost_delta_m: 0, total_distance_m: 20_000, rejoin_m: 3_000, ascent_m: None };
+        app.navigator.note_lead_preview(&preview);
+        app.navigator.adopt_lead_in(99, 30);
+        app.navigator.route_state_mut().active_route = Some(2);
+        assert_eq!(app.ride_origin().trip, obc_formats::ride::TripRef::new(42, 2, 3), "Day 3 is the ride's day");
+
+        let lead = app.navigator.lead_in().unwrap();
+        assert_eq!(lead.position(5_000), Err(59_000), "5 km in: still on Day 2");
+        assert_eq!(lead.position(25_000), Ok(8_000), "25 km in: 5 km past the join on Day 3");
     }
 
     #[test]
