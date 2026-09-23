@@ -382,13 +382,14 @@ public struct MainScreenView: View {
 
     @ViewBuilder
     private var plannedContent: some View {
-        if model.loadState == .failed && model.routes.isEmpty {
+        // A trip's routes live only in its line, so a library of trips has no routes.
+        if model.loadState == .failed && model.plannedItems.isEmpty {
             readError
-        } else if model.loadState == .loading && model.routes.isEmpty {
+        } else if model.loadState == .loading && model.plannedItems.isEmpty {
             skeletons
         } else if model.filteredPlannedItems.isEmpty && !model.searchText.isEmpty {
             noMatches(noun: "routes", scope: "all planned routes")
-        } else if model.routes.isEmpty {
+        } else if model.plannedItems.isEmpty {
             // Empty is not broken: point at the import that fills it.
             OBCEmptyStateView(
                 glyph: .trackTile,

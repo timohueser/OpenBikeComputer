@@ -458,7 +458,8 @@ struct RootView: View {
                     if let index = path.firstIndex(of: .trip(id: id)) {
                         path.removeSubrange(index...)
                     }
-                }
+                },
+                onOpenRide: { path.append(.ride(id: $0)) }
             )
         case .trash:
             RecentlyDeletedView(model: mainModel)
