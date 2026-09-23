@@ -88,6 +88,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Easier(EasierScreen::sample(crate::easier::Phase::Failed, true)),
         Screen::Easier(EasierScreen::sample(crate::easier::Phase::NoBetter, true)),
         Screen::Easier(EasierScreen::sample(crate::easier::Phase::NoBetter, false)),
+        Screen::Easier(EasierScreen::sample(crate::easier::Phase::Stale, true)),
         selected_place(),
         Screen::NavPlanning(NavPlanningScreen::new("Fontaine du Mont Ventoux")),
         Screen::NavPlanning(NavPlanningScreen::detour()),

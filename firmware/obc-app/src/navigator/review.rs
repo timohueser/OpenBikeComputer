@@ -1075,7 +1075,7 @@ mod tests {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
             }
             app.advance_easier();
-            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Failed });
+            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Stale });
             app.apply_gesture(crate::Gesture::Press);
             assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
             assert_eq!(app.active_route_index(), Some(0));

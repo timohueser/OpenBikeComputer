@@ -22,6 +22,8 @@ pub(crate) enum Phase {
     Failed,
     /// Every evaluable goal was searched and none improved.
     NoBetter,
+    /// The rider or the route moved on, so the comparison no longer applies.
+    Stale,
 }
 /// A deterministic winner; the owner reconstructs its exact candidate before review.
 #[derive(Clone, Copy)]
@@ -215,16 +217,17 @@ impl App {
             self.ui.map_dirty = true;
             return;
         }
-        if self.easier.phase != Phase::NoBetter
+        if !matches!(self.easier.phase, Phase::Failed | Phase::NoBetter | Phase::Stale)
             && !self.easier_current()
             && !matches!(self.assistant_review_status(), ReviewStatus::Saving | ReviewStatus::Unresolved)
         {
             self.cancel_easier();
-            self.easier.phase = Phase::Failed;
+            self.easier.phase = Phase::Stale;
         }
-        if self.easier.phase == Phase::Ready && matches!(self.assistant_review_status(), ReviewStatus::Failed(_)) {
+        if let (Phase::Ready, ReviewStatus::Failed(error)) = (self.easier.phase, self.assistant_review_status()) {
             self.cancel_easier();
-            self.easier.phase = Phase::Failed;
+            self.easier.phase =
+                if error == crate::navigator::NavigatorError::Movement { Phase::Stale } else { Phase::Failed };
         }
         match self.easier.phase {
             Phase::Trials | Phase::Rebuild => match self.assistant_review_status() {
