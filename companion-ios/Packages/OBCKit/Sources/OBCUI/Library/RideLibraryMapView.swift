@@ -137,7 +137,8 @@ public struct RideLibraryMapView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16)
-        .padding(.bottom, 34)
+        // Clears the map's legal link, which must stay visible.
+        .padding(.bottom, 58)
         .accessibilityIdentifier("libraryMap.rideCard")
     }
 }
