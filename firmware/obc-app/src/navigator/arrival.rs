@@ -427,6 +427,54 @@ mod tests {
         assert_eq!(trip.next_day(Some(&written)), Some(2), "Day 3 is next");
     }
 
+    /// The rider's path to the day-done card. Day 1 ridden to about half, paused, Finish held: the
+    /// card reads tomorrow as the start card's day row loads it, the rest of Day 1 and then Day 2.
+    /// Day 1 ridden to its end, Finish ride held on the arrival view: tomorrow is Day 2 alone.
+    #[test]
+    fn a_finish_lands_the_day_done_card_with_the_day_the_start_card_loads() {
+        use crate::device_core::RestStretch;
+        use crate::trip::{DayJoin, DayLoad};
+        let bytes = line();
+        let src = SliceSource(&bytes);
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        let back = back();
+        let back_src = SliceSource(&back);
+        let back_index = RouteIndex::read(&back_src).unwrap();
+        let back_route = RouteReader::new(&back_index, &back_src);
+        let length = route.total_distance_m;
+        // As the host reads them while Day 1 is next: where Day 2 meets Day 1, which ends where Day 2
+        // starts.
+        let join = DayJoin { key: 42, day: 1, leave_m: length, join_m: 0, gap_m: 0, after: None };
+        let start = |app: &mut App| app.set_day_join(Some(join));
+        let trip = TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] };
+        let routes = [(route.summary(), 7), (back_route.summary(), 8)];
+        let tomorrow = |app: &App| {
+            assert!(matches!(app.top_screen(), Screen::DayDone(_)), "the card after the save");
+            let trip = &app.trips()[0];
+            let load = trip.load_day(1, trip.progress_in(app.trip_progress()), app.metadata.day_join().as_ref());
+            let key = app.derived_needs().day_profile.expect("the card reads tomorrow");
+            (load, key.day, key.join_m, key.rest)
+        };
+
+        let mut app = recording_on(&routes, &[trip], 0, start);
+        ride(&mut app, &route, &[(0, 0), (0, 2_500), (0, 5_000)]);
+        let stopped = app.progress_m();
+        press(&mut app, &route, &[Gesture::Press, Gesture::Step(1)]);
+        press(&mut app, &route, &[Gesture::Hold]);
+        save(&mut app, &route);
+        let rest = DayLoad::Rest { from_m: stopped, to_m: length, join_m: 0 };
+        let stretch = RestStretch { route: 7, from_m: stopped, to_m: length };
+        assert_eq!(tomorrow(&app), (rest, 8, 0, Some(stretch)));
+
+        let mut app = recording_on(&routes, &[trip], 0, start);
+        ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
+        assert!(view_up(&app), "the arrival view");
+        press(&mut app, &route, &[Gesture::Hold]);
+        save(&mut app, &route);
+        assert_eq!(tomorrow(&app), (DayLoad::AsIs, 8, 0, None));
+    }
+
     #[test]
     fn finish_from_the_paused_page_records_where_the_rider_stopped() {
         let bytes = line();

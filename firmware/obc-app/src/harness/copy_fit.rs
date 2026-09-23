@@ -38,6 +38,9 @@ const COPY_W: i32 = crate::screen::vocab::chrome::copy_w(PANEL.width as i32);
 /// `Landmarks`. What is unmeasured is only the article a peak's own section carries.
 const NO_SEED: [&str; 1] = ["PeakArticle"];
 
+/// A long day's ride, for the day-done card's ledger.
+const DAY: RideTotals = RideTotals { distance_m: 184_300, moving_s: 11 * 3600 + 52 * 60, climb_m: 3_080 };
+
 /// A seed: a screen, and a walk over it. Every frame of the walk is measured, not only the last
 /// one, so a page a gesture opens is measured as well as the page it opened from.
 type Seed = (Screen, Vec<Gesture>);
@@ -73,6 +76,8 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Climb(ClimbScreen::new()),
         Screen::RideControl(RideControl::new()),
         Screen::RideStart(RideStartScreen::new()),
+        Screen::DayDone(DayDoneScreen::new(DAY, 1, 7, 11, Some(12))),
+        Screen::DayDone(DayDoneScreen::new(DAY, 1, 7, 11, None)),
         Screen::Menu(MenuScreen::new()),
         Screen::PeakView(PeakViewScreen::new(None)),
         Screen::Detour(DetourScreen::new(&RouteState::default())),

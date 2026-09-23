@@ -2339,6 +2339,22 @@ pub(crate) async fn run_app(
                         }
                         _ => defmt::info!("derived: the ride-track subject moved under the read — re-asking next pass"),
                     }
+                } else if let Some(key) = exec.needs.day_profile {
+                    // Tomorrow's profile for the day-done card, into the same resident buffer. As
+                    // above, a subject that moved under the read is answered by not answering.
+                    let filled = crate::flat_store::fill_day_profile(flat, app, key);
+                    match app.derived_needs().day_profile {
+                        Some(now) if (now.day, now.join_m, now.rest) == (key.day, key.join_m, key.rest) => {
+                            derived.day_profile = Some(if filled {
+                                obc_app::device_core::DerivedInput::filled(now)
+                            } else {
+                                obc_app::device_core::DerivedInput::failed(now)
+                            });
+                        }
+                        _ => {
+                            defmt::info!("derived: the day-profile subject moved under the read — re-asking next pass")
+                        }
+                    }
                 } else if let Some(key) = exec.needs.nav_preview {
                     // The Route overview's shape preview. The previewed route is the active one, and
                     // its reader was built just above. It is answered either way, because a failure is
