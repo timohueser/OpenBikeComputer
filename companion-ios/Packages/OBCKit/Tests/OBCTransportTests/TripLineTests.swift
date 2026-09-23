@@ -151,8 +151,11 @@ struct TripLineTests {
         reversed.reverse()
 
         #expect(reversed.dayCount == 3)
-        #expect(Array(reversed.dayEnds.prefix(2).map(\.coordinate)) == [trip.dayEnds[1].coordinate, trip.dayEnds[0].coordinate])
-        #expect(reversed.dayEnds.map(\.name) == ["Ulrichen", "Andermatt", nil], "the old start had no name")
+        // Ulrichen ends at the gap: its day end moves across the gap, and the name stays with the place.
+        let across = trip.line[trip.pieceStarts[0]].coordinate
+        #expect(Array(reversed.dayEnds.prefix(2).map(\.coordinate)) == [across, trip.dayEnds[0].coordinate])
+        #expect(reversed.dayEnds.map(\.name) == [nil, "Andermatt", nil], "the old start had no name")
+        #expect(reversed.dayStart(1)?.name == "Ulrichen")
         #expect(reversed.startName == "Brig")
         #expect(reversed.dayEnds.map(\.title) == ["Rhone", "Grimsel", "Furka"], "each day keeps its own name")
         #expect(reversed.dayEnds[2].coordinate == trip.line[0].coordinate)
