@@ -196,7 +196,7 @@ pub fn route_end(src: &dyn ByteSource) -> Result<(i32, i32), Error> {
     while at < end {
         let bytes = &mut block[..(end - at).min(BLOCK as u64) as usize];
         src.read_at(at, bytes)?;
-        for p in bytes.chunks_exact(POINT_RECORD_LEN) {
+        for p in bytes.as_chunks::<POINT_RECORD_LEN>().0 {
             lon = lon.wrapping_add(rd_i16(p, 0).into());
             lat = lat.wrapping_add(rd_i16(p, 2).into());
         }
