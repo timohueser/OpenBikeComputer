@@ -40,6 +40,15 @@ pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
 pub const TRACK_START: u16 = rgb565(0, 90, 0); // → (0,85,0) dark green
 pub const TRACK_END: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
 pub const TRAIL: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
+/// The effort zones Z1..Z5, one scale for heart rate and power. They are content, so no theme
+/// remaps them: Z1's grey is off the exact value that [`resolve`] flips in Dark.
+pub const ZONE: [u16; 5] = [
+    rgb565(178, 178, 178), // → (170,170,170) grey
+    rgb565(85, 170, 255),  // → (85,170,255) blue
+    rgb565(85, 170, 85),   // → (85,170,85) green
+    rgb565(255, 170, 0),   // → (255,170,0) amber
+    rgb565(255, 85, 85),   // → (255,85,85) red
+];
 /// Stable white for authored symbols such as national flags.
 pub const ART_WHITE: u16 = rgb565(250, 250, 250); // → (255,255,255) white
 
@@ -74,6 +83,9 @@ mod tests {
         }
         for color in [WOOD, AMBER, WARNING, ROUTE, DETOUR, BREADCRUMB, ON_ACCENT, SUBTEXT_ON_ACCENT] {
             assert_eq!(resolve(Theme::Dark, color), color);
+        }
+        for color in ZONE {
+            assert_eq!(resolve(Theme::Dark, color), color, "a zone colour is content");
         }
         assert_eq!(resolve(Theme::Dark, PARCHMENT), rgb565(0, 0, 0));
         assert_eq!(resolve(Theme::Dark, INK), rgb565(255, 255, 255));

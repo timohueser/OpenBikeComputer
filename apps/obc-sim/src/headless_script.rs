@@ -147,7 +147,7 @@ mod tests {
         let player = script.player.as_mut().unwrap();
         player.play();
         for _ in 0..4 {
-            let (ride, sensors) = headless_replay_advance(player, &mut baro, 1.0, 0.0);
+            let (ride, sensors) = headless_replay_advance(player, &mut baro, 1.0, 0.0, ReplaySensors::default());
             let mut plan = script.host.pass(
                 &mut app,
                 obc_app::device_core::PassClock { ride, ui: InputClock(before) },
