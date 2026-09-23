@@ -29,14 +29,14 @@ struct TripStopsModelTests {
     }
 
     @Test
-    func tenMovesOverTheSameFiveKilometresMakeAtMostFiveRequests() async throws {
+    func tenMovesOverTheSameFiveKilometresAskFourTimes() async throws {
         let search = MockStopSearch(stops: [])
         let finder = StopFinder(search: search)
         let line = MeasuredLine(routePoints: file(0, 30_000))
         for distance in [10_000.0, 14_900, 11_200, 13_800, 10_500, 14_400, 12_100, 12_900, 11_700, 13_300] {
             _ = try await finder.stops(near: distance, on: line)
         }
-        #expect(await search.requestCount == 5)
+        #expect(await search.requestCount == 4)
     }
 
     @Test
@@ -70,6 +70,33 @@ struct TripStopsModelTests {
         #expect(model.nearby == .loaded)
         #expect(model.stops.map(\.stop.name) == ["Spring", "Hotel Furka"])
         #expect(abs(model.stops[1].offset - 400) < 1)
+    }
+
+    /// Apple Maps answers recorded at a real day end near Haslach im Kinzigtal. The town lies
+    /// 3.4 km away; some answers lie beyond the radius.
+    @Test
+    func theSheetKeepsRecordedAppleMapsStopsWithinTheRadius() async throws {
+        let url = try #require(Bundle.module.url(forResource: "haslach-stops", withExtension: "json", subdirectory: "Fixtures"))
+        let recorded = try JSONDecoder().decode([RecordedStop].self, from: Data(contentsOf: url)).map(\.stop)
+        // Two days along a meridian, the first ending at the recorded day end.
+        let end = Coordinate(latitude: 48.2919, longitude: 8.126544)
+        let day = { (from: Double) in
+            stride(from: from, through: from + 11_000, by: 100).map {
+                RoutePoint(coordinate: Coordinate(latitude: end.latitude - $0 / 111_320, longitude: end.longitude))
+            }
+        }
+        let trip = Trip.joining(
+            [day(-11_000), day(0)], id: TripID("t"), name: "T", bikeType: .gravel, now: Date(timeIntervalSince1970: 0))
+        let model = TripStopsModel(
+            trip: trip, day: 0, finder: StopFinder(search: MockStopSearch(stops: recorded)), isOnline: true,
+            onPick: { _ in })
+        await model.load()
+        #expect(Set(model.stops.map(\.stop.name)) == [
+            "Fuxxbau", "Landhaus Hechtsberg", "Wohnmobil Stellplatz", "Schlossberghof", "Ramsteinerhof",
+            "Gasthaus Aiple", "Stadthotel Haslach", "Mosers Blume Relax & Genuss Hotel", "Haus Zum Hobel",
+            "Ferienwohnung Hinterer Strickerhof", "Gasthof Blume", "Hohengasthaus Nillhofe",
+            "Hausach Home Bahnhofsnähe", "Brucherhof", "Gasthaus Käppelehof",
+        ], "Hotel-Restaurant Alte Bauernschanke lies 5.4 km away")
     }
 
     @Test
@@ -154,5 +181,20 @@ struct TripStopsModelTests {
         #expect(!sheet.canPick(placed))
         sheet.pick(placed)
         #expect(model.trip(id)?.dayEnds == before)
+    }
+}
+
+/// One Apple Maps answer as the fixture stores it.
+private struct RecordedStop: Decodable {
+    var name: String
+    var latitude: Double
+    var longitude: Double
+    var kind: String
+    var mapItemID: String
+
+    var stop: Stop {
+        Stop(
+            name: name, coordinate: Coordinate(latitude: latitude, longitude: longitude),
+            kind: Stop.Kind(rawValue: kind) ?? .place, mapItemID: mapItemID)
     }
 }
