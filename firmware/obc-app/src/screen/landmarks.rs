@@ -454,8 +454,8 @@ mod tests {
             drawn,
             [
                 "Text",
-                "en.wikipedia.org/?",
-                "oldid=1322295338",
+                "en.wikipedia.org/",
+                "?oldid=1322295338",
                 "Article",
                 "Dunlough Castle",
                 "Authors",
