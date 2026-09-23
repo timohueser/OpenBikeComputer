@@ -13,14 +13,15 @@ downloads content-addressed objects and writes the cutter's `cells.json` sidecar
     # 2. measure
     cargo run --release -p obcm-assemble --features mem-profile -- \\
         --cells /tmp/obca/freiburg/cells.json \\
-        --skin  /tmp/obca/freiburg/skin.json \\
+        --light-skin /tmp/obca/freiburg/light-skin.json \\
+        --dark-skin  /tmp/obca/freiburg/dark-skin.json \\
         --out   /tmp/obca/freiburg/out --accept-holes
 
 The written tree is exactly what `obc-pack cut` produces, because that is what the CLI parses
 (`main.rs::parse_sidecar`): cell artifacts under `cells/<band>/<i>/<j>.obcm`, and a `cells.json`
 naming every cell's `id`, `band`, `path` and OBCA §3.7 `partial` flag plus the schema they were
-baked at. `schema.json` (an OBCC v2 root) and `skin.json` are written beside it for the CLI's
-`--schema` / `--skin` arguments; `--schema` is optional since the sidecar carries one.
+baked at. `schema.json` and the two skin documents are written beside it for the CLI; `--schema`
+is optional since the sidecar carries one.
 
 Terrain is deliberately **not** fetched. The harness measures the nav rewrite, which is where an
 assembly's memory goes; the terrain shard streams cell-by-cell and would only add gigabytes of
@@ -98,7 +99,8 @@ def main() -> int:
     ap.add_argument("region", nargs="?", help="region id, e.g. europe/germany/baden-wuerttemberg/freiburg-regbez")
     ap.add_argument("out", nargs="?", type=Path, help="output directory (created; re-runs resume)")
     ap.add_argument("--catalog", default=DEFAULT_CATALOG, help=f"catalog root URL (default: {DEFAULT_CATALOG})")
-    ap.add_argument("--skin", default="default", help="which catalog skin to write as skin.json (default: default)")
+    ap.add_argument("--light-skin", default="default", help="catalog Light skin id (default: default)")
+    ap.add_argument("--dark-skin", default="dusk", help="catalog Dark skin id (default: dusk)")
     ap.add_argument("--band", action="append", default=[], help="only fetch these bands (repeatable)")
     ap.add_argument("--jobs", type=int, default=8, help="parallel downloads (default: 8)")
     ap.add_argument("--list-regions", action="store_true", help="list the catalog's regions and exit")
@@ -174,15 +176,17 @@ def main() -> int:
     (args.out / "schema.json").write_text(json.dumps({"schema": schema}, indent=2) + "\n")
 
     skins = catalog.get("skins", [])
-    skin = next((s for s in skins if s["id"] == args.skin), None)
-    if skin is None:
-        raise SystemExit(f"error: no skin {args.skin!r} in the catalog (have: {', '.join(s['id'] for s in skins)})")
-    (args.out / "skin.json").write_text(json.dumps(skin, indent=2) + "\n")
+    for role, skin_id in (("light", args.light_skin), ("dark", args.dark_skin)):
+        skin = next((s for s in skins if s["id"] == skin_id), None)
+        if skin is None:
+            raise SystemExit(f"error: no skin {skin_id!r} in the catalog (have: {', '.join(s['id'] for s in skins)})")
+        (args.out / f"{role}-skin.json").write_text(json.dumps(skin, indent=2) + "\n")
 
     print(
-        f"wrote {args.out / 'cells.json'} (+ schema.json, skin.json)\n"
+        f"wrote {args.out / 'cells.json'} (+ schema.json and paired skins)\n"
         f"  measure with: cargo run --release -p obcm-assemble --features mem-profile -- "
-        f"--cells {args.out / 'cells.json'} --skin {args.out / 'skin.json'} --out {args.out / 'out'}",
+        f"--cells {args.out / 'cells.json'} --light-skin {args.out / 'light-skin.json'} "
+        f"--dark-skin {args.out / 'dark-skin.json'} --out {args.out / 'out'}",
         file=sys.stderr,
     )
     return 0

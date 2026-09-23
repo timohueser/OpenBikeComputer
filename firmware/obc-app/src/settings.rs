@@ -203,6 +203,15 @@ impl Units {
 }
 
 setting_enum! {
+    /// The colour theme used by every device screen.
+    pub enum Theme {
+        Light = 0, key Msg::ThemeLight;
+        Dark = 1, key Msg::ThemeDark;
+    }
+    default Light;
+}
+
+setting_enum! {
     /// How the Climb screen is reached. The Stats settings screen cycles it.
     pub enum ClimbMode {
         /// Kept out of the Back-cycle entirely and never auto-shown.
@@ -450,6 +459,7 @@ settings_table! {
         map_pois: bool = true, since(22);
         /// Bit positions follow PoiCategory::ALL, not the wire category IDs.
         map_poi_categories: u8 = 0x7f, since(22), range(0, 0x7f);
+        theme: Theme = Theme::Light, since(23);
     }
 
     pub const DEFAULT;
@@ -479,7 +489,7 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
 /// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
 /// struct widens every one of those.
-const _: () = assert!(core::mem::size_of::<Settings>() == 118, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 120, "Settings grew — was that deliberate?");
 
 impl Settings {
     pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
@@ -499,7 +509,7 @@ impl Settings {
     }
 }
 
-pub const VERSION: u8 = 22;
+pub const VERSION: u8 = 23;
 
 /// The oldest layout [`decode`] accepts. An older blob resets to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
@@ -544,8 +554,9 @@ const _: () = {
     assert!(off::brightness == 112, "brightness moved");
     assert!(off::find_hide_closed == 113);
     assert!(off::find_results == 114);
-    assert!(PAYLOAD_LEN == 119, "the CRC moved");
-    assert!(ENCODED_LEN == 128, "the blob is no longer 11 RRAM lines");
+    assert!(off::theme == 119);
+    assert!(PAYLOAD_LEN == 120, "the CRC moved");
+    assert!(ENCODED_LEN == 128, "the blob is no longer 8 RRAM lines");
 };
 
 #[cfg(test)]
@@ -570,6 +581,7 @@ mod tests {
         assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
         assert_eq!(d.up_ahead_source, UpAheadSource::default());
         assert_eq!(d.find_results, FindResults::default());
+        assert_eq!(d.theme, Theme::default());
 
         // And the whole const is its type's `Default` — the property the field list guards.
         assert_eq!(d, Settings::default());
@@ -612,6 +624,7 @@ mod tests {
             up_ahead_source: UpAheadSource::MapPoisOnly,
             find_hide_closed: false,
             find_results: FindResults::Six,
+            theme: Theme::Dark,
 
             brightness: 1,
         }
@@ -628,6 +641,20 @@ mod tests {
     fn codec_round_trips() {
         let s = every_field_set();
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    #[test]
+    fn version_22_blob_keeps_existing_values_and_defaults_theme() {
+        let mut expected = every_field_set();
+        expected.theme = Theme::Light;
+
+        let mut old = encode(&expected);
+        old[0] = 22;
+        let old_payload_len = off::theme;
+        let crc = crate::crc16::crc16(&old[..old_payload_len]);
+        old[old_payload_len..old_payload_len + 2].copy_from_slice(&crc.to_le_bytes());
+
+        assert_eq!(decode(&old), Some(expected));
     }
 
     /// One table over every declared field: the fixture moves every row off its default, that
@@ -732,6 +759,7 @@ mod tests {
         check!(WaypointMode);
         check!(UpAheadSource);
         check!(FindResults);
+        check!(Theme);
         check!(IdleReturn);
 
         check!(Language);

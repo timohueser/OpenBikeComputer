@@ -185,8 +185,8 @@ A baked cell MUST be a complete, valid OBCM file of the catalog's OBCM version, 
   finds nothing, so a cell of any band stays a legal, openable map;
 - the POI section and the nav section MUST be present, per `OBCM_Spec.md` §7/§8, and MUST be
   **empty** unless the cell's band carries them;
-- its style table MUST be the schema revision's **canonical table** (§6.2) — right ids, right
-  count, right order, placeholder values — and its `Marker Color` the schema's placeholder.
+- both style tables MUST be the schema revision's **canonical table** (§6.2) — right ids, right
+  count, right order, placeholder values — and both marker colors the schema's placeholder.
 
 Because the full ladder is written, **geometry-band membership is not recorded in the cell's
 bytes**. It is a property of the schema revision, read from the catalog (§6). A producer MUST NOT
@@ -350,14 +350,14 @@ an implicit metadata source.
 
 ## 4. The assembly contract
 
-An **assembly** is **one** OBCM file built from catalog cells for one selection and one skin,
+An **assembly** is **one** OBCM file built from catalog cells for one selection and two authored skins,
 carrying its terrain raster in `OBCM_Spec.md` §1.3's region when the selection has elevation. This
 section defines what an assembler does.
 
 ### 4.1 Inputs and preconditions
 
 An assembler takes a selection (any set of areas, holes allowed), a schema revision with its band
-table, a skin, the artifacts the coverage rule (§1.2) selects, and any selected
+table, a light skin, a dark skin, the artifacts the coverage rule (§1.2) selects, and any selected
 known-empty identities (§3.8). It MUST refuse to proceed if:
 
 - the cells do not all carry the same OBCM version, or that version is not the one it writes; or
@@ -427,8 +427,8 @@ overhang: the cells out there do not exist, so their leaves are empty. It MUST N
 | Geometry **offset tables** | Copied with `+ chunk_byte_base` per cell; the assembler writes the `Chunk Count + 1` entries for the concatenated region. |
 | Geometry **index nodes above the cell depth** | Rebuilt: a fresh tree over the assembly bbox down to the cell depth, with a branch wherever any descendant cell is present and an empty leaf where none is. |
 | **LOD table** | Rebuilt (new offsets and counts; `Max Meters/Pixel` and `Chunk Size` from the schema). |
-| **Header** | Rebuilt (bbox, section offsets, `Marker Color` from the skin). |
-| **Style table** | Rebuilt from the skin (§4.7) — same ids, same count, same order; values replaced. |
+| **Header** | Rebuilt (bbox, section offsets, and both marker colors from the skins). |
+| **Style tables** | Rebuilt from the skins (§4.7) — same ids, same count, same order; values replaced. |
 | **POI section + hours pool** | Rebuilt (§4.5). |
 | **Nav section** (directory, node tree, node chunks, edge pool) | Rebuilt (§4.6). |
 | **Profile table** (`OBCM_Spec.md` §8.6) | Copied from the cells after checking every cell agrees; it is schema data. |
@@ -533,20 +533,20 @@ An assembler MUST NOT create an edge between two nodes that no single cell joine
 ever joins *through* a coincident junction, so a merged route that steps between two nodes sharing
 no source cell is a bug.
 
-### 4.7 Stamping the skin
+### 4.7 Stamping the skins
 
-A **skin** is the presentation half of a preset: per feature type a color, weight, dash bit,
-`color2`, z-index and priority, plus the map's `Marker Color`. Stamping is:
+A **skin** is one authored presentation: per feature type a color, weight, dash bit, `color2`,
+z-index and priority, plus a marker color. Each assembly stamps one light and one dark skin:
 
 - resolve each feature type's style **id** from the schema revision's canonical assignment (§6.2)
-  — the skin MUST NOT introduce, remove, reorder, or renumber ids;
+  — neither skin MUST introduce, remove, reorder, or renumber ids;
 - before any output write, compare the resolved ids against the cells' canonical table. This check
-  also applies when a local schema omits the style assignment and the skin supplies explicit ids;
-- write the style table with the schema's ids in the schema's order and the skin's values in the
+  also applies when a local schema omits the style assignment and the skins supply explicit ids;
+- write both style tables with the schema's ids in the schema's order and each skin's values in the
   other seven bytes of each 8-byte record (`OBCM_Spec.md` §2);
-- write the skin's `Marker Color` into the header.
+- write both marker colors into the header.
 
-A restyle therefore costs ~2 KB of the output, and styles may change drawing order freely. An
+A paired restyle changes only the two small tables and marker fields. Styles may change drawing order freely. An
 assembler MUST reject a skin that does not cover every id in the schema's table, and MUST reject one
 that names a feature type the schema does not have: silently defaulting a missing style would ship a
 map with an invisible layer.
@@ -557,7 +557,7 @@ An assembly is self-made and outside the catalog's guarantees, so it MUST be ver
 written to a device. The verify runs through the **real reader** — the same crate the firmware
 uses — and MUST cover:
 
-1. **Parse.** Header (magic, version, bbox), style table, LOD table, POI directory, nav directory
+1. **Parse.** Header (magic, version, bbox), both style tables, LOD table, POI directory, nav directory
    and profile table all parse and validate.
 2. **Every chunk, every feature.** Walk each non-empty LOD's quadtree and decode every feature of
    every chunk. Any malformed, truncated, or capacity-exceeded outcome fails the assembly. This is
@@ -623,9 +623,9 @@ into chunk bytes, so it is the identity of a cell store.
 
 Critically, the schema also fixes the **style-id assignment**: `obc-pack` numbers feature types
 `1`-based in config document order (`OBCM_Spec.md` §2), and those ids are referenced by every
-feature header in every chunk. A schema revision therefore has one **canonical style table** — one
-id per feature type, in one order. A skin may change the other seven bytes of each record plus the
-header's `Marker Color`, and nothing else (§4.7).
+feature header in every chunk. A schema revision therefore has one **canonical style assignment** —
+one id per feature type, in one order. The two skins may change the other seven bytes of each record
+and their marker colors, and nothing else (§4.7).
 
 The hosted catalog has **exactly one** schema: the 14-LOD bikepacking ladder. Hosted "presets" are
 therefore skins. Custom schemas remain a local-bake affair for the desktop app.

@@ -67,7 +67,7 @@ impl AddFieldScreen {
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let f = avail[row.index];
-            let badge_color = if row.selected { INK } else { SUBTEXT };
+            let badge_color = if row.selected { ON_ACCENT } else { SUBTEXT };
             let a = row.area;
             let room = a.size.width as i32 - 10 - 8 - BADGE_W - 10;
             let font = if text_width(f.name(lang), Font::Body) as i32 <= room { Font::Body } else { Font::Label };
@@ -78,7 +78,7 @@ impl AddFieldScreen {
                 (a.top_left.y, a.size.height as i32),
                 font,
                 TextAlign::Left,
-                INK,
+                if row.selected { ON_ACCENT } else { INK },
             );
             size_badge(cv, a, f, badge_color);
         });

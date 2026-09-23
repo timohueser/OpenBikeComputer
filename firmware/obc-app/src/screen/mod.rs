@@ -20,7 +20,7 @@ use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
 use crate::ride::RideEntry;
 use crate::route::RouteSummary;
-use crate::settings::{DateTime, Settings};
+use crate::settings::{DateTime, Settings, Theme};
 
 mod arrival;
 pub(crate) mod assistant;
@@ -38,6 +38,7 @@ pub(crate) mod map;
 mod map_transfer;
 mod menu;
 mod nav_route;
+pub mod palette;
 mod passkey;
 mod peak_article;
 mod peak_view;
@@ -1271,63 +1272,11 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
 /// each value is chosen for the quantized result. The trailing comment on each is the device-64 RGB
 /// it lands on; `tests/palette.rs` asserts every one, so a retune that forgets to update a comment
 /// fails the build.
-pub mod palette {
-    /// Pack 8-bit RGB into RGB565.
-    pub const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
-        (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
-    }
-
-    // Device-64 has no warm off-white: any blue below 192 tints it yellow, so this is a clean
-    // near-white and the wood, ink and amber carry the warmth instead.
-    pub const PARCHMENT: u16 = rgb565(245, 243, 238); // → (255,255,255) white
-    pub const PARCHMENT_SHADE: u16 = rgb565(180, 170, 105); // → (170,170,85) tan
-    pub const HUD: u16 = rgb565(46, 37, 26); // → (0,0,0) near-black frame
-    pub const WOOD: u16 = rgb565(150, 100, 40); // → (170,85,0) wood brown
-    /// Lighter wood for inset borders and frame lines.
-    pub const WOOD_LIGHT: u16 = rgb565(180, 168, 100); // → (170,170,85) tan
-    pub const INK: u16 = rgb565(44, 33, 20); // → (0,0,0) text black
-    /// Muted ink for secondary and sub-label text.
-    pub const SUBTEXT: u16 = rgb565(110, 90, 58); // → (85,85,0) olive
-    /// Hairline rule between list rows.
-    pub const RULE: u16 = rgb565(180, 170, 100); // → (170,170,85) tan
-    pub const AMBER: u16 = rgb565(227, 165, 43); // → (255,170,0) accent
-    pub const WARNING: u16 = rgb565(192, 73, 46); // → (255,85,0) warning
-    /// Faint neutral grey: the Home screensaver's contour lines and empty battery cells. Dim
-    /// enough to sit behind the clock, bright enough to read as fine topographic lines.
-    pub const CONTOUR: u16 = rgb565(96, 96, 96); // → (85,85,85) grey
-    /// Green: the "on" state of a settings toggle pill, and the shallowest band of the Climb
-    /// screen's grade ramp. The only green on the panel.
-    pub const ON: u16 = rgb565(0, 170, 0); // → (0,170,0) green
-    /// Yellow: the Climb screen's `3–6 %` grade band. Device-64 has a pure `(255,255,0)`, so it
-    /// reads distinctly from amber.
-    pub const YELLOW: u16 = rgb565(255, 255, 0); // → (255,255,0) yellow
-    /// Red: the Climb screen's steepest grade band. Hotter than the [`WARNING`] orange, so the two
-    /// never blur into one another on the stripes.
-    pub const RED: u16 = rgb565(255, 0, 0); // → (255,0,0) red
-    /// Apricot: the Climb screen's tile background. Warmer and lighter than Statistics' tan
-    /// [`PARCHMENT_SHADE`], so the two riding views' grids read apart at a glance.
-    pub const CLIMB_TILE: u16 = rgb565(255, 170, 85); // → (255,170,85) apricot
-    /// Magenta: the planned route line on the Map. It lands on no base-map feature, so it always
-    /// reads as "the line to follow".
-    pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
-    /// Blue: the planned detour's polyline, which must read apart from the magenta route it will
-    /// replace, the warning-orange skipped span, and the navy breadcrumb behind it.
-    pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
-    /// Navy: the recorded breadcrumb, stroked over the route and under the marker. Recessive, so
-    /// the trail behind reads quieter than the magenta route ahead.
-    pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
-    /// Dark green: the start dot of a previewed track.
-    pub const TRACK_START: u16 = rgb565(0, 90, 0); // → (0,85,0) dark green
-    /// Dark red: the end dot of a previewed route. It stays apart from the magenta line it ends.
-    pub const TRACK_END: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
-    /// Trail red: a ridden track on the ride detail's map, apart from the magenta planned route.
-    pub const TRAIL: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
-}
-
 /// One RGB222 channel level, stepped down. Index by the channel's stored level (0-3); the result is
 /// another level, so the dimmed colour stays exactly on the device gamut and nothing has to be
 /// re-quantized.
 const DIM_LEVEL: [u8; 4] = [0, 1, 1, 2];
+const DIM_LEVEL_DARK: [u8; 4] = [0, 0, 1, 2];
 
 /// The dim policy a frame draws its base through while a drawer covers it: an RGB565 colour in, the
 /// same colour one device-64 level darker out.
@@ -1336,10 +1285,11 @@ const DIM_LEVEL: [u8; 4] = [0, 1, 1, 2];
 /// `color_fn` for the base screen and hands the sheet the untouched one, so it costs no RAM: no
 /// capture buffer, no second framebuffer, no alpha. `Canvas` resolves `color_fn` once per
 /// primitive, so this runs per primitive and not per pixel.
-pub(crate) fn dim_color(rgb565: u16) -> u16 {
-    let r = DIM_LEVEL[((rgb565 >> 14) & 0x3) as usize];
-    let g = DIM_LEVEL[((rgb565 >> 9) & 0x3) as usize];
-    let b = DIM_LEVEL[((rgb565 >> 3) & 0x3) as usize];
+pub(crate) fn dim_color(theme: Theme, rgb565: u16) -> u16 {
+    let levels = if theme == Theme::Light { DIM_LEVEL } else { DIM_LEVEL_DARK };
+    let r = levels[((rgb565 >> 14) & 0x3) as usize];
+    let g = levels[((rgb565 >> 9) & 0x3) as usize];
+    let b = levels[((rgb565 >> 3) & 0x3) as usize];
     palette::rgb565(r * 85, g * 85, b * 85)
 }
 
@@ -1351,12 +1301,13 @@ mod tests {
     fn the_dim_lut_only_darkens_and_stays_on_the_gamut() {
         for level in 0..4u16 {
             for shift in [14, 9, 3] {
-                let dimmed = dim_color(level << shift);
+                let dimmed = dim_color(Theme::Light, level << shift);
                 assert!((dimmed >> shift) & 0x3 <= level, "channel at bit {shift} brightened");
             }
         }
-        assert_eq!(dim_color(palette::PARCHMENT), palette::rgb565(170, 170, 170), "parchment recedes to grey");
-        assert_eq!(dim_color(palette::HUD), palette::rgb565(0, 0, 0), "the darkest chrome has nowhere to go");
+        assert_eq!(dim_color(Theme::Light, palette::PARCHMENT), palette::rgb565(170, 170, 170));
+        assert_eq!(dim_color(Theme::Light, palette::HUD), palette::rgb565(0, 0, 0));
+        assert_eq!(dim_color(Theme::Dark, palette::rgb565(85, 85, 0)), palette::rgb565(0, 0, 0));
     }
 
     #[test]

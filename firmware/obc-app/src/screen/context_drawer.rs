@@ -34,7 +34,7 @@ use crate::input::Gesture;
 use crate::navigator::RouteState;
 use crate::screen::quick_drawer::{brightness_percent, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 use crate::settings::{
-    ClimbMode, IdleReturn, Language, Units, UpAheadSource, WaypointMode, STAT_CYCLE_MAX, STAT_CYCLE_MIN,
+    ClimbMode, IdleReturn, Language, Theme, Units, UpAheadSource, WaypointMode, STAT_CYCLE_MAX, STAT_CYCLE_MIN,
     UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP,
 };
 use crate::{AppState, Msg, Settings};
@@ -116,6 +116,7 @@ pub enum ContextValue {
 
     /// The settings pages' values. Each is one [`Settings`] field.
     IdleReturn,
+    Theme,
     /// The backlight level, the same row the quick drawer edits. Staged levels drive the panel
     /// live through [`ContextDrawerScreen::staged_brightness`].
     Brightness,
@@ -142,6 +143,7 @@ impl ContextValue {
             ContextValue::BikeProfile => crate::settings::BikeType::ALL.len() as u8,
 
             ContextValue::IdleReturn => IdleReturn::COUNT as u8,
+            ContextValue::Theme => Theme::COUNT as u8,
             ContextValue::Brightness => BRIGHTNESS_LEVELS,
             ContextValue::FixInterval => FIX_LADDER.len() as u8,
             ContextValue::StatCycle => (STAT_CYCLE_MAX - STAT_CYCLE_MIN + 1) as u8,
@@ -176,6 +178,7 @@ impl ContextValue {
             ContextValue::BikeProfile => s.bike_type as u8,
 
             ContextValue::IdleReturn => s.idle_return as u8,
+            ContextValue::Theme => s.theme as u8,
             ContextValue::Brightness => s.brightness.min(BRIGHTNESS_MAX),
             // The nearest rung at or below the stored interval, so a value off the ladder still
             // opens on a rung.
@@ -203,6 +206,7 @@ impl ContextValue {
             ContextValue::BikeProfile => s.bike_type = crate::settings::BikeType::from_u8(ordinal).unwrap_or_default(),
 
             ContextValue::IdleReturn => s.idle_return = IdleReturn::from_byte(ordinal),
+            ContextValue::Theme => s.theme = Theme::from_byte(ordinal),
             ContextValue::Brightness => s.brightness = ordinal.min(BRIGHTNESS_MAX),
             ContextValue::FixInterval => s.fix_interval_s = FIX_LADDER[(ordinal as usize).min(FIX_LADDER.len() - 1)],
             ContextValue::StatCycle => s.stat_cycle_s = (STAT_CYCLE_MIN + ordinal as u16).min(STAT_CYCLE_MAX),
@@ -235,6 +239,7 @@ impl ContextValue {
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
 
             ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
+            ContextValue::Theme => Theme::from_byte(ordinal).name(lang),
             ContextValue::ClimbMode => ClimbMode::from_byte(ordinal).name(lang),
             ContextValue::WaypointMode => WaypointMode::from_byte(ordinal).name(lang),
             ContextValue::Units => Units::from_byte(ordinal).name(lang),
@@ -975,7 +980,7 @@ impl ContextDrawerScreen {
         }
         let knob = sheet::notch_x(x0, x1, self.staged, count);
         cv.disc(Point::new(knob, y), 8, palette::AMBER);
-        cv.disc(Point::new(knob, y), 3, palette::INK);
+        cv.disc(Point::new(knob, y), 3, palette::ON_ACCENT);
     }
 }
 
@@ -1404,6 +1409,7 @@ mod tests {
             // The settings pages' values, which no sheet table declares.
             for v in [
                 ContextValue::IdleReturn,
+                ContextValue::Theme,
                 ContextValue::Brightness,
                 ContextValue::FixInterval,
                 ContextValue::StatCycle,
@@ -1433,6 +1439,7 @@ mod tests {
             ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
             ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
+            ContextValue::Theme => Theme::from_byte(ordinal).name(lang),
             ContextValue::ClimbMode => ClimbMode::from_byte(ordinal).name(lang),
             ContextValue::WaypointMode => WaypointMode::from_byte(ordinal).name(lang),
             ContextValue::Units => Units::from_byte(ordinal).name(lang),

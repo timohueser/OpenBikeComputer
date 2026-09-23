@@ -52,7 +52,14 @@ impl LanguageScreen {
             let x = area.top_left.x + 10;
             let cy = y + ROW_ONE / 2;
             draw_flag(cv, x + 1, cy - FLAG_H / 2, *lang);
-            cv.text_vcentered(lang.name(), x + 30, (y, ROW_ONE), Font::Body, TextAlign::Left, palette::INK);
+            cv.text_vcentered(
+                lang.name(),
+                x + 30,
+                (y, ROW_ONE),
+                Font::Body,
+                TextAlign::Left,
+                if i == self.selected { palette::ON_ACCENT } else { palette::INK },
+            );
             if *lang == committed {
                 let tx = area.top_left.x + area.size.width as i32 - 22;
                 // The committed tick of the drawer editor, at row scale.

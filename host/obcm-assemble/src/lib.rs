@@ -77,7 +77,7 @@ pub struct KnownEmptyInput {
 }
 pub use emit::{MapPlan, FILE_CEILING};
 pub use nav::NavStats;
-pub use schema::{Band, BandRole, Schema, Skin, StyleRecord};
+pub use schema::{Band, BandRole, MapStyles, Schema, Skin, StyleRecord};
 pub use scratch::{MemoryScratch, ScratchId, ScratchStore};
 pub use verify::VerifyReport;
 
@@ -314,12 +314,12 @@ pub struct Summary {
 pub fn assemble(
     cells: Vec<CellInput<'_>>,
     schema: &Schema,
-    skin: &Skin,
+    styles: &MapStyles,
     opts: &Options,
     store: &mut dyn MapStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
-    assemble_with_known_empty(cells, Vec::new(), schema, skin, opts, store, clock)
+    assemble_with_known_empty(cells, Vec::new(), schema, styles, opts, store, clock)
 }
 
 /// The scratch a caller that has not supplied one gets: [`MemoryScratch`].
@@ -333,13 +333,13 @@ fn assemble_with_default_scratch(
     known_empty: Vec<KnownEmptyInput>,
     terrain: Option<TerrainJob<'_>>,
     schema: &Schema,
-    skin: &Skin,
+    styles: &MapStyles,
     opts: &Options,
     store: &mut dyn MapStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
     let scratch = MemoryScratch::new();
-    assemble_full(cells, known_empty, terrain, schema, skin, opts, store, clock, &scratch)
+    assemble_full(cells, known_empty, terrain, schema, styles, opts, store, clock, &scratch)
 }
 
 /// Assemble artifacts plus explicit zero-byte coverage from a pinned catalog.
@@ -351,12 +351,12 @@ pub fn assemble_with_known_empty(
     cells: Vec<CellInput<'_>>,
     known_empty: Vec<KnownEmptyInput>,
     schema: &Schema,
-    skin: &Skin,
+    styles: &MapStyles,
     opts: &Options,
     store: &mut dyn MapStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
-    assemble_with_default_scratch(cells, known_empty, None, schema, skin, opts, store, clock)
+    assemble_with_default_scratch(cells, known_empty, None, schema, styles, opts, store, clock)
 }
 
 /// Assemble the map, with the raster spliced in if there is one.
@@ -376,7 +376,7 @@ pub fn assemble_full(
     known_empty: Vec<KnownEmptyInput>,
     terrain: Option<TerrainJob<'_>>,
     schema: &Schema,
-    skin: &Skin,
+    map_styles: &MapStyles,
     opts: &Options,
     store: &mut dyn MapStore,
     clock: &dyn Clock,
@@ -384,7 +384,7 @@ pub fn assemble_full(
 ) -> Result<Summary> {
     let t_start = clock.now_us();
     schema.validate().map_err(Error::Input)?;
-    let styles = skin.resolve(schema).map_err(Error::Input)?;
+    let (light_styles, dark_styles) = map_styles.resolve(schema).map_err(Error::Input)?;
     let mut warnings: Vec<String> = Vec::new();
 
     // 1. Open every cell through the real reader, and refuse the disagreements.
@@ -420,7 +420,7 @@ pub fn assemble_full(
         coverage.push((empty.band, empty.id));
     }
     // The skin must describe the same style ids as the baked cells.
-    let resolved_ids: Vec<u8> = styles.iter().map(|s| s.id).collect();
+    let resolved_ids: Vec<u8> = light_styles.iter().map(|s| s.id).collect();
     if resolved_ids != cells[0].style_ids {
         return Err(Error::Input(format!(
             "the stamped style table has ids {resolved_ids:?} but the cells were baked with {:?} — \
@@ -479,7 +479,7 @@ pub fn assemble_full(
     }
 
     // 5. Plan the map.
-    let style_len = emit::pack_style_table(&styles).len();
+    let style_len = emit::pack_style_table(&light_styles).len();
     let poi_len = poi_section.section_len();
     let nav_projection = merged_nav.projection(&profile_table);
     let mut plan = plan_map(
@@ -572,8 +572,10 @@ pub fn assemble_full(
             &plan,
             &cells,
             &core_cells,
-            &styles,
-            skin.marker_color,
+            &light_styles,
+            &dark_styles,
+            map_styles.light.marker_color,
+            map_styles.dark.marker_color,
             &poi_section,
             &landmark_section,
             &peak_section,

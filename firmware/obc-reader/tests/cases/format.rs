@@ -5,17 +5,18 @@
 //! encoder and the reader pinned to one layout: if either drifts, these break.
 
 use obc_formats::obcm::{
-    nav_edge_id, BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, HEADER_OFFSET_SCALE_OFF, NAV_CHUNK_SIZE, NAV_DIR_LEN,
-    NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF,
-    NAV_PROFILE_LEN, POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
+    nav_edge_id, BRANCH_BIT, EMPTY_LEAF, HEADER_DARK_STYLE_OFFSET_OFF, HEADER_LEN, HEADER_OFFSET_SCALE_OFF,
+    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
 };
 use obc_map_scene::{BBox, Kind, LineStyle};
-use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{Error, MapCache, MapStyleSet, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
-    align_up, build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory, filler_len, hours_pool,
-    nav_directory, pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk,
-    pack_poi_record, pack_poly_hole, pad, poi_dir_len, poi_directory, resolve_offset, scaled, seal, splice_terrain,
-    terrain_stub, LodSpec, PoiCat, Style, FILLER, MARKER, OFFSET_SCALE, STYLE_OFFSET, UNIT,
+    align_up, append_dark_styles, build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory,
+    filler_len, hours_pool, nav_directory, pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record,
+    pack_nav_record, pack_poi_chunk, pack_poi_record, pack_poly_hole, pad, poi_dir_len, poi_directory, resolve_offset,
+    scaled, seal, splice_terrain, terrain_stub, LodSpec, PoiCat, Style, DARK_MARKER, FILLER, MARKER, OFFSET_SCALE,
+    STYLE_OFFSET, UNIT,
 };
 
 use crate::common::{decode_chunk, decode_filtered};
@@ -92,6 +93,82 @@ fn marker_color_round_trips() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
     assert_eq!(r.marker_color, MARKER);
+}
+
+#[test]
+fn style_set_switch_selects_complete_authored_presentation_without_touching_geometry_state() {
+    let mut bytes = two_lod_file();
+    let dark = [(1, -4, 0x001F, 7, 1, true, Some(0xFFFF)), (2, 5, 0x0000, 4, 2, false, None)];
+    append_dark_styles(&mut bytes, &dark, 0xBEEF);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let light = Reader::new(&src, &tables, &cache);
+    let light_geometry = decode_chunk(&light, 0, 0, &light.bbox);
+    let before = light.chunk_cache_stats();
+    let dark = light.with_style_set(MapStyleSet::Dark);
+    let dark_geometry = decode_chunk(&dark, 0, 0, &dark.bbox);
+    let after = dark.chunk_cache_stats();
+
+    assert_eq!(dark.generation(), light.generation());
+    assert_eq!(dark_geometry, light_geometry, "both presentations decode the same geometry");
+    assert_eq!(after.chunk_misses, before.chunk_misses, "the switch does not reload a geometry chunk");
+    assert_eq!(after.sd_reads, before.sd_reads, "the switch adds no source read");
+    assert!(after.chunk_hits > before.chunk_hits, "the dark view reuses the resident geometry chunk");
+    assert_eq!(light.marker_color, MARKER);
+    assert_eq!(dark.marker_color, 0xBEEF);
+    assert_eq!((light.style(1).unwrap().color, light.style(1).unwrap().weight), (0xF800, 2));
+    let dark_road = dark.style(1).unwrap();
+    assert_eq!((dark_road.color, dark_road.weight, dark_road.z_index), (0x001F, 7, -4));
+    assert_eq!(dark_road.flags.line_style(), LineStyle::Dashed);
+    assert_eq!(dark_road.color2, Some(0xFFFF));
+    assert_eq!((light.backdrop_style().unwrap().id, dark.backdrop_style().unwrap().id), (2, 1));
+}
+
+#[test]
+fn malformed_dark_style_tables_are_rejected() {
+    let valid = two_lod_file();
+
+    let mut missing = valid.clone();
+    missing[HEADER_DARK_STYLE_OFFSET_OFF..HEADER_DARK_STYLE_OFFSET_OFF + 4].fill(0);
+    assert!(matches!(MapTables::parse(&SliceSource(&missing)), Err(Error::BadOffset)));
+
+    let mut truncated = valid.clone();
+    truncated.pop();
+    assert!(matches!(MapTables::parse(&SliceSource(&truncated)), Err(Error::BadOffset)));
+
+    let mut mismatched = valid.clone();
+    append_dark_styles(&mut mismatched, &STYLES[..1], DARK_MARKER);
+    assert!(matches!(MapTables::parse(&SliceSource(&mismatched)), Err(Error::BadOffset)));
+
+    let mut duplicate = valid.clone();
+    append_dark_styles(&mut duplicate, &[STYLES[0], STYLES[0]], DARK_MARKER);
+    assert!(matches!(MapTables::parse(&SliceSource(&duplicate)), Err(Error::BadOffset)));
+
+    let mut reserved = valid.clone();
+    let reserved_style = (u8::MAX, 0, 0xFFFF, 1, 1, false, None);
+    reserved[STYLE_OFFSET + 1] = u8::MAX;
+    append_dark_styles(&mut reserved, &[reserved_style, STYLES[1]], DARK_MARKER);
+    assert!(matches!(MapTables::parse(&SliceSource(&reserved)), Err(Error::BadOffset)));
+}
+
+#[test]
+fn overlapping_style_table_ranges_are_rejected() {
+    let styles = [STYLES[0], STYLES[1], (3, 4, 0xFFFF, 1, 1, false, None)];
+    let mut bytes = build_file(
+        GLOBAL,
+        &styles,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![0],
+            chunks: vec![seal(pack_line(1, 0, 0, &[(1, 1)]), CS)],
+            chunk_size: CS,
+        }],
+    );
+    let overlapping = STYLE_OFFSET + UNIT;
+    bytes[HEADER_DARK_STYLE_OFFSET_OFF..HEADER_DARK_STYLE_OFFSET_OFF + 4]
+        .copy_from_slice(&scaled(overlapping).to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)));
 }
 
 #[test]
@@ -600,7 +677,7 @@ fn header_has_scaled_section_offsets() {
     let bytes = two_lod_file();
 
     // The header is no whole number of units, so the style table begins at the next boundary.
-    assert_eq!(HEADER_LEN, 65);
+    assert_eq!(HEADER_LEN, 71);
     assert_eq!(bytes[4], obc_formats::obcm::VERSION);
     assert_eq!(bytes[HEADER_OFFSET_SCALE_OFF], OFFSET_SCALE, "the scale byte producers write");
     assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()), scaled(STYLE_OFFSET), "Style Offset in units");
@@ -630,11 +707,13 @@ fn header_has_scaled_section_offsets() {
     assert!(bytes[nav_off + NAV_DIR_LEN..profile_off].iter().all(|&b| b == FILLER), "the eight bytes behind are 0xFF");
     let profile_count = bytes[nav_off + 26] as usize;
     assert!((1..=8).contains(&profile_count), "1..=8 profiles always present");
+    let dark_style_off = resolve_offset(&bytes, HEADER_DARK_STYLE_OFFSET_OFF);
     assert_eq!(
-        bytes.len(),
+        dark_style_off,
         align_up(profile_off + profile_count * obc_formats::obcm::NAV_PROFILE_LEN),
-        "the empty nav section ends the file, on the boundary its zero-length regions are named at"
+        "the dark style table follows the aligned nav section"
     );
+    assert_eq!(bytes.len(), dark_style_off + 1 + STYLES.len() * 8);
 }
 
 #[test]
@@ -731,6 +810,7 @@ fn populated_poi_category_round_trips_with_record_layout() {
     let nav_off = bytes.len();
     bytes[36..40].copy_from_slice(&scaled(nav_off).to_le_bytes());
     bytes.extend_from_slice(&empty_nav_directory(nav_off));
+    append_dark_styles(&mut bytes, STYLES, DARK_MARKER);
 
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -896,7 +976,9 @@ fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
 
     // A POI section offset past EOF is likewise rejected: the section is always present.
     let mut forged = bytes.clone();
-    forged[32..36].copy_from_slice(&scaled(bytes.len()).to_le_bytes()); // the file ends on a boundary
+    forged.resize(align_up(forged.len()), FILLER);
+    let end = forged.len();
+    forged[32..36].copy_from_slice(&scaled(end).to_le_bytes()); // POI at EOF
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "POI offset at EOF");
 
     // A hours_pool_count large enough to run the pool past EOF is rejected.
@@ -985,6 +1067,7 @@ fn nav_two_node_map() -> (Vec<u8>, usize) {
     bytes.resize(bytes.len() + index_gap, FILLER);
     bytes.extend_from_slice(&pack_nav_chunk(&[rec0, rec1], NAV_CHUNK_SIZE));
     bytes.extend_from_slice(&pad(edge, NAV_CHUNK_SIZE)); // edge pool chunk 0
+    append_dark_styles(&mut bytes, STYLES, DARK_MARKER);
     (bytes, nav_off)
 }
 
@@ -1044,7 +1127,11 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(bytes[nav_off + 27], 0, "reserved");
     let snap_index_offset = resolve_offset(&bytes, nav_off + 28);
     assert_eq!(snap_index_offset, edge_pool_offset + NAV_CHUNK_SIZE, "the empty snap index follows the edge pool");
-    assert_eq!(snap_index_offset, bytes.len(), "an empty snap index contributes no tail bytes");
+    assert_eq!(
+        snap_index_offset,
+        resolve_offset(&bytes, HEADER_DARK_STYLE_OFFSET_OFF),
+        "the empty snap index ends where the dark style section starts"
+    );
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 32..nav_off + 36].try_into().unwrap()), 0, "snap_index_node_count");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 36..nav_off + 40].try_into().unwrap()), 0, "snap_chunk_count");
     // The profile record: name, the two multiplier tables, then the climb weight and three
@@ -1151,7 +1238,9 @@ fn nav_directory_rejects_corrupt_fields() {
 
     // Nav offset past EOF (always-present section, no zero sentinel).
     let mut forged = bytes.clone();
-    forged[36..40].copy_from_slice(&scaled(bytes.len()).to_le_bytes()); // the file ends on a boundary
+    forged.resize(align_up(forged.len()), FILLER);
+    let end = forged.len();
+    forged[36..40].copy_from_slice(&scaled(end).to_le_bytes()); // nav at EOF
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "nav offset at EOF");
 
     // chunk_size 0 would divide-by-zero the edge addressing.

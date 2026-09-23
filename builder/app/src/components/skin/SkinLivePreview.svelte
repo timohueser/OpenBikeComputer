@@ -9,7 +9,12 @@
         wheelZoomFactor,
     } from "../../lib/skin/previewInteraction";
 
-    let { schemaJson, skin }: { schemaJson: string; skin: SkinEntry } = $props();
+    let {
+        schemaJson,
+        lightSkin,
+        darkSkin,
+        dark,
+    }: { schemaJson: string; lightSkin: SkinEntry; darkSkin: SkinEntry; dark: boolean } = $props();
 
     let canvas = $state<HTMLCanvasElement>();
     let preview = $state<LiveSkinPreview | null>(null);
@@ -39,12 +44,13 @@
         scheduleAnnouncement(nextStats);
     }
 
-    function queuePaint(nextSkin: string) {
+    function queuePaint(light: string, darkStyle: string, useDark: boolean) {
         if (!preview) return;
         cancelAnimationFrame(renderRaf);
         renderRaf = requestAnimationFrame(() => {
             try {
-                preview?.setSkin(nextSkin);
+                preview?.setStyles(light, darkStyle);
+                preview?.setTheme(useDark);
                 paint();
                 error = null;
             } catch (cause) {
@@ -147,13 +153,14 @@
 
     onMount(() => {
         let live = true;
-        void openLiveSkinPreview(schemaJson, JSON.stringify(skin))
+        void openLiveSkinPreview(schemaJson, JSON.stringify(lightSkin), JSON.stringify(darkSkin))
             .then((opened) => {
                 if (!live) {
                     opened.free();
                     return;
                 }
                 preview = opened;
+                opened.setTheme(dark);
                 loading = false;
                 paint();
             })
@@ -176,7 +183,7 @@
     $effect(() => {
         // JSON.stringify intentionally reads every nested style field, so a
         // swatch or number edit invalidates exactly one animation-frame render.
-        queuePaint(JSON.stringify(skin));
+        queuePaint(JSON.stringify(lightSkin), JSON.stringify(darkSkin), dark);
     });
 </script>
 

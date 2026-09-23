@@ -90,7 +90,7 @@ impl ClimbScreen {
         // The summit-flag glyph left of the elevation, so the figure reads as the summit height
         // without a "top" label.
         let readout_left = (w - TITLE_RIGHT_INSET) - text_width(&readout, Font::Label) as i32;
-        summit_glyph(cv, readout_left - SUMMIT_FLAG_GAP, TITLE_TEXT_CY, PARCHMENT);
+        summit_glyph(cv, readout_left - SUMMIT_FLAG_GAP, TITLE_TEXT_CY, BAR_TEXT);
 
         // Elevation maps to y over the climb's own base..summit span, so a small climb still fills
         // the chart. `.max(1)` guards a flat seg.
@@ -156,6 +156,7 @@ impl ClimbScreen {
                 cell.arrow,
                 TextAlign::Left,
                 CLIMB_TILE,
+                SUBTEXT,
                 INK,
             );
         }

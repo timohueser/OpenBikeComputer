@@ -133,7 +133,8 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     assembled = work / "assembled"
     assembly_inputs(tree, region_id, native, assembled)
     result = assembled / (region + ".obcm")
-    run(bin_dir / "obcm-assemble", "--cells", assembled / "cells.json", "--skin", assembled / "skin.json",
+    run(bin_dir / "obcm-assemble", "--cells", assembled / "cells.json",
+        "--light-skin", assembled / "skin.json", "--dark-skin", ROOT / "builder/presets/skins/dusk.json",
         "--terrain", assembled / "native-terrain.json", "--out", result, "--accept-partial", "--json")
     content = json.loads(landmarks.read_text())
     return result, {"recipe_commit": recipe_commit,

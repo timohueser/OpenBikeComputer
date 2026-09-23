@@ -112,7 +112,8 @@ export type AssembleWorkerRequest =
            *  of it (`Schema::parse` accepts an OBCC v2 root). */
           schemaJson: string;
           /** The chosen skin entry, as JSON. */
-          skinJson: string;
+          lightSkinJson: string;
+          darkSkinJson: string;
           options: AssembleOptions;
           /** The raster. Absent for a terrain-less catalog, in which case the map
            *  is written with an empty terrain region. */

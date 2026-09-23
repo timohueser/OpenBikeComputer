@@ -82,7 +82,7 @@ impl ResetScreen {
             let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
             let (bx, by) = (w / 2 - bw / 2, y + 8);
             cv.round(rect(bx, by, bw, bh), 8, AMBER);
-            cv.text_vcentered(label, w / 2, (by, bh), Font::Body, TextAlign::Center, INK);
+            cv.text_vcentered(label, w / 2, (by, bh), Font::Body, TextAlign::Center, ON_ACCENT);
             return;
         }
 

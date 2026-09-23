@@ -11,10 +11,12 @@
     let {
         store,
         base,
+        theme,
         onclose,
     }: {
         store: CoverageStore;
         base: SkinEntry;
+        theme: "Light" | "Dark";
         onclose: () => void;
     } = $props();
 
@@ -81,8 +83,8 @@
     <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="skin-editor-title">
         <header>
             <div>
-                <p class="eyebrow small faint">Skin editor</p>
-                <h2 id="skin-editor-title">Make the map yours</h2>
+                <p class="eyebrow small faint">{theme} map style</p>
+                <h2 id="skin-editor-title">Customize {theme.toLocaleLowerCase()}</h2>
                 <p class="small faint intro">Colors, widths, dashes, drawing order and route marker only. The baked schema and LODs stay fixed.</p>
             </div>
             <button type="button" class="iconbtn" aria-label="Close the skin editor" onclick={onclose}>✕</button>
@@ -91,16 +93,21 @@
         <div class="body">
             <aside>
                 <div class="sticky">
-                    <SkinLivePreview schemaJson={store.rootBody} skin={draft} />
+                    <SkinLivePreview
+                        schemaJson={store.rootBody}
+                        lightSkin={theme === "Light" ? draft : store.lightSkin}
+                        darkSkin={theme === "Dark" ? draft : store.darkSkin}
+                        dark={theme === "Dark"}
+                    />
                     <label class="name-field">
                         <span class="small">Skin name</span>
                         <input bind:this={nameInput} bind:value={name} maxlength="64" />
                     </label>
                     <div class="marker-row">
-                        <span class="small">Route marker</span>
+                        <span class="small">Rider marker</span>
                         <SkinColorControl
                             value={draft.marker_color}
-                            label="route marker"
+                            label="rider marker"
                             onchange={(value) => (draft.marker_color = value)}
                         />
                     </div>
@@ -178,7 +185,7 @@
             <span class="spacer"></span>
             <button type="button" class="btn ghost" onclick={onclose}>Cancel</button>
             <button type="button" class="btn" onclick={() => (draft = cloneSkin(base))}>Reset</button>
-            <button type="button" class="btn primary" disabled={!name.trim()} onclick={save}>Save custom skin</button>
+            <button type="button" class="btn primary" disabled={!name.trim()} onclick={save}>Save {theme.toLocaleLowerCase()} style</button>
         </footer>
     </div>
 </div>

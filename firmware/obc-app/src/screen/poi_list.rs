@@ -368,7 +368,9 @@ fn draw_poi_row(
     let name = if poi.name.is_empty() { poi_label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
     let name_top = top + 6;
     let name = marquee.fit(name, w - x - 12, Font::Body, row.scroll());
-    cv.text(&name, Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
+    let ink = if row.selected { ON_ACCENT } else { INK };
+    let subtext = if row.selected { SUBTEXT_ON_ACCENT } else { SUBTEXT };
+    cv.text(&name, Point::new(x, name_top), Font::Body, TextAlign::Left, ink);
 
     let line2_top = name_top + Font::Body.cap_bottom() as i32 + 4;
     if poi.opening == obc_reader::hours::OpeningStatus::Closed {
@@ -386,10 +388,11 @@ fn draw_poi_row(
             (fix.lon, fix.lat),
             (poi.lon, poi.lat),
             heading,
+            if row.selected { ON_ACCENT } else { WOOD },
         );
         text_x = x + 2 * ARROW_R + 8;
     }
-    cv.text(&dist, Point::new(text_x, line2_top), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(&dist, Point::new(text_x, line2_top), Font::Label, TextAlign::Left, subtext);
 }
 
 /// Half-size (px) of the bearing-arrow glyph in the list rows. The
@@ -419,6 +422,7 @@ pub(super) fn draw_bearing_arrow(
     pos: (i32, i32),
     poi: (i32, i32),
     heading_deg: f32,
+    color: u16,
 ) {
     use core::f32::consts::FRAC_PI_4;
     let theta = bearing_octant(pos, poi, heading_deg) as f32 * FRAC_PI_4;
@@ -431,9 +435,9 @@ pub(super) fn draw_bearing_arrow(
     };
     let tip = end(c, theta, rf);
     let tail = end(c, theta + core::f32::consts::PI, rf);
-    stroke2(cv, tail, tip, palette::WOOD);
+    stroke2(cv, tail, tip, color);
     for da in [3.0 * FRAC_PI_4, -3.0 * FRAC_PI_4] {
-        stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
+        stroke2(cv, tip, end(tip, theta + da, rf * 0.75), color);
     }
 }
 

@@ -1,17 +1,16 @@
 /**
  * The map the device smoke sends, and what the device must say about it afterwards.
  *
- * The map is `apps/obc-sim/assets/grimsel-demo.obcm`, already in the tree: an OBCM v18 file with an
+ * The map is `apps/obc-sim/assets/grimsel-demo.obcm`, already in the tree: an OBCM v19 file with an
  * embedded OBCT v3 surface terrain region, whose source packages, producer commit, output digest and
- * terrain digest are pinned in `fixtures/sources/ride-assistant/grimsel-demo-v18.json`. Nothing is
+ * terrain digest are pinned in `fixtures/sources/ride-assistant/grimsel-demo-v19.json`. Nothing is
  * assembled here and no byte is appended.
  *
- * Its length is exactly 19,713 whole card blocks. The flat store lays an object out over 512-byte
+ * Its length is exactly 19,715 whole card blocks. The flat store lays an object out over 512-byte
  * blocks inside its extents, so a payload that is not a multiple of 512 ends inside a block and the
  * device's last write carries a partial tail; this one ends on a block boundary and it does not.
- * That is the case the fixture is here for, and it costs no padding: a surface terrain region begins
- * on a 512-byte boundary and is a whole number of 512-byte blocks long, so a map that carries one
- * ends on a block boundary by construction.
+ * That is the case the fixture is here for. The producer pads the authored style tail so the complete
+ * paired-style map ends on the boundary.
  *
  * This is not the USB packet boundary. A stream record on the wire is four bytes of record prefix,
  * a sixteen-byte frame header and its payload, batched into writes of tens of kilobytes, so no host
@@ -30,7 +29,7 @@ import { join } from "node:path";
 
 /** Where the map and its provenance record live, relative to the repository root. */
 export const FIXTURE_MAP = "apps/obc-sim/assets/grimsel-demo.obcm";
-export const FIXTURE_RECORD = "fixtures/sources/ride-assistant/grimsel-demo-v18.json";
+export const FIXTURE_RECORD = "fixtures/sources/ride-assistant/grimsel-demo-v19.json";
 
 /** The flat store's block. A payload that is a whole number of these has no partial tail block. */
 export const CARD_BLOCK_BYTES = 512;
@@ -57,13 +56,13 @@ export interface SmokeFixture {
     readonly terrainBytes: number;
 }
 
-/** What the OBCM header says, for a file the reader has already accepted as v18. */
+/** What the OBCM header says, for a file the reader has already accepted as v19. */
 interface Header {
     readonly bbox: BoundingBox;
     readonly terrainBytes: number;
 }
 
-const OBCM_VERSION = 18;
+const OBCM_VERSION = 19;
 
 /**
  * Read the header fields the device echoes at boot.

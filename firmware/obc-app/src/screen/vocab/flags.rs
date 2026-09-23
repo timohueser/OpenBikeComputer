@@ -22,7 +22,7 @@ pub(crate) fn draw_flag(cv: &mut impl Surface, x: i32, y: i32, lang: Language) {
         }
         Language::Fr => {
             cv.fill(rect(x, y, 6, h), BREADCRUMB);
-            cv.fill(rect(x + 6, y, 6, h), PARCHMENT);
+            cv.fill(rect(x + 6, y, 6, h), ART_WHITE);
             cv.fill(rect(x + 12, y, 6, h), RED);
         }
         Language::Es => {
@@ -38,14 +38,14 @@ pub(crate) fn draw_flag(cv: &mut impl Surface, x: i32, y: i32, lang: Language) {
                 for dy in -1..=1 {
                     let py = yy + dy;
                     if py >= y && py < y + h {
-                        cv.fill(rect(x + i, py, 1, 1), PARCHMENT);
-                        cv.fill(rect(x + w - 1 - i, py, 1, 1), PARCHMENT);
+                        cv.fill(rect(x + i, py, 1, 1), ART_WHITE);
+                        cv.fill(rect(x + w - 1 - i, py, 1, 1), ART_WHITE);
                     }
                 }
             }
             // The cross: white border, red core.
-            cv.fill(rect(x, y + 4, w, 4), PARCHMENT);
-            cv.fill(rect(x + 7, y, 4, h), PARCHMENT);
+            cv.fill(rect(x, y + 4, w, 4), ART_WHITE);
+            cv.fill(rect(x + 7, y, 4, h), ART_WHITE);
             cv.fill(rect(x, y + 5, w, 2), RED);
             cv.fill(rect(x + 8, y, 2, h), RED);
         }

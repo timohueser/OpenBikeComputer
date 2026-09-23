@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v18)
+# OBCM File Format Specification (v19)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -10,9 +10,9 @@ This document is the normative byte contract. Its code authority for version num
 fixed lengths, flags, sentinels, the canonical POI id table, and endian primitives is
 `firmware/obc-formats/src/obcm.rs`; producers and consumers import those facts directly.
 
-**v18 is the only supported version**; earlier maps get repacked. A reader MUST
+**v19 is the only supported version**; earlier maps get repacked. A reader MUST
 check `Version` before it reads any later field and MUST refuse every value other
-than `0x12`. The header version applies to the whole file.
+than `0x13`. The header version applies to the whole file.
 
 Style flag bits gain meanings without a version bump, because the record's length, layout
 and offsets do not move. §2 states every defined bit.
@@ -26,8 +26,8 @@ screen space is the renderer's responsibility, not the format's.
 ## File layout
 
 ```
-[Header]                            (65 bytes, fixed)
-[Style Table]                       (global — shared by all LODs)
+[Header]                            (71 bytes, fixed)
+[Light Style Table]                 (global — shared by all LODs)
 [LOD Table]                         (LOD Count entries)
 [LOD 0 Index][LOD 0 Offset Table][LOD 0 Data Chunks]    (coarsest)
 [LOD 1 Index][LOD 1 Offset Table][LOD 1 Data Chunks]
@@ -39,6 +39,7 @@ screen space is the renderer's responsibility, not the format's.
 [Landmark Directory + Content]        (§9 — optional)
 [Peak Associations + Articles]        (§10 — optional)
 [Terrain Region]                      (§1.3 — an OBCT container, absent when the header says 0)
+[Dark Style Table]                  (global — shares IDs with the light table)
 ```
 
 Every structure a header or directory offset reaches begins on a **unit boundary** (§1.1), so the
@@ -51,14 +52,14 @@ integers are **little-endian**.
 
 ---
 
-## 1. Header (65 bytes)
+## 1. Header (71 bytes)
 
-Packed as `struct "<4sBiiiiIBIHIIBIIIIII"`.
+Packed as `struct "<4sBiiiiIBIHIIBIIIIIIIH"`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x12` |
+| 4 | Version | 1 | `uint8` | `0x13` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -76,15 +77,17 @@ Packed as `struct "<4sBiiiiIBIHIIBIIIIII"`.
 | 53 | Landmark Length | 4 | `uint32` | Section length in offset units; `0` exactly when Landmark Offset is `0` |
 | 57 | Peak Offset | 4 | `uint32` | Scaled offset to the separate peak collection (§10) |
 | 61 | Peak Length | 4 | `uint32` | Section length in offset units; `0` exactly when Peak Offset is `0` |
+| 65 | Dark Style Offset | 4 | `uint32` | **Scaled** offset to the Dark Style Table (§2) |
+| 69 | Dark Marker Color | 2 | `uint16` | Dark user-position marker color (RGB565) |
 
 Note the bbox field order in the file is **lat, lon, lat, lon**. A **scaled** offset is a count of
 `2^Offset Scale`-byte units, not of bytes — §1.1 is the whole of that rule, and it applies to every
 field this document marks that way, here and in the LOD table (§3), the offset tables (§5.1) and the
 POI (§7.1) and nav (§8.1) directories.
 
-The header is 65 bytes, which is not a whole number of units at any scale above `0`, so the Style
+The header is 71 bytes, which is not a whole number of units at any scale above `0`, so the Light Style
 Table begins at the first unit boundary at or after it — `80` at the default `U = 16`, giving
-`Style Offset = 5` — and the `65..80` gap is `0xFF` filler (§1.2). A reader follows `Style Offset`
+`Style Offset = 5` — and the `71..80` gap is `0xFF` filler (§1.2). A reader follows `Style Offset`
 rather than assuming the section follows the header. The POI and nav sections are always present, so neither of their offsets is
 ever `0` — a map with no POIs (or no routable ways) writes an **empty** directory there instead.
 `Terrain Offset`, `Landmark Offset` and `Peak Offset` may be `0`; each is zero exactly when its corresponding length is zero.
@@ -129,7 +132,7 @@ structure would otherwise begin mid-unit, it writes `0xFF` filler up to the boun
 
 Three kinds of gap follow, and none of them is content:
 
-- **between sections** — the 65-byte header and the style table, and any two sections a header or
+- **between sections** — the 71-byte header and a style table, and any two sections a header or
   directory offset names;
 - **before a region's chunks** — a region's chunk data begins at the first unit boundary at or after
   the structure preceding it, which is the index (§7.1, §8.1) or the index plus the offset table
@@ -193,19 +196,22 @@ Two consequences:
   mount, render and route, and MUST NOT present the map as faulty. A **writer** gets no such
   clemency and MUST verify the region it splices.
 
-### Marker Color
+### Marker Colors
 
 The **user-position marker** is a chevron drawn at the user's GPS fix, pointing along their course.
-It is not an OSM feature, so its color is a global header field rather than a style record. It is
-RGB565 like every style color. The marker's shape and size are fixed in the renderer; only its color
-is map-configurable. The default is `0xF800` (bright red).
+It is not an OSM feature, so its colors are global header fields rather than style records. They are
+RGB565 like every style color. The renderer selects the light or dark marker with the matching style
+table. The marker's shape and size are fixed in the renderer.
 
 ---
 
-## 2. Style Table
+## 2. Style Tables
 
-Maps numeric style IDs to rendering properties. **Global**: style IDs are shared
-across every LOD. Packed as `Count`, then `Count` records.
+The light and dark tables map the same numeric style IDs to independently authored rendering
+properties. Style IDs are global across every LOD and both tables. Each table is packed as `Count`,
+then `Count` records. Both tables MUST contain exactly the same nonzero IDs. A reader MUST reject a
+missing, duplicate or mismatched ID. Geometry is stored once and selects the active record by its
+shared ID. Changing tables therefore does not reload or convert geometry.
 
 1. **Count** (`uint8`): number of styles.
 2. **Style Records** (`Count` × 8 bytes):
