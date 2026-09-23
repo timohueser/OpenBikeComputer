@@ -23,6 +23,8 @@ public struct MeasuredLine: Equatable, Sendable {
     public let vertices: [Vertex]
     /// Vertex indices that start a new piece. Never contains 0.
     public let pieceStarts: Set<Int>
+    /// Whether any source point carried an elevation. Without one, every vertex reads 0 m.
+    public let hasElevation: Bool
 
     /// The line's length in metres.
     public var length: Double { vertices.last?.distance ?? 0 }
@@ -60,6 +62,7 @@ public struct MeasuredLine: Equatable, Sendable {
         }
         self.vertices = vertices
         self.pieceStarts = starts
+        hasElevation = elevations.contains { $0 != nil }
     }
 
     public init(routePoints: [RoutePoint]) {
@@ -109,6 +112,13 @@ public struct MeasuredLine: Equatable, Sendable {
 
     public func elevation(at distance: Double) -> Double {
         interpolate(at: distance) { a, b, t in a.elevation + (b.elevation - a.elevation) * t }
+    }
+
+    /// `count` elevations at even distances from the start to the end: a profile on a true
+    /// distance axis. Empty when the line has no elevation.
+    public func elevationProfile(count: Int) -> [Double] {
+        guard hasElevation, count > 1, vertices.count > 1 else { return [] }
+        return (0..<count).map { elevation(at: length * Double($0) / Double(count - 1)) }
     }
 
     /// Climb between two distances, from the cumulative walk: O(log n), so it can run on
