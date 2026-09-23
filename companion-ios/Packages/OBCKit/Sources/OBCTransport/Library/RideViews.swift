@@ -53,6 +53,55 @@ extension LibraryStore {
         }
     }
 
+    // MARK: Photos
+
+    /// The photos of a ride: for an edited ride, the photos of its synced rides that fall in its
+    /// time span. Its closed quiet rows are those of its first synced ride.
+    public func rideJournal(_ id: RideID) -> RideJournal {
+        let views = rideViews()
+        guard let view = views.first(where: { $0.id == id }) else { return archivedRideJournal(id) }
+        let journals = view.slices.map(\.source).uniqued.map { ($0, archivedRideJournal($0)) }
+        return RideJournal(
+            photos: journals.flatMap { source, journal in
+                journal.photos.filter { RideEdit.view(showing: $0.takenAt, of: source, in: views) == id }
+            },
+            closedRows: journals.first?.1.closedRows ?? []
+        )
+    }
+
+    public func ridePhotoThumbnails(_ id: RideID) -> [String: Data] {
+        rideSources(id).reduce(into: [:]) { all, source in
+            all.merge(archivedRidePhotoThumbnails(source)) { first, _ in first }
+        }
+    }
+
+    /// A photo stays with the synced ride that holds it, with its thumbnail; a new photo goes to
+    /// the synced ride whose slice is nearest its time. The photos that other rides show, or that
+    /// an edit hides, stay where they are.
+    public func saveRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID) {
+        let views = rideViews()
+        guard let view = views.first(where: { $0.id == id }) else {
+            return saveArchivedRideJournal(journal, thumbnails: thumbnails, for: id)
+        }
+        let sources = view.slices.map(\.source).uniqued
+        let stored = Dictionary(uniqueKeysWithValues: sources.map { ($0, archivedRideJournal($0)) })
+        let known = Set(stored.values.flatMap { $0.photos.map(\.assetID) })
+        for source in sources {
+            let stored = stored[source] ?? RideJournal()
+            let here = Set(stored.photos.map(\.assetID))
+            let others = stored.photos.filter { RideEdit.view(showing: $0.takenAt, of: source, in: views) != id }
+            let mine = journal.photos.filter {
+                here.contains($0.assetID) || (!known.contains($0.assetID) && view.source(for: $0.takenAt) == source)
+            }
+            let closed = source == sources.first ? stored.closedRows.union(journal.closedRows) : stored.closedRows
+            saveArchivedRideJournal(
+                RideJournal(photos: others + mine, closedRows: closed),
+                thumbnails: thumbnails.filter { asset, _ in mine.contains { $0.assetID == asset } },
+                for: source
+            )
+        }
+    }
+
     // MARK: Edits
 
     /// Keep only the part of the ride inside `range`. False when fewer than two points remain.
@@ -143,5 +192,13 @@ private struct RideEditSession<Store: LibraryStore> {
         let loaded = store.archivedRidePoints(id)
         points[id] = loaded
         return loaded
+    }
+}
+
+private extension Array where Element: Hashable {
+    /// The elements in order, each once.
+    var uniqued: [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
     }
 }

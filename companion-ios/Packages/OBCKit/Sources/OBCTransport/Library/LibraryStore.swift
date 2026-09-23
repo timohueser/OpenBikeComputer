@@ -66,13 +66,14 @@ public protocol LibraryStore: Sendable {
     func dismissedMerges() -> Set<RidePair>
     func dismissMerge(_ pair: RidePair)
 
-    /// The phone's additions to a stored ride; empty for an unknown ride.
-    func rideJournal(_ id: RideID) -> RideJournal
+    /// The phone's additions to a synced ride; empty for an unknown ride. The rider sees
+    /// `rideJournal(_:)`, where an edited ride shows the photos of its time ranges.
+    func archivedRideJournal(_ id: RideID) -> RideJournal
     /// The cached thumbnail of each photo the journal holds, keyed by asset id.
-    func ridePhotoThumbnails(_ id: RideID) -> [String: Data]
+    func archivedRidePhotoThumbnails(_ id: RideID) -> [String: Data]
     /// Writes the journal and the given new thumbnails, and deletes the thumbnails of photos the
     /// journal no longer holds. A ride that is not stored ignores it.
-    func saveRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID)
+    func saveArchivedRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID)
 
     /// The day note under `key`; empty when there is none.
     func dayNote(_ key: DayNoteKey) -> String
@@ -225,15 +226,15 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock { notes[key] = note.isEmpty ? nil : note }
     }
 
-    public func rideJournal(_ id: RideID) -> RideJournal {
+    public func archivedRideJournal(_ id: RideID) -> RideJournal {
         lock.withLock { journals[id] ?? RideJournal() }
     }
 
-    public func ridePhotoThumbnails(_ id: RideID) -> [String: Data] {
+    public func archivedRidePhotoThumbnails(_ id: RideID) -> [String: Data] {
         lock.withLock { thumbnails[id] ?? [:] }
     }
 
-    public func saveRideJournal(_ journal: RideJournal, thumbnails new: [String: Data], for id: RideID) {
+    public func saveArchivedRideJournal(_ journal: RideJournal, thumbnails new: [String: Data], for id: RideID) {
         lock.withLock {
             guard summaries[id] != nil else { return }
             journals[id] = journal

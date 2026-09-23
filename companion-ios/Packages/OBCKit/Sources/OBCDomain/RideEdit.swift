@@ -27,6 +27,26 @@ public struct RideView: Identifiable, Equatable, Sendable {
         self.summary = summary
         self.slices = slices
     }
+
+    /// The synced ride a photo taken at `time` joins: the slice that holds the time, else the
+    /// nearest one.
+    public func source(for time: Date) -> RideID {
+        let nearest = slices.min {
+            Self.gap(time, $0) < Self.gap(time, $1)
+        }
+        return nearest?.source ?? id
+    }
+
+    /// From the first slice's start to the last slice's end. A break between merged rides is
+    /// inside.
+    var span: RideSlice? {
+        guard let first = slices.first, let last = slices.last else { return nil }
+        return RideSlice(source: first.source, start: first.start, end: last.end)
+    }
+
+    static func gap(_ time: Date, _ slice: RideSlice) -> TimeInterval {
+        max(slice.start.timeIntervalSince(time), time.timeIntervalSince(slice.end), 0)
+    }
 }
 
 /// The pure half of ride editing: slice arithmetic and the points a list of slices stands for.
@@ -105,6 +125,17 @@ public enum RideEdit {
         case let (a?, b?): return a.key == b.key && a.dayIndex == b.dayIndex
         default: return false
         }
+    }
+
+    /// The view that shows a photo of `source` taken at `time`: the view whose span holds the
+    /// time, else the nearest one within `RidePhotoPlacement.margin`, as for an unedited ride.
+    /// Nil when every view of the source hides it: it stays with the synced ride until a revert.
+    public static func view(showing time: Date, of source: RideID, in views: [RideView]) -> RideID? {
+        let spans = views.filter { $0.sources.contains(source) }.compactMap { view in view.span.map { (view.id, $0) } }
+        guard let nearest = spans.min(by: { RideView.gap(time, $0.1) < RideView.gap(time, $1.1) }),
+              RideView.gap(time, nearest.1) <= RidePhotoPlacement.margin
+        else { return nil }
+        return nearest.0
     }
 
     public static let maxGapMeters = 500.0
