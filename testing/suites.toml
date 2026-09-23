@@ -119,13 +119,18 @@ triggers = [
   "fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx",
 ]
 
-# The three standalone Cargo roots are not in the workspace nextest run, so each names the
+# The standalone Cargo roots are not in the workspace nextest run, so each names the
 # command a local `obc test affected` uses for it.
 [[package]]
 name = "obc-fw-nrf54l"
 command = "cargo build --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --release --locked"
 triggers = ["rust-toolchain.toml"]
 platforms = ["linux"]
+
+[[package]]
+name = "obc-sensor-sim"
+command = "bash firmware/obc-sensor-sim/check.sh"
+platforms = ["linux", "macos"]
 
 [[package]]
 name = "obc-boot"
