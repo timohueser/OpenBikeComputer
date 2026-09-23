@@ -100,7 +100,8 @@ final class TripFlowTests: XCTestCase {
     // MARK: Import row → New trip
 
     /// The import landing's Start a trip row makes the import the first day of a new trip and
-    /// opens the trip page.
+    /// opens the day editor in split mode: the stepper cuts the file into days, and Done lands on
+    /// the trip page with those days.
     @MainActor
     func testImportStartsATrip() {
         let app = launch(fixtures: "trips", importSample: "gpx")
@@ -111,14 +112,67 @@ final class TripFlowTests: XCTestCase {
         snap(app, "TR7-import-rows")
         row.tap()
 
-        XCTAssertTrue(
-            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 10),
-            "Start a trip must open the new trip's page")
+        let stepper = app.steppers["dayEditor.days"]
+        XCTAssertTrue(stepper.waitForExistence(timeout: 10), "Start a trip must open the day editor in split mode")
         XCTAssertTrue(app.navigationBars["Schwarzwald Tour · Tag 2"].exists, "the trip takes the route's name")
+        snap(app, "DE-split-1")
+        app.buttons["dayEditor.days-Increment"].tap()
+        XCTAssertTrue(app.buttons["dayEditor.day.1"].firstMatch.waitForExistence(timeout: 5), "one tap must make two days")
+        app.buttons["dayEditor.days-Increment"].tap()
+        let day3 = app.buttons["dayEditor.day.2"].firstMatch
+        XCTAssertTrue(day3.waitForExistence(timeout: 5), "two stepper taps must make three days")
+        XCTAssertTrue(app.staticTexts["3 DAYS · ~1 H A DAY"].exists, "the header counts the days")
+        snap(app, "DE-split-3")
+
+        // A drag on the profile handle moves the day end; Even out balances again; Undo steps back.
+        let handle = app.otherElements["Day 2 end"].firstMatch
+        XCTAssertTrue(handle.exists, "the profile handle is missing")
+        let balanced = day3.label
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 70, dy: 0)))
+        XCTAssertNotEqual(day3.label, balanced, "the drag must move the day end")
+        let dragged = day3.label
+        snap(app, "DE-split-dragged")
+        app.buttons["dayEditor.evenOut"].tap()
+        XCTAssertNotEqual(day3.label, dragged, "Even out must move the day end again")
+        app.buttons["dayEditor.undo"].tap()
+        XCTAssertEqual(day3.label, dragged, "Undo must step back to the dragged position")
+        app.buttons["dayEditor.undo"].tap()
+        XCTAssertEqual(day3.label, balanced, "a second Undo steps back the drag")
+        app.buttons["dayEditor.done"].tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["trip.day.2"].firstMatch.waitForExistence(timeout: 10),
+            "Done must save the three days and land on the trip page")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'main.card.'"))
             .matching(NSPredicate(format: "label CONTAINS 'Schwarzwald'")).firstMatch.exists,
             "the imported route must not also be a route card")
+    }
+
+    // MARK: Day editor
+
+    /// Edit days on the trip page opens the editor in edit mode. The fixture trip's two files
+    /// do not join, so Day 1 ends at a transfer: its row says so, and Done returns to the trip.
+    @MainActor
+    func testEditDaysOpensTheEditor() {
+        let app = launch()
+        waitForMain(app)
+
+        app.buttons["main.trip.driftless-weekender"].tap()
+        let editDays = app.buttons["trip.editDays"]
+        XCTAssertTrue(editDays.waitForExistence(timeout: 5), "Edit days missing on the trip page")
+        editDays.tap()
+
+        let day1 = app.buttons["dayEditor.day.0"].firstMatch
+        XCTAssertTrue(day1.waitForExistence(timeout: 10), "the day editor is missing")
+        XCTAssertTrue(app.buttons["dayEditor.evenOut"].exists, "edit mode has Even out in the header")
+        XCTAssertFalse(app.buttons["dayEditor.days-Increment"].exists, "edit mode has no stepper")
+        XCTAssertTrue(day1.label.hasSuffix("transfer"), "a day end at a transfer says so: \(day1.label)")
+        snap(app, "DE-edit")
+
+        app.buttons["dayEditor.done"].tap()
+        XCTAssertTrue(app.buttons["trip.editDays"].waitForExistence(timeout: 5), "Done must return to the trip page")
     }
 }

@@ -294,8 +294,10 @@ struct RootView: View {
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 // A trip choice moves the route into the trip and opens the trip page.
+                // A new trip from one file opens in the day editor's split mode.
                 if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
                     path = [.trip(id: tripID)]
+                    if case .new = tripSelection { path.append(.dayEditor(id: tripID, isSplitMode: true)) }
                 }
                 importModel.closeImport()
             },
@@ -458,8 +460,17 @@ struct RootView: View {
                     if let index = path.firstIndex(of: .trip(id: id)) {
                         path.removeSubrange(index...)
                     }
-                }
+                },
+                onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) }
             )
+        case .dayEditor(let id, let isSplitMode):
+            if let editor = mainModel.dayEditor(id, isSplitMode: isSplitMode) {
+                TripDayEditorView(model: editor) {
+                    if let index = path.lastIndex(of: .dayEditor(id: id, isSplitMode: isSplitMode)) {
+                        path.removeSubrange(index...)
+                    }
+                }
+            }
         case .trash:
             RecentlyDeletedView(model: mainModel)
         case .settings:
@@ -542,6 +553,8 @@ struct RootView: View {
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case trip(id: TripID)
+    /// The trip's day editor, in split mode when one file just became the trip.
+    case dayEditor(id: TripID, isSplitMode: Bool)
     case ride(id: RideID)
     case trash
     case settings
