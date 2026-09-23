@@ -1,6 +1,6 @@
 import SwiftUI
 
-// System-styled wrappers: the action sheet, the text-field alert, and the system
+// System-styled wrappers: the action sheet, the rename sheet, and the system
 // pairing sheet. These are native presentations on purpose: the app tint carries the
 // brand, and the pairing alert stays system blue.
 
@@ -22,23 +22,87 @@ public extension View {
         }
     }
 
-    /// A centered alert with an inline input, shared by route rename and device
-    /// rename.
-    func obcRenameAlert(
+    /// The rename sheet, shared by every rename: a field that starts at `name`, under Cancel and
+    /// Save. The draft lives in the sheet, so a refresh of the screen below cannot reset or close
+    /// it. Save hands the draft to `onSave`.
+    func obcRenameSheet(
         _ title: String,
         isPresented: Binding<Bool>,
-        name: Binding<String>,
+        name: String,
         placeholder: String = "Name",
         message: String? = nil,
-        onSave: @escaping () -> Void
+        onSave: @escaping (String) -> Void
     ) -> some View {
-        alert(title, isPresented: isPresented) {
-            TextField(placeholder, text: name)
-            Button("Cancel", role: .cancel) {}
-            Button("Save", action: onSave)
-        } message: {
-            if let message { Text(message) }
+        sheet(isPresented: isPresented) {
+            OBCRenameSheet(title: title, name: name, placeholder: placeholder, message: message, onSave: onSave)
         }
+    }
+}
+
+private struct OBCRenameSheet: View {
+    let title: String
+    let placeholder: String
+    let message: String?
+    let onSave: (String) -> Void
+
+    @State private var draft: String
+    @FocusState private var focused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(title: String, name: String, placeholder: String, message: String?, onSave: @escaping (String) -> Void) {
+        self.title = title
+        self.placeholder = placeholder
+        self.message = message
+        self.onSave = onSave
+        _draft = State(initialValue: name)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 10) {
+                OBCGroupedSection {
+                    TextField(placeholder, text: $draft)
+                        .font(.system(size: 16))
+                        .focused($focused)
+                        .submitLabel(.done)
+                        .onSubmit(save)
+                        .padding(16)
+                        .accessibilityIdentifier("rename.field")
+                }
+                if let message {
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundStyle(OBCTheme.inkSoft)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .padding(20)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(OBCTheme.parchment.ignoresSafeArea())
+            .navigationTitle(title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .accessibilityIdentifier("rename.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: save)
+                        .fontWeight(.semibold)
+                        .accessibilityIdentifier("rename.save")
+                }
+            }
+            .onAppear { focused = true }
+        }
+        .tint(OBCTheme.tint)
+        .presentationDetents([.height(message == nil ? 190 : 220)])
+    }
+
+    private func save() {
+        onSave(draft)
+        dismiss()
     }
 }
 

@@ -24,7 +24,6 @@ public struct RouteDetailView: View {
     private let quietRows: AnyView?
 
     @State private var renameShown = false
-    @State private var renameDraft = ""
     @State private var deleteConfirmShown = false
     @State private var waypointsExpanded = false
     @State private var mapShown = false
@@ -157,12 +156,12 @@ public struct RouteDetailView: View {
         #else
         .sheet(isPresented: $mapShown) { trackMapCover }
         #endif
-        .obcRenameAlert(
+        .obcRenameSheet(
             renameTitle,
             isPresented: $renameShown,
-            name: $renameDraft,
+            name: model.name,
             onSave: {
-                if model.rename(to: renameDraft) { onRename?(model.name) }
+                if model.rename(to: $0) { onRename?(model.name) }
             }
         )
         .task { model.start() }
@@ -236,7 +235,6 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.title")
                 if model.isRenamable {
                     Button {
-                        renameDraft = model.name
                         renameShown = true
                     } label: {
                         Image(systemName: "pencil")
