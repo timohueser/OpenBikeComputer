@@ -168,7 +168,7 @@ A route object's payload is exactly the bytes of an OBCR file
 ([`OBCR_Spec.md`](OBCR_Spec.md)); the device stores and serves it verbatim. An update package's
 payload is exactly the bytes of an OBCU container ([`OBCU_Spec.md`](OBCU_Spec.md) §1).
 
-### 7.2 `ride` — ride object v3
+### 7.2 `ride` — ride object v4
 
 A ride payload is the sample stream the device recorded, followed by one fixed summary footer.
 There is no leading header and no finish-time conversion. Protocol-v4 `GET` serves the stored bytes
@@ -187,14 +187,14 @@ Each sample is a 20-byte record:
 | 17 | 1 | cadence, rpm; `0xFF` = absent/stale |
 | 18 | 2 | power, watts; `0xFFFF` = absent/stale |
 
-The final 84 bytes are the summary footer:
+The final 144 bytes are the summary footer:
 
 | Offset | Size | Field |
 | --: | --: | :-- |
 | 0 | 4 | magic `OBRF` (`4F 42 52 46`) |
-| 4 | 1 | version, `3` |
+| 4 | 1 | version, `4` |
 | 5 | 1 | UTF-8 name length, `0..=48` |
-| 6 | 2 | footer length, `84` |
+| 6 | 2 | footer length, `144` |
 | 8 | 4 | start time, Unix seconds |
 | 12 | 4 | total distance, metres |
 | 16 | 4 | moving time, seconds |
@@ -208,12 +208,28 @@ The final 84 bytes are the summary footer:
 | 32 | 2 | average power; `0xFFFF` = absent |
 | 34 | 2 | maximum power; `0xFFFF` = absent |
 | 36 | 48 | UTF-8 name followed by zero padding |
+| 84 | 8 | trip key, `u64`; `0` = no trip |
+| 92 | 1 | day index, 0-based |
+| 93 | 1 | day count |
+| 94 | 1 | bike type, `0..=3` (Road, Gravel, MTB, Touring) |
+| 95 | 1 | UTF-8 trip name length, `0..=48` |
+| 96 | 48 | UTF-8 trip name followed by zero padding |
+
+- **Bike type.** The bike type that is current when the ride starts
+  ([`OBCR_Spec.md`](OBCR_Spec.md) §1.2). The phone can change its own copy. The device copy does
+  not change.
+- **Trip.** A ride is on a trip when it starts on a day of a stored trip (§7.7). The footer holds the trip key, the index of that day and the trip's day
+  count. The rider sees Day 1 for day index 0. A reader requires `day index < day count`.
+- **Trip name.** The device writes the name of the trip when the ride is saved, so the name stays
+  after the trip is deleted. It is empty when the device no longer holds a trip with that key.
+- **No trip.** With trip key 0, the day index, the day count and every trip-name byte are zero.
 
 The footer is last because the flat-store payload pages are write-once. A list row reads precisely
-84 bytes at `object length − 84`; a full reader requires `object length == point_count × 20 + 84`.
+144 bytes at `object length − 144`; a full reader requires
+`object length == point_count × 20 + 144`. A reader rejects any other footer length.
 Finalize appends this footer and performs one store commit that publishes the final length and CRC
-and clears `RECORDING`. `specs/vectors/ride-v3.bin` pins three sample records — including sensor
-sentinels and segment flags — and the footer.
+and clears `RECORDING`. `specs/vectors/ride-v4.bin` pins three sample records — including sensor
+sentinels and segment flags — and a footer on a trip day.
 
 ### 7.3 `config` — the Config object
 

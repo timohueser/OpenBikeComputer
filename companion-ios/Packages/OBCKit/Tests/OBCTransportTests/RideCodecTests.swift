@@ -2,7 +2,7 @@ import XCTest
 import OBCDomain
 @testable import OBCTransport
 
-/// Ride-object v3 round-trip, quantization contract, and malformed-input behavior.
+/// Ride-object round-trip, quantization contract, and malformed-input behavior.
 final class RideCodecTests: XCTestCase {
     /// A ride whose values sit exactly on the wire grid (whole seconds/metres,
     /// 1e-7° coordinates, cm/s speed) so the round-trip compares exactly.
@@ -25,7 +25,8 @@ final class RideCodecTests: XCTestCase {
             id: RideID(id), name: "Kettle Moraine Loop", date: start,
             distanceMeters: 58_200, movingTime: 10_260,
             averageSpeedMps: 5.67, climbMeters: 812,
-            trackPreview: TrackPreview.normalizing(points.map(\.coordinate))
+            trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
+            bikeType: .mtb, trip: RideTrip(key: 7, dayIndex: 2, dayCount: 4, name: "Kettle Moraine")
         )
         return Ride(summary: summary, points: points)
     }

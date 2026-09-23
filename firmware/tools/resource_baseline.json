@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 57544,
+        "app": 57576,
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -52,7 +52,7 @@
         "semmc_driver": 52,
         "flat_store": 10152,
         "flat_requests": 3064,
-        "flat_ride_delta": 500,
+        "flat_ride_delta": 560,
         "flat_catalog_uploads": 740,
         "flat_map_read": 76,
         "flat_route_read": 48,

@@ -16,6 +16,10 @@ fn point(t_ms: u32) -> TrackPoint {
 }
 fn context() -> RideContinuation {
     RideContinuation {
+        origin: obc_app::RideOrigin {
+            bike: obc_formats::bike::BikeType::Mtb,
+            trip: obc_formats::ride::TripRef::new(7, 0, 2),
+        },
         ridden_m: 200.,
         moving_m: 180.,
         moving_s: 10.,
@@ -45,6 +49,9 @@ fn stats() -> RideStats {
         avg_cadence: Some(80),
         avg_power: Some(200),
         max_power: Some(250),
+        bike: obc_formats::bike::BikeType::Road,
+        trip: None,
+        trip_name: obc_formats::ride::Name::EMPTY,
     }
 }
 fn seed(owner: &HostStore) -> EntryMeta {

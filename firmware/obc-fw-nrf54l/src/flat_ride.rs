@@ -228,7 +228,7 @@ impl Recorder {
                     // The store proved a durable checkpoint, but it is not a sample or footer
                     // boundary. Keep the RECORDING object intact and loud, and never append to or
                     // publish bytes whose format this executor cannot prove.
-                    defmt::error!("flat ride: recovered payload is not a v3 sample/footer boundary");
+                    defmt::error!("flat ride: recovered payload is not a ride sample/footer boundary");
                     faulted(recovered.id, recovered.revision, RideDamage::Payload)
                 }
             }
@@ -331,7 +331,7 @@ impl Recorder {
         }
         Some(match effect? {
             RecorderEffect::Checkpoint { token } => {
-                let stats = app.recorder.ride_stats();
+                let stats = app.ride_stats();
                 let continuation = app.recorder.checkpoint_context();
                 match self.checkpoint(now, &stats, continuation).await {
                     Ok(status) => RecorderOutcome::Checkpointed { token, status },
@@ -342,7 +342,7 @@ impl Recorder {
                 // Recorder has already drained the samples through acknowledged appends, and the
                 // footer facts come from Recorder, which stamped its wall-clock anchor as it minted
                 // this close. The save name is not read at all: it was frozen when the ride opened.
-                let stats = app.recorder.ride_stats();
+                let stats = app.ride_stats();
                 match self.finalize(&stats).await {
                     RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                     RideClose::Nothing => {

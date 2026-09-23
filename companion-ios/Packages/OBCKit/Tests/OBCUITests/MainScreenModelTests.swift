@@ -457,6 +457,9 @@ final class MainScreenModelTests: XCTestCase {
 
         model.renameRide(model.rides[1].id, to: "Sunday Espresso Spin")
         XCTAssertEqual(model.rides[1].name, "Sunday Espresso Spin")
+
+        model.setRideBikeType(model.rides[1].id, to: .mtb)
+        XCTAssertEqual(model.rides[1].bikeType, .mtb)
     }
 
     func testAddImportedRouteLandsOnTopOfPlannedAndKeepsItsDetail() async throws {

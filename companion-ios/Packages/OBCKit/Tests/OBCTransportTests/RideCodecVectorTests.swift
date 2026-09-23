@@ -3,8 +3,8 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// The single cross-language ride-object contract: recorded 20-byte samples plus the v3 footer.
-struct RideCodecV3Tests {
+/// The single cross-language ride-object contract: recorded 20-byte samples plus the v4 footer.
+struct RideCodecVectorTests {
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -15,12 +15,12 @@ struct RideCodecV3Tests {
         .appendingPathComponent("specs/vectors")
 
     private func vector() throws -> Data {
-        let url = Self.vectorsDir.appendingPathComponent("ride-v3.bin")
+        let url = Self.vectorsDir.appendingPathComponent("ride-v4.bin")
         return try #require(FileManager.default.contents(atPath: url.path),
-                            "fixture ride-v3.bin missing at \(url.path)")
+                            "fixture ride-v4.bin missing at \(url.path)")
     }
 
-    @Test func decodesAndReencodesTheV3VectorExactly() throws {
+    @Test func decodesAndReencodesTheVectorExactly() throws {
         let bytes = try vector()
         #expect(bytes.count == 3 * RideObjectCodec.sampleLength + RideObjectCodec.footerLength)
         let ride = try RideObjectCodec.decode(bytes, id: RideID("42"))
@@ -36,6 +36,9 @@ struct RideCodecV3Tests {
         #expect(summary.avgCadence == 85)
         #expect(summary.avgPower == 210)
         #expect(summary.maxPower == 480)
+        #expect(summary.bikeType == .gravel)
+        #expect(summary.trip == RideTrip(key: 0x0123_4567_89AB_CDEF, dayIndex: 1, dayCount: 3,
+                                         name: "Alpen Traverse"))
 
         #expect(ride.points.count == 3)
         #expect(ride.points.map(\.segmentStart) == [true, false, true])
@@ -52,10 +55,14 @@ struct RideCodecV3Tests {
 
     @Test func rejectsBadFooterAndReservedSampleFlags() throws {
         let bytes = try vector()
-        var badFooter = bytes
-        badFooter[badFooter.count - RideObjectCodec.footerLength + 31] = 1
-        #expect(throws: (any Error).self) {
-            try RideObjectCodec.decode(badFooter, id: RideID("x"))
+        let footer = bytes.count - RideObjectCodec.footerLength
+        // Reserved byte, a day past the count, a bike type past the four, trip-name padding.
+        for (offset, value) in [(31, 1), (92, 3), (94, 4), (143, 1)] as [(Int, UInt8)] {
+            var badFooter = bytes
+            badFooter[footer + offset] = value
+            #expect(throws: (any Error).self) {
+                try RideObjectCodec.decode(badFooter, id: RideID("x"))
+            }
         }
 
         var badFlags = bytes

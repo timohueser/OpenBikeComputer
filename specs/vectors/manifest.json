@@ -186,19 +186,24 @@
       ]
     },
     "track-export.gpx": {
-      "format": "GPX 1.1 export of ride-v3.bin (obc_route::track_to_gpx)",
+      "format": "GPX 1.1 export of ride-v4.bin (obc_route::track_to_gpx)",
       "byte_len": 755,
       "track_name": "Schauinsland & back",
       "segments": 2,
       "track_points": 3,
       "creator": "OpenBikeComputer",
-      "note": "the exporter accepts only a validated finished v3 ride; headerless sample arrays are rejected"
+      "note": "the exporter accepts only a validated finished ride; headerless sample arrays are rejected"
     },
-    "ride-v3.bin": {
-      "format": "ride object v3 (spec 7.2): verbatim 20-byte samples plus fixed 84-byte footer",
-      "byte_len": 144,
-      "version": 3,
+    "ride-v4.bin": {
+      "format": "ride object v4 (spec 7.2): verbatim 20-byte samples plus fixed 144-byte footer",
+      "byte_len": 204,
+      "version": 4,
       "name": "Sensor Ride",
+      "bike_type": "Gravel (1)",
+      "trip_key": "0x0123456789ABCDEF",
+      "day_index": 1,
+      "day_count": 3,
+      "trip_name": "Alpen Traverse",
       "start_time_unix": 1751460000,
       "distance_m": 12345,
       "moving_time_s": 3600,

@@ -623,7 +623,7 @@ Then, on a fixed cadence of **10 seconds**:
 
 1. The recorder lends only the points appended since the last checkpoint that returned success,
    together with the running payload CRC and resume image. The production bound is sixteen 20-byte
-   samples plus the 84-byte final footer: **404 bytes**, independent of the durable tail length.
+   samples plus the 144-byte final footer: **464 bytes**, independent of the durable tail length.
 2. Storage reads the previous logical slot in bounded chunks, folds its CRC while copying it into the
    next slot, appends the lent bytes, and zero-pads to 16,384 bytes. A bad source CRC refuses the
    checkpoint before its header is written. If the reconstructed tail is shorter than 16,384 bytes,
@@ -820,7 +820,7 @@ defines it, not here.
 | Ride journal headers | 16 × 512-byte records, each isolated in one 16 KiB page |
 | Ride journal tail per slot | 16,384 bytes |
 | Ride checkpoint cadence | 10 s |
-| Ride recorder append buffer | 404 bytes (16 × 20-byte samples + 84-byte footer) |
+| Ride recorder append buffer | 464 bytes (16 × 20-byte samples + 144-byte footer) |
 | Ride reserve at start | 32 MiB (32 extents at the 1 MiB minimum) |
 | Rides recording at once | 1 |
 | Retained previous revisions per object | 1 |
