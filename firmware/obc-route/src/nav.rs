@@ -1133,7 +1133,7 @@ fn fill_segment(
 
 /// How many equal pieces a segment is split into to keep every emitted step at or under
 /// [`ELE_SAMPLE_STEP_M`]. Capped at [`ELE_MAX_DENSIFY_STEPS`].
-pub(crate) fn densify_steps(dist_m: f32) -> u32 {
+fn densify_steps(dist_m: f32) -> u32 {
     // `is_none_or` states the NaN case: a length that is not a number densifies nothing.
     if dist_m.partial_cmp(&ELE_SAMPLE_STEP_M).is_none_or(|o| o != core::cmp::Ordering::Greater) {
         return 1;
@@ -1143,7 +1143,7 @@ pub(crate) fn densify_steps(dist_m: f32) -> u32 {
 
 /// The point `k/den` of the way from `a` to `b`, interpolated in microdegrees. Integer-only, so it
 /// is deterministic across hosts; the truncation is at most 1 microdegree, about 11 cm.
-pub(crate) fn lerp_udeg(a: (i32, i32), b: (i32, i32), k: u32, den: u32) -> (i32, i32) {
+fn lerp_udeg(a: (i32, i32), b: (i32, i32), k: u32, den: u32) -> (i32, i32) {
     let f = |s: i32, e: i32| {
         let d = i64::from(e) - i64::from(s);
         (i64::from(s) + d * i64::from(k) / i64::from(den)) as i32

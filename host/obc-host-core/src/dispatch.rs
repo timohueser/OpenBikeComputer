@@ -713,6 +713,7 @@ impl HostLoop {
                                 source,
                                 &obc_formats::io::SliceSource(bytes),
                                 app.assistant_review_context().unwrap(),
+                                elev,
                             );
                             feed_routes(app, routes, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                             match preview {
@@ -965,7 +966,7 @@ impl HostLoop {
         let Some(map_fingerprint) = source.fingerprint() else { return failed(NavigatorError::SourceChanged) };
         self.sources = Some(PlanSources { map: source, map_fingerprint, original });
         if let PlannerWork::RestoreReview(source) = work {
-            return Some(self.restore_review(app, token, source, routes));
+            return Some(self.restore_review(app, token, source, routes, elev));
         }
         Some(NavigatorOutcome::Acquired { token })
     }
@@ -976,6 +977,7 @@ impl HostLoop {
         token: OperationToken<NavigatorTag>,
         source: obc_formats::obcr::RouteSourceKey,
         routes: &dyn RouteRepository,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> NavigatorOutcome {
         let failed = |error| NavigatorOutcome::Failed { token, error };
         let Some(context) = app.assistant_review_context() else { return failed(NavigatorError::SourceChanged) };
@@ -1002,7 +1004,7 @@ impl HostLoop {
         } else if target.validate_destination(&bytes, context.profile).is_err() {
             return failed(NavigatorError::Unavailable);
         }
-        let preview = match obc_app::navigator::ReviewedRoute::read(fingerprint, &bytes, context) {
+        let preview = match obc_app::navigator::ReviewedRoute::read(fingerprint, &bytes, context, elev) {
             Ok(preview) => preview,
             Err(error) => return failed(error),
         };

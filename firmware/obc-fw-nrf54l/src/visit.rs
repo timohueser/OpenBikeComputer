@@ -191,7 +191,7 @@ impl Executor {
                 None
             }
             NavigatorEffect::Acquire { work: PlannerWork::RestoreReview(source), .. } => {
-                self.restore(source, token, app, store, guard)
+                self.restore(source, token, app, store, guard, elev)
             }
             NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. } => {
                 self.validated = None;
@@ -268,6 +268,7 @@ impl Executor {
         app: &mut App,
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         self.validated = None;
         self.token = Some(token);
@@ -328,7 +329,7 @@ impl Executor {
             } else {
                 return Err(NavigatorError::Unavailable);
             }
-            let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, bytes, context)?;
+            let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, bytes, context, elev)?;
             let shape = crate::assistant::preview_shape(g.sources().1, bytes).map_err(|_| NavigatorError::Store)?;
             Ok::<_, NavigatorError>((preview, shape))
         });
@@ -423,7 +424,7 @@ impl Executor {
     ) -> Option<NavigatorOutcome> {
         if let Phase::Await(ticket, after) = self.phase {
             let answer = writer.try_result(ticket, reply)?;
-            return self.answered(after, answer, app, store, guard);
+            return self.answered(after, answer, app, store, guard, elev);
         }
         if self.release.is_some() {
             return self.cleanup(app, store, writer, guard, reply);
@@ -604,6 +605,7 @@ impl Executor {
         app: &mut App,
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let releasing = self.release.is_some();
         match (after, answer) {
@@ -710,7 +712,7 @@ impl Executor {
                         return self.fail(NavigatorError::DurabilityUnknown);
                     };
                     let preview = store.with_source(id, Some(Revision(1)), |source| {
-                        let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context)?;
+                        let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context, elev)?;
                         let display = if ranked {
                             None
                         } else {

@@ -74,50 +74,19 @@ impl VisitCosts {
     #[inline(never)]
     pub fn read(src: &dyn obc_formats::io::ByteSource, arrival: [u32; 2]) -> Result<Self, Error> {
         use crate::facts::FactsAccumulator;
-        use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
-        use obc_formats::obcr::CHUNK_META_LEN;
-        let h = read_header(src)?;
-        if h.chunk_count == 0
-            || h.chunk_count as usize > crate::MAX_ROUTE_CHUNKS
-            || arrival[0] > arrival[1]
-            || arrival[1] > h.total_distance_m
-        {
+        let h = crate::reader::read_header(src)?;
+        if arrival[0] > arrival[1] || arrival[1] > h.total_distance_m {
             return Err(Error::BadOffset);
         }
         let mut full = FactsAccumulator::new(0, None, 0, h.total_distance_m);
         let mut to_stop = FactsAccumulator::new(0, None, arrival[0], arrival[1]);
-        let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        let mut previous = None;
-        let mut count = 0u32;
-        for k in 0..h.chunk_count {
-            let offset = k
-                .checked_mul(CHUNK_META_LEN as u32)
-                .and_then(|n| h.index_offset.checked_add(n))
-                .ok_or(Error::BadOffset)?;
-            let mut bytes = [0; CHUNK_META_LEN];
-            src.read_at(u64::from(offset), &mut bytes)?;
-            let meta = parse_chunk_meta(&bytes, src.len())?;
-            if meta.point_count == 0 {
-                return Err(Error::BadOffset);
-            }
-            points.clear();
-            decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
-            if let Some(last) = previous {
-                let first = points[0];
-                if last != (first.lon, first.lat, first.ele) {
-                    return Err(Error::BadOffset);
-                }
-            }
-            for &point in points.iter().skip(usize::from(k > 0)) {
-                full.push(point, &mut |_| {});
-                to_stop.push(point, &mut |_| {});
-                count += 1;
-                previous = Some((point.lon, point.lat, point.ele));
-            }
-        }
+        crate::reader::for_each_stored_point(src, &h, |point| {
+            full.push(point, &mut |_| {});
+            to_stop.push(point, &mut |_| {});
+        })?;
         let full = full.finish(h.total_distance_m)?;
         let to_stop = to_stop.finish(h.total_distance_m)?;
-        if count != h.point_count || full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
+        if full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
             return Err(Error::BadOffset);
         }
         Ok(Self {

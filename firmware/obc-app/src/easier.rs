@@ -237,22 +237,23 @@ impl App {
             self.cancel_easier();
             self.easier.phase = Phase::after(error);
         }
+        // The executor binds `original` when it measures the original. With no complete terrain no
+        // goal can use a candidate, so the first trial stops there.
+        if self.easier.phase == Phase::Trials
+            && self.easier.context.is_some_and(|c| c.original.is_some())
+            && !Goal::LessClimb.evaluable(self.easier.current)
+        {
+            self.cancel_easier();
+            self.easier.phase = Phase::NoBetter;
+        }
         match self.easier.phase {
             Phase::Trials | Phase::Rebuild => match self.assistant_review_status() {
                 ReviewStatus::Preview => {
                     let Some(preview) = self.assistant_preview() else { return };
-                    let Some(facts) = preview.visit_costs else {
+                    let Some(costs) = preview.easier else {
                         self.cancel_easier();
                         self.easier.phase = Phase::Failed;
                         return;
-                    };
-                    let costs = Costs {
-                        distance_m: preview.distance_m,
-                        ascent_m: preview.ascent_m,
-                        rough_m: facts.rough_m,
-                        unknown_m: facts.unknown_m,
-                        elevation_complete: facts.complete_elevation,
-                        surface_attributed: true,
                     };
                     self.easier.context = self.assistant_review_context();
                     if self.easier.phase == Phase::Rebuild {
@@ -323,6 +324,8 @@ impl App {
                     }
                     if let Some(i) = self.easier.choices.iter().position(Option::is_some) {
                         self.easier.selected = i as u8;
+                        // A trial's plan error no longer describes what follows.
+                        self.easier.failure = None;
                         self.start_easier_trial(self.easier.choices[i].unwrap().objective);
                         self.easier.phase = Phase::Rebuild;
                     } else if self.easier.failure.is_some() {
@@ -361,6 +364,12 @@ impl App {
                     }
                 } else {
                     self.easier.review = true;
+                }
+            }
+            crate::Gesture::Press if self.easier.phase == Phase::Stale => {
+                if let Some(context) = self.easier.context {
+                    // A refusal keeps the stale page, so a later press can retry.
+                    let _ = self.open_easier_routes(context.map);
                 }
             }
             crate::Gesture::Step(delta) if self.easier.phase == Phase::Ready && !self.easier.review => {
