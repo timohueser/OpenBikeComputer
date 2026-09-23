@@ -224,20 +224,23 @@ pub(crate) const DATE_MONTHS: [Msg; 12] = [
     Msg::DateDec,
 ];
 
+/// The seven uppercase weekday-abbreviation catalog keys, Monday-first: the order
+/// [`weekday_from_ymd`](obc_reader::weekday_from_ymd) returns.
+const DATE_WEEKDAYS: [Msg; 7] =
+    [Msg::DateMon, Msg::DateTue, Msg::DateWed, Msg::DateThu, Msg::DateFri, Msg::DateSat, Msg::DateSun];
+
+/// Append `d` as the weekday and the short date, for example `TUE 30 SEP`.
+pub(crate) fn write_date_weekday<const N: usize>(s: &mut heapless::String<N>, d: &DateTime, lang: Language) {
+    let wd = obc_reader::weekday_from_ymd(d.year, d.month, d.day) as usize;
+    let month = t(DATE_MONTHS[(d.month.clamp(1, 12) - 1) as usize], lang);
+    let _ = write!(s, "{} {} {}", t(DATE_WEEKDAYS[wd], lang), d.day, month);
+}
+
 /// Append a unix instant as the short day-first date `D MON` (UTC), with no leading zero. It is
 /// day-first in every language.
 pub(crate) fn write_date_short<const N: usize>(s: &mut heapless::String<N>, unix: u32, lang: Language) {
     let d = DateTime::from_unix(unix);
     let _ = write!(s, "{} {}", d.day, t(DATE_MONTHS[(d.month.clamp(1, 12) - 1) as usize], lang));
-}
-
-/// A unix instant as a compact `YYYY-MM-DD` (UTC). Local time would need the app's UTC offset
-/// threaded in, and the date rarely differs.
-pub(crate) fn date_iso(unix: u32) -> heapless::String<12> {
-    let d = DateTime::from_unix(unix);
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{:04}-{:02}-{:02}", d.year, d.month, d.day);
-    s
 }
 
 /// A UTC offset as `±HH:MM`. The sign is always printed, so zero reads `+00:00`.
@@ -447,8 +450,9 @@ mod tests {
         let mut short: heapless::String<16> = heapless::String::new();
         write_date_short(&mut short, T, Language::En);
         assert_eq!(short.as_str(), "7 MAR", "day-first, no leading zero");
-        assert_eq!(date_iso(T).as_str(), "2026-03-07");
-        assert_eq!(date_iso(0).as_str(), "1970-01-01", "the epoch itself");
+        let mut long: heapless::String<16> = heapless::String::new();
+        write_date_weekday(&mut long, &DateTime::from_unix(T), Language::De);
+        assert_eq!(long.as_str(), "SA 7 MÄR", "a Saturday, in the language's own words");
     }
 
     #[test]

@@ -1124,6 +1124,7 @@ mod tests {
                 descent_m: 0,
                 visit_anchors_m: Some([0, stop, stop]),
                 visit_costs: None,
+                easier: None,
             });
             app.navigator.review.status = ReviewStatus::Preview;
             app.navigator.accept_review(

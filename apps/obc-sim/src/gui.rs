@@ -447,7 +447,7 @@ impl SimGui {
         gui.app.set_trip_progress(gui.trip_store.progress().iter().cloned());
         let join = obc_host_core::day_join(&gui.app, &gui.store, &gui.trip_store);
         gui.app.set_day_join(join);
-        gui.app.set_rides(gui.ride_store.catalog());
+        gui.app.set_rides(gui.ride_store.catalog(), gui.ride_store.trip_names());
 
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {

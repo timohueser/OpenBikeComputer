@@ -577,7 +577,7 @@ impl Demo {
         app.set_resident_frame(true);
         app.set_map_nav_graph(self.map.tables().has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
-        app.set_rides(self.rides.catalog());
+        app.set_rides(self.rides.catalog(), self.rides.trip_names());
         // Manual climb mode for both baselines: the whole demo ride is a climb, so Auto would swap
         // the opening Map for the Climb profile within the first frames.
         //

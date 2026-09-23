@@ -1143,7 +1143,8 @@
           "lat": 42.9919,
           "lon": -89.4604
         }
-      ]
+      ],
+      "bikeType": "road"
     },
     {
       "id": "libride-01",
@@ -1190,7 +1191,8 @@
           "lat": 43.5234,
           "lon": -89.2806
         }
-      ]
+      ],
+      "bikeType": "touring"
     },
     {
       "id": "libride-02",
@@ -1237,7 +1239,8 @@
           "lat": 42.9387,
           "lon": -88.8521
         }
-      ]
+      ],
+      "bikeType": "road"
     },
     {
       "id": "libride-03",
@@ -1288,7 +1291,8 @@
           "lat": 42.9693,
           "lon": -89.701
         }
-      ]
+      ],
+      "bikeType": "gravel"
     },
     {
       "id": "libride-04",
@@ -1339,7 +1343,8 @@
           "lat": 43.144,
           "lon": -89.2406
         }
-      ]
+      ],
+      "bikeType": "touring"
     },
     {
       "id": "libride-05",
@@ -1386,12 +1391,53 @@
           "lat": 43.3825,
           "lon": -89.8139
         }
-      ]
+      ],
+      "bikeType": "mtb"
+    },
+    {
+      "id": "libride-08",
+      "name": "Wildcat Mountain Again",
+      "date": "2026-06-12T07:30:00Z",
+      "distanceMeters": 71000,
+      "movingTime": 12239,
+      "averageSpeedMps": 5.8011,
+      "climbMeters": 990,
+      "track": [
+        {
+          "lat": 42.981,
+          "lon": -89.4356
+        },
+        {
+          "lat": 42.9782,
+          "lon": -89.4465
+        },
+        {
+          "lat": 42.9872,
+          "lon": -89.4613
+        },
+        {
+          "lat": 43.0021,
+          "lon": -89.4752
+        },
+        {
+          "lat": 42.9848,
+          "lon": -89.4816
+        },
+        {
+          "lat": 42.9879,
+          "lon": -89.4721
+        },
+        {
+          "lat": 42.9919,
+          "lon": -89.4604
+        }
+      ],
+      "bikeType": "road"
     },
     {
       "id": "libride-06",
       "name": "Cross-Plains Gravel",
-      "date": "2026-06-16T07:30:00Z",
+      "date": "2025-06-16T07:30:00Z",
       "distanceMeters": 36000,
       "movingTime": 6576,
       "averageSpeedMps": 5.4745,
@@ -1433,12 +1479,13 @@
           "lat": 43.5479,
           "lon": -88.6639
         }
-      ]
+      ],
+      "bikeType": "gravel"
     },
     {
       "id": "libride-07",
       "name": "Coulee Region Grinder",
-      "date": "2026-06-14T07:30:00Z",
+      "date": "2025-06-14T07:30:00Z",
       "distanceMeters": 21000,
       "movingTime": 3892,
       "averageSpeedMps": 5.3957,
@@ -1476,7 +1523,8 @@
           "lat": 42.7841,
           "lon": -89.2261
         }
-      ]
+      ],
+      "bikeType": "road"
     }
   ]
 }

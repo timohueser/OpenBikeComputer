@@ -297,7 +297,8 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         let name_row = selected.then(|| rect(40, y + 3, 184, Font::Body.line_height() as i32));
         let name = rx.marquee.fit(row_name(row, rx), 184, Font::Body, name_row);
         label(cv, &name, 40, y + 3, Font::Body, INK);
-        if row.key.distance() < rx.navigation.progress_m {
+        let passed = row.key.distance() < rx.navigation.progress_m;
+        if passed {
             label(cv, rx.t(Msg::AheadPassed), 12, y + 33, Font::Label, SUBTEXT);
         } else {
             label(
@@ -309,33 +310,51 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
                 INK,
             );
         }
-        let mut ascent = heapless::String::<20>::new();
-        if let Some(m) = row.ascent_m {
-            let _ = write!(ascent, "+{}{}", rx.settings.units.elev(m as f32) as u32, rx.settings.units.elev_label());
-        } else {
-            let _ = write!(ascent, "+?{}", rx.settings.units.elev_label());
-        }
-        label(cv, &ascent, 90, y + 33, Font::Label, INK);
         let offset = match &row.item {
             Item::Waypoint(w) => w.lateral_offset_m as i32,
             Item::Place(i) => rx.corridor.get(*i as usize).map_or(0, |p| p.offset_m),
             Item::Climb(_) => 0,
         };
-        if offset.abs() > 50 {
-            let mut s = heapless::String::<24>::new();
-            let _ = write!(
-                s,
-                "{} {}",
-                if offset < 0 { "<" } else { ">" },
-                distance(offset.unsigned_abs(), rx.settings.units)
-            );
-            cv.text(&s, Point::new(224, y + 33), Font::Label, TextAlign::Right, INK);
+        let offset = (offset.abs() > super::OFF_ROUTE_HINT_M)
+            .then(|| (distance(offset.unsigned_abs(), rx.settings.units), offset > 0));
+        if let Some((d, right)) = &offset {
+            let at = Point::new(offset_left(d), y + 33 + Font::Label.cap_mid() as i32);
+            super::poi_display::draw_side_arrow(cv, at, *right, INK);
+            cv.text(d, Point::new(FIGURE_RIGHT, y + 33), Font::Label, TextAlign::Right, INK);
+        }
+        // A climb under 5 m is noise, an unknown climb shows nothing, and the climb to a passed
+        // place means nothing.
+        if let Some(m) = row.ascent_m.filter(|m| *m >= 5 && !passed) {
+            let climb = super::vocab::fmt::elevation_short(Some(m), rx.settings.units);
+            if climb_fits(&climb, offset.as_ref().map(|(d, _)| d.as_str())) {
+                super::poi_display::draw_climb_figure(cv, CLIMB_X, y + 33, &climb);
+            }
         }
     }
     if a.has_next() {
         cv.triangle(Point::new(234, 298), Point::new(228, 290), Point::new(239, 290), WOOD);
     }
 }
+/// The climb figure's column on line 2 of a timeline row. It is 6 px clear of the widest imperial
+/// distance, and a 3-digit metric climb is 6 px clear of a 3-digit offset.
+const CLIMB_X: i32 = 90;
+/// The right edge of the offset figure on line 2.
+const FIGURE_RIGHT: i32 = 224;
+
+/// The left edge of the offset figure, which is its side arrow.
+fn offset_left(offset: &str) -> i32 {
+    use super::poi_display::{ARROW_GAP, ARROW_W};
+    FIGURE_RIGHT - obc_render::text::text_width(offset, Font::Label) as i32 - ARROW_GAP - ARROW_W
+}
+
+/// Whether the climb figure clears the offset. When both do not fit, the offset stays, because it
+/// warns that the place is not on the route.
+fn climb_fits(climb: &str, offset: Option<&str>) -> bool {
+    let climb_right =
+        CLIMB_X + super::poi_display::CLIMB_TEXT_DX + obc_render::text::text_width(climb, Font::Label) as i32;
+    offset.is_none_or(|o| climb_right + 6 <= offset_left(o))
+}
+
 fn detail(cv: &mut impl Surface, rx: &Render) {
     let a = rx.ahead;
     let Some(row) = a.rows.get(a.selected) else {
@@ -386,5 +405,37 @@ fn detail(cv: &mut impl Surface, rx: &Render) {
             }
         }
         Item::Place(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{Language, Units};
+    use obc_render::text::text_width;
+
+    /// The widest string `format` gives for any distance up to 50 km.
+    fn widest(format: impl Fn(u32) -> heapless::String<24>) -> heapless::String<24> {
+        (0..50_000).step_by(3).map(format).max_by_key(|s| text_width(s, Font::Label)).unwrap()
+    }
+
+    /// Line 2 never overprints in any unit or language: the distance or the "Passed" caption ends
+    /// before the climb and the widest offset, and the climb shows only where it clears the offset.
+    #[test]
+    fn line_two_figures_clear_each_other_in_every_unit_and_language() {
+        for units in [Units::Metric, Units::Imperial] {
+            let dist = widest(|m| distance(m, units));
+            let offset = offset_left(&dist);
+            let dist_right = 12 + text_width(&dist, Font::Label) as i32;
+            assert!(dist_right + 6 <= CLIMB_X, "{units:?}: {dist}");
+            for language in Language::ALL {
+                let passed = crate::i18n::t(Msg::AheadPassed, language);
+                assert!(12 + text_width(passed, Font::Label) as i32 + 6 <= offset, "{language:?}: {passed}");
+            }
+            let climb = super::super::vocab::fmt::elevation_short(Some(2_000), units);
+            assert!(climb_fits(&climb, None), "{units:?}: {climb} alone");
+            assert!(!climb_fits(&climb, Some(&dist)), "{units:?}: {climb} beside {dist} must give way");
+        }
+        assert!(climb_fits("120m", Some("300m")), "a metric climb shows beside a corridor offset");
     }
 }

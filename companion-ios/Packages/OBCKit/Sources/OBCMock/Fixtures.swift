@@ -429,12 +429,15 @@ private struct RideDTO: Decodable {
     let climbMeters: Double
     let payloadBytes: Int?
     let track: [GeoDTO]
+    /// A bike type name in lowercase; absent is Road.
+    let bikeType: String?
 
     var entry: RideEntry {
         let summary = RideSummary(
             id: RideID(id), name: name, date: date, distanceMeters: distanceMeters,
             movingTime: movingTime, averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
-            trackPreview: TrackPreview.normalizing(track.map(\.coordinate))
+            trackPreview: TrackPreview.normalizing(track.map(\.coordinate)),
+            bikeType: BikeType.allCases.first { $0.name.lowercased() == bikeType } ?? .road
         )
         // Fixture tracks carry no timestamps — synthesize them evenly across the
         // moving time, so the encoded payload is a plausible recorded tracklog.

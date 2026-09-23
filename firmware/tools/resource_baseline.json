@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 59488,
+        "app": 61056,
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -97,6 +97,12 @@
         "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
         "changes": "App +32 B: Navigator keeps the join point Join nearest gives the next fresh ride, whether the detour-family plan is Ride to start, and the adopted splice's and route's ids, so the ride is saved under the route's name. All other named allocations and ceilings are unchanged.",
         "verification": "One head build compared with the recorded baseline. Board guards passed: 311,576 B linked resident, residual main stack 47,848 B. No base rebuild or device flash."
+      },
+      "_easier_allocation_measurement": {
+        "source_commit": "claude/ra-easier-gpx (PR #2112), merged with develop",
+        "build": "the embedded CI job's resource report on that head (App 59,512 B)",
+        "changes": "App +24 B: the reviewed route keeps the easier candidate's costs, measured at the same stations as the original. All other named allocations and ceilings are unchanged.",
+        "verification": "No local board build: the build host is short of disk. One head build compared with the recorded baseline."
       },
       "_ahead_query_allocation_measurement": {
         "source_commit": "ee00d734f on claude/ra-ahead-query-perf, merged with develop",
