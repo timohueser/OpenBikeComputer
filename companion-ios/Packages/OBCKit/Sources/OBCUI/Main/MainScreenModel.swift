@@ -575,7 +575,7 @@ public final class MainScreenModel {
     private func currentTripObject(for trip: Trip) -> TripObjectCodec.Trip? {
         let ids = (0..<trip.dayCount).compactMap { scopedDayCopy(trip, day: $0)?.link.objectID }
         guard !ids.isEmpty, ids.count == trip.dayCount else { return nil }
-        return trip.tripObject(dayObjectIDs: ids)
+        return trip.tripObject(days: dayRoutes(of: trip), dayObjectIDs: ids)
     }
 
     /// The CRC of the trip object an upload would send now. A trip without a complete set of
@@ -981,7 +981,7 @@ public final class MainScreenModel {
             trip: trip, isSplitMode: isSplitMode, finder: stopFinder, placeName: placeName
         ) { [weak self] edited in
             guard let self, var current = self.trip(id) else { return }
-            current.replaceDayEnds(from: edited)
+            current.replaceDays(from: edited)
             self.saveEditedTrip(current)
             self.nameDayEnds(id)
         }
