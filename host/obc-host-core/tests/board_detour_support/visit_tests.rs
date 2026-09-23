@@ -37,21 +37,17 @@ impl VisitHarness {
             now: 0,
             catalog: None,
         };
-        this.pass();
+        // The catalog scope and a matched fix are what a visit request needs.
+        struct Here;
+        impl obc_ports::LocationSource for Here {
+            fn poll(&mut self) -> Option<obc_ports::Fix> {
+                Some(obc_ports::Fix::at(500_000, 500_000))
+            }
+        }
+        for _ in 0..8 {
+            this.pass_with(&mut Here, true);
+        }
         let map = flat_store::planner_map_key(this.h.store);
-        let context = ReviewContext {
-            purpose: ReviewPurpose::Visit,
-            map,
-            store: StoreIdentity::from_bytes(map.store),
-            original: flat_store::route_fingerprint(this.h.store, 1),
-            origin: (500_000, 500_000),
-            progress_m: 0,
-            occurrence: 0,
-            required_anchors_m: [0; 3],
-            profile: obc_route::BikeType::Road,
-            facts_policy: REVIEW_FACTS_POLICY,
-            unresolved_avoidance: false,
-        };
         let target = obc_route::visit::VisitTarget {
             map,
             display: (if mapped { 500_000 } else { 499_500 }, 510_000),
@@ -65,8 +61,18 @@ impl VisitHarness {
                 }),
             },
         };
-        assert!(this.h.app.plan_visit(target, context));
+        this.h.app.request_visit(target, "Water").unwrap();
         this
+    }
+    /// The request's frozen inputs with its original bound, for a test that plans another
+    /// review from them. The review is cancelled and settled on return.
+    fn bound_context(&mut self) -> ReviewContext {
+        self.pass();
+        let context = self.h.app.assistant_review_context().unwrap();
+        assert!(context.original.is_some());
+        self.h.app.cancel_assistant();
+        self.settle(ReviewStatus::Idle);
+        context
     }
     fn pass(&mut self) {
         self.pass_with(&mut NoFix, false);
@@ -89,9 +95,15 @@ impl VisitHarness {
                         }
                     }
                     CatalogEffect::RemoveOrphanReviews { token } => {
-                        let batch = flat_store::remove_routes_batch(self.h.store, self.h.app.orphan_reviews());
-                        if !batch.is_empty() {
-                            self.h.store.commit(&batch).unwrap();
+                        let heads = flat_store::route_heads(self.h.store, self.h.app.orphan_reviews());
+                        if !heads.is_empty() {
+                            let ticket = self
+                                .h
+                                .writer
+                                .try_call(flat_store::Request::RemoveRoutes { heads }, self.h.reply)
+                                .unwrap();
+                            self.h.writer.complete();
+                            assert!(self.h.writer.try_result(ticket, self.h.reply).unwrap().is_ok());
                         }
                         CatalogOutcome::OrphanReviewsRemoved { token }
                     }
@@ -251,10 +263,8 @@ fn find_ranks_from_leg_searches_without_touching_the_card() {
     }
     for accepted in [false, true] {
         let mut h = VisitHarness::new();
-        let mut context = h.h.app.assistant_review_context().unwrap();
         let target = h.h.app.assistant_visit_target().unwrap();
-        h.h.app.cancel_assistant();
-        h.settle(ReviewStatus::Idle);
+        let mut context = h.bound_context();
         if accepted {
             context.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
             h.h.app.plan_assistant(
@@ -471,8 +481,7 @@ fn near_place_anchor_retains_prefix_and_uses_only_two_legs() {
 fn easier_uses_shared_board_owner_and_releases_each_leg_without_adding_avoidance() {
     for objective in obc_route::nav::Objective::TRIALS {
         let mut h = VisitHarness::new();
-        let mut context = h.h.app.assistant_review_context().unwrap();
-        h.h.app.cancel_assistant();
+        let mut context = h.bound_context();
         context.purpose = ReviewPurpose::Easier(objective);
         h.h.app.plan_assistant(obc_app::NavRequest::new(context.origin, (520_000, 500_000), "Easier"), context);
         h.settle(ReviewStatus::Preview);
@@ -501,8 +510,7 @@ fn easier_terminal_anchor_at_the_last_required_coordinate_finishes_without_anoth
     let mut sink = obc_host_core::VecSink::default();
     obc_route::gpx_to_obcr(&SliceSource(gpx), "Terminal return", &mut sink).unwrap();
     let mut h = VisitHarness::with_route(sink.bytes());
-    let mut context = h.h.app.assistant_review_context().unwrap();
-    h.h.app.cancel_assistant();
+    let mut context = h.bound_context();
     context.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
     h.h.app.plan_assistant(obc_app::NavRequest::new(context.origin, (530_000, 500_000), "Easier"), context);
     h.settle(ReviewStatus::Preview);

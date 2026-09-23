@@ -420,22 +420,25 @@ impl HostStore {
         Ok(entries)
     }
 
-    /// Remove several route heads in one commit. A head that moved is skipped, not refused.
+    /// Remove several candidate route heads in one commit. A head that moved, that is flagged, or
+    /// that an accepted journey still names is skipped, not refused.
     pub(crate) fn remove_routes(&self, heads: &[(ObjectId, Revision)]) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
+        let current: Vec<_> = store
+            .entries()
+            .filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head())
+            .map(|entry| (entry.id, entry.revision, entry.flags))
+            .collect();
+        if !store.entries_ok() {
+            return Err(StoreError::Media);
+        }
         let mut batch = Vec::new();
         for &(id, revision) in heads {
-            let current = store.entries().any(|entry| {
-                entry.id == id
-                    && entry.revision == revision
-                    && entry.kind == ObjectKind::Route
-                    && entry.flags.is_route_head()
-            });
-            if !store.entries_ok() {
-                return Err(StoreError::Media);
-            }
-            if current {
+            let head = current
+                .iter()
+                .any(|&(head, at, flags)| head == id && at == revision && !flags.has(EntryFlags::ASSISTANT_ACCEPTED));
+            if head && obc_storage::flat::metadata::check_route_change(store, id).is_ok() {
                 batch.push(Mutation::Remove { id, revision });
             }
         }

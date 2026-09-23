@@ -65,9 +65,12 @@ impl NavPlan {
         self.sink.bytes()
     }
 
-    /// The graph coordinate the goal snapped to, once the search has run.
-    pub fn goal(&self) -> (i32, i32) {
-        self.planner.goal()
+    /// The graph coordinates the endpoints snapped to, once the search has run.
+    pub fn snapped_start(&self) -> (i32, i32) {
+        self.planner.snapped_start()
+    }
+    pub fn snapped_goal(&self) -> (i32, i32) {
+        self.planner.snapped_goal()
     }
 
     /// The plan's cumulative graph-chunk and route-index cache counters.

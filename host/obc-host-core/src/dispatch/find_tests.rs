@@ -344,6 +344,12 @@ fn run_find(scenario: Scenario) {
                 assert_eq!(acquisitions, 1, "the pressed result composes its route");
                 let preview = app.assistant_preview().unwrap();
                 assert_eq!(routes.ids().len(), 2);
+                app.prepare_find(Some(&map.reader()), pass_route);
+                let (list, review) = (app.find_place_costs(0).unwrap(), app.find_review_costs().unwrap());
+                assert!(review.arrival_m.abs_diff(list.arrival_m) <= 5, "list {list:?} review {review:?}");
+                assert!(review.added_m.zip(list.added_m).is_none_or(|(a, b)| a.abs_diff(b) <= 5));
+                assert_eq!(review.added_m.is_some(), list.added_m.is_some());
+                assert_eq!(review.arrival_ascent_m.is_some(), list.arrival_ascent_m.is_some());
                 assert!(!app.assistant_preview_shape().is_empty(), "published shape is token-bound and readable");
                 assert!(
                     routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),

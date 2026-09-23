@@ -36,12 +36,14 @@ impl LegMeasure {
         };
         match self.outbound {
             None if self.context.purpose == ReviewPurpose::Visit => {
-                self.leg = Self::leg(self.leg.goal(), self.from, self.context);
-                self.outbound = Some(stats);
+                self.outbound = Some(stats.joined_at(self.from, self.leg.snapped_start()));
+                self.leg = Self::leg(self.leg.snapped_goal(), self.from, self.context);
                 Ok(None)
             }
             None => Ok(Some(VisitLegs { outbound: stats, back: None })),
-            Some(outbound) => Ok(Some(VisitLegs { outbound, back: Some(stats) })),
+            Some(outbound) => {
+                Ok(Some(VisitLegs { outbound, back: Some(stats.joined_at(self.from, self.leg.snapped_goal())) }))
+            }
         }
     }
 }

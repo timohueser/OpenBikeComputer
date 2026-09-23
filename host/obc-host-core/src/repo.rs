@@ -137,9 +137,6 @@ pub trait RouteRepository {
     fn pin_active(&self) -> Option<RouteLease> {
         None
     }
-    fn pin_review(&self, _source: obc_formats::obcr::RouteSourceKey) -> Option<RouteLease> {
-        None
-    }
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
     /// even under an unchanged index — a re-route rewrites the nav bytes beneath the same catalog slot.
     fn invalidate_active(&mut self);

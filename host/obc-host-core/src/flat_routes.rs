@@ -394,13 +394,6 @@ impl RouteRepository for FlatRouteStore {
     fn active_source(&self) -> Option<&dyn ByteSource> {
         self.active.as_ref().map(|s| s as &dyn ByteSource)
     }
-    fn pin_review(&self, source: obc_formats::obcr::RouteSourceKey) -> Option<crate::RouteLease> {
-        if self.store_scope()?.store.bytes() != source.store {
-            return None;
-        }
-        let source = self.owner.open(ObjectId(source.object), Revision(source.revision)).ok()?;
-        source.is_current().then_some(crate::RouteLease::Flat(source))
-    }
     fn invalidate_active(&mut self) {
         self.active = None;
     }

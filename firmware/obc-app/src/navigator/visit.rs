@@ -387,19 +387,9 @@ impl crate::App {
         self.navigator.visit.needs_bind = false;
         true
     }
-    /// Place queries supply a map-bound approach or an ordinary coordinate destination.
-    /// No active route means a direct destination, with no implied continuation.
-    pub fn plan_visit(&mut self, target: VisitTarget, mut context: ReviewContext) -> bool {
-        context.purpose = if context.original.is_some() { ReviewPurpose::Visit } else { ReviewPurpose::Destination };
-        context.required_anchors_m = [context.progress_m; 3];
-        self.plan_place(target, context, context.origin, false)
-    }
     /// Measure a candidate's legs for the Find list: from `from` on the route to the place and,
     /// for a visit, back again. No route is composed and no source is bound.
     pub fn measure_visit(&mut self, target: VisitTarget, context: ReviewContext, from: (i32, i32)) -> bool {
-        self.plan_place(target, context, from, true)
-    }
-    fn plan_place(&mut self, target: VisitTarget, context: ReviewContext, from: (i32, i32), measure: bool) -> bool {
         if self.navigator.active_visit()
             || self.navigator.review.status == ReviewStatus::Unresolved
             || self.navigator.review.status == ReviewStatus::Planning
@@ -414,7 +404,7 @@ impl crate::App {
         };
         self.navigator.visit = VisitState::new();
         self.navigator.visit.target = Some((target.metadata, target.display));
-        self.navigator.request_review(crate::NavRequest::new(from, approach, "Visit"), context, measure);
+        self.navigator.request_review(crate::NavRequest::new(from, approach, "Visit"), context, true);
         self.ui.map_dirty = true;
         self.assistant_review_status() == ReviewStatus::Planning
     }
@@ -682,6 +672,28 @@ mod tests {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Planning);
                 assert_eq!(app.assistant_review_context().unwrap().purpose, ReviewPurpose::ReturnToRoute);
                 assert!(app.assistant_preview().is_none());
+                // The connector back is reviewed against the rest of the route being ridden.
+                app.navigator.reviewed(crate::navigator::ReviewedRoute {
+                    source: PayloadFingerprint { object: 9, revision: 1, length: 1, crc: 1 },
+                    distance_m: 500,
+                    ascent_m: 0,
+                    descent_m: 0,
+                    visit_anchors_m: None,
+                    visit_costs: Some(obc_route::visit::VisitCosts {
+                        arrival_ascent_m: 0,
+                        rough_m: 0,
+                        unknown_m: 0,
+                        arrival_elevation_complete: true,
+                        complete_elevation: true,
+                        legs_m: None,
+                        legs_ascent_m: None,
+                    }),
+                });
+                app.prepare_find(None, Some(&route));
+                let costs = app.ui.find.review_costs.unwrap();
+                assert_eq!(costs.arrival_m, 500);
+                assert_eq!(costs.added_m, Some(500 - (route.total_distance_m - app.progress_m())));
+                assert_eq!(costs.added_ascent_m, None);
                 app.apply_gesture(Gesture::Back);
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
                 assert_eq!(app.assistant_checkpoint(), checkpoint);

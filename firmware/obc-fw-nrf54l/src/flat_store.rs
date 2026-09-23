@@ -379,6 +379,11 @@ pub(crate) enum Request {
         id: ObjectId,
         kind: obc_app::catalog_state::CatalogObjectKind,
     },
+    /// Remove candidate route heads in one commit; a head that moved, is flagged or is still
+    /// named by an accepted journey is skipped.
+    RemoveRoutes {
+        heads: heapless::Vec<(ObjectId, Revision), MAX_BATCH>,
+    },
     /// One atomic batch. Replies with the commit sequence.
     Commit {
         batch: heapless::Vec<Mutation, MAX_BATCH>,
@@ -1020,6 +1025,24 @@ fn serve(
             Ok(Outcome::CleanedRoute(Some(id)))
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveRoutes { heads } => {
+            let mut batch: heapless::Vec<Mutation, MAX_BATCH> = heapless::Vec::new();
+            for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+                if heads.contains(&(meta.id, meta.revision))
+                    && !meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+                    && check_route_change(store, meta.id).is_ok()
+                {
+                    let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
+                }
+            }
+            if !store.entries_ok() {
+                return Err(StoreError::Media);
+            }
+            if !batch.is_empty() {
+                store.commit(&batch)?;
+            }
+            Ok(Outcome::Done)
+        }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
@@ -1391,21 +1414,19 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
-/// One removal per current route head among `ids`, for a single commit.
-pub(crate) fn remove_routes_batch(
+/// The current heads of up to one commit's worth of `ids`, in one catalog walk.
+pub(crate) fn route_heads(
     store: &FlatStore<FlatCard>,
     ids: impl Iterator<Item = u64>,
-) -> heapless::Vec<Mutation, MAX_BATCH> {
-    let mut batch = heapless::Vec::new();
-    for id in ids {
-        let head = store
-            .entries()
-            .find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id && meta.flags.is_route_head());
-        if let Some(meta) = head.filter(|_| store.entries_ok()) {
-            let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
+) -> heapless::Vec<(ObjectId, Revision), MAX_BATCH> {
+    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = ids.collect();
+    let mut heads = heapless::Vec::new();
+    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+        if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
+            break;
         }
     }
-    batch
+    heads
 }
 
 pub(crate) fn route_fingerprint(

@@ -1434,7 +1434,12 @@ mod tests {
         ));
         if visit {
             use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
-            assert!(app.plan_visit(
+            // A visit is asked from where the rider is, on the route being followed.
+            let index = obc_route::RouteIndex::read(routes.active_source().unwrap()).unwrap();
+            let followed = obc_route::RouteReader::new(&index, routes.active_source().unwrap());
+            let mut at = OneFix(Some(Fix::at(points[0].1, points[0].0)));
+            app.tick(RideClock(500), Sensors::new(&mut at), Some(&followed));
+            app.request_visit(
                 obc_route::visit::VisitTarget {
                     map: context.map,
                     display: points[1],
@@ -1448,8 +1453,9 @@ mod tests {
                         }),
                     },
                 },
-                context
-            ));
+                "Visit",
+            )
+            .unwrap();
         } else {
             app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
         }
