@@ -380,7 +380,6 @@ triggers = [
   "firmware/obc-render/src/**",
   "apps/obc-sim/src/**",
   "firmware/obc-app/i18n/*.toml",
-  "firmware/obc-app/assets/**",
   "firmware/obc-render/fonts/**",
   "apps/obc-sim/assets/**",
   "fixtures/catalog.toml",
