@@ -10,11 +10,14 @@ public struct ElevationProfileView: View {
     var height: CGFloat
     /// False draws the bare profile, for a caller that frames it itself.
     var card: Bool
+    /// Photo ticks on the floor, each from 0 at the start to 1 at the end.
+    var ticks: [Double]
 
-    public init(samples: [Double], height: CGFloat = 80, card: Bool = true) {
+    public init(samples: [Double], height: CGFloat = 80, card: Bool = true, ticks: [Double] = []) {
         self.samples = samples
         self.height = height
         self.card = card
+        self.ticks = ticks
     }
 
     /// From an imported route's points (skips missing elevations).
@@ -87,6 +90,14 @@ public struct ElevationProfileView: View {
             )
 
             drawExtremeMarkers(in: &context, points: points, size: size)
+
+            for tick in ticks {
+                let x = inset + (size.width - 2 * inset) * CGFloat(min(max(tick, 0), 1))
+                context.fill(
+                    Path(roundedRect: CGRect(x: x - 1, y: size.height - 8, width: 2, height: 8), cornerRadius: 1),
+                    with: .color(OBCTheme.water)
+                )
+            }
         }
         .frame(height: height)
     }

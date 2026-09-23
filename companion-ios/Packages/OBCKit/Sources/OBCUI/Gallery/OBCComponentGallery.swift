@@ -15,6 +15,7 @@ public struct OBCComponentGallery: View {
     @State private var progress = 0.62
     @State private var waypointsExpanded = true
     @State private var rideLibrary = Self.sampleRideLibrary()
+    @State private var selectedPhotos: Set<String> = ["p0", "p1", "p3", "p4", "p5"]
 
     public init() {}
 
@@ -209,6 +210,28 @@ public struct OBCComponentGallery: View {
                 }
                 #endif
 
+                #if os(iOS)
+                section("Ride photos") {
+                    OBCQuietRow(systemImage: "photo.on.rectangle", title: "Add 6 photos from this ride", onOpen: {}, onDismiss: {})
+                    ElevationProfileView(
+                        samples: [220, 260, 240, 380, 330, 470, 360, 450, 390, 410], ticks: [0.12, 0.3, 0.34, 0.55, 0.8, 0.93]
+                    )
+                    RidePhotoStrip(photos: Self.samplePhotos, thumbnails: Self.sampleThumbnails) { _ in }
+                    RidePhotoGrid(
+                        picks: Self.samplePhotos.enumerated().map { index, photo in
+                            RidePhotosModel.Pick(
+                                placed: RidePhotoPlacement.Placed(
+                                    photo: photo, distanceMeters: 0, coordinate: Coordinate(latitude: 0, longitude: 0),
+                                    locationOffTrack: index == 2
+                                ),
+                                thumbnail: Self.sampleThumbnails[photo.assetID]
+                            )
+                        },
+                        selected: $selectedPhotos
+                    )
+                }
+                #endif
+
                 section("Empty / Error Layout") {
                     OBCEmptyStateView(
                         glyph: .trackTile,
@@ -290,6 +313,23 @@ public struct OBCComponentGallery: View {
         model.rides = store.rideSummaries()
         return model
     }
+
+    #if os(iOS)
+    static let samplePhotos = (0..<6).map {
+        RidePhoto(assetID: "p\($0)", takenAt: Date(timeIntervalSince1970: 1_790_000_000 + Double($0) * 1_500))
+    }
+
+    /// Sky gradients through a day, rendered once.
+    static let sampleThumbnails: [String: Data] = Dictionary(uniqueKeysWithValues: samplePhotos.enumerated().compactMap { index, photo in
+        let t = Double(index) / 5
+        let sky = LinearGradient(
+            colors: [Color(red: 0.95 - 0.2 * t, green: 0.75, blue: 0.55 + 0.3 * t), OBCTheme.water],
+            startPoint: .top, endPoint: .bottom
+        )
+        .frame(width: 160, height: 120)
+        return ImageRenderer(content: sky).uiImage?.jpegData(compressionQuality: 0.8).map { (photo.assetID, $0) }
+    })
+    #endif
 
     static let sampleWaypoints = [
         Waypoint(index: 0, name: "Ottawa Lake trailhead", note: "Start · parking & water", distanceAlongMeters: 0, coordinate: .init(latitude: 42.9, longitude: -88.6)),
