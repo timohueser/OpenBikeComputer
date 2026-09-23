@@ -279,6 +279,29 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.rideSummaries().count, 200)
     }
 
+    /// The map line is built once: a later read needs no points file, and a re-saved ride
+    /// rebuilds it from the new points.
+    func testRideMapLineIsCachedUntilThePointsChange() throws {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        try store.saveRide(ride)
+        let line = try XCTUnwrap(store.rideMapLine(ride.id))
+        XCTAssertEqual(line.pieces, [ride.points.map(\.coordinate)])
+
+        try Data("not json".utf8).write(to: try pointsURL(in: dir, id: "ride-1"))
+        XCTAssertEqual(FileLibraryStore(directory: dir).rideMapLine(ride.id), line)
+
+        let moved = Ride(summary: ride.summary, points: [ride.points[0]] + [
+            RidePoint(timestamp: Date(timeIntervalSince1970: 2_060), coordinate: Coordinate(latitude: 47.2, longitude: 7.3)),
+        ])
+        try store.saveRide(moved)
+        XCTAssertEqual(store.rideMapLine(ride.id)?.pieces, [moved.points.map(\.coordinate)])
+
+        store.deleteRide(ride.id)
+        XCTAssertNil(store.rideMapLine(ride.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("ride-lines/ride-1.json").path))
+    }
+
     func testMissingPointsFileKeepsTheSummaryRow() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
