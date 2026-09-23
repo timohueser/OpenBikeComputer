@@ -157,7 +157,7 @@ pub fn track_log() -> Vec<u8> {
     v
 }
 
-/// The GPX 1.1 export of [`ride_v4`], through the production converter (`track_to_gpx`).
+/// The GPX 1.1 export of [`ride_v5`], through the production converter (`track_to_gpx`).
 ///
 /// Unlike the binary fixtures there is no independent spec to rebuild this from — the exporter's
 /// serialization *is* the contract — so this goes through the real code, exactly like
@@ -165,7 +165,7 @@ pub fn track_log() -> Vec<u8> {
 /// (`obc-web-convert`, compiled to wasm) must reproduce these bytes character-for-character.
 pub fn track_export_gpx() -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
-    obc_route::track_to_gpx(&SliceSource(&ride_v4()), TRACK_NAME, &mut sink).unwrap();
+    obc_route::track_to_gpx(&SliceSource(&ride_v5()), TRACK_NAME, &mut sink).unwrap();
     sink.0
 }
 
@@ -176,10 +176,10 @@ fn le32(v: u32) -> [u8; 4] {
     v.to_le_bytes()
 }
 
-/// Ride object v4: three exact 20-byte recorded samples followed by the fixed 144-byte footer.
+/// Ride object v5: three exact 20-byte recorded samples followed by the fixed 150-byte footer.
 /// Built field-by-field from the specification rather than through the production codec. The ride
 /// started on day 2 of 3 of the [`TRIP_KEY`] trip, on a Gravel bike.
-pub fn ride_v4() -> Vec<u8> {
+pub fn ride_v5() -> Vec<u8> {
     let mut v = Vec::new();
     // lon µdeg, lat µdeg, ele m, flags, t_ms, hr, cadence, power.
     for (lon, lat, ele, flags, t_ms, hr, cad, pwr) in [
@@ -199,14 +199,15 @@ pub fn ride_v4() -> Vec<u8> {
 
     let name = b"Sensor Ride";
     v.extend_from_slice(b"OBRF");
-    v.push(4); // version
+    v.push(5); // version
     v.push(name.len() as u8);
-    v.extend_from_slice(&le16(144)); // fixed footer length
+    v.extend_from_slice(&le16(150)); // fixed footer length
     v.extend_from_slice(&le32(1_751_460_000)); // start_time
     v.extend_from_slice(&le32(12_345)); // distance m
     v.extend_from_slice(&le32(3_600)); // moving_time s
     v.extend_from_slice(&le16(343)); // avg_speed cm/s
     v.extend_from_slice(&le16(120)); // climb m
+    v.extend_from_slice(&le16(95)); // descent m
     v.extend_from_slice(&le32(3)); // point_count
     v.push(142); // avg_hr
     v.push(176); // max_hr
@@ -214,15 +215,16 @@ pub fn ride_v4() -> Vec<u8> {
     v.push(0); // reserved
     v.extend_from_slice(&le16(210)); // avg_pwr
     v.extend_from_slice(&le16(480)); // max_pwr
+    v.extend_from_slice(&le32(756)); // energy kJ
     v.extend_from_slice(name);
-    v.resize(3 * 20 + 84, 0); // fixed 48-byte name slot
+    v.resize(3 * 20 + 90, 0); // fixed 48-byte name slot
     v.extend_from_slice(&TRIP_KEY.to_le_bytes());
     v.push(1); // day index: the second day
     v.push(3); // day count
     v.push(1); // bike type: Gravel
     v.push(TRIP_NAME.len() as u8);
     v.extend_from_slice(TRIP_NAME.as_bytes());
-    v.resize(3 * 20 + 144, 0); // fixed 48-byte trip-name slot
+    v.resize(3 * 20 + 150, 0); // fixed 48-byte trip-name slot
     v
 }
 
@@ -552,7 +554,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
         // The sample-codec fixture remains a codec vector only. GPX export is pinned from the
-        // finished ride-v4 object; headerless sample arrays are not accepted as rides.
+        // finished ride-v5 object; headerless sample arrays are not accepted as rides.
         ("track-log.obct", track_log()),
         ("track-export.gpx", track_export_gpx()),
         // The OBCT terrain shard (`OBCT_Spec.md`): a 2 × 2 cell rectangle with a hole
@@ -561,7 +563,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the
         // spec's guarantee is that they agree bit-for-bit on the same coordinate.
         ("terrain-shard.obcd", terrain.clone()),
-        ("ride-v4.bin", ride_v4()),
+        ("ride-v5.bin", ride_v5()),
         ("config-v1.bin", config_v1()),
         ("place-train-v15.bin", place_record()),
         ("landmark-section-v16.bin", landmarks::section()),

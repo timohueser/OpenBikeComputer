@@ -166,6 +166,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     public var averageSpeedMps: Double
     /// Total climb, in metres.
     public var climbMeters: Double
+    /// Total descent, in metres, dead-banded like the climb.
+    public var descentMeters: Double
     /// Normalized polyline for the preview component. Nil until geometry is decoded.
     public var trackPreview: TrackPreview?
 
@@ -176,6 +178,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     public var avgCadence: Int?
     public var avgPower: Int?
     public var maxPower: Int?
+    /// The ride's energy from power, in kJ.
+    public var energyKJ: Int?
 
     /// The bike type that was current when the ride started. The rider can change it on the phone;
     /// the device copy does not change.
@@ -191,12 +195,14 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         movingTime: TimeInterval = 0,
         averageSpeedMps: Double = 0,
         climbMeters: Double = 0,
+        descentMeters: Double = 0,
         trackPreview: TrackPreview? = nil,
         avgHeartRate: Int? = nil,
         maxHeartRate: Int? = nil,
         avgCadence: Int? = nil,
         avgPower: Int? = nil,
         maxPower: Int? = nil,
+        energyKJ: Int? = nil,
         bikeType: BikeType = .road,
         trip: RideTrip? = nil,
         source: RideSource? = nil
@@ -208,12 +214,14 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.movingTime = movingTime
         self.averageSpeedMps = averageSpeedMps
         self.climbMeters = climbMeters
+        self.descentMeters = descentMeters
         self.trackPreview = trackPreview
         self.avgHeartRate = avgHeartRate
         self.maxHeartRate = maxHeartRate
         self.avgCadence = avgCadence
         self.avgPower = avgPower
         self.maxPower = maxPower
+        self.energyKJ = energyKJ
         self.bikeType = bikeType
         self.trip = trip
         self.source = source

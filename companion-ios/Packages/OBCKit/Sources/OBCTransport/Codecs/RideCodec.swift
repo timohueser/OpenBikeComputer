@@ -1,14 +1,15 @@
 import Foundation
 import OBCDomain
 
-/// Ride object v4: verbatim 20-byte recorded samples followed by one fixed 144-byte `OBRF` footer.
+/// Ride object v5: verbatim 20-byte recorded samples followed by one fixed 150-byte `OBRF` footer.
 public enum RideObjectCodec {
-    static let version: UInt8 = 4
+    static let version: UInt8 = 5
     static let sampleLength = 20
-    static let footerLength = 144
+    static let footerLength = 150
     static let nameCapacity = 48
     static let noSensorU8: UInt8 = 0xFF
     static let noSensorU16: UInt16 = 0xFFFF
+    static let noEnergy: UInt32 = 0xFFFF_FFFF
 
     public static func encode(_ ride: Ride) -> Data {
         let summary = ride.summary
@@ -35,6 +36,7 @@ public enum RideObjectCodec {
         data.appendLE(UInt32(clamping: Int64(summary.movingTime.rounded())))
         data.appendLE(UInt16(clamping: Int64((summary.averageSpeedMps * 100).rounded())))
         data.appendLE(UInt16(clamping: Int64(summary.climbMeters.rounded())))
+        data.appendLE(UInt16(clamping: Int64(summary.descentMeters.rounded())))
         data.appendLE(UInt32(ride.points.count))
         data.append(sensorU8(summary.avgHeartRate))
         data.append(sensorU8(summary.maxHeartRate))
@@ -42,6 +44,7 @@ public enum RideObjectCodec {
         data.append(0)
         data.appendLE(sensorU16(summary.avgPower))
         data.appendLE(sensorU16(summary.maxPower))
+        data.appendLE(summary.energyKJ.map { UInt32(clamping: Swift.min($0, Int(noEnergy) - 1)) } ?? noEnergy)
         data.append(name)
         data.append(Data(repeating: 0, count: nameCapacity - name.count))
         let trip = summary.trip
@@ -74,6 +77,7 @@ public enum RideObjectCodec {
         let movingTime = TimeInterval(try footer.u32())
         let averageSpeed = Double(try footer.u16()) / 100
         let climb = Double(try footer.u16())
+        let descent = Double(try footer.u16())
         let pointCount = Int(try footer.u32())
         let avgHR = optSensorU8(try footer.u8())
         let maxHR = optSensorU8(try footer.u8())
@@ -81,6 +85,7 @@ public enum RideObjectCodec {
         guard try footer.u8() == 0 else { throw DeviceError.readFailed }
         let avgPower = optSensorU16(try footer.u16())
         let maxPower = optSensorU16(try footer.u16())
+        let energy = try footer.u32()
         let name = try nameField(&footer, length: nameLength)
         let tripKey = try footer.u64()
         let dayIndex = Int(try footer.u8())
@@ -128,10 +133,11 @@ public enum RideObjectCodec {
         }
         let summary = RideSummary(
             id: id, name: name, date: start, distanceMeters: distance,
-            movingTime: movingTime, averageSpeedMps: averageSpeed, climbMeters: climb,
+            movingTime: movingTime, averageSpeedMps: averageSpeed, climbMeters: climb, descentMeters: descent,
             trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: avgHR, maxHeartRate: maxHR, avgCadence: avgCadence,
-            avgPower: avgPower, maxPower: maxPower, bikeType: bikeType, trip: trip)
+            avgPower: avgPower, maxPower: maxPower, energyKJ: energy == noEnergy ? nil : Int(energy),
+            bikeType: bikeType, trip: trip)
         return Ride(summary: summary, points: points)
     }
 

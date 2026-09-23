@@ -61,18 +61,20 @@ function loopRide(
     }
     const distanceM = Math.round(radiusDeg * 111_000 * 2 * Math.PI * 1.2);
     return {
-        version: 4,
+        version: 5,
         name,
         startTime,
         distanceM,
         movingTimeS: n * 10,
         avgSpeedCms: Math.round((distanceM / (n * 10)) * 100),
         climbM,
+        descentM: climbM,
         avgHr: 139,
         maxHr: 171,
         avgCadence: 78,
         avgPower: null,
         maxPower: null,
+        energyKj: null,
         bikeType: 0,
         trip: null,
         points,

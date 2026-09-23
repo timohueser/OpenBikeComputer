@@ -168,7 +168,7 @@ A route object's payload is exactly the bytes of an OBCR file
 ([`OBCR_Spec.md`](OBCR_Spec.md)); the device stores and serves it verbatim. An update package's
 payload is exactly the bytes of an OBCU container ([`OBCU_Spec.md`](OBCU_Spec.md) §1).
 
-### 7.2 `ride` — ride object v4
+### 7.2 `ride` — ride object v5
 
 A ride payload is the sample stream the device recorded, followed by one fixed summary footer.
 There is no leading header and no finish-time conversion. Protocol-v4 `GET` serves the stored bytes
@@ -187,34 +187,41 @@ Each sample is a 20-byte record:
 | 17 | 1 | cadence, rpm; `0xFF` = absent/stale |
 | 18 | 2 | power, watts; `0xFFFF` = absent/stale |
 
-The final 144 bytes are the summary footer:
+The final 150 bytes are the summary footer:
 
 | Offset | Size | Field |
 | --: | --: | :-- |
 | 0 | 4 | magic `OBRF` (`4F 42 52 46`) |
-| 4 | 1 | version, `4` |
+| 4 | 1 | version, `5` |
 | 5 | 1 | UTF-8 name length, `0..=48` |
-| 6 | 2 | footer length, `144` |
+| 6 | 2 | footer length, `150` |
 | 8 | 4 | start time, Unix seconds |
 | 12 | 4 | total distance, metres |
 | 16 | 4 | moving time, seconds |
 | 20 | 2 | average speed, cm/s |
 | 22 | 2 | climb, metres |
-| 24 | 4 | point count |
-| 28 | 1 | average heart rate; `0xFF` = absent |
-| 29 | 1 | maximum heart rate; `0xFF` = absent |
-| 30 | 1 | average cadence; `0xFF` = absent |
-| 31 | 1 | reserved, zero |
-| 32 | 2 | average power; `0xFFFF` = absent |
-| 34 | 2 | maximum power; `0xFFFF` = absent |
-| 36 | 48 | UTF-8 name followed by zero padding |
-| 84 | 8 | trip key, `u64`; `0` = no trip |
-| 92 | 1 | day index, 0-based |
-| 93 | 1 | day count |
-| 94 | 1 | bike type, `0..=3` (Road, Gravel, MTB, Touring) |
-| 95 | 1 | UTF-8 trip name length, `0..=48` |
-| 96 | 48 | UTF-8 trip name followed by zero padding |
+| 24 | 2 | descent, metres |
+| 26 | 4 | point count |
+| 30 | 1 | average heart rate; `0xFF` = absent |
+| 31 | 1 | maximum heart rate; `0xFF` = absent |
+| 32 | 1 | average cadence; `0xFF` = absent |
+| 33 | 1 | reserved, zero |
+| 34 | 2 | average power; `0xFFFF` = absent |
+| 36 | 2 | maximum power; `0xFFFF` = absent |
+| 38 | 4 | energy, kJ; `0xFFFF_FFFF` = absent |
+| 42 | 48 | UTF-8 name followed by zero padding |
+| 90 | 8 | trip key, `u64`; `0` = no trip |
+| 98 | 1 | day index, 0-based |
+| 99 | 1 | day count |
+| 100 | 1 | bike type, `0..=3` (Road, Gravel, MTB, Touring) |
+| 101 | 1 | UTF-8 trip name length, `0..=48` |
+| 102 | 48 | UTF-8 trip name followed by zero padding |
 
+- **Climb and descent.** The device counts both with the same dead band, from the same altitude
+  samples.
+- **Energy.** Each power sample adds its watts × the time since the previous sample, at most 2 s,
+  while the ride records and is not paused. The total is rounded down to whole kJ. A ride without
+  power data writes the absent value, so `0` is a ride with power data and no work.
 - **Bike type.** The bike type that is current when the ride starts
   ([`OBCR_Spec.md`](OBCR_Spec.md) §1.2). The phone can change its own copy. The device copy does
   not change.
@@ -225,10 +232,10 @@ The final 144 bytes are the summary footer:
 - **No trip.** With trip key 0, the day index, the day count and every trip-name byte are zero.
 
 The footer is last because the flat-store payload pages are write-once. A list row reads precisely
-144 bytes at `object length − 144`; a full reader requires
-`object length == point_count × 20 + 144`. A reader rejects any other footer length.
+150 bytes at `object length − 150`; a full reader requires
+`object length == point_count × 20 + 150`. A reader rejects any other footer length.
 Finalize appends this footer and performs one store commit that publishes the final length and CRC
-and clears `RECORDING`. `specs/vectors/ride-v4.bin` pins three sample records — including sensor
+and clears `RECORDING`. `specs/vectors/ride-v5.bin` pins three sample records — including sensor
 sentinels and segment flags — and a footer on a trip day.
 
 ### 7.3 `config` — the Config object

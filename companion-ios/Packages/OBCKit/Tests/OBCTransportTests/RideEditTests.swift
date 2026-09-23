@@ -33,6 +33,24 @@ struct RideEditTests {
     }
 
     @Test
+    func statsEstimateTheEnergyFromTheStoredPointsAndCountTheDescent() {
+        // One point every 5 s at 500 W, one of them without power. Each interval counts at most
+        // 2 s, as the device caps a gap: four intervals × 2 s × 500 W = 4 kJ.
+        let elevations: [Double] = [500, 505, 510, 507, 503, 503]
+        let points = elevations.enumerated().map { i, elevation in
+            RidePoint(
+                timestamp: t0.addingTimeInterval(Double(i) * 5),
+                coordinate: Coordinate(latitude: 47 + Double(i) * 25 / 111_320, longitude: 8),
+                elevationMeters: elevation, power: i == 3 ? nil : 500
+            )
+        }
+        let summary = Self.ride("a", start: t0, seconds: 1).summary.withStats(of: points, id: RideID("a"))
+        #expect(summary.energyKJ == 4)
+        #expect(summary.climbMeters == 10)
+        #expect(summary.descentMeters == 7, "the dead band counts 3 m and 4 m down")
+    }
+
+    @Test
     func aTrimKeepsTheRangeAndCountsOnlyItsPoints() throws {
         let original = Self.ride("a", start: t0, seconds: 600)
         let store = store(original)

@@ -33,10 +33,12 @@ export class ObjectDecodeError extends Error {
 /** Absent-value sentinels in both samples and the final summary footer. */
 const NO_U8 = 0xff;
 const NO_U16 = 0xffff;
+const NO_U32 = 0xffffffff;
 const RIDE_SAMPLE_LEN = 20;
-const RIDE_FOOTER_LEN = 144;
+const RIDE_FOOTER_LEN = 150;
 const RIDE_NAME_CAP = 48;
-const RIDE_TRIP_AT = 84;
+const RIDE_NAME_AT = 42;
+const RIDE_TRIP_AT = 90;
 
 /** One recorded point. Coordinates are degrees × 1e7 (a ~1 cm grid); `null` means the sensor was
  *  absent, dropped, or stale. */
@@ -63,20 +65,23 @@ export interface RideTrip {
     name: string;
 }
 
-/** A downloaded v4 ride: the recorded sample bytes followed by one fixed summary footer. */
+/** A downloaded v5 ride: the recorded sample bytes followed by one fixed summary footer. */
 export interface RideObject {
-    version: 4;
+    version: 5;
     name: string;
     startTime: number;
     distanceM: number;
     movingTimeS: number;
     avgSpeedCms: number;
     climbM: number;
+    descentM: number;
     avgHr: number | null;
     maxHr: number | null;
     avgCadence: number | null;
     avgPower: number | null;
     maxPower: number | null;
+    /** The ride's energy from power; `null` without power data. */
+    energyKj: number | null;
     /** The bike type current at the start, `0..=3` (Road, Gravel, MTB, Touring). */
     bikeType: number;
     trip: RideTrip | null;
@@ -84,7 +89,7 @@ export interface RideObject {
 }
 
 /**
- * Decode the only ride-object format: verbatim 20-byte samples followed by the fixed 144-byte v4
+ * Decode the only ride-object format: verbatim 20-byte samples followed by the fixed 150-byte v5
  * footer. The footer's point count determines the complete object length.
  */
 export function decodeRideObject(data: Uint8Array): RideObject {
@@ -95,11 +100,11 @@ export function decodeRideObject(data: Uint8Array): RideObject {
         throw new ObjectDecodeError("ride object has no OBRF footer.");
     }
     const version = data[footer + 4];
-    if (version !== 4) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 4.`);
-    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 31] !== 0) {
+    if (version !== 5) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 5.`);
+    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 33] !== 0) {
         throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
-    const name = footerName(data, footer + 36, data[footer + 5]);
+    const name = footerName(data, footer + RIDE_NAME_AT, data[footer + 5]);
     const trip = footer + RIDE_TRIP_AT;
     const tripKey = view.getBigUint64(trip, true);
     const dayIndex = data[trip + 8];
@@ -110,7 +115,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     if (bikeType > 3 || (tripKey === 0n ? !noTrip : dayIndex >= dayCount)) {
         throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
-    const pointCount = view.getUint32(footer + 24, true);
+    const pointCount = view.getUint32(footer + 26, true);
     const expected = pointCount * RIDE_SAMPLE_LEN + RIDE_FOOTER_LEN;
     if (data.length !== expected) {
         throw new ObjectDecodeError(`ride object with ${pointCount} points should be ${expected} bytes, got ${data.length}.`);
@@ -134,7 +139,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     }
 
     return {
-        version: 4,
+        version: 5,
         points,
         name,
         startTime: view.getUint32(footer + 8, true),
@@ -142,11 +147,13 @@ export function decodeRideObject(data: Uint8Array): RideObject {
         movingTimeS: view.getUint32(footer + 16, true),
         avgSpeedCms: view.getUint16(footer + 20, true),
         climbM: view.getUint16(footer + 22, true),
-        avgHr: absent8(data[footer + 28]),
-        maxHr: absent8(data[footer + 29]),
-        avgCadence: absent8(data[footer + 30]),
-        avgPower: absent16(view.getUint16(footer + 32, true)),
-        maxPower: absent16(view.getUint16(footer + 34, true)),
+        descentM: view.getUint16(footer + 24, true),
+        avgHr: absent8(data[footer + 30]),
+        maxHr: absent8(data[footer + 31]),
+        avgCadence: absent8(data[footer + 32]),
+        avgPower: absent16(view.getUint16(footer + 34, true)),
+        maxPower: absent16(view.getUint16(footer + 36, true)),
+        energyKj: absent32(view.getUint32(footer + 38, true)),
         bikeType,
         trip: tripKey === 0n ? null : { key: tripKey, dayIndex, dayCount, name: tripName },
     };
@@ -164,7 +171,7 @@ function footerName(data: Uint8Array, at: number, len: number): string {
     }
 }
 
-/** Encode a v4 object for the loopback device and byte-contract tests. */
+/** Encode a v5 object for the loopback device and byte-contract tests. */
 export function encodeRideObject(r: RideObject): Uint8Array {
     const name = clippedUtf8(r.name, RIDE_NAME_CAP);
     const footer = r.points.length * RIDE_SAMPLE_LEN;
@@ -181,20 +188,22 @@ export function encodeRideObject(r: RideObject): Uint8Array {
         out[p + 17] = pt.cadenceRpm ?? NO_U8;
         view.setUint16(p + 18, pt.powerW ?? NO_U16, true);
     });
-    out.set([0x4f, 0x42, 0x52, 0x46, 4, name.length], footer);
+    out.set([0x4f, 0x42, 0x52, 0x46, 5, name.length], footer);
     view.setUint16(footer + 6, RIDE_FOOTER_LEN, true);
     view.setUint32(footer + 8, r.startTime, true);
     view.setUint32(footer + 12, r.distanceM, true);
     view.setUint32(footer + 16, r.movingTimeS, true);
     view.setUint16(footer + 20, r.avgSpeedCms, true);
     view.setUint16(footer + 22, r.climbM, true);
-    view.setUint32(footer + 24, r.points.length, true);
-    out[footer + 28] = r.avgHr ?? NO_U8;
-    out[footer + 29] = r.maxHr ?? NO_U8;
-    out[footer + 30] = r.avgCadence ?? NO_U8;
-    view.setUint16(footer + 32, r.avgPower ?? NO_U16, true);
-    view.setUint16(footer + 34, r.maxPower ?? NO_U16, true);
-    out.set(name, footer + 36);
+    view.setUint16(footer + 24, r.descentM, true);
+    view.setUint32(footer + 26, r.points.length, true);
+    out[footer + 30] = r.avgHr ?? NO_U8;
+    out[footer + 31] = r.maxHr ?? NO_U8;
+    out[footer + 32] = r.avgCadence ?? NO_U8;
+    view.setUint16(footer + 34, r.avgPower ?? NO_U16, true);
+    view.setUint16(footer + 36, r.maxPower ?? NO_U16, true);
+    view.setUint32(footer + 38, r.energyKj ?? NO_U32, true);
+    out.set(name, footer + RIDE_NAME_AT);
     const trip = footer + RIDE_TRIP_AT;
     if (r.trip) {
         const tripName = clippedUtf8(r.trip.name, RIDE_NAME_CAP);
@@ -331,4 +340,8 @@ function absent8(v: number): number | null {
 
 function absent16(v: number): number | null {
     return v === NO_U16 ? null : v;
+}
+
+function absent32(v: number): number | null {
+    return v === NO_U32 ? null : v;
 }
