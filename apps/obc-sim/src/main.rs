@@ -1325,6 +1325,7 @@ fn main() {
         }
         let mut trip_store = trips;
         app.set_trips(&trip_store.inputs());
+        app.set_trip_progress(trip_store.progress().iter().cloned());
         // The complete saved-ride projection comes from the same card as the map and routes.
         let mut ride_store = rides;
         app.set_rides(ride_store.catalog());

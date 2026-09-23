@@ -455,7 +455,9 @@ impl HostLoop {
             );
             app.offer_route_checkpoint(id, source);
         }
-        if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
+        if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) =
+            plan.effects.metadata.take_if(|effect| matches!(effect, MetadataEffect::WriteCheckpoint { .. }))
+        {
             let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
                 && app.assistant_preview().is_none();
             let current_map = map.source();
@@ -525,6 +527,21 @@ impl HostLoop {
         if let Some(effect) = plan.effects.catalog.take() {
             let outcome = self.serve_catalog(app, effect, routes, rides, trips);
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
+        }
+        if let Some(MetadataEffect::WriteProgress { token, scope }) =
+            plan.effects.metadata.take_if(|effect| matches!(effect, MetadataEffect::WriteProgress { .. }))
+        {
+            let outcome = match app.trip_progress_payload(token) {
+                Some(record) if scope.is_some() && scope.map(|s| s.store) == routes.store_scope().map(|s| s.store) => {
+                    let keys: Vec<u64> = app.trips().iter().map(|t| t.key).collect();
+                    match trips.write_progress(record.clone(), &keys) {
+                        Ok(()) => MetadataOutcome::ProgressWritten { token },
+                        Err(error) => MetadataOutcome::Failed { token, error },
+                    }
+                }
+                _ => MetadataOutcome::Cancelled { token },
+            };
+            deliver(&mut self.inbox.outcomes.metadata, outcome, "metadata");
         }
         if let Some(MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
             let outcome = match scope.zip(app.assistant_checkpoint_payload(token)) {

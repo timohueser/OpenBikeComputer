@@ -325,6 +325,10 @@ pub(crate) enum Request {
         change: obc_app::navigator::CheckpointChange,
     },
     ReconcileMetadata,
+    WriteProgress {
+        record: obc_app::trip::TripProgress,
+        keys: heapless::Vec<u64, { obc_app::MAX_TRIPS }>,
+    },
     CleanupRoute {
         before_utc: u32,
         store: obc_app::device_core::StoreIdentity,
@@ -925,6 +929,10 @@ fn serve(
                 change.next,
             )
             .map_err(metadata_error),
+        )),
+        Request::WriteProgress { record, keys } => Ok(Outcome::Metadata(
+            obc_storage::flat::metadata::write_progress(store, record, |key| keys.contains(&key))
+                .map_err(metadata_error),
         )),
         Request::ReconcileMetadata => {
             Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(metadata_error)))
@@ -1756,5 +1764,11 @@ pub(crate) fn load_metadata(
 ) -> Result<(), obc_app::metadata::MetadataError> {
     obc_storage::flat::metadata::read_rows(store, |row| app.set_ride_archive_proof(row.id.0, row.timestamp))
         .map_err(metadata_error)?;
+    let mut records = obc_formats::trip_progress::Records::new();
+    obc_storage::flat::metadata::read_progress(store, |record| {
+        let _ = records.push(record);
+    })
+    .map_err(metadata_error)?;
+    app.set_trip_progress(records);
     Ok(())
 }

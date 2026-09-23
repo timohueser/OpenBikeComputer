@@ -283,7 +283,7 @@ impl App {
                         self.catalogs.loaded_scope = None;
                         self.catalogs.note_store_moved();
                     }
-                    MetadataOutcome::CheckpointWritten { .. } => {
+                    MetadataOutcome::CheckpointWritten { .. } | MetadataOutcome::ProgressWritten { .. } => {
                         self.catalogs.loaded_scope = None;
                         self.catalogs.note_store_moved();
                     }
@@ -298,6 +298,7 @@ impl App {
             match self.recorder.apply_outcome_at(outcome, now_ms) {
                 crate::recorder::RecorderVerdict::Saved(ride) => {
                     let _ = self.pass.connections.ride_finalized.try_put(RideFinalized { ride });
+                    self.note_trip_finish();
                     self.end_ride_session();
                 }
                 crate::recorder::RecorderVerdict::Dropped => self.end_ride_session(),
@@ -485,15 +486,18 @@ impl App {
     }
 
     fn stage_metadata(&mut self, effects: &mut EffectSlots) {
-        if effects.metadata.is_empty() && self.navigator.checkpoint_change().is_some() {
-            let Some(scope) = self.catalogs.loaded_scope else {
-                return;
-            };
+        let Some(scope) = self.catalogs.loaded_scope.filter(|_| effects.metadata.is_empty()) else {
+            return;
+        };
+        if self.navigator.checkpoint_change().is_some() {
             if let Some(mut effect) = self.metadata.next_checkpoint_effect() {
                 effect.bind(Some(scope));
                 self.navigator.checkpoint_issued(effect.token());
                 let _ = effects.metadata.try_put(effect);
             }
+        } else if let Some(mut effect) = self.metadata.next_progress_effect() {
+            effect.bind(Some(scope));
+            let _ = effects.metadata.try_put(effect);
         }
     }
 

@@ -1521,7 +1521,7 @@ fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
 /// until the write is acknowledged.
 #[test]
 fn selecting_a_route_owes_one_bounded_checkpoint_operation() {
-    use obc_app::metadata::{MetadataEffect, MetadataOutcome};
+    use obc_app::metadata::MetadataOutcome;
     use obc_app::navigator::{ReviewStatus, RouteCheckpointSource};
     use obc_formats::assistant::PayloadFingerprint;
 
@@ -1540,10 +1540,10 @@ fn selecting_a_route_owes_one_bounded_checkpoint_operation() {
     );
     assert!(harness.app().requested_route_checkpoint().is_none(), "an executor answers it once per selection");
 
-    let MetadataEffect::WriteCheckpoint { token, .. } = harness.next_checkpoint_effect();
+    let token = harness.next_checkpoint_effect().token();
     assert!(harness.pass().effects.metadata.is_empty(), "one metadata operation at a time");
     harness.state.outcomes.metadata.try_put(MetadataOutcome::Cancelled { token }).unwrap();
-    let MetadataEffect::WriteCheckpoint { token, .. } = harness.next_checkpoint_effect();
+    let token = harness.next_checkpoint_effect().token();
     assert_eq!(harness.app().active_route_index(), Some(0), "and the rider keeps the route they chose");
     assert!(harness.app().assistant_checkpoint().is_none(), "nothing is durable before the answer");
 
@@ -1579,7 +1579,7 @@ fn deleting_the_active_route_drops_it_in_the_same_pass() {
 /// route in place with the rider's hold already spent. The removal waits for the clear instead.
 #[test]
 fn a_delete_waits_for_the_checkpoint_that_would_refuse_it() {
-    use obc_app::metadata::{MetadataEffect, MetadataOutcome};
+    use obc_app::metadata::MetadataOutcome;
     use obc_formats::assistant::{JourneyPhase, NavigatorCheckpoint, PayloadFingerprint};
 
     let mut harness = recording_harness();
@@ -1618,8 +1618,7 @@ fn a_delete_waits_for_the_checkpoint_that_would_refuse_it() {
 
     let mut plan = harness.pass();
     assert!(plan.effects.catalog.take().is_none(), "the store would refuse this removal, so it waits");
-    let MetadataEffect::WriteCheckpoint { token, .. } =
-        plan.effects.metadata.take().expect("the checkpoint the removal waits on is given up");
+    let token = plan.effects.metadata.take().expect("the checkpoint the removal waits on is given up").token();
     assert!(harness.app().assistant_checkpoint_submission(token));
     harness.state.outcomes.metadata.try_put(MetadataOutcome::CheckpointWritten { token }).unwrap();
 

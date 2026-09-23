@@ -118,6 +118,14 @@ impl TripSummary {
     }
 }
 
+/// A position on a trip: a day, that day's route, and metres into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TripPosition {
+    pub day: u16,
+    pub route: CatalogObjectId,
+    pub metres: u32,
+}
+
 /// The trip day whose route is `route`. A route is in at most one trip.
 pub fn trip_day(trips: &[TripSummary], route: CatalogObjectId) -> Option<TripRef> {
     trips.iter().find_map(|trip| {
@@ -162,22 +170,30 @@ impl TripSummary {
         self.in_trip(next)
     }
 
-    /// Metres into the position's day. They count only while the trip names the same route, at
-    /// the same revision, for that day; `revision_of` gives the store's current revision of a
-    /// route. Otherwise the position is the day start.
-    pub fn position_m(
-        &self,
-        progress: Option<&TripProgress>,
-        revision_of: impl Fn(CatalogObjectId) -> Option<u64>,
-    ) -> u32 {
-        match self.own(progress) {
-            Some(p)
-                if self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route.id)
-                    && revision_of(p.day_route.id) == Some(p.day_route.revision) =>
-            {
-                p.metres
-            }
-            _ => 0,
+    /// Metres into the position's day. They count only while the trip names the same route for that
+    /// day; the store already read them as 0 when that route has another revision now.
+    pub fn position_m(&self, progress: Option<&TripProgress>) -> u32 {
+        self.own(progress)
+            .filter(|p| self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route.id))
+            .map_or(0, |p| p.metres)
+    }
+
+    /// The record a Finish of day `ridden` writes: the position moves to `at`, `ridden` is the last
+    /// finished day, and it takes `today` (days since 1970-01-01; 0 without a trusted clock) as its
+    /// date.
+    pub fn finish(&self, old: Option<&TripProgress>, ridden: u16, at: TripPosition, today: u16) -> TripProgress {
+        let mut dates = self.own(old).map_or([0; MAX_TRIP_DAYS], |p| p.dates);
+        if let Some(date) = dates.get_mut(usize::from(ridden)).filter(|_| today != 0) {
+            *date = today;
+        }
+        TripProgress {
+            key: self.key,
+            day: at.day,
+            // The store stamps the revision it holds when it writes the record.
+            day_route: RouteVersion { id: at.route, revision: 0 },
+            metres: at.metres,
+            last_finished: Some(ridden),
+            dates,
         }
     }
 
@@ -230,7 +246,7 @@ mod tests {
         TripProgress {
             key: KEY,
             day,
-            day_route: RouteVersion { id: [10, 20, 30][usize::from(day)], revision: 1 },
+            day_route: RouteVersion { id: [10, 20, 30][usize::from(day)], revision: 0 },
             metres: 54_000,
             last_finished,
             dates: all,
@@ -287,13 +303,31 @@ mod tests {
     #[test]
     fn a_changed_day_route_resets_the_position_to_the_day_start() {
         let p = progress(1, Some(0), &[]);
-        assert_eq!(trip(0).position_m(Some(&p), |_| Some(1)), 54_000);
-        // The same route id replaced in place: a new revision, other geometry.
-        assert_eq!(trip(0).position_m(Some(&p), |_| Some(2)), 0);
+        assert_eq!(trip(0).position_m(Some(&p)), 54_000);
         let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 21, 30] };
         let reuploaded = TripSummary::resolve(&input, &[], &[]);
-        assert_eq!(reuploaded.position_m(Some(&p), |_| Some(1)), 0);
+        assert_eq!(reuploaded.position_m(Some(&p)), 0);
         assert_eq!(reuploaded.next_day(Some(&p)), Some(1), "the last finished day stays");
+    }
+
+    #[test]
+    fn a_finish_moves_the_position_and_finishes_the_day_ridden() {
+        let t = trip(0);
+        let at = |day: u16, metres| TripPosition { day, route: [10, 20, 30][usize::from(day)], metres };
+        let yesterday = progress(0, Some(0), &[MON]);
+        // Early stop: 20 km short of the end of Day 2. Day 3 is next, and the rest of Day 2 leads to it.
+        let early = t.finish(Some(&yesterday), 1, at(1, 54_000), MON + 1);
+        assert_eq!((early.day, early.metres, early.last_finished), (1, 54_000, Some(1)));
+        assert_eq!(early.dates[..2], [MON, MON + 1]);
+        assert_eq!((t.next_day(Some(&early)), t.position_m(Some(&early))), (Some(2), 54_000));
+        // Exact end: the position is the end of Day 2.
+        let end = t.finish(Some(&yesterday), 1, at(1, 74_000), MON + 1);
+        assert_eq!(t.next_day(Some(&end)), Some(2));
+        // Past the end: the position moved 20 km into Day 3, which is next and starts there.
+        let past = t.finish(Some(&yesterday), 1, at(2, 20_000), 0);
+        assert_eq!((t.next_day(Some(&past)), t.position_m(Some(&past))), (Some(2), 20_000));
+        assert_eq!(past.dates[..2], [MON, 0], "no trusted clock, no date");
+        assert_eq!(t.finish(None, 0, at(0, 5), MON).dates[0], MON, "the first Finish starts the record");
     }
 
     #[test]
