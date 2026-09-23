@@ -1154,6 +1154,20 @@ impl App {
         self.metadata.progress_payload(token)
     }
 
+    /// A ride that starts on a trip day makes that trip the active one: its record moves to the end
+    /// of the records, in the store too, so the start card follows it after a power cycle.
+    pub(crate) fn note_trip_start(&mut self) {
+        let Some(day) = self.recorder.ride_stats().trip else { return };
+        let records = self.metadata.progress();
+        if records.last().is_some_and(|p| p.key == day.key()) {
+            return;
+        }
+        let Some(trip) = self.trips().iter().find(|t| t.key == day.key()) else { return };
+        let record = trip.start(trip.progress_in(records));
+        let trips = self.catalogs.trips();
+        self.metadata.owe_start(record, |key| trips.iter().any(|t| t.key == key));
+    }
+
     /// A saved ride on a trip day moves that trip's progress to where the ride ended.
     pub(crate) fn note_trip_finish(&mut self) {
         use crate::trip::TripPosition;

@@ -317,12 +317,14 @@ any other length, which also rejects a torn write.
 
 The device keeps one progress record per trip key. The record never crosses the wire. The device
 writes it at Finish of a ride on a trip day, and keeps it in the ride-archive Metadata object
-([`Ride_Archive_Metadata.md`](Ride_Archive_Metadata.md)) with the navigator checkpoint.
+([`Ride_Archive_Metadata.md`](Ride_Archive_Metadata.md)) with the navigator checkpoint. The start
+of a ride on a trip day writes the record of its trip again, unchanged. A trip without a record
+gets a record without a position, a finished day or dates.
 
 | Field | Meaning |
 | :-- | :-- |
 | position day | the day that contains the last matched position |
-| position route | the route ObjectId and Revision of that day when the record was written |
+| position route | the route ObjectId and Revision of that day when the Finish wrote the position |
 | position metres | metres into that day's route |
 | last finished day | the last day the rider finished; none before the first Finish |
 | finish dates | for each day, the date of its Finish in days since 1970-01-01; 0 = none |
@@ -348,6 +350,8 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   rider instead rides 20 km into Day 3, Day 3 is next with 20 km less to ride.
   A ride on the rest of Day 2 plus Day 3 that ends before it joins Day 3 finishes Day 2, not
   Day 3. The position stays on Day 2, so Day 3 is still next.
+- **Active trip.** The trip of the latest record, while it has a next day. The start of a ride on a
+  trip day moves the record of its trip to the end, so that trip is active before its Finish.
 - **Ticks.** A day is ticked when it is at or before the last finished day, or when it is before
   the position day.
 - **Day dates.** Dates follow the rides. For day `k`, take the latest day `j ≤ k` with a finish

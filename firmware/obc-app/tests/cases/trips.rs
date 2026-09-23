@@ -2,6 +2,7 @@
 //! filed folders — the filed/unfiled partition, dangling refs, order, overflow, and re-resolution
 //! across a route rescan.
 
+use obc_app::trip::{RouteVersion, TripProgress};
 use obc_app::{App, AppState, RouteSummary, TripInput, MAX_TRIPS};
 use obc_map_scene::BBox;
 
@@ -180,31 +181,30 @@ fn a_ride_records_its_trip_day_and_bike_type() {
     assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, None, ""));
 }
 
-/// Ride Day 2 of a three-day trip and save it. `ride_on` loads Day 3 during the ride, as Ride on in
-/// the arrival view does. Returns the progress record the Finish writes.
-fn finish_day_2(ride_on: bool) -> (App, obc_app::trip::TripProgress) {
+/// Ride the route at catalog index `route` over a store that takes every write, and save the ride
+/// when `save`. `ride_on` loads the next route during the ride, as Ride on in the arrival view does.
+/// Returns the progress records the store takes, in write order.
+fn ride(app: &mut App, route: usize, ride_on: bool, save: bool) -> Vec<TripProgress> {
     use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
     use obc_app::device_core::{ExternalFacts, OutcomeSlots, Revision, StoreIdentity, StoreRevision};
     use obc_app::metadata::{MetadataEffect, MetadataOutcome};
     use obc_app::recorder::{CheckpointStatus, RecorderEffect, RecorderOutcome};
     use obc_app::RecorderIntent;
 
-    let mut app = app_with_three_routes();
-    app.set_trips(&[TripInput { id: 1, key: 42, name: "Alpen Traverse", start_date: 0, stage_ids: &[7, 8, 9] }]);
-    app.activate_route(1);
+    app.activate_route(route);
     let scope = StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) };
     let mut outcomes = OutcomeSlots::new();
-    let mut written = None;
+    let mut written = Vec::new();
     for pass in 0..40 {
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(scope);
         match pass {
             1 => app.recorder.request(RecorderIntent::Start),
-            2 if ride_on => app.activate_route(2),
-            3 => app.recorder.request(RecorderIntent::Save),
+            2 if ride_on => app.activate_route(route + 1),
+            3 if save => app.recorder.request(RecorderIntent::Save),
             _ => {}
         }
-        let mut plan = crate::common::pass(&mut app, pass * 1_000, &mut outcomes, &mut facts, None);
+        let mut plan = crate::common::pass(app, pass * 1_000, &mut outcomes, &mut facts, None);
         if let Some(CatalogEffect::ReadCatalog { token }) = plan.effects.catalog.take() {
             outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token, scope: Some(scope) }).unwrap();
         }
@@ -222,12 +222,53 @@ fn finish_day_2(ride_on: bool) -> (App, obc_app::trip::TripProgress) {
             _ => {}
         }
         if let Some(MetadataEffect::WriteProgress { token, .. }) = plan.effects.metadata.take() {
-            written = app.trip_progress_payload(token).cloned();
+            written.extend(app.trip_progress_payload(token).cloned());
             outcomes.metadata.try_put(MetadataOutcome::ProgressWritten { token }).unwrap();
         }
     }
+    written
+}
 
-    (app, written.expect("the Finish writes the trip's progress"))
+/// Ride Day 2 of a three-day trip and save it. Returns the progress record the Finish writes.
+fn finish_day_2(ride_on: bool) -> (App, TripProgress) {
+    let mut app = app_with_three_routes();
+    app.set_trips(&[TripInput { id: 1, key: 42, name: "Alpen Traverse", start_date: 0, stage_ids: &[7, 8, 9] }]);
+    let written = ride(&mut app, 1, ride_on, true);
+    let finish = written.last().cloned().expect("the Finish writes the trip's progress");
+    (app, finish)
+}
+
+/// A ride that starts on a day of another trip makes that trip active before any Finish: the start
+/// card's day row follows it, and the store takes the moved record, so a power cycle keeps it. A
+/// ride on the active trip writes nothing at its start.
+#[test]
+fn a_ride_on_a_day_of_another_trip_makes_that_trip_active() {
+    let trips = || {
+        let mut app = app_with_three_routes();
+        app.set_trips(&[
+            TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[7, 8] },
+            TripInput { id: 2, key: 5, name: "Jura", start_date: 0, stage_ids: &[9] },
+        ]);
+        app.set_trip_progress([TripProgress {
+            key: 42,
+            day: 1,
+            day_route: RouteVersion { id: 8, revision: 1 },
+            metres: 0,
+            last_finished: Some(0),
+            dates: [0; obc_route::MAX_TRIP_DAYS],
+        }]);
+        assert_eq!(app.next_trip_day().map(|(t, day)| (t.key, day)), Some((42, 1)));
+        app
+    };
+
+    let mut app = trips();
+    let written = ride(&mut app, 2, false, false);
+    assert_eq!(written.iter().map(|p| (p.key, p.last_finished)).collect::<Vec<_>>(), [(5, None)]);
+    assert_eq!(app.next_trip_day().map(|(t, day)| (t.key, day)), Some((5, 0)));
+    assert_eq!(app.trip_progress().iter().map(|p| p.key).collect::<Vec<_>>(), [42, 5], "Alps keeps its record");
+
+    let mut app = trips();
+    assert!(ride(&mut app, 1, false, false).is_empty());
 }
 
 /// Finish of a ride on a trip day moves the trip's progress: the store gets one record, and the

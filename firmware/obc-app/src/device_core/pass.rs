@@ -555,6 +555,7 @@ impl App {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.recorder.set_origin(self.ride_origin());
+            self.note_trip_start();
             self.metadata.begin_ride();
             self.navigator.reset_detour();
             // Only a measured anchor re-joins the route. A plain route selection records no

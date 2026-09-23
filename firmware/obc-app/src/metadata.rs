@@ -127,6 +127,12 @@ impl MetadataMachine {
         obc_formats::trip_progress::record(&mut self.progress, record.clone(), stored);
         self.progress_owed = Some(record);
     }
+    /// A start's record. It never displaces a Finish's record that the store does not hold yet.
+    pub(crate) fn owe_start(&mut self, record: TripProgress, stored: impl Fn(u64) -> bool) {
+        if self.progress_owed.is_none() {
+            self.owe_progress(record, stored);
+        }
+    }
     pub(crate) fn progress(&self) -> &[TripProgress] {
         &self.progress
     }

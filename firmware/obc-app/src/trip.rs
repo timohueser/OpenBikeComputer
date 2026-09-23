@@ -293,12 +293,26 @@ impl TripSummary {
         TripProgress {
             key: self.key,
             day: at.day,
-            // The store stamps the revision it holds when it writes the record.
+            // Revision 0: the store stamps the revision it holds when it writes the record.
             day_route: RouteVersion { id: at.route, revision: 0 },
             metres: at.metres,
             last_finished: Some(ridden),
             dates,
         }
+    }
+
+    /// The record a ride that starts on this trip writes. It is the trip's record as it is, so only
+    /// its place changes: the latest record names the active trip. A trip without a record gets
+    /// one without progress.
+    pub fn start(&self, old: Option<&TripProgress>) -> TripProgress {
+        self.own(old).cloned().unwrap_or_else(|| TripProgress {
+            key: self.key,
+            day: 0,
+            day_route: RouteVersion { id: self.stage_ids.first().copied().unwrap_or(0), revision: 0 },
+            metres: 0,
+            last_finished: None,
+            dates: [0; MAX_TRIP_DAYS],
+        })
     }
 
     /// How day `day` loads. When the position is on the day before, more than [`REST_MIN_M`] before
@@ -404,6 +418,17 @@ mod tests {
         assert_eq!(next(&[alps_day2.clone(), jura_done.clone()]), None, "the last ride finished its trip");
         assert_eq!(next(&[jura_done, alps_day2]), Some((KEY, 1, 1)));
         assert_eq!(next(&[]), None);
+    }
+
+    #[test]
+    fn a_start_keeps_the_record_and_gives_a_trip_without_one_no_progress() {
+        let t = trip(0);
+        let early = progress(1, Some(0), &[MON]);
+        assert_eq!(t.start(Some(&early)), early);
+        let fresh = t.start(None);
+        assert_eq!((fresh.key, fresh.metres, fresh.last_finished), (KEY, 0, None));
+        assert_eq!(t.next_day(Some(&fresh)), Some(0));
+        assert!(!t.is_ticked(0, Some(&fresh)));
     }
 
     #[test]
