@@ -95,22 +95,21 @@ final class RouteDetailTests: XCTestCase {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    /// The pencil opens a rename alert, and the title and the list row both update.
+    /// The pencil opens the rename sheet, and the title and the list row both update.
     @MainActor
     func testRenameUpdatesTitleAndList() {
         let app = launch()
         openPlannedDetail(app)
 
         app.buttons["detail.rename"].tap()
-        let alert = app.alerts["Rename route"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "H12 alert missing")
+        let field = app.textFields["rename.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "H12 rename sheet missing")
         snap(app, "H12-rename-route")
 
-        let field = alert.textFields.firstMatch
         field.tap()
         field.clearText()
         field.typeText("Kettle Gravel Day")
-        alert.buttons["Save"].tap()
+        app.buttons["rename.save"].tap()
 
         XCTAssertTrue(app.staticTexts["Kettle Gravel Day"].waitForExistence(timeout: 5), "title kept the old name")
 
@@ -241,16 +240,15 @@ final class RouteDetailTests: XCTestCase {
         let rename = app.buttons["detail.rename"]
         XCTAssertTrue(rename.waitForExistence(timeout: 10), "E1 must offer the rename pencil")
         rename.tap()
-        let alert = app.alerts["Rename route"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "H12 alert missing on E1")
+        let field = app.textFields["rename.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "H12 rename sheet missing on E1")
 
-        let field = alert.textFields.firstMatch
         // Tap past the text's right end: a centre tap lands the caret mid-name, and clearing only
         // deletes backwards.
         field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
         field.clearText()
         field.typeText("Schwarzwald Gravel")
-        alert.buttons["Save"].tap()
+        app.buttons["rename.save"].tap()
 
         XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5), "E1 title kept the old name")
         snap(app, "E1-renamed")
@@ -275,7 +273,7 @@ final class RouteDetailTests: XCTestCase {
 }
 
 extension XCUIElement {
-    /// Clear a text field by selecting all and deleting; alerts have no clear button.
+    /// Clear a text field by selecting all and deleting; the rename field has no clear button.
     func clearText() {
         guard let current = value as? String, !current.isEmpty else { return }
         typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))

@@ -27,7 +27,6 @@ public struct MainScreenView: View {
     @State private var isSelecting = false
     @State private var selectedRouteIDs: Set<RouteID> = []
     @State private var groupPromptShown = false
-    @State private var groupName = "New trip"
     // Pull-to-reveal search, Mail-style: hidden until the list is tugged down past the threshold,
     // and hidden again on scroll-up once the query is cleared. `scrollBaseline` is the sentinel
     // row's resting position.
@@ -127,14 +126,15 @@ public struct MainScreenView: View {
         .background(OBCTheme.parchment.ignoresSafeArea())
         // The multi-select action bar, shown only while selecting. Two or more routes make a group.
         .safeAreaInset(edge: .bottom) { selectionBar }
-        // The name prompt, prefilled.
-        .alert("Name the trip", isPresented: $groupPromptShown) {
-            TextField("Trip name", text: $groupName)
-            Button("Cancel", role: .cancel) {}
-            Button("Create") {
-                model.groupIntoTrip(Array(selectedRouteIDs), name: groupName)
-                exitSelection()
-            }
+        .obcRenameSheet(
+            "Name the trip",
+            isPresented: $groupPromptShown,
+            name: "New trip",
+            placeholder: "Trip name",
+            saveTitle: "Create"
+        ) {
+            model.groupIntoTrip(Array(selectedRouteIDs), name: $0)
+            exitSelection()
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $libraryMapShown) { libraryMap }
@@ -190,7 +190,6 @@ public struct MainScreenView: View {
         if isSelecting {
             let count = selectedRouteIDs.count
             Button {
-                groupName = "New trip"
                 groupPromptShown = true
             } label: {
                 Text(count > 0 ? "Group into trip (\(count))" : "Group into trip")

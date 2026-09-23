@@ -21,6 +21,7 @@ struct RootView: View {
     /// from the cache, so foregrounding is not a network request.
     @State private var updateSurfaceModel: UpdateSurfaceModel
     @State private var path: [MainDestination] = []
+    @State private var rideRenameShown = false
     @Environment(\.scenePhase) private var scenePhase
 
     private let transport: any DeviceTransport
@@ -39,8 +40,8 @@ struct RootView: View {
     /// and the share-sheet registration follow `supportedFileExtensions`.
     private let importer: RouteImporter
     private let rideExporter = RideExporter(encoders: [GPXRideEncoder()], defaultFileExtension: "gpx")
-    /// A route file handed in at launch, which opens the import landing once the main screen is up.
-    private let importAtLaunch: (data: Data, fileName: String)?
+    /// Route files handed in at launch, which open the import once the main screen is up.
+    private let importAtLaunch: [(data: Data, fileName: String)]
     /// A pre-staged firmware update handed in at launch, which pushes the update screen straight
     /// to its staged state, because the Files picker cannot be driven from automation.
     private let firmwareDemoAtLaunch: (data: Data, autoSend: Bool)?
@@ -55,7 +56,7 @@ struct RootView: View {
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
         updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
         updateNotifier: (any UpdateNotifying)? = nil,
-        importAtLaunch: (data: Data, fileName: String)? = nil,
+        importAtLaunch: [(data: Data, fileName: String)] = [],
         firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil,
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
@@ -179,18 +180,15 @@ struct RootView: View {
             Button("Add as a new route") { importModel.chooseAddAsNew() }
             Button("Cancel", role: .cancel) { importModel.cancelCollision() }
         }
-        .alert(
+        .obcRenameSheet(
             "Name the new route",
             isPresented: addAsNewShown,
-            presenting: importModel.addAsNewPrompt
-        ) { _ in
-            TextField("Name", text: $importModel.newRouteName)
-            Button("Cancel", role: .cancel) { importModel.cancelAddAsNew() }
-            Button("Add") { importModel.confirmNewName() }
-                .disabled(!importModel.isNewRouteNameValid)
-        } message: { _ in
-            Text("A route with this name is already in your library — pick a different one.")
-        }
+            name: importModel.newRouteName,
+            message: "A route with this name is already in your library — pick a different one.",
+            saveTitle: "Add",
+            canSave: importModel.isValidNewRouteName,
+            onSave: importModel.confirmNewName
+        )
         .task {
             lifecycleModel.start()
             reachability.start()
@@ -201,8 +199,8 @@ struct RootView: View {
             // A notice tapped from a cold launch: iOS delivers the response during startup, so
             // the flag may already be set by the time the first `.task` runs.
             if UpdateRouteRequest.shared.consume() { pushFirmwareUpdate() }
-            if let importAtLaunch {
-                importModel.open(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
+            if !importAtLaunch.isEmpty {
+                importModel.open(files: importAtLaunch)
             }
             // Push the update screen, pre-staged, once the main screen is up: the demo entry the
             // Files picker cannot provide from automation.
@@ -433,7 +431,7 @@ struct RootView: View {
                         mainModel.deleteRide(id)
                         path.removeAll()
                     },
-                    onRename: { mainModel.renameRide(id, to: $0) },
+                    onRenameTap: { rideRenameShown = true },
                     onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) },
                     rideShareMenu: tracked.map(rideShareMenu(for:)),
                     rideEditMenu: tracked.map { rideEditMenu(for: $0) },
@@ -448,6 +446,17 @@ struct RootView: View {
                 .id(tracked.map { [Double(mainModel.rideEditCount), Double($0.points.count),
                                    $0.points.first?.timestamp.timeIntervalSince1970 ?? 0,
                                    $0.points.last?.timestamp.timeIntervalSince1970 ?? 0] })
+                // A rename builds the screen again too, so the title shows the new name.
+                .id(ride.name)
+                // Above both rebuilds, so an edit that lands while the sheet is open cannot close it.
+                .obcRenameSheet(
+                    "Rename ride",
+                    isPresented: $rideRenameShown,
+                    name: ride.name,
+                    canSave: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                ) {
+                    mainModel.renameRide(id, to: $0.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
             }
         case .trip(let id):
             TripDetailView(
@@ -459,8 +468,21 @@ struct RootView: View {
                         path.removeSubrange(index...)
                     }
                 },
-                onOpenRide: { path.append(.ride(id: $0)) }
+                onOpenRide: { path.append(.ride(id: $0)) },
+                onOpenDay: { path.append(.tripDay(id: id, day: $0)) }
             )
+        case .tripDay(let id, let day):
+            if let trip = mainModel.trip(id), let route = mainModel.tripDays(id).first(where: { $0.day == day }) {
+                RouteDetailScreen(
+                    transport: transport,
+                    dressing: .tripDay(route.summary(tripID: id)),
+                    preloadedDetail: route.detail(tripID: id),
+                    // The full-resolution cut, for the interactive map.
+                    plannedGeometry: ImportedRoute(points: route.points),
+                    bikeType: trip.bikeType,
+                    deviceName: mainModel.deviceName
+                )
+            }
         case .trash:
             RecentlyDeletedView(model: mainModel)
         case .settings:
@@ -543,6 +565,7 @@ struct RootView: View {
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case trip(id: TripID)
+    case tripDay(id: TripID, day: Int)
     case ride(id: RideID)
     case trash
     case settings
@@ -568,7 +591,7 @@ import OBCMock
     RootView(
         transport: MockTransport(control: control),
         bondStore: MockBondStore(control: control),
-        importAtLaunch: SampleRouteFile.data().map { ($0, "sample-import.gpx") }
+        importAtLaunch: SampleRouteFile.files()
     )
 }
 #endif

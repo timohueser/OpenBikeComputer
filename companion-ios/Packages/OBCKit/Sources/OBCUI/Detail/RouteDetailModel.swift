@@ -3,7 +3,7 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// State for the route-detail screen: one profile layout, three dressings, because the view is
+/// State for the route-detail screen: one profile layout, four dressings, because the view is
 /// never forked.
 ///
 /// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
@@ -12,9 +12,11 @@ import OBCTransport
 /// points in `start()`, which runs once on the live model. Imported computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
-    /// Which of the three dressings this instance wears.
+    /// Which of the four dressings this instance wears.
     public enum Dressing {
         case planned(RouteSummary)
+        /// One day of a trip, read-only: the trip page owns its name, bike type and upload.
+        case tripDay(RouteSummary)
         case tracked(RideSummary)
         case imported(ImportedRoute, fileName: String, source: ImportSource = .file)
     }
@@ -108,9 +110,12 @@ public final class RouteDetailModel {
         return crc
     }
 
-    /// Every dressing renames. On the import landing the pencil fixes the name before save or
-    /// upload, so an import does not have to round-trip through the Planned list.
-    public var isRenamable: Bool { true }
+    /// On the import landing the pencil fixes the name before save or upload, so an import does
+    /// not have to round-trip through the Planned list. A trip day is renamed on the trip page.
+    public var isRenamable: Bool {
+        if case .tripDay = dressing { return false }
+        return true
+    }
 
     @ObservationIgnored private let now: () -> Date
     // MARK: Wiring
@@ -157,7 +162,7 @@ public final class RouteDetailModel {
         self.rides = rides
 
         switch dressing {
-        case .planned(let route):
+        case .planned(let route), .tripDay(let route):
             name = route.name
             subtitle = nil
             preview = route.trackPreview
@@ -227,7 +232,7 @@ public final class RouteDetailModel {
     /// The hero's corner tag, and whether it reads in the tracked accent colour.
     public var tag: (text: String, isAccent: Bool) {
         switch dressing {
-        case .planned: ("Planned", false)
+        case .planned, .tripDay: ("Planned", false)
         case .tracked(let ride): ("Tracked · \(OBCFormat.rideDay(ride.date))", true)
         case .imported: ("New · unsaved", false)
         }
@@ -255,7 +260,7 @@ public final class RouteDetailModel {
 
     public var stats: [OBCStat] {
         switch dressing {
-        case .planned:
+        case .planned, .tripDay:
             [
                 OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
                 OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
@@ -356,7 +361,7 @@ public final class RouteDetailModel {
             route.name = name  // a rename rides along
             route.estimatedDuration = estimatedDuration
             summary = route
-        case .imported, .tracked:  // tracked never uploads
+        case .imported, .tracked, .tripDay:  // tracked and trip days never upload
             summary = makeSummary()
         }
         return RouteBlob(
