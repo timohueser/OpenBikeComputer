@@ -26,7 +26,6 @@
         "framebuffer": 76800,
         "row_diff": 1284,
         "app": 59160,
-        "_app_note": "59,160 B on the head `--features resource-report` link of the `embedded` CI job. The Find list no longer keeps a stored route per candidate, so `App` lost the retained-candidate table and its store binding (352 B).",
         "map_cache": 37084,
         "map_tables": 4440,
         "route_cache": 9260,
@@ -60,6 +59,7 @@
         "flat_engine": 768,
         "ble_v4_adapter": 763
       },
+      "_app_note": "59,160 B on the head `--features resource-report` link of the `embedded` CI job. The Find list no longer keeps a stored route per candidate, so `App` lost the retained-candidate table and its store binding (352 B).",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,
