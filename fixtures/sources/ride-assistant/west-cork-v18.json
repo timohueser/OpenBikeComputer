@@ -2,13 +2,13 @@
   "schema": 3,
   "package": "sim-assistant-west-cork",
   "archive": {
-    "bytes": 2470965,
-    "sha256": "19156cb89216347471307b0cac2f9c0fe284a8c1a90edde102a8b790b0c51708"
+    "bytes": 2470991,
+    "sha256": "afc705e129e5e81d748ed7385bda0541a01b2f37a9a6c8b13c1106d8d6d009cc"
   },
   "producer": {
-    "source_commit": "178de5eeb",
+    "source_commit": "e0a047c6c",
     "executables_sha256": {
-      "obc-bake": "17a0579932606996dd003aa6d94aa14bd44e858d35e7ce8f4b54ec77bfa58b0a",
+      "obc-bake": "8a0432cd30a86388bccf99afea28e53eacd34f851aa947735e6b59fe4b86618f",
       "obc-dem": "ee482ccc01ca46f2a494d1031764b4785d1c0d1dabeea3f9e5cbbddda5da2c6f",
       "obcm-assemble": "9b40f409db738018228bab6c1ce6b37139aecace78422dfa01f3951bce62e9a6"
     }
@@ -31,8 +31,8 @@
     "sha256": "1c4a40f4887b23854e618ad3c5e38777e034941014b042046dafe494896876d5"
   },
   "map": {
-    "bytes": 4820688,
-    "sha256": "fe2736c3c92493f91ca555727aaf1216b6366948427bd7e7bed0bfa0264ae9e9",
+    "bytes": 4820800,
+    "sha256": "0f5b9cbc16dd15e79a5d39682f798e6a9f33b06cae52496f2c2e974a12510760",
     "obcm_version": 18
   },
   "land_source": {
@@ -75,7 +75,7 @@
   "recipe": "python3 fixtures/build-assistant-package.py west-cork",
   "packaged_build": {
     "bytes": 8122,
-    "sha256": "a7f3460b8b2cbfab4cf865ed4ff0b4369a17d9cfc65cea311e83200747019662",
+    "sha256": "992a12998ec7d79419efd8f8303ec5b57629088b339ab2781434f626b51a82b9",
     "note": "The packaged build.json holds the bake commands, executable digests and content counts."
   },
   "terrain": {
