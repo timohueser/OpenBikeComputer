@@ -98,8 +98,9 @@ impl ArrivalScreen {
         let here = name(self.view.route);
         let mut question: heapless::String<96> = heapless::String::new();
         match self.view.day.and_then(|day| Some((day + 1, day_place(here, day + 1)?))) {
+            // A no-break space keeps "Day 2" on one line.
             Some((number, place)) => {
-                let _ = write!(question, "{place}{}{day_word} {number}.", rx.t(Msg::ArrivalEndOfDay));
+                let _ = write!(question, "{place}{}{day_word}\u{a0}{number}.", rx.t(Msg::ArrivalEndOfDay));
             }
             None => {
                 let _ = write!(question, "{}{here}.", rx.t(Msg::ArrivalEndOf));
