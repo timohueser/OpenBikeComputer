@@ -240,10 +240,9 @@ expect = "PeakView"
 args = ["--center", "7961000,46585000", "--heading", "141.25"]
 boot = false
 
-# Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
-# over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
-# synced/retention metadata boundary lands.
-# `p` presses into the Rides screen from the Menu (one `d` step + `w` settle).
+# The Rides screen: the "Alps traverse" trip folder at its newest ride, then the two loose rides,
+# in the Route menu's two-line row. `p` presses into the Rides screen from the Menu (one `d` step
+# + `w` settle).
 [[frame]]
 name = "rides"
 map = "{grimsel}"
@@ -251,33 +250,56 @@ env = "tracks"
 script = "B d w p"
 expect = "Rides"
 
-# The Ride detail (#680, repaged in owner review round 2, content-paired in round 3): press the
-# highlighted ride (the unsynced `ride-1` fixture) — RIDE bar with the "not synced" slot, name, date · time, the
-# content-paired pager on its entry page (page A: the recorded track's shape preview, host-filled —
-# start disc + end diamond — over DISTANCE + RIDE TIME), and the guarded Delete-ride row.
+# The folder pressed: the trip's name in the title bar, its totals over a hairline, and its rides
+# newest first, each with its weekday date.
+[[frame]]
+name = "rides-trip"
+map = "{grimsel}"
+env = "tracks"
+script = "B d w p p"
+expect = "Rides"
+
+# The Ride detail of Day 2: the date line, the ridden track on the Grimsel map in the trail red with
+# its start dot, DISTANCE, RIDE TIME and CLIMBED, and the plain Delete-ride row.
 [[frame]]
 name = "ride-detail"
 map = "{grimsel}"
 env = "tracks"
-script = "B d w p p"
+script = "B d w p p p"
 expect = "RideDetail"
 
-# Page B after the 5 s dwell (seven `w` ticks): the recorded elevation band (the staged fixture,
-# host-filled) over AVG + CLIMBED — the same band slot, so nothing jumps.
+# Page 2 after the 5 s dwell (seven `w` ticks): the profile with its high point, AVG SPEED and the
+# one sensor Day 2 recorded, AVG HR.
 [[frame]]
 name = "ride-detail-elevation"
 map = "{grimsel}"
 env = "tracks"
-script = "B d w p p w*7"
+script = "B d w p p p w*7"
 expect = "RideDetail"
 
-# The detail's delete charging: `H` partial-holds Select over the Delete-ride row, so its
-# warning-red fill draws mid-charge (the guarded-hold idiom, ride_control's pattern).
+# Page 2 of Day 1, which recorded no sensor: AVG SPEED alone, and the profile takes the room.
+[[frame]]
+name = "ride-detail-elevation-nohr"
+map = "{grimsel}"
+env = "tracks"
+script = "B d w p p d p w*7"
+expect = "RideDetail"
+
+# Page 2 of the loose "Sensor Ride", which recorded all three sensors: the most rows a page holds.
+[[frame]]
+name = "ride-detail-sensors"
+map = "{grimsel}"
+env = "tracks"
+script = "B d w p d p w*7"
+expect = "RideDetail"
+
+# The detail's delete charging: `H` partial-holds Select, so the Delete-ride row draws its shaded
+# base and the warning-red fill. On the board a hold step repaints only this row.
 [[frame]]
 name = "ride-detail-delete"
 map = "{grimsel}"
 env = "tracks"
-script = "B d w p p H"
+script = "B d w p p p H"
 expect = "RideDetail"
 
 # The delete row HIDDEN while a ride is being recorded (owner review round 1 — no greyed face):
@@ -285,13 +307,13 @@ expect = "RideDetail"
 # session only starts once positions flow, and `is_tracking` (the hiding predicate) is
 # `session.is_some()`, so without `--gpx` this frame would wrongly show the live delete row. Then
 # out to the main Menu — a bare `B` reaches it from anywhere since #1515 D3 — step to the Rides
-# station (`d w`), press into the detail: the page ends at the stat ledger with NO Delete-ride row
-# at all, and `H` fills nothing.
+# station (`d w`), press through the trip folder into the detail: the page ends at the stat ledger
+# with NO Delete-ride row at all, and `H` fills nothing.
 [[frame]]
 name = "ride-detail-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "p*4 f d p B d w p p H"
+script = "p*4 f d p B d w p p p H"
 expect = "RideDetail"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1166,13 +1188,14 @@ script = "p p d p p f d p b"
 expect = "Statistics"
 args = ["--gpx", "{wptgpx}", "--at", "233"]
 
-# Easier compares the actual matched route; no alternative is fabricated when none improves it.
+# Easier compares the imported Grimsel climb with plans measured on the same terrain. The script runs
+# at the replay endpoint, so the rider holds still and the result stays current.
 [[frame]]
 name = "easier-route"
 env = ["elevation", "eta-route"]
 script = "p*4 b T A d d p f"
 expect = "Easier"
-args = ["--gpx", "{gpx}", "--at", "30"]
+args = ["--gpx", "{gpx}", "--script-at", "30", "--at", "30"]
 
 [[frame]]
 name = "ridecontrol"
@@ -1189,10 +1212,11 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 # frames — a real map under the device-64 dim LUT — so the two sheets can be judged against each
 # other.
 #
-# Grimsel carries **no routing graph**, so this frame is also the inert-row case: Detour draws
-# recessed with no chevron and a press does nothing. The drawer's dim means inert, unlike the
-# compass dial's, which dimmed a station a press still opened. The all-live arrangement is
-# `map-context-live.png`, shot on the Monaco graph down in the detour block.
+# Grimsel carries a routing graph, but at this replay point the rider reads off the route, so this
+# frame is also the inert-row case: Detour draws recessed with no chevron and a press does nothing.
+# The drawer's dim means inert, unlike the compass dial's, which dimmed a station a press still
+# opened. The all-live arrangement is `map-context-live.png`, shot on the Monaco graph down in the
+# detour block.
 [[frame]]
 name = "map-context"
 map = "{grimsel}"
@@ -1301,13 +1325,32 @@ script = "{up_base} C d p w d"
 expect = "ContextDrawer"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
+# (d) A POI row's detail: the category title, the Ahead row and the Off route row's side arrow.
 [[frame]]
 name = "up-ahead-poi-detail"
 map = "{monaco}"
 env = "monaco-route"
 script = "{up_base} {up_scope_pois} p f"
 expect = "PoiDetail"
+args = ["--gpx", "{upgpx}", "--at", "25"]
+
+# (d2) The fullest timeline detail: a two-line name, both distance rows and split hours. The page
+# drops its subtitle and draws the compact hours rows, so the hours clear the footer bar.
+[[frame]]
+name = "up-ahead-poi-detail-tight"
+map = "{monaco}"
+env = "monaco-garden"
+script = "{up_base} {up_scope_pois} p f"
+expect = "PoiDetail"
+args = ["--at", "0", "--clock", "2025-01-06T12:00"]
+
+# (b2) The same list in imperial units, where a climb gives way to the wider offset figure.
+[[frame]]
+name = "up-ahead-water-imperial"
+map = "{monaco}"
+env = "monaco-route"
+script = "B u p d*4 p p w d p w b b b w {up_base} {up_filter_water} d*9 f*8"
+expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
@@ -2022,6 +2065,17 @@ env = "routes"
 script = "p*4 f d p A d p f p f C p w d d"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
+langs = ["de", "fr", "es"]
+
+# A timeline place's detail: the category title and the Ahead and Off route captions beside their
+# values.
+[[frame]]
+name = "up-ahead-poi-detail"
+map = "{monaco}"
+env = "monaco-route"
+script = "{up_base} {up_scope_pois} p f"
+expect = "PoiDetail"
+args = ["--gpx", "{upgpx}", "--at", "25"]
 langs = ["de", "fr", "es"]
 
 [[frame]]

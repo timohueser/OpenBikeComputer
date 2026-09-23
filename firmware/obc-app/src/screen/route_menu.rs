@@ -17,32 +17,12 @@ use crate::trip::{TripProgress, TripSummary};
 use crate::{t as tr, Msg};
 
 use super::vocab::chrome::{empty_state, row_check, title_frame, ROW_CHECK_HALF};
-use super::vocab::list::{self, ListGeometry, Separators};
+use super::vocab::list;
 use super::vocab::marquee::{fit, MarqueeFrame};
+use super::vocab::two_line::{self, line2_right, LINE2, LINE2_FONT};
 use super::{
     palette, Ctx, MapScreen, Render, RouteOverviewScreen, RouteSwapScreen, Screen, Transition, TripDeleteScreen,
 };
-
-/// Per-route pane height (two lines: name + stats), sized so the routes fill the full list area.
-const ROW_H: i32 = 66;
-
-/// Text inset of the name/stats column from the row area's left edge. The distance on line 2 shares
-/// this x, so the name and the distance form one left column.
-const NAME_INSET: i32 = 12;
-
-/// The list side inset: the row area's margin from the panel edge.
-const SIDE_INSET: i32 = 12;
-
-/// The name on line 1 of every row.
-const NAME_FONT: Font = Font::Label;
-
-/// Line 2 of every row: one size under the name, so "Day 2 next · 3 days" fits the row. It is
-/// olive on every row, the cursor's too.
-const LINE2_FONT: Font = Font::Caption;
-const LINE2: u16 = palette::SUBTEXT;
-
-/// The top of line 2 in a row.
-const LINE2_Y: i32 = 36;
 
 /// The stats line's second column, the climb group, as a fraction of the row's inner width, so the
 /// climb figures align across every row whatever the width of the distance.
@@ -268,7 +248,7 @@ impl RouteMenuScreen {
         self.build_rows(trips, routes.len(), rx.internal_routes, &mut rows);
         let total = rows.len();
 
-        let geo = ListGeometry::below_title(w, h, ROW_H, 8, SIDE_INSET, Separators::Unselected);
+        let geo = two_line::geometry(w, h);
 
         // The title is "ROUTES" at the top level and the trip's name in a day list. `title_buf`
         // is filled only on the trip-name path, so it is declared uninitialized and borrowed there.
@@ -308,11 +288,11 @@ impl RouteMenuScreen {
             match rows[row.index] {
                 Row::Folder(ti) => {
                     let t = &trips[ti];
-                    let x = name_line(cv, &row, &rx.marquee, &t.name, w, None, INK);
+                    let x = name_line(cv, &row, &rx.marquee, &t.name, None, INK);
                     let meta = trip_meta(t, t.progress_in(rx.trip_progress), lang, line2_right(&row) - x);
-                    cv.text(&meta, Point::new(x, row.area.top_left.y + LINE2_Y), LINE2_FONT, TextAlign::Left, LINE2);
+                    cv.text(&meta, Point::new(x, two_line::line2_y(&row)), LINE2_FONT, TextAlign::Left, LINE2);
                 }
-                Row::Route(ri) => draw_route_row(cv, &row, &rx.marquee, &routes[ri], w, unaccepted(ri)),
+                Row::Route(ri) => draw_route_row(cv, &row, &rx.marquee, &routes[ri], unaccepted(ri)),
                 Row::Day { day, route } => {
                     let Some(t) = trip else { return };
                     let progress = t.progress_in(rx.trip_progress);
@@ -324,8 +304,8 @@ impl RouteMenuScreen {
                         (true, true) => (INK, LINE2, Some(LINE2)),
                     };
                     let r = &routes[route];
-                    let x = name_line(cv, &row, &rx.marquee, &r.name, w, tick, ink);
-                    let sy = row.area.top_left.y + LINE2_Y;
+                    let x = name_line(cv, &row, &rx.marquee, &r.name, tick, ink);
+                    let sy = two_line::line2_y(&row);
                     if let Some(label) = unaccepted(route) {
                         cv.text(label, Point::new(x, sy), LINE2_FONT, TextAlign::Left, LINE2);
                         return;
@@ -349,17 +329,12 @@ impl RouteMenuScreen {
     }
 }
 
-/// The x of the climb column, from the row area's left edge.
-fn climb_col_x(area_x: i32, w: i32) -> i32 {
-    area_x + (w - 2 * SIDE_INSET) * CLIMB_COL_PCT / 100
+/// The x of the climb column.
+fn climb_col_x(row: &list::RowCtx) -> i32 {
+    row.area.top_left.x + row.area.size.width as i32 * CLIMB_COL_PCT / 100
 }
 
-/// The right edge of a row's line 2.
-fn line2_right(row: &list::RowCtx) -> i32 {
-    row.area.top_left.x + row.area.size.width as i32 - 4
-}
-
-/// Line 1 of a two-line row: the name, cut or scrolled to the row. `tick` draws the ridden tick in
+/// Line 1 of a route-menu row: the name, cut or scrolled to the row. `tick` draws the ridden tick in
 /// that colour in the text column's indent and moves the text right by [`TICK_W`]. Returns the x
 /// where line 2 starts.
 fn name_line(
@@ -367,18 +342,15 @@ fn name_line(
     row: &list::RowCtx,
     marquee: &MarqueeFrame,
     name: &str,
-    w: i32,
     tick: Option<u16>,
     color: u16,
 ) -> i32 {
-    let y = row.area.top_left.y;
-    let mut x = row.area.top_left.x + NAME_INSET;
+    let mut x = two_line::text_x(row);
     if let Some(tick_color) = tick {
-        row_check(cv, Point::new(x + ROW_CHECK_HALF, y + 9 + NAME_FONT.cap_mid() as i32), tick_color);
+        row_check(cv, two_line::mark_at(row, x + ROW_CHECK_HALF), tick_color);
         x += TICK_W;
     }
-    let name = marquee.fit(name, (w - 20) - x, NAME_FONT, row.scroll());
-    cv.text(&name, Point::new(x, y + 9), NAME_FONT, TextAlign::Left, color);
+    two_line::name_line(cv, row, marquee, name, (x, two_line::name_right(row)), color);
     x
 }
 
@@ -389,12 +361,11 @@ fn draw_route_row(
     row: &list::RowCtx,
     marquee: &MarqueeFrame,
     route: &RouteSummary,
-    w: i32,
     unavailable: Option<&str>,
 ) {
     use palette::*;
-    let name_x = name_line(cv, row, marquee, &route.name, w, None, INK);
-    let sy = row.area.top_left.y + LINE2_Y;
+    let name_x = name_line(cv, row, marquee, &route.name, None, INK);
+    let sy = two_line::line2_y(row);
     if let Some(label) = unavailable {
         cv.text(label, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, LINE2);
         return;
@@ -403,7 +374,7 @@ fn draw_route_row(
     let _ = write!(dist, "{} km", route.distance_km);
     cv.text(&dist, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, LINE2);
 
-    climb_group(cv, climb_col_x(row.area.top_left.x, w), sy, &climb_label(route.climb_m), LINE2);
+    climb_group(cv, climb_col_x(row), sy, &climb_label(route.climb_m), LINE2);
 }
 
 fn climb_label(climb_m: u32) -> heapless::String<12> {
@@ -656,7 +627,7 @@ mod tests {
 
     #[test]
     fn every_language_keeps_the_day_count_on_a_panel_wide_row() {
-        let budget = 240 - 2 * SIDE_INSET - 4 - NAME_INSET;
+        let budget = 240 - 2 * two_line::SIDE_INSET - 4 - two_line::NAME_INSET;
         let t = three_days(&[]);
         for lang in Language::ALL {
             for p in [None, Some(&finished(2))] {

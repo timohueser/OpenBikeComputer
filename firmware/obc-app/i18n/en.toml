@@ -370,8 +370,9 @@ today = "Today"
 open = "OPEN"
 closed = "CLOSED"
 route_here = "Route here"
-side_left = "left"
-side_right = "right"
+ahead = "Ahead"
+away = "Away"
+off_route = "Off route"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -384,11 +385,14 @@ on_phone = "on your phone"
 title = "RIDES"
 no_rides = "No rides yet"
 no_rides_sub = "Record a ride"
-not_synced = "not synced"
+# The trip folder's line 2: "2 of 3 days · 156 km".
+of = "of"
+days = "days"
+# A trip folder whose trip name is unknown.
+trip = "Trip"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "synced"
 delete_ride = "Delete ride"
 
 # --- Route menu screen ---
@@ -792,7 +796,12 @@ preview_route = "Preview route"
 search_limit = "Search limit"
 no_connection = "No route connection"
 no_comparison = "Cannot compare"
-no_useful_route = "No useful route"
+search_failed = "Search failed"
+no_easier = "No easier way"
+checked_all = "Checked climb,"
+checked_all_goals = "surface, distance"
+checked_some = "Checked only"
+checked_some_goals = "climb, distance"
 comparing = "Comparing routes"
 ascent_saved = "ascent saved"
 rough_avoided = "rough avoided"

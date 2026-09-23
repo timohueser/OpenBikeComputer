@@ -11,18 +11,13 @@ frames expect: the two ride fixtures, the trip folder and the imported routes ar
 
 from __future__ import annotations
 
+import calendar
 import math
 import re
 import shutil
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-
-#: The `ride-1` footer distance, patched in place so the two same-day rides read differently on
-#: the Rides rows. Distance is not part of the object's length validation, so the patched copy
-#: still reads as a valid ride.
-RIDE_DISTANCE = (72, 17800)
-
 
 @dataclass(frozen=True)
 class Staging:
@@ -65,19 +60,60 @@ def plain_route(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
-def tracks(stage: Stage) -> Staging:
-    """Two stored ride objects for the Rides screen, from the pinned `ride-v4.bin` protocol vector.
+def _ride(samples, name, start, distance_m, moving_s, climb_m, avg_hr, trip):
+    """A ride object as `specs/obc-ble-interface-spec.md` §7.2 lays it out: 20-byte samples, then
+    the 144-byte footer. `samples` are `(lon, lat, ele)`; `trip` is `(key, day index, day count,
+    name)` or `None`.
+    """
+    body = bytearray()
+    for i, (lon, lat, ele) in enumerate(samples):
+        body += struct.pack("<iihHIBBH", lon, lat, ele, i == 0, i * 5000, 0xFF, 0xFF, 0xFFFF)
+    raw = name.encode()
+    footer = struct.pack("<4sBBHIIIHHI", b"OBRF", 4, len(raw), 144, start, distance_m, moving_s, 0, climb_m,
+                         len(samples))
+    footer += struct.pack("<BBBBHH48s", avg_hr or 0xFF, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, raw)
+    key, day, days, trip_name = trip or (0, 0, 0, "")
+    footer += struct.pack("<QBBBB48s", key, day, days, 1, len(trip_name.encode()), trip_name.encode())
+    return bytes(body + footer)
 
-    Both rows are conservatively unsynced; flat synced and retention metadata belong to the later
-    ride-domain boundary.
+
+def _metric(a, b):
+    """Two `(lon, lat)` microdegree points as local metres, for a ground distance."""
+    k = 0.111_32 * math.cos(math.radians(a[1] / 1e6))
+    return (a[0] * k, a[1] * 0.111_32), (b[0] * k, b[1] * 0.111_32)
+
+
+def tracks(stage: Stage) -> Staging:
+    """Four stored rides for the Rides screens, oldest first, so the import gives the newest the
+    highest id: two loose copies of the pinned `ride-v4.bin` vector, "Sensor Ride" with all three
+    sensors, and two days of the trip "Alps traverse" on the Grimsel climb's track. Day 2 has a
+    heart rate; Day 1 has no sensor. Every ride is unsynced; the flat store stages no archive rows.
     """
     where = stage.dir("tracks")
-    ride = (stage.vectors / "ride-v4.bin").read_bytes()
-    (where / "ride-0.obcr").write_bytes(ride)
-    patched = bytearray(ride)
-    offset, distance = RIDE_DISTANCE
-    struct.pack_into("<I", patched, offset, distance)
-    (where / "ride-1.obcr").write_bytes(patched)
+    vector = (stage.vectors / "ride-v4.bin").read_bytes()
+    footer = len(vector) - 144
+    for index, distance in enumerate((12_345, 17_800)):
+        loose = bytearray(vector)
+        struct.pack_into("<I", loose, footer + 12, distance)
+        loose[footer + 84 : footer + 144] = bytes(60)
+        loose[footer + 94] = vector[footer + 94]
+        (where / f"ride-{index}.obcr").write_bytes(loose)
+    gpx = (stage.fixtures / "sim-grimsel" / "tracks" / "grimsel-climb.gpx").read_text()
+    points = re.findall(r'<trkpt lat="([-\d.]+)" lon="([-\d.]+)">\s*<ele>([-\d.]+)</ele>', gpx)
+    climb = [(round(float(lon) * 1e6), round(float(lat) * 1e6), round(float(ele))) for lat, lon, ele in points[::3]]
+    assert len(climb) > 100, "the Grimsel track parses"
+    alps = (0x0123_4567_89AB_CDEF, "Alps traverse")
+    days = [
+        # name, samples, start (UTC), moving time, average heart rate: Day 1 rides the climb down
+        ("Day 1 Andermatt", climb[::-1], (2025, 9, 29, 7, 30), 48 * 60, None),
+        ("Day 2 Ulrichen", climb, (2025, 9, 30, 8, 12), 95 * 60, 128),
+    ]
+    for day, (name, samples, when, moving, hr) in enumerate(days):
+        metres = round(sum(math.dist(*_metric(a, b)) for a, b in zip(samples, samples[1:])))
+        ascent = sum(max(0, b[2] - a[2]) for a, b in zip(samples, samples[1:]))
+        start = calendar.timegm((*when, 0, 0, 0, 0))
+        ride = _ride(samples, name, start, metres, moving, ascent, hr, (alps[0], day, 3, alps[1]))
+        (where / f"ride-{day + 2}.obcr").write_bytes(ride)
     return Staging(("--tracks-dir", str(where)))
 
 
@@ -192,6 +228,21 @@ def monaco_route(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
+def monaco_garden(stage: Stage) -> Staging:
+    """A short Monaco line past the pharmacy with split hours and a two-line name, so the Up-ahead
+    detail can show its fullest page. The track is replayed as well as imported.
+    """
+    where = stage.dir("monaco-garden")
+    track = where / "garden.gpx"
+    points = "".join(
+        f'<trkpt lat="43.73470" lon="{7.4110 + 0.002 * i:.4f}"><time>2025-01-06T09:{i:02d}:00Z</time></trkpt>'
+        for i in range(6)
+    )
+    track.write_text("<gpx><trk><trkseg>" + points + "</trkseg></trk></gpx>")
+    stage.run(["--import", str(track), "--routes-dir", str(where)])
+    return Staging(("--routes-dir", str(where), "--gpx", str(track)))
+
+
 def journey(stage: Stage) -> Staging:
     """A card carrying a real Cork destination and recording, so the ride recovery after a restart
     can reach the Journey resume card. The landmark script accepts a Visit, which persists both.
@@ -251,6 +302,7 @@ ENVIRONMENTS = {
     "day-route": day_route,
     "long-route": long_route,
     "monaco-route": monaco_route,
+    "monaco-garden": monaco_garden,
     "journey": journey,
     "elevation": elevation,
 }

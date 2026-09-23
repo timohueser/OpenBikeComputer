@@ -906,6 +906,7 @@ mod tests {
             climb_m: 10,
             synced: false,
             synced_at_utc: 0,
+            ..Default::default()
         }
     }
     fn committed(revision: u64) -> ExternalFacts {
@@ -1367,7 +1368,7 @@ mod tests {
     #[should_panic(expected = "cannot change DeviceCore during a pass")]
     fn a_callback_cannot_mutate_core_state_during_a_pass() {
         let mut app = navigating();
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }], &[]);
         app.activity.viewed_ride = Some(0);
         let plan = quiet(&mut app, 10);
         let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
@@ -1381,7 +1382,7 @@ mod tests {
     #[test]
     fn a_push_outside_a_pass_is_applied_normally() {
         let mut app = navigating();
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }], &[]);
         app.activity.viewed_ride = Some(0);
         let plan = quiet(&mut app, 10);
         let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
@@ -1431,7 +1432,7 @@ mod tests {
     #[test]
     fn one_pass_routes_a_full_fact_batch_and_a_derived_answer() {
         let mut app = navigating();
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }], &[]);
         app.activity.viewed_ride = Some(0);
         let mut quiet_facts = ExternalFacts::NONE;
         let plan = pass_full(

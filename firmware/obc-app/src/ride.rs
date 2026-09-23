@@ -8,6 +8,7 @@
 use heapless::String;
 
 use obc_formats::obcr::NAME_CAP;
+use obc_formats::ride::TripRef;
 use obc_route::RideInfo;
 pub const MAX_RIDES: usize = 128;
 pub const UI_RIDES_CAP: usize = 32;
@@ -30,7 +31,7 @@ const _: () = assert!(
 
 /// A stored ride's header facts for the Rides screen, plus the device-local `synced` flag the
 /// unsynced-delete guard keys on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RideSummary {
     /// Ride name (truncated to [`NAME_CAP`] on a char boundary), for the row's first line.
     pub name: String<NAME_CAP>,
@@ -42,6 +43,12 @@ pub struct RideSummary {
     /// Whether exact durable client archive proof exists. The delete footer warns when false.
     pub synced: bool,
     pub synced_at_utc: u32,
+    /// The trip day the ride started on. The Rides screen groups a trip's rides into one folder,
+    /// named from [`RideTrips`].
+    pub trip: Option<TripRef>,
+    pub avg_hr: Option<u8>,
+    pub avg_cadence: Option<u8>,
+    pub avg_power: Option<u16>,
 }
 
 impl RideSummary {
@@ -55,6 +62,37 @@ impl RideSummary {
             climb_m: info.climb_m,
             synced,
             synced_at_utc,
+            trip: info.trip,
+            avg_hr: info.avg_hr,
+            avg_cadence: info.avg_cadence,
+            avg_power: info.avg_power,
         }
+    }
+}
+
+/// How many trip folders of the ride catalog carry their trip's name: one for every four rides of
+/// [`UI_RIDES_CAP`], because a trip is several days. A folder past the cap shows its newest ride's
+/// name instead.
+pub const RIDE_TRIPS_CAP: usize = UI_RIDES_CAP / 4;
+
+/// The names of the ride catalog's trips, one per trip key.
+pub type RideTrips = heapless::Vec<RideTrip, RIDE_TRIPS_CAP>;
+
+/// A trip's name as a ride footer stores it, so a folder keeps its name after the trip is deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RideTrip {
+    pub key: u64,
+    pub name: String<NAME_CAP>,
+}
+
+impl RideTrip {
+    /// Note the trip name of a ride in the catalog. Feed the rides newest first: the first
+    /// non-empty name of a trip wins, and a full table keeps what it has.
+    pub fn note(trips: &mut RideTrips, info: &RideInfo) {
+        let Some(trip) = info.trip else { return };
+        if info.trip_name.is_empty() || trips.iter().any(|t| t.key == trip.key()) {
+            return;
+        }
+        let _ = trips.push(RideTrip { key: trip.key(), name: info.trip_name.clone() });
     }
 }

@@ -1400,10 +1400,13 @@ fn the_deepest_descent_stops_short_of_max_depth() {
         app.test_mount_store();
         app.set_backlight_available(true);
         app.set_routes_with_ids(&test_routes(), &IDS3);
-        app.set_rides(&[
-            crate::RideEntry { id: 7, summary: ride_summary("Ride A") },
-            crate::RideEntry { id: 9, summary: ride_summary("Ride B") },
-        ]);
+        app.set_rides(
+            &[
+                crate::RideEntry { id: 7, summary: ride_summary("Ride A") },
+                crate::RideEntry { id: 9, summary: ride_summary("Ride B") },
+            ],
+            &[],
+        );
         // The escape is the way in from a riding view, and [Home, Map, Menu] is the deepest root a
         // descent starts from. On the Map itself a step zooms and a press pauses.
         app.apply_gesture(Gesture::BackHold);

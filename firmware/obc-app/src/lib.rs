@@ -88,7 +88,7 @@ pub use map_catalog::flat_boot_fault;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
 pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage, RideOrigin};
-pub use ride::{RideCatalog, RideEntry, RideSummary, MAX_RIDES, UI_RIDES_CAP};
+pub use ride::{RideCatalog, RideEntry, RideSummary, RideTrip, RideTrips, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};

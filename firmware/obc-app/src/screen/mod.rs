@@ -359,6 +359,8 @@ pub struct Render<'a> {
     pub unaccepted_routes: u64,
     pub internal_routes: u64,
     pub rides: &'a [RideEntry],
+    /// The names of the ride catalog's trips, one per trip key.
+    pub ride_trips: &'a [crate::RideTrip],
     pub trips: &'a [crate::trip::TripSummary],
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
     /// not started.
@@ -913,12 +915,12 @@ screens! {
     /// hold records the trip's durable id for the host to delete the trip and its member routes.
     RouteCleanup(RouteCleanupScreen) => Caps::nav(),
     TripDelete(TripDeleteScreen) => Caps::nav(),
-    /// The stored-rides list: name and sync glyph over a `D MON · distance` line; press opens the
-    /// Ride detail.
+    /// The stored-rides list, with a trip's rides in one folder; a folder press pushes the trip's
+    /// rides, a ride press opens the Ride detail.
     Rides(RidesScreen) => Caps::nav(),
-    /// The recorded sibling of the Route overview: the tracked ride's elevation band, a stat
-    /// ledger, and the guarded Delete-ride row.
-    RideDetail(RideDetailScreen) => Caps::nav(),
+    /// The recorded twin of the Route overview: the ridden track on the device map, then the
+    /// profile, each over a stat ledger, and the guarded Delete-ride row. A static map base.
+    RideDetail(RideDetailScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
     /// The route on the device map over its stats, then the full-height profile. A map base
     /// for the map band, but a static page: it is no ride view and redraws on no fix.
     RouteOverview(RouteOverviewScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
@@ -1079,6 +1081,7 @@ impl Screen {
     pub(crate) fn hold_fill_region(&self, w: i32, h: i32) -> Option<Rectangle> {
         match self {
             Screen::RouteOverview(_) => Some(RouteOverviewScreen::hold_fill_region(w, h)),
+            Screen::RideDetail(_) => Some(RideDetailScreen::hold_fill_region(w, h)),
             _ => None,
         }
     }
@@ -1296,6 +1299,8 @@ pub mod palette {
     pub const TRACK_START: u16 = rgb565(0, 90, 0); // → (0,85,0) dark green
     /// Dark red: the end dot of a previewed route. It stays apart from the magenta line it ends.
     pub const TRACK_END: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
+    /// Trail red: a ridden track on the ride detail's map, apart from the magenta planned route.
+    pub const TRAIL: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
 }
 
 /// One RGB222 channel level, stepped down. Index by the channel's stored level (0-3); the result is
@@ -1445,6 +1450,7 @@ mod tests {
                 "FindPlace",
                 "VisitReview",
                 "Easier",
+                "RideDetail",
                 "RouteOverview"
             ],
             "streamed map and prepared photo pixels stay unchanged while covered"

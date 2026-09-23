@@ -25,6 +25,57 @@ use obc_storage::flat::{
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
 
+#[repr(C, align(4))]
+struct IdentityBlock([u8; BLOCK_BYTES]);
+
+fn read_recovery_identity(
+    sd: &mut crate::semmc::Semmc,
+    started: embassy_time::Instant,
+    lba: u64,
+    block: &mut IdentityBlock,
+) -> Result<(), SemmcError> {
+    if started.elapsed().as_millis() >= crate::flpr_mux::RECOVERY_READ_START_CUTOFF_MS {
+        return Err(SemmcError::Timeout);
+    }
+    sd.read_recovery_block(lba as u32, &mut block.0)
+}
+
+fn validate_mounted_media(
+    sd: &mut crate::semmc::Semmc,
+    expected: obc_storage::flat::MountedMediaState,
+    started: embassy_time::Instant,
+) -> Result<(), SemmcError> {
+    let observed = u64::from(sd.num_blocks()?);
+    let mut block = IdentityBlock([0; BLOCK_BYTES]);
+    let mut matched_superblock = false;
+    for lba in obc_storage::flat::SUPERBLOCK_BLOCKS {
+        read_recovery_identity(sd, started, lba, &mut block)?;
+        if let Some(identity) = obc_storage::flat::decode_media_identity(&block.0, observed) {
+            if !obc_storage::flat::media_identity_matches(expected, identity) {
+                return Err(SemmcError::MediaChanged);
+            }
+            matched_superblock = true;
+            break;
+        }
+    }
+    if !matched_superblock {
+        return Err(SemmcError::MediaChanged);
+    }
+
+    let mut gates = [None; 2];
+    for (copy, lba) in obc_storage::flat::CATALOG_GATE_BLOCKS.into_iter().enumerate() {
+        read_recovery_identity(sd, started, lba, &mut block)?;
+        gates[copy] = obc_storage::flat::decode_catalog_identity(&block.0, copy, expected.store);
+    }
+    obc_storage::flat::catalog_state_matches(expected, gates).then_some(()).ok_or(SemmcError::MediaChanged)
+}
+
+/// Run the card and retained-mount checks for the ride loop's dedicated recovery pass.
+pub(crate) fn recover_media(store: &FlatStore<FlatCard>) -> Result<(), SemmcError> {
+    let expected = store.mounted_media_state();
+    crate::flpr_mux::recover_storage(|sd, started| validate_mounted_media(sd, expected, started))
+}
+
 /// Bring the card host up before the flat store reads its first block.
 ///
 /// Card identification is bounded at 1.5 seconds. The call is synchronous so its transient state
@@ -82,13 +133,21 @@ impl FlatCard {
     fn lba(lba: u64) -> Result<u32, SemmcError> {
         u32::try_from(lba).map_err(|_| SemmcError::OutOfRange)
     }
+
+    fn access<R>(f: impl FnOnce(&mut crate::semmc::Semmc) -> Result<R, SemmcError>) -> Result<R, SemmcError> {
+        crate::flpr_mux::with_storage(f)
+    }
+
+    fn finish_pending() -> Result<(), SemmcError> {
+        Self::access(|sd| sd.finish_write_blocks())
+    }
 }
 
 impl BlockDevice for FlatCard {
     type Error = SemmcError;
 
     fn block_count(&self) -> Result<u64, SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.num_blocks()).map(u64::from)
+        FlatCard::access(|sd| sd.num_blocks()).map(u64::from)
     }
 
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
@@ -98,7 +157,7 @@ impl BlockDevice for FlatCard {
         let blocks = buf.len() / BLOCK_BYTES;
         #[cfg(feature = "sd-bench")]
         let bench_started = embassy_time::Instant::now();
-        let result = crate::flpr_mux::with_storage(|sd| {
+        let result = FlatCard::access(|sd| {
             // A staged upload may have left the previous arena half in FLPR DMA while USB filled
             // the other one. No read may pass it; joining here preserves block-device ordering.
             sd.finish_write_blocks()?;
@@ -122,8 +181,10 @@ impl BlockDevice for FlatCard {
         });
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
-        if let Err(error) = result {
-            defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
+        if let Err(error) = &result {
+            if *error != SemmcError::Unhealthy {
+                defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
+            }
         }
         result
     }
@@ -131,7 +192,7 @@ impl BlockDevice for FlatCard {
     fn write(&self, lba: u64, buf: &[u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
-        crate::flpr_mux::with_storage(|sd| {
+        FlatCard::access(|sd| {
             // Two arena halves give the USB task an owned, aligned DMA source. Join the older half,
             // start this one, and return while the card runs, so the engine can receive, CRC and
             // fill the disjoint half. Generic callers stay synchronous.
@@ -169,7 +230,7 @@ impl BlockDevice for FlatCard {
     /// completion signal and every write is already durable when the store's next statement runs. A
     /// transport with a write-back cache would move that cost back here.
     fn sync(&self) -> Result<(), SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
+        FlatCard::finish_pending()
     }
 }
 
@@ -1085,7 +1146,7 @@ fn serve(
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::FinishUsbStage => {
-            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks()).map_err(|_| StoreError::Media)?;
+            FlatCard::finish_pending().map_err(|_| StoreError::Media)?;
             Ok(Outcome::Done)
         }
         Request::Pump { link, out } => {
@@ -1700,29 +1761,28 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
 
 #[inline(never)]
 pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut rides = obc_app::RideCatalog::new();
+    // The newest ids win, and only their footers are read, newest first, so the first trip name
+    // noted for a trip is its newest ride's.
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
     for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
-        let Ok(Ok(info)) =
-            store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source))
-        else {
-            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
-            return false;
-        };
-        let position = rides.iter().position(|ride| ride.id < entry.id.0).unwrap_or(rides.len());
-        if position < obc_app::UI_RIDES_CAP {
-            if rides.is_full() {
-                rides.pop();
-            }
-            let _ = rides.insert(
-                position,
-                obc_app::RideEntry { id: entry.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) },
-            );
-        }
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
     }
     if !store.entries_ok() {
         return false;
     }
-    app.set_rides(&rides);
+    let mut rides = obc_app::RideCatalog::new();
+    let mut trips = obc_app::RideTrips::new();
+    for head in heads {
+        let Ok(Ok(info)) = store.with_source(head.id, Some(head.revision), |source| obc_route::RideInfo::read(source))
+        else {
+            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
+            return false;
+        };
+        obc_app::RideTrip::note(&mut trips, &info);
+        let _ =
+            rides.push(obc_app::RideEntry { id: head.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) });
+    }
+    app.set_rides(&rides, &trips);
     defmt::info!("flat: Rides menu loaded {=usize} finished ride(s)", rides.len());
     true
 }

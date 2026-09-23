@@ -345,6 +345,7 @@ pub fn ride_summary(name: &str) -> obc_app::RideSummary {
         climb_m: 10,
         synced: false,
         synced_at_utc: 0,
+        ..Default::default()
     }
 }
 
