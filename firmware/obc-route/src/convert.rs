@@ -6,10 +6,11 @@ use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
 use crate::reader::{ChunkMeta, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS};
 use crate::symbol::category_for_symbol;
 use obc_elevation::DeadBand;
+use obc_formats::bike::BikeType;
 use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, ByteSource, Error};
 use obc_formats::obcr::{
-    CHUNK_META_LEN, HEADER_FULL_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_CATEGORY_GENERIC,
-    WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_OFF,
+    BIKE_TYPE_OFF, CHUNK_META_LEN, HEADER_FULL_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION,
+    WAYPOINT_CATEGORY_GENERIC, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_OFF,
 };
 use obc_map_scene::BBox;
 use obc_map_scene::{cos_lat, delta_m, ground_dist_m};
@@ -43,21 +44,24 @@ pub struct RouteStats {
     pub has_elevation: bool,
 }
 
-/// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route `name`.
+/// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route `name` and
+/// typing it [`BikeType::Road`].
 pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
-    gpx_to_obcr_attributed(src, name, sink, None, |_, _| Ok(0))
+    gpx_to_obcr_attributed(src, name, BikeType::Road, sink, None, |_, _| Ok(0))
 }
 
 /// Import with a bounded incoming-segment attribution provider. Plain GPX stays unknown.
 pub fn gpx_to_obcr_attributed(
     src: &dyn ByteSource,
     name: &str,
+    bike: BikeType,
     sink: &mut dyn ByteSink,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
     mut surface: impl FnMut((i32, i32), (i32, i32)) -> Result<u8, Error>,
 ) -> Result<RouteStats, Error> {
     let mut em = ObcrEmitter::new(sink)?;
     em.set_attribution_map(map_source);
+    em.set_bike_type(bike);
 
     // GPX carries `<wpt>` before the track, so collect up to MAX_WAYPOINTS first and place each
     // on the track in the pass below. The scope keeps the two scanners' block buffers from being
@@ -171,6 +175,7 @@ pub(crate) struct ObcrEmitter {
     ele_keep_m: i16,
     surface: u8,
     flags: u8,
+    bike: BikeType,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
 }
 
@@ -191,6 +196,7 @@ impl ObcrEmitter {
             addr_of_mut!((*slot).ele_keep_m).write(1);
             addr_of_mut!((*slot).surface).write(0);
             addr_of_mut!((*slot).flags).write(0);
+            addr_of_mut!((*slot).bike).write(BikeType::default());
             addr_of_mut!((*slot).map_source).write(None);
             let Self {
                 enc: _,
@@ -204,6 +210,7 @@ impl ObcrEmitter {
                 ele_keep_m: _,
                 surface: _,
                 flags: _,
+                bike: _,
                 map_source: _,
             } = &*slot;
         }
@@ -228,6 +235,7 @@ impl ObcrEmitter {
             ele_keep_m: 1,
             surface: 0,
             flags: 0,
+            bike: BikeType::default(),
             map_source: None,
         }
     }
@@ -252,6 +260,10 @@ impl ObcrEmitter {
 
     pub(crate) fn set_flags(&mut self, flags: u8) {
         self.flags = flags;
+    }
+
+    pub(crate) fn set_bike_type(&mut self, bike: BikeType) {
+        self.bike = bike;
     }
 
     pub(crate) fn set_attribution_map(&mut self, source: Option<obc_formats::obcr::RouteSourceKey>) {
@@ -368,6 +380,7 @@ impl ObcrEmitter {
 
         let mut header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);
         header[5] |= self.flags;
+        header[BIKE_TYPE_OFF] = self.bike as u8;
         if let Some(source) = self.map_source {
             header[5] |= obc_formats::obcr::FLAG_ATTRIBUTION_MAP;
             source.encode(header[128..160].as_mut().try_into().unwrap());

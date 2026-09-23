@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// OBCR v4 encoder and decoder. Stored geometry owns the route totals. Missing elevation and
+/// OBCR v5 encoder and decoder. Stored geometry owns the route totals. Missing elevation and
 /// incoming graph validity stay explicit. The exact bytes are in specs/OBCR_Spec.md, and shared
 /// Rust-produced vectors pin the reader.
 public enum RouteObjectCodec {
@@ -10,7 +10,7 @@ public enum RouteObjectCodec {
     static let magic = Data("OBCR".utf8)
     /// The one version the device accepts. Older files are rejected on both sides, so a stored
     /// route re-imports rather than mis-decoding.
-    static let version: UInt8 = 4
+    static let version: UInt8 = 5
     /// The header's ride core; every ride-path field lives here. The waypoint extension follows.
     static let headerBaseLength = 112
     static let headerLength = 160
@@ -39,17 +39,28 @@ public enum RouteObjectCodec {
 
     // MARK: Encode
 
-    /// Encode an imported route's geometry and waypoints into an OBCR v4 file, named `name` and
+    /// Encode an imported route's geometry and waypoints into an OBCR v5 file, named `name` and
     /// truncated to ``nameCap`` on a character boundary.
-    public static func encode(_ route: ImportedRoute, name: String) -> Data {
-        encode(points: route.points, waypoints: route.waypoints, name: name)
+    public static func encode(_ route: ImportedRoute, name: String, bikeType: BikeType) -> Data {
+        encode(points: route.points, waypoints: route.waypoints, name: name, bikeType: bikeType)
+    }
+
+    /// The header Total Distance, Total Ascent and Total Descent an upload of `points` carries:
+    /// the figures the device shows and estimates from. Nil for geometry that does not encode.
+    public static func totals(points: [RoutePoint]) -> (distanceMeters: UInt32, ascentMeters: UInt32, descentMeters: UInt32)? {
+        let header = ByteView(encode(points: points, waypoints: [], name: "", bikeType: .road))
+        guard let distance = try? header.u32(at: 36), let ascent = try? header.u32(at: 40),
+            let descent = try? header.u32(at: 44) else { return nil }
+        return (distance, ascent, descent)
     }
 
     /// The CRC-32 of the payload an upload of this library record would send: the record's
     /// geometry and waypoints under its display name, exactly what the detail screen's upload blob
     /// encodes. One definition, which is what makes "up to date" mean byte-identical.
     public static func payloadCRC(for record: PlannedRouteRecord) -> UInt32 {
-        CRC32.checksum(encode(points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name))
+        CRC32.checksum(encode(
+            points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name,
+            bikeType: record.bikeType))
     }
 
     /// `payload` with only its header name field replaced: the bytes a device holds for a route
@@ -67,10 +78,10 @@ public enum RouteObjectCodec {
         return out
     }
 
-    /// Encode geometry and waypoints into an OBCR v4 file. `waypoints` are stored verbatim,
+    /// Encode geometry and waypoints into an OBCR v5 file. `waypoints` are stored verbatim,
     /// already placed along the route; `points` carry the geometry and drive the header stats.
     /// Empty `points` yields empty `Data`: there is no valid zero-geometry OBCR.
-    public static func encode(points: [RoutePoint], waypoints: [Waypoint], name: String) -> Data {
+    public static func encode(points: [RoutePoint], waypoints: [Waypoint], name: String, bikeType: BikeType) -> Data {
         guard !points.isEmpty, points.allSatisfy({ $0.coordinate.isValidGeographic }) else { return Data() }
 
         // One pass over every raw point: exact stats, distance plus dead-banded ascent and
@@ -173,6 +184,7 @@ public enum RouteObjectCodec {
         header[5] = encoder.hasElevation ? 2 : 0
         let nameBytes = truncatedUTF8(name, maxBytes: nameCap)
         header[6] = UInt8(nameBytes.count)
+        header[7] = bikeType.rawValue
         header.putI32(box.minLon, at: 8)
         header.putI32(box.minLat, at: 12)
         header.putI32(box.maxLon, at: 16)
@@ -244,6 +256,7 @@ public enum RouteObjectCodec {
     public struct Decoded: Equatable, Sendable {
         public var name: String
         public var version: UInt8
+        public var bikeType: BikeType
         /// Header point count, the distinct stored points. It exceeds `points.count` only if the
         /// file's stored count disagrees with its geometry.
         public var storedPointCount: UInt32
@@ -262,7 +275,7 @@ public enum RouteObjectCodec {
         public var visitDescriptor: Data?
     }
 
-    /// Decode an OBCR v4 file. Every section is reached by an explicit offset and bounds-checked,
+    /// Decode an OBCR v5 file. Every section is reached by an explicit offset and bounds-checked,
     /// so malformed device bytes throw ``DeviceError/readFailed`` and never trap. An older file is
     /// rejected, not read: its waypoint records are a different width and its category byte a
     /// retired taxonomy, so the honest answer is "re-import it", exactly what the device says.
@@ -273,7 +286,8 @@ public enum RouteObjectCodec {
         guard version == RouteObjectCodec.version else { throw DeviceError.readFailed }
         guard data.count >= headerLength else { throw DeviceError.readFailed }
         let flags = try reader.u8(at: 5)
-        guard flags & ~15 == 0, try reader.u8(at: 7) == 0, try reader.u8(at: 119) == 0 else { throw DeviceError.readFailed }
+        guard flags & ~15 == 0, try reader.u8(at: 119) == 0,
+            let bikeType = BikeType(rawValue: try reader.u8(at: 7)) else { throw DeviceError.readFailed }
         let mapBytes = try reader.bytes(at: 128, count: 32)
         if flags & 4 == 0 {
             guard mapBytes.allSatisfy({ $0 == 0 }) else { throw DeviceError.readFailed }
@@ -387,7 +401,7 @@ public enum RouteObjectCodec {
         }
 
         return Decoded(
-            name: name, version: version, storedPointCount: storedPointCount,
+            name: name, version: version, bikeType: bikeType, storedPointCount: storedPointCount,
             totalDistanceMeters: totalDistance, totalAscentMeters: totalAscent,
             totalDescentMeters: totalDescent, minElevationMeters: minElevation,
             maxElevationMeters: maxElevation, start: start, points: points, waypoints: waypoints, unresolvedAvoidance: flags & 1 != 0,

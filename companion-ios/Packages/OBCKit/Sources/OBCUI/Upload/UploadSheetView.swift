@@ -260,7 +260,7 @@ private var previewBlob: RouteBlob {
             distanceMeters: 62_400, elevationGainMeters: 840
         ),
         waypoints: [waypoint],
-        payload: RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Kettle Moraine Loop")
+        payload: RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Kettle Moraine Loop", bikeType: .road)
     )
 }
 #endif

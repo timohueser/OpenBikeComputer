@@ -24,9 +24,9 @@ public enum OBCFormat {
         return "\(value) m ↑"
     }
 
-    /// Planned estimate: "3h 20m"; multi-day routes read "2 days".
+    /// Planned estimate: "3h 20m"; multi-day routes read "2 days". Minutes floor, as on the device.
     public static func estimatedDuration(_ interval: TimeInterval) -> String {
-        let minutes = Int((interval / 60).rounded())
+        let minutes = Int(interval / 60)
         if minutes >= 24 * 60 {
             let days = Int((Double(minutes) / (24 * 60)).rounded())
             return days == 1 ? "1 day" : "\(days) days"

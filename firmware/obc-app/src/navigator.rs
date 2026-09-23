@@ -48,7 +48,7 @@ pub enum PlanFamily {
 pub enum NavigatorIntent {
     AcceptAssistant {
         origin: ReviewOrigin,
-        profile: u8,
+        profile: crate::settings::BikeType,
     },
     CancelAssistant,
     ResumeAssistant {
@@ -304,6 +304,9 @@ pub struct NavigatorMachine {
     climbs_route: Option<usize>,
     waypoints: Waypoints,
     waypoints_route: Option<usize>,
+    /// The loaded route whose bike type the settings do not have yet; see
+    /// [`take_loaded_bike_type`](Self::take_loaded_bike_type).
+    bike_type_owed: Option<usize>,
     climb_profile: ClimbProfile,
     #[cfg(test)]
     climb_fill_count: u32,
@@ -341,6 +344,7 @@ impl NavigatorMachine {
             climbs_route: None,
             waypoints: Waypoints::new(),
             waypoints_route: None,
+            bike_type_owed: None,
             climb_profile: ClimbProfile::new(),
             #[cfg(test)]
             climb_fill_count: 0,
@@ -711,6 +715,7 @@ impl NavigatorMachine {
             climbs_route,
             waypoints,
             waypoints_route,
+            bike_type_owed,
             climb_profile,
             climb_fill_count,
             route_match,
@@ -729,6 +734,7 @@ impl NavigatorMachine {
         assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
         assert!(waypoints.is_empty() && waypoints_route.is_none(), "no waypoints before a route loads");
+        assert!(bike_type_owed.is_none(), "no route has been loaded");
         assert!(climb_profile.cols().iter().all(|&column| column == 0), "the climb detail starts flat");
         assert_eq!(*climb_fill_count, 0, "the climb detail has not been filled");
         assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");

@@ -140,7 +140,7 @@ impl Executor {
         if !store.mode().readable()
             || c.map != crate::flat_store::planner_map_key(store)
             || c.store.bytes() != store.store_id().0
-            || c.profile != app.settings().bike_profile_idx
+            || c.profile != app.settings().bike_type
             || self
                 .original
                 .as_ref()
@@ -284,7 +284,7 @@ impl Executor {
             || !crate::flat_store::planner_map_current()
             || app
                 .current_review_origin()
-                .is_none_or(|origin| !context.accepts_origin(app.settings().bike_profile_idx, origin))
+                .is_none_or(|origin| !context.accepts_origin(app.settings().bike_type, origin))
             || !crate::assistant::original_allowed(store, context, active)
         {
             return self.fail(NavigatorError::SourceChanged);

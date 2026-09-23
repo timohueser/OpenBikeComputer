@@ -311,7 +311,7 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
         progress_m: 0,
         occurrence: 0,
         required_anchors_m: [0; 3],
-        profile: 0,
+        profile: obc_route::BikeType::Road,
         facts_policy: REVIEW_FACTS_POLICY,
         unresolved_avoidance: false,
     };

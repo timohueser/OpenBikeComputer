@@ -437,6 +437,8 @@ private struct PlannedRouteFile: Codable {
     var version: Int
     var summary: RouteSummaryDTO
     var route: ImportedRouteDTO
+    /// The bike-type wire value. Optional-decoded: a file without it loads as Road.
+    var bikeType: UInt8?
     var sourceFileName: String
     /// The device object id this route is stored under, nil when not on the device.
     /// Optional-decoded, so a file without it loads as "not uploaded" and self-heals on the next
@@ -456,6 +458,7 @@ private struct PlannedRouteFile: Codable {
         version = 1
         summary = RouteSummaryDTO(record.summary)
         route = ImportedRouteDTO(record.route)
+        bikeType = record.bikeType.rawValue
         sourceFileName = record.sourceFileName
         deviceObjectID = record.deviceLink?.objectID.raw
         deviceSerial = record.deviceLink?.serial
@@ -476,6 +479,7 @@ private struct PlannedRouteFile: Codable {
         return PlannedRouteRecord(
             summary: summary.domain,
             route: route.domain,
+            bikeType: bikeType.flatMap(BikeType.init(rawValue:)) ?? .road,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
             deviceLink: link,

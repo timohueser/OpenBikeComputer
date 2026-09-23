@@ -405,10 +405,6 @@ pub struct App {
     /// identity-keyed view caches. It is the one owner of the id-to-summary pairing and of every
     /// rescan-remap invariant.
     pub(crate) catalogs: CatalogState,
-    /// The loaded map's routing-profile names, refreshed by the host on map load. Resident
-    /// because the bike-type editor and the route overview draw on frames with no `Reader`. Only
-    /// the names are mirrored; the multiplier tables stay in `MapTables`.
-    nav_profiles: crate::NavProfiles,
     tick_state: TickState,
     /// The UI plane: the screen stack, the fused input plane, the map-plane clock, repaint
     /// accumulation and wake scheduling, the idle-return policy, and the card scheduler.
@@ -490,7 +486,6 @@ impl App {
             catalogs: CatalogState::new() => CatalogState::init_in_place,
             tick_state: TickState::new(),
             ui: UiRuntime::new() => UiRuntime::init_in_place,
-            nav_profiles: crate::NavProfiles::new(),
             settings: Settings::default(),
             // The clock starts from the default set-point; the host re-stamps the persisted value.
             wall_clock: WallClock::new(Settings::default().local_clock()),
@@ -533,7 +528,6 @@ impl App {
             catalogs,
             tick_state,
             ui,
-            nav_profiles,
             settings,
             wall_clock,
             clock_trust,
@@ -559,7 +553,6 @@ impl App {
         catalogs.assert_boot_state();
         tick_state.assert_boot_state();
         ui.assert_boot_state();
-        assert!(nav_profiles.is_empty(), "no routing profiles before a map loads");
         assert_eq!(*settings, Settings::default(), "the defaults until the store answers");
         assert_eq!(*wall_clock, WallClock::new(Settings::default().local_clock()), "the default set-point");
         assert_eq!(*clock_trust, ClockTrust::Untrusted, "a persisted set-point is display-only this boot");
@@ -601,6 +594,10 @@ impl App {
         // map even on a frame with no fresh fix.
         if self.navigator.sync_route_state(route) {
             self.ui.map_dirty = true;
+        }
+        if let Some(bike) = self.navigator.take_loaded_bike_type(route).filter(|b| *b != self.settings.bike_type) {
+            self.settings.bike_type = bike;
+            self.settings_ops.note_edited();
         }
         // A detour commit queues a seam re-anchor because the commit handler owns no
         // `RouteReader`. Anchor it before this tick's fresh fix, then re-derive the guidance.
@@ -878,16 +875,6 @@ impl App {
         self.tick_state.has_live_fix(now_ms, &self.settings)
     }
 
-    /// Mirror the loaded map's routing-profile names into the App for the UI. The host calls this
-    /// whenever it reloads a map's tables. Only the display names are copied; the multiplier
-    /// tables stay in `MapTables`. It is safe on a router-less image, because the names are map
-    /// metadata and the row still renders. It dirties the map so an open settings screen picks
-    /// up the new names.
-    pub fn set_nav_profiles(&mut self, profiles: &[obc_reader::MapProfile]) {
-        self.nav_profiles.set_from(profiles);
-        self.ui.map_dirty = true;
-    }
-
     /// Feed the running firmware version string. The host calls this once at boot with its
     /// build's `git describe` tag. It is truncated to the 32-byte field, never ellipsized.
     pub fn set_fw_version(&mut self, version: &str) {
@@ -926,10 +913,6 @@ impl App {
 
     pub fn backlight_available(&self) -> bool {
         self.backlight_available
-    }
-
-    pub fn nav_profiles(&self) -> &crate::NavProfiles {
-        &self.nav_profiles
     }
 
     /// Replace the resident route catalog from the host's store, carrying each route's durable
@@ -1504,7 +1487,7 @@ impl App {
         self.catalogs.clear_detour_preview();
         // The spliced route starts at the fix the leg was planned from.
         let Some((lon, lat)) = self.catalogs.routes().get(idx).map(|r| (r.start_lon, r.start_lat)) else { return };
-        self.navigator.set_active_route(Some(idx));
+        self.navigator.load_route(idx);
         let ride = screen::begin_riding_session(&mut self.state, &mut self.activity, &mut self.recorder, lon, lat);
         screen::apply(&mut self.ui.stack, ride);
         self.ui.map_dirty = true;
@@ -1689,6 +1672,7 @@ impl App {
             // Same index and id, but new bytes. The remap preserves same-id state, and a
             // replace is the one case where that would carry stale state onto new geometry.
             self.drop_route_derived_state();
+            self.navigator.owe_bike_type();
             self.ui.map_dirty = true; // the drawn route line + progress changed under the rider
         }
         self.ui.cards.post_upload(PendingUpload::Route(UploadEvent { id, active_replace, elevation }));
@@ -2381,7 +2365,7 @@ impl App {
         // The detour level before the screen speaks, so a cancellation takes the preview with it.
         let detour_planned_before = self.navigator.detour_planned();
         let backlight_available = self.backlight_available;
-        let App { state, activity, settings, catalogs, nav_profiles, recorder, ui, navigator, dfu, storage, .. } = self;
+        let App { state, activity, settings, catalogs, recorder, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
             find: &mut ui.find,
             landmarks: &mut ui.landmarks,
@@ -2398,7 +2382,6 @@ impl App {
             routes: catalogs.routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
-            nav_profiles,
             backlight: backlight_available,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
@@ -2750,7 +2733,6 @@ impl App {
             navigator,
             recorder,
             ui,
-            nav_profiles,
             fw_version,
             map_name,
             map_obcm_version,
@@ -2795,7 +2777,6 @@ impl App {
             internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
-            nav_profiles,
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
@@ -5860,6 +5841,72 @@ mod tests {
         assert!(!app.take_dirty().map);
         app.set_trips(&[]);
         assert!(app.take_dirty().map);
+    }
+
+    /// A rider on Gravel, and two catalog routes the host would read as MTB.
+    fn gravel_rider() -> App {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("A"), summary("B")], &[10, 20]);
+        app.settings.bike_type = crate::settings::BikeType::Gravel;
+        app
+    }
+
+    /// Each rider load sets the current type from the loaded route, once: a start from the
+    /// overview, Ride to start, a swap mid-ride, the received-route prompt, and a phone replace of the active
+    /// route.
+    #[test]
+    fn a_route_load_sets_the_bike_type_once() {
+        use crate::harness::support::tick_typed_route;
+        use crate::settings::BikeType::{Mtb, Road};
+        type Load = fn(&mut App);
+        let loads: [(&str, Load); 5] = [
+            ("Ride to start", |app| app.ride_approach(1)),
+            ("start from the overview", |app| {
+                app.navigator.route_state_mut().active_route = Some(0);
+                let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
+                app.apply_gesture(Gesture::Press);
+            }),
+            ("swap mid-ride", |app| {
+                app.test_start_ride();
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::new(1)));
+                app.apply_gesture(Gesture::Press);
+            }),
+            ("received mid-ride", |app| {
+                app.test_start_ride();
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::received(1, 0)));
+                app.apply_gesture(Gesture::Press);
+            }),
+            ("phone replace of the active route", |app| {
+                app.navigator.route_state_mut().active_route = Some(0);
+                app.on_route_uploaded(10, true, None);
+            }),
+        ];
+        for (what, load) in loads {
+            let mut app = gravel_rider();
+            load(&mut app);
+            assert_eq!(tick_typed_route(&mut app, Mtb), Mtb, "{what} sets the route's type");
+            assert!(settings_dirty(&mut app), "{what}: …and saves it");
+            app.settings.bike_type = Road;
+            assert_eq!(tick_typed_route(&mut app, Mtb), Road, "{what}: a rider change after the load stays");
+        }
+    }
+
+    /// Changing the active route without a rider load keeps the rider's type: Back out of a browse
+    /// preview, and a detour commit that splices the loaded route.
+    #[test]
+    fn an_active_route_change_that_is_not_a_load_keeps_the_rider_type() {
+        use crate::harness::support::tick_typed_route;
+        use crate::settings::BikeType::{Gravel, Mtb};
+        let mut app = gravel_rider();
+        app.navigator.route_state_mut().active_route = Some(1); // browsing B over the loaded A
+        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(1, Some(0))));
+        assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "a browse preview is not a load");
+        app.apply_gesture(Gesture::Back);
+        assert_eq!(app.active_route_index(), Some(0));
+        assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "…and neither is Back to the loaded route");
+
+        app.land_detour_commit(Ok(10));
+        assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "a detour splice keeps the rider's type");
     }
 
     /// The one thing identity cannot catch: an upload that replaces a stored route keeps the

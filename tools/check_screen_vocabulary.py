@@ -45,8 +45,7 @@ CONSTANTS = ["SPIN_DPS", "SPIN_FRAME_MS", "PAGE_FLIP_MS"]
 # Spellings that appear only when a screen has re-grown something the vocabulary owns. `prev_top` is
 # the elevation band's connected top stroke, which `vocab/band.rs` owns. `fit_name` and
 # `fit_caption` are the display fitters `vocab/marquee.rs` replaced: a screen that cuts a name with
-# its own dots is how the second ellipsis convention comes back. The storage-cap `fit_name` in
-# `nav_profiles.rs` is not a display fitter and sits outside the scanned tree.
+# its own dots is how the second ellipsis convention comes back.
 RETIRED = ["prev_top", "fit_name", "fit_caption"]
 
 

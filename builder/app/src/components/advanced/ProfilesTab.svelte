@@ -1,13 +1,11 @@
 <script lang="ts">
-    // The routing-profile editor: one card per bike profile (name + the climb
-    // weight + a per-class multiplier grid for highway and surface classes),
-    // add/remove within the schema's 1..=8 bound, and per-profile "Reset to
-    // defaults". Every bound and
+    // The routing-profile editor: one card per bike type (the climb weight + a
+    // per-class multiplier grid for highway and surface classes) and per-type
+    // "Reset to defaults". The four types and their order are fixed. Every bound and
     // every class name is read from the served schema (readProfileSchema) — the
     // shipped defaults come from the packer, not a frontend copy.
     import type { ClassGroup } from "../../lib/config/profiles";
     import {
-        addProfile,
         cellValue,
         classNames,
         clearCell,
@@ -19,12 +17,10 @@
         profileClimbWeight,
         profileDefault,
         readProfileSchema,
-        removeProfile,
         resetProfile,
         setCell,
         setClimbWeight,
         setProfileDefault,
-        setProfileName,
     } from "../../lib/config/profiles";
     import type { Multiplier, SchemaEnvelope } from "../../lib/config/model";
     import { working } from "../../lib/config/storage.svelte";
@@ -40,24 +36,11 @@
     // the user edits (an untouched CLI config keeps no `routing` section).
     const profiles = $derived(ps ? displayProfiles(env.config, ps) : []);
     const groups: ClassGroup[] = ["highway", "surface"];
-    const encoder = new TextEncoder();
 
     let hint = $state<string | null>(null);
 
     function touch() {
         working.markModified();
-    }
-
-    function editName(i: number, name: string, el: HTMLInputElement) {
-        if (!ps) return;
-        if (encoder.encode(name).length > ps.nameMaxBytes) {
-            hint = `A profile name is at most ${ps.nameMaxBytes} bytes on the device.`;
-            el.value = ensureRouting(env.config, ps).profiles[i].name;
-            return;
-        }
-        hint = null;
-        setProfileName(ensureRouting(env.config, ps).profiles[i], name);
-        touch();
     }
 
     function editDefault(i: number, v: Multiplier) {
@@ -106,26 +89,6 @@
         resetProfile(env.config, i, ps);
         touch();
     }
-
-    function remove(i: number) {
-        if (!ps) return;
-        if (!removeProfile(env.config, i, ps)) {
-            hint = `A map needs at least ${ps.minProfiles} profile.`;
-            return;
-        }
-        hint = null;
-        touch();
-    }
-
-    function add() {
-        if (!ps) return;
-        if (!addProfile(env.config, ps)) {
-            hint = `The profile table holds at most ${ps.maxProfiles} profiles.`;
-            return;
-        }
-        hint = null;
-        touch();
-    }
 </script>
 
 {#if !ps}
@@ -143,16 +106,8 @@
             profile's default. The <b>climb weight</b> ({ps.climbMin}–{ps.climbMax}) is separate: flat
             metres charged per metre of ascent, added to the cost rather than scaling it, so
             {ps.climbMin} is climb-blind and only maps packed with terrain feel it. The device picks one
-            of these profiles by position; the name is what the rider sees. Up to {ps.maxProfiles} profiles.
+            of the four bike types. Their names and order are fixed; only the weights change.
         </p>
-        <button
-            type="button"
-            class="btn ghost"
-            onclick={add}
-            disabled={profiles.length >= ps.maxProfiles}
-        >
-            + Add profile
-        </button>
     </div>
 
     {#if hint}
@@ -162,14 +117,7 @@
     {#each profiles as profile, i (i)}
         <div class="card profile">
             <div class="phead">
-                <input
-                    class="pname"
-                    type="text"
-                    value={profile.name}
-                    maxlength={ps.nameMaxBytes}
-                    aria-label="Profile name"
-                    oninput={(e) => editName(i, e.currentTarget.value, e.currentTarget)}
-                />
+                <span class="pname">{profile.name}</span>
                 <div class="pdefault">
                     <span class="small muted">other classes</span>
                     <MultiplierCell
@@ -201,14 +149,6 @@
                 <button type="button" class="btn ghost small" onclick={() => reset(i)}>
                     Reset to defaults
                 </button>
-                <button
-                    type="button"
-                    class="del"
-                    title="Remove profile"
-                    aria-label="Remove {profile.name}"
-                    disabled={profiles.length <= ps.minProfiles}
-                    onclick={() => remove(i)}>×</button
-                >
             </div>
 
             {#each groups as group (group)}
@@ -283,24 +223,6 @@
 
     .spacer {
         flex: 1;
-    }
-
-    .del {
-        background: none;
-        border: none;
-        color: var(--ink-faint);
-        font-size: 18px;
-        padding: 0 4px;
-        cursor: pointer;
-    }
-
-    .del:hover:not(:disabled) {
-        color: var(--coral);
-    }
-
-    .del:disabled {
-        opacity: 0.3;
-        cursor: default;
     }
 
     .group + .group {

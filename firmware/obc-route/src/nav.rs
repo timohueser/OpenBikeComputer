@@ -35,6 +35,7 @@ use crate::convert::{ObcrEmitter, RouteStats, WpPlace};
 use crate::corridor::Corridor;
 use crate::reader::MAX_WAYPOINTS;
 use obc_elevation::{ElevationSource, ELE_DEADBAND_M};
+use obc_formats::bike::BikeType;
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::{cos_lat, ground_dist_m};
@@ -220,11 +221,11 @@ impl ProfileMult {
     /// first step, and the fallback for a map with an empty profile table.
     const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
 
-    /// Resolve `profile_idx` from the reader's profile table. An out-of-range index falls back to
-    /// profile 0: a stale device setting must never stop routing.
-    fn resolve(reader: &Reader, profile_idx: u8) -> ProfileMult {
+    /// Resolve `bike`'s profile from the reader's profile table. A map with fewer profiles than
+    /// the contract falls back to profile 0, so a malformed map never stops routing.
+    fn resolve(reader: &Reader, bike: BikeType) -> ProfileMult {
         let profiles = reader.nav_profiles();
-        match profiles.get(profile_idx as usize).or_else(|| profiles.first()) {
+        match profiles.get(bike as usize).or_else(|| profiles.first()) {
             Some(p) => ProfileMult { highway: p.highway, surface: p.surface, climb: u32::from(p.climb_weight()) },
             None => ProfileMult::NEUTRAL,
         }
@@ -506,8 +507,8 @@ pub struct NavPlanner {
     to: (i32, i32),
     /// The route's name, applied by the finishing header patch.
     name: heapless::String<NAME_CAP>,
-    /// Resolved into [`mult`](Self::mult) at the first step; out of range falls back to profile 0.
-    profile_idx: u8,
+    /// Resolved into [`mult`](Self::mult) at the first step, and written into the route header.
+    bike: BikeType,
     objective: Objective,
     /// Resolved from the reader at the first step; neutral until then.
     mult: ProfileMult,
@@ -584,7 +585,7 @@ impl NavPlanner {
     /// A planner for one route request. It touches nothing yet: the first
     /// [`step`](NavPlanner::step) resets the caller's scratch and tile cache, resolves the profile
     /// and starts snapping.
-    pub fn new(from: (i32, i32), to: (i32, i32), name: &str, profile_idx: u8) -> Self {
+    pub fn new(from: (i32, i32), to: (i32, i32), name: &str, bike: BikeType) -> Self {
         let mut nm = heapless::String::new();
         for ch in name.chars() {
             if nm.push(ch).is_err() {
@@ -596,7 +597,7 @@ impl NavPlanner {
             from,
             to,
             name: nm,
-            profile_idx,
+            bike,
             mult: ProfileMult::NEUTRAL,
             objective: Objective::Profile,
             start_id: 0,
@@ -626,8 +627,8 @@ impl NavPlanner {
     /// A detour planner: like [`new`](Self::new), but the search skips every edge the `corridor`
     /// blacklists. The exemption discs around the two snapped endpoints are set once the snap
     /// phases resolve.
-    pub fn new_detour(from: (i32, i32), to: (i32, i32), name: &str, profile_idx: u8, corridor: Corridor) -> Self {
-        let mut p = Self::new(from, to, name, profile_idx);
+    pub fn new_detour(from: (i32, i32), to: (i32, i32), name: &str, bike: BikeType, corridor: Corridor) -> Self {
+        let mut p = Self::new(from, to, name, bike);
         p.corridor = Some(corridor);
         p
     }
@@ -695,7 +696,7 @@ impl NavPlanner {
                 if self.snap_ordinal == 0 {
                     scratch.reset();
                     tiles.reset();
-                    self.mult = ProfileMult::resolve(reader, self.profile_idx).prefer(self.objective);
+                    self.mult = ProfileMult::resolve(reader, self.bike).prefer(self.objective);
                 }
                 let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
                 let lookup_radius = snap_lookup_radius(self.snap_ordinal);
@@ -948,6 +949,7 @@ impl NavPlanner {
     ) -> Result<bool, NavError> {
         let mut em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
         em.set_attribution_map(self.map_source);
+        em.set_bike_type(self.bike);
         em.set_flags(
             if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
                 | if self.unresolved_avoidance { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 },
@@ -1157,13 +1159,13 @@ pub fn plan_route<const N: usize>(
     from: (i32, i32),
     to: (i32, i32),
     name: &str,
-    profile_idx: u8,
+    bike: BikeType,
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
     elev: &mut dyn ElevationSource,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
-    let mut planner = NavPlanner::new(from, to, name, profile_idx);
+    let mut planner = NavPlanner::new(from, to, name, bike);
     loop {
         match planner.step(reader, scratch, tiles, elev, sink) {
             Step::Running => {}
@@ -1180,14 +1182,14 @@ pub fn plan_detour<const N: usize>(
     from: (i32, i32),
     to: (i32, i32),
     name: &str,
-    profile_idx: u8,
+    bike: BikeType,
     corridor: Corridor,
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
     elev: &mut dyn ElevationSource,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
-    let mut planner = NavPlanner::new_detour(from, to, name, profile_idx, corridor);
+    let mut planner = NavPlanner::new_detour(from, to, name, bike, corridor);
     loop {
         match planner.step(reader, scratch, tiles, elev, sink) {
             Step::Running => {}

@@ -120,7 +120,9 @@ fn schema_doc(revision: u32) -> String {
     "min_component_edges": 50,
     "profiles": [
       {{ "name": "Road", "default": 2.0, "highway": {{ "primary": 1.5 }} }},
-      {{ "name": "Gravel", "default": 1.5, "highway": {{ "track": 1.0 }} }}
+      {{ "name": "Gravel", "default": 1.5, "highway": {{ "track": 1.0 }} }},
+      {{ "name": "MTB", "default": 1.5, "highway": {{ "path": 1.0 }} }},
+      {{ "name": "Touring", "default": 1.5, "highway": {{ "cycleway": 1.0 }} }}
     ]
   }},
   {FEATURES}
@@ -542,7 +544,7 @@ fn walks_a_tree_into_a_root_and_its_satellites() {
     assert_eq!(g.root.schema.obcm_version, OBCM_VERSION, "read from the cells' own headers");
     assert_eq!(g.root.schema.chunk_size, 4_096);
     assert_eq!(g.root.schema.routing.min_component_edges, 50);
-    assert_eq!(g.root.schema.routing.profiles, ["Road", "Gravel"]);
+    assert_eq!(g.root.schema.routing.profiles, ["Road", "Gravel", "MTB", "Touring"]);
     assert_eq!(
         g.root.schema.grid,
         GridEntry { origin_udeg: GRID_ORIGIN_UDEG, world_side_udeg: WORLD_SIDE_UDEG },

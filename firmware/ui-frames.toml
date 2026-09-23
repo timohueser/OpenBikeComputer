@@ -1350,8 +1350,8 @@ script = "B d d w p w*6"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
-# (b) The start card (browse map → press, T6 #684): the hero bike (the selected profile's sprite +
-# colour) over its profile name, the two-row GPS / Battery checklist (the static Card row dropped
+# (b) The start card (browse map → press, T6 #684): the hero bike (the current bike type's sprite +
+# colour) over its name, the two-row GPS / Battery checklist (the static Card row dropped
 # in owner review round 1), then Start ride / Back. `--battery 45` pins the % and the `--gpx --at
 # 30` fix makes GPS read `fix`; the second frame drops the `--gpx` (no fix) so GPS reads
 # `searching..` (and a low --battery to vary the row).

@@ -25,7 +25,7 @@ pub mod climb_profile;
 pub mod convert;
 pub mod corridor;
 pub mod easier;
-pub mod eta;
+mod eta;
 pub mod facts;
 mod geo;
 pub mod gpx;
@@ -48,11 +48,12 @@ pub use climb::{
 pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, gpx_to_obcr_attributed, RouteStats};
 pub use corridor::{Corridor, MIN_DETOUR_SPAN_M};
-pub use eta::{ride_time_s, route_time_s, time_to_go_s, v_flat_mps, K_CLIMB_S_PER_M, V_FLAT_KMH};
+pub use eta::time_to_go_s;
 pub use facts::{GradeSample, IntervalFacts};
 pub use geo::tri_area_m2_cl;
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};
+pub use obc_formats::bike::BikeType;
 // The emit-time elevation seam, re-exported so a caller of `plan_route` names the source it must
 // hand in without depending on `obc-elevation` directly.
 pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};

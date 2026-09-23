@@ -278,7 +278,7 @@ impl crate::App {
         if !target.metadata.source.is_valid() || target.metadata.approach.is_some_and(|a| !a.source.is_valid()) {
             return Err(VisitUnavailable::NoMappedAccess);
         }
-        let profile = self.settings().bike_profile_idx;
+        let profile = self.settings().bike_type;
         let approach = target.approach(target.map, profile).ok_or(VisitUnavailable::Profile)?;
         let original = self.active_route_index().and_then(|i| self.route_ids().get(i)).copied();
         if original.is_some() && (!self.navigator.route_match.started() || self.navigator.following.off_route) {
@@ -335,7 +335,7 @@ impl crate::App {
             progress_m: origin.progress_m,
             occurrence: origin.occurrence,
             required_anchors_m: [origin.progress_m; 3],
-            profile: self.settings().bike_profile_idx,
+            profile: self.settings().bike_type,
             facts_policy: super::REVIEW_FACTS_POLICY,
             unresolved_avoidance: false,
         };
@@ -487,7 +487,7 @@ impl crate::App {
                 progress_m: self.navigator.following.progress_m,
                 occurrence: self.navigator.route_match.occurrence(),
                 required_anchors_m: [rejoin; 3],
-                profile: self.settings().bike_profile_idx,
+                profile: self.settings().bike_type,
                 facts_policy: super::REVIEW_FACTS_POLICY,
                 unresolved_avoidance: false,
             };
@@ -1113,7 +1113,7 @@ mod tests {
                 progress_m: 0,
                 occurrence: 0,
                 required_anchors_m: [0; 3],
-                profile: 0,
+                profile: crate::settings::BikeType::Road,
                 facts_policy: REVIEW_FACTS_POLICY,
                 unresolved_avoidance: false,
             });
@@ -1128,7 +1128,7 @@ mod tests {
             app.navigator.review.status = ReviewStatus::Preview;
             app.navigator.accept_review(
                 ReviewOrigin { fix: (0, 0), progress_m: 0, occurrence: 0, lateral_m: 0, trustworthy: true },
-                0,
+                crate::settings::BikeType::Road,
             );
             let mut tokens = TokenSource::new();
             ack(&mut app, &mut tokens, &route);

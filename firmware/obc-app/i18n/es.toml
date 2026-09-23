@@ -63,6 +63,13 @@ off = "Desact."
 manual = "Manual"
 auto = "Auto"
 
+# --- BikeType labels (the four fixed bike types) ---
+[bike_type]
+road = "Carretera"
+gravel = "Gravel"
+mtb = "BTT"
+touring = "Cicloturismo"
+
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
 off = "Desact."
@@ -204,6 +211,7 @@ fields = "Campos"
 pages = "Auto-cambio"
 climb = "Subida"
 waypoints = "Puntos"
+bike_type = "Tipo de bici"
 
 # --- Display settings screen ---
 [display]
