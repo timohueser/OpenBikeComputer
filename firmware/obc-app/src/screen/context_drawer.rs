@@ -605,7 +605,12 @@ pub(crate) enum Page {
 #[derive(Clone, Copy)]
 enum Sheet {
     Menu(&'static ContextMenu),
-    Editor { value: ContextValue, label: Msg },
+    /// `hero`: the sheet draws the staged bike over the start card's hero.
+    Editor {
+        value: ContextValue,
+        label: Msg,
+        hero: bool,
+    },
 }
 
 /// The contextual drawer's whole state: when it opened, what it holds, the cursor, the page, and
@@ -649,12 +654,26 @@ impl ContextDrawerScreen {
     pub(crate) fn editor(value: ContextValue, label: Msg, f: &ContextFacts) -> Self {
         ContextDrawerScreen {
             motion: SheetMotion::opening(),
-            sheet: Sheet::Editor { value, label },
+            sheet: Sheet::Editor { value, label, hero: false },
             lang: f.settings.language,
             selected: 0,
             page: Page::Editor,
             staged: value.committed(f),
         }
+    }
+
+    /// The bike type editor over the start card, which shows the staged bike in the card's hero.
+    pub(crate) fn over_hero(mut self) -> Self {
+        if let Sheet::Editor { hero, .. } = &mut self.sheet {
+            *hero = true;
+        }
+        self
+    }
+
+    /// Whether this sheet draws over its base's hero, so the base must be drawn under it every
+    /// frame the staged value moves.
+    pub(crate) fn draws_hero(&self) -> bool {
+        matches!(self.sheet, Sheet::Editor { hero: true, .. })
     }
 
     /// The declared rows, or none for an editor alone.
@@ -829,6 +848,11 @@ impl ContextDrawerScreen {
         // The sheet hangs from the bottom edge: it slides up by drawing its full height with its
         // bottom off-screen.
         let top = rx.h - visible;
+        if self.draws_hero() {
+            let bike = crate::settings::BikeType::from_u8(self.staged).unwrap_or_default();
+            cv.fill(super::ride_start::hero_box(rx.w), super::dim_color(palette::PARCHMENT));
+            super::ride_start::draw_hero(cv, rx.w, bike);
+        }
         sheet::frame(cv, rx.w, top, sheet_h, Edge::Bottom);
         match self.motion.page_offsets(rx.now_ms, MOTION, rx.w, self.page == Page::Root) {
             Some((out, incoming)) => {

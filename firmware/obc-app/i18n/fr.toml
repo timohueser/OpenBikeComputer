@@ -491,6 +491,7 @@ gps = "GPS"
 fix = "fixe"
 searching = "recherche.."
 battery = "Batterie"
+show_route = "Voir la route"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]

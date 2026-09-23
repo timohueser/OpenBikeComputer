@@ -525,6 +525,8 @@ gps = "GPS"
 fix = "fix"
 searching = "searching.."
 battery = "Battery"
+# The trip day row's second line, before the day's distance.
+show_route = "Show route"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
