@@ -734,6 +734,9 @@ impl ByteSink for HeaderSink<'_> {
     fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.sink.write(bytes)
     }
+    fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+        self.sink.write_chunk(anchor, body)
+    }
     fn patch_at(&mut self, at: u32, bytes: &[u8]) -> Result<(), Error> {
         if at != 0 || bytes.len() != self.header.len() {
             return Err(Error::BadOffset);

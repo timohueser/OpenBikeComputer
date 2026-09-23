@@ -1412,27 +1412,34 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
                 #[cfg(has_nav)]
-                let source_error =
-                    if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                        && (app.assistant_visit_target().is_some()
-                            || app
-                                .assistant_review_context()
-                                .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
-                    {
-                        let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
-                        let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
-                        let avoidance = id.is_some_and(|id| {
-                            flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
-                                obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
-                            })
-                            .ok()
-                            .and_then(Result::ok)
-                            .unwrap_or(true)
-                        });
-                        !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
-                    } else {
-                        false
-                    };
+                let composes = matches!(
+                    effect,
+                    NavigatorEffect::Acquire {
+                        work: PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_),
+                        ..
+                    }
+                );
+                #[cfg(has_nav)]
+                let source_error = if composes
+                    && (app.assistant_visit_target().is_some()
+                        || app
+                            .assistant_review_context()
+                            .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
+                {
+                    let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+                    let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
+                    let avoidance = id.is_some_and(|id| {
+                        flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
+                            obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
+                        })
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(true)
+                    });
+                    !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
+                } else {
+                    false
+                };
                 #[cfg(not(has_nav))]
                 let source_error = false;
                 if source_error {
@@ -1565,7 +1572,7 @@ pub(crate) async fn run_app(
                         }
                         NavigatorEffect::Acquire {
                             token,
-                            work: PlannerWork::Detour(_) | PlannerWork::MeasureLegs(_),
+                            work: PlannerWork::Detour(_) | PlannerWork::MeasureLegs(_) | PlannerWork::MeasureRoute(_),
                         }
                         | NavigatorEffect::CommitDetour { token } => {
                             defmt::warn!(

@@ -73,6 +73,8 @@ pub enum PlannerWork {
     AssistantRoute(NavRequest),
     /// Plan the request as a leg and, for a visit, the leg back; report the figures, keep nothing.
     MeasureLegs(NavRequest),
+    /// Compose the easier route into a measuring sink; report its costs and checksum, keep nothing.
+    MeasureRoute(NavRequest),
     Route(NavRequest),
     Detour(DetourRequest),
 }
@@ -530,7 +532,11 @@ impl NavigatorMachine {
                 }
                 let request = self.route_request.take()?;
                 if self.review.measure {
-                    PlannerWork::MeasureLegs(request)
+                    if self.review.context.is_some_and(|c| matches!(c.purpose, ReviewPurpose::Easier(_))) {
+                        PlannerWork::MeasureRoute(request)
+                    } else {
+                        PlannerWork::MeasureLegs(request)
+                    }
                 } else if self.review.status == ReviewStatus::Planning {
                     PlannerWork::AssistantRoute(request)
                 } else {
