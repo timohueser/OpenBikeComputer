@@ -1312,6 +1312,15 @@ script = "{up_base} {up_scope_pois} p f"
 expect = "PoiDetail"
 args = ["--at", "0", "--clock", "2025-01-06T12:00"]
 
+# (b2) The same list in imperial units, where a climb gives way to the wider offset figure.
+[[frame]]
+name = "up-ahead-water-imperial"
+map = "{monaco}"
+env = "monaco-route"
+script = "B u p d*4 p p w d p w b b b w {up_base} {up_filter_water} d*9 f*8"
+expect = "WhatsNext"
+args = ["--gpx", "{upgpx}", "--at", "25"]
+
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
 # the coverage guard takes precedence over map-place filters.
 [[frame]]

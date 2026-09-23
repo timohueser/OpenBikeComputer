@@ -343,8 +343,8 @@ open = "ABIERTO"
 closed = "CERRADO"
 route_here = "Ruta hasta aquí"
 ahead = "Adelante"
-away = "Directo"
-off_route = "Al lado"
+away = "Dist."
+off_route = "Desvío"
 
 # --- BLE pairing passkey card ---
 [passkey]
