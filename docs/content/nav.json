@@ -16,6 +16,7 @@
         { "path": "software/packer-routing", "title": "Packer & routing" },
         { "path": "software/terrain", "title": "Terrain & elevation" },
         { "path": "software/companion-link", "title": "The companion link" },
+        { "path": "software/trips", "title": "Trips and rides" },
         { "path": "software/firmware-updates", "title": "Firmware updates" }
       ]
     },
