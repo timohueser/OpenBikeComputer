@@ -78,8 +78,7 @@ struct TripFlowModelTests {
     func dayEditorDoneKeepsChangesMadeMeanwhile() {
         let (model, _) = makeModel()
         let editor = model.dayEditor(tripID, isSplitMode: false)!
-        let middle = editor.trip.dayEnds[0].distance + (editor.trip.dayEnds[1].distance - editor.trip.dayEnds[0].distance) / 2
-        #expect(editor.place(at: middle) != nil)
+        editor.splitDay(1)
         model.renameTrip(tripID, to: "Renamed meanwhile")
         model.setTripStartDay(tripID, to: CivilDay(daysSince1970: 20_000))
 

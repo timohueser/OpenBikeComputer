@@ -4,7 +4,8 @@ import OBCDomain
 @testable import OBCUI
 
 /// The drag rules behind the marker control: markers never cross, a map move projects
-/// within its window, VoiceOver steps are whole moves, and every move is reported once.
+/// within its window, the profile shows the stretch the map shows, VoiceOver steps are whole
+/// moves, and every move is reported once.
 @MainActor
 struct LineMarkerEditorModelTests {
     /// Latitude `meters` north of 47° N.
@@ -179,5 +180,33 @@ struct LineMarkerEditorModelTests {
         #expect(hairpin.markers[0].distance > 1_250, "never the outbound leg at 720 m")
         #expect(LineMarkerEditorModel.mapWindow(travelMeters: 0) == 50)
         #expect(LineMarkerEditorModel.mapWindow(travelMeters: 5_000) == 2_000)
+    }
+
+    /// From the first metre in view to the last, unless the hidden part between the pieces is
+    /// longer than the pieces: then only the piece nearest the map centre.
+    @Test
+    func theProfileShowsTheStretchInView() {
+        // A snaking route leaves the view twice for short bends: one stretch.
+        #expect(LineMarkerEditorModel.window(visible: [1_000...3_000, 3_500...5_000, 5_400...8_000], centre: 4_000)
+            == 1_000...8_000)
+        // A 40 km loop with both ends in view: 4 km shown, 36 km hidden.
+        let ends = [0.0...2_000, 38_000.0...40_000]
+        #expect(LineMarkerEditorModel.window(visible: ends, centre: 39_000) == 38_000...40_000)
+        #expect(LineMarkerEditorModel.window(visible: ends, centre: 2_500) == 0...2_000, "the nearer piece")
+        #expect(LineMarkerEditorModel.window(visible: [], centre: 0) == nil, "no line in view keeps the window")
+    }
+
+    @Test
+    func aDragStaysInTheStretchInViewAndTheWindowHoldsUnderTheFinger() {
+        let model = model()
+        model.showVisible([2_000...5_000], centre: 3_500)
+        #expect(model.window == 2_000...5_000)
+        model.begin(1)
+        model.move(1, to: 5_500)
+        #expect(model.markers[0].distance == 5_000, "held at the edge of the stretch in view")
+        model.showVisible([0...model.line.length], centre: 5_000)
+        #expect(model.window == 2_000...5_000, "the window holds still under the finger")
+        model.end()
+        #expect(model.window == 0...model.line.length, "the map's stretch applies on release")
     }
 }

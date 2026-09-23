@@ -6,6 +6,9 @@ import OBCDomain
 /// The map half of `LineMarkerEditor`: the line in segment colours, and a handle on every
 /// marker that drags along the line. UIKit, because a SwiftUI `Map` cannot move an
 /// annotation along a line at frame rate.
+///
+/// Linked to the profile, the map only looks: its pins take no drag, the profile shows the
+/// stretch in view, and stop pins show once the map is close enough.
 struct LineMarkerMapView: UIViewRepresentable {
     let model: LineMarkerEditorModel
     let lineVersion: Int
@@ -14,10 +17,10 @@ struct LineMarkerMapView: UIViewRepresentable {
     let segmentColors: [Color]
     let dashedSegments: Set<Int>
     let stops: [PlacedStop]
-    /// The line fits and focuses above this much of the bottom: the part a sheet covers.
+    /// The line fits above this much of the bottom, and the profile shows the line above it:
+    /// the part a sheet covers.
     var bottomInset: CGFloat = 0
-    /// A tap on the line places a marker.
-    var isPlacing = false
+    var linksProfile = false
 
     /// Stop pins show only while the map spans less than this: a whole-trip view stays clean.
     static let stopsSpanMeters = 40_000.0
@@ -26,10 +29,6 @@ struct LineMarkerMapView: UIViewRepresentable {
         let mapView = FittingMapView()
         mapView.onFirstLayout = { [weak coordinator = context.coordinator] in coordinator?.fit() }
         mapView.delegate = context.coordinator
-        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.placeTapped(_:)))
-        tap.isEnabled = false
-        mapView.addGestureRecognizer(tap)
-        context.coordinator.placementTap = tap
         mapView.isRotateEnabled = false
         mapView.isPitchEnabled = false
         mapView.showsCompass = false
@@ -57,14 +56,17 @@ struct LineMarkerMapView: UIViewRepresentable {
                 dashed: dashedSegments
             )
         }
-        coordinator.placementTap?.isEnabled = isPlacing
         if coordinator.stops != stops {
             coordinator.stops = stops
             coordinator.showStops(in: mapView)
         }
-        if let focus = model.mapFocus, focus.version != coordinator.focusVersion {
-            coordinator.focusVersion = focus.version
-            coordinator.show(focus.range, in: mapView)
+        // Which day a stop can end moves with the day ends.
+        for case let stop as StopAnnotation in mapView.annotations {
+            (mapView.view(for: stop) as? StopAnnotationView)?.configure(kind: stop.kind, action: model.stopActionTitle(stop.placed))
+        }
+        if coordinator.bottomInset != bottomInset {
+            coordinator.bottomInset = bottomInset
+            coordinator.reportVisibleSoon()
         }
         // Diff the annotations by marker id: a marker added, removed or replaced from outside
         // gets its handle without touching the others.
@@ -78,14 +80,16 @@ struct LineMarkerMapView: UIViewRepresentable {
             if let annotation = present[marker.id] {
                 if annotation.distance != marker.distance {
                     annotation.distance = marker.distance
-                    annotation.coordinate = clLocation(model.line.coordinate(at: marker.distance))
+                    annotation.coordinate = coordinator.coordinate(at: marker.distance)
                 }
-                if let view = mapView.view(for: annotation) as? MarkerAnnotationView {
+                if annotation.title != marker.name { annotation.title = marker.name }
+                if let view = mapView.view(for: annotation) {
                     coordinator.configure(view, for: annotation)
                 }
             } else {
                 mapView.addAnnotation(MarkerAnnotation(
-                    id: marker.id, distance: marker.distance, coordinate: model.line.coordinate(at: marker.distance)
+                    id: marker.id, distance: marker.distance, coordinate: coordinator.coordinate(at: marker.distance),
+                    title: marker.name
                 ))
             }
         }
@@ -107,8 +111,8 @@ struct LineMarkerMapView: UIViewRepresentable {
         /// The known stops; pins for them show while the map is zoomed in enough.
         var stops: [PlacedStop] = []
         private var stopsShown = false
-        var focusVersion = 0
-        var placementTap: UITapGestureRecognizer?
+        /// The sheet height the visible stretch was last reported for.
+        var bottomInset: CGFloat = 0
         /// The finger on the map, or none: a second finger is ignored until this one lets go.
         private var drag: Drag?
 
@@ -150,18 +154,20 @@ struct LineMarkerMapView: UIViewRepresentable {
         /// The whole line above the sheet, once the view has its size.
         func fit() {
             guard let mapView, let overlay = mapView.overlays.first as? SegmentedLineOverlay else { return }
-            mapView.setVisibleMapRect(overlay.boundingMapRect, edgePadding: padding, animated: false)
-        }
-
-        /// The part of the line between two distances, above the sheet.
-        func show(_ range: ClosedRange<Double>, in mapView: MKMapView) {
-            guard let overlay = mapView.overlays.first as? SegmentedLineOverlay else { return }
             mapView.setVisibleMapRect(
-                overlay.rect(between: range.lowerBound, and: range.upperBound), edgePadding: padding, animated: true)
+                overlay.boundingMapRect,
+                edgePadding: UIEdgeInsets(top: 72, left: 36, bottom: parent.bottomInset + 36, right: 36),
+                animated: false)
+            reportVisible()
         }
 
-        private var padding: UIEdgeInsets {
-            UIEdgeInsets(top: 72, left: 36, bottom: parent.bottomInset + 36, right: 36)
+        /// A pin's place: the point the renderer draws at that distance, so the tip is on the
+        /// drawn line at every zoom.
+        func coordinate(at distance: Double) -> CLLocationCoordinate2D {
+            guard let overlay = mapView?.overlays.first as? SegmentedLineOverlay else {
+                return clLocation(parent.model.line.coordinate(at: distance))
+            }
+            return overlay.mapPoint(at: distance).coordinate
         }
 
         /// Stop pins come and go with the zoom.
@@ -175,6 +181,30 @@ struct LineMarkerMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let wanted = Self.spanMeters(of: mapView) < LineMarkerMapView.stopsSpanMeters && !stops.isEmpty
             if wanted != stopsShown { showStops(in: mapView) }
+            reportVisible()
+        }
+
+        /// The sheet moves in many small steps: report once it rests.
+        func reportVisibleSoon() {
+            NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(reportVisible), object: nil)
+            perform(#selector(reportVisible), with: nil, afterDelay: 0.2)
+        }
+
+        /// Hand the profile the parts of the line in view above the sheet; close up, ask for
+        /// the stops along them.
+        @objc func reportVisible() {
+            guard parent.linksProfile, let mapView, let overlay = mapView.overlays.first as? SegmentedLineOverlay,
+                mapView.bounds.height > parent.bottomInset
+            else { return }
+            let visible = mapView.visibleMapRect
+            let share = Double((mapView.bounds.height - parent.bottomInset) / mapView.bounds.height)
+            let above = MKMapRect(x: visible.minX, y: visible.minY, width: visible.width, height: visible.height * share)
+            let inView = overlay.pieces(in: above)
+            parent.model.showVisible(inView.pieces, centre: inView.centre)
+            if Self.spanMeters(of: mapView) < LineMarkerMapView.stopsSpanMeters,
+                let first = inView.pieces.first, let last = inView.pieces.last {
+                parent.model.onCloseUp(first.lowerBound...last.upperBound)
+            }
         }
 
         /// The width of the visible map in metres.
@@ -189,21 +219,6 @@ struct LineMarkerMapView: UIViewRepresentable {
             guard let stop = view.annotation as? StopAnnotation else { return }
             mapView.deselectAnnotation(stop, animated: true)
             parent.model.onStopAction(stop.placed)
-        }
-
-        /// A tap while placing: the nearest point of the line under the finger, within a
-        /// finger's width of it, becomes the new marker.
-        @objc func placeTapped(_ recognizer: UITapGestureRecognizer) {
-            guard let mapView, parent.model.isPlacing else { return }
-            let point = recognizer.location(in: mapView)
-            let target = mapView.convert(point, toCoordinateFrom: mapView)
-            let line = parent.model.line
-            let projection = line.projection(
-                of: Coordinate(latitude: target.latitude, longitude: target.longitude), near: 0, window: line.length)
-            let metersPerPoint = mapView.region.span.latitudeDelta * 111_320 / Double(mapView.bounds.height)
-            guard projection.error <= 30 * metersPerPoint else { return }
-            parent.model.moveGhost(to: projection.distance)
-            parent.model.place()
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: any MKOverlay) -> MKOverlayRenderer {
@@ -227,6 +242,13 @@ struct LineMarkerMapView: UIViewRepresentable {
                 return view
             }
             guard let annotation = annotation as? MarkerAnnotation else { return nil }
+            if parent.linksProfile {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: "pin") as? PinAnnotationView
+                    ?? PinAnnotationView(annotation: annotation, reuseIdentifier: "pin")
+                view.annotation = annotation
+                configure(view, for: annotation)
+                return view
+            }
             let identifier = "marker"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MarkerAnnotationView
                 ?? MarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
@@ -236,14 +258,17 @@ struct LineMarkerMapView: UIViewRepresentable {
             return view
         }
 
-        func configure(_ view: MarkerAnnotationView, for annotation: MarkerAnnotation) {
+        func configure(_ view: MKAnnotationView, for annotation: MarkerAnnotation) {
             let isActive = parent.activeID == annotation.id
-            view.configure(
-                color: parent.model.color(endingAt: annotation.id),
-                isActive: isActive,
-                isFixed: parent.model.marker(annotation.id)?.isFixed ?? false,
-                label: isActive ? parent.model.label(for: annotation.id) : nil
-            )
+            let color = parent.model.color(endingAt: annotation.id)
+            let isFixed = parent.model.marker(annotation.id)?.isFixed ?? false
+            if let view = view as? PinAnnotationView {
+                view.configure(color: color, isActive: isActive, isFixed: isFixed)
+            } else if let view = view as? MarkerAnnotationView {
+                view.configure(
+                    color: color, isActive: isActive, isFixed: isFixed,
+                    label: isActive ? parent.model.label(for: annotation.id) : nil)
+            }
         }
 
         private func drag(_ phase: MarkerAnnotationView.DragPhase, touch: UITouch, annotation: MarkerAnnotation) {
@@ -280,7 +305,7 @@ struct LineMarkerMapView: UIViewRepresentable {
                 parent.model.move(id, toward: coordinate, window: window)
                 if let distance = parent.model.marker(id)?.distance, distance != held.distance {
                     held.distance = distance
-                    held.coordinate = clLocation(parent.model.line.coordinate(at: distance))
+                    held.coordinate = self.coordinate(at: distance)
                 }
             case .ended:
                 guard let current = drag, current.annotation === annotation else { return }
@@ -332,11 +357,45 @@ final class MarkerAnnotation: NSObject, MKAnnotation {
     let id: LineMarker.ID
     var distance: Double
     @objc dynamic var coordinate: CLLocationCoordinate2D
+    /// What VoiceOver reads for the pin: "Day 2 end".
+    @objc dynamic var title: String?
 
-    init(id: LineMarker.ID, distance: Double, coordinate: Coordinate) {
+    init(id: LineMarker.ID, distance: Double, coordinate: CLLocationCoordinate2D, title: String) {
         self.id = id
         self.distance = distance
-        self.coordinate = clLocation(coordinate)
+        self.coordinate = coordinate
+        self.title = title
+    }
+}
+
+/// A pin on a map linked to the profile: the handle drawn once into an image, with the tip at
+/// the image's bottom centre. An image, not a hosted SwiftUI view, so nothing but
+/// `centerOffset` places the tip. It takes no touch: a drag on it pans the map, and a tap
+/// reaches the stop under it.
+final class PinAnnotationView: MKAnnotationView {
+    private static var images: [String: UIImage] = [:]
+
+    override init(annotation: (any MKAnnotation)?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        displayPriority = .required
+        // Never selected: MapKit then hands a tap to the stop under the pin.
+        isEnabled = false
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(color: Color, isActive: Bool, isFixed: Bool) {
+        let key = "\(color)|\(isActive)|\(isFixed)"
+        let image = Self.images[key] ?? {
+            let renderer = ImageRenderer(content: MarkerHandleView(color: color, isActive: isActive, isFixed: isFixed))
+            renderer.scale = UITraitCollection.current.displayScale
+            let image = renderer.uiImage ?? UIImage()
+            Self.images[key] = image
+            return image
+        }()
+        self.image = image
+        centerOffset = CGPoint(x: 0, y: -image.size.height / 2)
+        zPriority = isActive ? .max : .defaultSelected
     }
 }
 
@@ -446,6 +505,8 @@ private final class FittingMapView: MKMapView {
 final class StopAnnotationView: MKAnnotationView {
     private static let size: CGFloat = 20
     private let host = UIHostingController(rootView: AnyView(EmptyView()))
+    private var kind: Stop.Kind?
+    private var action: String?
 
     override init(annotation: (any MKAnnotation)?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
@@ -462,6 +523,9 @@ final class StopAnnotationView: MKAnnotationView {
     required init?(coder: NSCoder) { nil }
 
     func configure(kind: Stop.Kind, action: String?) {
+        guard kind != self.kind || action != self.action else { return }
+        self.kind = kind
+        self.action = action
         host.rootView = AnyView(
             StopIcon(kind: kind, size: Self.size - 2, isRound: true)
                 .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 1.5))
@@ -478,6 +542,8 @@ final class StopAnnotationView: MKAnnotationView {
             configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
             let button = UIButton(configuration: configuration)
             button.accessibilityIdentifier = "map.stopAction"
+            // MapKit lays the accessory out by its frame: without one the button is 0 × 0.
+            button.sizeToFit()
             return button
         }
     }
@@ -512,7 +578,7 @@ final class SegmentedLineOverlay: NSObject, MKOverlay {
             let dot = MKMapRect(origin: point, size: MKMapSize(width: 0, height: 0))
             rect = rect.union(dot)
             chunk = chunk.union(dot)
-            if (i + 1) % Self.chunkSize == 0 {
+            if i > 0, i % Self.chunkSize == 0 {
                 chunks.append(chunk)
                 // The chunk's last vertex also starts the next chunk's first segment.
                 chunk = dot
@@ -538,6 +604,47 @@ final class SegmentedLineOverlay: NSObject, MKOverlay {
         }
         let pad = max(boundingMapRect.width, boundingMapRect.height) / 20
         return rect.insetBy(dx: -pad, dy: -pad)
+    }
+
+    /// The parts of the line inside `rect` as distance ranges in line order, and the distance of
+    /// their point nearest the rect's centre. Clipped per segment, so a long segment across the
+    /// rect counts although neither of its ends is inside.
+    func pieces(in rect: MKMapRect) -> (pieces: [ClosedRange<Double>], centre: Double) {
+        let vertices = line.vertices
+        let mid = MKMapPoint(x: rect.midX, y: rect.midY)
+        var pieces: [ClosedRange<Double>] = []
+        var centre = (distance: 0.0, gap: Double.infinity)
+        for chunk in chunkRects.indices where chunkRects[chunk].insetBy(dx: -1, dy: -1).intersects(rect) {
+            for i in (chunk * Self.chunkSize)..<min((chunk + 1) * Self.chunkSize, mapPoints.count - 1)
+            where !pieceStarts.contains(i + 1) {
+                let a = mapPoints[i], b = mapPoints[i + 1]
+                let dx = b.x - a.x, dy = b.y - a.y
+                // Liang–Barsky: the share of the segment inside the rect is t0...t1.
+                var t0 = 0.0, t1 = 1.0
+                for (p, q) in [(-dx, a.x - rect.minX), (dx, rect.maxX - a.x), (-dy, a.y - rect.minY), (dy, rect.maxY - a.y)] {
+                    if p == 0 {
+                        if q < 0 { t0 = 2 }
+                    } else if p < 0 {
+                        t0 = max(t0, q / p)
+                    } else {
+                        t1 = min(t1, q / p)
+                    }
+                }
+                guard t0 <= t1 else { continue }
+                let da = vertices[i].distance, span = vertices[i + 1].distance - da
+                let from = da + span * t0, to = da + span * t1
+                if let last = pieces.last, from <= last.upperBound + MeasuredLine.tieMeters {
+                    pieces[pieces.count - 1] = last.lowerBound...max(last.upperBound, to)
+                } else {
+                    pieces.append(from...to)
+                }
+                let length = dx * dx + dy * dy
+                let t = length > 0 ? min(max(((mid.x - a.x) * dx + (mid.y - a.y) * dy) / length, t0), t1) : t0
+                let gap = hypot(a.x + dx * t - mid.x, a.y + dy * t - mid.y)
+                if gap < centre.gap { centre = (da + span * t, gap) }
+            }
+        }
+        return (pieces, centre.distance)
     }
 
     /// The map point at a distance along the line, on the segment `MeasuredLine.index` picks.

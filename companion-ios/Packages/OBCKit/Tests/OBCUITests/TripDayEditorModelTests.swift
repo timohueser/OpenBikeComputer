@@ -4,7 +4,7 @@ import OBCDomain
 @testable import OBCUI
 
 /// The state under the day editor: a drag is live in the stats and reaches the trip on release,
-/// the stepper and Even out balance the days, add and remove keep the handles aligned, undo
+/// the stepper and Even out balance the days, split and join keep the handles aligned, undo
 /// steps back one change, and Done hands the draft back.
 @MainActor
 struct TripDayEditorModelTests {
@@ -37,6 +37,11 @@ struct TripDayEditorModelTests {
         trip([file(0, 10_000), file(10_000, 20_000), file(20_000, 30_000)], names: ["A", "B", "C"])
     }
 
+    /// Three days with a transfer at the end of Day 1: Day 2 starts 500 m north of where Day 1 ends.
+    private func withTransfer() -> Trip {
+        trip([file(0, 10_000), file(10_000, 20_000, y: 500), file(20_000, 30_000, y: 500)])
+    }
+
     @Test
     func aDragIsLiveInTheStatsAndReachesTheTripOnRelease() {
         let model = editor(threeDays())
@@ -44,10 +49,10 @@ struct TripDayEditorModelTests {
         #expect(!model.hasChanges)
         let first = model.handles.markers[0].id
 
+        let window = model.handles.window
         model.handles.begin(first)
-        #expect(model.selectedDay == 0, "a grab selects the day")
-        #expect(model.handles.window.lowerBound == 0 && abs(model.handles.window.upperBound - 20_000) < 1,
-                "the profile focuses on the days around the handle")
+        #expect(model.selectedDay == 0, "a grab highlights the day")
+        #expect(model.handles.window == window, "a grab moves no window")
         model.handles.move(first, to: 12_000)
         #expect(abs((model.live.days[0]?.distanceMeters ?? 0) - 12_000) < 1, "the live figures follow the finger")
         #expect(abs((model.live.days[1]?.distanceMeters ?? 0) - 8_000) < 1)
@@ -107,34 +112,53 @@ struct TripDayEditorModelTests {
         #expect(abs(model.trip.dayEnds[0].distance - 15_000) < 1)
     }
 
+    /// The stepper is split mode's alone: after that, the day count changes with Split and Join.
     @Test
-    func placementAddsADayEndWhereTheFingerLiftsAndSelectsIt() {
+    func theStepperWorksOnlyInSplitMode() {
         let model = editor(threeDays())
+        model.setDayCount(5)
+        #expect(model.trip.dayCount == 3)
+        #expect(!model.canUndo)
+    }
+
+    /// Split cuts the day at the middle of its riding time, not of its distance: a day that
+    /// climbs in its first half is cut before its middle kilometre.
+    @Test
+    func splitCutsADayAtTheMiddleOfItsRidingTime() {
+        let flat = stride(from: 0.0, through: 10_000, by: 100).map { RoutePoint(coordinate: coordinate($0), elevationMeters: 0) }
+        let climb = stride(from: 10_000.0, through: 20_000, by: 100).map {
+            RoutePoint(coordinate: coordinate($0), elevationMeters: min($0 - 10_000, 5_000) * 0.1)
+        }
+        let model = editor(trip([flat, climb], names: ["A", "B"]))
         let ids = model.handles.markers.map(\.id)
 
-        model.beginPlacing()
-        #expect(model.isPlacing)
-        #expect(model.handles.ghostDistance == nil)
-        model.handles.moveGhost(to: 13_500)
-        #expect(model.handles.ghostDistance == 13_500)
-        model.handles.place()
-        #expect(!model.isPlacing)
-        #expect(model.trip.dayCount == 4)
-        #expect(abs(model.trip.dayEnds[1].distance - 13_500) < 1)
-        #expect(model.selectedDay == 1, "the new end is selected, ready to move on")
-        #expect(model.handles.markers.count == 3)
-        #expect([model.handles.markers[0].id, model.handles.markers[2].id] == ids, "the old handles keep their ids")
-
-        model.beginPlacing()
-        model.cancelPlacing()
-        #expect(!model.isPlacing)
-        #expect(model.trip.dayCount == 4, "a cancelled placement adds nothing")
-
-        #expect(model.removeBlocker(3) != nil, "the last day ends the trip")
-        model.removeDayEnd(1)
+        model.splitDay(1)
         #expect(model.trip.dayCount == 3)
-        #expect(model.handles.markers.map(\.id) == ids)
-        #expect(model.selectedDay == nil)
+        #expect(model.trip.dayEnds[1].distance > 10_000 && model.trip.dayEnds[1].distance < 15_000)
+        #expect(abs(model.stats[1].duration - model.stats[2].duration) < 1, "two halves of equal riding time")
+        #expect(model.trip.dayEnds.map(\.title) == ["A", nil, "B"], "the old day's name stays with its end")
+        #expect(model.selectedDay == 1, "the new end's day is highlighted")
+        #expect(model.handles.markers.count == 2)
+        #expect(model.handles.markers[0].id == ids[0], "the old handle keeps its id")
+
+        model.undo()
+        #expect(model.trip.dayCount == 2, "a split is one undo step")
+        #expect(!model.canSplit(-1) && !model.canSplit(5))
+    }
+
+    @Test
+    func joinRemovesTheEndBetweenTwoDaysButNeverATransfer() {
+        let model = editor(threeDays())
+        let ids = model.handles.markers.map(\.id)
+        model.joinDay(0)
+        #expect(model.trip.dayCount == 2)
+        #expect(abs(model.trip.dayEnds[0].distance - 20_000) < 1)
+        #expect(model.handles.markers.map(\.id) == [ids[1]])
+
+        let transfer = editor(withTransfer())
+        transfer.joinDay(0)
+        #expect(transfer.trip.dayCount == 3, "a day end at a transfer holds a gap")
+        #expect(!transfer.canUndo)
     }
 
     @Test
@@ -146,16 +170,13 @@ struct TripDayEditorModelTests {
         #expect(model.trip.dayEnds[0].stop == camp.stop)
         #expect(abs(model.handles.markers[0].distance - 10_500) < 1)
         #expect(model.canUndo)
-    }
 
-    @Test
-    func selectingADayFocusesTheProfileOnItsNeighbours() {
-        let model = editor(threeDays())
-        model.select(1)
-        #expect(abs(model.handles.window.lowerBound - 10_000) < 1 && abs(model.handles.window.upperBound - 30_000) < 1)
-        #expect(model.handles.mapFocus?.range == model.handles.window)
-        model.select(nil)
-        #expect(model.handles.window == 0...model.handles.line.length)
+        // Day 1 ends at a transfer 500 m from the stop; the nearest end that may move is Day 2's.
+        let transfer = editor(withTransfer())
+        #expect(transfer.handles.stopActionTitle(camp) == "End Day 2 here")
+        transfer.handles.onStopAction(camp)
+        #expect(transfer.trip.dayEnds[0].stop == nil)
+        #expect(transfer.trip.dayEnds[1].stop == camp.stop)
     }
 
     /// The snap pass lands after the stops arrive, even though the geocoder has written place
@@ -232,7 +253,7 @@ struct TripDayEditorModelTests {
 
     @Test
     func aDayEndAtATransferIsFixed() {
-        let model = editor(trip([file(0, 10_000), file(10_000, 20_000, y: 500), file(20_000, 30_000, y: 500)]))
+        let model = editor(withTransfer())
         #expect(model.handles.markers[0].isFixed)
         #expect(!model.handles.markers[1].isFixed)
         #expect(!model.handles.begin(model.handles.markers[0].id))
