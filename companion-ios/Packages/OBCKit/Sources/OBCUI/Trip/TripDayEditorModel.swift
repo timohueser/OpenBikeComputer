@@ -112,10 +112,10 @@ public final class TripDayEditorModel {
     /// The day the handle belongs to.
     public func day(of handle: LineMarker.ID) -> Int? { handleIDs.firstIndex(of: handle) }
     /// The day is long enough to hold a second day end.
+    /// The day's stretch of the line, clear of the vias at its ends, holds two days.
     public func canSplit(_ day: Int) -> Bool {
         guard trip.dayEnds.indices.contains(day) else { return false }
-        let from = day > 0 ? trip.dayEnds[day - 1].distance : 0
-        return trip.dayEnds[day].distance - from >= 2 * Trip.minimumDayMeters
+        return trip.lineEnd(of: day) - trip.lineStart(of: day) >= 2 * Trip.minimumDayMeters
     }
 
     // MARK: Selection
@@ -160,8 +160,8 @@ public final class TripDayEditorModel {
     public func splitDay(_ day: Int) {
         settle()
         guard canSplit(day) else { return }
-        let from = day > 0 ? trip.dayEnds[day - 1].distance : 0
-        let middle = (line.cost(to: from, bikeType: trip.bikeType) + line.cost(to: trip.dayEnds[day].distance, bikeType: trip.bikeType)) / 2
+        let middle = (line.cost(to: trip.lineStart(of: day), bikeType: trip.bikeType)
+            + line.cost(to: trip.lineEnd(of: day), bikeType: trip.bikeType)) / 2
         let cut = line.distance(atCost: middle, bikeType: trip.bikeType)
         var added: Int?
         commit { trip in
@@ -264,7 +264,9 @@ public final class TripDayEditorModel {
         syncHandles()
     }
 
+    /// Refused while a bridge is in flight: it would land after the save.
     public func save() {
+        guard bridging == nil else { return }
         settle()
         snapTask?.cancel()
         onSave(trip)
@@ -384,13 +386,10 @@ public final class TripDayEditorModel {
         for (day, end) in trip.dayEnds.enumerated() {
             switch end.stopRoute {
             case .outAndBack(let spur)?:
-                branches.append(LineBranch(
-                    coordinates: [line.coordinate(at: end.distance)] + spur.map(\.coordinate), color: colors[day]))
+                branches.append(LineBranch(coordinates: spur.map(\.coordinate), color: colors[day]))
             case .via(let toStop, let fromStop, let leave, let rejoin)?:
-                branches.append(LineBranch(
-                    coordinates: [line.coordinate(at: leave)] + toStop.map(\.coordinate), color: colors[day]))
-                branches.append(LineBranch(
-                    coordinates: fromStop.map(\.coordinate) + [line.coordinate(at: rejoin)], color: colors[day + 1]))
+                branches.append(LineBranch(coordinates: toStop.map(\.coordinate), color: colors[day]))
+                branches.append(LineBranch(coordinates: fromStop.map(\.coordinate), color: colors[day + 1]))
                 oldSections.append(leave...rejoin)
             case nil:
                 break

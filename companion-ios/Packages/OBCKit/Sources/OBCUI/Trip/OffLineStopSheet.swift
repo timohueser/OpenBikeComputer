@@ -89,6 +89,8 @@ public struct OffLineStopSheet: View {
                         Text("\(OBCFormat.extraDistance(meters: extra)) · \(note)")
                     case .failed:
                         Text("No road found")
+                    case .noRoom:
+                        Text("No room on the line to leave and rejoin it")
                     }
                 }
                 .font(.obcMono(size: 12))
@@ -115,6 +117,7 @@ public struct OffLineStopSheet: View {
         case .noRoad: "No road to this stop found."
         case .noConnection: "No connection. The router needs a connection once for this area."
         case .mapData: "The map data for this area did not load."
+        case .noMap: "No map data for this area."
         }
     }
 }

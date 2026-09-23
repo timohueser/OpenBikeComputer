@@ -2,7 +2,8 @@ import Foundation
 
 /// How a day that ends at a stop off the line reaches the stop. The day end itself stays on the
 /// line point nearest the stop: that is the junction of an out and back, and the point a via
-/// runs around.
+/// runs around. Each leg starts or ends with its point on the line, not with the router's end,
+/// which snaps to a road up to 100 m away.
 public enum StopRoute: Equatable, Sendable {
     /// A spur from the junction to the stop. The next day rides it back to the same point, so the
     /// line does not change.
@@ -18,6 +19,8 @@ public enum LegRouteFailure: Error, Equatable, Sendable {
     case noConnection
     /// The map data for the area did not load.
     case mapData
+    /// The published map has no data for the area.
+    case noMap
     /// No road near an end, or no road between them within the device's search limit.
     case noRoad
 }

@@ -311,7 +311,8 @@ extension CellRouter: LegRouter {
             switch failure {
             case .noConnection: throw LegRouteFailure.noConnection
             case .cellDownloadFailed, .mapUnreadable: throw LegRouteFailure.mapData
-            case .noMap, .noRoad, .noPath, .exhausted: throw LegRouteFailure.noRoad
+            case .noMap: throw LegRouteFailure.noMap
+            case .noRoad, .noPath, .exhausted: throw LegRouteFailure.noRoad
             }
         }
     }

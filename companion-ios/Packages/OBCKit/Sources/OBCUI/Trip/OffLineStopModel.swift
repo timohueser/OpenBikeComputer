@@ -11,6 +11,8 @@ public final class OffLineStopModel: Identifiable {
         /// Routed: the route and the metres it adds to the trip.
         case ready(StopRoute, extraMeters: Double)
         case failed(LegRouteFailure)
+        /// The day ends around the stop leave the line no room to leave and rejoin it.
+        case noRoom
     }
 
     public enum Mode: Sendable {
@@ -51,18 +53,25 @@ public final class OffLineStopModel: Identifiable {
     /// Why nothing can be picked, once neither option routed. A missing connection explains more
     /// than a missing road, so it wins.
     public var failure: LegRouteFailure? {
-        guard case .failed(let a) = outAndBack, case .failed(let b) = via else { return nil }
-        return [a, b].contains(.noConnection) ? .noConnection : [a, b].contains(.mapData) ? .mapData : .noRoad
+        guard case .failed(let a) = outAndBack else { return nil }
+        let failures: [LegRouteFailure]
+        switch via {
+        case .failed(let b): failures = [a, b]
+        case .noRoom: failures = [a]
+        case .routing, .ready: return nil
+        }
+        return [.noConnection, .mapData, .noMap].first(where: failures.contains) ?? .noRoad
     }
 
     public func load() async {
         let signal: @Sendable () -> Void = { [weak self] in Task { @MainActor in self?.isDownloading = true } }
         let (trip, day, router) = (trip, day, router)
         async let out = Self.attempt { try await trip.routeOutAndBack(day, with: router, onDownload: signal) }
-        async let through = Self.attempt { try await trip.routeVia(day, with: router, onDownload: signal) }
+        let hasRoom = trip.viaEnds(of: day) != nil
+        async let through = hasRoom ? Self.attempt { try await trip.routeVia(day, with: router, onDownload: signal) } : nil
         let (a, b) = await (out, through)
         outAndBack = option(a)
-        via = option(b)
+        via = b.map(option) ?? .noRoom
         isDownloading = false
     }
 

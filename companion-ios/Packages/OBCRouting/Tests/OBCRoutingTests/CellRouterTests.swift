@@ -170,6 +170,11 @@ private func makeRouter(_ server: Server, _ cache: CellCache) -> CellRouter {
         #expect(again == first)
         #expect(downloads.value == 5)
 
+        await #expect(throws: LegRouteFailure.noMap, "no cells published here") {
+            try await makeRouter(server, cache).route(
+                from: Coordinate(latitude: 10, longitude: 10), to: Coordinate(latitude: 10.01, longitude: 10), bikeType: .road) {}
+        }
+
         await #expect(throws: LegRouteFailure.noConnection) {
             try await makeRouter(server, scratch()).route(from: vector.start, to: vector.end, bikeType: .road) {}
         }

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import OBCDomain
+@testable import OBCDomain
 @testable import OBCUI
 
 /// The day editor with the phone's router: a stop off the line offers out and back and via, a
@@ -28,9 +28,11 @@ struct OffLineStopModelTests {
         }
     }
 
-    private func editor(_ files: [[RoutePoint]], router: FakeLegRouter) -> TripDayEditorModel {
+    private func editor(
+        _ files: [[RoutePoint]], router: FakeLegRouter, onSave: @escaping (Trip) -> Void = { _ in }
+    ) -> TripDayEditorModel {
         let trip = Trip.joining(files, id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
-        return TripDayEditorModel(trip: trip, isSplitMode: false, finder: nil, router: router) { _ in }!
+        return TripDayEditorModel(trip: trip, isSplitMode: false, finder: nil, router: router, onSave: onSave)!
     }
 
     private func camp(on model: TripDayEditorModel, offset: Double) -> PlacedStop {
@@ -86,13 +88,28 @@ struct OffLineStopModelTests {
     }
 
     @Test
+    func aViaWithoutRoomSaysSoAndTheOutAndBackStays() async throws {
+        let model = editor([file(0, 10_000), file(10_000, 20_000), file(20_000, 30_000)], router: FakeLegRouter())
+        model.endDay(at: camp(on: model, offset: 400))
+        var trip = model.trip
+        trip.dayEnds[1].distance = trip.dayEnds[0].distance + 1
+        let choice = OffLineStopModel(trip: trip, day: 0, router: FakeLegRouter()) { _ in }
+        await choice.load()
+        #expect(choice.via == .noRoom)
+        #expect(choice.failure == nil, "the out and back still routes")
+    }
+
+    @Test
     func aGapInsideADayBridgesOrStaysAStraightLine() async {
-        let model = editor([file(0, 10_000), file(10_100, 20_000)], router: FakeLegRouter())
+        var saved: [Trip] = []
+        let model = editor([file(0, 10_000), file(10_100, 20_000)], router: FakeLegRouter()) { saved.append($0) }
         model.joinDay(0)
         #expect(model.gaps.count == 1)
         #expect(model.notes[0] == "straight line 100 m")
         #expect(model.canBridge(0))
         model.bridgeGap(in: 0)
+        model.save()
+        #expect(saved.isEmpty, "Done waits for the bridge")
         while model.bridging != nil { await Task.yield() }
         #expect(model.gaps.isEmpty)
         #expect(model.notes[0] == nil)

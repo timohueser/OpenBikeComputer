@@ -164,6 +164,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         case "noRoad": .noRoad
         case "offline": .noConnection
         case "mapData": .mapData
+        case "noMap": .noMap
         default: nil
         }
 

@@ -16,15 +16,19 @@ struct TripStopRoutesTests {
         stride(from: from, through: to, by: 100).map { RoutePoint(coordinate: Self.coordinate($0, y), elevationMeters: 500) }
     }
 
-    /// The phone's router as a fake: a straight road between the two points, or a failure.
+    /// The phone's router as a fake: a straight road between the two points, or a failure. Like
+    /// the real router, it may start and end on a road `snap` metres north of the points asked.
     struct FakeRouter: LegRouter {
         var failure: LegRouteFailure?
+        var snap = 0.0
 
         func route(
             from: Coordinate, to: Coordinate, bikeType: BikeType, onDownload: @escaping @Sendable () -> Void
         ) async throws -> [RoutePoint] {
             onDownload()
             if let failure { throw failure }
+            let from = Coordinate(latitude: from.latitude + snap / 111_320, longitude: from.longitude)
+            let to = Coordinate(latitude: to.latitude + snap / 111_320, longitude: to.longitude)
             let steps = max(Int(from.distance(to: to) / 50), 1)
             return (0...steps).map { i in
                 let t = Double(i) / Double(steps)
@@ -100,6 +104,27 @@ struct TripStopRoutesTests {
         #expect(days[1].points.first?.coordinate.distance(to: camp) ?? .infinity < 1)
         #expect(!days[0].points.contains { $0.coordinate.distance(to: Self.coordinate(10_500)) < 1 }, "the old section is not ridden")
         #expect(days.allSatisfy { $0.joinMeters == 0 && $0.leaveMeters == .max }, "a via is main line")
+    }
+
+    /// Done runs a line change on every edit: a router end snapped to a road beside the line must
+    /// not count as a junction off the line.
+    @Test
+    func aStopRouteKeepsItsJunctionsWhenTheRouterSnapsBesideTheLine() async throws {
+        var trip = trip()
+        let snapping = FakeRouter(snap: 60)
+        trip.setStopRoute(0, try await trip.routeVia(0, with: snapping))
+        var stored = trip
+        stored.replaceDays(from: trip)
+        guard case .via(_, _, let leave, let rejoin)? = stored.dayEnds[0].stopRoute else {
+            Issue.record("Done drops the via")
+            return
+        }
+        #expect(abs(leave - 9_200) < 1 && abs(rejoin - 13_200) < 1, "the via stays")
+
+        trip.setStopRoute(0, try await trip.routeOutAndBack(0, with: snapping))
+        stored.replaceDays(from: trip)
+        #expect(stored.dayEnds[0].stopRoute == trip.dayEnds[0].stopRoute, "the spur stays")
+        expectFiguresMatchTheUpload(stored)
     }
 
     @Test

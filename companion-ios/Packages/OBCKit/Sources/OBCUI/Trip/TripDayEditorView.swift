@@ -127,6 +127,7 @@ public struct TripDayEditorView: View {
                     close()
                 }
                 .fontWeight(.semibold)
+                .disabled(model.bridging != nil)
                 .accessibilityIdentifier("dayEditor.done")
             }
         }
