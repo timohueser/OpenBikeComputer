@@ -338,7 +338,7 @@ pub struct NavigatorMachine {
     lead_in: Option<LeadIn>,
     following: RouteState,
     /// Resident per-route caches, each with its own build key.
-    profile: Option<Profile>,
+    profile: Profile,
     profile_route: Option<usize>,
     climbs: Climbs,
     climbs_route: Option<usize>,
@@ -380,7 +380,7 @@ impl NavigatorMachine {
             lead_plan: None,
             lead_in: None,
             following: RouteState::new(),
-            profile: None,
+            profile: Profile::EMPTY => Profile::init_in_place,
             profile_route: None,
             climbs: Climbs::new(),
             climbs_route: None,
@@ -802,7 +802,8 @@ impl NavigatorMachine {
         assert!(*phase == OperationPhase::Idle && *cancel_mask == 0 && !*detour_commit, "no physical work pending");
         assert!(lead_plan.is_none() && lead_in.is_none(), "no lead-in is planned or adopted");
         following.assert_boot_state();
-        assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
+        assert!(profile_route.is_none(), "no elevation profile cached");
+        assert!(profile.cols().iter().all(|&(lo, hi)| lo > hi), "empty profile bands");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
         assert!(waypoints.is_empty() && waypoints_route.is_none(), "no waypoints before a route loads");
         assert_eq!(*waypoints_from_m, 0);

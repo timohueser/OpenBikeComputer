@@ -401,12 +401,19 @@ impl NavGuard {
             let arm = core::ptr::addr_of_mut!((*(arena_ptr() as *mut VisitArm)).work.plan).cast::<NavArm>();
             core::ptr::write_bytes(arm.cast::<u8>(), 0, core::mem::size_of::<NavArm>());
             (*arm).tiles.reset();
-            let mut planner = obc_route::NavPlanner::new(from, to, "Visit leg", context.profile);
+            obc_route::NavPlanner::init_in_place(
+                (*arm).planner.as_mut_ptr(),
+                from,
+                to,
+                "Visit leg",
+                context.profile,
+                None,
+            );
+            let planner = (*arm).planner.assume_init_mut();
             planner.set_attribution_map(context.map);
             if let obc_app::navigator::ReviewPurpose::Easier(objective) = context.purpose {
                 planner.set_objective(objective);
             }
-            (*arm).planner.write(planner);
         }
         self.phase = NavPhase::VisitPlan;
         self.planner_ready = true;
@@ -469,15 +476,25 @@ impl NavGuard {
         unsafe { (*(*(arena_ptr() as *mut VisitArm)).work.sources).sealed.take() }
     }
 
-    /// Write a fresh planner into the arm's slot: the only way it is ever initialized.
-    ///
-    /// It is called from an `#[inline(never)]` frame at the request drain, because `NavPlanner::new`
-    /// materializes a ~9 KB temporary, and inlined into the ride loop that temporary becomes a
-    /// permanent slot in the main task's poll frame.
-    pub(crate) fn begin_plan(&mut self, planner: obc_route::NavPlanner) {
-        // SAFETY: the guard exists ⇒ `Nav` owns the block; the write initializes the slot in place
-        // and no other reference into the arena is live (module doc).
-        unsafe { (*(arena_ptr() as *mut NavArm)).planner.write(planner) };
+    /// Initialize the planner directly in the exclusively owned arm.
+    pub(crate) fn begin_plan(
+        &mut self,
+        from: (i32, i32),
+        to: (i32, i32),
+        name: &str,
+        bike: obc_route::BikeType,
+        corridor: Option<obc_route::Corridor>,
+    ) {
+        unsafe {
+            obc_route::NavPlanner::init_in_place(
+                (*(arena_ptr() as *mut NavArm)).planner.as_mut_ptr(),
+                from,
+                to,
+                name,
+                bike,
+                corridor,
+            );
+        }
         self.planner_ready = true;
         self.phase = NavPhase::Plan;
     }
@@ -596,20 +613,19 @@ impl NavGuard {
         leg: obc_route::Leg,
         split_m: u32,
         rejoin_m: u32,
-        len_m: u32,
-        has_elevation: bool,
+        _len_m: u32,
+        _has_elevation: bool,
     ) {
         assert!(self.phase != NavPhase::Plan);
         unsafe {
             let arm = &mut *(arena_ptr() as *mut DetourArm);
-            core::ptr::addr_of_mut!(arm.work.splice).write(ManuallyDrop::new(obc_route::Splicer::new(
+            obc_route::Splicer::init_in_place(
+                core::ptr::addr_of_mut!(arm.work.splice).cast(),
                 leg,
                 split_m,
                 rejoin_m,
-                len_m,
-                has_elevation,
                 arm.original.name(),
-            )));
+            );
         }
         self.phase = NavPhase::Splice;
     }

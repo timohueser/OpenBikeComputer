@@ -173,41 +173,52 @@ struct Candidate {
 /// if it clears [`MIN_GAIN`], [`MIN_AVG_GRADE`] and [`MIN_LEN`]. Scanning continues from the
 /// summit either way, so a deep col becomes the base of the next climb.
 pub fn segment_climbs<I: IntoIterator<Item = ElePt>>(stream: I) -> Climbs {
-    let mut climbs = Climbs::new();
-    // Only a capped list needs the final re-sort; the common case appends in order.
-    let mut capped = false;
+    let mut detector = ClimbDetector::new();
+    for point in stream {
+        detector.push(point);
+    }
+    detector.finish()
+}
 
-    let mut cand: Option<Candidate> = None;
-    // The lowest point seen while no candidate is open: the trough the next one opens from.
-    let mut trough: Option<ElePt> = None;
+pub(crate) struct ClimbDetector {
+    climbs: Climbs,
+    capped: bool,
+    cand: Option<Candidate>,
+    trough: Option<ElePt>,
+}
 
-    for p in stream {
+impl ClimbDetector {
+    pub(crate) fn new() -> Self {
+        Self { climbs: Climbs::new(), capped: false, cand: None, trough: None }
+    }
+
+    pub(crate) fn push(&mut self, p: ElePt) {
         if !p.ele_m.is_finite() {
-            cand = None;
-            trough = None;
-            continue;
+            self.cand = None;
+            self.trough = None;
+            return;
         }
-        match cand.as_mut() {
+        match self.cand.as_mut() {
             // The gates are applied at close, not at open, so any rise opens a candidate and it
             // can grow into a keeper.
             None => {
-                let base = match trough {
+                let base = match self.trough {
                     None => {
-                        trough = Some(p);
-                        continue;
+                        self.trough = Some(p);
+                        return;
                     }
                     Some(t) => t,
                 };
                 if p.ele_m < base.ele_m {
-                    trough = Some(p);
+                    self.trough = Some(p);
                 } else if p.ele_m > base.ele_m {
-                    cand = Some(Candidate {
+                    self.cand = Some(Candidate {
                         trough_dist: base.dist_m,
                         trough_ele: base.ele_m,
                         max_dist: p.dist_m,
                         max_ele: p.ele_m,
                     });
-                    trough = None;
+                    self.trough = None;
                 }
             }
 
@@ -222,34 +233,36 @@ pub fn segment_climbs<I: IntoIterator<Item = ElePt>>(stream: I) -> Climbs {
                     let flat_run = p.dist_m - c.max_dist;
                     if give_back > MAX_DROP as f32 || flat_run > MAX_FLAT as f64 {
                         // Copy the summit out before the borrow ends, so the close can reassign
-                        // `cand`.
+                        // `self.cand`.
                         let summit = ElePt { dist_m: c.max_dist, ele_m: c.max_ele };
                         if let Some(seg) = close_candidate(c) {
-                            climbs.push_keeping_largest(seg);
-                            capped |= climbs.len() == MAX_CLIMBS;
+                            self.climbs.push_keeping_largest(seg);
+                            self.capped |= self.climbs.len() == MAX_CLIMBS;
                         }
                         // This sample is below the summit, so it seeds the next trough; a close
                         // on the flat counter falls back to the summit itself.
-                        cand = None;
-                        trough = Some(if p.ele_m < summit.ele_m { p } else { summit });
+                        self.cand = None;
+                        self.trough = Some(if p.ele_m < summit.ele_m { p } else { summit });
                     }
                 }
             }
         }
     }
 
-    // The route ends on a climb: close the open candidate at its summit.
-    if let Some(c) = cand {
-        if let Some(seg) = close_candidate(&c) {
-            climbs.push_keeping_largest(seg);
-            capped |= climbs.len() == MAX_CLIMBS;
+    pub(crate) fn finish(mut self) -> Climbs {
+        // The route ends on a climb: close the open candidate at its summit.
+        if let Some(c) = self.cand {
+            if let Some(seg) = close_candidate(&c) {
+                self.climbs.push_keeping_largest(seg);
+                self.capped |= self.climbs.len() == MAX_CLIMBS;
+            }
         }
-    }
 
-    if capped {
-        climbs.sort_by_route_order();
+        if self.capped {
+            self.climbs.sort_by_route_order();
+        }
+        self.climbs
     }
-    climbs
 }
 
 /// Turn a closed candidate into a kept [`ClimbSeg`], or `None` when it fails a gate.

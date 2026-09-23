@@ -58,8 +58,19 @@ impl NavGuard {
     pub fn restore_plan(&mut self) {
         self.tiles.reset();
     }
-    pub fn begin_plan(&mut self, planner: NavPlanner) {
-        self.work = Work::Plan(Box::new(planner));
+    pub fn begin_plan(
+        &mut self,
+        from: (i32, i32),
+        to: (i32, i32),
+        name: &str,
+        bike: obc_route::BikeType,
+        corridor: Option<obc_route::Corridor>,
+    ) {
+        let mut slot = Box::<NavPlanner>::new_uninit();
+        unsafe {
+            NavPlanner::init_in_place(slot.as_mut_ptr(), from, to, name, bike, corridor);
+            self.work = Work::Plan(slot.assume_init());
+        }
     }
     pub fn plan_parts(
         &mut self,
@@ -169,7 +180,7 @@ impl NavGuard {
         if let obc_app::navigator::ReviewPurpose::Easier(objective) = c.purpose {
             planner.set_objective(objective);
         }
-        self.begin_plan(planner);
+        self.work = Work::Plan(Box::new(planner));
     }
     pub fn visit_plan_parts(
         &mut self,
