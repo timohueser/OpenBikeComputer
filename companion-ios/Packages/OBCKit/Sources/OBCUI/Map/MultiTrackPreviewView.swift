@@ -13,20 +13,40 @@ public struct MultiTrackPreviewView: View {
     public struct Stage: Equatable, Sendable {
         public let coordinates: [Coordinate]
         public let color: Color
+        /// A dashed stage draws thinner and without the halo.
+        public let dash: [CGFloat]
 
-        public init(coordinates: [Coordinate], color: Color) {
+        public init(coordinates: [Coordinate], color: Color, dash: [CGFloat] = []) {
             self.coordinates = coordinates
             self.color = color
+            self.dash = dash
+        }
+
+        var lineWidth: CGFloat { dash.isEmpty ? 3 : 2 }
+    }
+
+    /// A round mark on the preview, with an optional symbol in it.
+    public struct Pin: Equatable, Sendable {
+        public let coordinate: Coordinate
+        public let color: Color
+        public let systemImage: String?
+
+        public init(coordinate: Coordinate, color: Color, systemImage: String? = nil) {
+            self.coordinate = coordinate
+            self.color = color
+            self.systemImage = systemImage
         }
     }
 
     let stages: [Stage]
+    let pins: [Pin]
     var showsChrome: Bool
 
     @Environment(\.obcIsOnline) private var isOnline
 
-    public init(stages: [Stage], showsChrome: Bool = true) {
+    public init(stages: [Stage], pins: [Pin] = [], showsChrome: Bool = true) {
         self.stages = stages
+        self.pins = pins
         self.showsChrome = showsChrome
     }
 
@@ -49,23 +69,39 @@ public struct MultiTrackPreviewView: View {
     /// The basemap-free fallback: every stage normalized into one shared unit square,
     /// so they stay in register, then stroked in its color over gridded parchment.
     private var grid: some View {
-        let shared = TrackPreview.normalizingShared(stages.map(\.coordinates))
+        let shared = TrackPreview.normalizingShared(stages.map(\.coordinates) + pins.map { [$0.coordinate] })
         return Canvas { context, size in
             drawGrid(in: &context, size: size)
             // They share one aspect ratio, so take the first non-empty stage's.
             let aspect = shared.first { !$0.points.isEmpty }?.aspectRatio ?? 1
             let reference = TrackPreview(points: [], aspectRatio: aspect)
             let transform = TrackPreviewView.fittingTransform(for: reference, in: size, inset: 8)
-            for (index, preview) in shared.enumerated() where preview.points.count > 1 {
-                let points = preview.points.map { transform($0) }
+            for (index, stage) in stages.enumerated() where shared[index].points.count > 1 {
                 var path = Path()
-                path.addLines(points)
+                path.addLines(shared[index].points.map { transform($0) })
+                if stage.dash.isEmpty {
+                    context.stroke(
+                        path, with: .color(OBCTheme.trackHalo),
+                        style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                }
                 context.stroke(
-                    path, with: .color(OBCTheme.trackHalo),
-                    style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
-                context.stroke(
-                    path, with: .color(stages[index].color),
-                    style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    path, with: .color(stage.color),
+                    style: StrokeStyle(lineWidth: stage.lineWidth, lineCap: .round, lineJoin: .round, dash: stage.dash))
+            }
+            for (index, pin) in pins.enumerated() {
+                guard let point = shared[stages.count + index].points.first.map(transform) else { continue }
+                if let systemImage = pin.systemImage {
+                    let disc = Path(ellipseIn: CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20))
+                    context.fill(disc, with: .color(OBCTheme.panel))
+                    context.stroke(disc, with: .color(OBCTheme.lineStrong))
+                    var image = context.resolve(Image(systemName: systemImage))
+                    image.shading = .color(pin.color)
+                    context.draw(image, in: CGRect(x: point.x - 6, y: point.y - 6, width: 12, height: 12))
+                } else {
+                    let dot = Path(ellipseIn: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
+                    context.fill(dot, with: .color(pin.color))
+                    context.stroke(dot, with: .color(.white), lineWidth: 1.5)
+                }
             }
         }
         .background(OBCTheme.panel)
@@ -102,10 +138,18 @@ public struct MultiTrackPreviewView: View {
         ) {
             ForEach(Array(stages.enumerated()), id: \.offset) { _, stage in
                 let coords = MapGeometry.clLocations(stage.coordinates)
+                if stage.dash.isEmpty {
+                    MapPolyline(coordinates: coords)
+                        .stroke(OBCTheme.trackHalo, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                }
                 MapPolyline(coordinates: coords)
-                    .stroke(OBCTheme.trackHalo, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
-                MapPolyline(coordinates: coords)
-                    .stroke(stage.color, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    .stroke(stage.color, style: StrokeStyle(
+                        lineWidth: stage.lineWidth, lineCap: .round, lineJoin: .round, dash: stage.dash))
+            }
+            ForEach(Array(pins.enumerated()), id: \.offset) { _, pin in
+                Annotation("", coordinate: MapGeometry.clLocations([pin.coordinate])[0], anchor: .center) {
+                    PinMark(pin: pin)
+                }
             }
         }
         // `initialPosition` is read once per Map identity, so key the identity on the
@@ -119,6 +163,26 @@ public struct MultiTrackPreviewView: View {
         #else
         grid
         #endif
+    }
+}
+
+/// A pin: a filled circle with a white rim, or a panel disc with the symbol.
+private struct PinMark: View {
+    let pin: MultiTrackPreviewView.Pin
+
+    var body: some View {
+        if let systemImage = pin.systemImage {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(pin.color)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(OBCTheme.panel))
+                .overlay(Circle().strokeBorder(OBCTheme.lineStrong))
+        } else {
+            Circle().fill(pin.color)
+                .frame(width: 10, height: 10)
+                .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+        }
     }
 }
 

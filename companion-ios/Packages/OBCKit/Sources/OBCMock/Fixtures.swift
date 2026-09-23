@@ -42,21 +42,31 @@ public struct TripEntry: Sendable {
     /// Seconds subtracted from the seed base date; bigger is older. It fixes the trip's slot in
     /// the newest-first list.
     public var order: Double
+    /// A fixed trip key, so fixture rides can name the trip; nil draws a fresh one.
+    public var key: UInt64?
+    /// The place name of each day end, in day order.
+    public var places: [String]
 
-    public init(id: TripID, name: String, routeIDs: [RouteID], order: Double = 0) {
+    public init(
+        id: TripID, name: String, routeIDs: [RouteID], order: Double = 0, key: UInt64? = nil, places: [String] = []
+    ) {
         self.id = id
         self.name = name
         self.routeIDs = routeIDs
         self.order = order
+        self.key = key
+        self.places = places
     }
 
     /// The library trip this fixture seeds from the fixture routes' geometry.
     public func trip(routes: [RouteEntry], base: Date) -> Trip {
         let members = routeIDs.compactMap { id in routes.first { $0.summary.id == id } }
-        return Trip.joining(
+        var trip = Trip.joining(
             members.map(\.points), names: members.map(\.summary.name), waypoints: members.map(\.waypoints),
-            id: id, name: name, bikeType: .road,
+            id: id, key: key ?? Trip.newKey(), name: name, bikeType: .road,
             now: base.addingTimeInterval(-order))
+        for (day, place) in places.enumerated() { trip.namePlace(day, to: place) }
+        return trip
     }
 }
 
@@ -303,7 +313,7 @@ private struct FixtureFile: Decodable {
     let diagnostics: String?
     let routes: [RouteDTO]
     let rides: [RideDTO]
-    /// Optional, and carried only by the trips demo fixture: it joins some of `routes` into trips
+    /// Optional, and carried only by the trip fixtures: it joins some of `routes` into trips
     /// by their string ids.
     let trips: [TripDTO]?
 
@@ -325,11 +335,13 @@ private struct TripDTO: Decodable {
     let name: String
     let routes: [String]
     let order: Double?
+    let key: UInt64?
+    let places: [String]?
 
     var entry: TripEntry {
         TripEntry(
             id: TripID(id), name: name,
-            routeIDs: routes.map(RouteID.init), order: order ?? 0)
+            routeIDs: routes.map(RouteID.init), order: order ?? 0, key: key, places: places ?? [])
     }
 }
 
