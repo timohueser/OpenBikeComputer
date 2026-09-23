@@ -56,6 +56,8 @@ final class TripFlowTests: XCTestCase {
 
         let field = app.textFields["rename.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5), "name prompt missing")
+        // Tap past the text's right end: clearing only deletes backwards from the caret.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
         field.clearText()
         field.typeText("Northwoods Weekend")
         app.buttons["rename.save"].tap()
