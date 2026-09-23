@@ -116,6 +116,8 @@ public final class MainScreenModel {
     @ObservationIgnored private var tripDayCache: [TripID: (trip: Trip, days: [TripDayRoute])] = [:]
     /// Names the place at a coordinate, such as its locality. Nil in tests and previews.
     private let placeName: (@Sendable (Coordinate) async -> String?)?
+    /// Finds stops near trip lines for the session. Nil in tests and previews.
+    public let stopFinder: StopFinder?
     /// The in-flight transfer ledger. Nil in tests and previews.
     @ObservationIgnored private let transferActivity: TransferActivity?
     /// The in-flight identity read for the current connection. A reconnect replaces it and
@@ -134,9 +136,11 @@ public final class MainScreenModel {
         nameReconciler: DeviceNameReconciler? = nil,
         transferActivity: TransferActivity? = nil,
         placeName: (@Sendable (Coordinate) async -> String?)? = nil,
+        stopSearch: (any StopSearch)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.placeName = placeName
+        self.stopFinder = stopSearch.map(StopFinder.init)
         self.transport = transport
         self.library = library
         self.lastBikeType = lastBikeType
@@ -918,6 +922,22 @@ public final class MainScreenModel {
         nameDayEnds(id)
     }
 
+    /// The stops of one day end, for the stops sheet. Nil for the last day, which ends at the line
+    /// end.
+    public func tripStops(_ id: TripID, day: Int, isOnline: Bool) -> TripStopsModel? {
+        guard let trip = trip(id), trip.endRange(of: day) != nil else { return nil }
+        return TripStopsModel(trip: trip, day: day, finder: stopFinder, isOnline: isOnline) { [weak self] stop in
+            self?.endTripDay(id, day: day, at: stop)
+        }
+    }
+
+    /// End a day at a stop: the day end moves to the line point nearest the stop and takes its
+    /// name.
+    public func endTripDay(_ id: TripID, day: Int, at stop: PlacedStop) {
+        guard var trip = trip(id), trip.endDay(day, at: stop) else { return }
+        saveEditedTrip(trip)
+    }
+
     /// Set or clear the date of Day 1.
     public func setTripStartDay(_ id: TripID, to day: CivilDay?) {
         guard var trip = trip(id) else { return }
@@ -968,13 +988,15 @@ public final class MainScreenModel {
     /// file is a day.
     @discardableResult
     public func createTrip(
-        name: String, files: [[RoutePoint]], dayNames: [String?] = [], bikeType: BikeType? = nil
+        name: String, files: [[RoutePoint]], dayNames: [String?] = [], waypoints: [[Waypoint]] = [],
+        bikeType: BikeType? = nil
     ) -> TripID? {
         let days = files.indices.filter { Trip.isDay(files[$0]) }
         guard !days.isEmpty else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trip = Trip.joining(
             days.map { files[$0] }, names: days.map { $0 < dayNames.count ? dayNames[$0] : nil },
+            waypoints: days.map { $0 < waypoints.count ? waypoints[$0] : [] },
             id: TripID(UUID().uuidString.lowercased()),
             name: trimmed.isEmpty ? "New trip" : trimmed,
             bikeType: bikeType ?? lastBikeType.value, now: now())
@@ -987,9 +1009,11 @@ public final class MainScreenModel {
     /// Add a route file to a trip as its new last day. False when the file is too short to be a
     /// day, which changes nothing.
     @discardableResult
-    public func appendToTrip(_ id: TripID, file: [RoutePoint], name: String? = nil) -> Bool {
+    public func appendToTrip(
+        _ id: TripID, file: [RoutePoint], name: String? = nil, waypoints: [Waypoint] = []
+    ) -> Bool {
         guard var trip = trip(id), Trip.isDay(file) else { return false }
-        tell(dropped: trip.append(file, name: name))
+        tell(dropped: trip.append(file, name: name, waypoints: waypoints))
         saveEditedTrip(trip)
         nameDayEnds(id)
         return true
@@ -1007,7 +1031,7 @@ public final class MainScreenModel {
         let ordered = TripJoin.proposedOrder(days.map(\.joinFile)).map { days[$0] }
         guard let tripID = createTrip(
             name: name, files: ordered.map(\.route.points), dayNames: ordered.map(\.summary.name),
-            bikeType: ordered[0].bikeType)
+            waypoints: ordered.map(\.route.waypoints), bikeType: ordered[0].bikeType)
         else { return nil }
         for (day, record) in ordered.enumerated() { moveIntoTrip(record, tripID: tripID, day: day) }
         return tripID
@@ -1028,12 +1052,14 @@ public final class MainScreenModel {
         case .none:
             return nil
         case .existing(let id):
-            guard appendToTrip(id, file: record.route.points, name: record.summary.name) else { return nil }
+            guard appendToTrip(
+                id, file: record.route.points, name: record.summary.name, waypoints: record.route.waypoints)
+            else { return nil }
             tripID = id
         case .new(let name):
             guard let id = createTrip(
                 name: name, files: [record.route.points], dayNames: [record.summary.name],
-                bikeType: record.bikeType)
+                waypoints: [record.route.waypoints], bikeType: record.bikeType)
             else { return nil }
             tripID = id
         }
