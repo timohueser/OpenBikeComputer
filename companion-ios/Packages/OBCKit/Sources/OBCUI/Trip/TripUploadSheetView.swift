@@ -3,7 +3,7 @@ import OBCDomain
 import OBCTransport
 
 /// The whole-trip upload sheet: the queued mode of the upload sheet, presented over
-/// the trip page. It is the single-route sheet with a "Stage X of Y" header over the
+/// the trip page. It is the single-route sheet with a "Step X of Y" header over the
 /// per-transfer bar, and a skipped and committed tally in the done state. Interruption
 /// and cancel read the same as a single upload: uploads restart, they do not resume.
 public struct TripUploadSheetView: View {
@@ -74,11 +74,11 @@ public struct TripUploadSheetView: View {
             }
             .padding(.bottom, 10)
 
-            // The queued-mode header: which stage of how many is moving now.
-            Text(model.stageProgressLabel)
+            // The queued-mode header: which step of how many is moving now.
+            Text(model.stepProgressLabel)
                 .font(.obcMono(size: 12))
                 .foregroundStyle(OBCTheme.forest)
-                .accessibilityIdentifier("tripUpload.stageLabel")
+                .accessibilityIdentifier("tripUpload.stepLabel")
                 .padding(.bottom, 12)
 
             OBCProgressBar(value: model.fraction)
@@ -88,8 +88,8 @@ public struct TripUploadSheetView: View {
                     .font(.system(size: 12.5))
                     .foregroundStyle(interrupted ? OBCTheme.warning : OBCTheme.amber)
                 Text(interrupted
-                    ? "The link to \(model.deviceName) dropped. Finished stages are kept — resume restarts this one."
-                    : "Sending each stage in order, then the trip. Keep \(model.deviceName) awake and nearby.")
+                    ? "The link to \(model.deviceName) dropped. Finished days are kept — resume restarts this one."
+                    : "Sending each day in order, then the trip. Keep \(model.deviceName) awake and nearby.")
                     .font(.system(size: 12.5))
                     .lineSpacing(2)
                     .foregroundStyle(OBCTheme.inkFaint)

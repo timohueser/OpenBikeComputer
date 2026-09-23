@@ -212,11 +212,11 @@ final class RouteDetailTests: XCTestCase {
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
-        XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
+        XCTAssertTrue(app.buttons["import.newRoute"].exists)
         XCTAssertTrue(app.buttons["Cancel"].exists, "E1 must keep the Cancel escape")
         snap(app, "E1-import-landing")
 
-        app.buttons["detail.saveToPlanned"].tap()
+        app.buttons["import.newRoute"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "save should dismiss E1")
         let savedRow = app.staticTexts["Schwarzwald Tour · Tag 2"]
         XCTAssertTrue(savedRow.waitForExistence(timeout: 5), "saved route must land in the Planned list")
@@ -255,7 +255,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5), "E1 title kept the old name")
         snap(app, "E1-renamed")
 
-        app.buttons["detail.saveToPlanned"].tap()
+        app.buttons["import.newRoute"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5),
                       "the renamed import must land in Planned under the new name")

@@ -87,16 +87,16 @@ final class FixtureTests: XCTestCase {
 
     // MARK: Trips demo fixture
 
-    func testTripsFixtureGroupsTwoRoutesAndKeepsLooseOnes() {
+    func testTripsFixtureJoinsTwoRoutes() {
         let set = FixtureSet.load("trips")
-        // Same five routes as `default`, plus one trip grouping two of them.
+        // Same five routes as `default`, plus one trip joining two of them.
         XCTAssertEqual(set.routes.count, 5)
         XCTAssertEqual(set.trips.count, 1)
         let trip = set.trips.first
         XCTAssertEqual(trip?.id, TripID("driftless-weekender"))
         XCTAssertEqual(trip?.name, "Driftless Weekender")
         XCTAssertEqual(
-            trip?.stageIDs,
+            trip?.routeIDs,
             [RouteID("devils-lake-overnighter"), RouteID("cross-plains-gravel")])
     }
 
@@ -104,7 +104,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertTrue(FixtureSet.load("default").trips.isEmpty)
     }
 
-    func testSeedLibraryWritesTheTripGroupingItsRoutes() {
+    func testSeedLibraryMovesTheTripRoutesIntoTheTrip() {
         let control = MockControl(scenario: .happyPath)
         control.loadFixtures("trips")
         let store = InMemoryLibraryStore()
@@ -112,9 +112,8 @@ final class FixtureTests: XCTestCase {
 
         let trips = store.trips()
         XCTAssertEqual(trips.count, 1)
-        XCTAssertEqual(trips.first?.stageIDs.count, 2)
-        // The two grouped routes are still full library records (a stage must
-        // resolve to a detail), so all five planned routes are present.
-        XCTAssertEqual(store.plannedRoutes().count, 5)
+        XCTAssertEqual(trips.first?.dayCount, 2)
+        // The two joined routes live only in the trip's line.
+        XCTAssertEqual(store.plannedRoutes().count, 3)
     }
 }

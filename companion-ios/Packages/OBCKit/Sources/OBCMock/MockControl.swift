@@ -246,11 +246,14 @@ public final class MockControl: @unchecked Sendable {
     public func seedLibrary(into store: any LibraryStore) {
         let existing = Set(store.plannedRoutes().map(\.id))
         let routes = lock.withLocked { _fixtures.routes }
+        let trips = lock.withLocked { _fixtures.trips }
+        let tripMembers = Set(trips.flatMap(\.routeIDs))
         // Seeded device links carry the mock device's own serial and StoreId, the same link an
         // upload against this mock would mint, so badges behave as on the real path.
         let scope = deviceInfo.libraryScope
         let base = Date()
-        for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
+        for (index, entry) in routes.enumerated()
+        where !existing.contains(entry.summary.id) && !tripMembers.contains(entry.summary.id) {
             var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)), scope: scope)
             // A fixture the mock device holds boots up to date: the seeded fingerprint matches
             // what an upload of the record would send.
@@ -259,12 +262,10 @@ public final class MockControl: @unchecked Sendable {
             }
             store.savePlannedRoute(record)
         }
-        // Trips group some of those routes. The routes are written above first, so no stage
-        // dangles. Idempotent over trip ids, like the routes.
-        let trips = lock.withLocked { _fixtures.trips }
+        // Idempotent over trip ids, like the routes.
         let existingTrips = Set(store.trips().map(\.id))
         for entry in trips where !existingTrips.contains(entry.id) {
-            store.saveTrip(entry.record(base: base))
+            store.saveTrip(entry.trip(routes: routes, base: base))
         }
     }
 

@@ -59,8 +59,8 @@ struct TripCodecTests {
 
     @Test
     func tripKeyIsNeverZero() {
-        #expect(TripRecord.key(fnv1a: 0) == 1)
-        #expect(TripRecord.key(fnv1a: 0xA1) == 0xA1)
+        #expect(Trip(id: TripID("t"), key: 0, name: "T", bikeType: .road, addedAt: Date()).key == 1)
+        #expect(Trip(id: TripID("t"), key: 0xA1, name: "T", bikeType: .road, addedAt: Date()).key == 0xA1)
     }
 
     @Test
