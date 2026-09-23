@@ -525,6 +525,10 @@ gps = "GPS"
 fix = "fix"
 searching = "searching.."
 battery = "Battery"
+# The trip day row's second line, before the day's distance.
+show_route = "Show route"
+# The spinner while the rest of the day before joins the next day.
+loading_day = "Loading day..."
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
@@ -688,6 +692,11 @@ blocked = "Road blocked"
 back_route = "Back on route"
 landmarks = "Landmarks"
 detour = "Worth a detour"
+find_hint = "Water and food"
+next_hint = "On your route"
+easier_hint = "Less climbing"
+landmarks_hint = "Sights nearby"
+climb_in = "Climb in"
 no_fix = "GPS required"
 no_route = "Follow a route"
 busy = "Planner busy"

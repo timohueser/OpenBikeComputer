@@ -46,6 +46,12 @@ impl<T> Slot<T> {
         self.held.take()
     }
 
+    /// Take the held value only when `pick` accepts it, so an executor serves one kind and leaves
+    /// the rest.
+    pub fn take_if(&mut self, pick: impl FnOnce(&T) -> bool) -> Option<T> {
+        self.held.take_if(|value| pick(value))
+    }
+
     /// Whether the slot holds nothing: the admission test before issuing a new operation.
     pub fn is_empty(&self) -> bool {
         self.held.is_none()

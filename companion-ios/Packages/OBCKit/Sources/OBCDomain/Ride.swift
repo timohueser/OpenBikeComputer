@@ -152,19 +152,6 @@ public struct Ride: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Everything the ride-detail screen renders beyond the list summary.
-public struct RideDetail: Equatable, Sendable {
-    public var summary: RideSummary
-    /// Elevation samples along the ride in metres, evenly spaced from start to end. Empty when the
-    /// tracklog carried no elevation.
-    public var elevationProfile: [Double]
-
-    public init(summary: RideSummary, elevationProfile: [Double] = []) {
-        self.summary = summary
-        self.elevationProfile = elevationProfile
-    }
-}
-
 public struct RideSummary: Identifiable, Equatable, Sendable {
     public var source: RideSource?
     public let id: RideID

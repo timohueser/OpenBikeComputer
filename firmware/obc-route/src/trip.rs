@@ -18,10 +18,10 @@ pub const TRIP_HEADER_LEN: usize = 64;
 /// The length of one day record.
 pub const TRIP_DAY_LEN: usize = 16;
 
-/// The device's resident cap on a trip's days. The wire format allows up to `u16::MAX`, and a
-/// phone encoder is not bound by this cap, so [`TripMeta::read`] windows a longer trip instead of
-/// overflowing.
-pub const MAX_TRIP_DAYS: usize = 32;
+/// The device's resident cap on a trip's days, the days a progress record can date. The wire format
+/// allows up to `u16::MAX`, and a phone encoder is not bound by this cap, so [`TripMeta::read`]
+/// windows a longer trip instead of overflowing.
+pub const MAX_TRIP_DAYS: usize = obc_formats::trip_progress::MAX_DAYS;
 
 /// One day of a trip: its route and where that route runs on the trip's main line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

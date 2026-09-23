@@ -54,11 +54,7 @@ impl RouteWindow {
 
     /// Return the complete climb, including its part outside this window.
     pub fn climb(self, climbs: &Climbs) -> Option<&ClimbSeg> {
-        climbs
-            .as_slice()
-            .iter()
-            .find(|c| c.start_m <= self.start_m && c.end_m > self.start_m)
-            .or_else(|| climbs.as_slice().iter().find(|c| c.start_m > self.start_m && c.start_m <= self.end_m))
+        climbs.ahead(self.start_m, self.end_m)
     }
 
     /// The next authored marker can lie beyond the displayed window. Generic and categorized

@@ -22,7 +22,7 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
-mod assistant;
+pub(crate) mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
 mod detour;
@@ -247,6 +247,8 @@ pub struct Ctx<'a> {
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
     /// not started.
     pub trip_progress: &'a [crate::trip::TripProgress],
+    /// Where the active trip's next day meets the day before; `None` loads the day as it is.
+    pub day_join: Option<crate::trip::DayJoin>,
     /// The App-owned POI-list snapshot, read-only: the POI list's `Gesture::Press` reads the
     /// highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen.
     pub poi_scratch: &'a PoiScratch,
@@ -302,6 +304,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         rides: &[],
         trips: &[],
         trip_progress: &[],
+        day_join: None,
         backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
         corridor: &[],
@@ -359,6 +362,8 @@ pub struct Render<'a> {
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
     /// not started.
     pub trip_progress: &'a [crate::trip::TripProgress],
+    /// Where the active trip's next day meets the day before; `None` loads the day as it is.
+    pub day_join: Option<crate::trip::DayJoin>,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -371,6 +376,8 @@ pub struct Render<'a> {
     /// The climb the rider is currently on, or `None` between climbs. A `Some` means a climb is
     /// tracked and both halves are valid, so a screen never reads a stale detail buffer.
     pub climb: Option<ActiveClimb<'a>>,
+    /// The active route's detected climbs, in route order. Empty when no route is loaded.
+    pub climbs: &'a obc_route::Climbs,
     /// The active route's named-waypoint table, in route order. Empty when no route is loaded, so a
     /// screen iterates it unconditionally.
     pub waypoints: &'a Waypoints,
@@ -623,7 +630,7 @@ pub enum RenderKeyKind {
     SensorSettings,
 
     /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
-    /// the rows are merged from.
+    /// the rows are merged from. The Assistant list shares it for its What's next hint.
     UpAhead,
     Drawer,
 }
@@ -859,7 +866,7 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map(),
-    Assistant(AssistantScreen) => Caps::nav(),
+    Assistant(AssistantScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     PeakArticle(PeakArticleScreen) => Caps::nav().reader(ReaderNeed::Articles),
@@ -1002,7 +1009,7 @@ impl Screen {
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.motion.needs_base(),
-            Screen::ContextDrawer(s) => s.motion.needs_base(),
+            Screen::ContextDrawer(s) => s.motion.needs_base() || s.draws_hero(),
             _ => false,
         }
     }

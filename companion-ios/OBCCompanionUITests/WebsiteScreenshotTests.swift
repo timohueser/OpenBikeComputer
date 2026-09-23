@@ -222,15 +222,14 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "the downloaded ride detail did not open"
         )
-        XCTAssertTrue(app.staticTexts["4.9 km"].exists)
+        XCTAssertTrue(app.staticTexts["detail.statsLine"].label.hasPrefix("4.9 km · "))
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the real Grimsel geometry should be visible in the ride hero"
         )
-        // The one genuinely async element on this screen: a tracked ride's profile samples come
-        // from the detail read, so the card, and everything the card pushes down, appears a beat
-        // after the stats do.
+        // The profile and highlights fill when the live model starts, a beat after the stats line.
         waitFor(app, "detail.elevationProfile", "the ride's elevation profile did not arrive")
+        waitFor(app, "detail.highlights", "the ride's highlights did not arrive")
         // The services block is static markup on the tracked dressing.
         XCTAssertTrue(
             app.descendants(matching: .any)["detail.services"].firstMatch.exists,
