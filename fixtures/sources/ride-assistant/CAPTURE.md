@@ -13,17 +13,17 @@ Build the compiler, get the pinned country boundary and extract, then read the c
 that extract. Run from the repository root:
 
 ```sh
-cargo build -p obc-bake --locked
+cargo build -p obc-bake --release --locked
 tools/obc fixtures sync assistant-osm
 FIXTURES="$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-osm"
 OBC_LANDMARK_CAPTURE="${OBC_LANDMARK_CAPTURE:-$HOME/.cache/openbikecomputer/bake/landmarks/switzerland}"
-target/debug/obc-bake landmark-candidates \
+target/release/obc-bake landmark-candidates \
   --osm "$FIXTURES/switzerland.osm.pbf" --out .artifacts/switzerland-candidates.json
 python3 tools/landmark_capture.py \
   --boundary "$FIXTURES/switzerland-boundary.geojson" \
   --candidates .artifacts/switzerland-candidates.json \
   --policy host/obc-pack/src/landmarks/policy.json \
-  --select-with target/debug/obc-bake \
+  --select-with target/release/obc-bake \
   --out "$OBC_LANDMARK_CAPTURE"
 ```
 
@@ -70,22 +70,11 @@ capture checks its digest before and after selection.
 Check offline reproducibility by compiling twice into empty directories:
 
 ```sh
-target/debug/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+target/release/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-a
-target/debug/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+target/release/obc-bake landmark-content --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-b
 diff -r .artifacts/content-a .artifacts/content-b
-```
-
-For the optimized count over a whole country, build `--release` and use a fresh output directory
-for each pass:
-
-```sh
-cargo build -p obc-bake --release --locked
-target/release/obc-bake landmark-content \
-  --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
-  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" \
-  --out .artifacts/switzerland-content
 ```
 
 Acquisition counts are not usable-content counts: the compiler applies its text, licence and
