@@ -1347,7 +1347,7 @@ fn main() {
         app.set_day_join(join);
         // The complete saved-ride projection comes from the same card as the map and routes.
         let mut ride_store = rides;
-        app.set_rides(ride_store.catalog());
+        app.set_rides(ride_store.catalog(), ride_store.trip_names());
         // Inject BLE before the script. `+` keeps independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
         app.set_ble_status(obc_app::BleStatus {

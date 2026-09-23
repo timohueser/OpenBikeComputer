@@ -358,6 +358,8 @@ pub struct Render<'a> {
     pub unaccepted_routes: u64,
     pub internal_routes: u64,
     pub rides: &'a [RideEntry],
+    /// The names of the ride catalog's trips, one per trip key.
+    pub ride_trips: &'a [crate::RideTrip],
     pub trips: &'a [crate::trip::TripSummary],
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
     /// not started.

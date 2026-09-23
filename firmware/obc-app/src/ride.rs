@@ -43,11 +43,9 @@ pub struct RideSummary {
     /// Whether exact durable client archive proof exists. The delete footer warns when false.
     pub synced: bool,
     pub synced_at_utc: u32,
-    /// The trip day the ride started on. The Rides screen groups a trip's rides into one folder.
+    /// The trip day the ride started on. The Rides screen groups a trip's rides into one folder,
+    /// named from [`RideTrips`].
     pub trip: Option<TripRef>,
-    /// The trip's name as the footer stores it, so a folder keeps its name after the trip is
-    /// deleted.
-    pub trip_name: String<NAME_CAP>,
     pub avg_hr: Option<u8>,
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
@@ -65,10 +63,36 @@ impl RideSummary {
             synced,
             synced_at_utc,
             trip: info.trip,
-            trip_name: info.trip_name.clone(),
             avg_hr: info.avg_hr,
             avg_cadence: info.avg_cadence,
             avg_power: info.avg_power,
         }
+    }
+}
+
+/// How many trip folders of the ride catalog carry their trip's name: one for every four rides of
+/// [`UI_RIDES_CAP`], because a trip is several days. A folder past the cap shows its newest ride's
+/// name instead.
+pub const RIDE_TRIPS_CAP: usize = UI_RIDES_CAP / 4;
+
+/// The names of the ride catalog's trips, one per trip key.
+pub type RideTrips = heapless::Vec<RideTrip, RIDE_TRIPS_CAP>;
+
+/// A trip's name as a ride footer stores it, so a folder keeps its name after the trip is deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RideTrip {
+    pub key: u64,
+    pub name: String<NAME_CAP>,
+}
+
+impl RideTrip {
+    /// Note the trip name of a ride in the catalog. Feed the rides newest first: the first
+    /// non-empty name of a trip wins, and a full table keeps what it has.
+    pub fn note(trips: &mut RideTrips, info: &RideInfo) {
+        let Some(trip) = info.trip else { return };
+        if info.trip_name.is_empty() || trips.iter().any(|t| t.key == trip.key()) {
+            return;
+        }
+        let _ = trips.push(RideTrip { key: trip.key(), name: info.trip_name.clone() });
     }
 }
