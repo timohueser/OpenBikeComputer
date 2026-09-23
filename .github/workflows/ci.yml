@@ -174,7 +174,7 @@ jobs:
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
-  # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
+  # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
   # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
@@ -189,11 +189,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      - name: cargo fmt --check (host workspace + the three standalone crates)
+      - name: cargo fmt --check (host workspace + standalone crates)
         run: |
           rc=0
           echo "::group::firmware workspace"
           cargo fmt --all --check || rc=1
+          cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml || rc=1
           echo "::endgroup::"
           echo "::group::obc-fw-nrf54l (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
@@ -550,6 +551,17 @@ jobs:
           tar -xzf /tmp/riscv-gcc.tar.gz -C "$HOME"
       - name: Put the RISC-V GCC on PATH
         run: echo "$HOME/xpack-riscv-none-elf-gcc-13.2.0-2/bin" >> "$GITHUB_PATH"
+      - uses: taiki-e/install-action@v2
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Sensor simulator tests, lint and device build
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        run: |
+          bash firmware/obc-sensor-sim/check.sh
+          cd firmware/obc-sensor-sim
+          cargo clippy --locked --lib --tests -- -D warnings
+          cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
