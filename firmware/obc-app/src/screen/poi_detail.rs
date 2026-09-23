@@ -6,7 +6,7 @@ use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
-use obc_reader::{Interval, Poi, PoiCategory, WeeklySchedule};
+use obc_reader::{hours::OpeningStatus, Interval, Poi, PoiCategory, WeeklySchedule};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -134,12 +134,37 @@ impl PoiDetailScreen {
         }
         let name_bot = draw_wrapped(cv, name, name_x, name_top, w - name_x - 16, INK);
 
+        let schedule = rx.poi_scratch.detail_schedule.filter(|s| {
+            self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
+                && rx.poi_scratch.detail_source == self.poi.metadata.source.0
+                && s.flags() == 0
+        });
+        let (heading, intervals) = hours_view(schedule.as_ref(), rx.place_local);
+        // The OPEN / CLOSED badge, only when the POI has a schedule. The pill is sized from the
+        // measured text, so accents in a translated label stay inside it.
+        let badge = schedule.filter(|s| s.status(rx.place_local) != OpeningStatus::Unknown).map(|sched| {
+            let open = sched.status(rx.place_local) == OpeningStatus::Open;
+            let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
+            let ink = obc_render::text::text_ink_bounds(text, Font::Body).unwrap_or(0..0);
+            let badge_h = ink.end - ink.start + 2 * BADGE_PAD_Y;
+            (text, bg, ink, badge_h)
+        });
+
+        // A page that would reach the footer bar drops the subtitle, because the title already names
+        // the category, and draws its hours in the compact rows.
+        let subtitle_h = 6 + Font::Label.cap_bottom() as i32;
+        let rows_h = ROW_PITCH * (1 + i32::from(self.off_route_m.is_some()));
+        let full_top = if named { name_bot + subtitle_h } else { name_bot };
+        let full_bottom =
+            hours_bottom(full_top + 8 + rows_h, intervals.len(), intervals.len() > 2, badge.as_ref().map(|b| b.3));
+        let tight = full_bottom + 6 > super::route_overview::start_button_top(h);
+
         // The subtitle is skipped when the name line is already the label, so it never repeats.
         let mut sub_bot = name_bot;
-        if named {
+        if named && !tight {
             let sub_y = name_bot + 6;
             cv.text(label, Point::new(x, sub_y), Font::Label, TextAlign::Left, SUBTEXT);
-            sub_bot = sub_y + Font::Label.cap_bottom() as i32;
+            sub_bot = name_bot + subtitle_h;
         }
 
         // From the Up-ahead timeline the distance runs along the route and the offset has its own
@@ -170,50 +195,30 @@ impl PoiDetailScreen {
 
         // Today's hours: a heading row, then each open interval on its own row. An overnight
         // spillover can add a third range, which the compact rows still fit in the same area.
-        let head_y = y + 16;
-        let schedule = rx.poi_scratch.detail_schedule.filter(|s| {
-            self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
-                && rx.poi_scratch.detail_source == self.poi.metadata.source.0
-                && s.flags() == 0
-        });
-        let (heading, intervals) = hours_view(schedule.as_ref(), rx.place_local);
+        let (head_y, mut row_y) = hours_top(y);
         // Drinking water has no opening hours, so "not listed" there would read as missing data.
         if !(matches!(heading, Msg::PoiDetailHoursNotListed) && category == Some(PoiCategory::Water)) {
             cv.text(rx.t(heading), Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
         }
 
-        let mut row_y = head_y + Font::Label.cap_bottom() as i32 + 8;
-        // The compact Label rows take over when full-size rows would not clear the footer bar.
-        let body_bottom =
-            row_y + (intervals.len() as i32 - 1) * Font::Body.line_height() as i32 + Font::Body.cap_bottom() as i32;
-        let compact = intervals.len() > 2 || body_bottom + 6 > super::route_overview::start_button_top(h);
-        let range_font = if compact { Font::Label } else { Font::Body };
-        let range_step = if compact { range_font.cap_height() + 2 } else { range_font.line_height() };
+        let (range_font, range_step) = range_face(intervals.len() > 2 || tight);
         for iv in &intervals {
             let mut range: heapless::String<16> = heapless::String::new();
             write_interval(&mut range, iv);
             cv.text(&range, Point::new(x, row_y), range_font, TextAlign::Left, INK);
-            row_y += range_step as i32;
+            row_y += range_step;
         }
 
-        // The OPEN / CLOSED badge, only when the POI has a schedule. The pill is sized from the
-        // measured text, so accents in a translated label stay inside it.
-        //
         // With interval rows on the page the badge rides the "Today" caption line, right-aligned,
         // so even a two-line name with two intervals clears the footer bar. The pill is taller than
         // the caption, so [`BADGE_RAISE`] lifts it clear of the first hours row. With no interval
         // rows the badge keeps its own spot under the caption, where a longer closed-today caption
         // would collide with a right-aligned pill.
-        if let Some(sched) = schedule.filter(|s| s.status(rx.place_local) != obc_reader::hours::OpeningStatus::Unknown)
-        {
-            let open = sched.status(rx.place_local) == obc_reader::hours::OpeningStatus::Open;
-            let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
+        if let Some((text, bg, ink, badge_h)) = badge {
             let font = Font::Body;
             let badge_w = text_width(text, font) as i32 + 2 * BADGE_PAD_X;
-            let ink = obc_render::text::text_ink_bounds(text, font).unwrap_or(0..0);
-            let badge_h = ink.end - ink.start + 2 * BADGE_PAD_Y;
             let (bx, badge_y) = if intervals.is_empty() {
-                (x, row_y + 8)
+                (x, row_y + BADGE_GAP)
             } else {
                 (w - x - badge_w, head_y + Font::Label.cap_mid() as i32 - badge_h / 2 - BADGE_RAISE)
             };
@@ -271,6 +276,36 @@ fn distance_row(cv: &mut impl Surface, w: i32, y: i32, caption: &str, d_m: u32, 
     ledger_row(cv, w, y, caption, &value, unit, None);
     cv.hline(16, y + ROW_PITCH - 2, w - 32, palette::RULE);
     ledger_value_left(w, &value, unit)
+}
+
+/// The gap between the "Today" caption and a badge that has no interval rows beside it.
+const BADGE_GAP: i32 = 8;
+
+/// The "Today" caption's y and the first interval row's y, under distance rows ending at `rows_end`.
+fn hours_top(rows_end: i32) -> (i32, i32) {
+    let head_y = rows_end + 16;
+    (head_y, head_y + Font::Label.cap_bottom() as i32 + 8)
+}
+
+/// The interval rows' face and pitch: Body rows, or the compact Label rows.
+fn range_face(compact: bool) -> (Font, i32) {
+    if compact {
+        (Font::Label, Font::Label.cap_height() as i32 + 2)
+    } else {
+        (Font::Body, Font::Body.line_height() as i32)
+    }
+}
+
+/// The bottom of the hours block under distance rows ending at `rows_end`: the last interval row,
+/// else the badge of height `badge_h`, else the caption.
+fn hours_bottom(rows_end: i32, intervals: usize, compact: bool, badge_h: Option<i32>) -> i32 {
+    let (head_y, row_y) = hours_top(rows_end);
+    let (font, step) = range_face(compact);
+    match (intervals, badge_h) {
+        (0, Some(badge_h)) => row_y + BADGE_GAP + badge_h,
+        (0, None) => head_y + Font::Label.cap_bottom() as i32,
+        (n, _) => row_y + (n as i32 - 1) * step + font.cap_bottom() as i32,
+    }
 }
 
 /// How far the Today-line badge lifts above the cap-centre of the caption. Centred, the pill

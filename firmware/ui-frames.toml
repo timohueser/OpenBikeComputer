@@ -1302,6 +1302,16 @@ script = "{up_base} {up_scope_pois} p f"
 expect = "PoiDetail"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
+# (d2) The fullest timeline detail: a two-line name, both distance rows and split hours. The page
+# drops its subtitle and draws the compact hours rows, so the hours clear the footer bar.
+[[frame]]
+name = "up-ahead-poi-detail-tight"
+map = "{monaco}"
+env = "monaco-garden"
+script = "{up_base} {up_scope_pois} p f"
+expect = "PoiDetail"
+args = ["--at", "0", "--clock", "2025-01-06T12:00"]
+
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
 # the coverage guard takes precedence over map-place filters.
 [[frame]]
