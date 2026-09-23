@@ -11,6 +11,7 @@ public struct RouteDetailView: View {
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
     private let onReverse: (() -> Void)?
+    private let onBikeTypeChange: ((BikeType) -> Void)?
     private let onSaveToPlanned: (() -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
@@ -32,6 +33,7 @@ public struct RouteDetailView: View {
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
+        onBikeTypeChange: ((BikeType) -> Void)? = nil,
         onSaveToPlanned: (() -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
@@ -43,6 +45,7 @@ public struct RouteDetailView: View {
         self.onDelete = onDelete
         self.onRename = onRename
         self.onReverse = onReverse
+        self.onBikeTypeChange = onBikeTypeChange
         self.onSaveToPlanned = onSaveToPlanned
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
@@ -61,6 +64,10 @@ public struct RouteDetailView: View {
                 titleBlock
 
                 OBCStatStrip(model.stats)
+
+                if case .planned = model.dressing {
+                    bikeTypeRow
+                }
 
                 if !model.sensorRows.isEmpty {
                     OBCGroupedSection {
@@ -213,6 +220,31 @@ public struct RouteDetailView: View {
         }
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    private var bikeTypeRow: some View {
+        OBCGroupedSection {
+            Menu {
+                Picker("Bike type", selection: Binding(
+                    get: { model.bikeType },
+                    set: { type in
+                        model.setBikeType(type)
+                        onBikeTypeChange?(type)
+                    }
+                )) {
+                    ForEach(BikeType.allCases, id: \.self) { Text($0.name).tag($0) }
+                }
+            } label: {
+                OBCListRow(label: "Bike type", value: model.bikeType.name, showsDivider: false) {
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(OBCTheme.inkFaint)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("detail.bikeType")
+        }
+        .padding(.top, 12)
     }
 
     /// Connected services. The affordance is inert until the services land.
