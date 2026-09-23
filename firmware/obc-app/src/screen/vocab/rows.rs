@@ -360,10 +360,12 @@ pub(crate) fn draw_guarded_rows(
     }
 }
 
-/// One answer to a prompt: a label and, under it, the olive hint that says what it does.
+/// One answer to a prompt: a label and, under it, the olive hint that says what it does. A guarded
+/// answer fires only on a completed hold, and its row fills as the rider holds.
 pub(crate) struct PromptOption<'a> {
     pub label: &'a str,
     pub hint: Option<&'a str>,
+    pub guard: bool,
 }
 
 /// The question's left edge, first line and line pitch.
@@ -376,10 +378,16 @@ const OPTION_H: i32 = 55;
 const OPTION_X: i32 = 6;
 const OPTION_TEXT_X: i32 = 12;
 
-/// Draw a prompt below the title: the question in olive, then up to three options with the amber
-/// cursor on `selected`. A question the rider must answer before a ride reads the same on every
-/// screen that asks one.
-pub(crate) fn draw_prompt(cv: &mut impl Surface, w: i32, question: &str, options: &[PromptOption], selected: usize) {
+/// Draw a prompt below the title: the question in olive, then up to three options with the cursor
+/// on `selected`. A question the rider must answer reads the same on every screen that asks one.
+pub(crate) fn draw_prompt(
+    cv: &mut impl Surface,
+    w: i32,
+    question: &str,
+    options: &[PromptOption],
+    selected: usize,
+    hold_progress: f32,
+) {
     use palette::*;
     let mut y = PROMPT_TOP;
     super::chrome::wrap(question, w - 2 * PROMPT_X, Font::Caption, |line| {
@@ -387,9 +395,8 @@ pub(crate) fn draw_prompt(cv: &mut impl Surface, w: i32, question: &str, options
         y += PROMPT_PITCH;
     });
     for (i, (option, top)) in options.iter().zip(OPTION_TOPS).enumerate() {
-        if i == selected {
-            cv.round(rect(OPTION_X, top, w - 2 * OPTION_X, OPTION_H), 5, AMBER);
-        }
+        let row = rect(OPTION_X, top, w - 2 * OPTION_X, OPTION_H);
+        confirm_row(cv, row, i == selected, option.guard, hold_progress, WARNING, 5);
         let room = w - OPTION_TEXT_X - OPTION_X;
         let label = super::marquee::fit(option.label, room, Font::Label);
         cv.text(&label, Point::new(OPTION_TEXT_X, top + 4), Font::Label, TextAlign::Left, INK);
