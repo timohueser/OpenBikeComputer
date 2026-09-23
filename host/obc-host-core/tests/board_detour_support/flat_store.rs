@@ -156,7 +156,8 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
             store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
             Ok(Outcome::Done)
         }
-        Request::PublishComputedRoute { allocation, name, original, .. } => {
+        Request::PublishComputedRoute { allocation, name, original, built_day } => {
+            assert!(!built_day, "these tests publish detours, not built trip days");
             if original.is_some_and(|(id, revision)| store.current_revision(id) != Ok(Some(revision)))
                 || !planner_map_current()
             {
