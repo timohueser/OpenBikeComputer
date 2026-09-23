@@ -31,6 +31,17 @@ public struct Stop: Hashable, Sendable {
     }
 }
 
+extension Stop {
+    /// The stops of several searches around one point, each stop once, in answer order. It fails
+    /// only when every search failed: part of an answer is better than none.
+    public static func merging(_ answers: [Result<[Stop], any Error>]) throws -> [Stop] {
+        let found = answers.compactMap { try? $0.get() }
+        if found.isEmpty, case .failure(let error)? = answers.first { throw error }
+        var seen = Set<String>()
+        return found.joined().filter { seen.insert($0.mapItemID ?? "\($0.name) \($0.coordinate)").inserted }
+    }
+}
+
 /// A stop measured against a trip line.
 public struct PlacedStop: Hashable, Sendable {
     public var stop: Stop

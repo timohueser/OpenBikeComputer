@@ -111,11 +111,12 @@ struct OBCCompanionApp: App {
         return PlaceNames.locality(at:)
     }
 
-    /// Stops near a trip line come from Apple Maps. Mock runs use fixed stops, offline and
-    /// deterministic.
+    /// Stops near a trip line come from Apple Maps. Fixture runs use the fixed stops near the
+    /// fixture trips, offline and deterministic. A trip imported in any other Debug run needs the
+    /// real search: the fixed stops lie in Wisconsin.
     static func makeStopSearch() -> any StopSearch {
         #if DEBUG
-        if mockControl != nil { return MockStopSearch() }
+        if mockControl != nil, launchOptions.fixtures != nil { return MockStopSearch() }
         #endif
         return AppleMapsStopSearch()
     }
