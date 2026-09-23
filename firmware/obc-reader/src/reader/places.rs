@@ -8,7 +8,7 @@ use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath};
 use heapless::Vec;
 use obc_formats::io::{rd_i32, rd_u16};
 use obc_formats::obcm::{poi_category_of, PoiMetadata, SourceId, POI_RECORD_LEN};
-use obc_map_scene::{cos_lat, delta_m, ground_dist_m_cl, BBox, M_PER_DEG};
+use obc_map_scene::{cos_lat, delta_m, ground_dist_m_cl, BBox};
 
 /// Resident page capacity; identity continuations expose all matching places.
 pub const PLACE_PAGE_SIZE: usize = 8;
@@ -628,11 +628,7 @@ impl<'a> Reach<'a> {
             grow(&mut bbox, point);
         }
         // The margin covers float rounding in the distance maths.
-        let lat_pad = (limit * 1.01 / (M_PER_DEG as f32 * 1e-6)) as i32 + 2;
-        // The smallest cosine that a segment or a place inside the box uses gives the widest pad.
-        let edge = bbox.min_lat.unsigned_abs().max(bbox.max_lat.unsigned_abs()).saturating_add(lat_pad as u32);
-        let cl_min = cos_lat(edge.min(90_000_000) as i32).max(1e-6);
-        let lon_pad = ((lat_pad as f32 / cl_min) as i32).saturating_add(2);
+        let (lon_pad, lat_pad) = crate::corridor::pads(bbox, limit * 1.01);
         Self { points, start_m, limit, cl: cos_lat(points[0].1), lon_pad, lat_pad, bbox }
     }
 

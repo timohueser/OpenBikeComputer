@@ -2532,6 +2532,12 @@ impl App {
         {
             self.ui.map_dirty = true;
         }
+        // A kept Overview holds no query, so only its own quarter-hour stamp can ask for a new one.
+        if self.ui.stack.iter().any(|screen| matches!(screen, Screen::WhatsNext(_)))
+            && self.ui.ahead.overview_expired(place_local)
+        {
+            self.ui.map_dirty = true;
+        }
         if self.ui.stack.iter().any(|screen| {
             matches!(
                 screen,
