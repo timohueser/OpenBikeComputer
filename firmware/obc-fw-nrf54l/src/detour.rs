@@ -165,6 +165,13 @@ impl Executor {
                 self.progress_m = request.progress_m;
                 self.rejoin_m = request.target_m;
                 self.kind = request.leg;
+                if let obc_route::Leg::Rest { from_m, .. } = request.leg {
+                    if self.begin_rest(app, store, id, from_m).is_err() {
+                        return self.fail(NavigatorError::SourceChanged);
+                    }
+                    self.phase = Phase::Ready(Work::Plan);
+                    return self.token.take().map(|token| NavigatorOutcome::Acquired { token });
+                }
                 let Some(quiesced) = app.nav_arena_precondition() else { return self.fail(NavigatorError::Workspace) };
                 *guard = match crate::arena::claim_nav(quiesced) {
                     Ok(g) => Some(g),
@@ -184,6 +191,17 @@ impl Executor {
                 if !self.current() {
                     return self.fail(NavigatorError::SourceChanged);
                 };
+                // A rest has nothing to search: its leg is the stored day before.
+                if self.rest_route(app).is_some() {
+                    self.phase = Phase::Preview;
+                    let preview = obc_app::DetourPreview {
+                        cost_delta_m: 0,
+                        total_distance_m: self.length_m,
+                        rejoin_m: self.rejoin_m,
+                        ascent_m: None,
+                    };
+                    return self.token.take().map(|token| NavigatorOutcome::DetourFinished { token, preview });
+                }
                 if let Phase::Ready(work) = self.phase {
                     self.phase = Phase::Step(work);
                     None
@@ -192,7 +210,10 @@ impl Executor {
                 }
             }
             NavigatorEffect::CommitDetour { .. } => {
-                if !matches!(self.phase, Phase::Preview) || self.leg.is_none() || guard.is_some() {
+                if !matches!(self.phase, Phase::Preview)
+                    || (self.leg.is_none() && self.rest_route(app).is_none())
+                    || guard.is_some()
+                {
                     return Some(NavigatorOutcome::Failed { token, error: NavigatorError::Workspace });
                 }
                 self.token = Some(token);
@@ -206,7 +227,7 @@ impl Executor {
                 };
                 let g = guard.as_mut().unwrap();
                 g.begin_sources();
-                if self.parse_sources(store, g).is_err() {
+                if self.parse_sources(app, store, g).is_err() {
                     return self.fail(NavigatorError::Store);
                 };
                 g.begin_splice(self.kind, self.progress_m, self.rejoin_m, self.length_m, self.has_elevation);
@@ -236,10 +257,56 @@ impl Executor {
         ));
         Ok(())
     }
-    fn parse_sources(&self, store: &FlatStore<FlatCard>, guard: &mut NavGuard) -> Result<(), ()> {
+    /// The day before's stored route, while the leg is a rest: the leg reads it in place of a
+    /// planned leg. It is looked up from the trip on each read, so the executor holds no handle for
+    /// it.
+    fn rest_route(&self, app: &App) -> Option<ObjectId> {
+        if !matches!(self.kind, obc_route::Leg::Rest { .. }) {
+            return None;
+        }
+        let day = obc_app::trip::trip_day(app.trips(), self.original.as_ref()?.id().0)?;
+        let trip = app.trips().iter().find(|trip| trip.key == day.key())?;
+        trip.stage_ids.get(usize::from(day.day_index()).checked_sub(1)?).map(|&id| ObjectId(id))
+    }
+    /// The rest of the day before `route`, from `from_m`: read where the days leave and join the
+    /// trip's line. At or past the leave point the rest is empty, and the whole day follows it.
+    #[inline(never)]
+    fn begin_rest(
+        &mut self,
+        app: &App,
+        store: &'static FlatStore<FlatCard>,
+        route: u64,
+        from_m: u32,
+    ) -> Result<(), ()> {
+        let day = obc_app::trip::trip_day(app.trips(), route).ok_or(())?;
+        let trip = app.trips().iter().find(|trip| trip.key == day.key()).ok_or(())?;
+        let k = u16::from(day.day_index()).checked_sub(1).ok_or(())?;
+        let read = |k| {
+            store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).map_err(|_| ())
+        };
+        let (before, this) = (read(k)?.map_err(|_| ())?, read(k + 1)?.map_err(|_| ())?);
+        let length_m = store
+            .with_source(ObjectId(before.route), None, |source| obc_route::RouteObjectInfo::read(source))
+            .map_err(|_| ())?
+            .map_err(|_| ())?
+            .distance_m;
+        let leave_m = before.leave_m.min(length_m);
+        let (to_m, rejoin_m) = if from_m < leave_m { (leave_m, this.join_m) } else { (from_m, 0) };
+        self.kind = obc_route::Leg::Rest { from_m, to_m };
+        self.progress_m = 0;
+        self.rejoin_m = rejoin_m;
+        self.length_m = to_m - from_m;
+        self.has_elevation = true;
+        Ok(())
+    }
+    fn parse_sources(&self, app: &App, store: &FlatStore<FlatCard>, guard: &mut NavGuard) -> Result<(), ()> {
+        let rest = self.rest_route(app);
         let (orig, leg) = guard.sources();
         orig.read_into(self.original.as_ref().ok_or(())?).map_err(|_| ())?;
-        leg.read_into(&store.sealed_source(self.leg.as_ref().ok_or(())?)).map_err(|_| ())
+        match rest {
+            Some(id) => store.with_source(id, None, |rest| leg.read_into(rest)).map_err(|_| ())?.map_err(|_| ()),
+            None => leg.read_into(&store.sealed_source(self.leg.as_ref().ok_or(())?)).map_err(|_| ()),
+        }
     }
     #[allow(clippy::too_many_arguments)] // Borrow the ride loop's existing views for one pass.
     pub(crate) fn poll(
@@ -310,10 +377,13 @@ impl Executor {
                     };
                     (result, None, sink.appended, sink.patch_len)
                 } else {
-                    let (Some(orig), Some(leg)) = (self.original.as_ref(), self.leg.as_ref()) else {
-                        return self.fail(NavigatorError::Store);
+                    let Some(orig) = self.original.as_ref() else { return self.fail(NavigatorError::Store) };
+                    let transformed = match (self.rest_route(app), self.leg.as_ref()) {
+                        (Some(id), _) => store.with_source(id, None, |rest| g.transform(orig, rest)),
+                        (None, Some(leg)) => Ok(g.transform(orig, &store.sealed_source(leg))),
+                        (None, None) => return self.fail(NavigatorError::Store),
                     };
-                    let (step, appended, patch) = g.transform(orig, &store.sealed_source(leg));
+                    let Ok((step, appended, patch)) = transformed else { return self.fail(NavigatorError::Store) };
                     match step {
                         TransformStep::Trim(TrimStep::Running) => (Ok(None), None, appended, patch),
                         TransformStep::Trim(TrimStep::Done(outcome)) => {
@@ -502,7 +572,7 @@ impl Executor {
                 if self.release.is_some() {
                     return None;
                 }
-                if self.parse_sources(store, guard.as_mut()?).is_err() {
+                if self.parse_sources(app, store, guard.as_mut()?).is_err() {
                     return self.fail(NavigatorError::Store);
                 };
                 self.phase = Phase::Allocate(After::StartTrim);
