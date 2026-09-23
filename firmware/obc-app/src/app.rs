@@ -959,6 +959,10 @@ impl App {
             self.ui.map_dirty = true;
         }
     }
+    /// Temporary directions can be retired after the ride and checkpoint release them.
+    pub fn set_temporary_routes(&mut self, mask: u64) {
+        self.navigator.set_temporary_routes(mask);
+    }
     pub fn set_unaccepted_routes(&mut self, mask: u64) {
         if self.navigator.unaccepted_routes() != mask {
             self.navigator.set_unaccepted_routes(mask);
@@ -1730,8 +1734,7 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// A lead-in found no way: drop the spinner at `slot`. Ride to start leaves the prompt it came
-    /// from with Join nearest and Cancel.
+    /// A lead-in failed: drop the spinner and offer an unguided start on the original route.
     fn land_lead_in_failure(&mut self, slot: usize) {
         self.ui.stack.truncate(slot.max(1));
         if let Some(Screen::StartAway(prompt)) = self.ui.stack.last_mut() {

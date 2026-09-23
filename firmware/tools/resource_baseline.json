@@ -13,9 +13,10 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "measured_resident": 319136,
-      "resident_ram_max": 323232,
+      "measured_resident": 315032,
+      "resident_ram_max": 319128,
       "resident_ram_slack": 4096,
+      "_resident_measurement": "Shipping head 2e6b02168, GitHub Actions run 35899318336, embedded job 107311243590: 315,032 B resident. Re-pin both ends of the existing 4,096 B band; no base rebuild.",
       "_resident_ram_slack_note": "The guard holds the link within one slack of `measured_resident` in each direction: `resident_ram_max` is `measured_resident` plus the slack, and a link more than the slack BELOW `measured_resident` fails too. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request, and the same figure is what a deletion can save before it must re-pin. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. Dead ceiling is therefore bounded by two slacks, instead of growing without limit as it did when only the upper end was gated. Re-pin both figures from the `embedded` CI job; a host toolchain links a little less, which the band absorbs.",
       "uninit_max": 132096,
       "framebuffer_count": 1,
@@ -25,7 +26,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 60984,
+        "app": 57912,
         "map_cache": 37084,
         "map_tables": 7528,
         "route_cache": 9260,
@@ -52,7 +53,7 @@
         "semmc_driver": 52,
         "flat_store": 10152,
         "flat_requests": 3064,
-        "flat_ride_delta": 560,
+        "flat_ride_delta": 566,
         "flat_catalog_uploads": 740,
         "flat_map_read": 76,
         "flat_route_read": 48,
@@ -65,7 +66,7 @@
         "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
         "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
       },
-      "_app_note": "60,984 B on head d8755449b in CI run 35893128960, embedded resource-report build. The persisted theme takes 8 B of it, and the effort state (zones, the 10 s power window and the 5-minute history) with the recorder energy total takes 168 B. RAM, stack and flash ceilings stay unchanged.",
+      "_app_note": "57,912 B on head 028a3d66c, measured with the resource-report build on rustc 1.96.0, aarch64-apple-darwin. The v5 ride footer adds descent and energy to the ride state, and the ride list keeps the trip key non-zero instead of behind a tag, 8 B less in total. RAM, stack and flash ceilings stay unchanged.",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,

@@ -19,7 +19,8 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::Msg;
+use crate::settings::Language;
+use crate::{t, Msg};
 
 use super::vocab::chrome::{title_frame, wrapped, TITLE_BAR_H};
 use super::{palette, Ctx, Render, Transition};
@@ -111,15 +112,22 @@ impl MapTransferScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        self.state.draw(cv, rx.w, rx.h, rx.settings.language);
+    }
+}
+
+impl MapTransfer {
+    /// Draw transfer status without a mounted map or an application instance.
+    pub fn draw(self, cv: &mut impl Surface, w: i32, h: i32, language: Language) {
         use palette::*;
-        let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, rx.t(Msg::MapTransferTitle), "");
+        let tr = |msg| t(msg, language);
+        title_frame(cv, w, h, tr(Msg::MapTransferTitle), "");
         let body_w = w - 2 * INSET;
 
-        match self.state {
+        match self {
             MapTransfer::Receiving { received_kib, total_kib } => {
                 let after =
-                    wrapped(cv, rx.t(Msg::MapTransferReceiving), w / 2, TITLE_BAR_H + 34, body_w, Font::Body, INK);
+                    wrapped(cv, tr(Msg::MapTransferReceiving), w / 2, TITLE_BAR_H + 34, body_w, Font::Body, INK);
 
                 // The fill grows inside an outline, so an empty bar still reads as a bar.
                 let bar_y = after + 18;
@@ -151,7 +159,7 @@ impl MapTransferScreen {
                 // resumes.
                 wrapped(
                     cv,
-                    rx.t(Msg::MapTransferKeepCable),
+                    tr(Msg::MapTransferKeepCable),
                     w / 2,
                     h - 2 * Font::Label.line_height() as i32 - 14,
                     body_w,
@@ -161,13 +169,13 @@ impl MapTransferScreen {
             }
             MapTransfer::Installed => {
                 let after =
-                    wrapped(cv, rx.t(Msg::MapTransferInstalled), w / 2, TITLE_BAR_H + 40, body_w, Font::Body, INK);
-                wrapped(cv, rx.t(Msg::MapTransferRestart), w / 2, after + 16, body_w, Font::Label, INK);
+                    wrapped(cv, tr(Msg::MapTransferInstalled), w / 2, TITLE_BAR_H + 40, body_w, Font::Body, INK);
+                wrapped(cv, tr(Msg::MapTransferRestart), w / 2, after + 16, body_w, Font::Label, INK);
             }
             MapTransfer::Failed(why) => {
                 let after =
-                    wrapped(cv, rx.t(Msg::MapTransferFailed), w / 2, TITLE_BAR_H + 40, body_w, Font::Body, WARNING);
-                wrapped(cv, rx.t(why.msg()), w / 2, after + 16, body_w, Font::Label, INK);
+                    wrapped(cv, tr(Msg::MapTransferFailed), w / 2, TITLE_BAR_H + 40, body_w, Font::Body, WARNING);
+                wrapped(cv, tr(why.msg()), w / 2, after + 16, body_w, Font::Label, INK);
             }
         }
     }

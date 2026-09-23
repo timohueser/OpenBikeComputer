@@ -96,8 +96,8 @@ impl VisitHarness {
                             }),
                         }
                     }
-                    CatalogEffect::RemoveOrphanReviews { token } => {
-                        let heads = flat_store::route_heads(self.h.store, self.h.app.orphan_reviews());
+                    CatalogEffect::RemoveOrphanRoutes { token } => {
+                        let heads = flat_store::route_heads(self.h.store, self.h.app.orphan_routes());
                         if !heads.is_empty() {
                             let ticket = self
                                 .h
@@ -107,7 +107,7 @@ impl VisitHarness {
                             self.h.writer.complete();
                             assert!(self.h.writer.try_result(ticket, self.h.reply).unwrap().is_ok());
                         }
-                        CatalogOutcome::OrphanReviewsRemoved { token }
+                        CatalogOutcome::OrphanRoutesRemoved { token }
                     }
                     _ => panic!("unexpected Find catalog effect"),
                 };

@@ -776,6 +776,8 @@ pub fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequ
     Ok(())
 }
 
+// Keep the full metadata image out of the storage dispatcher frame.
+#[inline(never)]
 pub(crate) fn protected_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<[Option<ObjectId>; 2], Error> {
     let mut bytes = [0; MAX_LEN];
     let mut owner = Metadata::new(store);

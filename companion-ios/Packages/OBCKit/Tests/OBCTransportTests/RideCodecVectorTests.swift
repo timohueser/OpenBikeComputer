@@ -3,7 +3,7 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// The single cross-language ride-object contract: recorded 20-byte samples plus the v4 footer.
+/// The single cross-language ride-object contract: recorded 20-byte samples plus the v5 footer.
 struct RideCodecVectorTests {
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -15,9 +15,9 @@ struct RideCodecVectorTests {
         .appendingPathComponent("specs/vectors")
 
     private func vector() throws -> Data {
-        let url = Self.vectorsDir.appendingPathComponent("ride-v4.bin")
+        let url = Self.vectorsDir.appendingPathComponent("ride-v5.bin")
         return try #require(FileManager.default.contents(atPath: url.path),
-                            "fixture ride-v4.bin missing at \(url.path)")
+                            "fixture ride-v5.bin missing at \(url.path)")
     }
 
     @Test func decodesAndReencodesTheVectorExactly() throws {
@@ -31,11 +31,13 @@ struct RideCodecVectorTests {
         #expect(summary.movingTime == 3_600)
         #expect(abs(summary.averageSpeedMps - 3.43) < 0.001)
         #expect(summary.climbMeters == 120)
+        #expect(summary.descentMeters == 95)
         #expect(summary.avgHeartRate == 142)
         #expect(summary.maxHeartRate == 176)
         #expect(summary.avgCadence == 85)
         #expect(summary.avgPower == 210)
         #expect(summary.maxPower == 480)
+        #expect(summary.energyKJ == 756)
         #expect(summary.bikeType == .gravel)
         #expect(summary.trip == RideTrip(key: 0x0123_4567_89AB_CDEF, dayIndex: 1, dayCount: 3,
                                          name: "Alpen Traverse"))
@@ -57,7 +59,7 @@ struct RideCodecVectorTests {
         let bytes = try vector()
         let footer = bytes.count - RideObjectCodec.footerLength
         // Reserved byte, a day past the count, a bike type past the four, trip-name padding.
-        for (offset, value) in [(31, 1), (92, 3), (94, 4), (143, 1)] as [(Int, UInt8)] {
+        for (offset, value) in [(33, 1), (98, 3), (100, 4), (149, 1)] as [(Int, UInt8)] {
             var badFooter = bytes
             badFooter[footer + offset] = value
             #expect(throws: (any Error).self) {

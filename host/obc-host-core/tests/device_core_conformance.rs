@@ -393,10 +393,10 @@ impl CoreHarness {
             CatalogEffect::RemoveObject { kind, .. } => Some(kind),
             CatalogEffect::ReadCatalog { .. }
             | CatalogEffect::CleanupRoute { .. }
-            | CatalogEffect::RemoveOrphanReviews { .. } => None,
+            | CatalogEffect::RemoveOrphanRoutes { .. } => None,
         };
         match effect {
-            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+            CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanRoutes { .. } => {
                 panic!("unexpected cleanup")
             }
             CatalogEffect::ReadCatalog { token } => {
@@ -890,7 +890,7 @@ impl CoreHarness {
         for _ in 0..4 {
             let effect = self.next_catalog_effect();
             match effect {
-                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanReviews { .. } => {
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanRoutes { .. } => {
                     panic!("unexpected cleanup")
                 }
                 CatalogEffect::RemoveObject { .. } => return effect,

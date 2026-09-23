@@ -110,7 +110,7 @@ use com::com_task;
 use com_hw::HwCom;
 use input_plane::{input_task, CHORDS, EXECUTOR_HP, GESTURES};
 use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Frame64, Ls021Flpr};
-use map_plane::{show_boot_fault, MapDisplay};
+use map_plane::{run_map_recovery, show_boot_fault, MapDisplay};
 
 // The debug-sensor and telemetry stream behind `debug-uart`. `BufferedUarte` keeps RX DMA armed
 // into an interrupt-driven ring, so the tens-of-ms map render never drops a streamed byte.
@@ -878,24 +878,21 @@ async fn main(_spawner: Spawner) {
                 None => {
                     let fault = flat_store::boot_fault_for(flat_catalog);
                     defmt::error!(
-                        "flat: no map to render from — showing the {=str} fault screen, then heartbeat idle",
+                        "flat: no map to render from — showing the {=str} fault screen with USB recovery",
                         fault.copy().0
                     );
                     let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
-                    show_boot_fault(&mut display, fault).await;
-                    idle_blink(&mut led).await
+                    run_map_recovery(&mut display, &mut led, fault).await
                 }
             },
             flat_store::Card::FlatBroken(fault) => {
                 let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
-                show_boot_fault(&mut display, fault).await;
-                idle_blink(&mut led).await
+                run_map_recovery(&mut display, &mut led, fault).await
             }
             flat_store::Card::NotFlat => {
                 defmt::error!("flat: card is not formatted as a flat store — FAT compatibility is retired");
                 let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
-                show_boot_fault(&mut display, obc_app::BootFault::StorageFault).await;
-                idle_blink(&mut led).await
+                run_map_recovery(&mut display, &mut led, obc_app::BootFault::StorageFault).await
             }
         };
 
@@ -920,8 +917,7 @@ async fn main(_spawner: Spawner) {
                     // USB map recovery speaks protocol v4 against the flat store, so a replacement
                     // can still be uploaded when the current map will not parse.
                     let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
-                    show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
-                    idle_blink(&mut led).await
+                    run_map_recovery(&mut display, &mut led, obc_app::BootFault::BadMap).await
                 }
             }
         };

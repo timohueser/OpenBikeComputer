@@ -580,6 +580,50 @@ fn splice_self_input_is_previous_output() {
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
 }
 
+#[test]
+fn a_nearest_point_approach_keeps_only_the_tail_and_its_waypoints() {
+    let bytes = road_route_obcr();
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let route = RouteReader::new(&index, &source);
+    let join_m = route.total_distance_m / 2;
+    let join = route.position_at(join_m).unwrap();
+    let leg_bytes = convert(
+        "Connection",
+        &format!(
+            "<gpx><trk><trkseg><trkpt lat=\"{}\" lon=\"{}\"><ele>300</ele></trkpt>\
+         <trkpt lat=\"{}\" lon=\"{}\"><ele>300</ele></trkpt></trkseg></trk></gpx>",
+            (join.lat + STREET_OFF) as f64 / 1e6,
+            join.lon as f64 / 1e6,
+            join.lat as f64 / 1e6,
+            join.lon as f64 / 1e6,
+        ),
+    );
+    let leg_source = SliceSource(&leg_bytes);
+    let leg_index = RouteIndex::read(&leg_source).unwrap();
+    let leg = RouteReader::new(&leg_index, &leg_source);
+    let mut sink = VecSink::default();
+    splice_detour(Leg::Approach, &route, &leg, join_m, join_m, leg.total_distance_m, true, &mut sink).unwrap();
+    let source = SliceSource(&sink.buf);
+    let index = RouteIndex::read(&source).unwrap();
+    let result = RouteReader::new(&index, &source);
+    assert_eq!(index.name(), "To route · Road trip");
+    assert_eq!(obc_route::splice::original_name(index.name()), "Road trip");
+    assert!(!index.has_unresolved_avoidance());
+    let expected_m = leg.total_distance_m + route.total_distance_m - join_m;
+    assert!(result.total_distance_m.abs_diff(expected_m) <= 3);
+    let at_join = result.position_at(leg.total_distance_m).unwrap();
+    assert!(obc_map_scene::ground_dist_m((at_join.lon, at_join.lat), (join.lon, join.lat)) < 3.0);
+    let original_waypoints = route.load_waypoints(join_m);
+    let result_waypoints = result.load_waypoints(0);
+    assert!(!original_waypoints.is_empty());
+    assert_eq!(result_waypoints.len(), original_waypoints.len());
+    for (original, shifted) in original_waypoints.entries.iter().zip(&result_waypoints.entries) {
+        assert_eq!(original.name, shifted.name);
+        assert!(shifted.dist_along_m.abs_diff(original.dist_along_m - join_m + leg.total_distance_m) <= 3);
+    }
+}
+
 /// Ride to start: a leg that rejoins at the route start comes first, and the whole route follows
 /// it unchanged, with the waypoints moved behind the leg.
 #[test]
@@ -613,8 +657,9 @@ fn an_approach_splice_is_the_leg_then_the_whole_route() {
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let spliced = RouteReader::new(&idx, &src);
-    assert_eq!(idx.name(), "To start · Road trip", "the Routes list tells it from the route");
+    assert_eq!(idx.name(), "To start · Road trip", "the active route identifies its connection");
     assert!(!idx.has_unresolved_avoidance(), "an approach avoids nothing");
+    assert_ne!(sink.buf[5] & obc_formats::obcr::FLAG_TEMPORARY, 0);
     assert_eq!(idx.bike_type(), BikeType::Touring, "an approach keeps the route's type, not the leg's");
     assert!(
         stats.total_distance_m.abs_diff(leg_m + route_m) <= 2,

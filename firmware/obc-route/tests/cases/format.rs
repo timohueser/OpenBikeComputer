@@ -479,3 +479,28 @@ fn preview_polyline_decimates_uniformly_with_exact_endpoints() {
     let two = r.preview_polyline::<2>();
     assert_eq!(two.as_slice(), &[(10, 10), (90, 70)], "N = 2 keeps exactly the endpoints");
 }
+
+#[test]
+fn borrowed_chunk_survives_reentrant_reads_and_identity_changes() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let idx_a = RouteIndex::read(&SliceSource(&a)).unwrap();
+    let idx_b = RouteIndex::read(&SliceSource(&b)).unwrap();
+    let src_a = CountingSource { inner: SliceSource(&a), reads: Cell::new(0) };
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+    let reader = RouteReader::new_cached(&idx_a, &src_a, &cache);
+    let expected = decode(&reader, 0);
+    reader
+        .with_chunk(0, |points| {
+            assert_eq!(points, expected);
+            let other = RouteReader::new_cached(&idx_b, &src_b, &cache);
+            other.with_chunk(0, |nested| assert_eq!(nested.last().unwrap().lon, 30)).unwrap();
+            assert_eq!(points, expected, "a nested read must not overwrite the borrowed slot");
+        })
+        .unwrap();
+    reader.with_chunk(0, |points| assert_eq!(points, expected)).unwrap();
+    assert_eq!(src_a.reads.get(), 1, "both borrows use the resident points");
+    assert_eq!(src_b.reads.get(), 1);
+    assert!(reader.with_chunk(usize::MAX, |_| ()).is_err());
+}

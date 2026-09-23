@@ -136,4 +136,4 @@ fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
 }
 
 const GRIMSEL_ROUTE_DIGESTS: [u64; 4] =
-    [0x5639_c196_df1b_155e, 0xbfba_332e_7b41_62f9, 0x2ec7_9079_bccc_5063, 0x2bd9_961b_436c_d426];
+    [0xc6d5_83fc_9f79_2ebe, 0x92d0_478b_d94e_49d9, 0x2aff_ca27_d99b_8983, 0xaa76_be78_6ee8_3fc6];

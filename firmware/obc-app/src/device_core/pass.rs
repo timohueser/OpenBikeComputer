@@ -465,6 +465,7 @@ impl App {
                 let _ = self.pass.connections.ui_catalog.try_put(full.rejected);
             }
         }
+        self.cleanup_orphan_routes();
         // The store refuses a removal for an object the checkpoint names, and a refused removal is
         // not retried, so the rider's confirmed delete would vanish. Give up the checkpoint first
         // and leave the intent admitted: the admitted intent is what the domain would pull next, so

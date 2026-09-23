@@ -42,7 +42,7 @@ streamed out (§5).
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCR"` |
 | 4 | Version | 1 | `uint8` | `0x05`; readers reject anything else |
-| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; bit 3 Assistant candidate; bit 4 built trip day; other bits zero |
+| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; bit 3 Assistant candidate; bit 4 built trip day; bit 5 temporary navigation route; other bits zero |
 | 6 | Name Len | 1 | `uint8` | Used bytes of the Name field (≤ 48) |
 | 7 | Bike Type | 1 | `uint8` | §1.2; readers reject values above `3` |
 | 8 | Min Lon | 4 | `int32` | Global bbox, microdegrees |
@@ -98,6 +98,11 @@ the route does not inherit the old acceptance.
 A built trip day is the rest of one trip day spliced in front of the next day. A device builds it
 for one ride. Route lists do not show it. A card holds at most one: the next build replaces it in
 place, with the same object ID and the next revision.
+
+A temporary navigation route contains generated directions, including connections and detours.
+Saved-route lists do not show it. The device can store it to follow or resume the ride.
+The device removes temporary directions when no active route or recovery checkpoint needs them.
+Assistant candidates and built trip days use their own retention rules.
 
 ### 1.2 Bike type and estimated time
 

@@ -175,3 +175,52 @@ fn a_built_day_replaces_the_one_before_it_and_stays_out_of_the_list() {
     assert_eq!(routes.internal_routes(), 1 << index, "and stays so after a catalog read");
     assert_ne!(routes.publish_nav_route(ROUTE).unwrap().id, first.id, "a plain route is its own object");
 }
+
+#[test]
+fn temporary_navigation_stays_readable_but_hidden_after_catalog_reload() {
+    let owner = HostStore::memory().unwrap();
+    let mut routes = FlatRouteStore::new(owner.clone(), &[ROUTE]).unwrap();
+    let original = routes.ids()[0];
+    let mut temporary = ROUTE.to_vec();
+    temporary[5] |= obc_formats::obcr::FLAG_TEMPORARY;
+    let publication = routes.publish_nav_route(&temporary).unwrap();
+    for pass in 0..3 {
+        let index = routes.ids().iter().position(|&id| id == publication.id).unwrap();
+        assert_eq!(routes.internal_routes(), 1 << index);
+        assert_eq!(routes.temporary_routes(), 1 << index);
+        assert_eq!(routes.unaccepted_routes(), 0, "a temporary ride is not an abandoned review");
+        assert_eq!(bytes(&routes.source(publication.id).unwrap()), temporary);
+        assert_eq!(bytes(&routes.source(original).unwrap()), ROUTE);
+        if pass == 0 {
+            routes.refresh_metadata().unwrap();
+        } else {
+            routes = FlatRouteStore::new(owner.clone(), &[]).unwrap();
+        }
+    }
+}
+
+#[test]
+fn completed_temporary_routes_release_catalog_capacity_without_removing_the_live_route() {
+    let mut routes = FlatRouteStore::from_bytes(&vec![ROUTE; obc_app::MAX_ROUTES - 2]).unwrap();
+    let saved = routes.ids().to_vec();
+    let mut temporary = ROUTE.to_vec();
+    temporary[5] |= obc_formats::obcr::FLAG_TEMPORARY;
+    let mut app = obc_app::App::new_idle(obc_app::AppState::new(0, 0, 1.0));
+    app.offer_assistant_checkpoint(routes.store_scope().unwrap().store, None);
+    for _ in 0..obc_app::MAX_ROUTES + 1 {
+        let publication = routes.publish_nav_route(&temporary).unwrap();
+        crate::dispatch::feed_routes(&mut app, &routes, &mut crate::trace::NoTrace);
+        let index = routes.ids().iter().position(|&id| id == publication.id).unwrap();
+        app.activate_route(index);
+        let retired: Vec<_> = app.orphan_routes().collect();
+        assert!(!retired.contains(&publication.id));
+        assert!(retired.iter().all(|id| !saved.contains(id)));
+        routes.retract_generated_routes(&retired).unwrap();
+        assert_eq!(routes.ids().len(), saved.len() + 1);
+        assert_eq!(bytes(&routes.source(publication.id).unwrap()), temporary);
+    }
+    crate::dispatch::feed_routes(&mut app, &routes, &mut crate::trace::NoTrace);
+    app.activate_route(usize::MAX);
+    routes.retract_generated_routes(&app.orphan_routes().collect::<Vec<_>>()).unwrap();
+    assert_eq!(routes.ids(), saved);
+}

@@ -282,13 +282,11 @@ fn start_nav_flush(
     writer.try_call(request, &NAV_STORE_REPLY).map_err(|_| step)
 }
 
-/// Construct and write a fresh request's planner into its slot, in this immediately-popped frame.
-/// `NavPlanner::new` materializes a ~9 KB temporary, and inlined into the ride loop that slot lands
-/// in the main task's poll frame, which is allocated at the entry of every poll.
+/// Initialize a fresh planner in its arena slot.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, bike: obc_route::BikeType) {
-    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), bike));
+    nav.guard.begin_plan(req.from, req.to, req.name(), bike, None);
     // One diagnostic line per plan start: the three addresses pin the memory map without the ELF at
     // hand. They are offsets inside the scratch arena's nav arm.
     let (planner, scratch, tiles) = nav.guard.arm_addrs();
@@ -1111,8 +1109,8 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
-                    CatalogEffect::RemoveOrphanReviews { token } => {
-                        let heads = crate::flat_store::route_heads(flat, app.orphan_reviews());
+                    CatalogEffect::RemoveOrphanRoutes { token } => {
+                        let heads = crate::flat_store::route_heads(flat, app.orphan_routes());
                         let result = if heads.is_empty() {
                             Ok(())
                         } else if let Some(writer) = crate::flat_store::writer() {
@@ -1124,7 +1122,7 @@ pub(crate) async fn run_app(
                             Err(obc_storage::flat::StoreError::ReadOnly)
                         };
                         let outcome = match result {
-                            Ok(()) => CatalogOutcome::OrphanReviewsRemoved { token },
+                            Ok(()) => CatalogOutcome::OrphanRoutesRemoved { token },
                             Err(_) => CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");

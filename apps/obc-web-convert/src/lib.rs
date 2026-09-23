@@ -39,7 +39,7 @@ mod web {
         crate::convert::gpx_to_obcr(bytes, name).map_err(to_js)
     }
 
-    /// Convert a finished ride-v4 object into a GPX 1.1 document, naming the track `name`.
+    /// Convert a finished ride-v5 object into a GPX 1.1 document, naming the track `name`.
     ///
     /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
     #[wasm_bindgen]
