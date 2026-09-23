@@ -12,7 +12,7 @@
 //! `App` stays the composition root: screen-stack remaps and `Activity` key remaps live there, and
 //! this component never sees a `Screen`.
 
-use obc_route::Profile;
+use obc_route::{Profile, RideTrackFacts};
 
 use crate::app::NAV_PREVIEW_MAX;
 use crate::device_core::derived::{DayProfileKey, DerivedInput, NavPreviewKey, RestStretch, RideTrackKey};
@@ -55,6 +55,9 @@ pub(crate) struct CatalogState {
     /// The viewed ride's recorded-track elevation profile: the Ride detail's band source,
     /// host-filled once per detail entry.
     ride_profile: Profile,
+    /// The viewed ride's descent and HR and power series, filled with the ride profile and shown
+    /// under the same key. The day profile does not use it.
+    ride_facts: RideTrackFacts,
     /// Whether [`ride_profile`](CatalogState::ride_profile) holds a successful host answer. Kept
     /// separate so the board can stream into the resident buffer without returning a ~5 KiB value
     /// through its task frame.
@@ -146,6 +149,7 @@ impl CatalogState {
             rides: RideCatalog::new(),
             ride_trips: RideTrips::new(),
             ride_profile: Profile::EMPTY,
+            ride_facts: RideTrackFacts::EMPTY,
             ride_profile_present: false,
             ride_profile_for: None,
             day_profile_for: None,
@@ -351,14 +355,15 @@ impl CatalogState {
         true
     }
 
-    /// Borrow the one resident profile buffer for an in-place fill, invalidating the ride-track
-    /// view first: until the matching accept lands, the need carries a new key and re-emits, so an
-    /// abandoned fill leaves a need up rather than a half-written buffer marked answered.
-    pub(crate) fn begin_ride_profile_fill(&mut self) -> &mut Profile {
+    /// Borrow the resident profile and facts buffers for an in-place fill, invalidating the
+    /// ride-track view first: until the matching accept lands, the need carries a new key and
+    /// re-emits, so an abandoned fill leaves a need up rather than a half-written buffer marked
+    /// answered.
+    pub(crate) fn begin_ride_track_fill(&mut self) -> (&mut Profile, &mut RideTrackFacts) {
         self.ride_profile_present = false;
         self.day_profile_for = None;
         self.ride_track_view = self.ride_track_view.next();
-        &mut self.ride_profile
+        (&mut self.ride_profile, &mut self.ride_facts)
     }
 
     /// The derived day-profile key for tomorrow: day route `day` from `join_m`, after `rest`.
@@ -376,7 +381,7 @@ impl CatalogState {
     }
 
     /// Borrow the ride profile's buffer for an in-place day-profile fill, under the same rule as
-    /// [`begin_ride_profile_fill`](Self::begin_ride_profile_fill).
+    /// [`begin_ride_track_fill`](Self::begin_ride_track_fill).
     pub(crate) fn begin_day_profile_fill(&mut self) -> &mut Profile {
         self.ride_profile_present = false;
         self.ride_profile_for = None;
@@ -427,7 +432,16 @@ impl CatalogState {
     /// The resident ride profile only if it was answered for `key`: the buffer is reachable through
     /// the exact key it was filled for and no other.
     pub(crate) fn ride_profile_for(&self, key: Option<RideTrackKey>) -> Option<&Profile> {
-        (self.ride_profile_present && key.is_some() && self.ride_profile_for == key).then_some(&self.ride_profile)
+        self.ride_track_shown(key).then_some(&self.ride_profile)
+    }
+
+    /// The resident ride facts, under the ride profile's key.
+    pub(crate) fn ride_facts_for(&self, key: Option<RideTrackKey>) -> Option<&RideTrackFacts> {
+        self.ride_track_shown(key).then_some(&self.ride_facts)
+    }
+
+    fn ride_track_shown(&self, key: Option<RideTrackKey>) -> bool {
+        self.ride_profile_present && key.is_some() && self.ride_profile_for == key
     }
 
     /// The ride-shape preview for `key`, or the empty slice when missing or stale. The screens draw
@@ -885,6 +899,7 @@ impl CatalogState {
             rides,
             ride_trips,
             ride_profile,
+            ride_facts,
             ride_profile_present,
             ride_profile_for,
             day_profile_for,
@@ -914,6 +929,7 @@ impl CatalogState {
         assert!(rides.is_empty() && ride_trips.is_empty(), "no rides catalogued");
         assert_eq!(ride_profile.cols(), Profile::EMPTY.cols(), "the ride-profile buffer is the empty line");
         assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
+        assert_eq!(*ride_facts, RideTrackFacts::EMPTY, "no ride facts filled");
         assert!(day_profile_for.is_none(), "no day profile answered");
         assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");
         assert!(nav_preview.is_empty() && nav_preview_route.is_none(), "no route-shape preview cached");

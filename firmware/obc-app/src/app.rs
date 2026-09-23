@@ -1303,12 +1303,12 @@ impl App {
         self.catalogs.rides()
     }
 
-    /// Borrow the app's one resident ride-profile buffer for an in-place host fill. It
+    /// Borrow the app's resident ride-profile and ride-facts buffers for an in-place host fill. It
     /// invalidates the ride-track view: until a keyed answer for the post-fill key lands, the
     /// level re-fires, so an abandoned fill leaves a need up, not a half-written buffer marked
     /// answered.
-    pub fn begin_ride_profile_fill(&mut self) -> &mut Profile {
-        self.catalogs.begin_ride_profile_fill()
+    pub fn begin_ride_track_fill(&mut self) -> (&mut Profile, &mut obc_route::RideTrackFacts) {
+        self.catalogs.begin_ride_track_fill()
     }
 
     /// Borrow the same buffer for an in-place day-profile fill, under the same rule.
@@ -3042,6 +3042,7 @@ impl App {
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
+            ride_facts: catalogs.ride_facts_for(ride_key),
             day_profile: catalogs.day_profile_for(day_key),
             climb,
             climbs: navigator.climbs(),
@@ -6100,7 +6101,7 @@ mod tests {
         let mut app = viewing_ride(&[7]);
         let before = app.derived_needs().ride_track.unwrap();
 
-        let _buffer = app.begin_ride_profile_fill(); // …and the executor dies here
+        let _buffers = app.begin_ride_track_fill(); // …and the executor dies here
         let after = app.derived_needs().ride_track.expect("still wanted");
         assert_ne!(before, after, "starting a fill invalidates the view generation");
         assert_eq!(after.ride, before.ride, "…without pretending the subject changed");

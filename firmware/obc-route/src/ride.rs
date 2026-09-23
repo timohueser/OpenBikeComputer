@@ -150,3 +150,76 @@ impl RideInfo {
         })
     }
 }
+
+/// How many bars the ride detail's HR and power graphs hold.
+pub const RIDE_SERIES_BUCKETS: usize = 60;
+
+/// What the ride detail shows beside the profile and the shape: the footer's descent, and the
+/// whole ride's HR and power as bucket averages. Each bucket covers an equal share of the samples,
+/// so a ride with fewer samples than [`RIDE_SERIES_BUCKETS`] has one bucket per sample. A bucket
+/// with no reading of a sensor is 0 for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RideTrackFacts {
+    pub descent_m: u16,
+    hr: [u8; RIDE_SERIES_BUCKETS],
+    power: [u16; RIDE_SERIES_BUCKETS],
+    len: u8,
+}
+
+impl RideTrackFacts {
+    pub const EMPTY: Self =
+        RideTrackFacts { descent_m: 0, hr: [0; RIDE_SERIES_BUCKETS], power: [0; RIDE_SERIES_BUCKETS], len: 0 };
+
+    pub fn hr(&self) -> &[u8] {
+        &self.hr[..self.len as usize]
+    }
+
+    pub fn power(&self) -> &[u16] {
+        &self.power[..self.len as usize]
+    }
+}
+
+/// Streams samples, in order, into the buckets of a [`RideTrackFacts`].
+pub(crate) struct SeriesFill {
+    points: u32,
+    bucket: usize,
+    hr: (u32, u32),
+    power: (u32, u32),
+}
+
+impl SeriesFill {
+    pub(crate) fn start(out: &mut RideTrackFacts, info: &RideInfo) -> Self {
+        *out = RideTrackFacts::EMPTY;
+        out.descent_m = info.descent_m;
+        out.len = (info.point_count as usize).min(RIDE_SERIES_BUCKETS) as u8;
+        SeriesFill { points: info.point_count, bucket: 0, hr: (0, 0), power: (0, 0) }
+    }
+
+    /// Add sample `index` of the ride.
+    pub(crate) fn push(&mut self, out: &mut RideTrackFacts, index: u32, hr: Option<u8>, power: Option<u16>) {
+        let bucket = (u64::from(index) * u64::from(out.len) / u64::from(self.points)) as usize;
+        if bucket != self.bucket {
+            self.flush(out);
+            self.bucket = bucket;
+        }
+        if let Some(hr) = hr {
+            self.hr = (self.hr.0.saturating_add(u32::from(hr)), self.hr.1 + 1);
+        }
+        if let Some(power) = power {
+            self.power = (self.power.0.saturating_add(u32::from(power)), self.power.1 + 1);
+        }
+    }
+
+    pub(crate) fn finish(mut self, out: &mut RideTrackFacts) {
+        if out.len > 0 {
+            self.flush(out);
+        }
+    }
+
+    fn flush(&mut self, out: &mut RideTrackFacts) {
+        let avg = |(sum, n): (u32, u32)| sum.checked_div(n).unwrap_or(0);
+        out.hr[self.bucket] = avg(self.hr) as u8;
+        out.power[self.bucket] = avg(self.power) as u16;
+        (self.hr, self.power) = ((0, 0), (0, 0));
+    }
+}

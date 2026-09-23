@@ -217,7 +217,7 @@ impl RouteOverviewScreen {
             let track = Track { points: rx.nav_preview, color: ROUTE, end_dot: true };
             let band = rect(MAP_X, MAP_TOP, w - 2 * MAP_X, MAP_BOT - MAP_TOP);
             draw_track_map(cv, rx, band, track, Some(route_bike_type(rx)));
-            title_chrome(cv, w, h, &route_title(rx, summary));
+            title_chrome(cv, w, h, &route_title(rx, summary), "");
             cv.hline(MAP_X, MAP_BOT, w - 2 * MAP_X, RULE);
 
             let mut dist: heapless::String<8> = heapless::String::new();

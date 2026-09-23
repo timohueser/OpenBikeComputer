@@ -333,7 +333,8 @@ impl RouteReader<'_> {
     }
 }
 
-/// Fill a recorded ride's elevation [`Profile`] and preview from one pass over its samples.
+/// Fill a recorded ride's elevation [`Profile`], its [`RideTrackFacts`](crate::RideTrackFacts)
+/// and its preview from one pass over its samples.
 ///
 /// It shares the gap-fill, cumulative ascent and peak of
 /// [`RouteReader::elevation_profile`] and differs only in the sweep: columns bucket by the
@@ -345,16 +346,18 @@ impl RouteReader<'_> {
 /// whole-track buffer or by-value profile is allocated, so the board fills its resident profile
 /// without growing its task frame.
 ///
-/// On an error the preview is empty and the partly filled profile must not be published.
+/// On an error the preview is empty and the partly filled profile and facts must not be published.
 pub fn ride_track_into<const N: usize>(
     src: &dyn ByteSource,
     out: &mut Profile,
+    facts: &mut crate::RideTrackFacts,
     preview: &mut Vec<(i32, i32), N>,
 ) -> Result<(), Error> {
-    use obc_formats::ride::SAMPLE_LEN;
+    use obc_formats::ride::{HR_NONE, PWR_NONE, SAMPLE_LEN};
 
     preview.clear();
     let info = crate::RideInfo::read(src)?;
+    let mut series = crate::ride::SeriesFill::start(facts, &info);
     let total_points = info.point_count as usize;
     let keep = N.min(total_points);
     let mut next = 0usize;
@@ -389,6 +392,9 @@ pub fn ride_track_into<const N: usize>(
             let lon = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
             let ele = i16::from_le_bytes([rec[8], rec[9]]);
             let p = (lon, lat);
+            let hr = (rec[16] != HR_NONE).then_some(rec[16]);
+            let power = u16::from_le_bytes([rec[18], rec[19]]);
+            series.push(facts, done + i as u32, hr, (power != PWR_NONE).then_some(power));
             if preview.len() < keep && done as usize + i == next {
                 let _ = preview.push(p);
                 if preview.len() < keep {
@@ -412,6 +418,7 @@ pub fn ride_track_into<const N: usize>(
         }
         done += n as u32;
     }
+    series.finish(facts);
 
     // A ride with no elevation at all reads as a flat zero band, not as sentinel values.
     if min_ele > max_ele {

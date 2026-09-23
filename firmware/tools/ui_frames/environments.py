@@ -60,18 +60,19 @@ def plain_route(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
-def _ride(samples, name, start, distance_m, moving_s, climb_m, avg_hr, trip):
+def _ride(samples, name, start, distance_m, moving_s, climb_m, descent_m, hr, trip):
     """A ride object as `specs/obc-ble-interface-spec.md` §7.2 lays it out: 20-byte samples, then
-    the 150-byte footer. `samples` are `(lon, lat, ele)`; `trip` is `(key, day index, day count,
-    name)` or `None`.
+    the 150-byte footer. `samples` are `(lon, lat, ele)`; `hr` is one heart rate per sample or
+    `None`; `trip` is `(key, day index, day count, name)` or `None`.
     """
     body = bytearray()
     for i, (lon, lat, ele) in enumerate(samples):
-        body += struct.pack("<iihHIBBH", lon, lat, ele, i == 0, i * 5000, 0xFF, 0xFF, 0xFFFF)
+        body += struct.pack("<iihHIBBH", lon, lat, ele, i == 0, i * 5000, hr[i] if hr else 0xFF, 0xFF, 0xFFFF)
     raw = name.encode()
-    footer = struct.pack("<4sBBHIIIHHHI", b"OBRF", 5, len(raw), 150, start, distance_m, moving_s, 0, climb_m, 0,
-                         len(samples))
-    footer += struct.pack("<BBBBHHI48s", avg_hr or 0xFF, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, 0xFFFF_FFFF, raw)
+    avg_hr = round(sum(hr) / len(hr)) if hr else 0xFF
+    footer = struct.pack("<4sBBHIIIHHHI", b"OBRF", 5, len(raw), 150, start, distance_m, moving_s, 0, climb_m,
+                         descent_m, len(samples))
+    footer += struct.pack("<BBBBHHI48s", avg_hr, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, 0xFFFF_FFFF, raw)
     key, day, days, trip_name = trip or (0, 0, 0, "")
     footer += struct.pack("<QBBBB48s", key, day, days, 1, len(trip_name.encode()), trip_name.encode())
     return bytes(body + footer)
@@ -87,7 +88,7 @@ def tracks(stage: Stage) -> Staging:
     """Four stored rides for the Rides screens, oldest first, so the import gives the newest the
     highest id: two loose copies of the pinned `ride-v5.bin` vector, "Sensor Ride" with all three
     sensors, and two days of the trip "Alps traverse" on the Grimsel climb's track. Day 2 has a
-    heart rate; Day 1 has no sensor. Every ride is unsynced; the flat store stages no archive rows.
+    heart rate that rises and falls with the climb; Day 1 has no sensor. Every ride is unsynced; the flat store stages no archive rows.
     """
     where = stage.dir("tracks")
     vector = (stage.vectors / "ride-v5.bin").read_bytes()
@@ -103,16 +104,18 @@ def tracks(stage: Stage) -> Staging:
     climb = [(round(float(lon) * 1e6), round(float(lat) * 1e6), round(float(ele))) for lat, lon, ele in points[::3]]
     assert len(climb) > 100, "the Grimsel track parses"
     alps = (0x0123_4567_89AB_CDEF, "Alps traverse")
+    wave = [round(128 + 22 * math.sin(i / len(climb) * 4 * math.pi)) for i in range(len(climb))]
     days = [
-        # name, samples, start (UTC), moving time, average heart rate: Day 1 rides the climb down
+        # name, samples, start (UTC), moving time, heart rates: Day 1 rides the climb down
         ("Day 1 Andermatt", climb[::-1], (2025, 9, 29, 7, 30), 48 * 60, None),
-        ("Day 2 Ulrichen", climb, (2025, 9, 30, 8, 12), 95 * 60, 128),
+        ("Day 2 Ulrichen", climb, (2025, 9, 30, 8, 12), 95 * 60, wave),
     ]
     for day, (name, samples, when, moving, hr) in enumerate(days):
         metres = round(sum(math.dist(*_metric(a, b)) for a, b in zip(samples, samples[1:])))
         ascent = sum(max(0, b[2] - a[2]) for a, b in zip(samples, samples[1:]))
+        descent = sum(max(0, a[2] - b[2]) for a, b in zip(samples, samples[1:]))
         start = calendar.timegm((*when, 0, 0, 0, 0))
-        ride = _ride(samples, name, start, metres, moving, ascent, hr, (alps[0], day, 3, alps[1]))
+        ride = _ride(samples, name, start, metres, moving, ascent, descent, hr, (alps[0], day, 3, alps[1]))
         (where / f"ride-{day + 2}.obcr").write_bytes(ride)
     return Staging(("--tracks-dir", str(where)))
 
