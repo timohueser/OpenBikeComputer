@@ -4,7 +4,7 @@ use crate::{
     screen::{Screen, Transition},
 };
 use obc_formats::{
-    io::{rd_u16, ByteSource, WindowSource},
+    io::{ByteSource, WindowSource},
     obcm::landmarks::*,
 };
 use obc_reader::{
@@ -43,6 +43,9 @@ pub struct Landmarks {
     pub page: u16,
     pub source_page: u16,
     pub source_pages: u16,
+    /// Whether the loaded Sources screen credits the photo, and that work's first screen.
+    pub source_photo: bool,
+    pub source_first: u16,
     pub name: heapless::String<256>,
     pub text: heapless::String<MAX_PAGE_BYTES>,
     pub record: Option<LandmarkRecord>,
@@ -69,6 +72,8 @@ impl Landmarks {
             page: 0,
             source_page: 0,
             source_pages: 0,
+            source_photo: false,
+            source_first: 0,
             name: heapless::String::new(),
             text: heapless::String::new(),
             record: None,
@@ -244,56 +249,38 @@ impl Landmarks {
             )),
             None => None,
         };
+        // Both credits are read to count the Sources screens; `text` is the scratch until the end.
+        let mut bytes = [0; MAX_PAGE_BYTES];
         self.article_pages = match &pages {
-            Some((_, _, credits)) => credit_count(credits)?,
+            Some((_, _, credits)) => read_credit(credits, false, &mut bytes, &mut self.text)?,
             None => 0,
         };
         let photo_credits = photo_credits.filter(|_| self.loaded.is_none() || self.photo_available);
-        let photo_count = photo_credits.and_then(|source| credit_count(source).ok());
+        let photo_count = photo_credits.and_then(|source| read_credit(source, true, &mut bytes, &mut self.text).ok());
         self.photo_available = photo_count.is_some();
         self.source_pages = self.article_pages + photo_count.unwrap_or(0);
-        let Some((article, text, credits)) = pages else {
-            // A record with a photo and no text has no reading page. Its Sources are the photo's.
-            let credits = photo_credits.ok_or(Error::BadOffset)?;
-            self.text.clear();
-            if sources {
-                let mut bytes = [0; MAX_PAGE_BYTES];
-                let page = read_display_page(credits, self.source_pages + 4, self.source_page + 4, &mut bytes)?;
-                self.text.push_str(page).map_err(|_| Error::BadOffset)?;
-            }
-            self.article = None;
-            self.loaded = Some(requested);
-            return Ok(());
-        };
-        let photo_source = sources && self.source_page >= self.article_pages;
-        let (source, index, count) = if sources {
-            if photo_source {
-                (
-                    photo_credits.unwrap_or(&credits),
-                    self.source_page - self.article_pages + 4,
-                    photo_count.unwrap_or(0) + 4,
-                )
-            } else {
-                (&credits as &dyn ByteSource, self.source_page + 4, self.article_pages + 4)
-            }
-        } else {
-            (&text as &dyn ByteSource, self.page.min(article.text_pages as u16 - 1), article.text_pages as u16)
-        };
-        let mut bytes = [0; MAX_PAGE_BYTES];
-        let result = read_display_page(source, count, index, &mut bytes);
-        let text = match result {
-            Err(_) if photo_source => {
-                self.photo_available = false;
-                self.source_pages = self.article_pages;
-                self.source_page = 0;
-                read_display_page(&credits, self.article_pages + 4, 4, &mut bytes)?
-            }
-            other => other?,
-        };
+        if self.source_page >= self.source_pages {
+            self.source_page = 0;
+        }
+        self.article = pages.as_ref().map(|(article, _, _)| *article);
         self.text.clear();
-        self.text.push_str(text).map_err(|_| Error::BadOffset)?;
-        self.article = Some(article);
-        self.loaded = Some(requested);
+        if sources {
+            self.source_photo = self.source_page >= self.article_pages;
+            self.source_first = if self.source_photo { self.article_pages } else { 0 };
+            let credits = match (&pages, photo_credits) {
+                (Some((_, _, credits)), _) if !self.source_photo => credits as &dyn ByteSource,
+                (_, Some(credits)) if self.photo_available => credits,
+                _ => return Err(Error::BadOffset),
+            };
+            read_credit(credits, self.source_photo, &mut bytes, &mut self.text)?;
+        } else if let Some((article, text, _)) = &pages {
+            let count = article.text_pages as u16;
+            let page = read_display_page(text, count, self.page.min(count - 1), &mut bytes)?;
+            self.text.push_str(page).map_err(|_| Error::BadOffset)?;
+        } else if !self.photo_available {
+            return Err(Error::BadOffset);
+        }
+        self.loaded = Some((requested.0, sources, if sources { self.source_page } else { self.page }, language));
         Ok(())
     }
 }
@@ -318,14 +305,26 @@ fn read_display_page<'a>(
     }
     Ok(text)
 }
-fn credit_count(source: &dyn ByteSource) -> Result<u16, Error> {
-    let mut count = [0; 2];
-    source.read_at(0, &mut count).map_err(Error::Source)?;
-    let count = rd_u16(&count, 0);
-    if !(5..=MAX_CREDIT_PAGES + 4).contains(&count) {
-        return Err(Error::BadOffset);
+/// Load one work's credit into `out`, its four fields one per line, and count its Sources screens.
+/// Only the creator may be empty: a public-domain dedication names none.
+fn read_credit(
+    source: &dyn ByteSource,
+    photo: bool,
+    bytes: &mut [u8; MAX_PAGE_BYTES],
+    out: &mut heapless::String<MAX_PAGE_BYTES>,
+) -> Result<u16, Error> {
+    out.clear();
+    for index in 0..CREDIT_FIELDS {
+        let field = page(source, CREDIT_FIELDS, index, bytes)?;
+        if (field.is_empty() && index != 2) || !field.chars().all(|c| matches!(c, ' '..='~' | '\u{a0}'..='\u{17f}')) {
+            return Err(Error::BadOffset);
+        }
+        if index > 0 {
+            out.push('\n').map_err(|_| Error::BadOffset)?;
+        }
+        out.push_str(field).map_err(|_| Error::BadOffset)?;
     }
-    Ok(count - 4)
+    Ok(crate::screen::source_layout(photo, out, |_, _, _| {}))
 }
 fn display_page(text: &str) -> bool {
     let font = obc_render::text::Font::Label;
@@ -486,10 +485,12 @@ pub(crate) mod tests {
         }
         out
     }
+    pub(crate) const CREDIT: [&str; 4] =
+        ["de.wikipedia.org/?oldid=1", "Ruine", "Wikipedia contributors", "CC BY-SA 4.0"];
     /// A map with one landmark section: seven records with article text, credits and no photo.
     /// The copy-fit gate renders the reading page over it, so the builder is crate-visible.
     pub(crate) fn map() -> Vec<u8> {
-        map_with_credits(&["Credit page one.", "Credit page two."])
+        map_with_credits(&CREDIT)
     }
     fn map_with_credits(credits: &[&str]) -> Vec<u8> {
         map_with_photo_credits(credits, &[])
@@ -507,27 +508,16 @@ pub(crate) mod tests {
             reference
         };
         let name = append("Ruin ä".as_bytes());
-        let text = &[
-            "First source page.",
-            "Second source
-page.",
-        ];
-        let mut credit_fields = vec!["A", "URL", "License", "License URL"];
-        credit_fields.extend_from_slice(credits);
+        let text = &["First source page.", "Second source\npage."];
+        let spanish = ["es.wikipedia.org/?oldid=42", "Ruina", "Wikipedia contributors", "CC BY-SA 4.0"];
         let articles = append(&obcm_testkit::articles::bundle(
             *b"de",
-            &[
-                (*b"de", text, &credit_fields),
-                (*b"es", &["Una ruina."], &["ES URL", "42", "License", "Autores", "Crédito español."]),
-            ],
+            &[(*b"de", text, credits), (*b"es", &["Una ruina."], &spanish)],
         ));
         let (photo, photo_attribution) = if photo_credits.is_empty() {
             (ContentRef::default(), ContentRef::default())
         } else {
-            let photo = append(&[0; 4]);
-            credit_fields.truncate(4);
-            credit_fields.extend_from_slice(photo_credits);
-            (photo, append(&fields(&credit_fields)))
+            (append(&[0; 4]), append(&fields(photo_credits)))
         };
         for i in 0..count {
             let record = LandmarkRecord {
@@ -583,10 +573,9 @@ page.",
             "Second source
 page."
         );
-        state.source_page = 1;
         state.read_step(&reader, true, *b"en").unwrap();
-        assert_eq!(&*state.text, "Credit page two.");
-        assert_eq!(state.source_pages, 2);
+        assert_eq!(state.text.as_str(), CREDIT.join("\n"));
+        assert_eq!(state.source_pages, 2, "the Changes row starts the text credit's second screen");
         state.read_step(&reader, false, *b"en").unwrap();
         assert_eq!(state.text, before);
         assert_eq!(state.selected().unwrap().key.qid, 3);
@@ -622,16 +611,16 @@ page."
         assert_eq!(state.text.as_str(), "Una ruina.");
         assert_eq!(state.article.unwrap().language, *b"es");
         state.read_step(&reader, true, *b"es").unwrap();
-        assert_eq!(state.text.as_str(), "Crédito español.");
+        assert!(state.text.starts_with("es.wikipedia.org/?oldid=42\nRuina\n"));
         state.read_step(&reader, false, *b"fr").unwrap();
         assert_eq!(state.article.unwrap().language, *b"de", "no English: use the baked default");
         assert_eq!(state.text.as_str(), "First source page.");
     }
     #[test]
-    fn full_attribution_budget_keeps_the_last_page_accessible() {
-        let pages: Vec<_> = (0..MAX_CREDIT_PAGES).map(|i| std::format!("Credit page {i}")).collect();
-        let refs: Vec<_> = pages.iter().map(std::string::String::as_str).collect();
-        let bytes = map_with_credits(&refs);
+    fn a_long_photo_credit_continues_on_its_own_screens_after_the_text() {
+        let creator = "Name ".repeat(60);
+        let photo = ["Wikimedia Commons", "Ruin.jpg", creator.trim_end(), "CC BY 4.0"];
+        let bytes = map_with_photo_credits(&CREDIT, &photo);
         let source = SliceSource(&bytes);
         let tables = MapTables::parse(&source).unwrap();
         let cache = MapCache::new();
@@ -640,16 +629,17 @@ page."
         state.generation = Some(reader.generation());
         state.restart(false);
         state.read_step(&reader, false, *b"en").unwrap();
-        assert_eq!(state.source_pages, MAX_CREDIT_PAGES);
-        state.source_page = MAX_CREDIT_PAGES - 1;
+        let photo_screens = crate::screen::source_layout(true, &photo.join("\n"), |_, _, _| {});
+        assert!(photo_screens > 1);
+        assert_eq!(state.source_pages, 2 + photo_screens);
+        state.source_page = state.source_pages - 1;
         state.read_step(&reader, true, *b"en").unwrap();
-        assert_eq!(state.text.as_str(), "Credit page 255");
-        state.selected = 1;
-        state.invalidate_selection();
-        state.selected = 0;
-        state.invalidate_selection();
-        state.read_step(&reader, false, *b"en").unwrap();
-        assert!(state.record.is_some(), "returning selection reloads its identity");
+        assert!(state.source_photo);
+        assert_eq!((state.source_first, state.text.as_str()), (2, photo.join("\n").as_str()));
+        state.source_page = 0;
+        state.read_step(&reader, true, *b"en").unwrap();
+        assert_eq!((state.source_photo, state.source_first), (false, 0));
+        assert_eq!(state.text.as_str(), CREDIT.join("\n"));
     }
     #[test]
     fn unreadable_photo_credit_does_not_erase_article_text() {
@@ -673,11 +663,11 @@ page."
         assert_eq!(state.text.as_str(), "First source page.");
         assert!(state.record.unwrap().photo.is_absent());
         state.read_step(&reader, true, *b"en").unwrap();
-        assert_eq!(state.text.as_str(), "Credit page one.");
+        assert_eq!(state.text.as_str(), CREDIT.join("\n"));
     }
     #[test]
     fn later_photo_credit_failure_preserves_article_and_its_sources() {
-        let bytes = map_with_photo_credits(&["Article credit 1", "Article credit 2"], &["Photo credit 1", "雪"]);
+        let bytes = map_with_photo_credits(&CREDIT, &["Wikimedia Commons", "雪.jpg", "A", "CC BY 4.0"]);
         let source = SliceSource(&bytes);
         let tables = MapTables::parse(&source).unwrap();
         let cache = MapCache::new();
@@ -689,17 +679,14 @@ page."
         app.ui.landmarks.reading = true;
         app.ui.landmarks.page = 1;
         app.prepare_landmarks(Some(&reader));
-        assert!(!app.ui.landmarks.record.unwrap().photo.is_absent());
+        assert!(app.ui.landmarks.record.unwrap().photo.is_absent(), "an unreadable credit drops its photo");
         assert!(app.ui.stack.push(Screen::LandmarkSources(crate::screen::LandmarkSourcesScreen)).is_ok());
         app.ui.landmarks.source_page = 3;
         app.prepare_landmarks(Some(&reader));
         assert_eq!(app.ui.landmarks.status, Status::Ready);
-        assert_eq!(app.ui.landmarks.text.as_str(), "Article credit 1");
-        assert_eq!(app.ui.landmarks.source_pages, 2);
+        assert_eq!(app.ui.landmarks.text.as_str(), CREDIT.join("\n"));
+        assert_eq!((app.ui.landmarks.source_page, app.ui.landmarks.source_pages), (0, 2));
         assert!(app.ui.landmarks.record.unwrap().photo.is_absent());
-        app.apply_gesture(crate::Gesture::Step(1));
-        app.prepare_landmarks(Some(&reader));
-        assert_eq!(app.ui.landmarks.text.as_str(), "Article credit 2");
         app.apply_gesture(crate::Gesture::Back);
         app.prepare_landmarks(Some(&reader));
         assert_eq!(app.ui.landmarks.page, 1);

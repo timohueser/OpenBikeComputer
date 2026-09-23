@@ -19,7 +19,15 @@ fn credit() -> Attribution {
         revision: "1".into(),
         license_url: "https://creativecommons.org/licenses/by-sa/4.0/".into(),
         original_notices: "Autoren".into(),
-        display_pages: vec!["Quelle und Autoren".into()],
+    }
+}
+
+fn photo_credit() -> Attribution {
+    Attribution {
+        source_url: "https://commons.wikimedia.org/wiki/File:Burg.jpg".into(),
+        revision: "2026-01-01T00:00:00Z".into(),
+        license_url: "https://creativecommons.org/licenses/by/4.0/".into(),
+        original_notices: r#"{"Artist":{"value":"<a href=\"//commons.wikimedia.org/wiki/User:A\">A</a>"}}"#.into(),
     }
 }
 
@@ -45,7 +53,7 @@ fn source_join_content_pool_and_independent_photo_readback() {
             path: "photo.rgb222".into(),
             sha256: digest.clone(),
             bytes: PHOTO_PIXELS,
-            attribution: credit(),
+            attribution: photo_credit(),
         }),
     };
     let mut content = Content {
@@ -100,6 +108,26 @@ fn source_join_content_pool_and_independent_photo_readback() {
     assert_eq!(page(&english_text, 1, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), "A castle.");
     let text = directory.content(&source, article.text, MAX_TEXT_BYTES).unwrap();
     assert_eq!(page(&text, 1, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), "Eine Burg.");
+    for (reference, expected) in [
+        (
+            article.attribution,
+            [
+                "de.wikipedia.org/?oldid=1",
+                "Burg",
+                "Wikipedia contributors",
+                "CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/",
+            ],
+        ),
+        (
+            first.photo_attribution,
+            ["Wikimedia Commons", "Burg.jpg", "A", "CC BY 4.0 creativecommons.org/licenses/by/4.0/"],
+        ),
+    ] {
+        let credit = directory.content(&source, reference, MAX_ATTRIBUTION_BYTES).unwrap();
+        for (index, expected) in expected.into_iter().enumerate() {
+            assert_eq!(page(&credit, CREDIT_FIELDS, index as u16, &mut [0; MAX_PAGE_BYTES]).unwrap(), expected);
+        }
+    }
     let photo = directory.content(&source, first.photo, PHOTO_MAX_COMPRESSED as u32).unwrap();
     let mut decoder = PhotoDecoder::new();
     let mut decoded = vec![];

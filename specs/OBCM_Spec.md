@@ -1301,9 +1301,9 @@ position and filter generation; changing any of these cancels the old query.
 | 22 | Reserved | 2 | Zero |
 | 24 | OSM metadata | 28 | The §7 service identity/approach encoding; all zero means absent |
 | 52 | Name reference | 8 | Required, at most 256 UTF-8 bytes |
-| 60 | Article bundle reference | 8 | Required multilingual bundle (§9.2), at most 278,696 bytes |
+| 60 | Article bundle reference | 8 | Required multilingual bundle (§9.2), at most 20,652 bytes |
 | 68 | Photo reference | 8 | Optional independent stream (§9.3), at most 52,096 bytes |
-| 76 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 65,535 bytes |
+| 76 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 1,024 bytes |
 
 Each reference is `(offset uint32, length uint32)`. Only `(0, 0)` means absent. A present reference
 has nonzero length, starts at or after payload start, and ends within the exact section length.
@@ -1325,7 +1325,7 @@ and variant count (`uint16`, 1..4). Each following variant occupies 20 bytes:
 | 2 | Text page count | 1 | 1..4 |
 | 3 | Reserved | 1 | Zero |
 | 4 | Text reference | 8 | Required page bundle, at most 4,118 bytes |
-| 12 | Article attribution reference | 8 | Required, at most 65,535 bytes |
+| 12 | Article attribution reference | 8 | Required, at most 1,024 bytes |
 
 References inside this directory are **relative to the article bundle**, not the landmark section.
 They start at or after `4 + count × 20` and end within the bundle. The default language must have a
@@ -1346,10 +1346,19 @@ and the final offset equals the bundle length. A selected field is the bytes bet
 offsets. Readers check its range, UTF-8 and destination capacity before use.
 
 A text bundle has the variant's 1..4 fields. Each field is one prepared page of at most 1,024 bytes.
-The language identifies the actual article text. Attribution bundles have four original fields
-(source URL, revision, licence URL, original notices), then 1..256 prepared display pages of at most
-1,024 bytes each. All original fields remain available; display pagination must not drop them.
-The total attribution bundle, including its offset table, is at most 65,535 bytes.
+The language identifies the actual article text.
+
+An attribution bundle is the credit of one work. It has exactly four fields, in this order: source,
+title, creator and licence. Each field is one line in the device glyph set. Only the creator can be
+empty, and only for a public-domain dedication (CC0). The bundle, including its offset table, is at
+most 1,024 bytes. Readers wrap the fields themselves.
+
+| Field | Article | Photo |
+| :-- | :-- | :-- |
+| Source | URL of the exact revision, `<language>.wikipedia.org/?oldid=<revision>` | `Wikimedia Commons` |
+| Title | Article title | Commons file name, which identifies the file page |
+| Creator | `Wikipedia contributors` | The licensor's requested attribution, else the author |
+| Licence | Creative Commons short name and licence URI, for example `CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/` | Same as the article |
 
 ### 9.3 Independent photo stream
 
@@ -1445,7 +1454,7 @@ The article bundle reference is `(0, 0)` when the record has no text; a record M
 article bundle, the photo, or both. A present reference MUST start at or after Payload Offset,
 contain more than 33 bytes, and end at or before Section Length without integer overflow. Payload
 limits, excluding the guard, are the same as §9: name at most 256 bytes, article bundle at most the
-shared article limit, compressed photo at most 52,096 bytes, and photo attribution at most 65,535
+shared article limit, compressed photo at most 52,096 bytes, and photo attribution at most 1,024
 bytes. The article bundle uses §9.2 unchanged. Its internal offsets are relative to the start of
 that bundle, after the guard. The photo stream uses §9.3 unchanged. One optional photo serves all
 text variants of an article. A record with a photo and no bundle has no language: a consumer shows

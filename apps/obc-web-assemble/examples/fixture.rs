@@ -326,7 +326,7 @@ fn skin_json(cfg: &Config) -> String {
 
 fn peak_catalogue(dir: &Path) -> PathBuf {
     use serde_json::json;
-    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Massif&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors","display_pages":["Source: Authors"]});
+    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Massif&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors"});
     let source = json!({"schema":1,"collection":"peaks","input_sha256":"authored","policy_sha256":"authored","languages":["en","de","fr","es"],"source_coverage":{},"counts":obc_pack::landmarks::Counts::default(),"omissions":[],
         "records":[{"id":"Q7","name":"Shared massif","default_language":"en","fallback_sources":[],"variants":[{"language":"en","text_pages":["A shared mountain."],"attribution":credit},{"language":"de","text_pages":["Ein gemeinsamer Berg."],"attribution":credit}],"photo":null}],
         "associations":[{"node_id":101,"article_id":"Q7","latitude":0,"longitude":0},{"node_id":102,"article_id":"Q7","latitude":0,"longitude":0}]});

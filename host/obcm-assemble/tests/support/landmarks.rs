@@ -17,20 +17,8 @@ pub fn record(qid: u64) -> LandmarkRecord {
 }
 
 const TEXT: &str = "An alpine château.";
-const ARTICLE: [&str; 5] = [
-    "https://example.invalid/wiki/Castle",
-    "17",
-    "https://example.invalid/license",
-    "Authored article attribution",
-    "Castle credit.",
-];
-const PHOTO: [&str; 5] = [
-    "https://example.invalid/photo/Castle",
-    "2026-01-01",
-    "https://example.invalid/license",
-    "Authored photo attribution",
-    "Photo credit.",
-];
+const ARTICLE: [&str; 4] = ["en.wikipedia.org/?oldid=17", "Castle", "Wikipedia contributors", "CC BY-SA 4.0"];
+const PHOTO: [&str; 4] = ["Wikimedia Commons", "Castle.jpg", "Authored photographer", "CC BY 4.0"];
 
 fn fields(values: &[&str]) -> Vec<u8> {
     let mut bytes = (values.len() as u16).to_le_bytes().to_vec();
@@ -88,7 +76,7 @@ pub fn assert_content(source: &dyn obc_formats::io::ByteSource) {
         for (reference, expected) in [(article.attribution, ARTICLE), (record.photo_attribution, PHOTO)] {
             let credit = directory.content(source, reference, MAX_ATTRIBUTION_BYTES).unwrap();
             for (index, expected) in expected.iter().enumerate() {
-                assert_eq!(page(&credit, 5, index as u16, &mut [0; MAX_PAGE_BYTES]).unwrap(), *expected);
+                assert_eq!(page(&credit, CREDIT_FIELDS, index as u16, &mut [0; MAX_PAGE_BYTES]).unwrap(), *expected);
             }
         }
         let photo = directory.content(source, record.photo, PHOTO_MAX_COMPRESSED as u32).unwrap();

@@ -81,6 +81,7 @@ pub use home::HomeScreen;
 pub(crate) use journey::JourneyError;
 pub use journey::JourneyScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
+pub(crate) use landmarks::source_layout;
 pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
 pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
