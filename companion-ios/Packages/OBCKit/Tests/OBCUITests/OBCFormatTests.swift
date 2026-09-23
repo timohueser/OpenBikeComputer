@@ -98,6 +98,25 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(OBCFormat.rideStatsLine(ride, locale: en), "74.3 km · 5:52 · 12.7 kph · 2,080 m ↑")
     }
 
+    func testDayNoteHeaderFillsItselfIn() {
+        // The wireframe's date form is the en_GB one.
+        let gb = Locale(identifier: "en_GB")
+        let day = date(2026, 9, 30, hour: 8)
+        XCTAssertEqual(
+            OBCFormat.dayNoteHeader(date: day, from: "Andermatt", to: "Ulrichen", distanceMeters: 74_300, calendar: cal, locale: gb),
+            "Wed 30 Sep · Andermatt → Ulrichen · 74 km"
+        )
+        XCTAssertEqual(OBCFormat.dayNoteHeader(date: day, distanceMeters: 58_200, calendar: cal, locale: gb), "Wed 30 Sep · 58 km")
+    }
+
+    func testNotePromptNamesTheDayOrTheRide() {
+        let ride = RideSummary(id: RideID("r"), name: "Ride", date: Date(), distanceMeters: 0)
+        var day2 = ride
+        day2.trip = RideTrip(key: 7, dayIndex: 1, dayCount: 3, name: "Alps traverse")
+        XCTAssertEqual(OBCFormat.notePrompt(ride), "How was the ride?")
+        XCTAssertEqual(OBCFormat.notePrompt(day2), "How was Day 2?")
+    }
+
     func testHighlightsReadAsOneShortPhraseEach() {
         XCTAssertEqual(
             OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: "Furka"), locale: en),
