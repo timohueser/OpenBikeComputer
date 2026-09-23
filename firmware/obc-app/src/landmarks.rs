@@ -662,7 +662,7 @@ page."
         assert_eq!(state.text.as_str(), CREDIT.join("\n"));
     }
     #[test]
-    fn unreadable_photo_credit_drops_the_photo_and_keeps_the_article_sources() {
+    fn later_photo_credit_failure_preserves_article_and_its_sources() {
         let bytes = map_with_photo_credits(&CREDIT, &["Wikimedia Commons", "雪.jpg", "A", "CC BY 4.0"]);
         let source = SliceSource(&bytes);
         let tables = MapTables::parse(&source).unwrap();
