@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import OBCDomain
+@testable import OBCDomain
 import OBCMock
 import OBCTransport
 @testable import OBCUI
@@ -74,6 +74,36 @@ struct TripReconcileModelTests {
         try await waitFor("re-cut landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripStageIDs(deviceTripID).count == 3)
         #expect(model.tripOnDeviceState(tripID) == .upToDate)
+    }
+
+    /// A re-cut to fewer days deletes the dropped day routes on the device after the new trip
+    /// object lands, so the device keeps no orphan day routes.
+    @Test
+    func fewerDaysDeleteTheDroppedDayRoutes() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        let file = (0..<20).map { i in
+            RoutePoint(coordinate: Coordinate(latitude: 43.2 + 0.001 * Double(i), longitude: -89.6), elevationMeters: 300)
+        }
+        model.appendToTrip(tripID, file: file)
+        try await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        #expect(control.deviceTripStageIDs(deviceTripID).count == 3)
+        let dropped = dayObjectID(model, 2)!
+
+        var trip = library.trips().first { $0.id == tripID }!
+        trip.dayEnds.remove(at: 1)
+        library.saveTrip(trip)
+        model.reloadTrips()
+        #expect(model.trip(tripID)?.dayCount == 2)
+
+        try await uploadTrip(model)
+        try await waitFor("dropped day deleted", timeout: .seconds(20), interval: .milliseconds(5)) {
+            control.deletedRouteObjectIDs.contains(dropped)
+        }
+        #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
+        #expect(!control.deviceTripStageIDs(deviceTripID).contains(dropped))
+        #expect(model.trip(tripID)?.dayCopies.count == 2)
+        #expect(control.deviceTripCount == 1)
     }
 
     /// A reverse changes every day route and the trip key: each day route and the trip object are

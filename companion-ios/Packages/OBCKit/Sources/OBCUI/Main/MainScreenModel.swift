@@ -752,6 +752,7 @@ public final class MainScreenModel {
                 },
                 commit: { [weak self] objectID, crc in
                     self?.markTripUploaded(id, objectID: objectID, crc32: crc)
+                    if objectID != nil { self?.deleteDroppedDayRoutes(id) }
                 }
             ))
         }
@@ -803,6 +804,24 @@ public final class MainScreenModel {
         }
         library.saveTrip(trip)
         reloadTrips()
+    }
+
+    /// Delete the device copies of days the trip no longer has. Runs after the new trip object
+    /// landed, so no stored trip names them and the device keeps no orphan day routes. A failed
+    /// delete leaves a plain route on the device.
+    private func deleteDroppedDayRoutes(_ id: TripID) {
+        guard var trip = trip(id), trip.dayCopies.count > trip.dayCount else { return }
+        let dropped = trip.dayCopies[trip.dayCount...].compactMap { copy -> DeviceObjectID? in
+            guard let copy, let scope = connectedScope, copy.link.matches(scope) else { return nil }
+            return copy.link.objectID
+        }
+        trip.dayCopies.removeLast(trip.dayCopies.count - trip.dayCount)
+        library.saveTrip(trip)
+        reloadTrips()
+        guard !dropped.isEmpty else { return }
+        Task { [transport] in
+            for objectID in dropped { try? await transport.deleteRoute(objectID) }
+        }
     }
 
     /// Record the link and fingerprint a trip-object upload landed under, so the trip badge
