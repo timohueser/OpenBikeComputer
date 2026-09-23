@@ -555,7 +555,6 @@ impl App {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.recorder.set_origin(self.ride_origin());
-            self.note_trip_start();
             self.metadata.begin_ride();
             self.navigator.reset_detour();
             // Only a measured anchor re-joins the route. A plain route selection records no
@@ -574,6 +573,8 @@ impl App {
                 }
             }
         }
+        // A continuation writes it too: a reset can come before the start's write lands.
+        self.note_trip_start();
         self.recorder.restart_buffers();
         self.ui.map_dirty = true;
     }

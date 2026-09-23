@@ -79,7 +79,14 @@ impl TripProgress {
 
 /// Write `new` into `records` by the bound rules: drop each record whose key no stored trip holds,
 /// then the first record when the list is full; `new` goes to the end and replaces its key's record.
+/// A start record, one without a finished day, never replaces: its key's record moves to the end
+/// as it is, and `new` goes in only when its key has none.
 pub fn record(records: &mut Records, new: TripProgress, stored: impl Fn(u64) -> bool) {
+    let own = records.iter().position(|r| r.key == new.key);
+    let new = match own {
+        Some(i) if new.last_finished.is_none() => records.remove(i),
+        _ => new,
+    };
     records.retain(|r| r.key != new.key && stored(r.key));
     if records.is_full() {
         records.remove(0);
@@ -125,6 +132,18 @@ mod tests {
         record(&mut records, at(99), |_| true);
         assert_eq!(records.first().map(|r| r.key), Some(2), "the first record goes");
         assert_eq!(records.len(), MAX_RECORDS);
+    }
+
+    #[test]
+    fn a_start_record_moves_the_stored_record_and_never_replaces_it() {
+        let start = |key| TripProgress { day: 0, metres: 0, last_finished: None, dates: [0; MAX_DAYS], ..at(key) };
+        let mut records = Records::new();
+        record(&mut records, at(1), |_| true);
+        record(&mut records, at(2), |_| true);
+        record(&mut records, start(1), |_| true);
+        assert_eq!(records.as_slice(), [at(2), at(1)]);
+        record(&mut records, start(3), |_| true);
+        assert_eq!(records.last(), Some(&start(3)), "a trip without a record gets the start record");
     }
 
     #[test]

@@ -1154,16 +1154,16 @@ impl App {
         self.metadata.progress_payload(token)
     }
 
-    /// A ride that starts on a trip day makes that trip the active one: its record moves to the end
-    /// of the records, in the store too, so the start card follows it after a power cycle.
+    /// A ride on a trip day makes that trip the active one: its start record moves the trip's record
+    /// to the end of the records, in the store too, so the start card follows it after a power
+    /// cycle. The store moves its own copy, so records the device has not read yet are safe.
     pub(crate) fn note_trip_start(&mut self) {
         let Some(day) = self.recorder.ride_stats().trip else { return };
-        let records = self.metadata.progress();
-        if records.last().is_some_and(|p| p.key == day.key()) {
+        if self.metadata.progress().last().is_some_and(|p| p.key == day.key()) {
             return;
         }
         let Some(trip) = self.trips().iter().find(|t| t.key == day.key()) else { return };
-        let record = trip.start(trip.progress_in(records));
+        let record = trip.start();
         let trips = self.catalogs.trips();
         self.metadata.owe_start(record, |key| trips.iter().any(|t| t.key == key));
     }
