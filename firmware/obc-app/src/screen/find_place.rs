@@ -496,9 +496,7 @@ fn figures(
     super::vocab::fmt::write_distance_coarse(&mut d, if extra { "+" } else { "" }, distance, units);
     cv.text(&d, Point::new(18, y), Font::Label, TextAlign::Left, INK);
     if climb.is_some() {
-        cv.triangle(Point::new(125, y + 18), Point::new(132, y + 6), Point::new(139, y + 18), INK);
-        let c = super::vocab::fmt::elevation_short(climb, units);
-        cv.text(&c, Point::new(146, y), Font::Label, TextAlign::Left, INK);
+        super::poi_display::draw_climb_figure(cv, 125, y, &super::vocab::fmt::elevation_short(climb, units));
     }
 }
 

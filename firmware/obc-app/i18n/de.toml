@@ -343,8 +343,9 @@ today = "Heute"
 open = "OFFEN"
 closed = "GESCHL."
 route_here = "Route hierher"
-side_left = "links"
-side_right = "rechts"
+ahead = "Voraus"
+away = "Distanz"
+off_route = "Abseits"
 
 # --- BLE pairing passkey card ---
 [passkey]
