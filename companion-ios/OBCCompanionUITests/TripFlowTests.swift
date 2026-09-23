@@ -121,11 +121,13 @@ final class TripFlowTests: XCTestCase {
         app.buttons["dayEditor.days-Increment"].tap()
         let day3 = app.buttons["dayEditor.day.2"].firstMatch
         XCTAssertTrue(day3.waitForExistence(timeout: 5), "two stepper taps must make three days")
-        XCTAssertTrue(app.staticTexts["3 DAYS · ~1 H A DAY"].exists, "the header counts the days")
+        XCTAssertTrue(
+            app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '3 DAYS'")).firstMatch.exists,
+            "the header counts the days")
         snap(app, "DE-split-3")
 
         // A drag on the profile handle moves the day end; Even out balances again; Undo steps back.
-        let handle = app.otherElements["Day 2 end"].firstMatch
+        let handle = profileHandle(app, "Day 2 end")
         XCTAssertTrue(handle.exists, "the profile handle is missing")
         let balanced = day3.label
         let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -133,14 +135,7 @@ final class TripFlowTests: XCTestCase {
         XCTAssertNotEqual(day3.label, balanced, "the drag must move the day end")
         let dragged = day3.label
         snap(app, "DE-split-dragged")
-        // Even out days is the last row: raise the sheet to its full height first.
-        let grabber = app.buttons["Sheet Grabber"].firstMatch
-        XCTAssertTrue(grabber.exists, "the sheet grabber is missing")
-        grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)))
-        let evenOut = app.buttons["dayEditor.evenOut"]
-        XCTAssertTrue(evenOut.waitForExistence(timeout: 5), "Even out days row missing")
-        evenOut.tap()
+        app.buttons["dayEditor.evenOut"].tap()
         XCTAssertNotEqual(day3.label, dragged, "Even out must move the day end again")
         app.buttons["dayEditor.undo"].tap()
         XCTAssertEqual(day3.label, dragged, "Undo must step back to the dragged position")
@@ -184,11 +179,11 @@ final class TripFlowTests: XCTestCase {
     // MARK: Day editor
 
     /// Edit days on the trip page opens the editor in edit mode. The fixture trip's two files
-    /// do not join, so Day 1 ends at a transfer: its row says so. Add day end arms placement
-    /// and a tap on the profile puts the new end there; its row's long press ends the day at a
-    /// searched stop; the back chevron asks before it discards all of it.
+    /// do not join, so Day 1 ends at a transfer: its row says so. Day 1's menu splits it; a drag
+    /// on the profile moves the new end; zoomed in, the map shows the stops, and a stop's
+    /// callout ends the day there; the back chevron asks before it discards all of it.
     @MainActor
-    func testEditDaysPlacementStopAndDiscard() {
+    func testEditDaysSplitDragStopAndDiscard() {
         let app = launch()
         waitForMain(app)
 
@@ -199,40 +194,48 @@ final class TripFlowTests: XCTestCase {
 
         let day1 = app.buttons["dayEditor.day.0"].firstMatch
         XCTAssertTrue(day1.waitForExistence(timeout: 10), "the day editor is missing")
-        XCTAssertTrue(app.buttons["dayEditor.evenOut"].exists, "edit mode has Even out in the header")
+        XCTAssertTrue(app.buttons["dayEditor.evenOut"].exists, "Even out days is in the header")
         XCTAssertFalse(app.buttons["dayEditor.days-Increment"].exists, "edit mode has no stepper")
         XCTAssertTrue(day1.label.hasSuffix("transfer"), "a day end at a transfer says so: \(day1.label)")
         snap(app, "DE-edit")
 
-        // Add day end: the hint shows, a tap on the profile places the end inside Day 1.
-        app.buttons["dayEditor.addDayEnd"].tap()
-        XCTAssertTrue(app.staticTexts["dayEditor.placementHint"].waitForExistence(timeout: 5), "placement hint missing")
-        snap(app, "DE-edit-placing")
-        let plot = app.otherElements["profile.placement"].firstMatch
-        XCTAssertTrue(plot.waitForExistence(timeout: 5), "the profile takes no placement")
-        plot.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.6)).tap()
+        // Day 1's menu: a transfer end neither moves to a stop nor joins; Split this day cuts it.
+        app.buttons["dayEditor.day.0.menu"].tap()
+        XCTAssertFalse(app.buttons["dayEditor.day.join"].exists, "a transfer end cannot join")
+        snap(app, "DE-edit-menu")
+        app.buttons["dayEditor.day.split"].tap()
         let day3 = app.buttons["dayEditor.day.2"].firstMatch
-        XCTAssertTrue(day3.waitForExistence(timeout: 5), "the tap must add a third day")
-        XCTAssertFalse(app.staticTexts["dayEditor.placementHint"].exists, "placement ends with the tap")
-        snap(app, "DE-edit-placed")
+        XCTAssertTrue(day3.waitForExistence(timeout: 5), "the split must add a day")
+        XCTAssertTrue(app.buttons["dayEditor.day.1"].label.hasSuffix("transfer"), "the transfer stays with its day")
 
-        // The new day's row: long press, End the day at a stop, search, pick.
-        day1.press(forDuration: 1)
-        let stops = app.buttons["dayEditor.day.stops"]
-        XCTAssertTrue(stops.waitForExistence(timeout: 5), "the row menu did not open")
-        stops.tap()
-        let field = app.textFields["stops.search"].firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "the stops sheet is missing")
-        field.tap()
-        field.typeText("Devil\n")
-        let camp = app.buttons["stops.row"].firstMatch
-        XCTAssertTrue(camp.waitForExistence(timeout: 10), "no stop found")
-        XCTAssertTrue(camp.isEnabled, "the campground must be inside the new day")
-        snap(app, "DE-edit-stops")
+        // The new end moves by a drag on the profile.
+        let split = day1.label
+        let start = profileHandle(app, "Day 1 end").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: -40, dy: 0)))
+        XCTAssertNotEqual(day1.label, split, "the drag must move the day end")
+        snap(app, "DE-edit-dragged")
+
+        // Close in on the transfer at Devil's Lake: the stops show, and a callout ends Day 1 there.
+        // Map pins sit beside the map element, not in it.
+        let transfer = app.otherElements
+            .matching(NSPredicate(format: "label == 'Day 2 end' AND identifier != 'profile.handle'")).firstMatch
+        XCTAssertTrue(transfer.exists, "the transfer pin is missing on the map")
+        let beside = transfer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 0, dy: 30))
+        beside.doubleTap()
+        beside.doubleTap()
+        let camp = app.otherElements
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Devil's Lake State Park Campgrounds")).firstMatch
+        XCTAssertTrue(camp.waitForExistence(timeout: 10), "zoomed in, the map shows the stops")
         camp.tap()
-        XCTAssertTrue(
-            app.buttons["dayEditor.day.0"].firstMatch.label.contains("Devil's Lake State Park Campgrounds"),
-            "the day end takes the stop's name: \(app.buttons["dayEditor.day.0"].firstMatch.label)")
+        let endHere = app.buttons["map.stopAction"]
+        XCTAssertTrue(endHere.waitForExistence(timeout: 5), "the callout has no button")
+        XCTAssertEqual(endHere.label, "End Day 1 here", "the nearest end that may move is Day 1's")
+        snap(app, "DE-edit-callout")
+        endHere.tap()
+        let named = NSPredicate(format: "label CONTAINS %@", "Devil's Lake State Park Campgrounds")
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: named, object: day1)], timeout: 5), .completed,
+            "the day takes the stop's name: \(day1.label)")
         snap(app, "DE-edit-at-stop")
 
         // Discard: the standard alert, then the trip page with its two days as saved.
@@ -247,5 +250,13 @@ final class TripFlowTests: XCTestCase {
         alert.buttons["Discard"].tap()
         XCTAssertTrue(app.buttons["trip.editDays"].waitForExistence(timeout: 5), "Discard must return to the trip page")
         XCTAssertFalse(app.descendants(matching: .any)["trip.day.2"].firstMatch.exists, "the discarded day end must not be saved")
+    }
+
+    /// A day end's drag band on the profile.
+    @MainActor
+    private func profileHandle(_ app: XCUIApplication, _ name: String) -> XCUIElement {
+        let handle = app.otherElements.matching(NSPredicate(format: "identifier == 'profile.handle' AND label == %@", name)).firstMatch
+        XCTAssertTrue(handle.waitForExistence(timeout: 5), "the profile handle \(name) is missing")
+        return handle
     }
 }

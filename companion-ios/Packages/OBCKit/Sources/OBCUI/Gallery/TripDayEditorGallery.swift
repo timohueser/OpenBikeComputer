@@ -9,7 +9,6 @@ struct TripDayEditorGallerySection: View {
     @State private var split = Self.model(GalleryStops.oneFile(), isSplitMode: true)
     @State private var edit = Self.model(GalleryStops.trip(waypoints: true), isSplitMode: false)
     @State private var discardShown = false
-    @State private var dayMenu: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -29,7 +28,8 @@ struct TripDayEditorGallerySection: View {
     }
 
     private func sheet(_ model: TripDayEditorModel) -> some View {
-        DayEditorSheet(model: model, discardShown: $discardShown, dayMenu: $dayMenu, onClose: {})
+        DayEditorSheet(
+            model: model, discardShown: $discardShown, sheetHeight: .constant(0), peekHeight: .constant(0), onClose: {})
             .frame(height: 560)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
             .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.line))

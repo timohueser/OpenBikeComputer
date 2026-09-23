@@ -4,23 +4,19 @@ import OBCDomain
 /// The elevation profile of the model's window, filled per segment, with a draggable handle on
 /// every marker. The fills and strokes are one static layer drawn for the markers at rest; a
 /// drag moves only a light overlay (the re-tinted stretch behind the finger, the pins and the
-/// label), so a frame never re-walks the profile. A pinch zooms the window; the overview strip
-/// below shows where the window is and pans it.
+/// label), so a frame never re-walks the profile. The window is set from outside; the profile
+/// itself does not zoom or scroll.
 struct LineMarkerProfileView: View {
     let model: LineMarkerEditorModel
     var height: CGFloat = 132
-    /// The whole-line strip under the plot, for a profile that can zoom.
-    var showsOverview = false
-
-    private static let stopMarkSize: CGFloat = 14
+    /// Kilometre ticks under the plot, for a window that is not the whole line.
+    var showsAxis = false
 
     /// Room above the curve for a handle and its label.
     private let inset = EdgeInsets(top: 52, leading: 14, bottom: 8, trailing: 14)
 
-    @State private var pinch: CGFloat = 1
-
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             GeometryReader { geometry in
                 let plot = CGRect(
                     x: inset.leading, y: inset.top,
@@ -35,7 +31,6 @@ struct LineMarkerProfileView: View {
                     )
                     .equatable()
                     movedStretch(plot: plot)
-                    stopMarks(plot: plot)
                     ForEach(model.markers) { marker in
                         if model.window.contains(marker.distance) {
                             handle(marker, plot: plot)
@@ -47,24 +42,14 @@ struct LineMarkerProfileView: View {
                             .position(labelCenter(for: marker.distance, plot: plot))
                             .allowsHitTesting(false)
                     }
-                    if model.isPlacing { placement(plot: plot) }
                 }
-                .gesture(
-                    MagnifyGesture()
-                        .onChanged { value in
-                            let window = model.window
-                            model.zoom(by: value.magnification / pinch, around: (window.lowerBound + window.upperBound) / 2)
-                            pinch = value.magnification
-                        }
-                        .onEnded { _ in pinch = 1 }
-                )
             }
             .frame(height: height)
             .background(OBCTheme.panel)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
             .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
-            if showsOverview {
-                ProfileOverviewStrip(model: model)
+            if showsAxis {
+                ProfileAxis(window: model.window, leading: inset.leading, trailing: inset.trailing)
             }
         }
     }
@@ -88,7 +73,6 @@ struct LineMarkerProfileView: View {
                 .allowsHitTesting(false)
             ProfileGrabBand(model: model, marker: marker, plot: plot, x: x)
         }
-        .opacity(model.isPlacing ? 0.35 : 1)
     }
 
     /// The stretch the drag in flight moved from one segment to the other, re-tinted; the rest
@@ -122,51 +106,11 @@ struct LineMarkerProfileView: View {
         }
     }
 
-    /// The finger over the line while a marker is placed: a ghost pin with its distance, and
-    /// the whole plot as the touch target.
-    private func placement(plot: CGRect) -> some View {
-        ZStack {
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in model.moveGhost(to: distance(atX: value.location.x, plot: plot)) }
-                        .onEnded { _ in model.place() }
-                )
-                .accessibilityElement()
-                .accessibilityLabel("Place the new day end")
-                .accessibilityIdentifier("profile.placement")
-            if let ghost = model.ghostDistance {
-                let x = x(ghost, plot: plot)
-                let y = y(model.line.elevation(at: ghost), plot: plot)
-                Path { path in
-                    path.move(to: CGPoint(x: x, y: y))
-                    path.addLine(to: CGPoint(x: x, y: plot.maxY))
-                }
-                .stroke(OBCTheme.inkFaint, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .allowsHitTesting(false)
-                MarkerHandleView(color: OBCTheme.inkFaint, isActive: true)
-                    .position(x: x, y: y - MarkerHandleView.size.height / 2)
-                    .allowsHitTesting(false)
-                MarkerLabel(text: "New day end · km \(OBCFormat.distanceValue(meters: ghost))")
-                    .fixedSize()
-                    .position(labelCenter(for: ghost, plot: plot))
-                    .allowsHitTesting(false)
-            }
-        }
-    }
-
     // MARK: Geometry
 
     private func x(_ distance: Double, plot: CGRect) -> CGFloat {
         let window = model.window
         return plot.minX + plot.width * CGFloat((distance - window.lowerBound) / max(window.upperBound - window.lowerBound, 1))
-    }
-
-    private func distance(atX x: CGFloat, plot: CGRect) -> Double {
-        let window = model.window
-        let share = Double((x - plot.minX) / max(plot.width, 1))
-        return window.lowerBound + (window.upperBound - window.lowerBound) * min(max(share, 0), 1)
     }
 
     private func y(_ elevation: Double, plot: CGRect) -> CGFloat {
@@ -192,30 +136,6 @@ struct LineMarkerProfileView: View {
             x: min(max(x(distance, plot: plot), plot.minX + 50), plot.maxX - 50),
             y: max(handleTop - 8, 14)
         )
-    }
-
-    /// The stops in the window: a mark along the top and a faint dotted tie to the floor.
-    private func stopMarks(plot: CGRect) -> some View {
-        ZStack(alignment: .topLeading) {
-            Canvas { context, _ in
-                for placed in model.stops where model.window.contains(placed.distance) {
-                    let x = x(placed.distance, plot: plot)
-                    var tie = Path()
-                    tie.move(to: CGPoint(x: x, y: Self.stopMarkSize + 4))
-                    tie.addLine(to: CGPoint(x: x, y: plot.maxY))
-                    context.stroke(
-                        tie, with: .color(StopIcon.color(placed.stop.kind).opacity(0.25)),
-                        style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                }
-            }
-            ForEach(Array(model.stops.enumerated()), id: \.offset) { _, placed in
-                if model.window.contains(placed.distance) {
-                    StopIcon(kind: placed.stop.kind, size: Self.stopMarkSize, isRound: true)
-                        .position(x: x(placed.distance, plot: plot), y: Self.stopMarkSize / 2 + 4)
-                }
-            }
-        }
-        .allowsHitTesting(false)
     }
 }
 
@@ -293,75 +213,30 @@ private struct ProfileStaticLayer: View, Equatable {
     }
 }
 
-/// The whole line under the plot with the window drawn on it. A drag on the strip pans the
-/// window; a tap centres it there.
-private struct ProfileOverviewStrip: View {
-    let model: LineMarkerEditorModel
-    @State private var panStart: Double?
+/// Kilometre ticks under the plot at a round step, about five across the window.
+private struct ProfileAxis: View {
+    let window: ClosedRange<Double>
+    let leading: CGFloat
+    let trailing: CGFloat
+
+    private static let steps: [Double] = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500].map { $0 * 1000 }
 
     var body: some View {
         GeometryReader { geometry in
-            let width = geometry.size.width
-            let length = max(model.line.length, 1)
-            let low = width * CGFloat(model.window.lowerBound / length)
-            let high = width * CGFloat(model.window.upperBound / length)
-            ZStack(alignment: .leading) {
-                OverviewCurve(samples: model.profile, size: geometry.size).equatable()
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(OBCTheme.forest.opacity(0.12))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(OBCTheme.forest.opacity(0.6), lineWidth: 1.5))
-                    .frame(width: max(high - low, 8))
-                    .offset(x: low)
+            let width = geometry.size.width - leading - trailing
+            let span = max(window.upperBound - window.lowerBound, 1)
+            let step = Self.steps.first { span / $0 <= 6 } ?? Self.steps[Self.steps.count - 1]
+            let ticks = Array(stride(from: (window.lowerBound / step).rounded(.up) * step, through: window.upperBound, by: step))
+            ForEach(ticks, id: \.self) { tick in
+                Text(OBCFormat.distanceValue(meters: tick))
+                    .font(.obcMono(size: 10))
+                    .foregroundStyle(OBCTheme.inkFaint)
+                    .fixedSize()
+                    .position(x: leading + width * CGFloat((tick - window.lowerBound) / span), y: geometry.size.height / 2)
             }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let start = panStart ?? model.window.lowerBound
-                        panStart = start
-                        let span = model.window.upperBound - model.window.lowerBound
-                        let target = start + Double(value.translation.width / max(width, 1)) * model.line.length
-                        model.setWindow(target...(target + span))
-                    }
-                    .onEnded { value in
-                        if abs(value.translation.width) < 2 {
-                            let span = model.window.upperBound - model.window.lowerBound
-                            let center = Double(value.location.x / max(width, 1)) * model.line.length
-                            model.setWindow((center - span / 2)...(center + span / 2))
-                        }
-                        panStart = nil
-                    }
-            )
         }
-        .frame(height: 22)
-        .background(OBCTheme.parchment2)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .accessibilityIdentifier("profile.overview")
-    }
-}
-
-private struct OverviewCurve: View, Equatable {
-    let samples: [LineMarkerEditorModel.ProfileSample]
-    let size: CGSize
-
-    var body: some View {
-        Canvas { context, _ in
-            guard samples.count > 1 else { return }
-            let lo = samples.map(\.elevation).min() ?? 0
-            let hi = max(samples.map(\.elevation).max() ?? 0, lo + 1)
-            let length = max(samples[samples.count - 1].distance, 1)
-            var area = Path()
-            area.move(to: CGPoint(x: 0, y: size.height))
-            for sample in samples {
-                area.addLine(to: CGPoint(
-                    x: size.width * CGFloat(sample.distance / length),
-                    y: size.height - 2 - (size.height - 4) * CGFloat((sample.elevation - lo) / (hi - lo))))
-            }
-            area.addLine(to: CGPoint(x: size.width, y: size.height))
-            area.closeSubpath()
-            context.fill(area, with: .color(OBCTheme.inkFaint.opacity(0.28)))
-        }
-        .allowsHitTesting(false)
+        .frame(height: 14)
+        .accessibilityHidden(true)
     }
 }
 
@@ -403,6 +278,7 @@ private struct ProfileGrabBand: View {
             }
             .onDisappear { if grab != nil { release() } }
             .accessibilityElement()
+            .accessibilityIdentifier("profile.handle")
             .accessibilityLabel(marker.name)
             .accessibilityValue("km \(OBCFormat.distanceValue(meters: marker.distance))")
             .accessibilityAdjustableAction { direction in

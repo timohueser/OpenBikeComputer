@@ -2,24 +2,25 @@ import SwiftUI
 import OBCDomain
 
 /// The day editor: the map is the screen and pans and zooms freely; a three-detent sheet holds
-/// the profile and the day list. Pins on the map and the profile are the primary control. In
-/// split mode a stepper in the sheet header sets the day count; in edit mode Even out sits
-/// there. A tap on a pin or a long press on a row offers End the day at a stop, Rename and
-/// Remove; a tap on a row focuses that day end. "Add day end" arms placement: the next tap on
-/// the line, on the map or the profile, puts the new end there. Done saves; the back chevron
-/// with changes asks first.
+/// the profile and the day list. The profile shows the stretch the map shows, and a day end
+/// moves only by a drag of its pin on the profile. A stop's map callout ends the nearest day
+/// there. Each day's ··· menu, or a long press on its row, holds the day's actions. In split
+/// mode a stepper in the sheet header sets the day count. Done saves; the back chevron with
+/// changes asks first.
 public struct TripDayEditorView: View {
     private let model: TripDayEditorModel
     private let onClose: () -> Void
 
     @State private var sheetShown = false
     @State private var discardShown = false
-    @State private var dayMenu: Int?
+    @State private var detent = PresentationDetent.medium
+    /// The sheet's height over the screen bottom, for the map: an estimate until it is measured.
+    @State private var sheetHeight: CGFloat = 420
+    /// The lowest detent: the sheet header and nothing more.
+    @State private var peekHeight: CGFloat = 120
 
     @Environment(\.obcIsOnline) private var isOnline
 
-    /// How much of the screen the sheet covers at its resting detent: the map fits above it.
-    private static let sheetInset: CGFloat = 330
     /// The sheet's top detent stops under the toolbar, so Undo and Done stay in reach.
     private static let topDetent = PresentationDetent.fraction(0.82)
 
@@ -32,41 +33,30 @@ public struct TripDayEditorView: View {
     private var trip: Trip { model.trip }
 
     public var body: some View {
-        ZStack(alignment: .top) {
-            map.ignoresSafeArea(edges: .bottom)
-            if model.isPlacing {
-                Text("Tap the line where the new day ends")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(OBCTheme.parchment)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(OBCTheme.ink.opacity(0.9), in: Capsule())
-                    .padding(.top, 10)
-                    .transition(.opacity)
-                    .accessibilityIdentifier("dayEditor.placementHint")
+        map
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle(trip.name)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
+            #endif
+            .toolbar { toolbar }
+            .onAppear {
+                sheetShown = true
+                model.loadStops()
             }
-        }
-        .animation(.snappy(duration: 0.2), value: model.isPlacing)
-        .navigationTitle(trip.name)
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        #endif
-        .toolbar { toolbar }
-        .onAppear {
-            sheetShown = true
-            model.loadStops()
-            model.handles.onTap = { [weak model] id in dayMenu = model?.day(of: id) }
-        }
-        .onDisappear { sheetShown = false }
-        .sheet(isPresented: $sheetShown) {
-            DayEditorSheet(model: model, discardShown: $discardShown, dayMenu: $dayMenu, onClose: close)
-                .presentationDetents([.fraction(0.24), .medium, Self.topDetent], selection: .constant(.medium))
+            .onDisappear { sheetShown = false }
+            .sheet(isPresented: $sheetShown) {
+                DayEditorSheet(
+                    model: model, discardShown: $discardShown, sheetHeight: $sheetHeight, peekHeight: $peekHeight,
+                    onClose: close
+                )
+                .presentationDetents([.height(peekHeight), .medium, Self.topDetent], selection: $detent)
                 .presentationBackgroundInteraction(.enabled(upThrough: Self.topDetent))
                 .presentationBackground(OBCTheme.parchment)
                 .presentationDragIndicator(.visible)
                 .interactiveDismissDisabled()
-        }
+            }
     }
 
     private func close() {
@@ -85,7 +75,7 @@ public struct TripDayEditorView: View {
                 model: handles, lineVersion: handles.lineVersion, markers: handles.markers,
                 activeID: handles.activeID, segmentColors: handles.segmentColors,
                 dashedSegments: handles.dashedSegments, stops: handles.stops,
-                bottomInset: Self.sheetInset, isPlacing: handles.isPlacing
+                bottomInset: sheetHeight, linksProfile: true
             )
         } else {
             grid
@@ -109,7 +99,7 @@ public struct TripDayEditorView: View {
             )
         }
         return MultiTrackPreviewView(stages: stages, showsChrome: false)
-            .padding(.bottom, Self.sheetInset)
+            .padding(.bottom, sheetHeight)
     }
 
     // MARK: Toolbar
@@ -140,17 +130,21 @@ public struct TripDayEditorView: View {
     }
 }
 
-/// The sheet over the map: the header with the stepper or Even out, the zoomable profile with
-/// its overview strip, and the day rows. The alerts and sheets of the editor present from
+/// The sheet over the map: the header with the trip figures, Even out days and, in split mode,
+/// the stepper; the profile; and the day rows. The alerts and sheets of the editor present from
 /// here, above the sheet.
 struct DayEditorSheet: View {
     let model: TripDayEditorModel
     @Binding var discardShown: Bool
-    @Binding var dayMenu: Int?
+    /// Reported to the host: the sheet's height and its lowest detent.
+    @Binding var sheetHeight: CGFloat
+    @Binding var peekHeight: CGFloat
     let onClose: () -> Void
 
     @State private var stopsModel: TripStopsModel?
     @State private var dayRename: Int?
+    @State private var headerHeight: CGFloat = 0
+    @State private var bottomSafeArea: CGFloat = 0
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -161,23 +155,30 @@ struct DayEditorSheet: View {
             header
                 .padding(.horizontal, 20)
                 .padding(.top, 18)
-            LineMarkerProfileView(model: model.handles, height: 150, showsOverview: true)
+                .padding(.bottom, 12)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    headerHeight = $0
+                    peekHeight = headerHeight + bottomSafeArea
+                }
+            LineMarkerProfileView(model: model.handles, height: 150, showsAxis: true)
                 .padding(.horizontal, 20)
-                .padding(.top, 12)
             list
         }
+        // A short sheet cuts the bottom, never the header.
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(OBCTheme.parchment)
+        .onGeometryChange(for: EdgeInsets.self) { proxy in
+            EdgeInsets(top: proxy.size.height, leading: 0, bottom: proxy.safeAreaInsets.bottom, trailing: 0)
+        } action: { measured in
+            bottomSafeArea = measured.bottom
+            sheetHeight = measured.top + measured.bottom
+            peekHeight = headerHeight + bottomSafeArea
+        }
         .alert("Discard changes?", isPresented: $discardShown) {
             Button("Discard", role: .destructive, action: onClose)
             Button("Keep Editing", role: .cancel) {}
         } message: {
             Text("Your day ends go back to the saved trip.")
-        }
-        .confirmationDialog(
-            dayMenu.map(dayTitle) ?? "", isPresented: Binding(get: { dayMenu != nil }, set: { if !$0 { dayMenu = nil } }),
-            titleVisibility: .visible
-        ) {
-            if let day = dayMenu { dayActions(day) }
         }
         .obcRenameSheet(
             "Rename day",
@@ -194,51 +195,35 @@ struct DayEditorSheet: View {
 
     // MARK: Header
 
-    /// "4 DAYS · ~5 H A DAY" with the stepper in split mode and Even out while editing; while a
-    /// day end is placed, the hint and Cancel.
-    @ViewBuilder
+    /// "4 DAYS · 324 KM · ~5 H A DAY" over the stepper in split mode, and Even out days.
     private var header: some View {
-        if model.isPlacing {
+        VStack(alignment: .leading, spacing: 10) {
+            let hours = Int((model.averageDayDuration / 3600).rounded())
+            OBCEyebrow(
+                "\(trip.dayCount) \(trip.dayCount == 1 ? "day" : "days") · "
+                    + "\(OBCFormat.distance(meters: model.handles.line.length)) · ~\(hours) h a day")
+                .accessibilityIdentifier("dayEditor.summary")
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    OBCEyebrow("New day end")
-                    Text("Tap the line on the map or the profile.")
-                        .font(.system(size: 14))
-                        .foregroundStyle(OBCTheme.inkSoft)
+                if model.isSplitMode {
+                    Stepper(
+                        "Days",
+                        value: Binding(get: { trip.dayCount }, set: { model.setDayCount($0) }),
+                        in: 1...model.maxDays
+                    )
+                    .labelsHidden()
+                    .accessibilityIdentifier("dayEditor.days")
                 }
                 Spacer()
-                Button("Cancel") { model.cancelPlacing() }
+                Button("Even out days") { model.evenOut() }
                     .font(.system(size: 16))
                     .foregroundStyle(OBCTheme.forest)
-                    .accessibilityIdentifier("dayEditor.cancelPlacing")
+                    .disabled(trip.dayCount < 2)
+                    .accessibilityIdentifier("dayEditor.evenOut")
             }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    let hours = Int((model.averageDayDuration / 3600).rounded())
-                    OBCEyebrow("\(trip.dayCount) \(trip.dayCount == 1 ? "day" : "days") · ~\(hours) h a day")
-                        .accessibilityIdentifier("dayEditor.summary")
-                    Spacer()
-                    if model.isSplitMode {
-                        Stepper(
-                            "Days",
-                            value: Binding(get: { trip.dayCount }, set: { model.setDayCount($0) }),
-                            in: 1...model.maxDays
-                        )
-                        .labelsHidden()
-                        .accessibilityIdentifier("dayEditor.days")
-                    } else {
-                        Button("Even out") { model.evenOut() }
-                            .font(.system(size: 16))
-                            .foregroundStyle(OBCTheme.forest)
-                            .accessibilityIdentifier("dayEditor.evenOut")
-                    }
-                }
-                if model.isSplitMode, model.balancesByDistance {
-                    Text("This file has no elevation. Days are balanced by distance.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(OBCTheme.inkSoft)
-                }
+            if model.isSplitMode, model.balancesByDistance {
+                Text("This file has no elevation. Days are balanced by distance.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(OBCTheme.inkSoft)
             }
         }
     }
@@ -247,24 +232,11 @@ struct DayEditorSheet: View {
 
     private var list: some View {
         List {
-            Section {
-                ForEach(0..<trip.dayCount, id: \.self) { day in
-                    dayRow(day)
-                }
+            ForEach(0..<trip.dayCount, id: \.self) { day in
+                dayRow(day)
+                    .listRowBackground(model.selectedDay == day ? OBCTheme.parchment2 : OBCTheme.panel)
             }
-            .listRowBackground(OBCTheme.panel)
             .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets())
-
-            Section {
-                quietRow("Add day end", systemImage: "plus", id: "addDayEnd") { model.beginPlacing() }
-                    .disabled(model.isPlacing)
-                if model.isSplitMode {
-                    quietRow("Even out days", systemImage: "arrow.left.and.right", id: "evenOut") { model.evenOut() }
-                }
-            }
-            .listRowBackground(OBCTheme.panel)
-            .listRowSeparatorTint(OBCTheme.screenLine)
             .listRowInsets(EdgeInsets())
         }
         #if os(iOS)
@@ -275,80 +247,59 @@ struct DayEditorSheet: View {
         .animation(.snappy(duration: 0.28), value: trip.dayCount)
     }
 
-    /// One day: its colour, number, name and figures. A tap focuses its end; the last day ends
-    /// the trip, so it has no swipe.
+    /// One day: its colour, number, name and figures, and its menu. A tap highlights it.
     private func dayRow(_ day: Int) -> some View {
         let end = trip.dayEnds[day]
         let isLast = day == trip.dayCount - 1
-        let blocker = model.removeBlocker(day)
-        return DayFigureRow(
-            model: model, day: day,
-            title: end.title ?? end.name.map { "to \($0)" },
-            date: trip.dayDates()[day].map { OBCFormat.tripDay($0) },
-            note: !isLast && blocker != nil ? "transfer" : nil,
-            showsDivider: !isLast
-        ) {
-            model.select(isLast ? nil : day)
+        return HStack(spacing: 0) {
+            DayFigureRow(
+                model: model, day: day,
+                title: end.title ?? end.name.map { "to \($0)" },
+                date: trip.dayDates()[day].map { OBCFormat.tripDay($0) },
+                note: !isLast && model.removeBlocker(day) != nil ? "transfer" : nil,
+                showsDivider: !isLast
+            ) {
+                model.select(day)
+            }
+            .accessibilityIdentifier("dayEditor.day.\(day)")
+            Menu { dayActions(day) } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(OBCTheme.inkSoft)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Day \(day + 1) actions")
+            .accessibilityIdentifier("dayEditor.day.\(day).menu")
+            .padding(.trailing, 6)
         }
         .contextMenu { dayActions(day) }
-        .swipeActions(edge: .trailing, allowsFullSwipe: blocker == nil) {
-            if blocker == nil {
-                Button(role: .destructive) { model.removeDayEnd(day) } label: {
-                    Label("Remove", systemImage: "minus.circle")
-                }
-                .tint(OBCTheme.warning)
-            }
-        }
-        .accessibilityIdentifier("dayEditor.day.\(day)")
     }
 
-    /// End the day at a stop, Rename day, Remove day end: the pin menu and the row's long press.
+    /// End at a stop, Rename, Split this day, Join with the next day: the ··· menu and the
+    /// row's long press. A day end at a transfer holds a gap, so it neither moves to a stop nor
+    /// joins.
     @ViewBuilder
     private func dayActions(_ day: Int) -> some View {
-        if day < trip.dayCount - 1 {
+        let movable = model.removeBlocker(day) == nil
+        if movable {
             Button { stopsModel = model.stops(for: day, isOnline: isOnline) } label: {
-                Label("End the day at a stop", systemImage: "tent")
+                Label("End at a stop", systemImage: "tent")
             }
             .accessibilityIdentifier("dayEditor.day.stops")
         }
-        Button { rename(day) } label: { Label("Rename day", systemImage: "pencil") }
+        Button { dayRename = day } label: { Label("Rename", systemImage: "pencil") }
             .accessibilityIdentifier("dayEditor.day.rename")
-        if model.removeBlocker(day) == nil {
-            Button(role: .destructive) { model.removeDayEnd(day) } label: {
-                Label("Remove day end", systemImage: "minus.circle")
-            }
-            .accessibilityIdentifier("dayEditor.day.remove")
+        if model.canSplit(day) {
+            Button { model.splitDay(day) } label: { Label("Split this day", systemImage: "scissors") }
+                .accessibilityIdentifier("dayEditor.day.split")
         }
-    }
-
-    /// "Day 2 · to Bad Tabarz"
-    private func dayTitle(_ day: Int) -> String {
-        guard trip.dayEnds.indices.contains(day) else { return "" }
-        let end = trip.dayEnds[day]
-        return ["Day \(day + 1)", end.title ?? end.name.map { "to \($0)" }].compactMap { $0 }.joined(separator: " · ")
-    }
-
-    private func quietRow(_ title: String, systemImage: String, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 18)
-                Text(title)
-                    .font(.system(size: 16))
-                Spacer(minLength: 0)
+        if movable {
+            Button { model.joinDay(day) } label: {
+                Label("Join with Day \(day + 2)", systemImage: "arrow.merge")
             }
-            .foregroundStyle(OBCTheme.forest)
-            .padding(.horizontal, 16)
-            .frame(minHeight: 48)
-            .contentShape(Rectangle())
+            .accessibilityIdentifier("dayEditor.day.join")
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("dayEditor.\(id)")
-    }
-
-    private func rename(_ day: Int) {
-        dayRename = day
     }
 }
 
