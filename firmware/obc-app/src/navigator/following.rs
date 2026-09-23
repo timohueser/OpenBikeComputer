@@ -197,7 +197,7 @@ impl NavigatorMachine {
     }
 
     pub(crate) fn profile(&self) -> Option<&obc_route::Profile> {
-        self.profile.as_ref()
+        self.profile_route.map(|_| &self.profile)
     }
 
     pub(crate) fn climbs(&self) -> &Climbs {
@@ -284,12 +284,7 @@ impl NavigatorMachine {
             dirty = true;
         }
 
-        if self.following.active_route != self.climbs_route {
-            let loaded = self.following.active_route.zip(route);
-            self.climbs = loaded.map_or_else(Climbs::new, |(_, r)| r.detect_climbs());
-            self.climbs_route = loaded.map(|(index, _)| index);
-            self.following.active_climb = None; // a fresh list — re-derive the active climb on the next match
-        }
+        self.refresh_route_profile(route);
 
         // The route's named waypoints load from the route start; a truncated table is slid forward
         // in `update_next_waypoint`.
@@ -441,12 +436,16 @@ impl NavigatorMachine {
         Some(route.bike_type())
     }
 
-    /// Build once per active route at render time. A missing reader clears stale geometry but
-    /// leaves the build pending; an unloaded route has no profile.
+    /// Build profile and climbs together once per active route. A missing reader clears the keys
+    /// and leaves the work pending. Both the tick and draw paths can supply the first reader.
     pub(crate) fn refresh_route_profile(&mut self, route: Option<&RouteReader>) {
-        if self.following.active_route != self.profile_route {
-            self.profile = self.following.active_route.and(route).map(|r| r.elevation_profile());
-            self.profile_route = self.profile.as_ref().and(self.following.active_route);
+        if self.following.active_route != self.profile_route || self.following.active_route != self.climbs_route {
+            let loaded = self.following.active_route.zip(route);
+            self.climbs =
+                loaded.map_or_else(Climbs::new, |(_, r)| r.elevation_profile_and_climbs_into(&mut self.profile));
+            self.profile_route = loaded.map(|(index, _)| index);
+            self.climbs_route = self.profile_route;
+            self.following.active_climb = None;
         }
     }
 
@@ -459,7 +458,6 @@ impl NavigatorMachine {
         // whole route on its next fix, which is wider still.
         self.route_match.reset();
         self.matched_route = None;
-        self.profile = None;
         self.profile_route = None;
         self.climbs = Climbs::new();
         self.climbs_route = None;
@@ -494,9 +492,6 @@ impl NavigatorMachine {
         self.bike_type_owed = self.bike_type_owed.and_then(remap);
         let old_profile = self.profile_route;
         self.profile_route = old_profile.and_then(remap);
-        if old_profile.is_some() && self.profile_route.is_none() {
-            self.profile = None;
-        }
         // Clearing the active-climb state with the cache keeps a stale "on climb" flag from
         // stranding the rider on a gone route.
         let old_climbs = self.climbs_route;

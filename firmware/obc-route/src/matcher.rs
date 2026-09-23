@@ -7,13 +7,10 @@
 //! widens the search at the same time, so a rejoin is still found. The forward bias stops a
 //! loop's second pass from snapping back to the first.
 //!
-//! One reused chunk-decode buffer holds the handful of chunks the window spans, so matching
-//! allocates nothing per fix.
-
-use heapless::Vec;
+//! Cached chunks are borrowed for each scan. A cache miss uses bounded reader scratch.
 
 use crate::geo::project_to_segment;
-use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::reader::RouteReader;
 use obc_map_scene::{cos_lat, ground_dist_m_cl};
 
 /// Cross-track distance (m) at or above which the rider is off-route.
@@ -74,7 +71,6 @@ pub struct RouteMatch {
     /// Widen the next match's forward window to the rejoin window, then clear. Set when the
     /// caller knows fixes went unmatched, so the cursor is stale by more than one fix's travel.
     wide_next: bool,
-    buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 }
 
 impl Default for RouteMatch {
@@ -94,7 +90,6 @@ impl RouteMatch {
             off_route: false,
             started: false,
             wide_next: false,
-            buf: Vec::new(),
         }
     }
 
@@ -108,7 +103,6 @@ impl RouteMatch {
         self.off_route = false;
         self.started = false;
         self.wide_next = false;
-        self.buf.clear();
     }
 
     /// Install a forward-only navigation floor at `progress_m` and move the cursor to the
@@ -116,7 +110,7 @@ impl RouteMatch {
     /// when the route has no decodable geometry.
     pub fn set_progress_floor(&mut self, route: &RouteReader, progress_m: u32) -> Option<crate::reader::RoutePosition> {
         let progress_m = progress_m.max(self.progress_m).max(self.floor_progress_m);
-        let pos = route.locate_progress(progress_m, &mut self.buf)?;
+        let pos = route.locate_progress(progress_m)?;
         self.chunk = pos.chunk;
         self.seg = pos.seg;
         self.progress_m = pos.progress_m;
@@ -140,7 +134,7 @@ impl RouteMatch {
 
     /// Resolve a persisted progress anchor without advancing the live match before its ACK.
     pub fn occurrence_at(&mut self, route: &RouteReader, progress_m: u32) -> Option<u32> {
-        let pos = route.locate_progress(progress_m, &mut self.buf)?;
+        let pos = route.locate_progress(progress_m)?;
         Some(((pos.chunk as u32) << 16) | pos.seg as u32)
     }
 
@@ -263,89 +257,94 @@ impl RouteMatch {
         let mut ambiguous = false;
         let mut c = first_chunk;
         let mut base_gidx = route.global_seg_index(first_chunk, 0) as i64;
-        'outer: while c < chunks.len() {
+        while c < chunks.len() {
             // Segments only run forward, so a chunk past the window ends the scan.
             if self.started && base_gidx - cur_gidx > fwd {
                 break;
             }
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
-            let decoded = route.decode_chunk(c, &mut self.buf).is_ok();
-            if !decoded && recovery.is_some() {
-                return Err(());
-            }
-            if decoded && self.buf.len() >= 2 {
-                let cum0 = chunks[c].cum_distance_m as f32;
-                let mut intra = 0f32; // distance from this chunk's anchor to point s
-                                      // cos(lat) barely changes across one chunk's span, so hoist it once per
-                                      // chunk rather than recomputing `cosf` for every segment of the window.
-                let cl = cos_lat(self.buf[0].lat);
-                let n = self.buf.len();
-                for s in 0..n - 1 {
-                    let off = base_gidx + s as i64 - cur_gidx;
-                    let global = (base_gidx + s as i64).max(0) as u32;
-                    if self.started && off > fwd {
-                        break 'outer;
-                    }
-                    let a = (self.buf[s].lon, self.buf[s].lat);
-                    let b = (self.buf[s + 1].lon, self.buf[s + 1].lat);
-                    let seg_len = ground_dist_m_cl(a, b, cl);
-                    if cum0 + intra > ceiling_m as f32 {
-                        break 'outer;
-                    }
-                    if (!self.started || off >= -back) && global >= self.floor_global_seg {
-                        let (mut t, mut dist) = project_to_segment(a, b, p, cl);
-                        let mut progress = (cum0 + intra + t * seg_len) as u32;
-                        if progress > ceiling_m {
-                            t = if seg_len > 1e-3 {
-                                ((ceiling_m as f32 - cum0 - intra) / seg_len).clamp(0.0, 1.0)
-                            } else {
-                                0.0
+            let decoded = route.with_chunk(c, |pts| {
+                if pts.len() >= 2 {
+                    let cum0 = chunks[c].cum_distance_m as f32;
+                    let mut intra = 0f32; // distance from this chunk's anchor to point s
+                                          // cos(lat) barely changes across one chunk's span, so hoist it once per
+                                          // chunk rather than recomputing `cosf` for every segment of the window.
+                    let cl = cos_lat(pts[0].lat);
+                    let n = pts.len();
+                    for s in 0..n - 1 {
+                        let off = base_gidx + s as i64 - cur_gidx;
+                        let global = (base_gidx + s as i64).max(0) as u32;
+                        if self.started && off > fwd {
+                            return true;
+                        }
+                        let a = (pts[s].lon, pts[s].lat);
+                        let b = (pts[s + 1].lon, pts[s + 1].lat);
+                        let seg_len = ground_dist_m_cl(a, b, cl);
+                        if cum0 + intra > ceiling_m as f32 {
+                            return true;
+                        }
+                        if (!self.started || off >= -back) && global >= self.floor_global_seg {
+                            let (mut t, mut dist) = project_to_segment(a, b, p, cl);
+                            let mut progress = (cum0 + intra + t * seg_len) as u32;
+                            if progress > ceiling_m {
+                                t = if seg_len > 1e-3 {
+                                    ((ceiling_m as f32 - cum0 - intra) / seg_len).clamp(0.0, 1.0)
+                                } else {
+                                    0.0
+                                };
+                                let ceiling = (
+                                    a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
+                                    a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
+                                );
+                                dist = ground_dist_m_cl(ceiling, p, cl);
+                                progress = ceiling_m;
+                            }
+                            // The floor can sit inside its containing segment. A fix earlier on that
+                            // same long segment must measure to the floor point, not project behind it
+                            // and appear on-route inside the skipped stretch.
+                            if progress < self.floor_progress_m {
+                                t = if seg_len > 1e-3 {
+                                    ((self.floor_progress_m as f32 - cum0 - intra) / seg_len).clamp(0.0, 1.0)
+                                } else {
+                                    0.0
+                                };
+                                let floor = (
+                                    a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
+                                    a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
+                                );
+                                dist = ground_dist_m_cl(floor, p, cl);
+                                progress = self.floor_progress_m;
+                            }
+                            if let Some(RecoveryScan::Check { progress_m: nearest_m, dist_m: nearest_dist }) = recovery
+                            {
+                                let separation = progress.abs_diff(nearest_m) as f32;
+                                let nearest_dist = nearest_dist as f32;
+                                // Adjacent projections around one location are harmless. Separate
+                                // near-ties or repeated coordinates do not identify one occurrence.
+                                ambiguous |= (dist <= nearest_dist + TIE_EPS_M
+                                    && separation > 2.0 * (nearest_dist + TIE_EPS_M))
+                                    || (dist <= nearest_dist + 1.0 && separation > 2.0 * (nearest_dist + 1.0));
+                            }
+                            // The first lock biases near-ties to the earliest segment. Once tracking,
+                            // the forward window bounds the search, so a strict nearest is right.
+                            let better = match best {
+                                None => true,
+                                Some((_, _, bd, _)) if self.started || recovery.is_some() => dist < bd,
+                                Some((_, _, bd, _)) => dist < bd - tie_m,
                             };
-                            let ceiling = (
-                                a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
-                                a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
-                            );
-                            dist = ground_dist_m_cl(ceiling, p, cl);
-                            progress = ceiling_m;
+                            if better {
+                                best = Some((c, s, dist, progress.min(total)));
+                            }
                         }
-                        // The floor can sit inside its containing segment. A fix earlier on that
-                        // same long segment must measure to the floor point, not project behind it
-                        // and appear on-route inside the skipped stretch.
-                        if progress < self.floor_progress_m {
-                            t = if seg_len > 1e-3 {
-                                ((self.floor_progress_m as f32 - cum0 - intra) / seg_len).clamp(0.0, 1.0)
-                            } else {
-                                0.0
-                            };
-                            let floor = (
-                                a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
-                                a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
-                            );
-                            dist = ground_dist_m_cl(floor, p, cl);
-                            progress = self.floor_progress_m;
-                        }
-                        if let Some(RecoveryScan::Check { progress_m: nearest_m, dist_m: nearest_dist }) = recovery {
-                            let separation = progress.abs_diff(nearest_m) as f32;
-                            let nearest_dist = nearest_dist as f32;
-                            // Adjacent projections around one location are harmless. Separate
-                            // near-ties or repeated coordinates do not identify one occurrence.
-                            ambiguous |= (dist <= nearest_dist + TIE_EPS_M
-                                && separation > 2.0 * (nearest_dist + TIE_EPS_M))
-                                || (dist <= nearest_dist + 1.0 && separation > 2.0 * (nearest_dist + 1.0));
-                        }
-                        // The first lock biases near-ties to the earliest segment. Once tracking,
-                        // the forward window bounds the search, so a strict nearest is right.
-                        let better = match best {
-                            None => true,
-                            Some((_, _, bd, _)) if self.started || recovery.is_some() => dist < bd,
-                            Some((_, _, bd, _)) => dist < bd - tie_m,
-                        };
-                        if better {
-                            best = Some((c, s, dist, progress.min(total)));
-                        }
+                        intra += seg_len;
                     }
-                    intra += seg_len;
                 }
+                false
+            });
+            match decoded {
+                Err(_) if recovery.is_some() => return Err(()),
+                Ok(true) => break,
+                _ => {}
             }
             base_gidx += pc_segs;
             c += 1;
