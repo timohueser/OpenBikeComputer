@@ -94,17 +94,18 @@ async function load(source?: InitInput): Promise<Bridge> {
 }
 
 /**
- * Convert a GPX file's bytes into a `.obcr` route named `name`.
+ * Convert a GPX file's bytes into a `.obcr` route named `name` and typed `bike` (`0..=3`: Road,
+ * Gravel, MTB, Touring).
  *
  * The returned array is a fresh copy owned by JS — safe to hold on to, hand to a `Blob`, or send
  * over WebUSB after further conversions have run.
  *
  * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
  */
-export async function gpxToObcr(gpx: Uint8Array, name: string): Promise<Uint8Array> {
+export async function gpxToObcr(gpx: Uint8Array, name: string, bike: number): Promise<Uint8Array> {
     const mod = await ensure();
     try {
-        return mod.obc_convert_gpx_to_obcr(gpx, name);
+        return mod.obc_convert_gpx_to_obcr(gpx, name, bike);
     } catch (cause) {
         throw asConvertError(cause);
     }

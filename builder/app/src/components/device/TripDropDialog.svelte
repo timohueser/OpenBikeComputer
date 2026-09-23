@@ -13,7 +13,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { commonPrefixName, sortForTrip } from "../../lib/device/multidrop";
-    import { prepareRoute, type PreparedRoute } from "../../lib/device/route";
+    import { prepareRoute, rememberedBikeType, type PreparedRoute } from "../../lib/device/route";
     import { formatBytes } from "../../lib/format";
 
     let {
@@ -47,7 +47,7 @@
             // the list fills top-to-bottom, which reads as progress without a progress bar.
             for (const row of rows) {
                 try {
-                    row.prepared = await prepareRoute(row.file);
+                    row.prepared = await prepareRoute(row.file, rememberedBikeType());
                 } catch (cause) {
                     row.error = cause instanceof Error ? cause.message : String(cause);
                 }

@@ -4,7 +4,9 @@
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::obcr::WAYPOINT_ELE_NONE;
-use obc_route::{for_each_waypoint, RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
+use obc_route::{
+    for_each_waypoint, BikeType, RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
+};
 
 /// Largest point count an `.obcr` can store, and so the ceiling [`gpx_to_obcr`] converts up to:
 /// every chunk full, with consecutive chunks sharing their seam vertex.
@@ -81,14 +83,14 @@ impl ErrorCode {
     }
 }
 
-/// Convert a GPX file's bytes into a `.obcr` route named `name`.
+/// Convert a GPX file's bytes into a `.obcr` route named `name` and typed `bike`.
 ///
-/// Byte-for-byte the same output as `obc_route::gpx_to_obcr` on the same input: this function
+/// Byte-for-byte the same output as the shared unattributed converter on the same input: this function
 /// contributes no geometry, only the buffer adapter and the guards below.
 ///
 /// The two pre-checks, empty and not-XML, are the two failures a dropped file produces, and the
 /// converter cannot tell them apart. Without them both surface as the generic "no track points".
-pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
+pub fn gpx_to_obcr(gpx: &[u8], name: &str, bike: BikeType) -> Result<Vec<u8>, ConvertFailure> {
     if gpx.is_empty() {
         return Err(ConvertFailure::new(
             ErrorCode::EmptyFile,
@@ -109,7 +111,8 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
     // wasm's 1 MiB stack. Nothing here is boxed, because nothing here is big: the scanners' buffers
     // are 4 KB each and sequential, never co-resident.
     let mut sink = VecSink(Vec::new());
-    obc_route::gpx_to_obcr(&SliceSource(gpx), name, &mut sink).map_err(describe_gpx_error)?;
+    obc_route::gpx_to_obcr_attributed(&SliceSource(gpx), name, bike, &mut sink, None, |_, _| Ok(0))
+        .map_err(describe_gpx_error)?;
     Ok(sink.0)
 }
 
@@ -397,7 +400,7 @@ mod tests {
     /// included.
     #[test]
     fn obcr_round_trips_to_the_track_it_stored() {
-        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
+        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny", BikeType::Road).unwrap();
         let flat = obcr_to_track(&obcr).unwrap();
         assert_eq!(flat.len() % 3, 0);
         let points: Vec<[f64; 3]> = flat.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]]).collect();
@@ -429,7 +432,7 @@ mod tests {
     /// What the converter stored, `obcr_to_waypoints` returns, sorted by distance along.
     #[test]
     fn obcr_round_trips_the_waypoints_it_stored() {
-        let obcr = gpx_to_obcr(WPT_GPX.as_bytes(), "Tiny").unwrap();
+        let obcr = gpx_to_obcr(WPT_GPX.as_bytes(), "Tiny", BikeType::Road).unwrap();
         let wps = obcr_to_waypoints(&obcr).unwrap();
         assert_eq!(wps.len(), 2);
 
@@ -452,7 +455,7 @@ mod tests {
     /// A route without waypoints is an empty list, which is the common case and not an error.
     #[test]
     fn a_waypoint_free_route_decodes_to_no_waypoints() {
-        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
+        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny", BikeType::Road).unwrap();
         assert_eq!(obcr_to_waypoints(&obcr).unwrap(), Vec::new());
     }
 
@@ -470,18 +473,30 @@ mod tests {
         // Too short for even the header, which reads the same as a cut-off copy.
         assert_eq!(code_of(obcr_to_track(b"short")), ErrorCode::InputTruncated);
         // A valid header cut off mid-index reads as truncation too.
-        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
+        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny", BikeType::Road).unwrap();
         assert_eq!(code_of(obcr_to_track(&obcr[..116])), ErrorCode::InputTruncated);
     }
 
-    /// The bridge adds nothing to the bytes: its output equals the shared converter's.
+    /// The bridge adds nothing to the bytes: its output equals the shared converter's, and the
+    /// picked bike type lands in the header.
     #[test]
     fn gpx_conversion_matches_the_shared_converter_byte_for_byte() {
-        let mine = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
-        let mut reference = VecSink(Vec::new());
-        obc_route::gpx_to_obcr(&SliceSource(TINY_GPX.as_bytes()), "Tiny", &mut reference).unwrap();
-        assert_eq!(mine, reference.0);
-        assert_eq!(&mine[0..4], b"OBCR");
+        for bike in BikeType::ALL {
+            let mine = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny", bike).unwrap();
+            let mut reference = VecSink(Vec::new());
+            obc_route::gpx_to_obcr_attributed(
+                &SliceSource(TINY_GPX.as_bytes()),
+                "Tiny",
+                bike,
+                &mut reference,
+                None,
+                |_, _| Ok(0),
+            )
+            .unwrap();
+            assert_eq!(mine, reference.0);
+            assert_eq!(&mine[0..4], b"OBCR");
+            assert_eq!(mine[obc_formats::obcr::BIKE_TYPE_OFF], bike as u8);
+        }
     }
 
     #[test]
@@ -522,14 +537,14 @@ mod tests {
     /// invalid-file message.
     #[test]
     fn each_rejected_input_gets_its_own_code() {
-        assert_eq!(code_of(gpx_to_obcr(b"", "x")), ErrorCode::EmptyFile);
-        assert_eq!(code_of(gpx_to_obcr(&[0x00, 0x01, 0x02, 0x03], "x")), ErrorCode::NotGpx);
+        assert_eq!(code_of(gpx_to_obcr(b"", "x", BikeType::Road)), ErrorCode::EmptyFile);
+        assert_eq!(code_of(gpx_to_obcr(&[0x00, 0x01, 0x02, 0x03], "x", BikeType::Road)), ErrorCode::NotGpx);
         // A FIT file's header starts with a length byte and then ".FIT", so the sniff catches it
         // rather than reporting a GPX with no track.
-        assert_eq!(code_of(gpx_to_obcr(b"\x0e\x10\x2e\x46\x49\x54", "x")), ErrorCode::NotGpx);
+        assert_eq!(code_of(gpx_to_obcr(b"\x0e\x10\x2e\x46\x49\x54", "x", BikeType::Road)), ErrorCode::NotGpx);
         // Waypoints but no track: well-formed GPX, nothing to ride.
         let wpt_only = r#"<?xml version="1.0"?><gpx><wpt lat="48.0" lon="7.8"><name>Home</name></wpt></gpx>"#;
-        assert_eq!(code_of(gpx_to_obcr(wpt_only.as_bytes(), "x")), ErrorCode::GpxNoTrackPoints);
+        assert_eq!(code_of(gpx_to_obcr(wpt_only.as_bytes(), "x", BikeType::Road)), ErrorCode::GpxNoTrackPoints);
 
         assert_eq!(code_of(track_to_gpx(b"", "x")), ErrorCode::EmptyFile);
         assert_eq!(code_of(track_to_gpx(b"<?xml version=\"1.0\"?><gpx></gpx>", "x")), ErrorCode::NotRide);
@@ -543,7 +558,7 @@ mod tests {
         let mut bom = vec![0xEF, 0xBB, 0xBF];
         bom.extend_from_slice(b"\n  ");
         bom.extend_from_slice(TINY_GPX.as_bytes());
-        assert!(gpx_to_obcr(&bom, "Tiny").is_ok());
+        assert!(gpx_to_obcr(&bom, "Tiny", BikeType::Road).is_ok());
     }
 
     #[test]
@@ -564,11 +579,11 @@ mod tests {
     /// The message is the product here, so each one must say what is wrong and what to do.
     #[test]
     fn messages_name_the_cause_and_the_fix() {
-        let no_track = gpx_to_obcr(b"<gpx></gpx>", "x").unwrap_err();
+        let no_track = gpx_to_obcr(b"<gpx></gpx>", "x", BikeType::Road).unwrap_err();
         assert!(no_track.message.contains("<trkpt>"), "names the missing element: {no_track}");
         assert!(no_track.message.contains("track"), "says what to re-export: {no_track}");
 
-        let not_gpx = gpx_to_obcr(&[0xFF; 8], "x").unwrap_err();
+        let not_gpx = gpx_to_obcr(&[0xFF; 8], "x", BikeType::Road).unwrap_err();
         assert!(not_gpx.message.contains(".fit"), "points at the likely real format: {not_gpx}");
 
         let short = track_to_gpx(&[0xAB; 4], "x").unwrap_err();
@@ -595,7 +610,7 @@ mod tests {
         }
         gpx.push_str("</trkseg></trk></gpx>");
 
-        let e = gpx_to_obcr(gpx.as_bytes(), "Too long").unwrap_err();
+        let e = gpx_to_obcr(gpx.as_bytes(), "Too long", BikeType::Road).unwrap_err();
         assert_eq!(e.code, ErrorCode::GpxTooManyPoints);
         assert!(e.message.contains(&MAX_STORED_POINTS.to_string()), "quotes the ceiling: {e}");
     }

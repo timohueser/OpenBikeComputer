@@ -30,13 +30,20 @@ mod web {
         console_error_panic_hook::set_once();
     }
 
-    /// Convert a GPX file's bytes into `.obcr` bytes, naming the route `name`. The header
-    /// truncates an over-long name on a char boundary rather than refusing it.
+    /// Convert a GPX file's bytes into `.obcr` bytes, naming the route `name` and typing it
+    /// `bike` (`0..=3`: Road, Gravel, MTB, Touring). The header truncates an over-long name on a
+    /// char boundary rather than refusing it.
     ///
     /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
     #[wasm_bindgen]
-    pub fn obc_convert_gpx_to_obcr(bytes: &[u8], name: &str) -> Result<Vec<u8>, JsValue> {
-        crate::convert::gpx_to_obcr(bytes, name).map_err(to_js)
+    pub fn obc_convert_gpx_to_obcr(bytes: &[u8], name: &str, bike: u8) -> Result<Vec<u8>, JsValue> {
+        let bike = obc_route::BikeType::from_u8(bike).ok_or_else(|| {
+            to_js(ConvertFailure {
+                code: crate::ErrorCode::Internal,
+                message: format!("Internal error: {bike} is not a bike type. This is a bug in the builder."),
+            })
+        })?;
+        crate::convert::gpx_to_obcr(bytes, name, bike).map_err(to_js)
     }
 
     /// Convert a finished ride-v5 object into a GPX 1.1 document, naming the track `name`.
