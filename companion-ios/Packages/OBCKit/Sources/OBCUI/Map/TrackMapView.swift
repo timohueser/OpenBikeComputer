@@ -135,7 +135,7 @@ public struct TrackMapView: View {
                     Circle()
                         .fill(stages[index].color)
                         .frame(width: 9, height: 9)
-                    Text("STAGE \(index + 1)")
+                    Text("DAY \(index + 1)")
                         .font(.obcMono(size: 11))
                         .foregroundStyle(OBCTheme.inkFaint)
                 }

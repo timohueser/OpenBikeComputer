@@ -77,82 +77,27 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     public func deletePlannedRoute(_ id: RouteID) {
         try? FileManager.default.removeItem(
             at: plannedDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true))
-        // Prune the route from any trip that held it; a trip left empty dissolves.
-        for var trip in storedTripRecords() where trip.stageIDs.contains(id) {
-            trip.stageIDs.removeAll { $0 == id }
-            if trip.stageIDs.isEmpty {
-                removeTripFile(trip.id)
-            } else {
-                writeTrip(trip)
-            }
-        }
     }
 
     // MARK: Trips
 
-    public func trips() -> [TripRecord] {
-        let alive = existingRouteIDs()
-        return storedTripRecords()
-            .compactMap { trip -> TripRecord? in
-                var trip = trip
-                // Drop dangling stage ids, where a route record went out from under the trip. A
-                // trip with nothing resolvable left is dropped.
-                trip.stageIDs = trip.stageIDs.filter(alive.contains)
-                return trip.stageIDs.isEmpty ? nil : trip
+    public func trips() -> [Trip] {
+        contents(of: tripsDir)
+            .compactMap { url -> Trip? in
+                guard url.pathExtension == "json",
+                    let file: TripFile = read(url), file.version == Self.tripSchemaVersion
+                else { return nil }
+                return file.trip
             }
             .sorted { $0.addedAt > $1.addedAt }
     }
 
-    public func saveTrip(_ record: TripRecord) {
-        writeTrip(record)
-        // Invariant: a RouteID lives in at most one trip. Strip the saved trip's stages from every
-        // other stored trip; one thereby emptied dissolves.
-        let claimed = Set(record.stageIDs)
-        for var other in storedTripRecords() where other.id != record.id {
-            let kept = other.stageIDs.filter { !claimed.contains($0) }
-            guard kept.count != other.stageIDs.count else { continue }
-            if kept.isEmpty {
-                removeTripFile(other.id)
-            } else {
-                other.stageIDs = kept
-                writeTrip(other)
-            }
-        }
+    public func saveTrip(_ trip: Trip) {
+        ensure(tripsDir)
+        write(TripFile(trip), to: tripFileURL(trip.id))
     }
 
     public func deleteTrip(_ id: TripID) {
-        removeTripFile(id)
-    }
-
-    /// Every stored trip, unpruned: the raw on-disk view the invariant and prune logic operate on.
-    /// `trips()` is the pruned public read.
-    private func storedTripRecords() -> [TripRecord] {
-        contents(of: tripsDir).compactMap { url -> TripRecord? in
-            guard url.pathExtension == "json",
-                let file: TripFile = read(url), file.version == Self.tripSchemaVersion
-            else { return nil }
-            return file.record
-        }
-    }
-
-    /// The planned-route ids currently on disk, read without loading the source sidecars. The
-    /// alive set the trip read prunes dangling stages against.
-    private func existingRouteIDs() -> Set<RouteID> {
-        Set(
-            contents(of: plannedDir).compactMap { dir -> RouteID? in
-                guard let file: PlannedRouteFile = read(dir.appendingPathComponent("route.json")),
-                    file.version == Self.schemaVersion
-                else { return nil }
-                return RouteID(file.summary.id)
-            })
-    }
-
-    private func writeTrip(_ record: TripRecord) {
-        ensure(tripsDir)
-        write(TripFile(record), to: tripFileURL(record.id))
-    }
-
-    private func removeTripFile(_ id: TripID) {
         try? FileManager.default.removeItem(at: tripFileURL(id))
     }
 
@@ -380,7 +325,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     /// Trips version independently of planned routes, and the version is used on both the write
     /// and the read side, so a future planned-route bump cannot silently stop stored trips from
     /// loading.
-    fileprivate static let tripSchemaVersion = 1
+    fileprivate static let tripSchemaVersion = 2
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
     private var tripsDir: URL { directory.appendingPathComponent("trips", isDirectory: true) }
@@ -511,54 +456,100 @@ private struct PlannedRouteFile: Codable {
     }
 }
 
-/// A trip's metadata: its name and the ordered stage route ids. The schema is additive, so a
-/// library with no `trips/` directory simply reads zero trips. Stage ordering is the file's.
-///
-/// The device link persists exactly the way a planned route's does: the object id, serial and
-/// store identity as separate optional fields, all-or-nothing on read. A partial link decodes as
-/// no link at all, so it can never light a badge or drive a replace-by-id against the wrong device
-/// or era. The id stays a bare `UInt64` on disk, and the link and fingerprint are optional-decoded
-/// so a not-yet-uploaded trip loads clean.
+/// A trip: its line, its day ends and its device copies. Device links persist as a planned
+/// route's do: the object id, serial and store identity, all or nothing on read, so a partial link
+/// never drives a replace by id against the wrong device.
 private struct TripFile: Codable {
     var version: Int
     var id: String
+    var key: UInt64
     var name: String
-    var stageIDs: [String]
-    var deviceObjectID: UInt64?
-    var deviceSerial: String?
-    var deviceStoreID: String?
-    var uploadedCRC32: UInt32?
+    var bikeType: UInt8
+    var startDay: Int?
+    var line: ImportedRouteDTO
+    var pieceStarts: [Int]
+    var dayEnds: [DayEndDTO]
+    var startName: String?
+    var dayCopies: [DeviceCopyDTO?]
+    var device: DeviceCopyDTO?
+    var uploadedKey: UInt64?
     var addedAt: Date
+    var editedAt: Date
 
-    init(_ record: TripRecord) {
+    init(_ trip: Trip) {
         version = FileLibraryStore.tripSchemaVersion
-        id = record.id.rawValue
-        name = record.name
-        stageIDs = record.stageIDs.map(\.rawValue)
-        deviceObjectID = record.deviceLink?.objectID.raw
-        deviceSerial = record.deviceLink?.serial
-        deviceStoreID = record.deviceLink?.storeID
-        uploadedCRC32 = record.uploadedCRC32
-        addedAt = record.addedAt
+        id = trip.id.rawValue
+        key = trip.key
+        name = trip.name
+        bikeType = trip.bikeType.rawValue
+        startDay = trip.startDay?.daysSince1970
+        line = ImportedRouteDTO(ImportedRoute(points: trip.line))
+        pieceStarts = trip.pieceStarts
+        dayEnds = trip.dayEnds.map(DayEndDTO.init)
+        startName = trip.startName
+        uploadedKey = trip.uploadedKey
+        dayCopies = trip.dayCopies.map { $0.map { DeviceCopyDTO(link: $0.link, crc32: $0.uploadedCRC32) } }
+        device = trip.deviceLink.map { DeviceCopyDTO(link: $0, crc32: trip.uploadedCRC32) }
+        addedAt = trip.addedAt
+        editedAt = trip.editedAt
     }
 
-    var record: TripRecord {
-        let link: DeviceRouteLink? =
-            if let deviceObjectID, let deviceSerial, let deviceStoreID {
-                DeviceRouteLink(
-                    serial: deviceSerial, storeID: deviceStoreID,
-                    objectID: DeviceObjectID(deviceObjectID))
-            } else {
-                nil
-            }
-        return TripRecord(
+    var trip: Trip {
+        Trip(
             id: TripID(id),
+            key: key,
             name: name,
-            stageIDs: stageIDs.map(RouteID.init),
-            deviceLink: link,
-            uploadedCRC32: uploadedCRC32,
-            addedAt: addedAt
+            bikeType: BikeType(rawValue: bikeType) ?? .road,
+            startDay: startDay.map(CivilDay.init(daysSince1970:)),
+            line: line.domain.points,
+            pieceStarts: pieceStarts,
+            dayEnds: dayEnds.map(\.domain),
+            startName: startName,
+            dayCopies: dayCopies.map { $0.map { TripDayCopy(link: $0.link, uploadedCRC32: $0.crc32) } },
+            deviceLink: device?.link,
+            uploadedCRC32: device?.crc32,
+            uploadedKey: uploadedKey,
+            addedAt: addedAt,
+            editedAt: editedAt
         )
+    }
+}
+
+private struct DayEndDTO: Codable {
+    var lat: Double
+    var lon: Double
+    var name: String?
+    var title: String?
+    var distance: Double
+
+    init(_ end: DayEnd) {
+        lat = end.coordinate.latitude
+        lon = end.coordinate.longitude
+        name = end.name
+        title = end.title
+        distance = end.distance
+    }
+
+    var domain: DayEnd {
+        DayEnd(coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance)
+    }
+}
+
+private struct DeviceCopyDTO: Codable {
+    var objectID: UInt64
+    var serial: String
+    var storeID: String
+    var crc32: UInt32?
+
+    init(link: DeviceRouteLink, crc32: UInt32?) {
+        objectID = link.objectID.raw
+        serial = link.serial
+        storeID = link.storeID
+        self.crc32 = crc32
+    }
+
+    var link: DeviceRouteLink {
+        DeviceRouteLink(serial: serial, storeID: storeID, objectID: DeviceObjectID(objectID))
     }
 }
 

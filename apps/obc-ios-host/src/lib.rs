@@ -172,7 +172,7 @@ impl Host {
         app.set_resident_frame(true);
         app.set_map_nav_graph(map.tables().has_nav_graph());
         app.set_routes_with_ids(routes.catalog(), routes.ids());
-        app.set_rides(rides.catalog());
+        app.set_rides(rides.catalog(), rides.trip_names());
         // The phone runs the settings a rider runs: whatever was saved, or the defaults.
         app.set_settings(boot_settings);
         tracks.offer_recovery(&mut app);

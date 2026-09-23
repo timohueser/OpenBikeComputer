@@ -132,6 +132,13 @@ pub struct Selection {
     association: Association,
 }
 
+impl Selection {
+    /// The [`Reader::generation`] this selection was made on.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+}
+
 impl Reader<'_> {
     pub fn peak_article(&self, source: obcm::SourceId) -> Result<Option<Selection>, Error> {
         let Some(section) = map_section(self.source())? else {
@@ -157,7 +164,7 @@ impl Reader<'_> {
     pub fn with_peak_article<T>(
         &self,
         selection: Selection,
-        read: impl FnOnce(&dyn ByteSource, Directory, Record) -> Result<T, Error>,
+        read: impl FnOnce(&WindowSource<'_>, Directory, Record) -> Result<T, Error>,
     ) -> Result<T, Error> {
         if selection.generation != self.generation() {
             return Err(Error::BadOffset);

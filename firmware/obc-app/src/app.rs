@@ -1179,27 +1179,29 @@ impl App {
         self.catalogs.route_filed(idx)
     }
 
-    /// Replace the host's paired ride snapshot, newest first. Keep the newest
-    /// [`UI_RIDES_CAP`](crate::UI_RIDES_CAP) summaries visible, and re-point open screens by
-    /// durable id across the rescan.
-    pub fn set_rides(&mut self, entries: &[RideEntry]) {
+    /// Replace the host's paired ride snapshot, newest first, and the names of its trips. Keep the
+    /// newest [`UI_RIDES_CAP`](crate::UI_RIDES_CAP) summaries visible, and re-point open screens
+    /// by durable id across the rescan.
+    pub fn set_rides(&mut self, entries: &[RideEntry], trips: &[crate::RideTrip]) {
         let entries = &entries[..entries.len().min(crate::UI_RIDES_CAP)];
-        if self.catalogs.rides() == entries {
+        let trips = &trips[..trips.len().min(crate::ride::RIDE_TRIPS_CAP)];
+        if self.catalogs.rides() == entries && self.catalogs.ride_trips() == trips {
             return;
         }
         // Screen indices follow the durable identity through each rescan.
-        let old_ids = self.catalogs.replace_rides(entries);
+        let old_ids = self.catalogs.replace_rides(entries, trips);
         let catalogs = &self.catalogs;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_ride(&old_ids, i) };
-        let new_len = catalogs.ride_len();
         for s in self.ui.stack.iter_mut() {
             match s {
-                Screen::Rides(m) => m.remap_rides(&remap, new_len),
+                Screen::Rides(m) => m.remap_rides(catalogs.rides()),
                 Screen::RideDetail(d) => d.remap_rides(&remap),
                 _ => {}
             }
         }
         self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
+        let rides = self.catalogs.rides();
+        self.ui.stack.retain(|s| !matches!(s, Screen::Rides(m) if m.trip_is_gone(rides)));
         self.ui.map_dirty = true;
     }
     /// Apply an exact durable archive row after the complete catalog and metadata reads succeed.
@@ -2931,6 +2933,7 @@ impl App {
             unaccepted_routes: navigator.unaccepted_routes(),
             internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
+            ride_trips: catalogs.ride_trips(),
             trips: catalogs.trips(),
             trip_progress: metadata.progress(),
             day_join: metadata.day_join(),
@@ -3008,12 +3011,9 @@ impl App {
                 if let (Some(work), Screen::LandmarkPhoto(page)) = (photo.as_mut(), &mut ui.stack[i]) {
                     if !covered || page.covered_rebuild {
                         let (target, color) = cv.split();
-                        for _ in 0..work.steps {
-                            work.runtime.step(page, reader, target, color, rx.settings.language);
-                            if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
-                                page.covered_rebuild = false;
-                                break;
-                            }
+                        work.runtime.step(page, reader, target, color, rx.settings.language, work.steps);
+                        if page.status != crate::photo::Status::Pending {
+                            page.covered_rebuild = false;
                         }
                     } else {
                         work.runtime.cancel();
@@ -5627,12 +5627,32 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_last_ride_of_a_trip_returns_to_the_ride_list() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut ride = ride_summary("Day 1 Andermatt");
+        ride.trip = obc_formats::ride::TripRef::new(5, 0, 2);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride }], &[]);
+        let _ = app.ui.stack.push(Screen::Rides(crate::screen::RidesScreen::new()));
+        app.apply_gesture(Gesture::Press); // the folder: the trip's rides
+        app.apply_gesture(Gesture::Press); // the ride detail
+        app.apply_gesture(Gesture::Hold); // the delete, back on the trip's rides
+        assert_eq!(app.activity.take_ride_delete(), Some(0));
+        let depth = app.ui.stack.len();
+        app.set_rides(&[], &[]); // the host's rescan after the delete
+        assert_eq!(app.ui.stack.len(), depth - 1, "the emptied trip page is gone");
+        assert!(matches!(app.top_screen(), Screen::Rides(_)), "the ride list is on top");
+    }
+
+    #[test]
     fn ride_track_request_hands_out_the_id_until_answered() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_rides(&[
-            crate::RideEntry { id: 7, summary: ride_summary("A") },
-            crate::RideEntry { id: 9, summary: ride_summary("B") },
-        ]);
+        app.set_rides(
+            &[
+                crate::RideEntry { id: 7, summary: ride_summary("A") },
+                crate::RideEntry { id: 9, summary: ride_summary("B") },
+            ],
+            &[],
+        );
 
         assert_eq!(ride_track_request(&app), None, "no detail open — no request");
 
@@ -5647,12 +5667,12 @@ mod tests {
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
-        app.set_rides(&[crate::RideEntry { id: 9, summary: ride_summary("B") }]);
+        app.set_rides(&[crate::RideEntry { id: 9, summary: ride_summary("B") }], &[]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
         assert_eq!(ride_track_request(&app), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("A") }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("A") }], &[]);
         assert_eq!(app.activity.viewed_ride, None);
         assert_eq!(ride_track_request(&app), None);
     }
@@ -5845,7 +5865,7 @@ mod tests {
             .iter()
             .map(|&id| RideEntry { id, summary: ride_summary(if id == 7 { "First" } else { "Second" }) })
             .collect();
-        app.set_rides(&rides);
+        app.set_rides(&rides, &[]);
         app.activity.viewed_ride = Some(0);
         app
     }
@@ -6058,11 +6078,11 @@ mod tests {
         assert!(app.take_dirty().map);
         app.set_trips(&trips);
         assert!(app.take_dirty().map);
-        app.set_rides(&rides);
+        app.set_rides(&rides, &[]);
         assert!(app.take_dirty().map);
         app.set_routes_with_ids(&routes, &[10]);
         app.set_trips(&trips);
-        app.set_rides(&rides);
+        app.set_rides(&rides, &[]);
         app.set_unaccepted_routes(0);
         assert!(!app.take_dirty().map, "an identical catalog feed changes no pixels");
         routes[0].climb_m += 1;
@@ -6070,7 +6090,7 @@ mod tests {
         assert!(app.take_dirty().map);
         assert_eq!(app.trips()[0].climb_m, routes[0].climb_m);
         rides[0].summary.synced = true;
-        app.set_rides(&rides);
+        app.set_rides(&rides, &[]);
         assert!(app.take_dirty().map);
         app.set_unaccepted_routes(1);
         assert!(app.take_dirty().map, "candidate visibility changes the route menu");

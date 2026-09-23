@@ -156,6 +156,10 @@ pub trait RouteRepository {
 pub trait RideRepository {
     /// The ride catalog (paired entries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
     fn catalog(&self) -> &[RideEntry];
+    /// The names of the catalog's trips, one per trip key.
+    fn trip_names(&self) -> &[obc_app::RideTrip] {
+        &[]
+    }
     /// Remove the ride: `Ok(true)` = removed, `Ok(false)` = already absent, `Err` = storage failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
     /// Fill the keyed ride's profile in place and return its preview from one track read.

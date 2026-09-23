@@ -5,18 +5,13 @@ import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// The Planned list's filed and loose partition, trip stats, dissolve on last-stage removal, and
-/// the two delete-dialog branches. `PlannedItem.partition` is tested directly; the edits run
-/// through `MainScreenModel` on the `trips` fixture.
+/// The Planned list with trips: the interleave, trip stats from the day routes, delete, and the
+/// trip badge composition. The edits run through `MainScreenModel` on the `trips` fixture.
 @MainActor
 struct TripListModelTests {
     private let tripID = TripID("driftless-weekender")
-    private let stageA = RouteID("devils-lake-overnighter")
-    private let stageB = RouteID("cross-plains-gravel")
 
-    /// A started model over the trips fixture: one trip with 2 stages and 3 loose routes, seeded
-    /// into an in-memory library as the composition root does.
-    private func makeModel() -> (MainScreenModel, MockControl) {
+    private func makeModel() -> MainScreenModel {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.loadFixtures("trips")
@@ -24,13 +19,11 @@ struct TripListModelTests {
         control.seedLibrary(into: library)
         let model = MainScreenModel(transport: MockTransport(control: control), library: library)
         model.start()  // library-first content (trips + items) is set synchronously
-        return (model, control)
+        return model
     }
 
-    // MARK: Partition (pure)
-
     @Test
-    func partitionHidesFiledRoutesAndInterleavesByAddedAt() {
+    func partitionInterleavesTripsAndRoutesByAddedAt() {
         let base = Date()
         func record(_ id: String, addedAt: Date) -> PlannedRouteRecord {
             PlannedRouteRecord(
@@ -38,146 +31,49 @@ struct TripListModelTests {
                 route: ImportedRoute(points: []),
                 sourceFileName: "\(id).gpx", sourceFileData: Data(), addedAt: addedAt)
         }
-        let records = [
-            record("loose-new", addedAt: base),                          // newest
-            record("filed-1", addedAt: base.addingTimeInterval(-10)),
-            record("filed-2", addedAt: base.addingTimeInterval(-20)),
-            record("loose-old", addedAt: base.addingTimeInterval(-30)),  // oldest
-        ]
-        let trip = TripRecord(
-            id: TripID("t"), name: "Trip", stageIDs: [RouteID("filed-1"), RouteID("filed-2")],
-            addedAt: base.addingTimeInterval(-15))
+        let records = [record("new", addedAt: base), record("old", addedAt: base.addingTimeInterval(-30))]
+        let trip = Trip(id: TripID("t"), name: "Trip", bikeType: .road, addedAt: base.addingTimeInterval(-15))
 
         let items = PlannedItem.partition(records: records, trips: [trip])
 
-        // Filed routes are not loose rows; the trip stands in for them.
-        #expect(items.map(\.id) == ["route:loose-new", "trip:t", "route:loose-old"])
+        #expect(items.map(\.id) == ["route:new", "trip:t", "route:old"])
     }
 
-    // MARK: List model — filed/loose from the fixture
-
     @Test
-    func fixtureTripFilesItsStagesAndLeavesLooseRoutes() {
-        let (model, _) = makeModel()
-
-        #expect(model.trips.count == 1)
-        #expect(model.trip(tripID)?.stageIDs == [stageA, stageB])
-
-        // All five planned routes still resolve (a stage must open its detail).
-        #expect(model.routes.count == 5)
-
-        let ids = model.plannedItems.map(\.id)
-        #expect(ids.contains("trip:driftless-weekender"))
-        #expect(!ids.contains("route:devils-lake-overnighter"))  // filed
-        #expect(!ids.contains("route:cross-plains-gravel"))      // filed
-        #expect(ids.contains("route:kettle-moraine-loop"))       // loose
-        #expect(ids.filter { $0.hasPrefix("route:") }.count == 3)
-    }
-
-    // MARK: Trip stats
-
-    @Test
-    func tripStatsSumTheMemberRoutes() {
-        let (model, control) = makeModel()
-        let members = control.fixtures.routes.filter { $0.summary.id == stageA || $0.summary.id == stageB }
-        let expectedDistance = members.reduce(0) { $0 + $1.summary.distanceMeters }
-        let expectedClimb = members.reduce(0) { $0 + $1.summary.elevationGainMeters }
-
+    func tripStatsSumTheDayRoutes() {
+        let model = makeModel()
+        let days = model.tripDays(tripID)
         let stats = model.tripStats(tripID)
-        #expect(stats.stageCount == 2)
-        #expect(stats.distanceMeters == expectedDistance)
-        #expect(stats.elevationGainMeters == expectedClimb)
+        #expect(days.map(\.name) == ["Devil's Lake Overnighter", "Cross-Plains Gravel"])
+        #expect(stats.dayCount == 2)
+        #expect(stats.distanceMeters == days.reduce(0) { $0 + $1.distanceMeters })
+        #expect(stats.distanceMeters > 0)
     }
 
-    // MARK: Dissolve on last remove
-
     @Test
-    func removingTheLastStageDissolvesTheTripAndKeepsTheRoutes() {
-        let (model, _) = makeModel()
-
-        let dissolvedFirst = model.removeStage(stageA, from: tripID)
-        #expect(dissolvedFirst == false)
-        #expect(model.trip(tripID)?.stageIDs == [stageB])
-        #expect(model.plannedItems.map(\.id).contains("route:devils-lake-overnighter"))
-
-        let dissolvedSecond = model.removeStage(stageB, from: tripID)
-        #expect(dissolvedSecond == true)
+    func deleteTripRemovesItFromTheList() {
+        let model = makeModel()
+        model.deleteTrip(tripID)
         #expect(model.trip(tripID) == nil)
-        #expect(model.trips.isEmpty)
-        #expect(model.routes.count == 5)
-        let ids = model.plannedItems.map(\.id)
-        #expect(ids.contains("route:devils-lake-overnighter"))
-        #expect(ids.contains("route:cross-plains-gravel"))
-    }
-
-    // MARK: Reorder stages
-
-    @Test
-    func reorderPersistsTheNewRideOrder() {
-        let control = MockControl(scenario: .happyPath)
-        control.latency = .zero
-        control.loadFixtures("trips")
-        let library = InMemoryLibraryStore()
-        control.seedLibrary(into: library)
-        let model = MainScreenModel(transport: MockTransport(control: control), library: library)
-        model.start()
-
-        // Move stage B (index 1) before stage A, with SwiftUI onMove semantics.
-        model.reorderTripStages(tripID, from: IndexSet(integer: 1), to: 0)
-
-        #expect(model.trip(tripID)?.stageIDs == [stageB, stageA])
-        #expect(model.tripStages(tripID).map(\.id) == [stageB, stageA])
-        // The store's persisted order, read fresh rather than from the mirror.
-        #expect(library.trips().first { $0.id == tripID }?.stageIDs == [stageB, stageA])
-    }
-
-    // MARK: Delete-dialog composition
-
-    @Test
-    func ungroupDropsTheTripButKeepsEveryRoute() {
-        let (model, _) = makeModel()
-
-        model.ungroupTrip(tripID)
-
-        #expect(model.trip(tripID) == nil)
-        #expect(model.routes.count == 5)  // routes untouched
-        let ids = model.plannedItems.map(\.id)
-        #expect(ids.contains("route:devils-lake-overnighter"))
-        #expect(ids.contains("route:cross-plains-gravel"))
-        #expect(!ids.contains { $0.hasPrefix("trip:") })
-    }
-
-    @Test
-    func deleteTripAndRoutesRemovesTheTripAndItsMembers() {
-        let (model, _) = makeModel()
-
-        model.deleteTripAndRoutes(tripID)
-
-        #expect(model.trip(tripID) == nil)
+        #expect(!model.plannedItems.map(\.id).contains { $0.hasPrefix("trip:") })
         #expect(model.routes.count == 3)
-        let ids = model.plannedItems.map(\.id)
-        #expect(!ids.contains("route:devils-lake-overnighter"))
-        #expect(!ids.contains("route:cross-plains-gravel"))
-        #expect(ids.contains("route:kettle-moraine-loop"))
     }
 
-    // MARK: Trip badge composition (pure)
-
     @Test
-    func tripBadgeIsUpToDateOnlyWhenTripAndEveryStageAre() {
+    func tripBadgeIsUpToDateOnlyWhenTripAndEveryDayAre() {
         #expect(
-            MainScreenModel.composeTripState(tripSelf: .upToDate, stageStates: [.upToDate, .upToDate])
+            MainScreenModel.composeTripState(tripSelf: .upToDate, dayStates: [.upToDate, .upToDate])
                 == .upToDate)
         #expect(
-            MainScreenModel.composeTripState(tripSelf: .upToDate, stageStates: [.upToDate, .outdated])
+            MainScreenModel.composeTripState(tripSelf: .upToDate, dayStates: [.upToDate, .outdated])
                 == .outdated)
         #expect(
-            MainScreenModel.composeTripState(tripSelf: .outdated, stageStates: [.upToDate])
+            MainScreenModel.composeTripState(tripSelf: .outdated, dayStates: [.upToDate])
                 == .outdated)
-        // A trip object not on the device gets no badge, whatever the stages say.
+        // A trip object not on the device gets no badge, whatever the days say.
         #expect(
-            MainScreenModel.composeTripState(tripSelf: .notOnDevice, stageStates: [.upToDate])
+            MainScreenModel.composeTripState(tripSelf: .notOnDevice, dayStates: [.upToDate])
                 == .notOnDevice)
-        #expect(MainScreenModel.composeTripState(tripSelf: .upToDate, stageStates: []) == .notOnDevice)
+        #expect(MainScreenModel.composeTripState(tripSelf: .upToDate, dayStates: []) == .notOnDevice)
     }
 }

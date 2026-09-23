@@ -21,24 +21,15 @@ public protocol LibraryStore: Sendable {
     /// Insert or replace a record under its id: also the write path for renames and for the
     /// uploaded-to-device flip.
     func savePlannedRoute(_ record: PlannedRouteRecord)
-    /// Delete a planned route. Also prunes the id from any trip that holds it, because a route
-    /// cannot linger as a dangling stage once its record is gone; a trip left with no stages
-    /// dissolves.
+    /// Delete a planned route.
     func deletePlannedRoute(_ id: RouteID)
 
     // MARK: Trips
 
-    /// Every saved trip, newest first. A read drops stage ids whose planned-route record is gone,
-    /// so a returned trip's stages are always resolvable, and a trip left with no resolvable stage
-    /// is dropped.
-    func trips() -> [TripRecord]
-    /// Insert or replace a trip under its id. Enforces the invariant that a `RouteID` lives in at
-    /// most one trip: saving a trip removes its stages from every other stored trip, and any other
-    /// trip thereby emptied dissolves. The routes themselves are untouched.
-    func saveTrip(_ record: TripRecord)
-    /// Delete a trip, with ungroup semantics only. The member route records are untouched and
-    /// become top-level; the caller composes a "delete trip and routes" cascade from this and the
-    /// per-route deletes.
+    /// Every saved trip, newest first.
+    func trips() -> [Trip]
+    /// Insert or replace a trip under its id. A trip owns its line, so it touches no route.
+    func saveTrip(_ trip: Trip)
     func deleteTrip(_ id: TripID)
 
     // MARK: Tracked rides
@@ -120,7 +111,7 @@ extension LibraryStore {
 public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private let lock = NSLock()
     private var planned: [RouteID: PlannedRouteRecord] = [:]
-    private var storedTrips: [TripID: TripRecord] = [:]
+    private var storedTrips: [TripID: Trip] = [:]
     private var summaries: [RideID: RideSummary] = [:]
     private var points: [RideID: [RidePoint]] = [:]
     private var synced: Set<RideID> = []
@@ -138,57 +129,21 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     }
 
     public func deletePlannedRoute(_ id: RouteID) {
-        lock.withLock {
-            planned[id] = nil
-            pruneStageFromTrips(id)
-        }
+        lock.withLock { planned[id] = nil }
     }
 
     // MARK: Trips
 
-    public func trips() -> [TripRecord] {
-        lock.withLock {
-            let alive = Set(planned.keys)
-            return storedTrips.values
-                .compactMap { trip -> TripRecord? in
-                    var trip = trip
-                    trip.stageIDs = trip.stageIDs.filter(alive.contains)
-                    return trip.stageIDs.isEmpty ? nil : trip
-                }
-                .sorted { $0.addedAt > $1.addedAt }
-        }
+    public func trips() -> [Trip] {
+        lock.withLock { storedTrips.values.sorted { $0.addedAt > $1.addedAt } }
     }
 
-    public func saveTrip(_ record: TripRecord) {
-        lock.withLock {
-            storedTrips[record.id] = record
-            // Invariant: a RouteID lives in at most one trip. Strip the saved trip's stages from
-            // every other trip; one thereby emptied dissolves.
-            let claimed = Set(record.stageIDs)
-            for (id, var other) in storedTrips where id != record.id {
-                let kept = other.stageIDs.filter { !claimed.contains($0) }
-                guard kept.count != other.stageIDs.count else { continue }
-                if kept.isEmpty {
-                    storedTrips[id] = nil
-                } else {
-                    other.stageIDs = kept
-                    storedTrips[id] = other
-                }
-            }
-        }
+    public func saveTrip(_ trip: Trip) {
+        lock.withLock { storedTrips[trip.id] = trip }
     }
 
     public func deleteTrip(_ id: TripID) {
         lock.withLock { storedTrips[id] = nil }
-    }
-
-    /// Remove `route` from every trip that holds it; a trip left with no stages dissolves. The
-    /// caller holds `lock`.
-    private func pruneStageFromTrips(_ route: RouteID) {
-        for (id, var trip) in storedTrips where trip.stageIDs.contains(route) {
-            trip.stageIDs.removeAll { $0 == route }
-            storedTrips[id] = trip.stageIDs.isEmpty ? nil : trip
-        }
     }
 
     public func rideSummaries() -> [RideSummary] {

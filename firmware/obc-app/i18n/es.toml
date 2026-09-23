@@ -357,11 +357,12 @@ on_phone = "en el móvil"
 title = "SALIDAS"
 no_rides = "Sin salidas"
 no_rides_sub = "Graba una salida"
-not_synced = "sin sincr."
+of = "de"
+days = "días"
+trip = "Viaje"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "sincr."
 delete_ride = "Borrar salida"
 
 # --- Route menu screen ---

@@ -33,6 +33,7 @@ fn palette_quantizes_to_documented_device64() {
         ("BREADCRUMB", BREADCRUMB, (0, 0, 170)),
         ("TRACK_START", TRACK_START, (0, 85, 0)),
         ("TRACK_END", TRACK_END, (170, 0, 0)),
+        ("TRAIL", TRAIL, (170, 0, 0)),
         ("CONTOUR", CONTOUR, (85, 85, 85)),
     ];
     for &(name, c, want) in cases {
