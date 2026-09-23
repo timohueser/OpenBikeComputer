@@ -118,6 +118,8 @@ public final class MainScreenModel {
     @ObservationIgnored private var tripDayCache: [TripID: (trip: Trip, days: [TripDayRoute])] = [:]
     /// Names the place at a coordinate, such as its locality. Nil in tests and previews.
     private let placeName: (@Sendable (Coordinate) async -> String?)?
+    /// The trip reviews' place names, for the session.
+    private let placeNameCache: PlaceNameCache?
     /// Finds stops near trip lines for the session. Nil in tests and previews.
     public let stopFinder: StopFinder?
     /// The in-flight transfer ledger. Nil in tests and previews.
@@ -142,6 +144,7 @@ public final class MainScreenModel {
         now: @escaping () -> Date = Date.init
     ) {
         self.placeName = placeName
+        placeNameCache = placeName.map(PlaceNameCache.init(lookup:))
         self.stopFinder = stopSearch.map(StopFinder.init)
         self.transport = transport
         self.library = library
@@ -935,9 +938,13 @@ public final class MainScreenModel {
         saveEditedTrip(trip)
     }
 
-    /// The trip review of a trip over the rides as the list shows them. It loads on `start()`.
-    public func tripJournal(_ id: TripID) -> TripJournalModel? {
-        trip(id).map { TripJournalModel(trip: $0, rides: rides, library: library, placeName: placeName) }
+    /// The model of one trip page's review. It reads the geocoder through the session's cache.
+    public func tripJournal() -> TripJournalModel {
+        var placeName: (@Sendable (Coordinate) async -> String?)?
+        if let cache = placeNameCache {
+            placeName = { await cache.name(at: $0) }
+        }
+        return TripJournalModel(library: library, placeName: placeName)
     }
 
     /// The stops of one day end, for the stops sheet. Nil for the last day, which ends at the line

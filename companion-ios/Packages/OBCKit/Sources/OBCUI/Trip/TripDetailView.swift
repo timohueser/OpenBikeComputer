@@ -39,7 +39,8 @@ public struct TripDetailView: View {
     @State private var stopsModel: TripStopsModel?
     /// The trip review, once the trip has a ride.
     @State private var journal: TripJournalModel?
-    /// Coming back from a ride reloads the journal, which may hold a new note or new photos.
+    /// Each open of the page, and each return from a ride, which may bring a new note or new photos,
+    /// loads the journal again.
     @State private var appearances = 0
 
     @Environment(\.obcIsOnline) private var isOnline
@@ -77,9 +78,9 @@ public struct TripDetailView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if let journal, let review = journal.review {
-                    journalHeader(journal, review)
-                    journalEntries(journal)
+                if let journal, let review = journal.review, let shown = journal.trip {
+                    journalHeader(journal, review, shown)
+                    journalEntries(journal, shown)
                     let unridden = review.days.indices.filter { review.days[$0].rides.isEmpty }
                     if !unridden.isEmpty {
                         OBCEyebrow("Still to ride")
@@ -118,10 +119,12 @@ public struct TripDetailView: View {
         .toolbar { overflowMenu }
         .accessibilityIdentifier("trip.screen")
         .onAppear { appearances += 1 }
+        // Once per open: the first pass runs before `onAppear` counts it.
         .task(id: journalInput) {
-            let next = model.tripJournal(tripID)
-            await next?.start()
-            journal = next?.review == nil ? nil : next
+            guard appearances > 0, let trip else { return }
+            let journal = journal ?? model.tripJournal()
+            self.journal = journal
+            await journal.load(trip: trip, rides: journalInput.rides)
         }
         .obcRenameAlert(
             "Rename trip",
@@ -281,8 +284,9 @@ public struct TripDetailView: View {
 
     /// The line with the ridden part solid in the trail colour, the rest dashed, a transfer
     /// dotted with its mark, the day ends, the photos, and where the last ride stopped.
-    private func journalMap(_ journal: TripJournalModel) -> some View {
-        let trip = journal.trip
+    /// `shown` is the trip the journal read; the transfer labels come from the trip as it is now.
+    private func journalMap(_ journal: TripJournalModel, _ shown: Trip) -> some View {
+        let trip = shown
         let stages = journal.runs.map { run in
             switch run.kind {
             case .ridden: MultiTrackPreviewView.Stage(coordinates: run.coordinates, color: OBCTheme.trackStroke)
@@ -290,15 +294,13 @@ public struct TripDetailView: View {
             case .transfer: MultiTrackPreviewView.Stage(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [1.5, 4])
             }
         }
-        let transfers = zip(
-            trip.dayEnds.indices.dropLast().filter { trip.endsAtTransfer($0) },
-            journal.runs.filter { $0.kind == .transfer }
-        ).map { day, run in
-            MultiTrackPreviewView.Pin(
+        let transfers = journal.transfers.keys.sorted().compactMap { day -> MultiTrackPreviewView.Pin? in
+            guard let start = trip.dayStart(day + 1)?.coordinate else { return nil }
+            let end = trip.dayEnds[day].coordinate
+            return MultiTrackPreviewView.Pin(
                 coordinate: Coordinate(
-                    latitude: (run.coordinates[0].latitude + run.coordinates[1].latitude) / 2,
-                    longitude: (run.coordinates[0].longitude + run.coordinates[1].longitude) / 2),
-                color: OBCTheme.inkSoft, systemImage: trip.dayEnds[day].transfer?.systemImage ?? "arrow.right")
+                    latitude: (end.latitude + start.latitude) / 2, longitude: (end.longitude + start.longitude) / 2),
+                color: OBCTheme.inkSoft, systemImage: transferKind(day)?.systemImage ?? "arrow.right")
         }
         let stopped = journal.review?.days.last { $0.endedAt != nil }?.endedAt.map {
             MultiTrackPreviewView.Pin(coordinate: trip.measuredLine.coordinate(at: $0), color: OBCTheme.forest)
@@ -310,12 +312,17 @@ public struct TripDetailView: View {
             .accessibilityIdentifier("trip.journal.map")
     }
 
-    private func journalHeader(_ journal: TripJournalModel, _ review: TripReview) -> some View {
-        let progress = review.currentDay.map { "day \($0 + 1) of \(journal.trip.dayCount)" }
+    /// The label of the transfer after `day`, as the rider set it last.
+    private func transferKind(_ day: Int) -> TransferKind? {
+        trip?.dayEnds[safe: day]?.transfer
+    }
+
+    private func journalHeader(_ journal: TripJournalModel, _ review: TripReview, _ shown: Trip) -> some View {
+        let progress = review.currentDay.map { "day \($0 + 1) of \(shown.dayCount)" }
         let dateLine = [model.tripDateLine(tripID), progress].compactMap { $0 }.joined(separator: " · ")
         return VStack(alignment: .leading, spacing: 0) {
-            journalMap(journal)
-            Text(journal.trip.name)
+            journalMap(journal, shown)
+            Text(trip?.name ?? shown.name)
                 .font(.obcSerif(size: 28))
                 .foregroundStyle(OBCTheme.ink)
                 .padding(.top, 16)
@@ -334,19 +341,15 @@ public struct TripDetailView: View {
 
     /// The ridden days in order, each with the transfer after it and the offer under the day that
     /// ended far from its plan.
-    private func journalEntries(_ journal: TripJournalModel) -> some View {
-        let trip = journal.trip
-        return ForEach(journal.entries) { entry in
+    private func journalEntries(_ journal: TripJournalModel, _ trip: Trip) -> some View {
+        ForEach(journal.entries) { entry in
             TripJournalDayEntry(
                 number: entry.day + 1, title: trip.dayEnds[entry.day].title, header: entry.header, note: entry.note,
                 photos: entry.photos, thumbnails: entry.thumbnails, rides: entry.rides, onOpenRide: onOpenRide)
                 .padding(.top, 28)
                 .accessibilityIdentifier("trip.journal.day.\(entry.day)")
-            if trip.endsAtTransfer(entry.day) {
-                TripJournalTransfer(
-                    kind: trip.dayEnds[entry.day].transfer, from: trip.dayEnds[entry.day].name,
-                    to: journal.transferDestinations[entry.day]
-                ) { model.setTripTransfer(tripID, day: entry.day, to: $0) }
+            if let places = journal.transfers[entry.day] {
+                TripJournalTransfer(kind: transferKind(entry.day), from: places.from, to: places.to) { model.setTripTransfer(tripID, day: entry.day, to: $0) }
                     .padding(.top, 22)
                     .accessibilityIdentifier("trip.journal.transfer.\(entry.day)")
             }

@@ -74,24 +74,33 @@ extension Trip {
     }
 
     /// Reverse the whole trip: the direction and the order of the days. Every day end keeps its
-    /// place, its place name and its transfer; the start and the last day end swap place names. Every day keeps
-    /// its own name. The trip gets a new key,
-    /// so device progress of the old direction does not carry over. Returns the day ends the
-    /// change dropped.
+    /// place and its place name; the start and the last day end swap place names. A day end at a
+    /// transfer keeps its boundary and its transfer: it moves to the other side of the gap, and
+    /// the two place names of the boundary swap with it. Every day keeps its own name. The trip
+    /// gets a new key, so device progress of the old direction does not carry over. Returns the
+    /// day ends the change dropped.
     @discardableResult
     public mutating func reverse() -> [DayEnd] {
         guard line.count > 1 else { return [] }
         let length = measuredLine.length
         let count = line.count
+        // Where the next day starts, for each day end at a transfer.
+        let resumes = dayEnds.indices.map { transferStart(after: $0).map { line[$0].coordinate } }
         line = ImportedRoute(points: line).reversed().points
         // A gap into point i lies between i-1 and i; reversed, it leads into point count-i.
         pieceStarts = pieceStarts.map { count - $0 }.sorted()
         // Old day k becomes day n-1-k, and now ends where it used to start.
         let titles = Array(dayEnds.map(\.title).reversed())
-        let interior = dayEnds.dropLast().reversed().enumerated().map { day, end in
-            DayEnd(
-                coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance,
-                stop: end.stop, transfer: end.transfer)
+        let interior = zip(dayEnds, resumes).dropLast().reversed().enumerated().map { day, pair in
+            let (end, resume) = pair
+            guard let resume else {
+                return DayEnd(
+                    coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance,
+                    stop: end.stop)
+            }
+            return DayEnd(
+                coordinate: resume, name: end.resumeName, title: titles[day], distance: length - end.distance,
+                transfer: end.transfer, resumeName: end.name)
         }
         let endName = dayEnds.last?.name
         dayEnds = interior + [DayEnd(

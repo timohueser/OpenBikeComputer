@@ -46,16 +46,16 @@ extension Trip {
     }
 
     /// Where `day` starts: the line start, the next piece after a transfer, or the day end before
-    /// it. The name is nil after a transfer, because the phone names only day ends and the start.
+    /// it, with the place name the trip keeps for it.
     public func dayStart(_ day: Int) -> (coordinate: Coordinate, name: String?)? {
         guard dayEnds.indices.contains(day) else { return nil }
         guard day > 0 else { return line.first.map { ($0.coordinate, startName) } }
-        if let start = transferStart(after: day - 1) { return (line[start].coordinate, nil) }
+        if let start = transferStart(after: day - 1) { return (line[start].coordinate, dayEnds[day - 1].resumeName) }
         return (dayEnds[day - 1].coordinate, dayEnds[day - 1].name)
     }
 
     /// The line index where the next day starts after a transfer at the end of `day`.
-    private func transferStart(after day: Int) -> Int? {
+    func transferStart(after day: Int) -> Int? {
         guard dayEnds.indices.contains(day) else { return nil }
         let vertices = measuredLine.vertices
         return pieceStarts.first { start in

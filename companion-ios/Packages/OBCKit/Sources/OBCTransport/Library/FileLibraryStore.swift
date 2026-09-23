@@ -627,6 +627,7 @@ private struct DayEndDTO: Codable {
     var distance: Double
     var stop: StopDTO?
     var transfer: String?
+    var resumeName: String?
 
     init(_ end: DayEnd) {
         lat = end.coordinate.latitude
@@ -636,12 +637,13 @@ private struct DayEndDTO: Codable {
         distance = end.distance
         stop = end.stop.map(StopDTO.init)
         transfer = end.transfer?.rawValue
+        resumeName = end.resumeName
     }
 
     var domain: DayEnd {
         DayEnd(
             coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance,
-            stop: stop?.domain, transfer: transfer.flatMap(TransferKind.init(rawValue:)))
+            stop: stop?.domain, transfer: transfer.flatMap(TransferKind.init(rawValue:)), resumeName: resumeName)
     }
 }
 

@@ -10,9 +10,9 @@ struct TripReviewTests {
         Coordinate(latitude: 46.5 + y / 111_320, longitude: 8 + x / (111_320 * cos(46.5 * Double.pi / 180)))
     }
 
-    /// A straight file east along y = 0, a point every 100 m.
+    /// A straight file along y = 0, a point every 100 m.
     private func file(_ from: Double, _ to: Double) -> [RoutePoint] {
-        stride(from: from, through: to, by: 100).map { RoutePoint(coordinate: coordinate($0)) }
+        stride(from: from, through: to, by: to >= from ? 100 : -100).map { RoutePoint(coordinate: coordinate($0)) }
     }
 
     /// One day per `(from, to)` pair in km. A file that starts away from the last end is a transfer.
@@ -22,9 +22,9 @@ struct TripReviewTests {
             id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
     }
 
-    /// A track east along y = 0 from `from` to `to` km, a sample every 20 m.
+    /// A track along y = 0 from `from` to `to` km, a sample every 20 m.
     private func track(_ from: Double, _ to: Double) -> [RidePoint] {
-        stride(from: from * 1_000, through: to * 1_000, by: 20).map { point(coordinate($0)) }
+        stride(from: from * 1_000, through: to * 1_000, by: to >= from ? 20 : -20).map { point(coordinate($0)) }
     }
 
     private func point(_ coordinate: Coordinate, elevation: Double? = nil) -> RidePoint {
@@ -95,6 +95,18 @@ struct TripReviewTests {
         #expect(abs(review.ridden[1].lowerBound - 6_000) < Trip.coverSampleMeters)
         #expect(abs(review.ridden[1].upperBound - 20_000) < 1)
         #expect(abs(review.days[0].endedAt! - 8_000) < 1)
+    }
+
+    @Test
+    func theReturnOfAnOutAndBackStaysOnTheReturnLeg() throws {
+        // Out 10 km, back to the start, then 10 km the other way.
+        let trip = trip([(0, 10), (10, 0), (0, -10)])
+        let review = try #require(TripReview(
+            trip: trip, rides: [ride("d2", day: 1, of: trip)], tracks: [RideID("d2"): track(10, 0)]))
+        #expect(review.ridden.count == 1)
+        #expect(abs(review.ridden[0].lowerBound - 10_000) < Trip.coverSampleMeters)
+        #expect(abs(review.ridden[0].upperBound - 20_000) < 1)
+        #expect(abs(try #require(review.days[1].endedAt) - 20_000) < 1)
     }
 
     @Test

@@ -27,10 +27,12 @@ public struct DayEnd: Equatable, Sendable {
     /// How the rider travels on from here when the next day starts elsewhere. Phone-only: the
     /// device knows a transfer by its geometry alone.
     public var transfer: TransferKind?
+    /// The name of the place where the next day starts, when that is across a transfer.
+    public var resumeName: String?
 
     public init(
         coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double, stop: Stop? = nil,
-        transfer: TransferKind? = nil
+        transfer: TransferKind? = nil, resumeName: String? = nil
     ) {
         self.coordinate = coordinate
         self.name = name
@@ -38,6 +40,7 @@ public struct DayEnd: Equatable, Sendable {
         self.distance = distance
         self.stop = stop
         self.transfer = transfer
+        self.resumeName = resumeName
     }
 }
 
