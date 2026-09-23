@@ -74,7 +74,7 @@ extension Trip {
     }
 
     /// Reverse the whole trip: the direction and the order of the days. Every day end keeps its
-    /// place and its place name; the start and the last day end swap place names. Every day keeps
+    /// place, its place name and its transfer; the start and the last day end swap place names. Every day keeps
     /// its own name. The trip gets a new key,
     /// so device progress of the old direction does not carry over. Returns the day ends the
     /// change dropped.
@@ -91,7 +91,7 @@ extension Trip {
         let interior = dayEnds.dropLast().reversed().enumerated().map { day, end in
             DayEnd(
                 coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance,
-                stop: end.stop)
+                stop: end.stop, transfer: end.transfer)
         }
         let endName = dayEnds.last?.name
         dayEnds = interior + [DayEnd(

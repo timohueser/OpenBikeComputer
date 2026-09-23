@@ -23,8 +23,12 @@ struct TripReviewTests {
     }
 
     /// A track east along y = 0 from `from` to `to` km, a sample every 20 m.
-    private func track(_ from: Double, _ to: Double) -> [Coordinate] {
-        stride(from: from * 1_000, through: to * 1_000, by: 20).map { coordinate($0) }
+    private func track(_ from: Double, _ to: Double) -> [RidePoint] {
+        stride(from: from * 1_000, through: to * 1_000, by: 20).map { point(coordinate($0)) }
+    }
+
+    private func point(_ coordinate: Coordinate, elevation: Double? = nil) -> RidePoint {
+        RidePoint(timestamp: Date(timeIntervalSince1970: 0), coordinate: coordinate, elevationMeters: elevation)
     }
 
     private func ride(
@@ -81,7 +85,7 @@ struct TripReviewTests {
     func theRiddenPartFollowsTheTrackAndSkipsADetour() throws {
         let trip = trip([(0, 10), (10, 20)])
         // Day 1 rides 0–4 km, leaves the line 1 km north until 6 km, and rides on to 8 km.
-        let detour = track(0, 4) + [coordinate(4_000, 1_000), coordinate(6_000, 1_000)] + track(6, 8)
+        let detour = track(0, 4) + [point(coordinate(4_000, 1_000)), point(coordinate(6_000, 1_000))] + track(6, 8)
         // Day 2 starts again at 7.5 km, so the two rides overlap.
         let review = try #require(TripReview(
             trip: trip, rides: [ride("d1", day: 0, of: trip), ride("d2", day: 1, of: trip, hour: 24)],
@@ -97,11 +101,40 @@ struct TripReviewTests {
     func aSparseTrackCoversTheLineInOnePart() throws {
         let trip = trip([(0, 10)])
         // A sample every 1 km, farther apart than the join allowance alone.
-        let sparse = stride(from: 0.0, through: 10_000, by: 1_000).map { coordinate($0) }
+        let sparse = stride(from: 0.0, through: 10_000, by: 1_000).map { point(coordinate($0)) }
         let review = try #require(TripReview(
             trip: trip, rides: [ride("d1", day: 0, of: trip)], tracks: [RideID("d1"): sparse]))
         #expect(review.ridden.count == 1)
         #expect(abs(review.ridden[0].upperBound - 10_000) < 1)
+    }
+
+    @Test
+    func theMapRunsSplitAtTheRiddenBoundAndCrossATransfer() throws {
+        let trip = trip([(0, 10), (15, 25)])
+        let review = try #require(TripReview(
+            trip: trip, rides: [ride("d1", day: 0, of: trip)], tracks: [RideID("d1"): track(0, 4.04)]))
+        let runs = trip.runs(ridden: review.ridden)
+        #expect(runs.map(\.kind) == [.ridden, .planned, .transfer, .planned])
+        #expect(runs[0].coordinates.last!.distance(to: runs[1].coordinates.first!) == 0)
+        #expect(runs[0].coordinates.last!.distance(to: coordinate(4_040)) < 1, "the cut falls inside a segment")
+        #expect(runs[2].coordinates.map { $0.distance(to: coordinate(10_000)) }.first! < 1)
+        #expect(runs[2].coordinates.map { $0.distance(to: coordinate(15_000)) }.last! < 1)
+    }
+
+    @Test
+    func theHighPointAndTheBiggestDayComeFromTheRides() throws {
+        let trip = trip([(0, 10), (10, 20), (20, 30)])
+        let tracks = [
+            RideID("d1"): [point(coordinate(0), elevation: 500), point(coordinate(5_000), elevation: 2_431)],
+            RideID("d2"): [point(coordinate(10_000), elevation: 900)],
+        ]
+        let one = try #require(TripReview(trip: trip, rides: [ride("d1", day: 0, of: trip, km: 12)], tracks: tracks))
+        #expect(one.highPoint?.elevationMeters == 2_431)
+        #expect(one.biggestDay == nil, "one ridden day is no contest")
+        let two = try #require(TripReview(
+            trip: trip, rides: [ride("d1", day: 0, of: trip, km: 12), ride("d2", day: 1, of: trip, km: 9, hour: 24)],
+            tracks: tracks))
+        #expect(two.biggestDay == 0)
     }
 
     @Test

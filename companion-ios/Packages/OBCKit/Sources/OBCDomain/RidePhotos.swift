@@ -117,6 +117,8 @@ public enum RidePhotoPlacement {
 public enum RideQuietRow: String, CaseIterable, Sendable {
     case photos
     case note
+    /// The trip review's offer to even out the days after this ride's day.
+    case rebalance
 }
 
 /// What the phone adds to a synced ride. The device copy never has it.

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import OBCDomain
+@testable import OBCDomain
 @testable import OBCTransport
 
 /// Trip persistence: a trip round-trips its line, pieces, day ends, stops and device copies through
@@ -44,6 +44,7 @@ struct TripLibraryStoreTests {
         t.reverse()
         t.renameDay(0, to: "Andermatt")
         t.uploadedKey = 42
+        t.dayEnds[0].transfer = .ferry
         t.startDay = CivilDay(daysSince1970: 20_725)
         let link = DeviceRouteLink(serial: "OBC-001", storeID: "000000000000000000000000a1b2c3d4", objectID: DeviceObjectID(5))
         t.deviceLink = link

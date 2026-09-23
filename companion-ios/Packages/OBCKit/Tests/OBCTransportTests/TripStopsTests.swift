@@ -103,6 +103,41 @@ struct TripStopsTests {
     }
 
     @Test
+    func aTransferLabelStaysWithItsBoundary() throws {
+        // A train from 10 km to 11 km, after day 1.
+        var trip = Trip.joining(
+            [file(0, 10_000), file(11_000, 20_000), file(20_000, 30_000)],
+            id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
+        #expect(abs(try #require(trip.transferMeters(after: 0)) - 1_000) < 2)
+        #expect(trip.transferMeters(after: 1) == nil)
+        trip.setTransfer(1, to: .bus)
+        #expect(trip.dayEnds[1].transfer == nil, "no transfer to label")
+
+        trip.setTransfer(0, to: .train)
+        trip.append(file(30_000, 40_000))
+        #expect(trip.dayEnds[0].transfer == .train, "a re-projection keeps it")
+        trip.reverse()
+        #expect(trip.dayEnds.map(\.transfer) == [nil, nil, .train, nil], "the boundary is now after day 3")
+        #expect(trip.endsAtTransfer(2))
+        trip.setTransfer(2, to: nil)
+        #expect(trip.dayEnds[2].transfer == nil)
+    }
+
+    @Test
+    func aDayAfterATransferStartsWhereItsPieceStarts() throws {
+        var trip = Trip.joining(
+            [file(0, 10_000), file(11_000, 20_000), file(20_000, 30_000)],
+            id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
+        trip.startName = "Andermatt"
+        trip.namePlace(0, to: "Göschenen")
+        trip.namePlace(1, to: "Ulrichen")
+        let starts = try (0..<3).map { try #require(trip.dayStart($0)) }
+        #expect(starts.map(\.name) == ["Andermatt", nil, "Ulrichen"])
+        #expect(starts[1].coordinate.distance(to: coordinate(11_000)) < 1)
+        #expect(starts[2].coordinate.distance(to: coordinate(20_000)) < 1)
+    }
+
+    @Test
     func reverseKeepsTheStopWithItsPlace() {
         var trip = trip()
         let camp = trip.place([stop("Camp", 12_000, 100)], near: 10_000)[0]

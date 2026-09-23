@@ -26,12 +26,39 @@ extension Trip {
     /// A day end where the next day starts farther away than this is a transfer.
     public static let transferMinMeters = TripJoin.joinMeters
 
+    /// The straight metres from where `day` ends to where the next day starts, when that is more
+    /// than ``transferMinMeters``; else nil.
+    public func transferMeters(after day: Int) -> Double? {
+        transferStart(after: day).map { line[$0 - 1].coordinate.distance(to: line[$0].coordinate) }
+    }
+
     /// Whether the next day starts more than ``transferMinMeters`` from where `day` ends.
     /// Moving such a day end would put the gap inside a day.
     public func endsAtTransfer(_ day: Int) -> Bool {
-        guard dayEnds.indices.contains(day) else { return false }
+        transferStart(after: day) != nil
+    }
+
+    /// Label the transfer after `day`. Nil clears it. No change where the day does not end at a
+    /// transfer.
+    public mutating func setTransfer(_ day: Int, to kind: TransferKind?) {
+        guard endsAtTransfer(day) else { return }
+        dayEnds[day].transfer = kind
+    }
+
+    /// Where `day` starts: the line start, the next piece after a transfer, or the day end before
+    /// it. The name is nil after a transfer, because the phone names only day ends and the start.
+    public func dayStart(_ day: Int) -> (coordinate: Coordinate, name: String?)? {
+        guard dayEnds.indices.contains(day), let first = line.first else { return nil }
+        if day == 0 { return (first.coordinate, startName) }
+        if let start = transferStart(after: day - 1) { return (line[start].coordinate, nil) }
+        return (dayEnds[day - 1].coordinate, dayEnds[day - 1].name)
+    }
+
+    /// The line index where the next day starts after a transfer at the end of `day`.
+    private func transferStart(after day: Int) -> Int? {
+        guard dayEnds.indices.contains(day) else { return nil }
         let vertices = measuredLine.vertices
-        return pieceStarts.contains { start in
+        return pieceStarts.first { start in
             abs(vertices[start].distance - dayEnds[day].distance) < MeasuredLine.tieMeters
                 && line[start - 1].coordinate.distance(to: line[start].coordinate) > Self.transferMinMeters
         }
