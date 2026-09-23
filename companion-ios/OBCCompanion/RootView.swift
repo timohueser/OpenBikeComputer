@@ -292,8 +292,10 @@ struct RootView: View {
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 // A trip choice moves the route into the trip and opens the trip page.
+                // A new trip from one file opens in the day editor's split mode.
                 if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
                     path = [.trip(id: tripID)]
+                    if case .new = tripSelection { path.append(.dayEditor(id: tripID, isSplitMode: true)) }
                 }
                 importModel.closeImport()
             },
@@ -469,8 +471,16 @@ struct RootView: View {
                     }
                 },
                 onOpenRide: { path.append(.ride(id: $0)) },
+                onEvenOut: { offer in Task { await mainModel.evenOutDays(id, from: offer.fixedBefore) } },
+                onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) },
                 onOpenDay: { path.append(.tripDay(id: id, day: $0)) }
             )
+        case .dayEditor(let id, let isSplitMode):
+            DayEditorHost(make: { mainModel.dayEditor(id, isSplitMode: isSplitMode) }) {
+                if let index = path.lastIndex(of: .dayEditor(id: id, isSplitMode: isSplitMode)) {
+                    path.removeSubrange(index...)
+                }
+            }
         case .tripDay(let id, let day):
             if let trip = mainModel.trip(id), let route = mainModel.tripDays(id).first(where: { $0.day == day }) {
                 RouteDetailScreen(
@@ -560,11 +570,29 @@ struct RootView: View {
     }
 }
 
+/// Owns the day editor's draft for the screen's life. The destination body runs on every pass
+/// of the root, so the model is made once, on appear, not in the body.
+private struct DayEditorHost: View {
+    let make: () -> TripDayEditorModel?
+    let onClose: () -> Void
+    @State private var model: TripDayEditorModel?
+
+    var body: some View {
+        if let model {
+            TripDayEditorView(model: model, onClose: onClose)
+        } else {
+            OBCTheme.parchment.ignoresSafeArea().onAppear { model = make() }
+        }
+    }
+}
+
 /// Pushed-detail routing. Carries only ids, so the screens look the live summary up in
 /// `MainScreenModel` and a rename mid-stack stays consistent.
 enum MainDestination: Hashable {
     case route(id: RouteID)
     case trip(id: TripID)
+    /// The trip's day editor, in split mode when one file just became the trip.
+    case dayEditor(id: TripID, isSplitMode: Bool)
     case tripDay(id: TripID, day: Int)
     case ride(id: RideID)
     case trash

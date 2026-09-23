@@ -41,6 +41,15 @@ enum GalleryStops {
         index: 0, name: "Water · Obergesteln", distanceAlongMeters: 0,
         coordinate: Coordinate(latitude: 46.5147, longitude: 8.3242))
 
+    /// The sample line as one file, the way "Start a trip" hands it to the day editor.
+    static func oneFile() -> Trip {
+        let points = SampleLine.alps.vertices.map { RoutePoint(coordinate: $0.coordinate, elevationMeters: $0.elevation) }
+        return Trip.joining(
+            [points], names: ["Alps traverse"], waypoints: [[waypoint]], id: TripID("gallery-file"),
+            name: "Alps traverse", bikeType: .gravel, now: Date(timeIntervalSince1970: 0)
+        ).withPlaceName("Brig", day: 0)
+    }
+
     /// The sample line as two days, the first ending at Ulrichen.
     static func trip(waypoints: Bool) -> Trip {
         let points = SampleLine.alps.vertices.map {
@@ -63,7 +72,7 @@ private extension Trip {
     }
 }
 
-private struct GalleryStopSearch: StopSearch {
+struct GalleryStopSearch: StopSearch {
     let stops: [Stop]
 
     func stops(near center: Coordinate, radius: Double) async throws -> [Stop] {

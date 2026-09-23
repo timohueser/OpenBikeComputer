@@ -40,12 +40,30 @@ public final class LineMarkerEditorModel {
     public private(set) var dashedSegments: Set<Int>
     /// The marker under a finger, or under VoiceOver's adjustment. One at a time.
     public private(set) var activeID: LineMarker.ID?
-    /// Known stops near the line: small pins on the map and marks along the top of the profile.
+    /// The markers as they stood before the drag in flight: what the static profile layer and
+    /// the map's colour runs draw until the finger lets go.
+    public private(set) var restingMarkers: [LineMarker]
+    /// The part of the line the profile shows, and the range a drag may take: the whole line,
+    /// or the stretch a map linked to the profile shows.
+    public private(set) var window: ClosedRange<Double>
+    /// A window the map asked for during a drag.
+    private var pendingWindow: ClosedRange<Double>?
+    /// Known stops near the line: small pins on the map.
     public var stops: [PlacedStop] = []
     @ObservationIgnored public var onEvent: (LineMarkerEvent) -> Void
+    /// A finger that touched a handle and lifted without moving it.
+    @ObservationIgnored public var onTap: (LineMarker.ID) -> Void = { _ in }
+    /// The map settled close enough for stop pins, over this stretch of the line.
+    @ObservationIgnored public var onCloseUp: (ClosedRange<Double>) -> Void = { _ in }
+    /// The title of the one action a stop's map callout offers, or nil for no action.
+    @ObservationIgnored public var stopActionTitle: (PlacedStop) -> String? = { _ in nil }
+    @ObservationIgnored public var onStopAction: (PlacedStop) -> Void = { _ in }
 
-    /// The profile resampled by distance, so a 50,000-point line draws as a few hundred.
+    /// The window resampled by distance: a 50,000-point line draws as a few hundred samples,
+    /// and a 1 km window of a 600 km line keeps its shape.
     private(set) var profile: [ProfileSample] = []
+    /// About one sample per point of plot width.
+    static let profileSamples = 400
     private(set) var elevationRange: ClosedRange<Double> = 0...1
 
     /// `nil` for a line with fewer than two vertices: there is nothing to put a marker on.
@@ -58,8 +76,11 @@ public final class LineMarkerEditorModel {
     ) {
         guard line.vertices.count > 1 else { return nil }
         precondition(segmentColors.count == markers.count + 1, "one colour per segment")
+        let ordered = Self.ordered(markers, on: line)
         self.line = line
-        self.markers = Self.ordered(markers, on: line)
+        self.markers = ordered
+        restingMarkers = ordered
+        window = 0...max(line.length, 1)
         self.segmentColors = segmentColors
         self.dashedSegments = dashedSegments
         self.onEvent = onEvent
@@ -73,8 +94,47 @@ public final class LineMarkerEditorModel {
         precondition(segmentColors.count == markers.count + 1, "one colour per segment")
         end()
         self.markers = Self.ordered(markers, on: line)
+        restingMarkers = self.markers
         self.segmentColors = segmentColors
         self.dashedSegments = dashedSegments
+    }
+
+    // MARK: The profile window
+
+    /// Show on the profile the stretch the map shows. `pieces` are the parts of the line in
+    /// view, in line order; `centre` is the distance of the line point in view nearest the map
+    /// centre. A drag keeps its window: a map moved under it applies when the finger lifts.
+    public func showVisible(_ pieces: [ClosedRange<Double>], centre: Double) {
+        guard let range = Self.window(visible: pieces, centre: centre) else { return }
+        if activeID == nil { setWindow(range) } else { pendingWindow = range }
+    }
+
+    /// From the first metre in view to the last. When the hidden part between the pieces is
+    /// longer than the pieces together, as on a loop or an out-and-back with both ends in view,
+    /// only the piece nearest `centre`.
+    static func window(visible pieces: [ClosedRange<Double>], centre: Double) -> ClosedRange<Double>? {
+        guard let first = pieces.first, let last = pieces.last else { return nil }
+        let shown = pieces.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        guard last.upperBound - first.lowerBound - shown > shown else { return first.lowerBound...last.upperBound }
+        func gap(_ piece: ClosedRange<Double>) -> Double {
+            piece.contains(centre) ? 0 : min(abs(piece.lowerBound - centre), abs(piece.upperBound - centre))
+        }
+        return pieces.min { gap($0) < gap($1) }
+    }
+
+    /// The window held inside the line, sampled afresh; the elevation scale follows it.
+    func setWindow(_ range: ClosedRange<Double>) {
+        let low = min(max(range.lowerBound, 0), line.length)
+        window = low...max(min(range.upperBound, line.length), low + 1)
+        let count = min(max(line.vertices.count, 2), Self.profileSamples)
+        let span = window.upperBound - window.lowerBound
+        profile = (0..<count).map { i -> ProfileSample in
+            let distance = window.lowerBound + span * Double(i) / Double(count - 1)
+            return ProfileSample(distance: distance, elevation: line.elevation(at: distance))
+        }
+        let lo = profile.map(\.elevation).min() ?? 0
+        let hi = profile.map(\.elevation).max() ?? 0
+        elevationRange = lo...max(hi, lo + 1)
     }
 
     /// A new line (a join, a reverse, a reroute) with its markers. Ignored for a line with
@@ -101,14 +161,8 @@ public final class LineMarkerEditorModel {
     }
 
     private func resample() {
-        let count = min(max(line.vertices.count, 2), 320)
-        profile = (0..<count).map { i -> ProfileSample in
-            let distance = line.length * Double(i) / Double(count - 1)
-            return ProfileSample(distance: distance, elevation: line.elevation(at: distance))
-        }
-        let lo = profile.map(\.elevation).min() ?? 0
-        let hi = profile.map(\.elevation).max() ?? 0
-        elevationRange = lo...max(hi, lo + 1)
+        pendingWindow = nil
+        setWindow(0...line.length)
     }
 
     // MARK: Lookups
@@ -161,21 +215,23 @@ public final class LineMarkerEditorModel {
 
     // MARK: Moves
 
-    /// Take the marker. Refused while another marker is held, so a second finger changes
-    /// nothing until the first lets go.
+    /// Take the marker. Refused for a fixed marker, and while another marker is held, so a
+    /// second finger changes nothing until the first lets go.
     @discardableResult
     public func begin(_ id: LineMarker.ID) -> Bool {
-        guard activeID == nil, marker(id) != nil else { return false }
+        guard activeID == nil, let marker = marker(id), !marker.isFixed else { return false }
         activeID = id
         onEvent(.began(id))
         return true
     }
 
-    /// Move the held marker to a distance along the line, between its neighbours. Any
+    /// Move the held marker to a distance along the line, between its neighbours and inside the
+    /// window. Any
     /// other marker, held by nobody or by another finger, stays.
     public func move(_ id: LineMarker.ID, to distance: Double) {
         guard activeID == id, let index = index(of: id) else { return }
-        let clamped = LineMarker.clamp(distance, forMarkerAt: index, in: markers, length: line.length)
+        let held = LineMarker.clamp(distance, forMarkerAt: index, in: markers, length: line.length)
+        let clamped = min(max(held, window.lowerBound), window.upperBound)
         guard clamped != markers[index].distance else { return }
         markers[index].distance = clamped
         onEvent(.moved(id, distance: clamped))
@@ -193,7 +249,18 @@ public final class LineMarkerEditorModel {
     public func end() {
         guard let id = activeID, let marker = marker(id) else { return }
         activeID = nil
+        restingMarkers = markers
         onEvent(.ended(id, distance: marker.distance))
+        if let pendingWindow {
+            self.pendingWindow = nil
+            setWindow(pendingWindow)
+        }
+    }
+
+    /// A touch on the handle that never became a drag.
+    public func tap(_ id: LineMarker.ID) {
+        guard marker(id) != nil else { return }
+        onTap(id)
     }
 
     /// One VoiceOver step: a whole move in one call.

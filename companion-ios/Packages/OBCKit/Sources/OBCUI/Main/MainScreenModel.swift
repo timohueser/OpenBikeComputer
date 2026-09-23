@@ -956,6 +956,37 @@ public final class MainScreenModel {
         }
     }
 
+    /// Even out the days after `from` by riding time, snapped to the stops near the new ends:
+    /// the trip review's offer. The days before `from` and every day end at a transfer stay.
+    public func evenOutDays(_ id: TripID, from: Double) async {
+        guard var trip = trip(id) else { return }
+        let before = trip.dayEnds.map(\.distance)
+        trip.evenOut(from: from, candidates: trip.place(trip.waypoints))
+        let ends = trip.dayEnds.dropLast().map(\.distance).filter { $0 > from }
+        let found = (try? await stopFinder?.stops(near: ends, on: trip.measuredLine)) ?? []
+        // A move that landed during the search wins: the offer was for the day ends before it.
+        // A place name written meanwhile does not count.
+        guard var current = self.trip(id), current.dayEnds.map(\.distance) == before else { return }
+        let candidates = current.place(current.waypoints) + zip(found, ends).flatMap { current.place($0, near: $1) }
+        current.evenOut(from: from, candidates: candidates)
+        saveEditedTrip(current)
+        nameDayEnds(id)
+    }
+
+    /// The day editor of a trip. Done writes the draft's day ends into the trip as it is then,
+    /// so an upload or a reconcile that ran meanwhile keeps its links.
+    public func dayEditor(_ id: TripID, isSplitMode: Bool) -> TripDayEditorModel? {
+        guard let trip = trip(id) else { return nil }
+        return TripDayEditorModel(
+            trip: trip, isSplitMode: isSplitMode, finder: stopFinder, placeName: placeName
+        ) { [weak self] edited in
+            guard let self, var current = self.trip(id) else { return }
+            current.replaceDayEnds(from: edited)
+            self.saveEditedTrip(current)
+            self.nameDayEnds(id)
+        }
+    }
+
     /// End a day at a stop: the day end moves to the line point nearest the stop and takes its
     /// name.
     public func endTripDay(_ id: TripID, day: Int, at stop: PlacedStop) {
