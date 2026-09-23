@@ -22,7 +22,6 @@ public struct TripDetailView: View {
     private let onEvenOut: ((RebalanceOffer) -> Void)?
 
     @State private var renameShown = false
-    @State private var renameDraft = ""
     @State private var deleteDialogShown = false
     /// The whole-trip upload sheet's driver, created once at the Upload tap. A model built inline
     /// in the `.sheet` closure would rebuild on every body pass and restart the queue.
@@ -31,7 +30,6 @@ public struct TripDetailView: View {
     /// driver exists.
     @State private var isPreparingUpload = false
     @State private var dayRename: Int?
-    @State private var dayDraft = ""
     @State private var startDateShown = false
     /// The full-screen interactive trip map.
     @State private var mapShown = false
@@ -126,12 +124,12 @@ public struct TripDetailView: View {
             self.journal = journal
             await journal.load(trip: trip, rides: journalInput.rides)
         }
-        .obcRenameAlert(
+        .obcRenameSheet(
             "Rename trip",
             isPresented: $renameShown,
-            name: $renameDraft,
+            name: trip?.name ?? "",
             onSave: {
-                let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !name.isEmpty { model.renameTrip(tripID, to: name) }
             }
         )
@@ -146,12 +144,12 @@ public struct TripDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .obcRenameAlert(
+        .obcRenameSheet(
             "Rename day",
             isPresented: Binding(get: { dayRename != nil }, set: { if !$0 { dayRename = nil } }),
-            name: $dayDraft,
+            name: dayRename.flatMap { trip?.dayEnds[safe: $0]?.title } ?? "",
             onSave: {
-                if let day = dayRename { model.renameTripDay(tripID, day: day, to: dayDraft) }
+                if let day = dayRename { model.renameTripDay(tripID, day: day, to: $0) }
             }
         )
         .sheet(isPresented: $startDateShown) {
@@ -247,10 +245,10 @@ public struct TripDetailView: View {
                         .joined(separator: " · "),
                     showsDivider: index != indices.last
                 ) {
-                    renameDay(index)
+                    dayRename = index
                 }
                 .contextMenu {
-                    Button { renameDay(index) } label: { Label("Rename day", systemImage: "pencil") }
+                    Button { dayRename = index } label: { Label("Rename day", systemImage: "pencil") }
                     if index < days.count - 1 {
                         Button {
                             stopsModel = model.tripStops(tripID, day: index, isOnline: isOnline)
@@ -267,11 +265,6 @@ public struct TripDetailView: View {
                 }
             }
         }
-    }
-
-    private func renameDay(_ day: Int) {
-        dayDraft = trip?.dayEnds[safe: day]?.title ?? ""
-        dayRename = day
     }
 
     /// "330 m off the line" when the day ends at a stop away from the line.
@@ -419,7 +412,6 @@ public struct TripDetailView: View {
         ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button {
-                    renameDraft = trip?.name ?? ""
                     renameShown = true
                 } label: { Label("Rename", systemImage: "pencil") }
                 .accessibilityIdentifier("trip.rename")

@@ -64,22 +64,21 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(element.exists, "\(label) row missing")
     }
 
-    /// Rename through the text-field alert; the new name shows in Settings and on the main top bar.
+    /// Rename through the rename sheet; the new name shows in Settings and on the main top bar.
     @MainActor
     func testRenameDeviceShowsAcrossTheApp() {
         let app = launch()
         openSettings(app)
 
         app.staticTexts["Rename device"].tap()
-        let alert = app.alerts["Rename device"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "H3 alert missing")
+        let field = app.textFields["rename.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "H3 rename sheet missing")
         snap(app, "H3-rename-device")
 
-        let field = alert.textFields.firstMatch
         field.tap()
         field.clearText()
         field.typeText("Summit")
-        alert.buttons["Save"].tap()
+        app.buttons["rename.save"].tap()
 
         XCTAssertTrue(app.staticTexts["Summit"].waitForExistence(timeout: 5),
                       "settings kept the old name")
