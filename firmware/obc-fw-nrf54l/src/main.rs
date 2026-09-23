@@ -286,8 +286,8 @@ static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 /// on the stack.
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars, style table, LOD pyramid), parsed once at boot and
-/// borrowed by every per-frame `Reader`. Resident so no frame does a style-table read or a ~4 KB
-/// parse on the deep render path.
+/// borrowed by every per-frame `Reader`. Resident so no frame repeats the parse or style-table
+/// reads on the deep render path.
 static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, built in place like [`MAP_CACHE`]. It spares the render and
@@ -310,6 +310,23 @@ static mut TERRAIN_WINDOW: MaybeUninit<obc_formats::io::WindowSource<'static>> =
 /// per point.
 #[cfg(has_nav)]
 static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
+
+/// Parse and place the immutable map tables without retaining the by-value result in the async
+/// boot frame. The parse temporary lives only in this shallow synchronous frame; the caller keeps
+/// the returned pointer-sized result across recovery awaits.
+///
+/// # Safety
+/// `slot` must be the uniquely owned static map-table slot and must be written only by this call.
+#[inline(never)]
+unsafe fn parse_map_tables(
+    map: &'static dyn obc_formats::io::ByteSource,
+    slot: *mut MaybeUninit<MapTables>,
+) -> Result<&'static MapTables, obc_reader::Error> {
+    let tables = MapTables::parse(map)?;
+    let ptr = slot as *mut MapTables;
+    ptr.write(tables);
+    Ok(&*ptr)
+}
 
 /// Mount the map's embedded terrain into the `.bss` [`TERRAIN`] slot and hand back the sampler.
 ///
@@ -889,17 +906,12 @@ async fn main(_spawner: Spawner) {
 
         // Parse the OBCM header, style table and LOD pyramid once at boot into the resident
         // [`MAP_TABLES`]. They are immutable for the session, so the per-frame readers borrow them
-        // instead of re-parsing: no per-frame style-table read, and no ~4 KB parse on the deep render
-        // path. The transient parse cost is paid here, where the call stack is shallow.
+        // instead of re-parsing. The transient parse cost is paid here, where the call stack is
+        // shallow.
         // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
         let map_tables: &MapTables = unsafe {
-            let parsed = MapTables::parse(flat_map);
-            let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
-            match parsed {
-                Ok(t) => {
-                    slot.write(t);
-                    &*slot
-                }
+            match parse_map_tables(flat_map, core::ptr::addr_of_mut!(MAP_TABLES)) {
+                Ok(tables) => tables,
                 Err(e) => {
                     defmt::error!(
                         "map: not valid OBCM: {} — showing MAP UNREADABLE with USB recovery",

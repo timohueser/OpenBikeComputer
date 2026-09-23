@@ -24,16 +24,29 @@ public struct DayEnd: Equatable, Sendable {
     public var distance: Double
     /// The stop the rider ended the day at. The day end sits on the line point nearest it.
     public var stop: Stop?
+    /// How the rider travels on from here when the next day starts elsewhere. Phone-only: the
+    /// device knows a transfer by its geometry alone.
+    public var transfer: TransferKind?
+    /// The name of the place where the next day starts, when that is across a transfer.
+    public var resumeName: String?
 
     public init(
-        coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double, stop: Stop? = nil
+        coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double, stop: Stop? = nil,
+        transfer: TransferKind? = nil, resumeName: String? = nil
     ) {
         self.coordinate = coordinate
         self.name = name
         self.title = title
         self.distance = distance
         self.stop = stop
+        self.transfer = transfer
+        self.resumeName = resumeName
     }
+}
+
+/// How a transfer between two days goes.
+public enum TransferKind: String, CaseIterable, Sendable {
+    case train, bus, ferry, car
 }
 
 /// The device copy of one day route: the same link and fingerprint a planned route keeps.

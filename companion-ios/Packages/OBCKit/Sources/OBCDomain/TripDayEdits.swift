@@ -29,17 +29,18 @@ extension Trip {
         let ends = DayBalance.ends(on: measured, bikeType: bikeType, days: days, candidates: candidates)
         dayEnds = ends.map { end in
             DayEnd(coordinate: measured.coordinate(at: end.distance), name: end.stop?.name, distance: end.distance, stop: end.stop)
-        } + [DayEnd(coordinate: last.coordinate, name: last.name, distance: last.distance)]
+        } + [DayEnd(coordinate: last.coordinate, name: last.name, distance: last.distance, transfer: last.transfer, resumeName: last.resumeName)]
     }
 
     /// Re-balance the day ends after `from` by riding time, keeping the number of days and each
-    /// day's own name. A day end at a transfer stays, and the days on each side of it are
-    /// balanced among themselves. `from` is where the balance starts: the line start, or the
-    /// position a trip review re-plans from.
+    /// day's own name. A day end at a transfer stays, with its transfer, and the days on each
+    /// side of it are balanced among themselves. `from` is where the balance starts: the line
+    /// start, or the position a trip review re-plans from.
     public mutating func evenOut(from: Double = 0, candidates: [PlacedStop]) {
         let measured = measuredLine
         var stretchStart = from
-        var first = dayEnds.firstIndex { $0.distance > from } ?? dayEnds.count
+        // An end within a tie of `from` is the one the balance starts after, not one to move.
+        var first = dayEnds.firstIndex { $0.distance > from + MeasuredLine.tieMeters } ?? dayEnds.count
         while first < dayEnds.count - 1 {
             // The stretch runs up to the next fixed end: a transfer, or the line end.
             var fixed = first

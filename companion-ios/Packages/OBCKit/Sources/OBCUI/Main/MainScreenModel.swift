@@ -118,6 +118,8 @@ public final class MainScreenModel {
     @ObservationIgnored private var tripDayCache: [TripID: (trip: Trip, days: [TripDayRoute])] = [:]
     /// Names the place at a coordinate, such as its locality. Nil in tests and previews.
     private let placeName: (@Sendable (Coordinate) async -> String?)?
+    /// The trip reviews' place names, for the session.
+    private let placeNameCache: PlaceNameCache?
     /// Finds stops near trip lines for the session. Nil in tests and previews.
     public let stopFinder: StopFinder?
     /// The in-flight transfer ledger. Nil in tests and previews.
@@ -142,6 +144,7 @@ public final class MainScreenModel {
         now: @escaping () -> Date = Date.init
     ) {
         self.placeName = placeName
+        placeNameCache = placeName.map(PlaceNameCache.init(lookup:))
         self.stopFinder = stopSearch.map(StopFinder.init)
         self.transport = transport
         self.library = library
@@ -928,6 +931,22 @@ public final class MainScreenModel {
         nameDayEnds(id)
     }
 
+    /// Label the transfer after a day, or clear it. Phone-only: no upload carries it.
+    public func setTripTransfer(_ id: TripID, day: Int, to kind: TransferKind?) {
+        guard var trip = trip(id) else { return }
+        trip.setTransfer(day, to: kind)
+        saveEditedTrip(trip)
+    }
+
+    /// The model of one trip page's review. It reads the geocoder through the session's cache.
+    public func tripJournal() -> TripJournalModel {
+        var placeName: (@Sendable (Coordinate) async -> String?)?
+        if let cache = placeNameCache {
+            placeName = { await cache.name(at: $0) }
+        }
+        return TripJournalModel(library: library, placeName: placeName)
+    }
+
     /// The stops of one day end, for the stops sheet. Nil for the last day, which ends at the line
     /// end.
     public func tripStops(_ id: TripID, day: Int, isOnline: Bool) -> TripStopsModel? {
@@ -935,6 +954,20 @@ public final class MainScreenModel {
         return TripStopsModel(trip: trip, day: day, finder: stopFinder, isOnline: isOnline) { [weak self] stop in
             self?.endTripDay(id, day: day, at: stop)
         }
+    }
+
+    /// Even out the days after `from` by riding time, snapped to the stops near the new ends:
+    /// the trip review's offer. The days before `from` and every day end at a transfer stay.
+    public func evenOutDays(_ id: TripID, from: Double) async {
+        guard var trip = trip(id) else { return }
+        trip.evenOut(from: from, candidates: trip.place(trip.waypoints))
+        let ends = trip.dayEnds.dropLast().map(\.distance).filter { $0 > from }
+        let found = (try? await stopFinder?.stops(near: ends, on: trip.measuredLine)) ?? []
+        guard var current = self.trip(id), current.dayEnds == self.trip(id)?.dayEnds else { return }
+        let candidates = current.place(current.waypoints) + zip(found, ends).flatMap { current.place($0, near: $1) }
+        current.evenOut(from: from, candidates: candidates)
+        saveEditedTrip(current)
+        nameDayEnds(id)
     }
 
     /// The day editor of a trip. Done writes the draft's day ends into the trip as it is then,

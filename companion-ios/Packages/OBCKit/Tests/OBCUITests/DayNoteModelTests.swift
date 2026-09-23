@@ -49,6 +49,18 @@ struct DayNoteModelTests {
         #expect(again.dismissed)
     }
 
+    @Test func closingTheRowKeepsPhotosAddedSinceStart() async throws {
+        let ride = try ride("a")
+        let day = model(ride)
+        await day.start()
+        var journal = library.rideJournal(ride.id)
+        journal.add([RidePhoto(assetID: "p1", takenAt: ride.date)])
+        library.saveRideJournal(journal, thumbnails: [:], for: ride.id)
+
+        day.openWriter()
+        #expect(library.rideJournal(ride.id).photos.map(\.assetID) == ["p1"])
+    }
+
     @Test func aDismissedRowStaysGone() async throws {
         let ride = try ride("a")
         let first = model(ride)
@@ -114,6 +126,24 @@ struct DayNoteModelTests {
         let ride = try ride("a", trip: RideTrip(key: trip.key, dayIndex: 1, dayCount: 2, name: trip.name))
 
         let day = model(ride) { _ in "Geocoded" }
+        await day.start()
+        #expect(day.header.hasSuffix(" · Andermatt → Ulrichen · 74 km"))
+    }
+
+    @Test func aDayAfterATransferStartsAtItsOwnPlace() async throws {
+        // Day 1 ends at Göschenen; the train takes the rider on to Andermatt.
+        func file(_ lat: Double, _ lon: Double) -> [RoutePoint] {
+            [0, 0.01].map { RoutePoint(coordinate: Coordinate(latitude: lat, longitude: lon + $0)) }
+        }
+        var trip = Trip.joining(
+            [file(46.67, 8.58), file(46.63, 8.59)], id: TripID("t"), name: "Alps traverse", bikeType: .road, now: Date())
+        trip.namePlace(0, to: "Göschenen")
+        trip.namePlace(1, to: "Ulrichen")
+        #expect(trip.endsAtTransfer(0))
+        library.saveTrip(trip)
+        let ride = try ride("a", trip: RideTrip(key: trip.key, dayIndex: 1, dayCount: 2, name: trip.name))
+
+        let day = model(ride) { $0.latitude > 46.6 ? "Andermatt" : "Brig" }
         await day.start()
         #expect(day.header.hasSuffix(" · Andermatt → Ulrichen · 74 km"))
     }

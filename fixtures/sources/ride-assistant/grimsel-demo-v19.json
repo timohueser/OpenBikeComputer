@@ -1,10 +1,23 @@
 {
   "schema": 1,
   "artifact": "apps/obc-sim/assets/grimsel-demo.obcm",
-  "obcm_version": 18,
+  "obcm_version": 19,
   "map": {
-    "bytes": 10083328,
-    "sha256": "802e112298388a7145538569498b2e29a753b803d5fa32b327b286db93408377"
+    "bytes": 10084352,
+    "sha256": "6aedecd2d20ba254fd8b4f37ee744afec125c19291571d997069af872ecf3c4f",
+    "format_upgrade": {
+      "input_sha256": "802e112298388a7145538569498b2e29a753b803d5fa32b327b286db93408377",
+      "input_obcm_version": 18,
+      "dark_skin": {
+        "path": "builder/presets/skins/dusk.json",
+        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+      },
+      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer. The demo recipe pads the result to a 512-byte boundary.",
+      "transformer": {
+        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
+        "name": "upgrade_obcm_v18_to_v19.py"
+      }
+    }
   },
   "producer_commit": "e0a047c6c",
   "obc_pack_sha256": "a73373000d77ec3ed7be073fd32d364b5557dca5be1647050de2e08025a48d68",

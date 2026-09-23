@@ -34,8 +34,13 @@ mod web {
     impl JsSkinPreview {
         /// Open the canonical map and apply the initial skin.
         #[wasm_bindgen(constructor)]
-        pub fn new(map: Vec<u8>, schema_json: &str, skin_json: &str) -> Result<JsSkinPreview, JsValue> {
-            MapPreview::open(map, schema_json, skin_json).map(JsSkinPreview).map_err(to_js)
+        pub fn new(
+            map: Vec<u8>,
+            schema_json: &str,
+            light_skin_json: &str,
+            dark_skin_json: &str,
+        ) -> Result<JsSkinPreview, JsValue> {
+            MapPreview::open(map, schema_json, light_skin_json, dark_skin_json).map(JsSkinPreview).map_err(to_js)
         }
 
         #[wasm_bindgen(getter)]
@@ -50,8 +55,12 @@ mod web {
 
         /// Restamp presentation bytes only. Geometry stays resident and is not decoded or
         /// assembled again.
-        pub fn set_skin(&mut self, skin_json: &str) -> Result<(), JsValue> {
-            self.0.set_skin(skin_json).map_err(to_js)
+        pub fn set_styles(&mut self, light_skin_json: &str, dark_skin_json: &str) -> Result<(), JsValue> {
+            self.0.set_styles(light_skin_json, dark_skin_json).map_err(to_js)
+        }
+
+        pub fn set_theme(&mut self, dark: bool) {
+            self.0.set_style_set(if dark { obc_reader::MapStyleSet::Dark } else { obc_reader::MapStyleSet::Light });
         }
 
         /// Move the map by a screen-space drag delta. Positive values move the rendered map right

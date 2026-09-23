@@ -33,7 +33,7 @@ describe("parseCellIndex", () => {
         const doc = parseCellIndex(EXAMPLE_CELL_INDEX, exampleCatalog, fineRef);
         expect(doc.band).toBe("fine");
         expect(doc.cells.map((c) => c.id)).toEqual(["18/1204/1052", "18/1204/1053"]);
-        expect(doc.cells[0].bytes).toBe(577);
+        expect(doc.cells[0].bytes).toBe(583);
         expect(doc.cells[0].cell).toEqual({ log2: 18, i: 1204, j: 1052 });
         expect(doc.cells[1].sources.map((s) => s.extract_id)).toEqual([
             "europe/germany/baden-wuerttemberg",

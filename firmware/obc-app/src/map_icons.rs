@@ -422,6 +422,7 @@ fn in_bounds(b: BBox, p: (i32, i32)) -> bool {
 fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
     let rows: [u16; 11] = match kind {
         Kind::Peak => {
+            cv.disc(p, HALO_RADIUS as u32, 0xffff);
             cv.triangle(p + Point::new(0, -4), p + Point::new(-7, 3), p + Point::new(7, 3), 0x0000);
             return;
         }

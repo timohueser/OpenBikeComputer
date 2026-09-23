@@ -26,7 +26,7 @@ describe("parseRoot", () => {
         expect(catalog.schema.revision).toBe(7);
         // The generated example is self-sourced from the format crate's version constant, so this
         // pin is what makes an OBCM bump walk past the site's own catalog reader.
-        expect(catalog.schema.obcm_version).toBe(18);
+        expect(catalog.schema.obcm_version).toBe(19);
         expect(catalog.schema.bands.map((b) => b.id)).toEqual(["coarse", "mid", "fine", "network"]);
         expect(catalog.skins.map((s) => s.id)).toEqual(["contrast", "default"]);
         expect(catalog.skins[0].preview).toBeNull();

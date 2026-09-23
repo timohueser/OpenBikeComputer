@@ -290,7 +290,13 @@ impl RouteMenuScreen {
                     let t = &trips[ti];
                     let x = name_line(cv, &row, &rx.marquee, &t.name, None, INK);
                     let meta = trip_meta(t, t.progress_in(rx.trip_progress), lang, line2_right(&row) - x);
-                    cv.text(&meta, Point::new(x, two_line::line2_y(&row)), LINE2_FONT, TextAlign::Left, LINE2);
+                    cv.text(
+                        &meta,
+                        Point::new(x, two_line::line2_y(&row)),
+                        LINE2_FONT,
+                        TextAlign::Left,
+                        two_line::row_color(&row, LINE2),
+                    );
                 }
                 Row::Route(ri) => draw_route_row(cv, &row, &rx.marquee, &routes[ri], unaccepted(ri)),
                 Row::Day { day, route } => {
@@ -307,7 +313,13 @@ impl RouteMenuScreen {
                     let x = name_line(cv, &row, &rx.marquee, &r.name, tick, ink);
                     let sy = two_line::line2_y(&row);
                     if let Some(label) = unaccepted(route) {
-                        cv.text(label, Point::new(x, sy), LINE2_FONT, TextAlign::Left, LINE2);
+                        cv.text(
+                            label,
+                            Point::new(x, sy),
+                            LINE2_FONT,
+                            TextAlign::Left,
+                            two_line::row_color(&row, LINE2),
+                        );
                         return;
                     }
                     let mut dist: heapless::String<24> = heapless::String::new();
@@ -315,13 +327,13 @@ impl RouteMenuScreen {
                         let _ = write!(dist, "{} · ", tr(weekday(date), lang));
                     }
                     let _ = write!(dist, "{} km", r.distance_km);
-                    cv.text(&dist, Point::new(x, sy), LINE2_FONT, TextAlign::Left, line2);
+                    cv.text(&dist, Point::new(x, sy), LINE2_FONT, TextAlign::Left, two_line::row_color(&row, line2));
                     // The climb follows the distance, because the weekday leaves no room for a
                     // column. It drops whole when the row is too narrow.
                     let climb_x = x + text_width(&dist, LINE2_FONT) as i32 + 8;
                     let climb = climb_label(r.climb_m);
                     if climb_x + CLIMB_GLYPH_W + text_width(&climb, LINE2_FONT) as i32 <= line2_right(&row) {
-                        climb_group(cv, climb_x, sy, &climb, line2);
+                        climb_group(cv, climb_x, sy, &climb, two_line::row_color(&row, line2));
                     }
                 }
             }
@@ -347,7 +359,7 @@ fn name_line(
 ) -> i32 {
     let mut x = two_line::text_x(row);
     if let Some(tick_color) = tick {
-        row_check(cv, two_line::mark_at(row, x + ROW_CHECK_HALF), tick_color);
+        row_check(cv, two_line::mark_at(row, x + ROW_CHECK_HALF), two_line::row_color(row, tick_color));
         x += TICK_W;
     }
     two_line::name_line(cv, row, marquee, name, (x, two_line::name_right(row)), color);
@@ -367,14 +379,14 @@ fn draw_route_row(
     let name_x = name_line(cv, row, marquee, &route.name, None, INK);
     let sy = two_line::line2_y(row);
     if let Some(label) = unavailable {
-        cv.text(label, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, LINE2);
+        cv.text(label, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, two_line::row_color(row, LINE2));
         return;
     }
     let mut dist: heapless::String<12> = heapless::String::new();
     let _ = write!(dist, "{} km", route.distance_km);
-    cv.text(&dist, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, LINE2);
+    cv.text(&dist, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, two_line::row_color(row, LINE2));
 
-    climb_group(cv, climb_col_x(row), sy, &climb_label(route.climb_m), LINE2);
+    climb_group(cv, climb_col_x(row), sy, &climb_label(route.climb_m), two_line::row_color(row, LINE2));
 }
 
 fn climb_label(climb_m: u32) -> heapless::String<12> {

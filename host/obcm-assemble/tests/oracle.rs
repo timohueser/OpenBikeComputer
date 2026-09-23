@@ -430,6 +430,11 @@ fn skin(cfg: &Config) -> Skin {
     Skin { id: "fixture".into(), name: "Fixture".into(), marker_color: cfg.marker_color, styles }
 }
 
+fn map_styles(cfg: &Config) -> obcm_assemble::MapStyles {
+    let light = skin(cfg);
+    obcm_assemble::MapStyles { dark: light.clone(), light }
+}
+
 /// `assemble(cut(X))`: graft every cell the cutter wrote back into one map.
 fn assembled(dir: &Path, cfg: &Config, summary: &CutSummary) -> (Vec<u8>, MemoryStore) {
     let opts = Options { accept_partial: true, ..Default::default() };
@@ -469,7 +474,7 @@ fn assemble_bands(
         .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
         .collect();
     let mut store = MemoryStore::default();
-    let out = assemble(inputs, &schema_with(cfg, band_json), &skin(cfg), opts, &mut store, &NoClock)?;
+    let out = assemble(inputs, &schema_with(cfg, band_json), &map_styles(cfg), opts, &mut store, &NoClock)?;
     Ok((out, store))
 }
 
@@ -910,7 +915,7 @@ fn an_assembly_hands_its_whole_scratch_back() {
         Vec::new(),
         None,
         &schema_with(&cfg, BANDS),
-        &skin(&cfg),
+        &map_styles(&cfg),
         &opts,
         &mut store,
         &NoClock,
@@ -1139,7 +1144,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
             Vec::new(),
             terrain,
             &schema_with(&cfg, BANDS),
-            &skin(&cfg),
+            &map_styles(&cfg),
             &opts,
             &mut store,
             &NoClock,
@@ -1218,11 +1223,12 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
         "the rectangle tiles the box"
     );
 
-    // The header names a region, and the region is where the map ends.
+    // The header names a region. The paired dark style table follows it.
     let src = SliceSource(&with_bytes);
     let tables = MapTables::parse(&src).expect("the map parses");
     let region = tables.terrain().expect("the header names a §1.3 region");
-    assert_eq!(region.offset + region.len, with_bytes.len() as u64, "terrain sits last (§1.3)");
+    let dark_style_offset = u32::from_le_bytes(with_bytes[65..69].try_into().unwrap()) as u64 * 16;
+    assert_eq!(region.offset + region.len, dark_style_offset, "the dark style table follows terrain");
     assert!(region.offset > 0, "…and byte 0 is the header, so a real region never starts there");
     // `Terrain Length` counts units, so the window is the container rounded up — never shorter.
     assert!(region.len >= t.bytes && region.len - t.bytes < 16, "the window is the container plus §1.2 filler");
@@ -1263,12 +1269,12 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     assert_eq!(surface_reader.header().flags, obc_formats::obct::SURFACE_FLAG | obc_formats::obct::CELL_INDEX_FLAG);
     assert_eq!(surface_reader.sample(&mut TileCache::<4>::new(), lat as i32, lon as i32), Some(sampled));
 
-    // Splicing moved no other offset, which is why terrain sits last: the map with a raster is the
-    // map without one, byte for byte, up to the nav section's end.
+    // Splicing moves only the final dark table: every section before the appended terrain stays put.
+    let plain_dark_offset = u32::from_le_bytes(plain_bytes[65..69].try_into().unwrap()) as usize * 16;
     assert_eq!(
-        &with_bytes[obc_formats::obcm::HEADER_LEN..plain_bytes.len()],
-        &plain_bytes[obc_formats::obcm::HEADER_LEN..],
-        "only the header's terrain pair and the appended region differ"
+        &with_bytes[obc_formats::obcm::HEADER_LEN..plain_dark_offset],
+        &plain_bytes[obc_formats::obcm::HEADER_LEN..plain_dark_offset],
+        "only the header, appended terrain, and relocated dark table differ"
     );
     assert_eq!(&with_bytes[..41], &plain_bytes[..41], "and every header field before the pair is unmoved");
 }
@@ -1305,7 +1311,7 @@ impl Loaded {
             })
             .collect();
         let mut store = MemoryStore::default();
-        let out = assemble(inputs, &schema(cfg), &skin(cfg), opts, &mut store, &NoClock)?;
+        let out = assemble(inputs, &schema(cfg), &map_styles(cfg), opts, &mut store, &NoClock)?;
         Ok((out, store))
     }
 
@@ -1386,7 +1392,7 @@ fn the_degenerate_selections_behave() {
         vec![CellInput { id: loaded.cells[one].0, band: "not-a-band".into(), src: &loaded.bytes[one], partial: false }];
     let err = format!(
         "{}",
-        assemble(bogus, &schema(&cfg), &skin(&cfg), &opts, &mut store, &NoClock)
+        assemble(bogus, &schema(&cfg), &map_styles(&cfg), &opts, &mut store, &NoClock)
             .expect_err("a band outside the schema must be refused")
     );
     assert!(err.contains("is not in the schema"), "got: {err}");
@@ -1647,8 +1653,9 @@ fn the_assembler_refuses_what_the_spec_says_it_must() {
         .zip(&sources)
         .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
         .collect();
-    let mut wrong = skin(&cfg);
-    wrong.styles.truncate(2);
+    let mut wrong = map_styles(&cfg);
+    wrong.light.styles.truncate(2);
+    wrong.dark.styles.truncate(2);
     let mut store = MemoryStore::default();
     let err = assemble(inputs, &schema(&cfg), &wrong, &accept_partial, &mut store, &NoClock)
         .expect_err("a skin that does not cover the cells' style ids must be refused");

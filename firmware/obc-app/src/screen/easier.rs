@@ -214,7 +214,7 @@ impl EasierScreen {
 }
 fn button(cv: &mut impl Surface, text: &str) {
     cv.round(rect(12, 280, 216, 32), 6, AMBER);
-    cv.text(text, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
+    cv.text(text, Point::new(120, 282), Font::Body, TextAlign::Center, ON_ACCENT);
 }
 fn fit(b: BBox, w: i32, h: i32) -> Viewport {
     let lat = b.min_lat + (b.max_lat - b.min_lat) / 2;
@@ -288,35 +288,35 @@ fn benefit(
     let mut top = area.top_left.y + (area.size.height as i32 - content_height) / 2;
     cv.round(area, 6, AMBER);
     if let Some(title) = title {
-        cv.text_vcentered(title, center, (top, label_height), Font::Label, TextAlign::Center, INK);
+        cv.text_vcentered(title, center, (top, label_height), Font::Label, TextAlign::Center, ON_ACCENT);
         top += heading_height;
     }
     let row_width = 20 + 8 + obc_render::text::text_width(&text, Font::Display) as i32;
     let left = center - row_width / 2;
-    cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, INK);
+    cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, ON_ACCENT);
     cv.text_vcentered(
         if new > old { rx.t(Msg::AssistantMoreThanNow) } else { label },
         center,
         (top + number_height + 8, label_height),
         Font::Label,
         TextAlign::Center,
-        INK,
+        ON_ACCENT,
     );
     let x = left + 10;
     let y = top + number_height / 2;
     match goal {
-        0 => cv.triangle(Point::new(x - 9, y + 7), Point::new(x, y - 9), Point::new(x + 9, y + 7), INK),
+        0 => cv.triangle(Point::new(x - 9, y + 7), Point::new(x, y - 9), Point::new(x + 9, y + 7), ON_ACCENT),
         1 => {
-            cv.vline(x - 8, y - 9, 18, 2, INK);
-            cv.vline(x + 7, y - 9, 18, 2, INK);
+            cv.vline(x - 8, y - 9, 18, 2, ON_ACCENT);
+            cv.vline(x + 7, y - 9, 18, 2, ON_ACCENT);
             for offset in [-7, 0, 7] {
-                cv.vline(x, y + offset, 3, 1, INK);
+                cv.vline(x, y + offset, 3, 1, ON_ACCENT);
             }
         }
         _ => {
-            cv.hline(x - 8, y, 16, INK);
-            cv.disc(Point::new(x - 8, y), 3, INK);
-            cv.disc(Point::new(x + 8, y), 3, INK);
+            cv.hline(x - 8, y, 16, ON_ACCENT);
+            cv.disc(Point::new(x - 8, y), 3, ON_ACCENT);
+            cv.disc(Point::new(x + 8, y), 3, ON_ACCENT);
         }
     }
 }

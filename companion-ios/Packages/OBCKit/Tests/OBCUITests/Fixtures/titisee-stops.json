@@ -1,0 +1,533 @@
+{
+ "campsites": [
+  {
+   "kind": "campsite",
+   "latitude": 47.88715,
+   "longitude": 8.139582,
+   "mapItemID": "IA744A5B906CB3951",
+   "name": "Sandbank Camping GmbH"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.889939,
+   "longitude": 8.134239,
+   "mapItemID": "IBC0FAB6DACC4E6D9",
+   "name": "Naturcamping Weiherhof"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.885817,
+   "longitude": 8.130575,
+   "mapItemID": "I33957A5287BCA92",
+   "name": "Camping Bankenhof"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.894996,
+   "longitude": 8.137881,
+   "mapItemID": "IE5AC25C16A8BDC0E",
+   "name": "Bühlhof Titisee"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.88978,
+   "longitude": 8.134792,
+   "mapItemID": "I18009B5939E2956E",
+   "name": "Naturcamping Weiherhof"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.905692,
+   "longitude": 8.15808,
+   "mapItemID": "IC271E378CE455722",
+   "name": "Wohnmobil Stellplatz"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.88649,
+   "longitude": 8.13056,
+   "mapItemID": "I30AC86B9500ED821",
+   "name": "Wohnmobil Stellplatz"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.859793,
+   "longitude": 8.114718,
+   "mapItemID": "IB093E2F7709DDBEF",
+   "name": "Wohnmobilstellplatz"
+  }
+ ],
+ "hotels": [
+  {
+   "kind": "hotel",
+   "latitude": 47.900339,
+   "longitude": 8.149329,
+   "mapItemID": "I61FFB814D80BC33",
+   "name": "Seehotel Wiesler"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900218,
+   "longitude": 8.151909,
+   "mapItemID": "I1F2D259869CFC903",
+   "name": "Treschers Schwarzwaldhotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903291,
+   "longitude": 8.153175,
+   "mapItemID": "I2BAA4CCB2393DD93",
+   "name": "Bären"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.89819,
+   "longitude": 8.154996,
+   "mapItemID": "I67C485C90CA9EF3B",
+   "name": "Maritim Titisee Hotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.892773,
+   "longitude": 8.13853,
+   "mapItemID": "IDD6EB99BC1C590CF",
+   "name": "Alemannenhof"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.891728,
+   "longitude": 8.165472,
+   "mapItemID": "IAA5AFAD251869D4",
+   "name": "Saigerhöh"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.893058,
+   "longitude": 8.177938,
+   "mapItemID": "IBA458C1592C7B294",
+   "name": "Hotel Hochfirst Garni"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902862,
+   "longitude": 8.154952,
+   "mapItemID": "I3A1D3ED1B2D5936B",
+   "name": "Coucou Hotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901849,
+   "longitude": 8.154992,
+   "mapItemID": "I8B732310C6200B1E",
+   "name": "Hotel Rheingold Garni"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903819,
+   "longitude": 8.15458,
+   "mapItemID": "I59119D0FBF3808AC",
+   "name": "Action Forest Hotel - Kletterwald - Lasertag - nähe Badeparadies"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.894708,
+   "longitude": 8.139346,
+   "mapItemID": "ID5454A18A8A378F9",
+   "name": "Nature Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900358,
+   "longitude": 8.147528,
+   "mapItemID": "I266317B98F32535",
+   "name": "Brugger's Hotelpark am See"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.892294,
+   "longitude": 8.178063,
+   "mapItemID": "IE4CAA92DF2F99DF",
+   "name": "Boutiquehotel Ochsen"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902049,
+   "longitude": 8.153454,
+   "mapItemID": "IE43EA4A6D5E3A9FC",
+   "name": "Parkhotel Waldeck"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902759,
+   "longitude": 8.107871,
+   "mapItemID": "I13D0D4D2D0323901",
+   "name": "Parkhotel Adler"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903021,
+   "longitude": 8.145673,
+   "mapItemID": "I361D748C52810137",
+   "name": "Hotel zum See, Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.898178,
+   "longitude": 8.156345,
+   "mapItemID": "IBB85FF64BA286CE5",
+   "name": "stuub titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.894883,
+   "longitude": 8.185725,
+   "mapItemID": "IBBCB9DC7BF85D398",
+   "name": "JUFA Hotel Schwarzwald"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.889825,
+   "longitude": 8.127324,
+   "mapItemID": "I906296032FABAA8C",
+   "name": "Feuerwehrhotel Sankt Florian"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901534,
+   "longitude": 8.147315,
+   "mapItemID": "I5DF2C0FBEA59CF76",
+   "name": "Pension Bergseeblick"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903643,
+   "longitude": 8.107435,
+   "mapItemID": "ICD9E69D9BA8E6FB1",
+   "name": "Hotel Reppert"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903304,
+   "longitude": 8.1057,
+   "mapItemID": "I80C31C362169BEBC",
+   "name": "Hotel Imbery"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901948,
+   "longitude": 8.147594,
+   "mapItemID": "IA689207788883A97",
+   "name": "Gästehaus Wald und See"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.888653,
+   "longitude": 8.130557,
+   "mapItemID": "I8FC443569D9DCBCE",
+   "name": "DJH"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901828,
+   "longitude": 8.152408,
+   "mapItemID": "I95FA0A23896082A6",
+   "name": "Hotel Sonneneck"
+  }
+ ],
+ "nearby": [
+  {
+   "kind": "hotel",
+   "latitude": 47.902422,
+   "longitude": 8.155703,
+   "mapItemID": "I5F87BCB431AAC28D",
+   "name": "Apartments Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902224,
+   "longitude": 8.15593,
+   "mapItemID": "I2683971BA6EC99FA",
+   "name": "Gastehaus Birke"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902602,
+   "longitude": 8.155118,
+   "mapItemID": "I79CD89ACD433E241",
+   "name": "Ferienanlage d. Erholungswerks Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902862,
+   "longitude": 8.154952,
+   "mapItemID": "I3A1D3ED1B2D5936B",
+   "name": "Coucou Hotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.904153,
+   "longitude": 8.155293,
+   "mapItemID": "I45F3CF78BEC095EE",
+   "name": "See Event"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901849,
+   "longitude": 8.154992,
+   "mapItemID": "I8B732310C6200B1E",
+   "name": "Hotel Rheingold Garni"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903819,
+   "longitude": 8.15458,
+   "mapItemID": "I59119D0FBF3808AC",
+   "name": "Action Forest Hotel - Kletterwald - Lasertag - nähe Badeparadies"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903804,
+   "longitude": 8.154427,
+   "mapItemID": "I4602C1CE0189EABE",
+   "name": "Hotel Waldlust"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903607,
+   "longitude": 8.154018,
+   "mapItemID": "I24B341AD4ED1731F",
+   "name": "FOREST Private Suites"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901927,
+   "longitude": 8.158168,
+   "mapItemID": "I62CFE584A1E247AF",
+   "name": "Kasita in the Black Forest"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900842,
+   "longitude": 8.157504,
+   "mapItemID": "I166C56C74CA25E6",
+   "name": "Kuckucksnest Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900842,
+   "longitude": 8.157504,
+   "mapItemID": "I290E50E5E86F232C",
+   "name": "Schwarzwald Apartments Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900956,
+   "longitude": 8.157668,
+   "mapItemID": "IA85B7100D67B474D",
+   "name": "Appartementhaus am Hochfirstweg"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902049,
+   "longitude": 8.153454,
+   "mapItemID": "IE43EA4A6D5E3A9FC",
+   "name": "Parkhotel Waldeck"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903291,
+   "longitude": 8.153175,
+   "mapItemID": "I2BAA4CCB2393DD93",
+   "name": "Bären"
+  },
+  {
+   "kind": "campsite",
+   "latitude": 47.905692,
+   "longitude": 8.15808,
+   "mapItemID": "IC271E378CE455722",
+   "name": "Wohnmobil Stellplatz"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901828,
+   "longitude": 8.152408,
+   "mapItemID": "I95FA0A23896082A6",
+   "name": "Hotel Sonneneck"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901374,
+   "longitude": 8.152552,
+   "mapItemID": "IFFDC587345E78851",
+   "name": "Haus Ketterer"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.906639,
+   "longitude": 8.157646,
+   "mapItemID": "I5B50B23C78DDAA94",
+   "name": "Kaltenbach's Appartements"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.906639,
+   "longitude": 8.157646,
+   "mapItemID": "I5FCFD075CB1AF483",
+   "name": "Minaroso"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902381,
+   "longitude": 8.152022,
+   "mapItemID": "IC9D46BFC90214D9",
+   "name": "Crystal Lake"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.9026,
+   "longitude": 8.16001,
+   "mapItemID": "IA1EFDB77F183A628",
+   "name": "Fewo Cheny"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901331,
+   "longitude": 8.152205,
+   "mapItemID": "I3E92A34FCE1B2CEC",
+   "name": "Haus Seestern"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901487,
+   "longitude": 8.152098,
+   "mapItemID": "I6F1C28C3A2EFC18E",
+   "name": "Café Heck"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902454,
+   "longitude": 8.160638,
+   "mapItemID": "I86CBA8EA78FFE8E3",
+   "name": "Pension Tritschler"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.898178,
+   "longitude": 8.156345,
+   "mapItemID": "IBB85FF64BA286CE5",
+   "name": "stuub titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.89819,
+   "longitude": 8.154996,
+   "mapItemID": "I67C485C90CA9EF3B",
+   "name": "Maritim Titisee Hotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900218,
+   "longitude": 8.151909,
+   "mapItemID": "I1F2D259869CFC903",
+   "name": "Treschers Schwarzwaldhotel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901658,
+   "longitude": 8.151173,
+   "mapItemID": "IB76160368DF558D7",
+   "name": "Am Roten Platz"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.896874,
+   "longitude": 8.157593,
+   "mapItemID": "IB330BB9FE80E9287",
+   "name": "Seehäusle Titisee"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901529,
+   "longitude": 8.14967,
+   "mapItemID": "I14790BCFF570775C",
+   "name": "Gastehaus Hochfirstblick"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900989,
+   "longitude": 8.162611,
+   "mapItemID": "IA58C9D6F59A90DAC",
+   "name": "Pension Haus Tannenwiese"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900339,
+   "longitude": 8.149329,
+   "mapItemID": "I61FFB814D80BC33",
+   "name": "Seehotel Wiesler"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901311,
+   "longitude": 8.148692,
+   "mapItemID": "IA408DC47A5B176DA",
+   "name": "Pension Anna"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901135,
+   "longitude": 8.148442,
+   "mapItemID": "I44CD88797B835D61",
+   "name": "Haus am Tannenhain"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901445,
+   "longitude": 8.148367,
+   "mapItemID": "I686B60ABB9E4243A",
+   "name": "Sonnenschein"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901948,
+   "longitude": 8.147594,
+   "mapItemID": "IA689207788883A97",
+   "name": "Gästehaus Wald und See"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902815,
+   "longitude": 8.147351,
+   "mapItemID": "I70EF8D9226002E7A",
+   "name": "Gasthaus Rehwinkel"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.901534,
+   "longitude": 8.147315,
+   "mapItemID": "I5DF2C0FBEA59CF76",
+   "name": "Pension Bergseeblick"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.900358,
+   "longitude": 8.147528,
+   "mapItemID": "I266317B98F32535",
+   "name": "Brugger's Hotelpark am See"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.902061,
+   "longitude": 8.146822,
+   "mapItemID": "I4DBE0A076D92D41C",
+   "name": "Gaestehaus Ferienglueck"
+  },
+  {
+   "kind": "hotel",
+   "latitude": 47.903291,
+   "longitude": 8.146695,
+   "mapItemID": "IBC6415CB334FFDAC",
+   "name": "Haus Hirschbühlweg"
+  }
+ ]
+}

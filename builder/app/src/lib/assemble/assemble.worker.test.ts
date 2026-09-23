@@ -15,7 +15,7 @@ vi.mock("../cells/store", () => ({
 const input = { id: "18/1204/1052", band: "network", partial: false, byteLength: 4, key: "cell" };
 const request = (): Extract<AssembleWorkerRequest, { type: "assemble" }> => ({
     type: "assemble", requireDisk: true, cells: [], sourceCells: [input], cellStore: "revision",
-    knownEmpty: [], schemaJson: "{}", skinJson: "{}", options: {},
+    knownEmpty: [], schemaJson: "{}", lightSkinJson: "{}", darkSkinJson: "{}", options: {},
 });
 
 describe("assembly worker storage admission", () => {
@@ -82,7 +82,7 @@ describe("assembly worker storage admission", () => {
         const terrain = { postingLog2: 14, cellLog2: 19 };
         const terrainCells = [{ id: "19/602/526", sha256: "terrain", bytes: Uint8Array.of(1) }];
         await send({ ...request(), sourceCells: [], cellStore: undefined, knownEmpty: [{ id: input.id, band: input.band }], terrain, terrainCells });
-        expect(seams.assemble.mock.calls[0][6]).toEqual({ lattice: terrain, cells: terrainCells });
+        expect(seams.assemble.mock.calls[0][7]).toEqual({ lattice: terrain, cells: terrainCells });
         expect(messages).toContainEqual({ type: "stored-map", sha256: "abc", byteLength: 4 });
         expect(sink.close).toHaveBeenCalledOnce();
         expect(scratch.discard).toHaveBeenCalledOnce();

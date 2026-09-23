@@ -154,7 +154,9 @@ fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice
             let over_store = MapTables::parse(source).expect("the same map parses over the store");
             assert_eq!(over_store.version, over_slice.version);
             assert_eq!(over_store.bbox, over_slice.bbox);
-            assert_eq!(over_store.marker_color, over_slice.marker_color);
+            for style_set in [obc_reader::MapStyleSet::Light, obc_reader::MapStyleSet::Dark] {
+                assert_eq!(over_store.marker_color(style_set), over_slice.marker_color(style_set));
+            }
             assert_eq!(over_store.lods().len(), over_slice.lods().len(), "the same ladder");
             assert_eq!(over_store.terrain(), over_slice.terrain(), "and the same §1.3 answer");
 

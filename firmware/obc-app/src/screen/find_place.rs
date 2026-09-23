@@ -100,7 +100,7 @@ impl FindPlaceScreen {
                     Point::new(50, y + 5),
                     Font::Body,
                     TextAlign::Left,
-                    INK,
+                    if first + slot == self.selected { ON_ACCENT } else { INK },
                 );
             }
             return;
@@ -136,18 +136,24 @@ impl FindPlaceScreen {
             Point::new(14, 8),
             Font::Body,
             TextAlign::Left,
-            PARCHMENT,
+            BAR_TEXT,
         );
         cv.fill(panel(rx.w, rx.h, RESULTS_PANEL_TOP), PARCHMENT);
         cv.round(rect(10, 210, rx.w - 20, 104), 6, AMBER);
         if self.selected >= count.max(1) {
-            cv.text(rx.t(Msg::AssistantMorePlaces), Point::new(rx.w / 2, 232), Font::Body, TextAlign::Center, INK);
+            cv.text(
+                rx.t(Msg::AssistantMorePlaces),
+                Point::new(rx.w / 2, 232),
+                Font::Body,
+                TextAlign::Center,
+                ON_ACCENT,
+            );
             cv.text(
                 rx.t(Msg::AssistantBrowsePlaces),
                 Point::new(rx.w / 2, 270),
                 Font::Label,
                 TextAlign::Center,
-                SUBTEXT,
+                SUBTEXT_ON_ACCENT,
             );
             return;
         }
@@ -164,7 +170,7 @@ impl FindPlaceScreen {
                 State::Empty => rx.t(Msg::AssistantNoneFound),
                 _ => rx.t(Msg::AssistantFinding),
             };
-            cv.text(title, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
+            cv.text(title, Point::new(18, 236), Font::Body, TextAlign::Left, ON_ACCENT);
             cv.text(
                 if matches!(rx.find.state, State::Empty | State::Ready) {
                     rx.t(Msg::AssistantPartial)
@@ -174,15 +180,15 @@ impl FindPlaceScreen {
                 Point::new(18, 270),
                 Font::Label,
                 TextAlign::Left,
-                SUBTEXT,
+                SUBTEXT_ON_ACCENT,
             );
             return;
         };
         let Some(cost) = rx.find.costs(self.selected) else { return };
-        cv.text(letter(self.selected), Point::new(18, 212), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text(letter(self.selected), Point::new(18, 212), Font::Label, TextAlign::Left, SUBTEXT_ON_ACCENT);
         let mut number = heapless::String::<8>::new();
         let _ = write!(number, "{}/{}", self.selected + 1, count);
-        cv.text(&number, Point::new(rx.w - 18, 212), Font::Label, TextAlign::Right, INK);
+        cv.text(&number, Point::new(rx.w - 18, 212), Font::Label, TextAlign::Right, ON_ACCENT);
         let name = if poi.name.is_empty() {
             obc_formats::obcm::poi_label_of(poi.subtype).unwrap_or(rx.t(Msg::AssistantPlace))
         } else {
@@ -190,7 +196,7 @@ impl FindPlaceScreen {
         };
         let name_row = rect(18, 236, 15 * Font::Body.char_width() as i32, Font::Body.line_height() as i32);
         let name = rx.marquee.fit(name, name_row.size.width as i32, Font::Body, Some(name_row));
-        cv.text(&name, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
+        cv.text(&name, Point::new(18, 236), Font::Body, TextAlign::Left, ON_ACCENT);
         if poi.opening == obc_reader::hours::OpeningStatus::Closed {
             cv.text(rx.t(Msg::AssistantClosed), Point::new(48, 212), Font::Label, TextAlign::Left, WARNING);
         }
@@ -202,7 +208,7 @@ impl FindPlaceScreen {
         } else {
             let _ = line.push_str(rx.t(Msg::AssistantDestination));
         }
-        cv.text(&line, Point::new(18, 288), Font::Label, TextAlign::Left, INK);
+        cv.text(&line, Point::new(18, 288), Font::Label, TextAlign::Left, ON_ACCENT);
     }
 }
 
@@ -366,7 +372,7 @@ impl VisitReviewScreen {
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
         // The title is inset 14 px and clears the bar's right radius.
         let title = rx.marquee.fit(&self.name, rx.w - 24, Font::Label, Some(rect(4, 4, rx.w - 8, 34)));
-        cv.text(&title, Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
+        cv.text(&title, Point::new(14, 8), Font::Label, TextAlign::Left, BAR_TEXT);
         cv.fill(panel(rx.w, rx.h, REVIEW_PANEL_TOP), PARCHMENT);
         if let Some(Costs { arrival_m, arrival_ascent_m, added_m, added_ascent_m }) = rx.find.review_costs {
             figures(cv, arrival_m, arrival_ascent_m, 196, false, rx.settings.units);
@@ -391,7 +397,13 @@ impl VisitReviewScreen {
             for (index, label) in [Msg::AssistantBackMap, Msg::AssistantCancelVisit].iter().enumerate() {
                 let y = 240 + index as i32 * 38;
                 cv.round(rect(12, y, 216, 32), 6, if self.cancel_selected == (index == 1) { AMBER } else { PARCHMENT });
-                cv.text(rx.t(*label), Point::new(120, y + 2), Font::Body, TextAlign::Center, INK);
+                cv.text(
+                    rx.t(*label),
+                    Point::new(120, y + 2),
+                    Font::Body,
+                    TextAlign::Center,
+                    if self.cancel_selected == (index == 1) { ON_ACCENT } else { INK },
+                );
             }
             return;
         }
@@ -412,10 +424,10 @@ impl VisitReviewScreen {
             }
         };
         cv.round(rect(12, 280, 216, 32), 6, AMBER);
-        cv.text(label, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
+        cv.text(label, Point::new(120, 282), Font::Body, TextAlign::Center, ON_ACCENT);
         if self.route_choices && rx.find.review == ReviewStatus::Preview && self.error.is_none() {
-            cv.triangle(Point::new(18, 296), Point::new(24, 290), Point::new(24, 302), INK);
-            cv.triangle(Point::new(222, 296), Point::new(216, 290), Point::new(216, 302), INK);
+            cv.triangle(Point::new(18, 296), Point::new(24, 290), Point::new(24, 302), ON_ACCENT);
+            cv.triangle(Point::new(222, 296), Point::new(216, 290), Point::new(216, 302), ON_ACCENT);
         }
     }
 }
@@ -496,7 +508,7 @@ fn figures(
     super::vocab::fmt::write_distance_coarse(&mut d, if extra { "+" } else { "" }, distance, units);
     cv.text(&d, Point::new(18, y), Font::Label, TextAlign::Left, INK);
     if climb.is_some() {
-        super::poi_display::draw_climb_figure(cv, 125, y, &super::vocab::fmt::elevation_short(climb, units));
+        super::poi_display::draw_climb_figure(cv, 125, y, &super::vocab::fmt::elevation_short(climb, units), INK);
     }
 }
 

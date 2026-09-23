@@ -88,6 +88,8 @@ let package = Package(
         .testTarget(
             name: "OBCUITests",
             dependencies: ["OBCUI", "OBCMock"],
+            // Recorded Apple Maps answers.
+            resources: [.copy("Fixtures")],
             swiftSettings: languageMode
         ),
     ]

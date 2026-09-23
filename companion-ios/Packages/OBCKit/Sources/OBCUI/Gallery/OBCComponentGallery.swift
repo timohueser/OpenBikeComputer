@@ -192,6 +192,12 @@ public struct OBCComponentGallery: View {
                     }
                 }
 
+                #if os(iOS)
+                section("Trip review") {
+                    TripReviewGallerySection()
+                }
+                #endif
+
                 section("Connected Services") {
                     OBCConnectedServicesBlock(services: [
                         OBCServiceStatus(name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.coral, state: .uploaded("Uploaded on import")),

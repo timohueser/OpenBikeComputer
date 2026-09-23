@@ -14,8 +14,8 @@ use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::{NavError, NavPhase, NavPlanner, NavScratch, RouteIndex, RouteReader, Step, NAV_MAX_NODES};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::{
-    assemble_full, CellInput, KnownEmptyInput, MemoryScratch, MemorySource, MemoryStore, NoClock, Options, Schema,
-    Skin, TerrainCellInput, TerrainJob, TerrainParams,
+    assemble_full, CellInput, KnownEmptyInput, MapStyles, MemoryScratch, MemorySource, MemoryStore, NoClock, Options,
+    Schema, Skin, TerrainCellInput, TerrainJob, TerrainParams,
 };
 use serde::Deserialize;
 
@@ -82,7 +82,9 @@ pub struct CellMap {
 /// router cannot reach.
 pub fn assemble(catalog: &str, job: Job) -> Result<CellMap, String> {
     let catalog: Catalog = serde_json::from_str(catalog).map_err(|e| format!("the catalog: {e}"))?;
-    let skin = catalog.skins.first().ok_or("the catalog has no skin")?;
+    let light = catalog.skins.into_iter().next().ok_or("the catalog has no skin")?;
+    // This routing-only map is never drawn, so both presentation slots use the first skin.
+    let styles = MapStyles { dark: light.clone(), light };
     let read = |path: &str| std::fs::read(path).map(MemorySource).map_err(|e| format!("{path}: {e}"));
     let cell_bytes = job.cells.iter().map(|c| read(&c.path)).collect::<Result<Vec<_>, _>>()?;
     let mut cells = Vec::with_capacity(job.cells.len());
@@ -113,7 +115,7 @@ pub fn assemble(catalog: &str, job: Job) -> Result<CellMap, String> {
         known_empty,
         terrain,
         &catalog.schema,
-        skin,
+        &styles,
         &opts,
         &mut store,
         &NoClock,

@@ -40,7 +40,7 @@ ALLOWED_SHARED_BINDINGS: set[str] = {"BikeProfile"}
 # a parser change must not lower them.
 ROW_LABELS = 26
 SHEET_BINDINGS = 12
-PAGE_BINDINGS = 11
+PAGE_BINDINGS = 12
 
 # `cx.settings.<field> = …`, or `s.<field> = …` after `let s = &mut *cx.settings` — the production
 # write paths a screen has into the persisted record. `=(?!=)` so an equality test is not read as

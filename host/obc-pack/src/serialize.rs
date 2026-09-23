@@ -1613,7 +1613,7 @@ pub fn serialize_nav_section(
 }
 
 /// The byte offset of the style table in every file this packer writes: the first unit boundary at
-/// or after the 65-byte header, which at the default `U = 16` is `80`. Reading the field rather than
+/// or after the header, which at the default `U = 16` is `80`. Reading the field rather than
 /// assuming the table follows the header is what it was always for.
 const STYLE_OFFSET: usize = 80;
 // 80 is a derivation with two halves, and both are asserted.
@@ -1638,6 +1638,7 @@ fn header_bytes(
     lod_table_offset: usize,
     poi_section_offset: usize,
     nav_section_offset: usize,
+    dark_style_offset: usize,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN);
     out.extend_from_slice(&MAGIC);
@@ -1656,6 +1657,8 @@ fn header_bytes(
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — no embedded raster
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain length, `0` exactly when the offset is
     out.extend_from_slice(&[0; 16]); // optional landmark and peak sections
+    out.extend_from_slice(&scaled(dark_style_offset).to_le_bytes());
+    out.extend_from_slice(&marker_color.to_le_bytes());
     debug_assert_eq!(out.len(), HEADER_LEN);
     out
 }
@@ -1740,6 +1743,7 @@ pub fn serialize_lods(
         .expect("POI section must fit before emitting the in-memory map");
     let nav_section_offset = poi_section_offset + poi_section.len();
     let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain);
+    let dark_style_offset = align_up(nav_section_offset + nav_section.len());
 
     let (out, ()) = lay_out(0, |w| {
         w.put(&header_bytes(
@@ -1749,6 +1753,7 @@ pub fn serialize_lods(
             lod_table_offset,
             poi_section_offset,
             nav_section_offset,
+            dark_style_offset,
         ))?;
         let at = w.begin_section()?; // → the style table
         debug_assert_eq!(at, STYLE_OFFSET as u64);
@@ -1763,7 +1768,10 @@ pub fn serialize_lods(
             w.put(&b.cb)?;
         }
         w.put(&poi_section)?;
-        w.put(&nav_section)
+        w.put(&nav_section)?;
+        let at = w.begin_section()?;
+        debug_assert_eq!(at, dark_style_offset as u64);
+        w.put(&style_data)
     });
     check_scale_covers(out.len() as u64);
     (out, dropped)
@@ -1832,14 +1840,31 @@ where
     let landmark_bytes = crate::landmark_map::serialize(landmarks, &landmark_refs)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let peak_bytes = crate::peak_map::serialize(peaks).map_err(io::Error::other)?;
-    let (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, peak_offset, peak_len, cursor) = {
+    let (
+        poi_section_offset,
+        nav_section_offset,
+        landmark_offset,
+        landmark_len,
+        peak_offset,
+        peak_len,
+        dark_style_offset,
+        cursor,
+    ) = {
         let mut sink = |bytes: &[u8]| w.write_all(bytes);
         let mut u = UnitWriter::new(SCALE, 0, &mut sink);
 
         // 1. Header, then filler to the style table's boundary. The POI and nav offsets are not
         // known until the LODs are sized, so write `STYLE_OFFSET` placeholders (any unit-aligned
         // byte will do; `scaled` refuses a non-boundary) and patch them in step 5.
-        u.put(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, STYLE_OFFSET, STYLE_OFFSET))?;
+        u.put(&header_bytes(
+            lod_count,
+            marker_color,
+            global_bbox,
+            lod_table_offset,
+            STYLE_OFFSET,
+            STYLE_OFFSET,
+            STYLE_OFFSET,
+        ))?;
         let at = u.begin_section()?; // → the style table
         debug_assert_eq!(at, STYLE_OFFSET as u64);
 
@@ -1904,7 +1929,18 @@ where
             let end = u.begin_section()? as usize;
             (start, end - start)
         };
-        (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, peak_offset, peak_len, u.at() as usize)
+        let dark_style_offset = u.begin_section()? as usize;
+        u.put(&style_data)?;
+        (
+            poi_section_offset,
+            nav_section_offset,
+            landmark_offset,
+            landmark_len,
+            peak_offset,
+            peak_len,
+            dark_style_offset,
+            u.at() as usize,
+        )
     };
 
     // 5. Back-patch the LOD table and the header's two section-offset fields, then leave the cursor
@@ -1921,6 +1957,8 @@ where
     w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_PEAK_OFFSET_OFF as u64))?;
     w.write_all(&scaled(peak_offset).to_le_bytes())?;
     w.write_all(&scaled(peak_len).to_le_bytes())?;
+    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF as u64))?;
+    w.write_all(&scaled(dark_style_offset).to_le_bytes())?;
     w.seek(SeekFrom::Start(cursor as u64))?;
     Ok((cursor as u64, dropped))
 }
