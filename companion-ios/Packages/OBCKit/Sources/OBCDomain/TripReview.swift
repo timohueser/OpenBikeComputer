@@ -71,6 +71,51 @@ extension Trip {
     }
 }
 
+/// A stretch of the trip line as the review map draws it.
+public struct LineRun: Equatable, Sendable {
+    public enum Kind: Sendable { case ridden, planned, transfer }
+    public var kind: Kind
+    public var coordinates: [Coordinate]
+}
+
+extension Trip {
+    /// The line cut into ridden and planned runs at the bounds of `ridden`, with a straight
+    /// transfer run across each transfer gap. A shorter gap draws nothing.
+    public func runs(ridden: [ClosedRange<Double>]) -> [LineRun] {
+        let measured = measuredLine
+        let vertices = measured.vertices
+        let bounds = ridden.flatMap { [$0.lowerBound, $0.upperBound] }
+        var runs: [LineRun] = []
+        func add(_ kind: LineRun.Kind, _ from: Coordinate, _ to: Coordinate) {
+            if let last = runs.last, last.kind == kind, last.coordinates.last == from {
+                runs[runs.count - 1].coordinates.append(to)
+            } else {
+                runs.append(LineRun(kind: kind, coordinates: [from, to]))
+            }
+        }
+        for (a, b) in zip(vertices, vertices.dropFirst()) {
+            if a.distance == b.distance {
+                if a.coordinate.distance(to: b.coordinate) > Self.transferMinMeters { add(.transfer, a.coordinate, b.coordinate) }
+                continue
+            }
+            func at(_ distance: Double) -> Coordinate {
+                let t = (distance - a.distance) / (b.distance - a.distance)
+                return Coordinate(
+                    latitude: a.coordinate.latitude + (b.coordinate.latitude - a.coordinate.latitude) * t,
+                    longitude: a.coordinate.longitude + (b.coordinate.longitude - a.coordinate.longitude) * t)
+            }
+            let cuts = bounds.filter { $0 > a.distance && $0 < b.distance }.sorted()
+            var from = (distance: a.distance, coordinate: a.coordinate)
+            for to in cuts.map({ ($0, at($0)) }) + [(b.distance, b.coordinate)] {
+                let mid = (from.distance + to.0) / 2
+                add(ridden.contains { $0.contains(mid) } ? .ridden : .planned, from.coordinate, to.1)
+                from = to
+            }
+        }
+        return runs
+    }
+}
+
 /// The offer to even out the days after a day that ended far from its plan. It feeds the day
 /// editor's Even out days: the days in ``days`` share the line after ``fixedBefore`` equally,
 /// and nothing before it moves.
@@ -118,11 +163,13 @@ public struct TripReview: Equatable, Sendable {
     /// The day after the last ridden day; nil once the last day is ridden.
     public let currentDay: Int?
     public let rebalance: RebalanceOffer?
+    /// The highest ridden point with an elevation.
+    public let highPoint: RidePoint?
 
     /// Nil before the trip has a ride: the trip page shows the plan. `rides` are the rides as the
     /// list shows them, so an edited ride counts once. `tracks` gives each ride's points; a ride
     /// without them counts in the totals but covers nothing.
-    public init?(trip: Trip, rides: [RideSummary], tracks: [RideID: [Coordinate]]) {
+    public init?(trip: Trip, rides: [RideSummary], tracks: [RideID: [RidePoint]]) {
         var byDay: [Int: [RideSummary]] = [:]
         for ride in rides {
             guard let day = ride.trip, day.key == trip.key, day.dayIndex < trip.dayCount else { continue }
@@ -134,7 +181,7 @@ public struct TripReview: Equatable, Sendable {
         days = trip.dayEnds.enumerated().map { index, end in
             defer { start = end.distance }
             let dayRides = (byDay[index] ?? []).sorted { $0.date < $1.date }
-            let covered = dayRides.map { trip.coverage(of: tracks[$0.id] ?? [], near: start) }
+            let covered = dayRides.map { trip.coverage(of: (tracks[$0.id] ?? []).map(\.coordinate), near: start) }
             coverage += covered
             return Day(planned: start...end.distance, rides: dayRides, endedAt: covered.last?.end)
         }
@@ -143,6 +190,16 @@ public struct TripReview: Equatable, Sendable {
         totals = RideTotals(days.flatMap(\.rides))
         currentDay = lastRidden + 1 < trip.dayCount ? lastRidden + 1 : nil
         rebalance = Self.rebalance(trip: trip, days: days, lastRidden: lastRidden)
+        highPoint = days.flatMap(\.rides).flatMap { tracks[$0.id] ?? [] }
+            .filter { $0.elevationMeters != nil }
+            .max { ($0.elevationMeters ?? 0) < ($1.elevationMeters ?? 0) }
+    }
+
+    /// The ridden day with the most distance, once two days are ridden.
+    public var biggestDay: Int? {
+        let ridden = days.indices.filter { !days[$0].rides.isEmpty }
+        guard ridden.count > 1 else { return nil }
+        return ridden.max { days[$0].totals.distanceMeters < days[$1].totals.distanceMeters }
     }
 
     /// The offer after the last ridden day, when it ended more than ``rebalanceMinMeters`` from
