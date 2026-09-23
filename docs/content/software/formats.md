@@ -847,7 +847,7 @@ An unknown point pauses ascent integration instead of adding a false climb. See 
   <text class="d-sub" x="250" y="216" text-anchor="middle" style="font-size:12px">append only</text>
 
   <rect class="d-panel" x="308" y="164" width="384" height="34" rx="8" />
-  <text class="d-sub" x="320" y="185" style="font-size:12px"><tspan class="d-label">144-byte footer</tspan> — totals · sensors · name · bike · trip</text>
+  <text class="d-sub" x="320" y="185" style="font-size:12px"><tspan class="d-label">150-byte footer</tspan> — totals · sensors · name · bike · trip</text>
 
   <rect class="d-hot" x="308" y="206" width="384" height="34" rx="8" style="fill:#f8efe4" />
   <text class="d-sub" x="320" y="227" style="font-size:12px"><tspan class="d-label" style="fill:#a9501c">one commit</tspan> — final length + CRC, RECORDING cleared</text>
