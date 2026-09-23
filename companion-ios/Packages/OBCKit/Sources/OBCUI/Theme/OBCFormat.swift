@@ -80,6 +80,22 @@ public enum OBCFormat {
         return formatter.string(from: date)
     }
 
+    /// A trip day's date: "Mon 29 Sep".
+    public static func tripDay(_ day: CivilDay, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        return formatter.string(from: day.date(calendar: calendar))
+    }
+
+    /// A trip's date range: "Mon 29 Sep – Wed 1 Oct", or one date for a one-day trip.
+    public static func tripDates(_ first: CivilDay, _ last: CivilDay, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let start = tripDay(first, calendar: calendar, locale: locale)
+        return first == last ? start : "\(start) – \(tripDay(last, calendar: calendar, locale: locale))"
+    }
+
     // MARK: Card subtitles
 
     /// Planned-route stat line: "62.4 km · 840 m ↑ · 3h 20m".
