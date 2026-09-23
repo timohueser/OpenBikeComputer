@@ -95,6 +95,8 @@ public final class DayNoteModel {
     private func closeOffer() {
         guard offer else { return }
         offer = false
+        // Photos added since start live only in the store, so close the row on its copy.
+        journal = library.rideJournal(ride.id)
         journal.close(.note)
         library.saveRideJournal(journal, thumbnails: [:], for: ride.id)
     }

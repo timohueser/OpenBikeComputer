@@ -49,6 +49,18 @@ struct DayNoteModelTests {
         #expect(again.dismissed)
     }
 
+    @Test func closingTheRowKeepsPhotosAddedSinceStart() async throws {
+        let ride = try ride("a")
+        let day = model(ride)
+        await day.start()
+        var journal = library.rideJournal(ride.id)
+        journal.add([RidePhoto(assetID: "p1", takenAt: ride.date)])
+        library.saveRideJournal(journal, thumbnails: [:], for: ride.id)
+
+        day.openWriter()
+        #expect(library.rideJournal(ride.id).photos.map(\.assetID) == ["p1"])
+    }
+
     @Test func aDismissedRowStaysGone() async throws {
         let ride = try ride("a")
         let first = model(ride)
