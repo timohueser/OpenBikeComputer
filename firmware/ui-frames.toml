@@ -564,7 +564,7 @@ expect = "StatFields"
 [[frame]]
 name = "fields-wpt-panel"
 map = "{grimsel}"
-script = "B u p p p d*6 p d*7 p"
+script = "B u p p p d*6 p d*6 p"
 expect = "StatFields"
 
 # The six `Next: <category>` fields (epic #946, U5). `B u p p p` is Home -> Settings -> Ride ->
@@ -573,7 +573,7 @@ expect = "StatFields"
 [[frame]]
 name = "addfield-next-category"
 map = "{grimsel}"
-script = "B u p p p d*6 p d*7"
+script = "B u p p p d*6 p d*6"
 expect = "AddField"
 
 # (b) three of them placed, drawn by the WYSIWYG editor's ghost: icon + the localized category word
@@ -1145,24 +1145,23 @@ script = "p*4 b"
 expect = "Statistics"
 args = ["--clock", "2025-06-29T14:40", "--stat-fields", "time-to-go,eta,dist-to-go,to-climb,speed,ride-time", "--gpx", "{gpx}", "--at", "30"]
 
-# The opt-in trip fields on Day 2 of a three-day trip: the rest of Day 2 and all of Day 3, with the
-# climb in the caption line, and the day of the trip.
+# The opt-in Trip to go field on Day 2 of a three-day trip: the rest of Day 2 and all of Day 3.
 [[frame]]
 name = "statistics-trip"
 map = "{grimsel}"
 env = "arrival-trip"
 script = "p p p d p p b"
 expect = "Statistics"
-args = ["--clock", "2025-06-29T14:40", "--stat-fields", "trip-to-go,trip-day,dist-to-go,to-climb,speed,ride-time", "--gpx", "{gpx}", "--at", "30"]
+args = ["--clock", "2025-06-29T14:40", "--stat-fields", "trip-to-go,dist-to-go,to-climb,speed,ride-time,eta", "--gpx", "{gpx}", "--at", "30"]
 
-# The same fields on a route that is not a trip day read `--`.
+# The same field on a route that is not a trip day reads `--`.
 [[frame]]
 name = "statistics-trip-none"
 map = "{grimsel}"
 env = "eta-route"
 script = "p*4 b"
 expect = "Statistics"
-args = ["--clock", "2025-06-29T14:40", "--stat-fields", "trip-to-go,trip-day,dist-to-go,to-climb,speed,ride-time", "--gpx", "{gpx}", "--at", "30"]
+args = ["--clock", "2025-06-29T14:40", "--stat-fields", "trip-to-go,dist-to-go,to-climb,speed,ride-time,eta", "--gpx", "{gpx}", "--at", "30"]
 
 # The Route overview's EST TIME row for the zero-elevation twin: the whole-route estimate before
 # the ride starts, with no climb term. The Grimsel climb's own figure is on `routeoverview`.
@@ -1836,7 +1835,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "addfield-next-category"
 map = "{grimsel}"
-script = "B u p p p d*6 p d*12"
+script = "B u p p p d*6 p d*11"
 expect = "AddField"
 langs = ["de", "fr", "es"]
 

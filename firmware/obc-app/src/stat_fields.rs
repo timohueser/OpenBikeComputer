@@ -7,8 +7,6 @@
 
 include!("stat_fields/selection.rs");
 
-use core::fmt::Write as _;
-
 use obc_reader::PoiCategory;
 use obc_render::text::TextAlign;
 use obc_route::{Profile, RouteReader, Waypoints};
@@ -43,8 +41,8 @@ pub struct Readout<'a> {
     /// The per-category "next ahead" cache the six `Next: <category>` tiles read. It is empty on
     /// a host that never refreshes it, which makes those tiles waypoint-only.
     pub next_ahead: &'a crate::next_ahead::NextAhead,
-    /// The loaded route's trip day, or `None` off a trip.
-    pub trip: Option<crate::trip::TripLeg>,
+    /// The length of the loaded trip day's later days, or `None` off a trip.
+    pub trip_later_m: Option<u32>,
 }
 
 /// Grid geometry: a page is `ROWS_PER_PAGE` x `COLS` tiles. A single-span field fills one slot, a
@@ -105,7 +103,6 @@ stat_field_table! {
     TimeToGo = 21, StatfieldTimeToGo, 1, 1, None;
     Eta = 22, StatfieldEta, 1, 1, None;
     TripToGo = 23, StatfieldTripToGo, 1, 1, None;
-    TripDay = 24, StatfieldTripDay, 1, 1, None;
     Clock = 9, StatfieldClock, 2, 1, None;
     NextWaypoint = 10, StatfieldNextWaypoint, 2, 1, None;
     NextWater = 15, PoiCatWater, 2, 1, Some(PoiCategory::Water);
@@ -214,32 +211,14 @@ impl StatField {
                 StatCell::new(cap(t(Msg::TileEta, lang), ""), value, false)
             }
             StatField::TripToGo => {
-                // The value and the climb do not both fit a half-width tile, so the climb moves
-                // into the caption line.
-                let trip = cx.trip.zip(cx.route).zip(cx.profile);
-                let Some(((leg, r), p)) = trip else {
-                    return StatCell::new(cap(units.dist_label(), t(Msg::TileTrip, lang)), fmt::dashes(), false);
-                };
-                let to_go_m = r.total_distance_m.saturating_sub(cx.navigation.progress_m) + leg.later_m;
-                let climb_m = ascent_to_go_m(r, p, cx.navigation) + leg.later_ascent_m;
-                let mut cell = StatCell::new(
-                    cap(units.dist_label(), ""),
-                    fmt::distance_figure(units.dist(to_go_m as f32 / 1000.0)),
-                    false,
-                );
-                cell.caption_climb = Some(caption_climb(units.elev(climb_m as f32) as u32));
-                cell
-            }
-            StatField::TripDay => {
-                let value = match cx.trip {
-                    Some(leg) => {
-                        let mut s = heapless::String::<8>::new();
-                        let _ = write!(s, "{}/{}", leg.day + 1, leg.days);
-                        s
+                let value = match (cx.trip_later_m, cx.route) {
+                    (Some(later_m), Some(r)) => {
+                        let to_go_m = r.total_distance_m.saturating_sub(cx.navigation.progress_m) + later_m;
+                        fmt::distance_figure(units.dist(to_go_m as f32 / 1000.0))
                     }
-                    None => fmt::dashes(),
+                    _ => fmt::dashes(),
                 };
-                StatCell::new(cap(t(Msg::TileDay, lang), ""), value, false)
+                StatCell::new(cap(t(Msg::TileTrip, lang), units.dist_label()), value, false)
             }
             StatField::Clock => {
                 let value = fmt::clock_hm(cx.now.hour, cx.now.minute);
@@ -343,14 +322,12 @@ pub struct StatCell {
     pub value: heapless::String<10>,
     pub arrow: bool,
     pub value_align: TextAlign,
-    /// A climb figure the tile draws after the caption, behind a climb arrow.
-    pub caption_climb: Option<heapless::String<8>>,
 }
 
 impl StatCell {
     fn new(caption: heapless::String<24>, value: impl AsRef<str>, arrow: bool) -> Self {
         let value = heapless::String::try_from(value.as_ref()).expect("stat values fit the value buffer");
-        StatCell { caption, value, arrow, value_align: TextAlign::Left, caption_climb: None }
+        StatCell { caption, value, arrow, value_align: TextAlign::Left }
     }
 }
 
@@ -359,17 +336,6 @@ fn cap(a: &str, b: &str) -> heapless::String<24> {
     let mut s = heapless::String::new();
     let _ = s.push_str(a);
     let _ = s.push_str(b);
-    s
-}
-
-/// A climb figure for a tile's caption line: four digits fit beside the unit, so from 10,000 on it
-/// reads in whole thousands, `12k`.
-fn caption_climb(v: u32) -> heapless::String<8> {
-    if v < 10_000 {
-        return fmt::integer(v);
-    }
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{}k", (v + 500) / 1000);
     s
 }
 
@@ -549,7 +515,7 @@ mod tests {
             bike_type: crate::settings::BikeType::Road,
             language: Language::En,
             next_ahead: EMPTY_CACHE,
-            trip: None,
+            trip_later_m: None,
         }
     }
 
@@ -671,28 +637,24 @@ mod tests {
     }
 
     #[test]
-    fn trip_tiles_add_the_later_days_to_the_rest_of_the_loaded_day() {
+    fn trip_to_go_adds_the_later_days_to_the_rest_of_the_loaded_day() {
         let rec = idle_recorder();
-        with_pass_route(|route, profile| {
+        with_pass_route(|route, _| {
             let mut navigation = RouteState::new();
             navigation.route_total_m = route.total_distance_m;
             navigation.progress_m = route.total_distance_m - 1_000;
             let empty = Waypoints::new();
-            let leg = crate::trip::TripLeg { day: 1, days: 3, later_m: 61_000, later_ascent_m: 9_800 };
-            let cx = |units| Readout {
-                route: Some(route),
-                profile: Some(profile),
-                trip: Some(leg),
-                ..readout(&navigation, rec, units, &empty)
+            let cell = |units| {
+                let cx = Readout {
+                    route: Some(route),
+                    trip_later_m: Some(61_000),
+                    ..readout(&navigation, rec, units, &empty)
+                };
+                let cell = StatField::TripToGo.cell(&cx);
+                (cell.caption.as_str().to_owned(), cell.value.as_str().to_owned())
             };
-            let cell = StatField::TripToGo.cell(&cx(Units::Metric));
-            assert_eq!(cell.value.as_str(), "62.0", "the last kilometre of today and 61 km of Day 3");
-            assert_eq!(cell.caption.as_str(), "KM");
-            assert_eq!(cell.caption_climb.as_deref(), Some("9800"), "today's descent adds no climb");
-            let cell = StatField::TripToGo.cell(&cx(Units::Imperial));
-            assert_eq!((cell.value.as_str(), cell.caption.as_str()), ("38.5", "MI"));
-            assert_eq!(cell.caption_climb.as_deref(), Some("32k"), "32,152 ft in whole thousands");
-            assert_eq!(StatField::TripDay.cell(&cx(Units::Metric)).value.as_str(), "2/3");
+            assert_eq!(cell(Units::Metric), ("TRIP KM".into(), "62.0".into()), "the last km of today, 61 km later");
+            assert_eq!(cell(Units::Imperial), ("TRIP MI".into(), "38.5".into()));
         });
     }
 
@@ -753,8 +715,7 @@ mod tests {
         assert_eq!(val(StatField::TimeToGo).as_str(), "--", "no route → no end to ride to, reads --");
         assert_eq!(val(StatField::Eta).as_str(), "--", "no route → no arrival to estimate, reads --");
         assert_eq!(val(StatField::TripToGo).as_str(), "--", "no trip → nothing left of one, reads --");
-        assert_eq!(StatField::TripToGo.cell(&cx).caption.as_str(), "KM TRIP");
-        assert_eq!(val(StatField::TripDay).as_str(), "--", "no trip → no day, reads --");
+        assert_eq!(StatField::TripToGo.cell(&cx).caption.as_str(), "TRIP KM");
         assert_eq!(val(StatField::Clock).as_str(), "12:00", "the neutral default DateTime");
         assert_eq!(val(StatField::NextWaypoint).as_str(), "--", "no route → the waypoint tile reads --");
     }
@@ -810,7 +771,6 @@ mod tests {
             (TimeToGo, 21, Msg::StatfieldTimeToGo, 1, 1, None),
             (Eta, 22, Msg::StatfieldEta, 1, 1, None),
             (TripToGo, 23, Msg::StatfieldTripToGo, 1, 1, None),
-            (TripDay, 24, Msg::StatfieldTripDay, 1, 1, None),
             (Clock, 9, Msg::StatfieldClock, 2, 1, None),
             (NextWaypoint, 10, Msg::StatfieldNextWaypoint, 2, 1, None),
             (NextWater, 15, Msg::PoiCatWater, 2, 1, Some(PoiCategory::Water)),
@@ -833,7 +793,7 @@ mod tests {
                 assert_eq!(field.name(lang), t(name, lang), "{field:?} in {lang:?}");
             }
         }
-        for byte in 25..=u8::MAX {
+        for byte in 24..=u8::MAX {
             assert_eq!(StatField::from_u8(byte), None, "unknown persisted ID {byte}");
         }
         let list = StatFieldList::decode(1, &[10]);
