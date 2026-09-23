@@ -140,6 +140,7 @@ fn grid_route_matches_known_optimum_and_round_trips() {
     let src = SliceSource(&obcr);
     let idx = RouteIndex::read(&src).expect("round trip");
     assert_eq!(idx.name(), "Water stop");
+    assert_ne!(obcr[5] & obc_formats::obcr::FLAG_TEMPORARY, 0);
     let info = RouteObjectInfo::read(&src).unwrap();
     assert_eq!(info.distance_m, 4474, "header length = summed edge costs");
     assert_eq!(info.ascent_m, 0);
@@ -1273,7 +1274,7 @@ fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
 }
 
 /// FNV-1a of the no-terrain emit for the fixture above.
-const NULL_PATH_DIGEST: u64 = 2855711472671813495;
+const NULL_PATH_DIGEST: u64 = 1853384897492501207;
 
 /// A real source fills every point's height and the header's min, max and dead-banded climb. The
 /// crest is reachable only through the densification: a vertex-only fill tops out at 900 m.

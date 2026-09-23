@@ -657,8 +657,9 @@ fn an_approach_splice_is_the_leg_then_the_whole_route() {
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let spliced = RouteReader::new(&idx, &src);
-    assert_eq!(idx.name(), "To start · Road trip", "the Routes list tells it from the route");
+    assert_eq!(idx.name(), "To start · Road trip", "the active route identifies its connection");
     assert!(!idx.has_unresolved_avoidance(), "an approach avoids nothing");
+    assert_ne!(sink.buf[5] & obc_formats::obcr::FLAG_TEMPORARY, 0);
     assert_eq!(idx.bike_type(), BikeType::Touring, "an approach keeps the route's type, not the leg's");
     assert!(
         stats.total_distance_m.abs_diff(leg_m + route_m) <= 2,

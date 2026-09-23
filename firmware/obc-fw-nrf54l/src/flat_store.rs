@@ -1680,7 +1680,7 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
         {
             Ok(Ok((summary, flags))) => {
                 let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
-                if candidate || flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
+                if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
                     internal_routes |= 1 << routes.len();
                 }
                 if candidate && accepted & (1 << index) == 0 {

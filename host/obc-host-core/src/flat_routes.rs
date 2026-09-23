@@ -87,7 +87,7 @@ impl FlatRouteStore {
     }
 
     fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, flags: u8) {
-        use obc_formats::obcr::{FLAG_ASSISTANT_CANDIDATE, FLAG_BUILT_DAY};
+        use obc_formats::obcr::{FLAG_ASSISTANT_CANDIDATE, FLAG_BUILT_DAY, FLAG_TEMPORARY};
         let candidate = flags & FLAG_ASSISTANT_CANDIDATE != 0;
         let built = flags & FLAG_BUILT_DAY != 0;
         let i = if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
@@ -104,7 +104,7 @@ impl FlatRouteStore {
         if i < 64 {
             self.internal_routes &= !(1 << i);
             self.built_day &= !(1 << i);
-            if candidate || built {
+            if candidate || built || flags & FLAG_TEMPORARY != 0 {
                 self.internal_routes |= 1 << i;
             }
             if built {
@@ -189,7 +189,7 @@ impl RouteRepository for FlatRouteStore {
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
             let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
-            if candidate || flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
+            if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
                 internal_routes |= 1 << ids.len();
             }
             if flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
