@@ -38,8 +38,11 @@ struct PhotoKitLibrary: PhotoLibrary {
     }
 
     func image(_ assetID: String, maxPixels: Int) async throws -> Data? {
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil).firstObject
-        else { return nil }
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil).firstObject else {
+            // Limited or revoked access hides a photo the same way a delete does.
+            if access() == .full { return nil }
+            throw PhotoNotShared()
+        }
         let options = PHImageRequestOptions()
         // One callback with the final image, fetched from iCloud when the phone has no copy.
         options.deliveryMode = .highQualityFormat

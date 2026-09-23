@@ -94,6 +94,8 @@ struct RidePhotoGridSheet: View {
         }
         .tint(OBCTheme.tint)
         .task { await model.loadPicks() }
+        // A new set of picks restarts the loop; closing the sheet cancels it.
+        .task(id: model.picks?.map(\.id)) { await model.loadPickThumbnails() }
     }
 }
 
@@ -118,6 +120,7 @@ struct RidePhotoStripSection: View {
                 .padding(.top, 18)
             }
         }
+        .task(id: model.photos.map(\.id)) { await model.fillThumbnails() }
         #if os(iOS)
         .fullScreenCover(item: $viewerStart) { start in
             RidePhotoViewer(model: model, preview: preview, index: start.index)

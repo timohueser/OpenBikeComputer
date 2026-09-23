@@ -430,6 +430,10 @@ struct RootView: View {
                     onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) },
                     rideShareMenu: tracked.map(rideShareMenu(for:))
                 )
+                // The screen's models hold the points they were built with, so an edit of the
+                // ride's points builds them again.
+                .id(tracked.map { [Double($0.points.count), $0.points.first?.timestamp.timeIntervalSince1970 ?? 0,
+                                   $0.points.last?.timestamp.timeIntervalSince1970 ?? 0] })
             }
         case .trip(let id):
             TripDetailView(

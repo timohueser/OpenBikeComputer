@@ -75,11 +75,11 @@ public struct RidePhotoGrid: View {
 
     private func caption(_ pick: RidePhotosModel.Pick) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            if pick.locationOffTrack {
+            if pick.placed.locationOffTrack {
                 Text("Location off the track")
                     .font(.system(size: 10, weight: .semibold))
             }
-            Text(pick.photo.takenAt.formatted(date: .omitted, time: .shortened))
+            Text(pick.placed.photo.takenAt.formatted(date: .omitted, time: .shortened))
                 .font(.obcMono(size: 10, weight: .semibold))
         }
         .foregroundStyle(.white)
