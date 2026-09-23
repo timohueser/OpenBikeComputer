@@ -225,7 +225,7 @@ fn udeg_pad(m: f32) -> i32 {
 /// Whether `p` lies inside segment `a→b`'s µdeg bbox grown by `(lon_pad, lat_pad)`: the cheap
 /// integer reject in front of the projection math. Saturating, so a huge pad cannot wrap.
 #[inline]
-fn within_pad(a: (i32, i32), b: (i32, i32), p: (i32, i32), lon_pad: i32, lat_pad: i32) -> bool {
+pub(crate) fn within_pad(a: (i32, i32), b: (i32, i32), p: (i32, i32), lon_pad: i32, lat_pad: i32) -> bool {
     let (lo_lon, hi_lon) = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
     let (lo_lat, hi_lat) = if a.1 <= b.1 { (a.1, b.1) } else { (b.1, a.1) };
     p.0 >= lo_lon.saturating_sub(lon_pad)
