@@ -498,7 +498,7 @@ impl HostLoop {
         }
         self.serve_effects(app, plan, routes, rides, trips, tracks, platform);
         if let Some(effect) = navigation {
-            if let Some(outcome) = self.serve_navigator(app, effect, routes, trips, map, elev) {
+            if let Some(outcome) = self.serve_navigator(app, effect, routes, map, elev) {
                 deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
             }
         }
@@ -675,6 +675,8 @@ impl HostLoop {
                 feed_routes(app, routes, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
+                let join = crate::nav::day_join(app, routes, trips);
+                app.set_day_join(join);
                 feed_rides(app, rides, self.trace.as_deref_mut().unwrap_or(&mut NoTrace));
                 CatalogOutcome::CatalogRead { token, scope }
             }
@@ -691,7 +693,6 @@ impl HostLoop {
         app: &mut App,
         effect: NavigatorEffect,
         routes: &mut dyn RouteRepository,
-        trips: &dyn TripCatalog,
         map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
@@ -699,7 +700,7 @@ impl HostLoop {
         self.plan_token = Some(token);
         let failed = |error| Some(NavigatorOutcome::Failed { token, error });
         match effect {
-            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, trips, map),
+            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, map),
             NavigatorEffect::Step { .. } => {
                 if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
                     return failed(NavigatorError::SourceChanged);
@@ -853,7 +854,6 @@ impl HostLoop {
         token: OperationToken<NavigatorTag>,
         work: PlannerWork,
         routes: &dyn RouteRepository,
-        trips: &dyn TripCatalog,
         map: &crate::flat_map::FlatMap,
     ) -> Option<NavigatorOutcome> {
         let failed = |error| Some(NavigatorOutcome::Failed { token, error });
@@ -976,7 +976,7 @@ impl HostLoop {
                 };
                 let orig = obc_route::RouteReader::new(&index, &source);
                 self.plan = Some(if matches!(request.leg, obc_route::Leg::Rest { .. }) {
-                    let Some(ready) = crate::nav::rest_ready(app, &request, routes, trips) else {
+                    let Some(ready) = crate::nav::rest_ready(app, &request, routes) else {
                         return failed(NavigatorError::SourceChanged);
                     };
                     InflightPlan::Rest(ready)
@@ -1495,7 +1495,6 @@ mod tests {
                 tokens.issue(),
                 PlannerWork::AssistantRoute(active_request),
                 &routes,
-                &(),
                 &map
             ),
             Some(NavigatorOutcome::Failed { .. })
@@ -1655,7 +1654,6 @@ mod tests {
                     tokens.issue(),
                     PlannerWork::AssistantRoute(active_request),
                     &routes,
-                    &(),
                     &map
                 ),
                 Some(NavigatorOutcome::Failed { .. })

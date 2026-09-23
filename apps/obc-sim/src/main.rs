@@ -1343,6 +1343,8 @@ fn main() {
         let mut trip_store = trips;
         app.set_trips(&trip_store.inputs());
         app.set_trip_progress(trip_store.progress().iter().cloned());
+        let join = obc_host_core::day_join(&app, &store, &trip_store);
+        app.set_day_join(join);
         // The complete saved-ride projection comes from the same card as the map and routes.
         let mut ride_store = rides;
         app.set_rides(ride_store.catalog());

@@ -1082,6 +1082,20 @@ impl App {
         self.metadata.progress()
     }
 
+    /// The active trip's next day: the one the host reads a [`DayJoin`](crate::trip::DayJoin) for.
+    pub fn next_trip_day(&self) -> Option<(&crate::trip::TripSummary, u16)> {
+        crate::trip::next_trip_day(self.trips(), self.metadata.progress()).map(|(trip, day, _)| (trip, day))
+    }
+
+    /// Where the active trip's next day meets the day before, read after the catalog read that fed
+    /// the trips and the progress records.
+    pub fn set_day_join(&mut self, join: Option<crate::trip::DayJoin>) {
+        if self.metadata.day_join() != join {
+            self.metadata.set_day_join(join);
+            self.ui.map_dirty = true;
+        }
+    }
+
     /// Replace the trip progress records with the ones a complete catalog read found.
     pub fn set_trip_progress(&mut self, records: impl IntoIterator<Item = crate::trip::TripProgress>) {
         self.metadata.set_progress(records);
@@ -1098,25 +1112,59 @@ impl App {
 
     /// A saved ride on a trip day moves that trip's progress to where the ride ended.
     pub(crate) fn note_trip_finish(&mut self) {
+        use crate::trip::TripPosition;
         let Some(ridden) = self.recorder.ride_stats().trip else { return };
         let Some(trip) = self.trips().iter().find(|t| t.key == ridden.key()) else { return };
         let day = u16::from(ridden.day_index());
         let Some(&route) = trip.stage_ids.get(usize::from(day)) else { return };
-        let active = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
-        let lead = self.navigator.lead_in().filter(|lead| Some(lead.splice) == active && lead.route == route);
-        let at = match lead.map(|lead| lead.position(self.progress_m())) {
+        let old = trip.progress_in(self.metadata.progress());
+        let active_index = self.active_route_index();
+        let active = active_index.and_then(|i| self.route_ids().get(i).copied());
+        // After a reset the adopted lead-in is gone, but a built day is still the internal route
+        // the record and the line facts describe: its rest starts where the record stands.
+        let built =
+            active_index.is_some_and(|i| active != Some(route) && self.navigator.internal_routes() & (1 << i) != 0);
+        let lead =
+            self.navigator.lead_in().filter(|lead| Some(lead.splice) == active && lead.route == route).or_else(|| {
+                match trip.load_day(day, old, self.metadata.day_join().as_ref()) {
+                    crate::trip::DayLoad::Rest { from_m, to_m, join_m } if built => Some(crate::navigator::LeadIn {
+                        splice: active?,
+                        route,
+                        lead_m: to_m - from_m,
+                        join_m,
+                        rest_from_m: Some(from_m),
+                    }),
+                    _ => None,
+                }
+            });
+        let mut at = match lead.map(|lead| lead.position(self.progress_m())) {
             Some(Err(metres)) if day > 0 => {
-                let before = trip.stage_ids[usize::from(day) - 1];
-                crate::trip::TripPosition { day: day - 1, route: before, metres }
+                TripPosition { day: day - 1, route: trip.stage_ids[usize::from(day) - 1], metres }
             }
-            Some(Ok(metres)) => crate::trip::TripPosition { day, route, metres },
-            _ if active == Some(route) => crate::trip::TripPosition { day, route, metres: self.progress_m() },
-            _ => crate::trip::TripPosition { day, route, metres: 0 },
+            Some(Ok(metres)) => TripPosition { day, route, metres },
+            _ if active == Some(route) => TripPosition { day, route, metres: self.progress_m() },
+            _ => TripPosition { day, route, metres: 0 },
         };
+        // Metres measured on geometry that a re-upload replaced during the ride mean nothing on the
+        // new one.
+        if self.metadata.replaced_during_ride(at.route) {
+            at.metres = 0;
+        }
         let today = if self.clock_trusted() { (self.wall_clock.unix_now(self.ui.now_ms) / 86_400) as u16 } else { 0 };
-        let record = trip.finish(trip.progress_in(self.metadata.progress()), day, at, today);
+        let record = trip.finish(old, day, at, today);
         let trips = self.catalogs.trips();
         self.metadata.owe_progress(record, |key| trips.iter().any(|t| t.key == key));
+    }
+
+    /// A route the open ride's trip day stands on was replaced: note it, so the Finish does not
+    /// carry metres from the old geometry.
+    fn note_ride_route_replaced(&mut self, id: crate::CatalogObjectId) {
+        let Some(ridden) = self.recorder.ride_stats().trip else { return };
+        let Some(trip) = self.trips().iter().find(|t| t.key == ridden.key()) else { return };
+        let day = usize::from(ridden.day_index());
+        if trip.stage_ids.get(day.saturating_sub(1)..=day).is_some_and(|days| days.contains(&id)) {
+            self.metadata.note_replaced_during_ride(id);
+        }
     }
 
     /// The open ride's footer facts. The trip name is read from the trip catalog as the footer is
@@ -1762,6 +1810,7 @@ impl App {
         let active_id = self.active_route_index().and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
         if replaced {
+            self.note_ride_route_replaced(id);
             self.invalidate_current_visit(id);
             // New bytes under an unchanged identity: the id is exactly what did not change, so
             // every derived key must move with the bytes.
@@ -2482,6 +2531,7 @@ impl App {
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             trip_progress: metadata.progress(),
+            day_join: metadata.day_join(),
             backlight: backlight_available,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
@@ -2879,6 +2929,7 @@ impl App {
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             trip_progress: metadata.progress(),
+            day_join: metadata.day_join(),
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
@@ -5902,8 +5953,54 @@ mod tests {
     #[test]
     fn a_ride_on_the_rest_of_the_day_before_counts_for_the_day() {
         use crate::navigator::NavigatorIntent;
+        let mut app = rest_ride_app();
+        app.navigator.admit_intent(NavigatorIntent::PlanDetour(crate::DetourRequest::rest(1, 54_000, 74_000, 3_000)));
+        let preview =
+            crate::host::DetourPreview { cost_delta_m: 0, total_distance_m: 20_000, rejoin_m: 3_000, ascent_m: None };
+        app.navigator.note_lead_preview(&preview);
+        app.navigator.adopt_lead_in(99, 30);
+        app.navigator.route_state_mut().active_route = Some(2);
+        assert_eq!(app.ride_origin().trip, obc_formats::ride::TripRef::new(42, 2, 3), "Day 3 is the ride's day");
+        app.recorder.set_origin(app.ride_origin());
+
+        // A stop 5 km into the rest finishes Day 2, and Day 3 is still next.
+        let record = finish_at(&mut app, 5_000);
+        assert_eq!((record.day, record.day_route.id, record.metres, record.last_finished), (1, 20, 59_000, Some(1)));
+        assert_eq!(app.next_trip_day().map(|(_, day)| day), Some(2));
+    }
+
+    /// After a reset the adopted lead-in is gone. The built day is still the active internal route,
+    /// and the record and the line facts give its rest again, so the Finish lands on the same day.
+    #[test]
+    fn a_rest_ride_continued_after_a_reset_finishes_where_it_ended() {
+        let mut app = rest_ride_app();
+        app.set_internal_routes(1 << 2);
+        app.navigator.route_state_mut().active_route = Some(2);
+        app.recorder.set_origin(crate::RideOrigin {
+            bike: obc_formats::bike::BikeType::Road,
+            trip: obc_formats::ride::TripRef::new(42, 2, 3),
+        });
+        let record = finish_at(&mut app, 25_000);
+        assert_eq!((record.day, record.day_route.id, record.metres, record.last_finished), (2, 30, 8_000, Some(2)));
+    }
+
+    /// A re-upload of the day's route during the ride voids the metres measured on the old one.
+    #[test]
+    fn a_day_route_replaced_during_the_ride_voids_the_metres() {
+        let mut app = rest_ride_app();
+        app.navigator.route_state_mut().active_route = Some(1);
+        app.recorder.set_origin(app.ride_origin());
+        app.metadata.begin_ride();
+        app.on_route_uploaded(30, true, None);
+        let record = finish_at(&mut app, 25_000);
+        assert_eq!((record.day, record.metres, record.last_finished), (2, 0, Some(2)));
+    }
+
+    /// Day 2 (route 20) ridden to 54 km of 74, then Day 3 (route 30) and its built rest (99) in the
+    /// catalog; Day 3 joins the line 3 km in.
+    fn rest_ride_app() -> App {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_routes_with_ids(&[summary("Day 2"), summary("Day 3"), summary("Day 3")], &[20, 30, 99]);
+        app.set_routes_with_ids(&[summary("Day 2"), summary("Day 3"), summary("From stop")], &[20, 30, 99]);
         app.set_trips(&[crate::trip::TripInput {
             id: 1,
             key: 42,
@@ -5911,17 +6008,23 @@ mod tests {
             start_date: 0,
             stage_ids: &[10, 20, 30],
         }]);
-        app.navigator.admit_intent(NavigatorIntent::PlanDetour(crate::DetourRequest::rest(1, 54_000)));
-        let preview =
-            crate::host::DetourPreview { cost_delta_m: 0, total_distance_m: 20_000, rejoin_m: 3_000, ascent_m: None };
-        app.navigator.note_lead_preview(&preview);
-        app.navigator.adopt_lead_in(99, 30);
-        app.navigator.route_state_mut().active_route = Some(2);
-        assert_eq!(app.ride_origin().trip, obc_formats::ride::TripRef::new(42, 2, 3), "Day 3 is the ride's day");
+        let record = crate::trip::TripProgress {
+            key: 42,
+            day: 1,
+            day_route: crate::trip::RouteVersion { id: 20, revision: 1 },
+            metres: 54_000,
+            last_finished: Some(1),
+            dates: [0; obc_route::MAX_TRIP_DAYS],
+        };
+        app.set_trip_progress([record]);
+        app.set_day_join(Some(crate::trip::DayJoin { key: 42, day: 2, leave_m: 74_000, join_m: 3_000 }));
+        app
+    }
 
-        let lead = app.navigator.lead_in().unwrap();
-        assert_eq!(lead.position(5_000), Err(59_000), "5 km in: still on Day 2");
-        assert_eq!(lead.position(25_000), Ok(8_000), "25 km in: 5 km past the join on Day 3");
+    fn finish_at(app: &mut App, progress_m: u32) -> crate::trip::TripProgress {
+        app.navigator.route_state_mut().progress_m = progress_m;
+        app.note_trip_finish();
+        app.trip_progress().last().cloned().expect("the Finish writes the record")
     }
 
     #[test]

@@ -105,13 +105,13 @@ impl RideStartScreen {
                     Some((trip, day, route)) => {
                         let route = usize::from(route);
                         let prev = cx.navigator.replace_active_route(route);
-                        match trip.load_day(day, trip.progress_in(cx.trip_progress)) {
+                        match trip.load_day(day, trip.progress_in(cx.trip_progress), cx.day_join.as_ref()) {
                             DayLoad::AsIs => {
                                 Transition::Push(Screen::RouteOverview(super::RouteOverviewScreen::new(route, prev)))
                             }
-                            DayLoad::Rest { from_m } => {
+                            DayLoad::Rest { from_m, to_m, join_m } => {
                                 self.prev_active = prev;
-                                let request = crate::DetourRequest::rest(route, from_m);
+                                let request = crate::DetourRequest::rest(route, from_m, to_m, join_m);
                                 cx.navigator.admit_intent(crate::navigator::NavigatorIntent::PlanDetour(request));
                                 let name = cx.routes.get(route).map_or("", |r| r.name.as_str());
                                 Transition::Push(Screen::NavPlanning(super::NavPlanningScreen::day(name)))
@@ -161,12 +161,14 @@ impl RideStartScreen {
                 cv.round(rect(BAND_X, top, w - 2 * BAND_X, h), 5, AMBER);
             }
             let text_top = top + TEXT_DY;
-            match (row, next.and_then(|(_, _, route)| rx.routes.get(usize::from(route)))) {
-                (Row::Day, Some(route)) => {
+            match (row, next.and_then(|(trip, day, route)| Some((trip, day, rx.routes.get(usize::from(route))?)))) {
+                (Row::Day, Some((trip, day, route))) => {
+                    let load = trip.load_day(day, trip.progress_in(rx.trip_progress), rx.day_join.as_ref());
                     let name = rx.marquee.fit(&route.name, w - TEXT_X - BAND_X, Font::Label, None);
                     cv.text(&name, Point::new(TEXT_X, text_top - 2), Font::Label, TextAlign::Left, INK);
                     let mut line2: heapless::String<40> = heapless::String::new();
-                    let _ = write!(line2, "{} · {} km", rx.t(Msg::RideStartShowRoute), route.distance_km);
+                    let km = load.distance_km(route.distance_km);
+                    let _ = write!(line2, "{} · {km} km", rx.t(Msg::RideStartShowRoute));
                     let line2_top = text_top - 2 + DAY_LINE2_DY - 2;
                     cv.text(&line2, Point::new(TEXT_X, line2_top), Font::Caption, TextAlign::Left, SUBTEXT);
                 }
@@ -280,11 +282,14 @@ mod tests {
         let routes = [route(), route()];
         let input = TripInput { id: 1, key: 9, name: "Alps", start_date: 0, stage_ids: &[70, 80] };
         let trips = [TripSummary::resolve(&input, &routes, &[70, 80])];
+        // Day 1 ends on the line at 40 km; Day 2 joins it 2 km in.
+        let join = crate::trip::DayJoin { key: 9, day: 1, leave_m: 40_000, join_m: 2_000 };
         let day1 = TripProgress {
             key: 9,
             day: 0,
             day_route: crate::trip::RouteVersion { id: 70, revision: 0 },
-            metres: 0,
+            // Day 1 ridden to 200 m before its end: a full day.
+            metres: 39_800,
             last_finished: Some(0),
             dates: [0; obc_route::MAX_TRIP_DAYS],
         };
@@ -297,12 +302,14 @@ mod tests {
             routes: &routes,
             trips: &trips,
             trip_progress: &records,
+            day_join: Some(join),
             ..test_ctx(&mut st, &mut act, &mut settings)
         };
         let mut scr = RideStartScreen::new();
         scr.handle(Gesture::Step(1), &mut cx);
         assert!(matches!(scr.handle(Gesture::Press, &mut cx), Transition::Push(Screen::RouteOverview(_))));
         assert_eq!(cx.navigator.route_state().active_route, Some(1), "Day 2 is loaded under its detail");
+        assert!(cx.navigator.pending_detour_request().is_none(), "a full day builds no route");
         scr.handle(Gesture::Step(-2), &mut cx);
         let Transition::Push(Screen::ContextDrawer(editor)) = scr.handle(Gesture::Press, &mut cx) else {
             panic!("the bike row opens the editor");
@@ -316,13 +323,15 @@ mod tests {
             routes: &routes,
             trips: &trips,
             trip_progress: &early,
+            day_join: Some(join),
             ..test_ctx(&mut st, &mut act, &mut settings)
         };
         let mut scr = RideStartScreen::new();
         scr.handle(Gesture::Step(1), &mut cx);
         assert!(matches!(scr.handle(Gesture::Press, &mut cx), Transition::Push(Screen::NavPlanning(_))));
         let request = cx.navigator.pending_detour_request().expect("the rest is asked for");
-        assert_eq!((request.route, request.leg), (1, obc_route::Leg::Rest { from_m: 5_000, to_m: u32::MAX }));
+        assert_eq!(request.leg, obc_route::Leg::Rest { from_m: 5_000, to_m: 40_000 });
+        assert_eq!((request.route, request.target_m), (1, 2_000), "Day 2 follows from where it joins the line");
 
         let mut cx = Ctx { trips: &trips, ..test_ctx(&mut st, &mut act, &mut settings) };
         let mut scr = RideStartScreen::new();

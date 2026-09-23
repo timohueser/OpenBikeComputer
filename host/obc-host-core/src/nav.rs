@@ -141,31 +141,39 @@ pub struct DetourReady {
 }
 
 /// The rest of the day before a trip day, ready to splice in front of it. `request` names the day's
-/// route, and its leg the metres on the day before where the rest starts. At or past the day
-/// before's leave point the rest is empty, and the whole day follows it.
+/// route, its leg the span on the day before, and its target where the day joins the line.
 pub fn rest_ready(
     app: &obc_app::App,
     request: &obc_app::DetourRequest,
     routes: &dyn crate::RouteRepository,
-    trips: &dyn crate::TripCatalog,
 ) -> Option<DetourReady> {
-    let obc_route::Leg::Rest { from_m, .. } = request.leg else { return None };
+    let obc_route::Leg::Rest { from_m, to_m } = request.leg else { return None };
     let route = *app.route_ids().get(request.route)?;
     let day = obc_app::trip::trip_day(app.trips(), route)?;
-    let k = u16::from(day.day_index()).checked_sub(1)?;
-    let (before, this) = (trips.day(day.key(), k)?, trips.day(day.key(), k + 1)?);
-    let bytes = routes.route_bytes(before.route)?;
-    let length = obc_route::RouteIndex::read(&obc_formats::io::SliceSource(&bytes)).ok()?.total_distance_m;
-    let leave_m = before.leave_m.min(length);
-    let (to_m, rejoin_m) = if from_m < leave_m { (leave_m, this.join_m) } else { (from_m, 0) };
+    let trip = app.trips().iter().find(|trip| trip.key == day.key())?;
+    let before = *trip.stage_ids.get(usize::from(day.day_index()).checked_sub(1)?)?;
     Some(DetourReady {
-        bytes,
-        detour_len_m: to_m - from_m,
+        bytes: routes.route_bytes(before)?,
+        detour_len_m: to_m.checked_sub(from_m)?,
         progress_m: 0,
-        rejoin_m,
-        leg: obc_route::Leg::Rest { from_m, to_m },
+        rejoin_m: request.target_m,
+        leg: request.leg,
         has_elevation: true,
     })
+}
+
+/// Where the active trip's next day meets the day before, for [`App::set_day_join`]: the day
+/// before's leave point, clamped to its route's length, and the day's join point.
+pub fn day_join(
+    app: &obc_app::App,
+    routes: &dyn crate::RouteRepository,
+    trips: &dyn crate::TripCatalog,
+) -> Option<obc_app::trip::DayJoin> {
+    let (trip, day) = app.next_trip_day()?;
+    let (before, this) = (trips.day(trip.key, day.checked_sub(1)?)?, trips.day(trip.key, day)?);
+    let bytes = routes.route_bytes(before.route)?;
+    let length = obc_route::RouteObjectInfo::read(&obc_formats::io::SliceSource(&bytes)).ok()?.distance_m;
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
 }
 
 impl DetourReady {

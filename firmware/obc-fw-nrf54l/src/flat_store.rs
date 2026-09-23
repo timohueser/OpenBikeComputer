@@ -1770,5 +1770,21 @@ pub(crate) fn load_metadata(
     })
     .map_err(metadata_error)?;
     app.set_trip_progress(records);
+    let join = day_join(store, app);
+    app.set_day_join(join);
     Ok(())
+}
+
+/// Where the active trip's next day meets the day before: the day before's leave point, clamped to
+/// its route's length, and the day's join point.
+fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::trip::DayJoin> {
+    let (trip, day) = app.next_trip_day()?;
+    let read = |k| store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).ok()?.ok();
+    let (before, this) = (read(day.checked_sub(1)?)?, read(day)?);
+    let length = store
+        .with_source(ObjectId(before.route), None, |source| obc_route::RouteObjectInfo::read(source))
+        .ok()?
+        .ok()?
+        .distance_m;
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m: before.leave_m.min(length), join_m: this.join_m })
 }
