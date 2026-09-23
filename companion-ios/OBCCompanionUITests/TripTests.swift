@@ -113,10 +113,10 @@ final class TripTests: XCTestCase {
         XCTAssertTrue(rename.waitForExistence(timeout: 5), "overflow menu did not open")
         rename.tap()
 
-        let field = app.textFields.firstMatch
+        let field = app.textFields["rename.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5), "rename field missing")
         field.typeText(" Reworked")
-        app.alerts.buttons["Save"].tap()
+        app.buttons["rename.save"].tap()
 
         XCTAssertTrue(
             app.staticTexts["Driftless Weekender Reworked"].waitForExistence(timeout: 5)

@@ -15,7 +15,6 @@ public struct SettingsView: View {
     private let onOpenDevPanel: (() -> Void)?
 
     @State private var renameShown = false
-    @State private var renameDraft = ""
     @State private var forgetShown = false
     @State private var versionTaps = 0
     @Environment(\.openURL) private var openURL
@@ -52,12 +51,12 @@ public struct SettingsView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        .obcRenameAlert(
+        .obcRenameSheet(
             "Rename device",
             isPresented: $renameShown,
-            name: $renameDraft,
+            name: model.deviceName,
             message: "Shown across the app and on the device.",
-            onSave: { _ = model.rename(to: renameDraft) }
+            onSave: { _ = model.rename(to: $0) }
         )
         // The rename's config write failed: say so once. The reconcile pass pushes the
         // name on the next connect, so no action is needed.
@@ -86,7 +85,6 @@ public struct SettingsView: View {
                 showsChevron: true,
                 disabled: !model.canRename,
                 action: {
-                    renameDraft = model.deviceName
                     renameShown = true
                 }
             )

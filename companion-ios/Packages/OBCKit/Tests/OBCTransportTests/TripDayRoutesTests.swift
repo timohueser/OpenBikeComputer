@@ -40,6 +40,17 @@ struct TripDayRoutesTests {
         #expect(abs(days[1].elevationGainMeters - 300) < 5)
     }
 
+    /// The route detail behind a tap on a day row: that day's cut, not the whole line.
+    @Test
+    func aDayDetailIsTheDaysOwnProfile() {
+        let day = trip.dayRoutes()[1]
+        let detail = day.detail(tripID: TripID("t"))
+        #expect(detail.summary == day.summary(tripID: TripID("t")))
+        #expect(detail.elevationProfile.first == 1200)
+        #expect(detail.elevationProfile.last == 1500)
+        #expect(detail.maxGradePercent.map { abs($0 - 2) < 0.1 } == true)
+    }
+
     @Test
     func unchangedDaysKeepTheirBytes() {
         var changed = trip
