@@ -1839,6 +1839,14 @@ script = "B u p p p d*6 p d*11"
 expect = "AddField"
 langs = ["de", "fr", "es"]
 
+# The Trip to go row of the Add-field picker: its name fits beside the span badge.
+[[frame]]
+name = "addfield-trip"
+map = "{grimsel}"
+script = "B u p p p d*6 p d*5"
+expect = "AddField"
+langs = ["de", "fr", "es"]
+
 # Date & Time per-language: the two info rows and the UTC offset value row. Eyeball the status
 # copy against the row's right edge (the info row has no chevron column, so it is the full row).
 [[frame]]

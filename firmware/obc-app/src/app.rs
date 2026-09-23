@@ -1071,8 +1071,15 @@ impl App {
     /// The trip day of the loaded route. A day built from the rest of the day before counts as the
     /// day it leads into.
     fn loaded_trip_day(&self) -> Option<obc_formats::ride::TripRef> {
-        let route = self.active_route_index().and_then(|i| self.route_ids().get(i).copied())?;
-        let route = self.navigator.lead_in().filter(|lead| lead.splice == route).map_or(route, |lead| lead.route);
+        let index = self.active_route_index()?;
+        let route = *self.route_ids().get(index)?;
+        if let Some(lead) = self.navigator.lead_in().filter(|lead| lead.splice == route) {
+            return crate::trip::trip_day(self.trips(), lead.route);
+        }
+        // A reset drops the lead-in of a built day, but the open ride still names the day.
+        if self.navigator.internal_routes() & (1 << index) != 0 && self.recorder.recording() {
+            return self.recorder.ride_stats().trip;
+        }
         crate::trip::trip_day(self.trips(), route)
     }
 
@@ -6062,6 +6069,19 @@ mod tests {
         });
         let record = finish_at(&mut app, 25_000);
         assert_eq!((record.day, record.day_route.id, record.metres, record.last_finished), (2, 30, 8_000, Some(2)));
+    }
+
+    #[test]
+    fn a_built_day_continued_after_a_reset_stays_its_trip_day() {
+        let mut app = rest_ride_app();
+        app.set_internal_routes(1 << 2);
+        app.navigator.route_state_mut().active_route = Some(2);
+        assert_eq!(app.loaded_trip_day(), None, "without a ride, an internal route is no trip day");
+        app.test_start_ride();
+        let day3 = obc_formats::ride::TripRef::new(42, 2, 3);
+        app.recorder.set_origin(crate::RideOrigin { bike: obc_formats::bike::BikeType::Road, trip: day3 });
+        assert_eq!(app.loaded_trip_day(), day3);
+        assert_eq!(app.trip_later_m(), Some(0), "Day 3 is the last day");
     }
 
     /// A re-upload of the day's route during the ride voids the metres measured on the old one.
