@@ -1136,7 +1136,7 @@ impl RecorderMachine {
 
     /// The ride's footer facts: the totals as they stand, against the anchor stamped when this
     /// operation was minted. The trip name is App's to fill ([`App::ride_stats`](crate::App::ride_stats)).
-    pub fn ride_stats(&self) -> RideStats {
+    pub(crate) fn ride_stats(&self) -> RideStats {
         RideStats {
             distance_m: self.ridden_m as u32, // float→int casts saturate
             moving_time_s: self.moving_s as u32,

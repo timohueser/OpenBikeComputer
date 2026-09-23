@@ -67,18 +67,34 @@ impl Default for Name {
 /// The trip day a ride started on (`obc-ble-interface-spec.md` §7.7 names the trip key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripRef {
-    /// The trip key; never 0, because 0 means "no trip" on the wire.
-    pub key: u64,
-    /// 0-based.
-    pub day_index: u8,
-    /// The trip's day count when the ride started.
-    pub day_count: u8,
+    key: u64,
+    day_index: u8,
+    day_count: u8,
 }
 
 impl TripRef {
-    /// `None` unless the key is nonzero and the day lies inside the trip.
-    pub fn new(key: u64, day_index: u8, day_count: u8) -> Option<TripRef> {
-        (key != 0 && day_index < day_count).then_some(TripRef { key, day_index, day_count })
+    /// `None` unless the key is nonzero, because 0 means "no trip" on the wire, and the day lies
+    /// inside the trip.
+    pub const fn new(key: u64, day_index: u8, day_count: u8) -> Option<TripRef> {
+        if key != 0 && day_index < day_count {
+            Some(TripRef { key, day_index, day_count })
+        } else {
+            None
+        }
+    }
+
+    pub const fn key(&self) -> u64 {
+        self.key
+    }
+
+    /// 0-based.
+    pub const fn day_index(&self) -> u8 {
+        self.day_index
+    }
+
+    /// The trip's day count when the ride started.
+    pub const fn day_count(&self) -> u8 {
+        self.day_count
     }
 }
 
@@ -259,7 +275,7 @@ const _: () = assert!(FOOTER_LEN == TRIP_NAME_AT + NAME_CAP);
 mod tests {
     use super::*;
 
-    const TRIP: TripRef = TripRef { key: 0x0123_4567_89AB_CDEF, day_index: 1, day_count: 3 };
+    const TRIP: TripRef = TripRef::new(0x0123_4567_89AB_CDEF, 1, 3).unwrap();
 
     fn example() -> Footer {
         let mut footer = Footer::new(

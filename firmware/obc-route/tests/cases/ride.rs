@@ -25,7 +25,7 @@ const STATS: RideStats = RideStats {
     avg_power: Some(210),
     max_power: Some(480),
     bike: BikeType::Mtb,
-    trip: Some(TripRef { key: 7, day_index: 0, day_count: 2 }),
+    trip: TripRef::new(7, 0, 2),
     trip_name: Name::EMPTY,
 };
 
