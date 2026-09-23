@@ -26,6 +26,8 @@ pub const FLAG_ASSISTANT_CANDIDATE: u8 = 8;
 /// A trip day the device built from the rest of the day before. Lists hide it, and the device keeps
 /// at most one, which each new build replaces.
 pub const FLAG_BUILT_DAY: u8 = 16;
+/// Generated navigation geometry. Saved-route lists do not show it.
+pub const FLAG_TEMPORARY: u8 = 32;
 pub const WAYPOINT_PROVENANCE_OFF: usize = 44;
 pub const VISIT_DESCRIPTOR_VERSION: u8 = 1;
 pub const VISIT_DESCRIPTOR_LEN: usize = 80;

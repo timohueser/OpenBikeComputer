@@ -248,6 +248,7 @@ impl Splicer {
                     } else {
                         0
                     } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
+                        | obc_formats::obcr::FLAG_TEMPORARY
                         | if matches!(self.leg, Leg::Rest { .. }) { obc_formats::obcr::FLAG_BUILT_DAY } else { 0 },
                 );
                 // Preserve the sampled heights the planner densified.

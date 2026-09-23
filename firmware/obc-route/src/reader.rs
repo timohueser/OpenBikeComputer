@@ -1163,7 +1163,7 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let Some(bike) = BikeType::from_u8(h[obc_formats::obcr::BIKE_TYPE_OFF]) else {
         return Err(Error::BadOffset);
     };
-    if h[5] & !31 != 0 || h[119] != 0 {
+    if h[5] & !63 != 0 || h[119] != 0 {
         return Err(Error::BadOffset);
     }
     if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 && h[128..160].iter().any(|b| *b != 0) {
