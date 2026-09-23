@@ -444,7 +444,7 @@ struct RootView: View {
         return RideShareMenu(
             gpx: RideGPXFile(ride: ride, encode: { try exporter.export($0).data }),
             onSaveAsRoute: ride.plannedRoute().map { route in
-                { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date)) }
+                { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
             }
         )
     }

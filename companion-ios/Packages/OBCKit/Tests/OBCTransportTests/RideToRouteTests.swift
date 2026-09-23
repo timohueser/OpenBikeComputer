@@ -57,7 +57,7 @@ import OBCFormats
     @Test func plannedRouteUploadsWithTheRideDistance() throws {
         let rideLength = Self.ridden(Self.ride)
         let decoded = try RouteObjectCodec.decode(
-            RouteObjectCodec.encode(try #require(Self.ride.plannedRoute()), name: "Furka")
+            RouteObjectCodec.encode(try #require(Self.ride.plannedRoute()), name: "Furka", bikeType: .road)
         )
 
         #expect(decoded.name == "Furka")
