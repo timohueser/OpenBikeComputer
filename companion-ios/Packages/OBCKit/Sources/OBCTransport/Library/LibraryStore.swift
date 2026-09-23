@@ -50,6 +50,9 @@ public protocol LibraryStore: Sendable {
     /// or its points do not decode: the ride stays summary-only rather than dropped, and the detail
     /// degrades to the preview's coordinates.
     func ridePoints(_ id: RideID) -> [RidePoint]?
+    /// One ride's line for the all-rides map. Nil when its points do not load. A persistent store
+    /// caches it, so the map reads a season of rides without decoding a tracklog.
+    func rideMapLine(_ id: RideID) -> RideMapLine?
     /// Save one ride's summary and points. Report a write failure before sync records success.
     func saveRide(_ ride: Ride) throws
     /// Commit the downloaded ride and local sync state together. Only a persistent store
@@ -105,6 +108,10 @@ extension LibraryStore {
     public func archivedRideSource(_ id: RideID) -> RideSource? { nil }
 
     public func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt? { nil }
+
+    public func rideMapLine(_ id: RideID) -> RideMapLine? {
+        ridePoints(id).map { RideMapLine(id: id, points: $0) }
+    }
 }
 
 /// The no-filesystem conformer: unit tests, previews, and Debug mock runs. Persistence across
