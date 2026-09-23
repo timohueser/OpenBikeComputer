@@ -17,7 +17,7 @@ fn route(points: Vec<(i32, i32, i16)>, waypoints: &[WpRec<'_>], distance: u32) -
     })
     .0
 }
-fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut VecSink) {
+fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut dyn obc_formats::io::ByteSink) {
     let source = SliceSource(bytes);
     let index = RouteIndex::read(&source).unwrap();
     let reader = RouteReader::new(&index, &source);
@@ -453,6 +453,67 @@ fn easier_composition_preserves_access_order_full_metadata_and_clean_provenance(
     let index = RouteIndex::read(&out).unwrap();
     let accepted = RouteReader::new(&index, &out);
     builder.prepare_easier(&accepted).unwrap(); // A clean accepted route permits another comparison.
+}
+
+/// A trial keeps no bytes, so what it measures from the stream must be what the store would read
+/// back: the stored copy's costs and its CRC-32. The legs span several output chunks, and waypoint
+/// records follow the first header patch.
+#[test]
+fn a_measured_trial_is_its_stored_copy() {
+    use obc_formats::io::{ByteSink, Error};
+    use obc_route::easier::{Costs, Measure, MeasureSink};
+    struct Tee<'a>(VecSink, MeasureSink<'a>);
+    impl ByteSink for Tee<'_> {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            self.0.write(bytes)?;
+            self.1.write(bytes)
+        }
+        fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+            self.0.write(body)?;
+            self.1.write_chunk(anchor, body)
+        }
+        fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
+            self.0.patch_at(offset, bytes)?;
+            self.1.patch_at(offset, bytes)
+        }
+    }
+    struct Hills;
+    impl obc_route::ElevationSource for Hills {
+        fn sample(&mut self, lat: i32, lon: i32) -> Option<i16> {
+            Some((500 + (lon / 7 % 40) * 3 + lat / 20) as i16)
+        }
+    }
+    let wps = [(55, 450, 500, 17, 4, 4, -50, b"Cafe" as &[u8]), (166, 1400, 400, 19, 1, 4, 40, b"Shop" as &[u8])];
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let mut slot = Box::<VisitBuilder>::new_uninit();
+    let mut builder = unsafe {
+        VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+        slot.assume_init()
+    };
+    builder.prepare_easier(&original).unwrap();
+    let (mut measure, mut hills) = (Measure::new(), Hills);
+    let mut tee = Tee(VecSink::default(), MeasureSink::new(&mut measure, &mut hills));
+    builder.begin(&mut tee).unwrap();
+    while let Some((from, to)) = builder.easier_leg(&original, (0, 0)).unwrap() {
+        let points = (0..=200)
+            .map(|i| (from.0 + (to.0 - from.0) * i / 200, from.1 + 300 * i * (200 - i) / 10_000, 10 + i as i16))
+            .collect();
+        append(&mut builder, &route(points, &[], 100), &mut tee);
+        builder.finish_easier_leg(&original).unwrap();
+    }
+    let stats = loop {
+        if let Some(stats) = builder.finish_step(&original, &mut tee).unwrap() {
+            break stats;
+        }
+    };
+    let Tee(stored, _) = tee;
+    assert!(stats.chunk_count > 1 && stats.waypoint_count == 2);
+    let (_, costs) = Costs::candidate(&SliceSource(&stored.buf), [0, stats.total_distance_m], &mut Hills).unwrap();
+    assert!(costs.ascent_m > 0 && costs.distance_m > 0);
+    assert_eq!(measure.finish(&mut Hills).unwrap(), (costs, obc_crc::crc32(&stored.buf)));
 }
 
 #[test]

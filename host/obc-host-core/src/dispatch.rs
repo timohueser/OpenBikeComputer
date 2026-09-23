@@ -830,7 +830,10 @@ impl HostLoop {
             return failed(NavigatorError::Workspace);
         }
         if match work {
-            PlannerWork::Route(_) | PlannerWork::AssistantRoute(_) | PlannerWork::MeasureLegs(_) => self.hold.route,
+            PlannerWork::Route(_)
+            | PlannerWork::AssistantRoute(_)
+            | PlannerWork::MeasureLegs(_)
+            | PlannerWork::MeasureRoute(_) => self.hold.route,
             PlannerWork::Detour(_) => self.hold.detour,
         } {
             return None;
@@ -859,7 +862,7 @@ impl HostLoop {
                     Some(InflightPlan::Measure(Box::new(crate::nav_visit::LegMeasure::start(&request, context))));
                 None
             }
-            PlannerWork::AssistantRoute(request) => {
+            PlannerWork::AssistantRoute(request) | PlannerWork::MeasureRoute(request) => {
                 if app.assistant_visit_target().is_some()
                     || app
                         .assistant_review_context()
@@ -931,7 +934,10 @@ impl HostLoop {
                         return failed(NavigatorError::Unavailable);
                     }
                     match crate::nav_visit::VisitPlan::start(context, app.assistant_visit_target(), &route) {
-                        Ok(plan) => self.plan = Some(InflightPlan::Visit(Box::new(plan))),
+                        Ok(mut plan) => {
+                            plan.measure = matches!(work, PlannerWork::MeasureRoute(_));
+                            self.plan = Some(InflightPlan::Visit(Box::new(plan)));
+                        }
                         Err(error) => return failed(error),
                     }
                 } else {
@@ -1000,6 +1006,17 @@ impl HostLoop {
                 Ok(Some(stats)) => stats,
                 Err(error) => return Some(NavigatorOutcome::Failed { token, error }),
             };
+            if plan.measure {
+                // These are the bytes a stored copy would hold.
+                let bytes = plan.bytes();
+                let source = obc_formats::io::SliceSource(bytes);
+                let outcome = match obc_route::easier::Costs::candidate(&source, [0, stats.total_distance_m], elev) {
+                    Ok((_, costs)) => app.assistant_easier_measured(token, costs, obc_crc::crc32(bytes)),
+                    Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Unavailable },
+                };
+                self.plan = None;
+                return Some(outcome);
+            }
             if app
                 .assistant_review_context()
                 .is_some_and(|context| context.purpose == obc_app::navigator::ReviewPurpose::Visit)

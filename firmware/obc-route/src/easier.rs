@@ -2,8 +2,8 @@
 use crate::{nav::Objective, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_elevation::{DeadBand, ElevationSource};
 use obc_formats::{
-    io::{ByteSource, Error},
-    obcr::RouteSourceKey,
+    io::{ByteSink, ByteSource, Error},
+    obcr::{RouteSourceKey, HEADER_FULL_LEN},
 };
 use obc_map_scene::ground_dist_m;
 
@@ -121,25 +121,142 @@ impl Costs {
             surface_attributed: facts.attribution_map == Some(map),
         })
     }
-    /// A complete candidate, measured by [`Stations`] like the original, in the same walk that
-    /// reads its visit costs. The caller has checked that it is attributed to the current map.
+    /// A complete stored candidate, measured by [`Measure`] in the same walk that reads its visit
+    /// costs. The caller has checked that it is attributed to the current map.
     pub fn candidate(
         src: &dyn ByteSource,
         arrival: [u32; 2],
         elev: &mut dyn ElevationSource,
     ) -> Result<(crate::visit::VisitCosts, Self), Error> {
-        let mut stations = Stations::new(elev);
-        let facts = crate::visit::VisitCosts::read_with(src, arrival, None, |p| stations.push((p.lon, p.lat)))?;
-        let (distance_m, ascent_m, elevation_complete) = stations.finish();
-        let costs = Self {
+        let total_m = crate::reader::read_header(src)?.total_distance_m;
+        let mut measure = Measure::new();
+        let facts = crate::visit::VisitCosts::read_with(src, arrival, None, |p| measure.push(p, elev))?;
+        Ok((facts, measure.costs(total_m, elev)?))
+    }
+}
+
+/// A candidate measured from the points its stored copy holds, in stored order: from the stored
+/// bytes by [`Costs::candidate`], or from the stream by [`MeasureSink`] while it is composed.
+pub struct Measure {
+    stations: Stations,
+    facts: crate::facts::FactsAccumulator,
+    points: u32,
+    previous: Option<(i32, i32, i16)>,
+    written: u32,
+    crc: obc_crc::Crc32,
+    /// The stored checksum, point count and distance, known once the header is patched.
+    patched: Option<(u32, u32, u32)>,
+}
+impl Measure {
+    pub fn new() -> Self {
+        Self {
+            stations: Stations::new(),
+            facts: crate::facts::FactsAccumulator::new(0, None, 0, u32::MAX),
+            points: 0,
+            previous: None,
+            written: 0,
+            crc: obc_crc::Crc32::new(),
+            patched: None,
+        }
+    }
+    fn push(&mut self, p: RoutePoint, elev: &mut dyn ElevationSource) {
+        self.facts.push(p, &mut |_| {});
+        self.stations.push((p.lon, p.lat), elev);
+        self.points += 1;
+    }
+    fn costs(self, total_m: u32, elev: &mut dyn ElevationSource) -> Result<Costs, Error> {
+        let facts = self.facts.finish(total_m)?;
+        let (distance_m, ascent_m, elevation_complete) = self.stations.finish(elev);
+        Ok(Costs {
             distance_m,
             ascent_m,
-            rough_m: facts.rough_m,
-            unknown_m: facts.unknown_m,
+            rough_m: facts.rough_m(),
+            unknown_m: facts.surface_m[0],
             elevation_complete,
             surface_attributed: true,
-        };
-        Ok((facts, costs))
+        })
+    }
+    /// The costs and the CRC-32 the store computes over the stored copy, once a [`MeasureSink`]
+    /// has taken the complete stream.
+    pub fn finish(self, elev: &mut dyn ElevationSource) -> Result<(Costs, u32), Error> {
+        let (crc, points, total_m) = self.patched.ok_or(Error::BadOffset)?;
+        if points != self.points {
+            return Err(Error::BadOffset);
+        }
+        Ok((self.costs(total_m, elev)?, crc))
+    }
+}
+impl Default for Measure {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A sink that keeps no bytes. It decodes each chunk body as the store would read it back, and
+/// folds every byte into the stored copy's checksum.
+pub struct MeasureSink<'a> {
+    measure: &'a mut Measure,
+    elev: &'a mut dyn ElevationSource,
+    /// Bytes appended through this sink, so a caller can pace its steps.
+    pub appended: usize,
+}
+impl<'a> MeasureSink<'a> {
+    pub fn new(measure: &'a mut Measure, elev: &'a mut dyn ElevationSource) -> Self {
+        Self { measure, elev, appended: 0 }
+    }
+}
+impl ByteSink for MeasureSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let m = &mut *self.measure;
+        // The header is patched at the end over the zeros the stream starts with.
+        let header = (HEADER_FULL_LEN as u32).saturating_sub(m.written) as usize;
+        if bytes.iter().take(header).any(|&b| b != 0) {
+            return Err(Error::BadOffset);
+        }
+        m.crc.update(bytes);
+        m.written = u32::try_from(bytes.len()).ok().and_then(|n| m.written.checked_add(n)).ok_or(Error::TooLarge)?;
+        m.patched = None;
+        self.appended += bytes.len();
+        Ok(())
+    }
+    fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+        let Self { measure: m, elev, .. } = self;
+        if m.written < HEADER_FULL_LEN as u32 {
+            return Err(Error::BadOffset);
+        }
+        // Each chunk repeats the last point of the chunk before it.
+        match m.previous {
+            None => m.push(crate::reader::chunk_anchor(anchor), &mut **elev),
+            Some(previous) if previous == anchor => {}
+            Some(_) => return Err(Error::BadOffset),
+        }
+        let mut last = anchor;
+        crate::reader::decode_records((anchor.0, anchor.1), body, |p| {
+            m.push(p, &mut **elev);
+            last = (p.lon, p.lat, p.ele);
+        })?;
+        m.previous = Some(last);
+        self.write(body)
+    }
+    fn patch_at(&mut self, offset: u32, header: &[u8]) -> Result<(), Error> {
+        let m = &mut *self.measure;
+        if offset != 0 || header.len() != HEADER_FULL_LEN || m.written < HEADER_FULL_LEN as u32 {
+            return Err(Error::BadOffset);
+        }
+        // CRC-32 is affine: the stored checksum is the streamed one plus the header's own term,
+        // which is the header followed by zeros for the rest of the stream, from a zero register.
+        let mut term = obc_crc::Crc32::from_checksum(u32::MAX);
+        term.update(header);
+        let mut rest = (m.written - HEADER_FULL_LEN as u32) as usize;
+        while rest > 0 {
+            let n = rest.min(64);
+            term.update(&[0; 64][..n]);
+            rest -= n;
+        }
+        let crc = m.crc.finalize() ^ term.finalize() ^ u32::MAX;
+        let at = |i: usize| u32::from_le_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]]);
+        m.patched = Some((crc, at(32), at(36)));
+        Ok(())
     }
 }
 
@@ -152,8 +269,7 @@ const STATION_SPACING_M: f64 = 40.0;
 /// stored geometry and one at the end. Distance is the sum of the chords between stations, and
 /// climb is the dead band over terrain at the stations. Neither the stored point density nor an
 /// imported route's own heights enter the result.
-struct Stations<'a> {
-    elev: &'a mut dyn ElevationSource,
+struct Stations {
     band: DeadBand<f64>,
     complete: bool,
     distance: f64,
@@ -162,10 +278,9 @@ struct Stations<'a> {
     previous: Option<(i32, i32)>,
     station: Option<(i32, i32)>,
 }
-impl<'a> Stations<'a> {
-    fn new(elev: &'a mut dyn ElevationSource) -> Self {
+impl Stations {
+    fn new() -> Self {
         Self {
-            elev,
             band: DeadBand::new(),
             complete: true,
             distance: 0.0,
@@ -176,14 +291,10 @@ impl<'a> Stations<'a> {
         }
     }
     #[inline(never)]
-    fn remaining(
-        route: &RouteReader,
-        start_m: u32,
-        elev: &'a mut dyn ElevationSource,
-    ) -> Result<(u32, u32, bool), Error> {
+    fn remaining(route: &RouteReader, start_m: u32, elev: &mut dyn ElevationSource) -> Result<(u32, u32, bool), Error> {
         let start = route.position_at(start_m).ok_or(Error::BadOffset)?;
-        let mut stations = Self::new(elev);
-        stations.push((start.lon, start.lat));
+        let mut stations = Self::new();
+        stations.push((start.lon, start.lat), elev);
         let first = route.chunks().iter().rposition(|c| c.cum_distance_m <= start_m).unwrap_or(0);
         let mut along = f64::from(route.chunks().get(first).ok_or(Error::BadOffset)?.cum_distance_m);
         let mut last = None;
@@ -195,32 +306,32 @@ impl<'a> Stations<'a> {
                 along += last.map_or(0.0, |l| f64::from(ground_dist_m(l, p)));
                 last = Some(p);
                 if along > f64::from(start_m) {
-                    stations.push(p);
+                    stations.push(p, elev);
                 }
             }
         }
-        Ok(stations.finish())
+        Ok(stations.finish(elev))
     }
-    fn push(&mut self, p: (i32, i32)) {
+    fn push(&mut self, p: (i32, i32), elev: &mut dyn ElevationSource) {
         let Some(a) = self.previous else {
             self.previous = Some(p);
-            return self.station(p);
+            return self.station(p, elev);
         };
         let length = f64::from(ground_dist_m(a, p));
         // `next` stays ahead of `along`, so a zero-length step adds no station.
         while self.next <= self.along + length {
             let t = (self.next - self.along) / length;
             let at = |s: i32, e: i32| s + (f64::from(e - s) * t) as i32;
-            self.station((at(a.0, p.0), at(a.1, p.1)));
+            self.station((at(a.0, p.0), at(a.1, p.1)), elev);
             self.next += STATION_SPACING_M;
         }
         self.along += length;
         self.previous = Some(p);
     }
-    fn station(&mut self, q: (i32, i32)) {
+    fn station(&mut self, q: (i32, i32), elev: &mut dyn ElevationSource) {
         self.distance += self.station.map_or(0.0, |s| f64::from(ground_dist_m(s, q)));
         self.station = Some(q);
-        match self.elev.sample(q.1, q.0) {
+        match elev.sample(q.1, q.0) {
             Some(h) => self.band.push(f64::from(h)),
             None => {
                 self.complete = false;
@@ -228,9 +339,9 @@ impl<'a> Stations<'a> {
             }
         }
     }
-    fn finish(mut self) -> (u32, u32, bool) {
+    fn finish(mut self, elev: &mut dyn ElevationSource) -> (u32, u32, bool) {
         if let Some(end) = self.previous.filter(|&end| self.station != Some(end)) {
-            self.station(end);
+            self.station(end, elev);
         }
         (self.distance as u32, self.band.ascent() as u32, self.complete)
     }
