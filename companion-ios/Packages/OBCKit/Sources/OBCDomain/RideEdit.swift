@@ -157,13 +157,16 @@ extension RideSummary {
     /// This summary with the stats of `points`, counted by the device's rules
     /// (`firmware/obc-app/src/recorder.rs`). Every interval inside a segment counts: the device
     /// starts a new segment after each interval it does not count. Moving time, the average speed
-    /// and the sensor averages count only intervals at 0.8 m/s or faster. The climb has the
-    /// device's 3 m dead band and restarts at each segment. The name, the bike type and the trip
-    /// stay; a view is no device object, so it has no source.
+    /// and the sensor averages count only intervals at 0.8 m/s or faster. The climb and the descent
+    /// have the device's 3 m dead band and restart at each segment. The energy is an estimate from
+    /// the stored points: each interval with a power value adds watts × its time, at most 2 s, as the
+    /// device caps a gap, but the device sums every power sample and the points hold only some. The
+    /// name, the bike type and the trip stay; a view is no device object, so it has no source.
     public func withStats(of points: [RidePoint], id: RideID) -> RideSummary {
-        var ridden = 0.0, movingMeters = 0.0, moving = 0.0, climb = 0.0
+        var ridden = 0.0, movingMeters = 0.0, moving = 0.0, climb = 0.0, descent = 0.0
         var confirmed: Double?
         var heartRate = Weighted(), cadence = Weighted(), power = Weighted()
+        var joules: Double?
         for (index, point) in points.enumerated() {
             if point.segmentStart { confirmed = nil }
             if let elevation = point.elevationMeters {
@@ -172,6 +175,7 @@ extension RideSummary {
                         climb += elevation - last
                         confirmed = elevation
                     } else if elevation <= last - RouteStats.climbHysteresisMeters {
+                        descent += last - elevation
                         confirmed = elevation
                     }
                 } else {
@@ -184,6 +188,7 @@ extension RideSummary {
             let distance = previous.coordinate.routeDistance(to: point.coordinate)
             guard dt > 0 else { continue }
             ridden += distance
+            if let watts = point.power { joules = (joules ?? 0) + Double(watts) * min(dt, 2) }
             guard distance / dt >= 0.8 else { continue }
             movingMeters += distance
             moving += dt
@@ -194,9 +199,10 @@ extension RideSummary {
         return RideSummary(
             id: id, name: name, date: points.first?.timestamp ?? date, distanceMeters: ridden,
             movingTime: moving, averageSpeedMps: moving > 0 ? movingMeters / moving : 0,
-            climbMeters: climb, trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
+            climbMeters: climb, descentMeters: descent, trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: heartRate.average, maxHeartRate: heartRate.max, avgCadence: cadence.average,
-            avgPower: power.average, maxPower: power.max, bikeType: bikeType, trip: trip
+            avgPower: power.average, maxPower: power.max, energyKJ: joules.map { Int($0 / 1_000) },
+            bikeType: bikeType, trip: trip
         )
     }
 }

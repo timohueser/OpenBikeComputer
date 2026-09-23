@@ -923,6 +923,8 @@ private struct RideSummaryDTO: Codable {
     var movingTime: Double
     var averageSpeedMps: Double
     var climbMeters: Double
+    // Optional, so a `summary.json` written before the footer carried descent still decodes.
+    var descentMeters: Double?
     var preview: TrackPreviewDTO?
     // The per-ride sensor summary is optional, so a `summary.json` written without these keys
     // still decodes with every field nil.
@@ -931,6 +933,7 @@ private struct RideSummaryDTO: Codable {
     var avgCadence: Int?
     var avgPower: Int?
     var maxPower: Int?
+    var energyKJ: Int?
     var bikeType: UInt8
     var trip: RideTripDTO?
 
@@ -943,12 +946,14 @@ private struct RideSummaryDTO: Codable {
         movingTime = summary.movingTime
         averageSpeedMps = summary.averageSpeedMps
         climbMeters = summary.climbMeters
+        descentMeters = summary.descentMeters
         preview = summary.trackPreview.map(TrackPreviewDTO.init)
         avgHeartRate = summary.avgHeartRate
         maxHeartRate = summary.maxHeartRate
         avgCadence = summary.avgCadence
         avgPower = summary.avgPower
         maxPower = summary.maxPower
+        energyKJ = summary.energyKJ
         bikeType = summary.bikeType.rawValue
         trip = summary.trip.map(RideTripDTO.init)
     }
@@ -957,10 +962,10 @@ private struct RideSummaryDTO: Codable {
         RideSummary(
             id: RideID(id), name: name, date: date,
             distanceMeters: distanceMeters, movingTime: movingTime,
-            averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
+            averageSpeedMps: averageSpeedMps, climbMeters: climbMeters, descentMeters: descentMeters ?? 0,
             trackPreview: preview?.domain,
             avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
-            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower,
+            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower, energyKJ: energyKJ,
             bikeType: BikeType(rawValue: bikeType) ?? .road, trip: trip?.domain, source: source
         )
     }

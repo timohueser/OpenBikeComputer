@@ -1,6 +1,6 @@
-//! Recorded-ride v4 summary access.
+//! Recorded-ride v5 summary access.
 //!
-//! The object begins with the existing 20-byte track samples and ends with one fixed 144-byte
+//! The object begins with the existing 20-byte track samples and ends with one fixed 150-byte
 //! footer. Recording therefore writes the final bytes directly; finalize is one footer append,
 //! never a whole-ride conversion.
 
@@ -21,6 +21,7 @@ pub struct RideStats {
     pub moving_time_s: u32,
     pub avg_speed_cms: u16,
     pub climb_m: u16,
+    pub descent_m: u16,
     /// Unix seconds that were true at [`anchor_ms`](RideStats::anchor_ms).
     pub unix_at_anchor: u32,
     /// The monotonic sample clock at which [`unix_at_anchor`](RideStats::unix_at_anchor) was read.
@@ -32,6 +33,8 @@ pub struct RideStats {
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
     pub max_power: Option<u16>,
+    /// The ride's energy from power; `None` without power data.
+    pub energy_kj: Option<u32>,
     /// The bike type that was current when the ride started.
     pub bike: BikeType,
     /// The trip day the ride started on.
@@ -70,6 +73,8 @@ pub fn encode_summary_footer(
         stats.avg_power,
         stats.max_power,
     );
+    footer.descent_m = stats.descent_m;
+    footer.energy_kj = stats.energy_kj;
     footer.bike = stats.bike;
     footer.set_trip(stats.trip, stats.trip_name);
     encode_footer(&footer)
@@ -85,12 +90,14 @@ pub struct RideInfo {
     pub moving_time_s: u32,
     pub avg_speed_cms: u16,
     pub climb_m: u16,
+    pub descent_m: u16,
     pub point_count: u32,
     pub avg_hr: Option<u8>,
     pub max_hr: Option<u8>,
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
     pub max_power: Option<u16>,
+    pub energy_kj: Option<u32>,
     pub bike: BikeType,
     pub trip: Option<TripRef>,
     pub trip_name: String<NAME_CAP>,
@@ -129,12 +136,14 @@ impl RideInfo {
             moving_time_s: footer.moving_time_s,
             avg_speed_cms: footer.avg_speed_cms,
             climb_m: footer.climb_m,
+            descent_m: footer.descent_m,
             point_count: footer.point_count,
             avg_hr: footer.avg_hr,
             max_hr: footer.max_hr,
             avg_cadence: footer.avg_cadence,
             avg_power: footer.avg_power,
             max_power: footer.max_power,
+            energy_kj: footer.energy_kj,
             bike: footer.bike,
             trip: footer.trip(),
             trip_name,

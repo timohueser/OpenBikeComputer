@@ -51,7 +51,7 @@ pub enum ErrorCode {
     GpxNoTrackPoints,
     /// The decimated route still exceeds [`MAX_STORED_POINTS`].
     GpxTooManyPoints,
-    /// The bytes are not a finished ride-v4 object.
+    /// The bytes are not a finished ride-v5 object.
     NotRide,
     /// The finished ride carries no recorded points.
     RideNoPoints,
@@ -113,7 +113,7 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
     Ok(sink.0)
 }
 
-/// Convert a finished ride-v4 object's bytes into a GPX 1.1 document named `name`.
+/// Convert a finished ride-v5 object's bytes into a GPX 1.1 document named `name`.
 ///
 /// Byte-for-byte the same output as `obc_route::track_to_gpx`; only the buffer adapter is new.
 pub fn track_to_gpx(ride: &[u8], name: &str) -> Result<String, ConvertFailure> {
@@ -319,7 +319,7 @@ fn describe_track_error(e: Error) -> ConvertFailure {
         ),
         Error::BadOffset | Error::BadMagic | Error::BadVersion => ConvertFailure::new(
             ErrorCode::NotRide,
-            "These bytes are not one complete ride-v4 object. Download the finished ride again; \
+            "These bytes are not one complete ride-v5 object. Download the finished ride again; \
              unfinished sample logs and older ride formats are not accepted.",
         ),
         Error::Io => ConvertFailure::new(
@@ -572,7 +572,7 @@ mod tests {
         assert!(not_gpx.message.contains(".fit"), "points at the likely real format: {not_gpx}");
 
         let short = track_to_gpx(&[0xAB; 4], "x").unwrap_err();
-        assert!(short.message.contains("ride-v4"), "names the required format: {short}");
+        assert!(short.message.contains("ride-v5"), "names the required format: {short}");
     }
 
     /// A route past the storage ceiling reports that, with the number in it. The zig-zag keeps

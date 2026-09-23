@@ -62,16 +62,16 @@ def plain_route(stage: Stage) -> Staging:
 
 def _ride(samples, name, start, distance_m, moving_s, climb_m, avg_hr, trip):
     """A ride object as `specs/obc-ble-interface-spec.md` §7.2 lays it out: 20-byte samples, then
-    the 144-byte footer. `samples` are `(lon, lat, ele)`; `trip` is `(key, day index, day count,
+    the 150-byte footer. `samples` are `(lon, lat, ele)`; `trip` is `(key, day index, day count,
     name)` or `None`.
     """
     body = bytearray()
     for i, (lon, lat, ele) in enumerate(samples):
         body += struct.pack("<iihHIBBH", lon, lat, ele, i == 0, i * 5000, 0xFF, 0xFF, 0xFFFF)
     raw = name.encode()
-    footer = struct.pack("<4sBBHIIIHHI", b"OBRF", 4, len(raw), 144, start, distance_m, moving_s, 0, climb_m,
+    footer = struct.pack("<4sBBHIIIHHHI", b"OBRF", 5, len(raw), 150, start, distance_m, moving_s, 0, climb_m, 0,
                          len(samples))
-    footer += struct.pack("<BBBBHH48s", avg_hr or 0xFF, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, raw)
+    footer += struct.pack("<BBBBHHI48s", avg_hr or 0xFF, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, 0xFFFF_FFFF, raw)
     key, day, days, trip_name = trip or (0, 0, 0, "")
     footer += struct.pack("<QBBBB48s", key, day, days, 1, len(trip_name.encode()), trip_name.encode())
     return bytes(body + footer)
@@ -85,18 +85,18 @@ def _metric(a, b):
 
 def tracks(stage: Stage) -> Staging:
     """Four stored rides for the Rides screens, oldest first, so the import gives the newest the
-    highest id: two loose copies of the pinned `ride-v4.bin` vector, "Sensor Ride" with all three
+    highest id: two loose copies of the pinned `ride-v5.bin` vector, "Sensor Ride" with all three
     sensors, and two days of the trip "Alps traverse" on the Grimsel climb's track. Day 2 has a
     heart rate; Day 1 has no sensor. Every ride is unsynced; the flat store stages no archive rows.
     """
     where = stage.dir("tracks")
-    vector = (stage.vectors / "ride-v4.bin").read_bytes()
-    footer = len(vector) - 144
+    vector = (stage.vectors / "ride-v5.bin").read_bytes()
+    footer = len(vector) - 150
     for index, distance in enumerate((12_345, 17_800)):
         loose = bytearray(vector)
         struct.pack_into("<I", loose, footer + 12, distance)
-        loose[footer + 84 : footer + 144] = bytes(60)
-        loose[footer + 94] = vector[footer + 94]
+        loose[footer + 90 : footer + 150] = bytes(60)
+        loose[footer + 100] = vector[footer + 100]
         (where / f"ride-{index}.obcr").write_bytes(loose)
     gpx = (stage.fixtures / "sim-grimsel" / "tracks" / "grimsel-climb.gpx").read_text()
     points = re.findall(r'<trkpt lat="([-\d.]+)" lon="([-\d.]+)">\s*<ele>([-\d.]+)</ele>', gpx)
