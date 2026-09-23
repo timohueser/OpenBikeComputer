@@ -1156,9 +1156,10 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 # other.
 #
 # Grimsel carries a routing graph, but at this replay point the rider reads off the route, so this
-# frame is also the inert-row case: Detour draws recessed with no chevron and a press does nothing. The drawer's dim means inert, unlike the
-# compass dial's, which dimmed a station a press still opened. The all-live arrangement is
-# `map-context-live.png`, shot on the Monaco graph down in the detour block.
+# frame is also the inert-row case: Detour draws recessed with no chevron and a press does nothing.
+# The drawer's dim means inert, unlike the compass dial's, which dimmed a station a press still
+# opened. The all-live arrangement is `map-context-live.png`, shot on the Monaco graph down in the
+# detour block.
 [[frame]]
 name = "map-context"
 map = "{grimsel}"

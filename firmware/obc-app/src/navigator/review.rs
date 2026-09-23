@@ -69,6 +69,8 @@ pub struct ReviewedRoute {
     pub descent_m: u32,
     pub visit_anchors_m: Option<[u32; 3]>,
     pub visit_costs: Option<obc_route::visit::VisitCosts>,
+    /// An easier candidate measured like the original it replaces.
+    pub easier: Option<obc_route::easier::Costs>,
 }
 
 impl ReviewedRoute {
@@ -77,6 +79,7 @@ impl ReviewedRoute {
         source: PayloadFingerprint,
         bytes: &dyn obc_formats::io::ByteSource,
         context: ReviewContext,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Result<Self, NavigatorError> {
         let info = obc_route::RouteObjectInfo::read(bytes).map_err(|_| NavigatorError::Unavailable)?;
         if !info.assistant_candidate
@@ -112,6 +115,12 @@ impl ReviewedRoute {
         } else {
             None
         };
+        let easier = match (context.purpose, visit_costs) {
+            (ReviewPurpose::Easier(_), Some(facts)) => {
+                Some(obc_route::easier::Costs::candidate(bytes, facts, elev).map_err(|_| NavigatorError::Unavailable)?)
+            }
+            _ => None,
+        };
         Ok(Self {
             source,
             distance_m: info.distance_m,
@@ -119,6 +128,7 @@ impl ReviewedRoute {
             descent_m: info.descent_m,
             visit_anchors_m,
             visit_costs,
+            easier,
         })
     }
 }
@@ -977,6 +987,7 @@ mod tests {
             descent_m: 3,
             visit_anchors_m: None,
             visit_costs: None,
+            easier: None,
         });
         nav.review_index(Some(1));
         nav.route = PlanPhase::PreviewReady;

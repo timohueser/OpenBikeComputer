@@ -1931,8 +1931,13 @@ pub(crate) async fn run_app(
                                                                                     NavigatorError::Unavailable
                                                                                 })?;
                                                                         }
+                                                                        // An easier review never
+                                                                        // plans here, so no terrain.
                                                                         obc_app::navigator::ReviewedRoute::read(
-                                                                            source, bytes, context,
+                                                                            source,
+                                                                            bytes,
+                                                                            context,
+                                                                            &mut obc_route::NullElevation,
                                                                         )
                                                                     },
                                                                 )
