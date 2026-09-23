@@ -474,8 +474,9 @@ landmarks, and easier routes. There is no network in any of them.
 ### Find a place
 
 Find combines places near the rider with places along the next part of the route, and alternates
-the two sources so that neither crowds out the other. It plans a real route to each candidate and
-shows the measured cost. The drawer sets how many results to calculate, and four is the default.
+the two sources so that neither crowds out the other. It plans the legs to each candidate and back,
+and shows their measured cost; the complete route is composed when the rider opens a result. The
+drawer sets how many results to calculate, and four is the default.
 
 Places known to be closed now are hidden, which the rider can turn off for every category at once.
 A place with unknown hours stays in the list and is never labelled open. Opening hours are
