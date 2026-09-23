@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "measurement": {
-    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the `embedded` CI job's shipping link on 1d33e67b.",
+    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the shipping link of claude/sensor-links-concurrent on the pinned host, which holds three live sensor links; the `embedded` CI job re-pins it.",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
@@ -13,8 +13,8 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "measured_resident": 313264,
-      "resident_ram_max": 317360,
+      "measured_resident": 319136,
+      "resident_ram_max": 323232,
       "resident_ram_slack": 4096,
       "_resident_ram_slack_note": "The guard holds the link within one slack of `measured_resident` in each direction: `resident_ram_max` is `measured_resident` plus the slack, and a link more than the slack BELOW `measured_resident` fails too. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request, and the same figure is what a deletion can save before it must re-pin. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. Dead ceiling is therefore bounded by two slacks, instead of growing without limit as it did when only the upper end was gated. Re-pin both figures from the `embedded` CI job; a host toolchain links a little less, which the band absorbs.",
       "uninit_max": 132096,
@@ -37,7 +37,7 @@
         "terrain": 2152,
         "terrain_window": 24,
         "stack_reserve": 65536,
-        "ble_total": 24957,
+        "ble_total": 24969,
         "ble_mpsl": 0,
         "ble_sdc_memory": 11336,
         "ble_host_resources": 6120,
@@ -46,7 +46,7 @@
         "ble_object_store": 124,
         "ble_server": 2168,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 358,
+        "ble_sensor_manager": 370,
         "usb_named": 35973,
         "sd_bounce": 2048,
         "semmc_driver": 52,
