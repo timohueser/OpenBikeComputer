@@ -3,8 +3,8 @@ import OBCDomain
 import OBCTransport
 
 /// The trip page, behind a trip card in the routes list: the map in day colours, the totals, the
-/// Upload trip action, one row per day, then the start date and the bike type. A tap on a day
-/// renames it. The overflow menu carries Rename, Reverse and Delete trip.
+/// Upload trip action, one row per day with its number and its name, then the start date and the
+/// bike type. A tap on a day renames it. The overflow menu carries Rename, Reverse and Delete trip.
 ///
 /// Driven straight off `MainScreenModel`: the model owns the trip edits and the library, and this
 /// view binds them. It pops itself the moment the trip is deleted.
@@ -170,22 +170,23 @@ public struct TripDetailView: View {
         )
     }
 
-    /// One row per day: "Day 2 · to Ulrichen", then the date, when the trip has one, and the
-    /// day's stats.
+    /// One row per day: the number, the day's own name or "to ‹place›", then the date, when the
+    /// trip has one, and the day's stats.
     private var dayRows: some View {
         let routes = model.tripDays(tripID)
         let dates = model.tripDayDates(tripID)
         return OBCGroupedSection {
             ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
-                let place = trip?.dayEnds[safe: index]?.name
+                let end = trip?.dayEnds[safe: index]
                 TripDayRow(
                     color: OBCTheme.stageColor(index: index),
-                    title: place.map { "Day \(index + 1) · to \($0)" } ?? "Day \(index + 1)",
+                    number: index + 1,
+                    title: end?.title ?? end?.name.map { "to \($0)" },
                     detail: ([dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) }]
                         + [OBCFormat.plannedSubtitle(day)]).compactMap { $0 }.joined(separator: " · "),
                     showsDivider: index < routes.count - 1
                 ) {
-                    dayDraft = place ?? ""
+                    dayDraft = end?.title ?? ""
                     dayRename = index
                 }
                 .accessibilityIdentifier("trip.day.\(index)")

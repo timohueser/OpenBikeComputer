@@ -6,7 +6,7 @@ import OBCDomain
 /// the figures and the estimate the device shows for the same day route.
 public struct TripDayRoute: Equatable, Sendable {
     public let day: Int
-    /// The OBCR name, "Day 2 Ulrichen", at most 48 bytes.
+    /// The OBCR name: the day's own name, or "Day 2 Ulrichen"; at most 48 bytes.
     public let name: String
     public let points: [RoutePoint]
     public let payload: Data
@@ -35,7 +35,7 @@ extension Trip {
     /// bytes unchanged leaves its CRC unchanged, so the upload skips that day.
     public func dayRoutes() -> [TripDayRoute] {
         dayLines().enumerated().map { day, points in
-            let name = Self.routeName(day: day, place: dayEnds[day].name)
+            let name = Self.routeName(day: day, title: dayEnds[day].title, place: dayEnds[day].name)
             let payload = RouteObjectCodec.encode(points: points, waypoints: [], name: name, bikeType: bikeType)
             let totals = RouteObjectCodec.totals(of: payload)
             let distance = Double(totals?.distanceMeters ?? 0)
@@ -47,13 +47,18 @@ extension Trip {
         }
     }
 
-    /// "Day N ‹place›" within the OBCR name cap. The cap cuts the place name on a character
-    /// boundary, never the "Day N".
-    static func routeName(day: Int, place: String?) -> String {
-        var name = "Day \(day + 1)"
-        guard let place, !place.isEmpty else { return name }
-        name += " "
-        for character in place {
+    /// The day's own name, or "Day N ‹place›", within the OBCR name cap. The cap cuts on a
+    /// character boundary, and never cuts the "Day N".
+    static func routeName(day: Int, title: String?, place: String?) -> String {
+        if let title, !title.isEmpty { return capped("", title) }
+        let number = "Day \(day + 1)"
+        guard let place, !place.isEmpty else { return number }
+        return capped(number + " ", place)
+    }
+
+    private static func capped(_ prefix: String, _ text: String) -> String {
+        var name = prefix
+        for character in text {
             guard name.utf8.count + String(character).utf8.count <= RouteObjectCodec.nameCap else { break }
             name.append(character)
         }

@@ -34,6 +34,14 @@ struct TripLineTests {
     // MARK: Join
 
     @Test
+    func joiningKeepsEachFilesName() {
+        let trip = Trip.joining(
+            [file([(0, 0), (1000, 0)]), file([(1000, 0), (2000, 0)])], names: ["Stage 1 Andermatt", nil],
+            id: TripID("t"), name: "T", bikeType: .road, now: Date())
+        #expect(trip.dayEnds.map(\.title) == ["Stage 1 Andermatt", nil])
+    }
+
+    @Test
     func joiningMakesOneDayPerFileWithTheDayEndsOnTheBoundaries() {
         let files = [file([(0, 0), (1000, 0)]), file([(1000, 0), (3000, 0)]), file([(3000, 0), (3500, 0)])]
         let trip = join(files)
@@ -127,9 +135,12 @@ struct TripLineTests {
             file([(2000, 0), (2000, 1500)]),
             file([(2500, 1500), (4500, 1500)]),
         ])
-        trip.renameDay(0, to: "Andermatt")
-        trip.renameDay(1, to: "Ulrichen")
-        trip.renameDay(2, to: "Brig")
+        trip.namePlace(0, to: "Andermatt")
+        trip.namePlace(1, to: "Ulrichen")
+        trip.namePlace(2, to: "Brig")
+        trip.renameDay(0, to: "Furka")
+        trip.renameDay(1, to: "Grimsel")
+        trip.renameDay(2, to: "Rhone")
         return trip
     }
 
@@ -143,6 +154,7 @@ struct TripLineTests {
         #expect(Array(reversed.dayEnds.prefix(2).map(\.coordinate)) == [trip.dayEnds[1].coordinate, trip.dayEnds[0].coordinate])
         #expect(reversed.dayEnds.map(\.name) == ["Ulrichen", "Andermatt", nil], "the old start had no name")
         #expect(reversed.startName == "Brig")
+        #expect(reversed.dayEnds.map(\.title) == ["Rhone", "Grimsel", "Furka"], "each day keeps its own name")
         #expect(reversed.dayEnds[2].coordinate == trip.line[0].coordinate)
         #expect(reversed.key != trip.key)
         // Each reversed day is an old day ridden backwards, in reverse day order.
@@ -162,6 +174,7 @@ struct TripLineTests {
         #expect(trip.line == original.line)
         #expect(trip.pieceStarts == original.pieceStarts)
         #expect(trip.dayEnds.map(\.name) == ["Andermatt", "Ulrichen", "Brig"])
+        #expect(trip.dayEnds.map(\.title) == ["Furka", "Grimsel", "Rhone"])
         #expect(trip.startName == "Realp")
         #expect(trip.dayEnds.map(\.coordinate) == original.dayEnds.map(\.coordinate))
         #expect(distances(trip) == distances(original))

@@ -14,15 +14,19 @@ public struct TripID: Hashable, Sendable {
 /// by projection onto the line after every line change.
 public struct DayEnd: Equatable, Sendable {
     public var coordinate: Coordinate
-    /// The rider's or the geocoder's name for the place. Nil reads as "Day N".
+    /// The rider's or the geocoder's name for the place.
     public var name: String?
+    /// The own name of the day that ends here: its route's or file's name, or the rider's. It
+    /// travels with the day, not with the place. Nil reads as "Day N ‹place›".
+    public var title: String?
     /// Metres along the trip line. The stored value is the hint for the next projection, which
     /// keeps a day end on its own leg of an out-and-back or a loop.
     public var distance: Double
 
-    public init(coordinate: Coordinate, name: String? = nil, distance: Double) {
+    public init(coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double) {
         self.coordinate = coordinate
         self.name = name
+        self.title = title
         self.distance = distance
     }
 }
@@ -119,18 +123,22 @@ public struct Trip: Identifiable, Equatable, Sendable {
 
     public var dayCount: Int { dayEnds.count }
 
-    /// The day's name as the rider reads it: "Day 2 Ulrichen", or "Day 2" for an unnamed end.
-    public func dayTitle(_ day: Int) -> String {
-        let number = "Day \(day + 1)"
-        guard dayEnds.indices.contains(day), let name = dayEnds[day].name, !name.isEmpty else { return number }
-        return "\(number) \(name)"
+    /// Name one day. The name travels with the day through every line change. Nil or blank
+    /// returns the day to "Day N ‹place›".
+    public mutating func renameDay(_ day: Int, to title: String?) {
+        guard dayEnds.indices.contains(day) else { return }
+        dayEnds[day].title = Self.trimmed(title)
     }
 
-    /// Name one day end. The name travels with the place through every line change.
-    public mutating func renameDay(_ day: Int, to name: String?) {
+    /// Name the place where a day ends.
+    public mutating func namePlace(_ day: Int, to name: String?) {
         guard dayEnds.indices.contains(day) else { return }
+        dayEnds[day].name = Self.trimmed(name)
+    }
+
+    static func trimmed(_ name: String?) -> String? {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        dayEnds[day].name = trimmed?.isEmpty == false ? trimmed : nil
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 
     /// Whether some device holds a copy of the trip object.
