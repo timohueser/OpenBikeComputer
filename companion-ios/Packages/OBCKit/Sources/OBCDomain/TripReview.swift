@@ -14,20 +14,23 @@ public struct LineCoverage: Equatable, Sendable {
 }
 
 extension Trip {
-    /// Two on-line samples at most this far apart along the line join one ridden part, so a GPS
-    /// dropout or a short cut does not break it.
+    /// Two on-line samples in a row join one ridden part when the line between them is at most
+    /// this much longer than the step between them, which allows for a bend. A bigger jump is
+    /// another leg of the line.
     public static let coverJoinMeters = 500.0
     /// A sample closer than this to the last one adds nothing. It bounds the work on a dense track.
     static let coverSampleMeters = 50.0
 
     /// The parts of the line `track` rode. A sample at most ``onLineMeters`` from the line is on
-    /// it. The first sample projects near `hint`, and each next one near the last, which keeps
-    /// the track on its own leg of an out-and-back.
+    /// it, and a sample off the line ends a part. The first sample projects near `hint`, and each
+    /// next one near the last, which keeps the track on its own leg of an out-and-back.
     public func coverage(of track: [Coordinate], near hint: Double) -> LineCoverage {
         guard line.count > 1 else { return LineCoverage() }
         let measured = measuredLine
         var ranges: [ClosedRange<Double>] = []
         var last: Double?
+        // The sample at `last`, while no sample off the line came after it.
+        var onLine: Coordinate?
         var near = hint
         var sampled: Coordinate?
         for (index, point) in track.enumerated() {
@@ -39,14 +42,19 @@ extension Trip {
                 let coarse = measured.projection(of: point, near: near, window: measured.length)
                 projection = measured.projection(of: point, near: coarse.distance, window: Self.refineWindowMeters)
             }
-            guard projection.error <= Self.onLineMeters else { continue }
+            guard projection.error <= Self.onLineMeters else {
+                onLine = nil
+                continue
+            }
             let at = projection.distance
-            if let previous = last, abs(at - previous) <= Self.coverJoinMeters, let open = ranges.popLast() {
+            if let previous = last, let from = onLine,
+                abs(at - previous) <= from.distance(to: point) + Self.coverJoinMeters, let open = ranges.popLast() {
                 ranges.append(min(open.lowerBound, at)...max(open.upperBound, at))
             } else {
                 ranges.append(at...at)
             }
             last = at
+            onLine = point
             near = at
         }
         return LineCoverage(ranges: Self.merged(ranges), end: last)
