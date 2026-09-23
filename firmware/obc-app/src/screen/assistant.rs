@@ -16,7 +16,6 @@ use obc_render::{
     text::{Font, TextAlign},
     Surface,
 };
-use obc_route::window::RouteWindow;
 
 /// The live questions, then the placeholders. A placeholder stays in the list, inert, as a
 /// reminder of what the Assistant will answer.
@@ -103,7 +102,7 @@ fn next_hint<'a>(rx: &Render<'a>, buf: &'a mut heapless::String<24>) -> Option<&
     }
     let start_m = nav.progress_m;
     let end_m = start_m.saturating_add(rx.ahead.range.meters()).min(nav.route_total_m);
-    let climb = RouteWindow { identity: 0, start_m, end_m }.climb(rx.climbs)?;
+    let climb = rx.climbs.ahead(start_m, end_m)?;
     if climb.start_m <= start_m {
         return Some(rx.t(Msg::AheadOnClimb));
     }
@@ -154,10 +153,14 @@ mod tests {
     #[test]
     fn question_and_photo_labels_fit_all_supported_languages() {
         for language in Language::ALL {
-            for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeNavigation]) {
+            // A row without a chevron: wider, and the label drops to the Label cut.
+            for message in QUESTIONS {
                 let text = crate::i18n::t(message, language);
-                let width = obc_render::text::text_width(text, Font::Body);
-                assert!(width <= 212, "{language:?}: {text}");
+                assert!(obc_render::text::text_width(text, Font::Body) <= 202, "{language:?}: {text}");
+            }
+            for message in [Msg::AssistantArrival, Msg::AssistantResumeNavigation] {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
             }
             // A hint line has the row's width less the text inset; the longest distance is 6 cells.
             let climb = std::format!("{} 5279ft", crate::i18n::t(Msg::AssistantClimbIn, language));
