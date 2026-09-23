@@ -338,14 +338,7 @@ where
         debug_assert!(false, "a map-drawing base needs the host's RenderScratch, but none was lent");
         return None;
     };
-    let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
-    let (target, color_fn) = cv.split();
-    let bg = color_fn(bg565);
-    // The rider's contour switch, restated every frame from `Settings` rather than held in the
-    // scratch, so a flip lands on the next map frame with no reload and nothing to reset.
-    // Suppression drops the terrain layer in the collect pass, so nothing is decoded.
-    let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
-    let mut stats = scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
+    let mut stats = render_base(cv, scene, scratch, vp, rx.settings.map_contours, rx.clock);
     // One occupancy list for the frame. The icons take their space here and the settlement names
     // take what is left, which is the whole priority rule between the two overlays.
     let reserved = label_reserved(vp, rx.state.user_fix, rx.waypoints.as_slice(), chrome);
@@ -409,6 +402,59 @@ where
         cv.disc(c, 3, super::palette::INK);
     }
     Some(marker565)
+}
+
+/// Stroke width (px) of a previewed track. The whole route fits one small band, so the map's
+/// riding-zoom [`ROUTE_WEIGHT`] would swallow the roads under it.
+const TRACK_WEIGHT: u32 = 4;
+
+/// Draw the base map with one track stroked over it, and nothing else: no rider, names, icons or
+/// chevrons. It is the backdrop of a route or ride preview. The render clears the whole target
+/// first. Returns `false`, having drawn nothing, when the frame streams no map.
+pub(crate) fn draw_track_scene<D, F>(
+    cv: &mut Canvas<D, F>,
+    rx: &mut RenderFrame<'_, '_>,
+    vp: &Viewport,
+    track: &[(i32, i32)],
+    color: u16,
+) -> bool
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let Some(scene) = rx.scene else { return false };
+    let rx = &mut rx.render;
+    let Some(scratch) = rx.scratch.as_deref_mut() else {
+        debug_assert!(false, "a map-drawing base needs the host's RenderScratch, but none was lent");
+        return false;
+    };
+    rx.stats = render_base(cv, scene, scratch, vp, rx.settings.map_contours, rx.clock);
+    let (target, color_fn) = cv.split();
+    scratch.stroke_path(target, vp, track.iter().copied(), color_fn(color), TRACK_WEIGHT);
+    true
+}
+
+/// Clear the target to the map's backdrop and render the base map through `vp`.
+fn render_base<D, F>(
+    cv: &mut Canvas<D, F>,
+    scene: &obc_reader::Reader<'_>,
+    scratch: &mut obc_render::RenderScratch,
+    vp: &Viewport,
+    contours: bool,
+    clock: &dyn obc_render::Clock,
+) -> obc_render::RenderStats
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
+    let (target, color_fn) = cv.split();
+    let bg = color_fn(bg565);
+    // The rider's contour switch, restated every frame from `Settings` rather than held in the
+    // scratch, so a flip lands on the next map frame with no reload and nothing to reset.
+    // Suppression drops the terrain layer in the collect pass, so nothing is decoded.
+    let cfg = obc_render::RenderConfig { terrain_layer: contours };
+    scratch.render_timed(target, scene, vp, bg, cfg, color_fn, clock)
 }
 
 /// Side (px) of the box the rider mark owns. The chevron reaches 12 px ahead and 8 px out.

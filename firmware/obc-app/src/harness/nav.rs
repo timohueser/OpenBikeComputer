@@ -415,6 +415,65 @@ fn clipped_replay_matches_the_full_render_inside_the_region() {
 }
 
 #[test]
+fn a_route_overview_hold_step_repaints_the_delete_row_and_not_the_map() {
+    // The board's hold repaint on a static map base: the hold fill names its region, the region
+    // lies under the map band, and a render clipped to it leaves every band pixel as the full frame
+    // drew it, visits no map chunk, and still moves the fill.
+    use embedded_graphics::prelude::Point;
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
+    let mut name = heapless::String::<48>::new();
+    let _ = name.push_str("Loop");
+    let bbox = BBox { min_lon: 7_490_000, min_lat: 43_490_000, max_lon: 7_510_000, max_lat: 43_510_000 };
+    let summary = RouteSummary { name, distance_km: 3, climb_m: 50, bbox, start_lon: 7_490_000, start_lat: 43_490_000 };
+    app.set_routes_with_ids(&[summary], &[10]);
+    for _ in 0..3 {
+        app.apply_gesture(Gesture::Press); // Home → Menu → Routes → the overview
+    }
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
+    app.set_nav_preview(&[(7_490_000, 43_490_000), (7_500_000, 43_505_000), (7_510_000, 43_500_000)]);
+    app.apply_gesture(Gesture::Step(1)); // → the Delete row
+    let color = |c| {
+        let (r, g, b) = rgb565_to_rgb888(c);
+        Rgb888::new(r, g, b)
+    };
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).expect("valid fixture");
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+
+    let mut full = Buf::new(240, 320);
+    app.render_frame(Some(&mut scratch), &mut full, &reader, None, 240.0, 320.0, color);
+    let in_band = |x: i32, y: i32| (5..235).contains(&x) && (38..113).contains(&y);
+    let parchment = color(crate::screen::palette::PARCHMENT);
+    assert_ne!(full.get(6, 39), parchment, "the full frame draws the map in the band");
+
+    assert!(app.base_draws_map(), "the overview is a map base");
+    app.set_hold_progress(0.5, 0.0);
+    let region = app.hold_fill_region().expect("a static map base names its hold region");
+    assert!(region.top_left.y >= 113, "the Delete row lies under the map band");
+
+    let mut clipped = Buf::new(240, 320);
+    clipped.px.copy_from_slice(&full.px);
+    app.set_render_clip(Some(region));
+    let stats = app.render_frame(Some(&mut scratch), &mut clipped, &reader, None, 240.0, 320.0, color);
+    assert_eq!(stats.chunks_visited, 0, "the clipped repaint renders no map");
+    let mut filled = 0;
+    for y in 0..320 {
+        for x in 0..240 {
+            if in_band(x, y) {
+                assert_eq!(clipped.get(x, y), full.get(x, y), "band pixel ({x},{y}) changed");
+            } else if region.contains(Point::new(x, y)) && clipped.get(x, y) != full.get(x, y) {
+                filled += 1;
+            }
+        }
+    }
+    assert!(filled > 0, "the fill moved inside the Delete row");
+}
+
+#[test]
 fn planning_region_scopes_take_dirty() {
     // The seam the board's clipped repaint hangs off: a spinner tick's dirt drains as `map: true`
     // with the needle region; any full-frame demand in the same window folds the region away; and
