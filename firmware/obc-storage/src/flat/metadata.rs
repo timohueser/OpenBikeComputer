@@ -6,11 +6,12 @@ use super::{
 };
 
 use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint, CHECKPOINT_LEN, CHECKPOINT_VERSION};
+use obc_formats::trip_progress::{TripProgress, MAX_RECORDS, RECORD_LEN};
 
 pub const HEADER_LEN: usize = 32;
 pub const ROW_LEN: usize = 40;
 pub const MAX_RIDES: usize = 128;
-pub const MAX_LEN: usize = HEADER_LEN + MAX_RIDES * ROW_LEN + CHECKPOINT_LEN;
+pub const MAX_LEN: usize = HEADER_LEN + MAX_RIDES * ROW_LEN + CHECKPOINT_LEN + MAX_RECORDS * RECORD_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -114,12 +115,22 @@ impl<'a> Image<'a> {
         if &buffer[..4] != b"OBRM"
             || buffer[4..10] != [2, 0, 32, 0, 40, 0]
             || !matches!((checkpoint_version, checkpoint_len), (0, 0) | (CHECKPOINT_VERSION, CHECKPOINT_LEN))
-            || len != rows_end + checkpoint_len
+            || len < rows_end + checkpoint_len
+            || !(len - rows_end - checkpoint_len).is_multiple_of(RECORD_LEN)
+            || (len - rows_end - checkpoint_len) / RECORD_LEN > MAX_RECORDS
         {
             return Err(Error::Invalid);
         }
-        if checkpoint_len != 0 && NavigatorCheckpoint::decode(&buffer[rows_end..len]).is_none() {
+        let progress_start = rows_end + checkpoint_len;
+        if checkpoint_len != 0 && NavigatorCheckpoint::decode(&buffer[rows_end..progress_start]).is_none() {
             return Err(Error::Invalid);
+        }
+        let records = buffer[progress_start..len].as_chunks::<RECORD_LEN>().0;
+        for (i, record) in records.iter().enumerate() {
+            let key = TripProgress::decode(record).ok_or(Error::Invalid)?.key;
+            if records[..i].iter().any(|r| TripProgress::decode(r).is_some_and(|r| r.key == key)) {
+                return Err(Error::Invalid);
+            }
         }
         let mut previous = ObjectId::NONE;
         let mut rides = 0;
@@ -151,8 +162,35 @@ impl<'a> Image<'a> {
         HEADER_LEN + u16::from_le_bytes(self.buffer[10..12].try_into().unwrap()) as usize * ROW_LEN
     }
 
+    fn progress_start(&self) -> usize {
+        self.rows_end() + u16::from_le_bytes(self.buffer[14..16].try_into().unwrap()) as usize
+    }
+
     pub fn checkpoint(&self) -> Option<NavigatorCheckpoint> {
-        NavigatorCheckpoint::decode(&self.bytes()[self.rows_end()..])
+        NavigatorCheckpoint::decode(&self.bytes()[self.rows_end()..self.progress_start()])
+    }
+
+    /// The trip progress records, in write order.
+    pub fn progress(&self) -> impl Iterator<Item = TripProgress> + '_ {
+        let records = self.bytes()[self.progress_start()..].as_chunks::<RECORD_LEN>().0;
+        records.iter().map(|b| TripProgress::decode(b).unwrap())
+    }
+
+    /// Replace every trip progress record. The keys must be unique and nonzero.
+    pub fn set_progress(&mut self, records: &[TripProgress]) -> Result<(), Error> {
+        let start = self.progress_start();
+        let unique = records.iter().enumerate().all(|(i, r)| r.key != 0 && records[..i].iter().all(|o| o.key != r.key));
+        if records.len() > MAX_RECORDS || !unique {
+            return Err(Error::Invalid);
+        }
+        if start + records.len() * RECORD_LEN > self.buffer.len() {
+            return Err(Error::Capacity);
+        }
+        for (out, record) in self.buffer[start..].as_chunks_mut::<RECORD_LEN>().0.iter_mut().zip(records) {
+            *out = record.encode();
+        }
+        self.len = start + records.len() * RECORD_LEN;
+        Ok(())
     }
 
     pub fn set_checkpoint(&mut self, checkpoint: Option<NavigatorCheckpoint>) -> Result<(), Error> {
@@ -161,17 +199,19 @@ impl<'a> Image<'a> {
             Some(value) => Some(value.encode().ok_or(Error::Invalid)?),
             None => None,
         };
+        let (old_end, new_end) = (self.progress_start(), start + encoded.map_or(0, |_| CHECKPOINT_LEN));
+        let len = self.len - old_end + new_end;
+        if len > self.buffer.len() {
+            return Err(Error::Capacity);
+        }
+        self.buffer.copy_within(old_end..self.len, new_end);
+        self.len = len;
         if let Some(bytes) = encoded {
-            if start + CHECKPOINT_LEN > self.buffer.len() {
-                return Err(Error::Capacity);
-            }
-            self.buffer[start..start + CHECKPOINT_LEN].copy_from_slice(&bytes);
+            self.buffer[start..new_end].copy_from_slice(&bytes);
             self.buffer[12..14].copy_from_slice(&CHECKPOINT_VERSION.to_le_bytes());
             self.buffer[14..16].copy_from_slice(&(CHECKPOINT_LEN as u16).to_le_bytes());
-            self.len = start + CHECKPOINT_LEN;
         } else {
             self.buffer[12..16].fill(0);
-            self.len = start;
         }
         Ok(())
     }
@@ -600,6 +640,50 @@ pub fn write_checkpoint<D: BlockDevice>(
     image.set_checkpoint(next)?;
     owner.replace_checkpoint(store, &mut image)?;
     Ok(())
+}
+
+/// Write one trip progress record by the bound rules of
+/// [`record`](obc_formats::trip_progress::record); `stored` says whether a stored trip holds a key.
+/// The record takes the current Revision of its day route, so a later replace voids its metres.
+#[inline(never)]
+pub fn write_progress<D: BlockDevice>(
+    store: &FlatStore<D>,
+    mut new: TripProgress,
+    stored: impl Fn(u64) -> bool,
+) -> Result<(), Error> {
+    new.day_route.revision = route_revision(store, new.day_route.id)?.unwrap_or(0);
+    let mut bytes = [0; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    let mut records: obc_formats::trip_progress::Records = image.progress().collect();
+    obc_formats::trip_progress::record(&mut records, new, stored);
+    image.reconcile(store)?;
+    image.set_progress(&records)?;
+    owner.replace(store, &mut image, None)?;
+    Ok(())
+}
+
+/// The trip progress records, in write order. A record whose day route has another Revision now
+/// reads its metres as 0.
+#[inline(never)]
+pub fn read_progress<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(TripProgress)) -> Result<(), Error> {
+    let mut bytes = [0; MAX_LEN];
+    let image = Metadata::new(store).load(store, &mut bytes)?;
+    for mut record in image.progress() {
+        if route_revision(store, record.day_route.id)? != Some(record.day_route.revision) {
+            record.metres = 0;
+        }
+        accept(record);
+    }
+    Ok(())
+}
+
+fn route_revision<D: BlockDevice>(store: &FlatStore<D>, id: u64) -> Result<Option<u64>, Error> {
+    match source_head(store, ObjectId(id), ObjectKind::Route) {
+        Ok(entry) => Ok(Some(entry.revision.0)),
+        Err(Error::Stale) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// A validated recovery offer. No checkpoint means ordinary boot behavior.

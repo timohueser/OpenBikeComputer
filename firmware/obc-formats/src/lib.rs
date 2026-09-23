@@ -21,3 +21,4 @@ pub mod obcr;
 pub mod obct;
 pub mod ride;
 pub mod track;
+pub mod trip_progress;

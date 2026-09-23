@@ -21,6 +21,8 @@ use obc_route::MAX_TRIP_DAYS;
 use crate::route::RouteSummary;
 use crate::CatalogObjectId;
 
+pub use obc_formats::trip_progress::{RouteVersion, TripProgress};
+
 /// Maximum trips the resident menu catalog holds. Each [`TripSummary`] costs a name and two small
 /// stage `Vec`s, so the table is a couple of KB of static RAM.
 pub const MAX_TRIPS: usize = 16;
@@ -116,37 +118,71 @@ impl TripSummary {
     }
 }
 
+/// How a trip day loads: [`TripSummary::load_day`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayLoad {
+    AsIs,
+    /// The rest of the day before, `[from_m, to_m]` on its route, and then the day from `join_m`.
+    Rest {
+        from_m: u32,
+        to_m: u32,
+        join_m: u32,
+    },
+}
+
+impl DayLoad {
+    /// The loaded route's length, in km, for a day whose own route is `day_km` long.
+    pub fn distance_km(self, day_km: u32) -> u32 {
+        match self {
+            DayLoad::AsIs => day_km,
+            DayLoad::Rest { from_m, to_m, join_m } => {
+                ((to_m - from_m) + (day_km * 1000).saturating_sub(join_m) + 500) / 1000
+            }
+        }
+    }
+}
+
+/// A rest of the day before this short counts as ridden, so the next day loads as it is. It covers
+/// a Finish a few metres before the day's end.
+pub const REST_MIN_M: u32 = 500;
+
+/// Where the active trip's next day meets the day before on the trip's line. The host reads it from
+/// the trip object and the day before's route after each catalog read; without it the next day
+/// loads as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayJoin {
+    pub key: u64,
+    /// The next day.
+    pub day: u16,
+    /// Where the day before leaves the line, clamped to the length of its route.
+    pub leave_m: u32,
+    /// Where the next day joins the line.
+    pub join_m: u32,
+}
+
+/// A position on a trip: a day, that day's route, and metres into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TripPosition {
+    pub day: u16,
+    pub route: CatalogObjectId,
+    pub metres: u32,
+}
+
+/// The active trip's next day: `(trip, day, catalog index)`. The active trip is the trip of the
+/// latest progress record, while it has a day left whose route the store holds.
+pub fn next_trip_day<'t>(trips: &'t [TripSummary], progress: &[TripProgress]) -> Option<(&'t TripSummary, u16, u16)> {
+    let (trip, record) = progress.iter().rev().find_map(|p| Some((trips.iter().find(|t| t.key == p.key)?, p)))?;
+    let day = trip.next_day(Some(record))?;
+    let (_, index) = trip.days().find(|&(k, _)| k == day)?;
+    Some((trip, day, index))
+}
+
 /// The trip day whose route is `route`. A route is in at most one trip.
 pub fn trip_day(trips: &[TripSummary], route: CatalogObjectId) -> Option<TripRef> {
     trips.iter().find_map(|trip| {
         let day = trip.stage_ids.iter().position(|&id| id == route)?;
         TripRef::new(trip.key, day as u8, trip.stage_ids.len() as u8)
     })
-}
-
-/// A route object as the store holds it. A replace keeps the id and bumps the revision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RouteVersion {
-    pub id: CatalogObjectId,
-    pub revision: u64,
-}
-
-/// The device's own progress through one trip: the device writes it at Finish and the phone never
-/// sees it. It is keyed on the trip key, so it survives a re-upload of the same trip.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TripProgress {
-    pub key: u64,
-    /// The day that contains the position.
-    pub day: u16,
-    /// That day's route when the record was written.
-    pub day_route: RouteVersion,
-    /// Metres into that day's route.
-    pub metres: u32,
-    /// The last finished day; `None` before the first Finish.
-    pub last_finished: Option<u16>,
-    /// The date each day was finished, in days since 1970-01-01; 0 = none. A finish without a
-    /// trusted clock records no date.
-    pub dates: [u16; MAX_TRIP_DAYS],
 }
 
 const _: () = assert!(MAX_TRIP_DAYS <= u32::BITS as usize, "TripSummary::resolved is a u32 day mask");
@@ -185,22 +221,45 @@ impl TripSummary {
         self.in_trip(next)
     }
 
-    /// Metres into the position's day. They count only while the trip names the same route, at
-    /// the same revision, for that day; `revision_of` gives the store's current revision of a
-    /// route. Otherwise the position is the day start.
-    pub fn position_m(
-        &self,
-        progress: Option<&TripProgress>,
-        revision_of: impl Fn(CatalogObjectId) -> Option<u64>,
-    ) -> u32 {
-        match self.own(progress) {
-            Some(p)
-                if self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route.id)
-                    && revision_of(p.day_route.id) == Some(p.day_route.revision) =>
-            {
-                p.metres
+    /// Metres into the position's day. They count only while the trip names the same route for that
+    /// day; the store already read them as 0 when that route has another revision now.
+    pub fn position_m(&self, progress: Option<&TripProgress>) -> u32 {
+        self.own(progress)
+            .filter(|p| self.stage_ids.get(usize::from(p.day)) == Some(&p.day_route.id))
+            .map_or(0, |p| p.metres)
+    }
+
+    /// The record a Finish of a ride on day `day` writes: the position moves to `at`, and the ride's
+    /// day is finished on `today` (days since 1970-01-01; 0 without a trusted clock). A ride that
+    /// ends in the rest of the day before, before it joins its day, finishes the day before.
+    pub fn finish(&self, old: Option<&TripProgress>, day: u16, at: TripPosition, today: u16) -> TripProgress {
+        let ridden = day.min(at.day);
+        let mut dates = self.own(old).map_or([0; MAX_TRIP_DAYS], |p| p.dates);
+        if let Some(date) = dates.get_mut(usize::from(ridden)).filter(|_| today != 0) {
+            *date = today;
+        }
+        TripProgress {
+            key: self.key,
+            day: at.day,
+            // The store stamps the revision it holds when it writes the record.
+            day_route: RouteVersion { id: at.route, revision: 0 },
+            metres: at.metres,
+            last_finished: Some(ridden),
+            dates,
+        }
+    }
+
+    /// How day `day` loads. When the position is on the day before, more than [`REST_MIN_M`] before
+    /// it leaves the line, the day is the rest of that day and then this day. Otherwise it is this
+    /// day's route as it is.
+    pub fn load_day(&self, day: u16, progress: Option<&TripProgress>, join: Option<&DayJoin>) -> DayLoad {
+        let from_m = self.position_m(progress);
+        let join = join.filter(|j| j.key == self.key && j.day == day);
+        match (self.own(progress).and_then(|p| self.in_trip(p.day)), join) {
+            (Some(at), Some(join)) if at + 1 == day && from_m > 0 && from_m + REST_MIN_M < join.leave_m => {
+                DayLoad::Rest { from_m, to_m: join.leave_m, join_m: join.join_m }
             }
-            _ => 0,
+            _ => DayLoad::AsIs,
         }
     }
 
@@ -253,7 +312,7 @@ mod tests {
         TripProgress {
             key: KEY,
             day,
-            day_route: RouteVersion { id: [10, 20, 30][usize::from(day)], revision: 1 },
+            day_route: RouteVersion { id: [10, 20, 30][usize::from(day)], revision: 0 },
             metres: 54_000,
             last_finished,
             dates: all,
@@ -265,6 +324,51 @@ mod tests {
         let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 30] };
         let t = TripSummary::resolve(&input, &[], &[30, 10]);
         assert_eq!(t.days().collect::<std::vec::Vec<_>>(), [(0, 1), (2, 0)]);
+    }
+
+    #[test]
+    fn the_active_trip_is_the_latest_record_while_it_has_a_day_left() {
+        let catalog_ids = [10, 20, 30, 40];
+        let alps = TripSummary::resolve(
+            &TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 30] },
+            &[],
+            &catalog_ids,
+        );
+        let jura = TripSummary::resolve(
+            &TripInput { id: 2, key: 7, name: "Jura", start_date: 0, stage_ids: &[40] },
+            &[],
+            &catalog_ids,
+        );
+        let trips = [alps, jura];
+        let alps_day2 = progress(1, Some(0), &[]);
+        let jura_done = TripProgress { key: 7, ..progress(0, Some(0), &[]) };
+        let next = |records: &[TripProgress]| next_trip_day(&trips, records).map(|(t, day, index)| (t.key, day, index));
+        assert_eq!(next(core::slice::from_ref(&alps_day2)), Some((KEY, 1, 1)));
+        assert_eq!(next(&[alps_day2.clone(), jura_done.clone()]), None, "the last ride finished its trip");
+        assert_eq!(next(&[jura_done, alps_day2]), Some((KEY, 1, 1)));
+        assert_eq!(next(&[]), None);
+    }
+
+    #[test]
+    fn a_day_after_an_early_stop_is_the_rest_of_the_day_before_and_the_day() {
+        let t = trip(0);
+        // Day 2 leaves the line at 74 km, and Day 3 joins it 3 km in from a camp.
+        let join = DayJoin { key: KEY, day: 2, leave_m: 74_000, join_m: 3_000 };
+        assert_eq!(t.load_day(0, None, Some(&join)), DayLoad::AsIs, "no progress: the day as it is");
+        // Stopped 20 km before the end of Day 2 and finished: Day 3 starts with the rest of Day 2.
+        let early = progress(1, Some(1), &[]);
+        let rest = t.load_day(2, Some(&early), Some(&join));
+        assert_eq!(rest, DayLoad::Rest { from_m: 54_000, to_m: 74_000, join_m: 3_000 });
+        assert_eq!(rest.distance_km(61), 78, "20 km of Day 2, then 58 km of Day 3");
+        // Rode Day 2 to its end, or a few metres short of it: Day 3 as it is.
+        let full = TripProgress { metres: 73_700, ..early.clone() };
+        assert_eq!(t.load_day(2, Some(&full), Some(&join)), DayLoad::AsIs);
+        // Rode 20 km into Day 3: Day 3 as it is, and the ride joins it where the rider is.
+        assert_eq!(t.load_day(2, Some(&progress(2, Some(1), &[])), Some(&join)), DayLoad::AsIs);
+        // A voided position, a day far ahead, or no line facts for the day: as it is.
+        assert_eq!(t.load_day(2, Some(&TripProgress { metres: 0, ..early.clone() }), Some(&join)), DayLoad::AsIs);
+        assert_eq!(t.load_day(0, Some(&early), Some(&join)), DayLoad::AsIs);
+        assert_eq!(t.load_day(2, Some(&early), None), DayLoad::AsIs);
     }
 
     #[test]
@@ -305,18 +409,49 @@ mod tests {
         // A finish without a trusted clock carries the last dated day forward.
         let p = progress(2, Some(1), &[MON + 1]);
         assert_eq!(trip(0).day_date(2, Some(&p)), Some(MON + 3));
+        // A month-long trip: a Finish past the 32 stored dates stores none, and the day's date
+        // follows the last stored one.
+        let at = TripPosition { day: 40, route: 10, metres: 0 };
+        let mut dates = [0; MAX_TRIP_DAYS];
+        dates[31] = MON + 31;
+        let late = trip(0).finish(Some(&TripProgress { dates, ..progress(0, None, &[]) }), 40, at, MON + 45);
+        assert_eq!(late.dates, dates, "no date past the last slot");
+        assert_eq!(trip(0).day_date(40, Some(&late)), Some(MON + 40));
     }
 
     #[test]
     fn a_changed_day_route_resets_the_position_to_the_day_start() {
         let p = progress(1, Some(0), &[]);
-        assert_eq!(trip(0).position_m(Some(&p), |_| Some(1)), 54_000);
-        // The same route id replaced in place: a new revision, other geometry.
-        assert_eq!(trip(0).position_m(Some(&p), |_| Some(2)), 0);
+        assert_eq!(trip(0).position_m(Some(&p)), 54_000);
         let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 21, 30] };
         let reuploaded = TripSummary::resolve(&input, &[], &[]);
-        assert_eq!(reuploaded.position_m(Some(&p), |_| Some(1)), 0);
+        assert_eq!(reuploaded.position_m(Some(&p)), 0);
         assert_eq!(reuploaded.next_day(Some(&p)), Some(1), "the last finished day stays");
+    }
+
+    #[test]
+    fn a_finish_moves_the_position_and_finishes_the_day_ridden() {
+        let t = trip(0);
+        let at = |day: u16, metres| TripPosition { day, route: [10, 20, 30][usize::from(day)], metres };
+        let yesterday = progress(0, Some(0), &[MON]);
+        // Early stop: 20 km short of the end of Day 2. Day 3 is next, and the rest of Day 2 leads to it.
+        let early = t.finish(Some(&yesterday), 1, at(1, 54_000), MON + 1);
+        assert_eq!((early.day, early.metres, early.last_finished), (1, 54_000, Some(1)));
+        assert_eq!(early.dates[..2], [MON, MON + 1]);
+        assert_eq!((t.next_day(Some(&early)), t.position_m(Some(&early))), (Some(2), 54_000));
+        // Exact end: the position is the end of Day 2.
+        let end = t.finish(Some(&yesterday), 1, at(1, 74_000), MON + 1);
+        assert_eq!(t.next_day(Some(&end)), Some(2));
+        // Past the end: the position moved 20 km into Day 3, which is next and starts there.
+        let past = t.finish(Some(&yesterday), 1, at(2, 20_000), 0);
+        assert_eq!((t.next_day(Some(&past)), t.position_m(Some(&past))), (Some(2), 20_000));
+        assert_eq!(past.dates[..2], [MON, 0], "no trusted clock, no date");
+        assert_eq!(t.finish(None, 0, at(0, 5), MON).dates[0], MON, "the first Finish starts the record");
+        // A ride on the rest of Day 2 and Day 3 that stops 6 km into the rest: Day 2 is finished,
+        // and Day 3 is still next.
+        let short = t.finish(Some(&early), 2, at(1, 60_000), MON + 2);
+        assert_eq!((short.day, short.metres, short.last_finished), (1, 60_000, Some(1)));
+        assert_eq!(t.next_day(Some(&short)), Some(2));
     }
 
     #[test]

@@ -247,6 +247,8 @@ pub struct Ctx<'a> {
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
     /// not started.
     pub trip_progress: &'a [crate::trip::TripProgress],
+    /// Where the active trip's next day meets the day before; `None` loads the day as it is.
+    pub day_join: Option<crate::trip::DayJoin>,
     /// The App-owned POI-list snapshot, read-only: the POI list's `Gesture::Press` reads the
     /// highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen.
     pub poi_scratch: &'a PoiScratch,
@@ -302,6 +304,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         rides: &[],
         trips: &[],
         trip_progress: &[],
+        day_join: None,
         backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
         corridor: &[],
@@ -359,6 +362,8 @@ pub struct Render<'a> {
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
     /// not started.
     pub trip_progress: &'a [crate::trip::TripProgress],
+    /// Where the active trip's next day meets the day before; `None` loads the day as it is.
+    pub day_join: Option<crate::trip::DayJoin>,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -1002,7 +1007,7 @@ impl Screen {
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.motion.needs_base(),
-            Screen::ContextDrawer(s) => s.motion.needs_base(),
+            Screen::ContextDrawer(s) => s.motion.needs_base() || s.draws_hero(),
             _ => false,
         }
     }
