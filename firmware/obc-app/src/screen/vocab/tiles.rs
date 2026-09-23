@@ -9,7 +9,7 @@ use obc_render::{
 };
 
 use super::marquee::{fit, MarqueeFrame};
-use crate::effort::{Effort, Metric, HISTORY_BARS};
+use crate::effort::Metric;
 use crate::screen::{palette, poi_menu};
 use crate::{t, Msg};
 
@@ -72,18 +72,26 @@ pub(crate) fn tile(
 const ZONE_LABEL: [&str; 5] = ["Z1", "Z2", "Z3", "Z4", "Z5"];
 
 /// The caption, the zone and the value of an effort tile, laid out as [`tile`] lays out a plain
-/// one. With a zone the zone sits at the top right, and the ink is black in both themes, because
-/// the zone tint does not change with the theme either.
-fn effort_block(cv: &mut impl Surface, area: Rectangle, caption: &str, value: &str, zone: Option<u8>) {
+/// one. With a zone the ink is black in both themes, because the zone tint does not change with
+/// the theme either, and `zone_label` puts the zone at the top right.
+fn effort_block(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    caption: &str,
+    value: &str,
+    zone: Option<u8>,
+    zone_label: bool,
+) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     let w = area.size.width as i32;
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
-    let zone_w = zone.map_or(0, |_| text_width("Z0", Font::Label) as i32 + 4);
+    let label = zone.filter(|_| zone_label);
+    let zone_w = label.map_or(0, |_| text_width("Z0", Font::Label) as i32 + 4);
     let caption = fit(caption, w - 11 - zone_w, Font::Label);
     let (caption_ink, value_ink) = if zone.is_some() { (ON_ACCENT, ON_ACCENT) } else { (SUBTEXT, INK) };
     cv.text(&caption, Point::new(x + 5, cy), Font::Label, TextAlign::Left, caption_ink);
-    if let Some(z) = zone {
+    if let Some(z) = label {
         cv.text(ZONE_LABEL[z as usize], Point::new(x + w - 6, cy), Font::Label, TextAlign::Right, ON_ACCENT);
     }
     cv.text(value, Point::new(x + 8, cy + 18), Font::Display, TextAlign::Left, value_ink);
@@ -92,51 +100,79 @@ fn effort_block(cv: &mut impl Surface, area: Rectangle, caption: &str, value: &s
 /// A heart-rate or power tile filled with its zone colour.
 pub(crate) fn zone_tile(cv: &mut impl Surface, area: Rectangle, caption: &str, value: &str, zone: u8) {
     cv.round(area, 5, palette::ZONE[zone as usize]);
-    effort_block(cv, area, caption, value, Some(zone));
+    effort_block(cv, area, caption, value, Some(zone), true);
 }
 
-/// The graph field's number block: an effort tile's anatomy at a fixed width.
-const GRAPH_BLOCK_W: i32 = 78;
+/// The number block of a graph field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphBlock {
+    /// The riding field: a short caption with the zone at the top right.
+    Live,
+    /// The ride detail: wide enough for `AVG PWR`, and without the zone.
+    Ride,
+}
+
+impl GraphBlock {
+    fn width(self) -> i32 {
+        match self {
+            GraphBlock::Live => 78,
+            GraphBlock::Ride => 96,
+        }
+    }
+}
+
 /// The block colour continues as this frame around the graph panel.
 const GRAPH_FRAME: i32 = 2;
 
 /// A graph field: the zone-tinted number block on the left, continuing as a frame around a page
-/// coloured panel of the last five minutes. Tan without a zone, and olive bars without a limit.
+/// coloured panel with one bar per value, oldest on the left. Tan without a zone, and olive bars
+/// without a limit.
 #[allow(clippy::too_many_arguments)] // the field's whole state, spelled out
-pub(crate) fn graph_tile(
+pub(crate) fn graph_field(
     cv: &mut impl Surface,
     area: Rectangle,
+    block: GraphBlock,
     caption: &str,
     value: &str,
     zone: Option<u8>,
-    effort: &Effort,
+    values: impl ExactSizeIterator<Item = u16> + Clone,
     m: Metric,
     limit: Option<u32>,
 ) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     let (w, h) = (area.size.width as i32, area.size.height as i32);
-    let (b, left) = (GRAPH_FRAME, GRAPH_BLOCK_W);
+    let (b, left) = (GRAPH_FRAME, block.width());
     cv.round(area, 5, zone.map_or(PARCHMENT_SHADE, |z| ZONE[z as usize]));
     cv.round(rect(x + left, y + b, w - left - b, h - 2 * b), 3, PARCHMENT);
-    effort_block(cv, rect(x, y, left, h), caption, value, zone);
-    history_bars(cv, rect(x + left + 3, y + b + 1, w - left - b - 6, h - 2 * b - 2), effort, m, limit);
+    effort_block(cv, rect(x, y, left, h), caption, value, zone, block == GraphBlock::Live);
+    graph_bars(cv, rect(x + left + 3, y + b + 1, w - left - b - 6, h - 2 * b - 2), values, m, limit);
 }
 
-/// One bar per 5 s bucket, oldest on the left, each in its bucket's zone. The scale is the metric's
-/// graph span of the limit; without a limit, the history's own peak stands in for it.
-fn history_bars(cv: &mut impl Surface, area: Rectangle, effort: &Effort, m: Metric, limit: Option<u32>) {
+/// One bar per value, each in its zone. The scale is the metric's graph span of the limit; without
+/// a limit, the values' own peak stands in for it.
+fn graph_bars(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    values: impl ExactSizeIterator<Item = u16> + Clone,
+    m: Metric,
+    limit: Option<u32>,
+) {
     use palette::*;
+    let n = values.len() as i32;
+    if n == 0 {
+        return;
+    }
     let (x, y) = (area.top_left.x, area.top_left.y);
     let (w, h) = (area.size.width as i32, area.size.height as i32);
-    let reference = limit.unwrap_or_else(|| effort.history(m).max().unwrap_or(0) as u32).max(1);
+    let reference = limit.unwrap_or_else(|| values.clone().max().unwrap_or(0) as u32).max(1);
     let (lo, hi) = m.graph_span();
     let gh = h - 5;
     let base = y + h - 1;
     let height = |pct: f32| (((pct - lo as f32) / (hi - lo) as f32).clamp(0.0, 1.0) * gh as f32) as i32;
-    let bw = w / HISTORY_BARS as i32;
-    let x0 = x + (w - bw * HISTORY_BARS as i32) / 2;
-    for (i, v) in effort.history(m).enumerate() {
+    let bw = w / n;
+    let x0 = x + (w - bw * n) / 2;
+    for (i, v) in values.enumerate() {
         let bh = height(v as f32 * 100.0 / reference as f32);
         if bh > 0 {
             let ink = limit.map_or(SUBTEXT, |l| ZONE[m.zone_of(v as u32, l) as usize]);

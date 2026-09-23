@@ -386,6 +386,8 @@ pub struct Render<'a> {
     /// The viewed ride's recorded-track elevation profile, host-filled on detail entry and
     /// invalidated on exit. `None` while the fill still streams and on every other screen.
     pub ride_profile: Option<&'a Profile>,
+    /// The viewed ride's descent and HR and power series, under the ride profile's key and rule.
+    pub ride_facts: Option<&'a obc_route::RideTrackFacts>,
     /// Tomorrow's profile on the day-done card, host-filled into the ride profile's buffer.
     pub day_profile: Option<&'a Profile>,
     /// The climb the rider is currently on, or `None` between climbs. A `Some` means a climb is
@@ -1174,7 +1176,6 @@ impl Screen {
             Screen::TripReceived(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
-            Screen::RideDetail(s) => s.tick_timers(now_ms),
             Screen::DayDone(s) => s.tick_timers(now_ms),
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
             Screen::PeakView(s) => s.tick_timers(now_ms, w, h),

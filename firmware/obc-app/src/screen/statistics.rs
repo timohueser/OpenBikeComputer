@@ -20,7 +20,7 @@ use crate::Msg;
 use super::vocab::band::ElevationBand;
 use super::vocab::chrome::title_frame;
 use super::vocab::fmt::{dashes, write_distance_coarse};
-use super::vocab::tiles::{category_tile, graph_tile, tile, waypoint_panel, zone_tile};
+use super::vocab::tiles::{category_tile, graph_field, tile, waypoint_panel, zone_tile, GraphBlock};
 use super::{palette, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Cursor scrub per Up/Down step, as a fraction of the whole route.
@@ -339,7 +339,8 @@ impl StatisticsScreen {
             match (placed.field.graph(), placed.field.category(), cell.zone) {
                 (Some(m), ..) => {
                     let limit = rx.settings.effort_limits().of(m);
-                    graph_tile(cv, area, &cell.caption, &cell.value, cell.zone, rx.recorder.effort(), m, limit);
+                    let history = rx.recorder.effort().history(m);
+                    graph_field(cv, area, GraphBlock::Live, &cell.caption, &cell.value, cell.zone, history, m, limit);
                 }
                 (None, Some(cat), _) => {
                     category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, SUBTEXT, INK);
