@@ -22,18 +22,19 @@ pub(crate) fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, ri
 }
 
 /// [`title_frame`] plus the BLE connected indicator: a small Bluetooth rune in the title bar's
-/// right slot. The `right` readout is inset left of it, so the two never overlap. The rune does not
-/// animate, so it repaints only on a link change.
+/// right slot. The `right` readout is inset left of it, and the title is cut with `..` left of the
+/// readout, so the three never overlap. The rune does not animate, so it repaints only on a link
+/// change.
 pub(crate) fn title_frame_ble(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str, ble_connected: bool) {
     use palette::*;
+    const GAP: i32 = 8;
     cv.clear(PARCHMENT);
-    title_chrome(cv, w, h, title);
-    let right_x = if ble_connected {
+    let right_x = if ble_connected { w - 14 - BLE_GLYPH_W - GAP } else { w - 14 };
+    let right_w = if right.is_empty() { 0 } else { text_width(right, Font::Label) as i32 + GAP };
+    title_chrome(cv, w, h, &super::marquee::fit(title, right_x - right_w - 14, Font::Body));
+    if ble_connected {
         ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, PARCHMENT);
-        w - 14 - BLE_GLYPH_W - 8
-    } else {
-        w - 14
-    };
+    }
     // The two y values differ because the Body and Label glyphs have different baselines.
     cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, PARCHMENT);
 }
