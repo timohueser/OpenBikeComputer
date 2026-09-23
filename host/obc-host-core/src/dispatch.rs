@@ -82,6 +82,8 @@ fn remove_object(
 pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
+    /// The rest of the day before a trip day: nothing to search, so it is ready at once.
+    Rest(DetourReady),
     Ready(NavPlan, obc_route::RouteStats),
     Visit(Box<crate::nav_visit::VisitPlan>),
     VisitReady(Box<crate::nav_visit::VisitPlan>, obc_route::RouteStats),
@@ -496,7 +498,7 @@ impl HostLoop {
         }
         self.serve_effects(app, plan, routes, rides, trips, tracks, platform);
         if let Some(effect) = navigation {
-            if let Some(outcome) = self.serve_navigator(app, effect, routes, map, elev) {
+            if let Some(outcome) = self.serve_navigator(app, effect, routes, trips, map, elev) {
                 deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
             }
         }
@@ -689,6 +691,7 @@ impl HostLoop {
         app: &mut App,
         effect: NavigatorEffect,
         routes: &mut dyn RouteRepository,
+        trips: &dyn TripCatalog,
         map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
@@ -696,7 +699,7 @@ impl HostLoop {
         self.plan_token = Some(token);
         let failed = |error| Some(NavigatorOutcome::Failed { token, error });
         match effect {
-            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, map),
+            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, trips, map),
             NavigatorEffect::Step { .. } => {
                 if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
                     return failed(NavigatorError::SourceChanged);
@@ -850,6 +853,7 @@ impl HostLoop {
         token: OperationToken<NavigatorTag>,
         work: PlannerWork,
         routes: &dyn RouteRepository,
+        trips: &dyn TripCatalog,
         map: &crate::flat_map::FlatMap,
     ) -> Option<NavigatorOutcome> {
         let failed = |error| Some(NavigatorOutcome::Failed { token, error });
@@ -971,10 +975,17 @@ impl HostLoop {
                     return failed(NavigatorError::Workspace);
                 };
                 let orig = obc_route::RouteReader::new(&index, &source);
-                let Some(plan) = DetourPlan::start(&request, app.settings().bike_type, &orig) else {
-                    return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
-                };
-                self.plan = Some(InflightPlan::Detour(plan));
+                self.plan = Some(if matches!(request.leg, obc_route::Leg::Rest { .. }) {
+                    let Some(ready) = crate::nav::rest_ready(app, &request, routes, trips) else {
+                        return failed(NavigatorError::SourceChanged);
+                    };
+                    InflightPlan::Rest(ready)
+                } else {
+                    let Some(plan) = DetourPlan::start(&request, app.settings().bike_type, &orig) else {
+                        return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
+                    };
+                    InflightPlan::Detour(plan)
+                });
                 Some((source, Box::new(index)))
             }
         };
@@ -1066,6 +1077,12 @@ impl HostLoop {
             self.plan = Some(InflightPlan::VisitReady(plan, stats));
             return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached });
         }
+        if let Some(InflightPlan::Rest(_)) = self.plan {
+            let Some(InflightPlan::Rest(ready)) = self.plan.take() else { unreachable!() };
+            let preview = ready.lead_preview();
+            self.detour_ready = Some(Preview { ready, sources: self.sources.take().expect("admitted sources") });
+            return Some(NavigatorOutcome::DetourFinished { token, preview });
+        }
         let outcome = match self.plan.as_mut() {
             Some(InflightPlan::Nav(plan)) => plan.step(&map.reader(), elev),
             Some(InflightPlan::Detour(plan)) => plan.step(&map.reader(), elev),
@@ -1100,7 +1117,10 @@ impl HostLoop {
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 }
             }
-            InflightPlan::Ready(..) | InflightPlan::Visit(..) | InflightPlan::VisitReady(..) => {
+            InflightPlan::Ready(..)
+            | InflightPlan::Visit(..)
+            | InflightPlan::VisitReady(..)
+            | InflightPlan::Rest(..) => {
                 unreachable!("only an unfinished plan steps")
             }
         })
@@ -1475,6 +1495,7 @@ mod tests {
                 tokens.issue(),
                 PlannerWork::AssistantRoute(active_request),
                 &routes,
+                &(),
                 &map
             ),
             Some(NavigatorOutcome::Failed { .. })
@@ -1634,6 +1655,7 @@ mod tests {
                     tokens.issue(),
                     PlannerWork::AssistantRoute(active_request),
                     &routes,
+                    &(),
                     &map
                 ),
                 Some(NavigatorOutcome::Failed { .. })

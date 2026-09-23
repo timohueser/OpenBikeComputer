@@ -114,6 +114,12 @@ impl TripCatalog for FlatTripStore {
         app.set_trip_progress(self.progress.iter().cloned());
     }
 
+    fn day(&self, key: u64, k: u16) -> Option<obc_route::TripDay> {
+        let (id, revision, _) = self.rows.iter().find(|(_, _, trip)| trip.key == key)?;
+        let source = self.owner.open(ObjectId(*id), *revision).ok()?;
+        obc_route::read_trip_day(&source, k).ok()
+    }
+
     fn write_progress(&mut self, record: TripProgress, keys: &[u64]) -> Result<(), MetadataError> {
         let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
         let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;

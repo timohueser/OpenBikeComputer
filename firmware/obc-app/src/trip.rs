@@ -118,6 +118,16 @@ impl TripSummary {
     }
 }
 
+/// How a trip day loads: [`TripSummary::load_day`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayLoad {
+    AsIs,
+    /// The rest of the day before, from `from_m` on its route, and then the day.
+    Rest {
+        from_m: u32,
+    },
+}
+
 /// A position on a trip: a day, that day's route, and metres into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripPosition {
@@ -206,6 +216,16 @@ impl TripSummary {
         }
     }
 
+    /// How day `day` loads. When the position is inside the day before, the day is the rest of that
+    /// day from the position and then this day; otherwise it is this day's route as it is.
+    pub fn load_day(&self, day: u16, progress: Option<&TripProgress>) -> DayLoad {
+        let metres = self.position_m(progress);
+        match self.own(progress).and_then(|p| self.in_trip(p.day)) {
+            Some(at) if at + 1 == day && metres > 0 => DayLoad::Rest { from_m: metres },
+            _ => DayLoad::AsIs,
+        }
+    }
+
     /// Whether day `k` is ticked: it is finished, or its end is behind the position.
     pub fn is_ticked(&self, k: u16, progress: Option<&TripProgress>) -> bool {
         self.own(progress).is_some_and(|p| {
@@ -290,6 +310,21 @@ mod tests {
         assert_eq!(next(&[alps_day2.clone(), jura_done.clone()]), None, "the last ride finished its trip");
         assert_eq!(next(&[jura_done, alps_day2]), Some((KEY, 1, 1)));
         assert_eq!(next(&[]), None);
+    }
+
+    #[test]
+    fn a_day_after_an_early_stop_is_the_rest_of_the_day_before_and_the_day() {
+        let t = trip(0);
+        assert_eq!(t.load_day(0, None), DayLoad::AsIs, "no progress: the day as it is");
+        // Stopped 20 km before the end of Day 2 and finished it: Day 3 starts with the rest of Day 2.
+        let early = progress(1, Some(1), &[]);
+        assert_eq!(t.load_day(2, Some(&early)), DayLoad::Rest { from_m: 54_000 });
+        // Rode 20 km into Day 3: Day 3 as it is, and the ride joins it where the rider is.
+        assert_eq!(t.load_day(2, Some(&progress(2, Some(1), &[]))), DayLoad::AsIs);
+        // At the start of Day 2 (a replaced route reads as 0 m): Day 3 as it is.
+        assert_eq!(t.load_day(2, Some(&TripProgress { metres: 0, ..early.clone() })), DayLoad::AsIs);
+        // A day far ahead or behind: as it is.
+        assert_eq!(t.load_day(0, Some(&early)), DayLoad::AsIs);
     }
 
     #[test]
