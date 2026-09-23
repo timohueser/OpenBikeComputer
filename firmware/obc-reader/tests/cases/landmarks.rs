@@ -148,7 +148,7 @@ fn content_references_and_utf8_page_boundaries_are_checked() {
 #[test]
 fn multilingual_bundle_selects_ui_english_and_local_default_and_checks_directory() {
     use obcm_testkit::articles::bundle;
-    let credits = ["URL", "1", "License", "Authors", "Credit."];
+    let credits = ["en.wikipedia.org/?oldid=1", "Title", "Wikipedia contributors", "CC BY-SA 4.0"];
     let variants = [
         (*b"de", &["Deutsch."][..], &credits[..]),
         (*b"en", &["English."][..], &credits[..]),

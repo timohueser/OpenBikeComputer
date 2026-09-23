@@ -225,14 +225,29 @@ where
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
     }
-    for (i, line) in state.text.lines().enumerate() {
-        cv.text(
-            line,
-            Point::new(12, 40 + i as i32 * Font::Label.line_height() as i32),
-            Font::Label,
-            TextAlign::Left,
-            INK,
-        );
+    if sources {
+        // A failed read keeps the last work's first screen, so this can briefly exceed the page.
+        let screen = state.source_page.saturating_sub(state.source_first);
+        source_layout(state.source_photo, &state.text, |at, y, line| {
+            let (text, color) = match line {
+                SourceLine::Caption(msg) => (rx.t(msg), SUBTEXT),
+                SourceLine::Note(msg) => (rx.t(msg), INK),
+                SourceLine::Value(value) => (value, INK),
+            };
+            if at == screen {
+                cv.text(text, Point::new(12, y), Font::Label, TextAlign::Left, color);
+            }
+        });
+    } else {
+        for (i, line) in state.text.lines().enumerate() {
+            cv.text(
+                line,
+                Point::new(12, 40 + i as i32 * Font::Label.line_height() as i32),
+                Font::Label,
+                TextAlign::Left,
+                INK,
+            );
+        }
     }
     let label = if sources || state.peak.is_some() {
         rx.t(Msg::AssistantBack)
@@ -242,6 +257,66 @@ where
     cv.round(rect(4, 282, 232, 34), 6, AMBER);
     cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
 }
+/// One drawn line of a Sources screen.
+pub(crate) enum SourceLine<'a> {
+    Caption(Msg),
+    Value(&'a str),
+    Note(Msg),
+}
+
+/// Lay out one credited work as caption and value rows, from its four credit fields one per line.
+/// A row that does not fit below the last one starts the work's next screen; only a row taller
+/// than a whole screen splits. Returns the work's screen count.
+pub(crate) fn source_layout(photo: bool, fields: &str, mut emit: impl FnMut(u16, i32, SourceLine<'_>)) -> u16 {
+    const TOP: i32 = 42;
+    /// The lowest line top whose glyphs clear the Back bar.
+    const LAST: i32 = 258;
+    const GAP: i32 = 4;
+    let pitch = super::vocab::chrome::wrapped_line_pitch(Font::Label);
+    let captions = if photo {
+        [Msg::AssistantSourcePhoto, Msg::AssistantSourceFile, Msg::AssistantSourceAuthor, Msg::AssistantSourceLicense]
+    } else {
+        [
+            Msg::AssistantSourceText,
+            Msg::AssistantSourceArticle,
+            Msg::AssistantSourceAuthors,
+            Msg::AssistantSourceLicense,
+        ]
+    };
+    // The article is an excerpt; the photo is resized and dithered to the panel palette.
+    let changes = if photo { Msg::AssistantSourceResized } else { Msg::AssistantSourceExcerpt };
+    let rows = captions.into_iter().zip(fields.split('\n').map(Some)).chain([(Msg::AssistantSourceChanges, None)]);
+    let (mut screen, mut y) = (0, TOP);
+    for (caption, value) in rows.filter(|(_, value)| *value != Some("")) {
+        let mut lines = 1;
+        if let Some(value) = value {
+            lines = 0;
+            super::vocab::chrome::wrap(value, 216, Font::Label, |_| lines += 1);
+        }
+        if y != TOP {
+            y += GAP;
+            if y + lines * pitch > LAST {
+                (screen, y) = (screen + 1, TOP);
+            }
+        }
+        emit(screen, y, SourceLine::Caption(caption));
+        y += pitch;
+        let Some(value) = value else {
+            emit(screen, y, SourceLine::Note(changes));
+            y += pitch;
+            continue;
+        };
+        super::vocab::chrome::wrap(value, 216, Font::Label, |line| {
+            if y > LAST {
+                (screen, y) = (screen + 1, TOP);
+            }
+            emit(screen, y, SourceLine::Value(line));
+            y += pitch;
+        });
+    }
+    screen + 1
+}
+
 pub(super) fn visit_action(
     state: &crate::landmarks::Landmarks,
     scratch: &super::poi_list::PoiScratch,
@@ -336,6 +411,85 @@ mod tests {
     use super::*;
     use crate::{i18n::t, settings::Language};
     use obc_formats::obcm::{landmarks::*, PoiApproach, PoiMetadata, SourceId};
+
+    /// The layout counts every caption and the Changes note as one line, in every language.
+    #[test]
+    fn source_captions_fit_one_line_in_every_language() {
+        let messages = [
+            Msg::AssistantSourceText,
+            Msg::AssistantSourceArticle,
+            Msg::AssistantSourceAuthors,
+            Msg::AssistantSourceLicense,
+            Msg::AssistantSourcePhoto,
+            Msg::AssistantSourceFile,
+            Msg::AssistantSourceAuthor,
+            Msg::AssistantSourceChanges,
+            Msg::AssistantSourceResized,
+            Msg::AssistantSourceExcerpt,
+        ];
+        for language in Language::ALL {
+            for msg in messages {
+                let label = t(msg, language);
+                assert!(text_width(label, Font::Label) <= 216, "{label:?} does not fit one line in {language:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sources_wrap_by_word_and_start_a_screen_only_for_a_whole_row() {
+        let lines = |photo: bool, fields: &str| {
+            let mut lines = std::vec::Vec::new();
+            let screens = source_layout(photo, fields, |screen, y, line| {
+                let text = match line {
+                    SourceLine::Caption(msg) | SourceLine::Note(msg) => t(msg, Language::En).into(),
+                    SourceLine::Value(value) => std::string::String::from(value),
+                };
+                lines.push((screen, y, text));
+            });
+            (screens, lines)
+        };
+        let licence = "CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/";
+        let article =
+            std::format!("en.wikipedia.org/?oldid=1322295338\nDunlough Castle\nWikipedia contributors\n{licence}");
+        let (screens, text) = lines(false, &article);
+        assert_eq!(screens, 2);
+        let drawn: std::vec::Vec<_> = text.iter().map(|(screen, _, line)| (*screen, line.as_str())).collect();
+        assert_eq!(
+            drawn,
+            [
+                (0, "Text"),
+                (0, "en.wikipedia.org/"),
+                (0, "?oldid=1322295338"),
+                (0, "Article"),
+                (0, "Dunlough Castle"),
+                (0, "Authors"),
+                (0, "Wikipedia"),
+                (0, "contributors"),
+                (1, "License"),
+                (1, "CC BY-SA 4.0"),
+                (1, "creativecommons."),
+                (1, "org/licenses/"),
+                (1, "by-sa/4.0/"),
+                (1, "Changes"),
+                (1, "Excerpt"),
+            ]
+        );
+        // No creator: its row is left out, and the photo states its changes.
+        let (screens, text) = lines(true, "Wikimedia Commons\nRuin.jpg\n\nCC0 1.0");
+        assert_eq!(screens, 1);
+        let drawn: std::vec::Vec<_> = text.iter().map(|(_, _, line)| line.as_str()).collect();
+        assert_eq!(
+            drawn,
+            ["Photo", "Wikimedia Commons", "File", "Ruin.jpg", "License", "CC0 1.0", "Changes", "Resized, dithered"]
+        );
+        let long = std::format!("Wikimedia Commons\n{}\nAn author\nCC BY 4.0", "Word ".repeat(40).trim_end());
+        let (screens, text) = lines(true, &long);
+        // The File row does not fit below Photo, starts the next screen, and is taller than it.
+        assert_eq!(screens, 3);
+        assert!(text.iter().all(|(_, y, _)| (42..=258).contains(y)));
+        let author = text.iter().position(|(_, _, line)| line == "Author").unwrap();
+        assert_eq!(text[author + 1].0, text[author].0, "a caption never ends a screen without its value");
+    }
 
     #[test]
     fn every_landmark_category_has_a_label_that_fits_both_cards() {

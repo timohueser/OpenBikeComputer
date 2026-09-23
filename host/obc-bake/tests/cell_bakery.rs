@@ -335,12 +335,11 @@ impl Fixture {
         let pixels = vec![7u8; obc_formats::obcm::landmarks::PHOTO_PIXELS];
         let photo_sha = obc_bake::hash::bytes(&pixels);
         std::fs::write(dir.join("Q1.rgb222"), &pixels).expect("landmark photo");
-        let attribution = |url: &str| obc_pack::landmarks::Attribution {
-            source_url: format!("https://example.test/{region_id}"),
+        let attribution = |source_url: String, url: &str| obc_pack::landmarks::Attribution {
+            source_url,
             revision: "1".into(),
             license_url: url.into(),
-            original_notices: String::new(),
-            display_pages: vec!["credit".into()],
+            original_notices: r#"{"Artist":{"value":"A"}}"#.into(),
         };
         let content = obc_pack::landmarks::Content {
             schema: 2,
@@ -363,13 +362,19 @@ impl Fixture {
                 variants: vec![obc_pack::landmarks::TextVariant {
                     language: "en".into(),
                     text_pages: vec!["a page".into()],
-                    attribution: attribution(ARTICLE_LICENSE),
+                    attribution: attribution(
+                        format!("https://en.wikipedia.org/w/index.php?title={region_id}&oldid=1"),
+                        ARTICLE_LICENSE,
+                    ),
                 }],
                 photo: Some(obc_pack::landmarks::Photo {
                     path: "Q1.rgb222".into(),
                     sha256: photo_sha,
                     bytes: pixels.len(),
-                    attribution: attribution(PHOTO_LICENSE),
+                    attribution: attribution(
+                        format!("https://commons.wikimedia.org/wiki/File:{region_id}.jpg"),
+                        PHOTO_LICENSE,
+                    ),
                 }),
             }],
             omissions: vec![],
