@@ -86,6 +86,23 @@ struct TripStopsModelTests {
         #expect(model.results.map { $0.map(model.canPick) } == [false, true], "day 1 ends at least 100 m before day 2")
     }
 
+    @Test
+    func aSearchOnAnOutAndBackLandsOnTheDaysOwnLeg() async {
+        // Out 10 km, back 10 km, out again: day 2 can end only on the way back.
+        let trip = Trip.joining(
+            [file(0, 10_000), file(0, 10_000).reversed(), file(-10_000, 0).reversed()],
+            id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
+        let camp = Stop(name: "Camp", coordinate: coordinate(2_000, 30), kind: .campsite)
+        let model = TripStopsModel(
+            trip: trip, day: 1, finder: StopFinder(search: MockStopSearch(stops: [camp])), isOnline: true,
+            onPick: { _ in })
+        model.query = "Camp"
+        await model.search()
+        let placed = model.results?.first
+        #expect(placed.map { ($0.distance / 10).rounded() * 10 } == 18_000)
+        #expect(placed.map(model.canPick) == true)
+    }
+
     /// A started model over the `trips` fixture, with Apple Maps answering `stops`.
     private func makeModel(stops: [Stop]) -> (MainScreenModel, InMemoryLibraryStore) {
         let control = MockControl(scenario: .happyPath)

@@ -9,14 +9,14 @@ extension Trip {
     public static let stopWindowMeters = 10_000.0
 
     /// `stops` measured against the line, in the order given. With `near`, each stop
-    /// projects onto the line within ``stopWindowMeters`` of that distance; without it, onto the
-    /// nearest point of the whole line.
-    public func place(_ stops: [Stop], near: Double? = nil) -> [PlacedStop] {
+    /// projects onto the line within `window` of that distance; without it, onto the nearest
+    /// point of the whole line.
+    public func place(_ stops: [Stop], near: Double? = nil, window: Double = stopWindowMeters) -> [PlacedStop] {
         guard line.count > 1 else { return [] }
         let measured = measuredLine
         return stops.map { stop in
             let coarse = near.map {
-                measured.projection(of: stop.coordinate, near: $0, window: Self.stopWindowMeters)
+                measured.projection(of: stop.coordinate, near: $0, window: window)
             } ?? measured.projection(of: stop.coordinate, near: 0, window: measured.length)
             let fine = measured.projection(of: stop.coordinate, near: coarse.distance, window: Self.refineWindowMeters)
             return PlacedStop(stop: stop, distance: fine.distance, offset: fine.error)
