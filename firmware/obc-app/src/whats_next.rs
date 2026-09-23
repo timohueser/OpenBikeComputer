@@ -158,6 +158,8 @@ impl AheadState {
     pub(crate) fn back(&mut self) {
         self.page = Page::Overview;
         self.rows.clear();
+        self.boundary = None;
+        self.backwards = false;
         if let Some((status, _)) = self.overview {
             self.status = status;
             self.authored_done = true;
@@ -166,6 +168,10 @@ impl AheadState {
         } else if !self.stale {
             self.dirty = true;
         }
+    }
+    /// Whether the kept Overview's opening status is from an earlier quarter hour.
+    pub(crate) fn overview_expired(&self, local: Option<(u8, u16)>) -> bool {
+        self.page == Page::Overview && self.overview.is_some_and(|(_, at)| at != quarter(local))
     }
     pub(crate) fn refresh(&mut self, anchor: u32) {
         self.stale = false;
@@ -286,7 +292,7 @@ impl AheadState {
             self.next_waypoint = next_waypoint.map(entry);
             self.climb = window.climb(climbs).copied();
         }
-        if self.page == Page::Overview && self.overview.is_some_and(|(_, at)| at != quarter(local)) {
+        if self.overview_expired(local) {
             self.dirty = true;
         }
         if self.settled
@@ -813,47 +819,72 @@ mod tests {
     }
 
     #[test]
-    fn back_keeps_the_overview_until_the_quarter_hour_changes() {
+    fn back_keeps_the_overview_and_the_clock_takes_it_again_from_the_first_place() {
+        use crate::harness::support::Buf;
+        use crate::{settings::IdleReturn, App, AppState, Gesture, Settings};
+        use embedded_graphics::pixelcolor::Rgb888;
         let bytes = route(false);
         let source = SliceSource(&bytes);
         let index = RouteIndex::read(&source).unwrap();
         let route = RouteReader::new(&index, &source);
+        // Monday 00:00 to 01:00 only.
         let mut first_hour = [0; 29];
         first_hour[2] = 4;
-        let pois = [(3_000, 0), (6_000, u16::MAX)]
+        let pois = [(3_000, 0), (50_000, u16::MAX)]
             .into_iter()
             .map(|(lon, payload)| PoiSpec { lat: 100, lon, subtype: 1, name: format!("Water {lon}"), payload })
             .collect();
-        let bytes =
+        let map =
             obcm_testkit::build_poi_map_with_hours((-1000, -1000, 150_000, 1000), 512, &[(1, pois)], &[first_hour]);
-        let source = obc_reader::SliceSource(&bytes);
-        let tables = MapTables::parse(&source).unwrap();
+        let map_source = obc_reader::SliceSource(&map);
+        let tables = MapTables::parse(&map_source).unwrap();
         let cache = MapCache::new();
-        let map = Reader::new(&source, &tables, &cache);
-        let scope = scope(UpAheadSource::Both);
-        let mut a = AheadState::new();
-        let mut scratch = CorridorScratch::new();
-        let settle = |a: &mut AheadState, scratch: &mut CorridorScratch, local| {
+        let map = Reader::new(&map_source, &tables, &cache);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
+        app.set_routes_with_ids(&[route.summary()], &[7]);
+        app.navigator.set_active_route(Some(0));
+        app.navigator.sync_route_state(Some(&route));
+        let now = 1_000;
+        app.advance_animations(obc_ports::InputClock(now));
+        app.stamp_clock_ble(1_727_051_400, 0); // Monday 00:30
+        app.open_whats_next();
+        let mut frame = Buf::new(240, 320);
+        let mut settle = |app: &mut App| {
             for _ in 0..100 {
-                a.prepare(Some(&map), Some(&route), &Climbs::default(), scope, scratch, Some(local));
-                if !a.pending() {
+                app.render_map(None, &mut frame, &map, Some(&route), 240.0, 320.0, |c| {
+                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                    Rgb888::new(r, g, b)
+                });
+                if !app.ui.ahead.pending() {
                     return;
                 }
             }
             panic!("window did not settle");
         };
-        settle(&mut a, &mut scratch, (0, 30));
-        let (water, status) = (a.water, a.status);
-        assert!(water.is_some_and(|d| d < 400), "the nearer water is open in the first hour");
-        a.explore();
-        settle(&mut a, &mut scratch, (0, 30));
-        a.back();
-        assert!(!a.pending() && a.request(scope).is_none(), "Back takes no new query");
-        assert_eq!((a.water, a.status), (water, status));
-        a.prepare(Some(&map), Some(&route), &Climbs::default(), scope, &mut scratch, Some((0, 44)));
-        assert!(!a.pending(), "a new minute inside the quarter hour changes no opening status");
-        settle(&mut a, &mut scratch, (0, 90));
-        assert!(a.water.is_some_and(|d| d > 400), "the nearer water closed after the first hour");
+        settle(&mut app);
+        let near = app.ui.ahead.water;
+        assert!(near.is_some_and(|d| d < 400), "the near water is open in the first hour");
+        app.apply_gesture(Gesture::Press);
+        settle(&mut app);
+        for _ in 0..4 {
+            app.apply_gesture(Gesture::Step(1));
+        }
+        settle(&mut app);
+        assert!(app.ui.ahead.has_previous(), "the Timeline turned a page");
+        app.apply_gesture(Gesture::Back);
+        assert!(!app.ui.ahead.pending(), "Back takes no new query");
+        assert_eq!(app.ui.ahead.water, near);
+        for (minutes, expired, water_is_near) in [(5, false, true), (16, true, true), (31, true, false)] {
+            app.ui.map_dirty = false;
+            app.advance_animations(obc_ports::InputClock(now + minutes * 60_000));
+            assert_eq!(app.ui.ahead.overview_expired(app.place_local_time()), expired);
+            if expired {
+                assert!(app.ui.map_dirty, "a new quarter hour repaints the kept Overview");
+                settle(&mut app);
+            }
+            assert_eq!(app.ui.ahead.water.is_some_and(|d| d < 400), water_is_near, "{minutes} min");
+        }
     }
 
     #[test]

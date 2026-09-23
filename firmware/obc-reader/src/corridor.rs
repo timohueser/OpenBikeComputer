@@ -234,14 +234,19 @@ pub(crate) fn within_pad(a: (i32, i32), b: (i32, i32), p: (i32, i32), lon_pad: i
         && p.1 <= hi_lat.saturating_add(lat_pad)
 }
 
-/// Grow `bbox` by `pad_m` ground metres on all four sides. The longitude pad is scaled by
-/// `1/cos_lat` so both axes span the same ground distance, and every step saturates.
+/// Longitude and latitude pads in µdeg that span at least `pad_m` ground metres anywhere in `bbox`
+/// grown by them: the cosine is taken at the grown box's poleward edge, and both pads round up.
+pub(crate) fn pads(bbox: BBox, pad_m: f32) -> (i32, i32) {
+    let lat_pad = (libm::ceilf(pad_m / (M_PER_DEG as f32 * 1e-6)) as i32).saturating_add(1);
+    let edge = bbox.min_lat.unsigned_abs().max(bbox.max_lat.unsigned_abs()).saturating_add(lat_pad as u32);
+    let cl = cos_lat(edge.min(90_000_000) as i32).max(1e-6);
+    let lon_pad = (libm::ceilf(lat_pad as f32 / cl) as i32).saturating_add(1);
+    (lon_pad, lat_pad)
+}
+
+/// Grow `bbox` by at least `pad_m` ground metres on all four sides. Every step saturates.
 pub(crate) fn inflate_bbox(bbox: BBox, pad_m: f32) -> BBox {
-    // Meters → latitude µdeg, then longitude µdeg via the box's mid-latitude cos.
-    let lat_pad = (pad_m / (M_PER_DEG as f32 * 1e-6)) as i32;
-    let mid_lat = bbox.min_lat.saturating_add(bbox.max_lat) / 2;
-    let cl = cos_lat(mid_lat).max(1e-3);
-    let lon_pad = ((lat_pad as f32 / cl) as i32).max(1);
+    let (lon_pad, lat_pad) = pads(bbox, pad_m);
     BBox {
         min_lon: bbox.min_lon.saturating_sub(lon_pad),
         min_lat: bbox.min_lat.saturating_sub(lat_pad),
