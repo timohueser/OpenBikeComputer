@@ -76,7 +76,9 @@ final class RouteObjectCodecTests: XCTestCase {
         var candidate = try fixture("route-plain.obcr")
         candidate[5] |= 8
         XCTAssertEqual(try RouteObjectCodec.decode(candidate).points, plain.points)
-        candidate[5] |= 16
+        candidate[5] |= 16  // a built trip day
+        XCTAssertEqual(try RouteObjectCodec.decode(candidate).points, plain.points)
+        candidate[5] |= 32
         XCTAssertThrowsError(try RouteObjectCodec.decode(candidate))
     }
 
