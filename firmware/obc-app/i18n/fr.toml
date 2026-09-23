@@ -67,6 +67,13 @@ off = "Arrêt"
 manual = "Manuel"
 auto = "Auto"
 
+# --- BikeType labels (the four fixed bike types) ---
+[bike_type]
+road = "Route"
+gravel = "Gravel"
+mtb = "VTT"
+touring = "Randonnée"
+
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
 off = "Arrêt"
@@ -95,6 +102,15 @@ sep = "sept"
 oct = "oct"
 nov = "nov"
 dec = "déc"
+
+[weekday]
+mon = "lun"
+tue = "mar"
+wed = "mer"
+thu = "jeu"
+fri = "ven"
+sat = "sam"
+sun = "dim"
 
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
 # line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
@@ -133,6 +149,7 @@ elevation = "Altitude"
 ride_time = "Durée"
 time_to_go = "Temps restant"
 eta = "Arrivée"
+trip_to_go = "Reste voyage"
 clock = "Heure"
 next_waypoint = "Point suiv."
 waypoint_list = "Liste PT"
@@ -151,6 +168,7 @@ grade = "PENTE"
 elev = "ALT "
 ride = "DURÉE"
 eta = "ARRIVÉE"
+trip = "VOY. "
 time = "HEURE"
 next_wpt = "PT SUIV"
 waypoints = "POINTS"
@@ -208,6 +226,7 @@ fields = "Champs"
 pages = "Défil. auto"
 climb = "Montée"
 waypoints = "Points"
+bike_type = "Type de vélo"
 
 # --- Display settings screen ---
 [display]
@@ -330,8 +349,9 @@ today = "Auj."
 open = "OUVERT"
 closed = "FERMÉ"
 route_here = "Itinéraire ici"
-side_left = "gauche"
-side_right = "droite"
+ahead = "À venir"
+away = "Dist."
+off_route = "Écart"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -344,11 +364,12 @@ on_phone = "sur le tél."
 title = "SORTIES"
 no_rides = "Aucune sortie"
 no_rides_sub = "Faites une sortie"
-not_synced = "non sync."
+of = "sur"
+days = "jours"
+trip = "Voyage"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "sync."
 delete_ride = "Supprimer"
 
 # --- Route menu screen ---
@@ -358,6 +379,12 @@ title = "PARCOURS"
 no_routes = "Aucun parcours"
 no_routes_sub = "Importez un GPX"
 folder_empty_sub = "Ce voyage n'a aucun parcours"
+day = "Jour"
+day_next = "à venir"
+trip_done = "Terminé"
+day_one = "j"
+days = "j"
+no_days = "Aucun jour"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]
@@ -374,7 +401,6 @@ no_route_sub = "Retour à la liste"
 distance = "DISTANCE"
 est_time = "DURÉE"
 climb = "MONTÉE"
-descent = "DESCENTE"
 bike_type = "TYPE VÉLO"
 start_ride = "DÉMARRER"
 loading_profile = "Chargement"
@@ -430,6 +456,30 @@ too_far_hint = "Essayez une destination plus proche."
 not_found = "Aucun parcours trouvé."
 not_found_hint = "Aucune voie proche - partez d'une route."
 
+# --- Start away from the route start: Ride to start or Join nearest ---
+[start_away]
+title = "VERS LE DÉPART"
+you_are = "Vous êtes à "
+from_start = " du départ."
+no_route = "Pas de parcours vers le départ d'ici."
+ride_to_start = "Aller au départ"
+then_route = ", puis parcours"
+join_nearest = "Rejoindre le tracé"
+away_at = " de là, au "
+cancel = "Annuler"
+
+# --- Arrival at the end of the route ---
+[arrival]
+title = "ARRIVÉE"
+end_of = "Fin de "
+end_of_day = ", fin du "
+finish = "Finir la sortie"
+finish_hint = "Enregistrer"
+ride_on = "Continuer : "
+to = " jusqu'à "
+keep_riding = "Rouler encore"
+keep_riding_hint = "Fermer cette vue"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSE"
@@ -439,6 +489,19 @@ discard = "Abandonner"
 ride_time = "DURÉE"
 distance = "DISTANCE"
 climb = "MONTÉE"
+
+# --- The card after Finish on a trip day ---
+[day_done]
+# The title "DAY 2 DONE": the day number goes between the two words.
+day = "JOUR"
+done = "TERMINÉ"
+# The title after the last day of a trip.
+trip_done = "VOYAGE TERMINÉ"
+# The caption over tomorrow's day, and the title of page 2.
+tomorrow = "DEMAIN"
+# After the time estimate: "~3:30 h est."
+est = "est."
+ok = "OK"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]
@@ -462,6 +525,8 @@ gps = "GPS"
 fix = "fixe"
 searching = "recherche.."
 battery = "Batterie"
+show_route = "Voir la route"
+loading_day = "Chargement..."
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
@@ -615,13 +680,18 @@ done = "Anciens parcours supprimés. Renvoyez le parcours. Appuyez pour fermer."
 route_end_to_pin = "Fin route au point"
 straight_line = "(direct)"
 title = "Assistant"
-find = "Trouver un lieu"
+find = "Lieux proches"
 next = "Et ensuite ?"
 easier = "Route douce"
 blocked = "Route barrée"
-back_route = "Retour au tracé"
+back_route = "Retour tracé"
 landmarks = "Sites à voir"
 detour = "Détour utile"
+find_hint = "Eau et vivres"
+next_hint = "Sur le parcours"
+easier_hint = "Moins de montée"
+landmarks_hint = "À proximité"
+climb_in = "Montée à"
 no_fix = "GPS requis"
 no_route = "Suivre un trajet"
 busy = "Calcul en cours"
@@ -649,7 +719,6 @@ return_extra = "Avec le retour"
 direct = "Destination"
 calculating = "Prépare trajet"
 planning_route = "Calcul du trajet"
-loading_route = "Chargement trajet"
 add_stop = "Détour"
 go_here = "Aller ici"
 saving = "Enregistrement"
@@ -663,6 +732,16 @@ partial_data = "Données partielles"
 select_read = "Choisir: lire"
 select_refresh = "Choisir: recharger"
 back = "Retour"
+source_text = "Texte"
+source_article = "Article"
+source_authors = "Auteurs"
+source_license = "Licence"
+source_photo = "Photo"
+source_file = "Fichier"
+source_author = "Auteur"
+source_changes = "Modifications"
+source_resized = "Réduite, tramée"
+source_excerpt = "Extrait"
 access_unavailable = "Accès inconnu"
 visit = "Visiter"
 no_access = "Accès non carto"
@@ -708,7 +787,12 @@ preview_route = "Voir le trajet"
 search_limit = "Recherche limitée"
 no_connection = "Pas de liaison"
 no_comparison = "Comparaison absente"
-no_useful_route = "Aucun trajet utile"
+search_failed = "Recherche échouée"
+no_easier = "Pas plus facile"
+checked_all = "Vérifié : montée,"
+checked_all_goals = "surface, distance"
+checked_some = "Vérifié seulement"
+checked_some_goals = "montée, distance"
 comparing = "Comparer trajets"
 ascent_saved = "de montée évitée"
 rough_avoided = "sol rugueux évité"

@@ -102,7 +102,7 @@ public protocol DeviceObjects: Sendable {
     func listTrips() async throws -> [TripCatalogEntry]
     /// The stored trip object: its name and stage device ids in ride order, dangling refs
     /// included. Reconcile fetches this only when the catalog fingerprint cannot decide.
-    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded
+    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip
     /// Upload a whole trip object, the trip sibling of `uploadRoute`. A fresh trip lets the device
     /// mint an id; a re-push or an adoption sends the stored id to replace it in place. The queue
     /// sends this last, after every member route.
@@ -112,8 +112,6 @@ public protocol DeviceObjects: Sendable {
     func deleteTrip(_ id: DeviceObjectID) async throws
     /// Enumerate tracked rides on the device, including the bounded-catalog truncation signal.
     func listRides() async throws -> RideCatalog
-    /// Full detail for one tracked ride.
-    func rideDetail(_ id: RideID) async throws -> RideDetail
     /// Download tracked rides. `rides` yields each ride's payload as it lands; `handle` carries
     /// batch progress, cancel and restart, and whole rides are the resume granularity.
     func downloadRides(_ ids: [RideID]) -> RideDownload
@@ -194,7 +192,7 @@ extension DeviceObjects {
     // Defaults for stand-ins that do not model trips: an empty trip catalog and no transfers.
 
     public func listTrips() async throws -> [TripCatalogEntry] { [] }
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         throw DeviceError.readFailed
     }
     /// Default: trip upload reads as "no link" rather than trapping.

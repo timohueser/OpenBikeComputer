@@ -95,11 +95,7 @@ impl DrawTarget for Buf {
 /// an empty POI directory and an empty hours pool. It renders as a flat backdrop, so the only
 /// non-backdrop pixels come from whatever is drawn on top. `marker` is the header's marker color.
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
-    build_min_obcm_profiles(marker, &["Default"])
-}
-
-/// [`build_min_obcm`] with a caller-chosen profile table (1..=8 names, every multiplier 1.0×).
-pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
+    let profiles: &[&str] = &["Default"];
     // Every offset a header or directory carries is a count of `U = 16`-byte units, so every
     // structure one reaches starts on a unit boundary and the bytes between them are `0xFF` filler.
     // The header is not a unit multiple, so the style table begins at the next boundary.
@@ -285,6 +281,17 @@ impl LocationSource for NoFix {
     }
 }
 
+/// Tick once over the Grimsel route re-typed `bike`, as the host hands the active route's reader,
+/// and answer the settings' bike type after it.
+pub fn tick_typed_route(app: &mut App, bike: obc_app::settings::BikeType) -> obc_app::settings::BikeType {
+    let mut bytes = include_bytes!("../../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr").to_vec();
+    bytes[obc_formats::obcr::BIKE_TYPE_OFF] = bike as u8;
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).expect("the fixture route parses");
+    app.tick(RideClock(1_000), Sensors::new(&mut NoFix), Some(&RouteReader::new(&index, &src)));
+    app.settings().bike_type
+}
+
 /// Tick once with no fix and no sensors, then composite one frame of `app` over `bytes` into a
 /// 120×120 recording [`Buf`].
 pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
@@ -343,6 +350,7 @@ pub fn ride_summary(name: &str) -> obc_app::RideSummary {
         climb_m: 10,
         synced: false,
         synced_at_utc: 0,
+        ..Default::default()
     }
 }
 

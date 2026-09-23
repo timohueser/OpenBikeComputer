@@ -67,7 +67,7 @@ from a canonical bbox that is never self-sourced from a header. Each one has a b
 
 | Package | Source | Build record |
 | --- | --- | --- |
-| `sim-grimsel` | Pinned `assistant-osm` Switzerland snapshot, on the canonical fixture bbox. OBCT terrain from Copernicus GLO-30 tile `N46_00_E008_00`. OBCR v4 route. Landmark text, photos and credits from the pinned `assistant-switzerland-content` package. | [grimsel-v19.json](sources/ride-assistant/grimsel-v19.json) |
+| `sim-grimsel` | Pinned `assistant-osm` Switzerland snapshot, on the canonical fixture bbox. OBCT terrain from Copernicus GLO-30 tile `N46_00_E008_00`. OBCR v5 route. Landmark text, photos and credits from the pinned `assistant-switzerland-content` package. | [grimsel-v19.json](sources/ride-assistant/grimsel-v19.json) |
 | `sim-monaco` | Pinned `assistant-osm` Monaco snapshot, plus the project-authored up-ahead GPX. | [monaco-v19.json](sources/ride-assistant/monaco-v19.json) |
 | `sim-freiburg` | Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`, box `7.77,47.97,7.93,48.14`. 12 by 19 km of the Rhine plain with one city, three towns, 26 villages and 14 hamlets. No terrain, no route, no track: it exists for the settlement labels. | [freiburg-v19.json](sources/ride-assistant/freiburg-v19.json) |
 | `sim-assistant-west-cork` | A complete-relation extract of the pinned Ireland snapshot, with compiled landmark content. | [west-cork-v19.json](sources/ride-assistant/west-cork-v19.json) |

@@ -11,11 +11,17 @@ public struct RouteDetailView: View {
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
     private let onReverse: (() -> Void)?
-    private let onSaveToPlanned: (() -> Void)?
+    private let onBikeTypeChange: ((BikeType) -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
-    /// An optional row shown above the actions in the imported dressing.
+    /// The imported dressing's choice rows, under the stats.
     private let importAccessory: AnyView?
+    /// A tracked ride's photos.
+    private let photos: RidePhotosModel?
+    /// A tracked ride's day note.
+    private let dayNote: DayNoteModel?
+    /// The quiet rows under a ride's stats line, such as a merge suggestion.
+    private let quietRows: AnyView?
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -32,10 +38,13 @@ public struct RouteDetailView: View {
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
-        onSaveToPlanned: (() -> Void)? = nil,
+        onBikeTypeChange: ((BikeType) -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
-        importAccessory: AnyView? = nil
+        importAccessory: AnyView? = nil,
+        photos: RidePhotosModel? = nil,
+        dayNote: DayNoteModel? = nil,
+        quietRows: AnyView? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -43,10 +52,13 @@ public struct RouteDetailView: View {
         self.onDelete = onDelete
         self.onRename = onRename
         self.onReverse = onReverse
-        self.onSaveToPlanned = onSaveToPlanned
+        self.onBikeTypeChange = onBikeTypeChange
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
         self.importAccessory = importAccessory
+        self.photos = photos
+        self.dayNote = dayNote
+        self.quietRows = quietRows
     }
 
     public var body: some View {
@@ -60,20 +72,25 @@ public struct RouteDetailView: View {
 
                 titleBlock
 
-                OBCStatStrip(model.stats)
+                if let photos {
+                    RidePhotoOfferRow(model: photos)
+                }
+                if let dayNote {
+                    DayNoteOfferRow(model: dayNote, photos: photos)
+                }
+                quietRows
 
-                if !model.sensorRows.isEmpty {
-                    OBCGroupedSection {
-                        ForEach(model.sensorRows) { row in
-                            OBCListRow(
-                                label: row.label,
-                                value: row.value,
-                                showsDivider: row.id != model.sensorRows.last?.id
-                            )
-                        }
-                    }
-                    .padding(.top, 12)
-                    .accessibilityIdentifier("detail.sensorSummary")
+                if !model.stats.isEmpty {
+                    OBCStatStrip(model.stats)
+                }
+
+                if case .planned = model.dressing {
+                    bikeTypeRow
+                }
+
+                if case .imported = model.dressing, let importAccessory {
+                    importAccessory
+                        .padding(.top, 14)
                 }
 
                 if !model.waypoints.isEmpty {
@@ -94,10 +111,37 @@ public struct RouteDetailView: View {
                     OBCEyebrow("Elevation profile")
                         .padding(.top, 18)
                         .padding(.bottom, 4)
-                    ElevationProfileView(samples: model.elevationProfile)
+                    ElevationProfileView(samples: model.elevationProfile, ticks: photos?.tickFractions ?? [])
+                }
+
+                if !model.highlights.isEmpty {
+                    highlightsLine
+                }
+
+                if let photos {
+                    RidePhotoStripSection(model: photos, preview: model.preview)
+                }
+                if let dayNote {
+                    DayNoteEntry(model: dayNote, photos: photos)
+                }
+
+                if !model.sensorRows.isEmpty {
+                    OBCGroupedSection {
+                        ForEach(model.sensorRows) { row in
+                            OBCListRow(
+                                label: row.label,
+                                value: row.value,
+                                showsDivider: row.id != model.sensorRows.last?.id
+                            )
+                        }
+                    }
+                    .padding(.top, 16)
+                    .accessibilityIdentifier("detail.sensorSummary")
                 }
 
                 if case .tracked = model.dressing {
+                    // Ride detail B: the ride's facts first, then sensors, bike type and services.
+                    bikeTypeRow
                     servicesBlock
                 }
                 actions
@@ -122,6 +166,8 @@ public struct RouteDetailView: View {
             }
         )
         .task { model.start() }
+        .task { await photos?.start() }
+        .task { await dayNote?.start() }
     }
 
     /// Offline keeps the grid and no tap: a map with no network path is blank.
@@ -137,7 +183,8 @@ public struct RouteDetailView: View {
             tag: model.tag.text,
             tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft,
             waypoints: model.waypoints,
-            totalDistanceMeters: model.distanceMeters
+            totalDistanceMeters: model.distanceMeters,
+            photoPins: photos?.pinCoordinates ?? []
         )
         .frame(height: 214)
 
@@ -210,9 +257,39 @@ public struct RouteDetailView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(OBCTheme.inkSoft)
             }
+            if let statsLine = model.statsLine {
+                Text(statsLine)
+                    .font(.obcMono(size: 15, weight: .medium))
+                    .foregroundStyle(OBCTheme.ink)
+                    .padding(.top, 6)
+                    .accessibilityIdentifier("detail.statsLine")
+            }
         }
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    private var highlightsLine: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            OBCEyebrow("Highlights")
+            Text(model.highlights.joined(separator: " · "))
+                .font(.obcMono(size: 13, weight: .medium))
+                .foregroundStyle(OBCTheme.inkSoft)
+        }
+        .padding(.top, 14)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("detail.highlights")
+    }
+
+    private var bikeTypeRow: some View {
+        OBCGroupedSection {
+            OBCBikeTypeRow(type: model.bikeType) { type in
+                model.setBikeType(type)
+                onBikeTypeChange?(type)
+            }
+            .accessibilityIdentifier("detail.bikeType")
+        }
+        .padding(.top, 12)
     }
 
     /// Connected services. The affordance is inert until the services land.
@@ -255,32 +332,19 @@ public struct RouteDetailView: View {
                         onConfirm: { onDelete?() }
                     )
             case .imported where noDevicePaired:
-                // A share can arrive before pairing: the route saves now and
-                // uploads later. Trips are app-local, so Add-to-trip still works.
-                importAccessory
+                // A share can arrive before pairing: the route saves now and uploads later.
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     title: "No device paired yet.",
                     message: "Save it now — upload once you pair."
                 )
                 .padding(.bottom, 4)
-                Button("Save to Planned") { onSaveToPlanned?() }
-                    .buttonStyle(.obcPrimary)
-                    .accessibilityIdentifier("detail.saveToPlanned")
                 Button("Pair a device") { onPair?() }
                     .buttonStyle(.obcGhost)
                     .accessibilityIdentifier("detail.pairDevice")
             case .imported:
-                importAccessory
-                uploadButton
-                Button("Save to Planned") { onSaveToPlanned?() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("detail.saveToPlanned")
-                Text("Uploading saves it too. Tap Cancel to discard.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 2)
+                // The rows under the stats land the route; upload is on the route or trip page.
+                EmptyView()
             case .tracked:
                 // The services block above carries the per-ride upload.
                 Button("Delete ride") { deleteConfirmShown = true }
@@ -328,13 +392,11 @@ public struct RouteDetailView: View {
     }
 }
 
-/// The import landing: the detail body framed by Cancel and Save chrome.
+/// The import landing: the detail body under Cancel and "Imported route", with the choice rows.
 /// Shown full-screen when a route file decodes.
 public struct ImportLandingView: View {
     private let model: RouteDetailModel
     private let deviceName: String
-    private let onUpload: () -> Void
-    private let onSave: () -> Void
     private let onCancel: () -> Void
     private let noDevicePaired: Bool
     private let onPair: () -> Void
@@ -343,8 +405,6 @@ public struct ImportLandingView: View {
     public init(
         model: RouteDetailModel,
         deviceName: String,
-        onUpload: @escaping () -> Void = {},
-        onSave: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
         noDevicePaired: Bool = false,
         onPair: @escaping () -> Void = {},
@@ -352,8 +412,6 @@ public struct ImportLandingView: View {
     ) {
         self.model = model
         self.deviceName = deviceName
-        self.onUpload = onUpload
-        self.onSave = onSave
         self.onCancel = onCancel
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
@@ -365,23 +423,17 @@ public struct ImportLandingView: View {
             RouteDetailView(
                 model: model,
                 deviceName: deviceName,
-                onUpload: onUpload,
-                onSaveToPlanned: onSave,
                 noDevicePaired: noDevicePaired,
                 onPair: onPair,
                 importAccessory: importAccessory
             )
-            .navigationTitle("Imported route")
+            .navigationTitle(model.landingTitle)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: onSave)
-                        .fontWeight(.semibold)
                 }
             }
         }
@@ -438,7 +490,6 @@ private struct PreviewNoopTransport: DeviceLink, DeviceObjects {
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
 }
 #endif

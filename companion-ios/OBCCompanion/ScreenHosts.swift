@@ -88,8 +88,8 @@ struct UploadRequest: Identifiable {
 struct RouteDetailScreen: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
-    /// The route-menu picker, planned dressing only: the detail overflow's Add or Move to trip
-    /// presents the shared picker sheet.
+    /// The route-menu picker, planned dressing only: the detail overflow's Add to trip presents
+    /// the shared picker sheet.
     @State private var tripPickerShown = false
     private let transport: any DeviceTransport
     /// The in-flight ledger the upload sheet claims a token from. Nil in previews.
@@ -97,18 +97,26 @@ struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    private let onBikeTypeChange: ((BikeType) -> Void)?
     /// Reverse the route, planned dressing only: it creates the flipped copy and navigates to it.
     /// Nil on rides and imports.
     private let onReverse: (() -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
-    /// Trip filing, planned only: the existing trips, this route's current trip, where nil means
-    /// loose and offers Add while non-nil offers Move and Remove, and the two edits. A nil
-    /// `onAddToTrip` suppresses the overflow entirely.
+    /// Add to trip, planned only: the route becomes a day of the picked trip. A nil `onAddToTrip`
+    /// suppresses the overflow entirely.
     private let tripPickerItems: [TripPickerItem]
-    private let currentTripID: TripID?
     private let onAddToTrip: ((TripSelection) -> Void)?
-    private let onRemoveFromTrip: (() -> Void)?
+    /// The share button, rides with a tracklog only.
+    private let rideShareMenu: RideShareMenu?
+    /// A tracked ride's photos.
+    @State private var photos: RidePhotosModel?
+    /// A tracked ride's day note.
+    @State private var dayNote: DayNoteModel?
+    /// The ⋯ menu with Edit ride and Revert to original, rides with a tracklog only.
+    private let rideEditMenu: RideEditMenu?
+    /// The quiet rows under a ride's stats line.
+    private let quietRows: AnyView?
 
     init(
         transport: any DeviceTransport,
@@ -116,37 +124,57 @@ struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
-        rideGeometry: [Coordinate]? = nil,
+        bikeType: BikeType = .road,
+        ridePoints: [RidePoint] = [],
+        rides: [RideSummary] = [],
+        photos: (library: any LibraryStore, photoLibrary: any PhotoLibrary)? = nil,
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onBikeTypeChange: ((BikeType) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
-        currentTripID: TripID? = nil,
         onAddToTrip: ((TripSelection) -> Void)? = nil,
-        onRemoveFromTrip: (() -> Void)? = nil
+        rideShareMenu: RideShareMenu? = nil,
+        rideEditMenu: RideEditMenu? = nil,
+        quietRows: AnyView? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
-            transport: transport, dressing: dressing,
+            transport: transport, dressing: dressing, bikeType: bikeType,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
-            rideGeometry: rideGeometry
+            ridePoints: ridePoints, rides: rides
         ))
         self.transport = transport
         self.activity = activity
         self.deviceName = deviceName
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onBikeTypeChange = onBikeTypeChange
         self.onReverse = onReverse
         self.onUploaded = onUploaded
         self.tripPickerItems = tripPickerItems
-        self.currentTripID = currentTripID
         self.onAddToTrip = onAddToTrip
-        self.onRemoveFromTrip = onRemoveFromTrip
-        if case .tracked = dressing { isRide = true } else { isRide = false }
+        self.rideShareMenu = rideShareMenu
+        self.rideEditMenu = rideEditMenu
+        self.quietRows = quietRows
+        if case .tracked(let ride) = dressing {
+            isRide = true
+            if let photos {
+                _photos = State(initialValue: RidePhotosModel(
+                    rideID: ride.id, points: ridePoints, library: photos.library, photoLibrary: photos.photoLibrary
+                ))
+                _dayNote = State(initialValue: DayNoteModel(
+                    ride: ride, points: ridePoints, library: photos.library, placeName: placeName
+                ))
+            }
+        } else {
+            isRide = false
+        }
     }
 
     var body: some View {
@@ -172,7 +200,11 @@ struct RouteDetailScreen: View {
             },
             onDelete: onDelete,
             onRename: onRename,
-            onReverse: onReverse
+            onReverse: onReverse,
+            onBikeTypeChange: onBikeTypeChange,
+            photos: photos,
+            dayNote: dayNote,
+            quietRows: quietRows
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
@@ -182,45 +214,34 @@ struct RouteDetailScreen: View {
                     tripMenu(onAddToTrip: onAddToTrip)
                 }
             }
+            if let rideShareMenu {
+                ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
+            }
+            if let rideEditMenu {
+                ToolbarItem(placement: .primaryAction) { rideEditMenu }
+            }
         }
         .sheet(item: $uploadRequest) { request in
             UploadSheetView(model: request.model)
         }
         .sheet(isPresented: $tripPickerShown) {
             TripPickerSheet(
-                title: currentTripID == nil ? "Add to trip" : "Move to trip",
+                title: "Add to trip",
                 trips: tripPickerItems,
-                currentTripID: currentTripID,
                 onPick: { onAddToTrip?($0) }
             )
         }
     }
 
-    /// The detail overflow's trip menu: Add to trip for a loose route, or Move to trip and Remove
-    /// from trip for one already filed.
+    /// The detail overflow's trip menu.
     private func tripMenu(onAddToTrip: @escaping (TripSelection) -> Void) -> some View {
         Menu {
-            if currentTripID == nil {
-                Button {
-                    tripPickerShown = true
-                } label: {
-                    Label("Add to trip…", systemImage: "folder.badge.plus")
-                }
-                .accessibilityIdentifier("detail.addToTrip")
-            } else {
-                Button {
-                    tripPickerShown = true
-                } label: {
-                    Label("Move to trip…", systemImage: "folder")
-                }
-                .accessibilityIdentifier("detail.moveToTrip")
-                Button(role: .destructive) {
-                    onRemoveFromTrip?()
-                } label: {
-                    Label("Remove from trip", systemImage: "minus.circle")
-                }
-                .accessibilityIdentifier("detail.removeFromTrip")
+            Button {
+                tripPickerShown = true
+            } label: {
+                Label("Add to trip…", systemImage: "folder.badge.plus")
             }
+            .accessibilityIdentifier("detail.addToTrip")
         } label: {
             Image(systemName: "ellipsis.circle")
         }
@@ -228,68 +249,45 @@ struct RouteDetailScreen: View {
     }
 }
 
-/// Owns a stable model for the presented import cover, and turns Save into the summary the main
-/// model lands in Planned. Upload presents the upload sheet: a completed upload also saves the
-/// route, and the cover closes once the sheet does.
+/// Owns a stable model for the presented import cover. The three rows land the route: as a new
+/// route, as the last day of a trip, or as the first day of a new trip.
 struct ImportLandingHost: View {
     @State private var model: RouteDetailModel
-    @State private var uploadRequest: UploadRequest?
-    @State private var uploadCompleted = false
-    /// The optional "Add to trip" choice for this import, opt-in and default none, and the shared
-    /// picker's presentation.
-    @State private var tripSelection: TripSelection = .none
     @State private var tripPickerShown = false
-    private let transport: any DeviceTransport
-    /// The in-flight ledger the upload sheet claims a token from.
-    private let activity: TransferActivity?
     private let deviceName: String
     private let noDevicePaired: Bool
-    /// Existing trips for the import row's picker. Empty means no trips yet, and the row still
-    /// offers a new one.
-    private let tripPickerItems: [TripPickerItem]
+    /// The trips the route can join, most recently edited first.
+    private let trips: [TripPickerItem]
     private let onSave: (RouteDetail, TripSelection) -> Void
-    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void
-    private let onPair: (RouteDetail, TripSelection) -> Void
+    private let onPair: (RouteDetail) -> Void
     private let onCancel: () -> Void
 
     init(
         transport: any DeviceTransport,
-        activity: TransferActivity? = nil,
         route: ImportedRoute,
         fileName: String,
+        source: ImportSource,
+        bikeType: BikeType,
         deviceName: String,
         noDevicePaired: Bool,
-        tripPickerItems: [TripPickerItem] = [],
-        // When this import replaces an existing route, the landing reuses its id and device link,
-        // so a save or upload updates that route in place instead of adding a duplicate. The old
-        // fingerprint is what makes the button read "Update".
+        trips: [TripPickerItem] = [],
+        // When this import replaces an existing route, the landing reuses its id, so New route
+        // updates that route in place instead of adding a duplicate.
         replacing: PlannedRouteRecord? = nil,
-        // The replace-by-id target for an upload from this landing. The caller derives it through
-        // the scope-gated helper, so a link minted on another device or era can never aim the
-        // upload at the wrong object.
-        replacingDeviceObjectID: DeviceObjectID? = nil,
-        // The proven-held CRC of the route being replaced: the button reads "up to date" only on
-        // the same proof the list badge uses, never on a stale link.
-        replacingProvenCRC: UInt32? = nil,
         onSave: @escaping (RouteDetail, TripSelection) -> Void,
-        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void,
-        onPair: @escaping (RouteDetail, TripSelection) -> Void,
+        onPair: @escaping (RouteDetail) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
-            dressing: .imported(route, fileName: fileName),
-            deviceObjectID: replacingDeviceObjectID,
-            provenCommittedCRC: replacingProvenCRC,
+            dressing: .imported(route, fileName: fileName, source: source),
+            bikeType: bikeType,
             importedRouteID: replacing?.id
         ))
-        self.transport = transport
-        self.activity = activity
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
-        self.tripPickerItems = tripPickerItems
+        self.trips = trips
         self.onSave = onSave
-        self.onUploaded = onUploaded
         self.onPair = onPair
         self.onCancel = onCancel
     }
@@ -298,66 +296,39 @@ struct ImportLandingHost: View {
         ImportLandingView(
             model: model,
             deviceName: deviceName,
-            onUpload: {
-                uploadRequest = UploadRequest(model: UploadSheetModel(
-                    transport: transport,
-                    blob: model.makeUploadBlob(),
-                    deviceName: deviceName,
-                    // Normally the sheet self-dismisses; parked under the hold flag, so a capture
-                    // cannot lose the sheet.
-                    timing: OBCCompanionApp.launchUploadTiming(),
-                    activity: activity,
-                    onCompleted: { [model] objectID, crc in
-                        uploadCompleted = true
-                        if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded(model.makeDetail(), tripSelection, objectID, crc)
-                    }
-                ))
-            },
-            onSave: { onSave(model.makeDetail(), tripSelection) },
             onCancel: onCancel,
             noDevicePaired: noDevicePaired,
-            onPair: { onPair(model.makeDetail(), tripSelection) },
-            importAccessory: AnyView(tripRow)
+            onPair: { onPair(model.makeDetail()) },
+            importAccessory: AnyView(rows)
         )
-        .sheet(
-            item: $uploadRequest,
-            // The route is already in Planned, saved on completion, so closing the confirm sheet
-            // also closes the landing. A cancelled upload stays on the landing, still unsaved.
-            onDismiss: { if uploadCompleted { onCancel() } }
-        ) { request in
-            UploadSheetView(model: request.model)
-        }
         .sheet(isPresented: $tripPickerShown) {
-            TripPickerSheet(
-                title: "Add to trip",
-                trips: tripPickerItems,
-                allowsNone: true,
-                onPick: { tripSelection = $0 }
-            )
+            TripPickerSheet(title: "Add to trip", trips: trips, onPick: save)
         }
     }
 
-    /// The optional "Add to trip" row: opt-in, default None. It opens the shared picker and shows
-    /// the current choice.
-    private var tripRow: some View {
-        OBCDisclosureRow(
-            systemImage: "folder.badge.plus",
-            label: "Add to trip",
-            value: tripSelectionLabel,
-            accessibilityID: "import.addToTrip",
-            action: { tripPickerShown = true }
-        )
-        .padding(.bottom, 2)
+    /// New route, Add to ‹trip› (or Add to trip with a picker when there are several), Start a
+    /// trip.
+    private var rows: some View {
+        OBCGroupedSection {
+            OBCListRow(label: "New route", showsChevron: true) { save(.none) }
+                .accessibilityIdentifier("import.newRoute")
+            if trips.count == 1, let trip = trips.first {
+                OBCListRow(label: "Add to \(trip.name)", detail: "Becomes Day \(trip.dayCount + 1)", showsChevron: true) {
+                    save(.existing(trip.id))
+                }
+                .accessibilityIdentifier("import.addToTrip")
+            } else if trips.count > 1 {
+                OBCListRow(label: "Add to trip", showsChevron: true) { tripPickerShown = true }
+                    .accessibilityIdentifier("import.addToTrip")
+            }
+            OBCListRow(label: "Start a trip", showsChevron: true, showsDivider: false) {
+                save(.new(model.name))
+            }
+            .accessibilityIdentifier("import.startTrip")
+        }
     }
 
-    /// The current import trip choice as a row value: None, an existing trip's name, or the new
-    /// trip's name.
-    private var tripSelectionLabel: String {
-        switch tripSelection {
-        case .none: "None"
-        case .existing(let id): tripPickerItems.first { $0.id == id }?.name ?? "Trip"
-        case .new(let name): name
-        }
+    private func save(_ selection: TripSelection) {
+        onSave(model.makeDetail(), selection)
     }
 }

@@ -19,6 +19,8 @@ use obc_storage::flat::{
     Store as _, StoreError, RIDE_RESUME_LEN,
 };
 
+const _: () = assert!(obc_app::recorder::CHECKPOINT_RETRY_MS == obc_storage::health::Breaker::COOL_DOWN_MS);
+
 use obc_app::recorder::{CheckpointStatus, RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::RideDamage;
 
@@ -226,7 +228,7 @@ impl Recorder {
                     // The store proved a durable checkpoint, but it is not a sample or footer
                     // boundary. Keep the RECORDING object intact and loud, and never append to or
                     // publish bytes whose format this executor cannot prove.
-                    defmt::error!("flat ride: recovered payload is not a v3 sample/footer boundary");
+                    defmt::error!("flat ride: recovered payload is not a ride sample/footer boundary");
                     faulted(recovered.id, recovered.revision, RideDamage::Payload)
                 }
             }
@@ -320,8 +322,7 @@ impl Recorder {
         now: u32,
     ) -> Option<RecorderOutcome> {
         if let Some(id) = app.recorder.object_owed(*opened_session) {
-            let name =
-                app.active_route_index().and_then(|i| app.routes().get(i)).map_or("", |route| route.name.as_str());
+            let name = app.ride_name().unwrap_or("");
             self.open(store, id, name, now).await;
             // A refused start stays owed and is retried on the next iteration.
             if self.open_session() == Some(id) {
@@ -330,7 +331,7 @@ impl Recorder {
         }
         Some(match effect? {
             RecorderEffect::Checkpoint { token } => {
-                let stats = app.recorder.ride_stats();
+                let stats = app.ride_stats();
                 let continuation = app.recorder.checkpoint_context();
                 match self.checkpoint(now, &stats, continuation).await {
                     Ok(status) => RecorderOutcome::Checkpointed { token, status },
@@ -341,7 +342,7 @@ impl Recorder {
                 // Recorder has already drained the samples through acknowledged appends, and the
                 // footer facts come from Recorder, which stamped its wall-clock anchor as it minted
                 // this close. The save name is not read at all: it was frozen when the ride opened.
-                let stats = app.recorder.ride_stats();
+                let stats = app.ride_stats();
                 match self.finalize(&stats).await {
                     RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                     RideClose::Nothing => {

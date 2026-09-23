@@ -18,7 +18,7 @@ use crate::input_plane::InputPlane;
 use crate::next_ahead::NextAhead;
 use crate::placement::define_placement_constructors;
 use crate::screen::vocab::marquee::Marquee;
-use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
+use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, RenderKeyKind, Screen, Stack};
 use crate::settings::{DateTime, Settings};
 
 /// One frame's hold charge on the two hold buttons, as the host's own input plane sees them.
@@ -214,6 +214,13 @@ impl UiRuntime {
     /// map pipeline on a non-map frame, including the `Reader` build and its stack spike.
     pub(crate) fn base_draws_map(&self) -> bool {
         self.base_content() == BaseContent::Map
+    }
+
+    /// Whether the base screen is a live map view, with the `Map` render key. Only such a screen
+    /// draws the map icons and the settlement names; a static page with a map band does not.
+    pub(crate) fn base_draws_live_map(&self) -> bool {
+        let base = screen::base_index(&self.stack);
+        self.stack.get(base).is_some_and(|s| s.caps().render_key == RenderKeyKind::Map)
     }
 
     /// Whether an overlay sheet covers the base screen. A frozen base does not tick, and its rows
@@ -451,8 +458,15 @@ impl UiRuntime {
     /// It is deliberately not covered by a render key. The scheduler already answers "did anything
     /// visible move" at this one door, including for host seams that run between two passes, where
     /// a stack-local key comparison sees nothing.
-    pub(crate) fn run_card_sweep(&mut self, catalogs: &CatalogState, tracking: bool) {
-        let ctx = CardCtx { now_ms: self.now_ms, hold_charging: self.hold_charging(), catalogs, tracking };
+    pub(crate) fn run_card_sweep(
+        &mut self,
+        catalogs: &CatalogState,
+        tracking: bool,
+        panning: bool,
+        arrival: Option<crate::screen::ArrivalView>,
+    ) {
+        let hold_charging = self.hold_charging();
+        let ctx = CardCtx { now_ms: self.now_ms, hold_charging, catalogs, tracking, panning, arrival };
         if self.cards.sweep(&mut self.stack, &ctx) {
             self.map_dirty = true;
         }

@@ -89,6 +89,48 @@ final class OBCFormatTests: XCTestCase {
         )
     }
 
+    func testRideStatsLineMatchesTheWireframe() {
+        let ride = RideSummary(
+            id: RideID("d2"), name: "Day 2", date: date(2026, 9, 30, hour: 8),
+            distanceMeters: 74_300, movingTime: 5 * 3600 + 52 * 60,
+            averageSpeedMps: 12.7 / 3.6, climbMeters: 2_080
+        )
+        XCTAssertEqual(OBCFormat.rideStatsLine(ride, locale: en), "74.3 km · 5:52 · 12.7 kph · 2,080 m ↑")
+    }
+
+    func testDayNoteHeaderFillsItselfIn() {
+        // The wireframe's date form is the en_GB one.
+        let gb = Locale(identifier: "en_GB")
+        let day = date(2026, 9, 30, hour: 8)
+        XCTAssertEqual(
+            OBCFormat.dayNoteHeader(date: day, from: "Andermatt", to: "Ulrichen", distanceMeters: 74_300, calendar: cal, locale: gb),
+            "Wed 30 Sep · Andermatt → Ulrichen · 74 km"
+        )
+        XCTAssertEqual(OBCFormat.dayNoteHeader(date: day, distanceMeters: 58_200, calendar: cal, locale: gb), "Wed 30 Sep · 58 km")
+    }
+
+    func testNotePromptNamesTheDayOrTheRide() {
+        let ride = RideSummary(id: RideID("r"), name: "Ride", date: Date(), distanceMeters: 0)
+        var day2 = ride
+        day2.trip = RideTrip(key: 7, dayIndex: 1, dayCount: 3, name: "Alps traverse")
+        XCTAssertEqual(OBCFormat.notePrompt(ride), "How was the ride?")
+        XCTAssertEqual(OBCFormat.notePrompt(day2), "How was Day 2?")
+    }
+
+    func testHighlightsReadAsOneShortPhraseEach() {
+        XCTAssertEqual(
+            OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: "Furka"), locale: en),
+            "Furka 2,431 m"
+        )
+        XCTAssertEqual(
+            OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: nil), locale: en),
+            "2,431 m at km 31"
+        )
+        XCTAssertEqual(OBCFormat.highlight(.longestClimb(ascent: 1_100, length: 18_000), locale: en), "18.0 km climb")
+        XCTAssertEqual(OBCFormat.highlight(.fastestDescent(speedMps: 62 / 3.6), locale: en), "62 kph descent")
+        XCTAssertEqual(OBCFormat.highlight(.biggestDay(distance: 82_000), locale: en), "Biggest day 82.0 km")
+    }
+
     // MARK: Stat-strip parts (the value and unit split)
 
     func testStatValuesMatchTheJoinedLines() {

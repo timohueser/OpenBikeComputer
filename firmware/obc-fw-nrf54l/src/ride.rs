@@ -287,9 +287,8 @@ fn start_nav_flush(
 /// in the main task's poll frame, which is allocated at the entry of every poll.
 #[cfg(has_nav)]
 #[inline(never)]
-fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
-    // The rider's bike-type setting. An out-of-range index falls back to profile 0 in the router.
-    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
+fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, bike: obc_route::BikeType) {
+    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), bike));
     // One diagnostic line per plan start: the three addresses pin the memory map without the ELF at
     // hand. They are offsets inside the scratch arena's nav arm.
     let (planner, scratch, tiles) = nav.guard.arm_addrs();
@@ -841,6 +840,7 @@ pub(crate) async fn run_app(
         }
         // Feed the watchdog, gated on the input plane's heartbeat: this pass proves thread mode
         // alive and the stamp proves the recognizer alive, so either plane wedging stops the feed.
+        let mut watchdog_fed = false;
         if let Some(h) = wdt.as_mut() {
             // The input plane stamps from its own `Instant::now()`, which can be a hair newer than
             // this loop's `now`, and the subtraction then wraps. A wrapped age means the heartbeat is
@@ -848,9 +848,19 @@ pub(crate) async fn run_app(
             let age = now.wrapping_sub(INPUT_HB_MS.load(Ordering::Relaxed));
             if age <= INPUT_HB_STALE_MS || age > u32::MAX / 2 {
                 h.pet();
+                watchdog_fed = true;
             } else {
                 defmt::error!("WDT: input-plane heartbeat {=u32} ms stale — withholding the feed", age);
             }
+        }
+
+        // A half-open probe owns this whole watchdog-fed pass. Ending it here keeps re-identification
+        // and mount validation separate from every retained write, map read and deferred operation.
+        if crate::flpr_mux::storage_recovery_due(watchdog_fed) {
+            if crate::flat_store::recover_media(flat).is_ok() {
+                pending_map_redraw = true;
+            }
+            continue;
         }
 
         // Feed the live hold progress before anything below consults it: every hold-deferral rule
@@ -1101,26 +1111,20 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
-                    CatalogEffect::RemoveReview { token, source } => {
-                        let result = if source.store != flat.store_id().0 {
-                            Err(obc_storage::flat::StoreError::NotFound)
+                    CatalogEffect::RemoveOrphanReviews { token } => {
+                        let heads = crate::flat_store::route_heads(flat, app.orphan_reviews());
+                        let result = if heads.is_empty() {
+                            Ok(())
                         } else if let Some(writer) = crate::flat_store::writer() {
                             writer
-                                .call(
-                                    crate::flat_store::Request::RemoveComputedRoute {
-                                        id: obc_storage::flat::ObjectId(source.object),
-                                        revision: obc_storage::flat::Revision(source.revision),
-                                    },
-                                    &CATALOG_STORE_REPLY,
-                                )
+                                .call(crate::flat_store::Request::RemoveRoutes { heads }, &CATALOG_STORE_REPLY)
                                 .await
+                                .map(|_| ())
                         } else {
                             Err(obc_storage::flat::StoreError::ReadOnly)
                         };
                         let outcome = match result {
-                            Ok(_) | Err(obc_storage::flat::StoreError::NotFound) => {
-                                CatalogOutcome::ReviewRemoved { token, source }
-                            }
+                            Ok(()) => CatalogOutcome::OrphanReviewsRemoved { token },
                             Err(_) => CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
@@ -1267,9 +1271,32 @@ pub(crate) async fn run_app(
                 exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
             }
 
-            // The catalog and checkpoint calls share one physical reply slot.
+            // The catalog and metadata calls share one physical reply slot.
             if exec.catalog.is_none() && exec.outcomes.metadata.is_empty() {
-                if let Some(effect) = exec.effects.metadata.take() {
+                if let Some(effect) = exec
+                    .effects
+                    .metadata
+                    .take_if(|effect| matches!(effect, obc_app::metadata::MetadataEffect::WriteProgress { .. }))
+                {
+                    use obc_app::metadata::MetadataOutcome;
+                    let token = effect.token();
+                    let current =
+                        effect.scope().is_some_and(|scope| scope.store == crate::flat_store::catalog_scope(flat).store);
+                    let outcome = match app.trip_progress_payload(token).filter(|_| current) {
+                        Some(record) => {
+                            let request = crate::flat_store::Request::WriteProgress {
+                                record: record.clone(),
+                                keys: app.trips().iter().map(|trip| trip.key).collect(),
+                            };
+                            match metadata_call(request).await {
+                                Ok(()) => MetadataOutcome::ProgressWritten { token },
+                                Err(error) => MetadataOutcome::Failed { token, error },
+                            }
+                        }
+                        None => MetadataOutcome::Cancelled { token },
+                    };
+                    RideExec::deliver(&mut exec.outcomes.metadata, outcome, "metadata");
+                } else if let Some(effect) = exec.effects.metadata.take() {
                     use obc_app::metadata::MetadataOutcome;
                     let token = effect.token();
                     #[cfg(has_nav)]
@@ -1300,7 +1327,7 @@ pub(crate) async fn run_app(
                             && app.assistant_review_context().is_none_or(|context| {
                                 crate::flat_store::planner_map_current()
                                     && context.map == crate::flat_store::planner_map_key(flat)
-                                    && context.profile == app.settings().bike_profile_idx
+                                    && context.profile == app.settings().bike_type
                                     && context.original.is_none_or(|original| {
                                         visit.original_current()
                                             || review_original.as_ref().is_some_and(|held| {
@@ -1385,27 +1412,34 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
                 #[cfg(has_nav)]
-                let source_error =
-                    if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                        && (app.assistant_visit_target().is_some()
-                            || app
-                                .assistant_review_context()
-                                .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
-                    {
-                        let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
-                        let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
-                        let avoidance = id.is_some_and(|id| {
-                            flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
-                                obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
-                            })
-                            .ok()
-                            .and_then(Result::ok)
-                            .unwrap_or(true)
-                        });
-                        !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
-                    } else {
-                        false
-                    };
+                let composes = matches!(
+                    effect,
+                    NavigatorEffect::Acquire {
+                        work: PlannerWork::AssistantRoute(_) | PlannerWork::MeasureRoute(_),
+                        ..
+                    }
+                );
+                #[cfg(has_nav)]
+                let source_error = if composes
+                    && (app.assistant_visit_target().is_some()
+                        || app
+                            .assistant_review_context()
+                            .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
+                {
+                    let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+                    let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
+                    let avoidance = id.is_some_and(|id| {
+                        flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
+                            obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
+                        })
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(true)
+                    });
+                    !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
+                } else {
+                    false
+                };
                 #[cfg(not(has_nav))]
                 let source_error = false;
                 if source_error {
@@ -1421,7 +1455,7 @@ pub(crate) async fn run_app(
                 let visit_effect = false;
                 #[cfg(has_nav)]
                 if visit_effect {
-                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard) {
+                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard, &mut *nav.elev) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
@@ -1431,9 +1465,7 @@ pub(crate) async fn run_app(
                 let detour_effect = false;
                 #[cfg(has_nav)]
                 if detour_effect {
-                    if let Some(outcome) =
-                        detour.accept(effect, app, flat, &mut nav_guard, app.settings().bike_profile_idx)
-                    {
+                    if let Some(outcome) = detour.accept(effect, app, flat, &mut nav_guard, app.settings().bike_type) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
@@ -1448,7 +1480,7 @@ pub(crate) async fn run_app(
                                 || app.assistant_review_context().is_some_and(|context| {
                                     context.map != crate::flat_store::planner_map_key(flat)
                                         || context.store.bytes() != flat.store_id().0
-                                        || context.profile != app.settings().bike_profile_idx
+                                        || context.profile != app.settings().bike_type
                                         || !crate::assistant::original_allowed(
                                             flat,
                                             context,
@@ -1484,7 +1516,7 @@ pub(crate) async fn run_app(
                                             guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
                                             elev: &mut *nav.elev,
                                         };
-                                        nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
+                                        nav_begin(&mut bufs, &request, app.settings().bike_type);
                                         if let Some(context) = app.assistant_review_context() {
                                             if let Some((planner, ..)) = bufs.guard.plan_parts() {
                                                 planner.set_attribution_map(context.map);
@@ -1540,7 +1572,7 @@ pub(crate) async fn run_app(
                         }
                         NavigatorEffect::Acquire {
                             token,
-                            work: PlannerWork::Detour(_) | PlannerWork::RestoreReview(_),
+                            work: PlannerWork::Detour(_) | PlannerWork::MeasureLegs(_) | PlannerWork::MeasureRoute(_),
                         }
                         | NavigatorEffect::CommitDetour { token } => {
                             defmt::warn!(
@@ -1555,13 +1587,7 @@ pub(crate) async fn run_app(
                         NavigatorEffect::Release { token, retain_result, .. } => {
                             #[cfg(has_nav)]
                             if nav_run.is_none() && !retain_result {
-                                if let Some(source) = review_publication.filter(|source| {
-                                    !app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                                        store: flat.store_id().0,
-                                        object: source.object,
-                                        revision: source.revision,
-                                    })
-                                }) {
+                                if let Some(source) = review_publication {
                                     if let Some(writer) = crate::flat_store::writer() {
                                         let result = writer
                                             .call(
@@ -1608,12 +1634,7 @@ pub(crate) async fn run_app(
                                 exec.nav_token = Some(token);
                                 if let Some(run) = nav_run.as_mut() {
                                     if let NavIo::Published(id) = run.io {
-                                        run.io = if retain_result
-                                            || app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                                                store: flat.store_id().0,
-                                                object: id.0,
-                                                revision: 1,
-                                            }) {
+                                        run.io = if retain_result {
                                             NavIo::Complete
                                         } else {
                                             NavIo::NeedPublishCompensation(id)
@@ -1879,6 +1900,7 @@ pub(crate) async fn run_app(
                                             original: review_original
                                                 .as_ref()
                                                 .map(|source| (source.id(), source.revision())),
+                                            built_day: false,
                                         },
                                         None => {
                                             publishing = false;
@@ -1934,8 +1956,13 @@ pub(crate) async fn run_app(
                                                                                     NavigatorError::Unavailable
                                                                                 })?;
                                                                         }
+                                                                        // An easier review never
+                                                                        // plans here, so no terrain.
                                                                         obc_app::navigator::ReviewedRoute::read(
-                                                                            source, bytes, context,
+                                                                            source,
+                                                                            bytes,
+                                                                            context,
+                                                                            &mut obc_route::NullElevation,
                                                                         )
                                                                     },
                                                                 )
@@ -2114,16 +2141,6 @@ pub(crate) async fn run_app(
                     }
                 }
                 if search_ended {
-                    if review_publication.is_some_and(|source| {
-                        app.retains_find_review(obc_formats::obcr::RouteSourceKey {
-                            store: flat.store_id().0,
-                            object: source.object,
-                            revision: source.revision,
-                        })
-                    }) && app.assistant_review_status() != obc_app::navigator::ReviewStatus::Preview
-                    {
-                        review_publication = None;
-                    }
                     crate::assistant::release_original(
                         flat,
                         &mut review_original,
@@ -2329,6 +2346,22 @@ pub(crate) async fn run_app(
                         }
                         _ => defmt::info!("derived: the ride-track subject moved under the read — re-asking next pass"),
                     }
+                } else if let Some(key) = exec.needs.day_profile {
+                    // Tomorrow's profile for the day-done card, into the same resident buffer. As
+                    // above, a subject that moved under the read is answered by not answering.
+                    let filled = crate::flat_store::fill_day_profile(flat, app, key);
+                    match app.derived_needs().day_profile {
+                        Some(now) if (now.day, now.join_m, now.rest) == (key.day, key.join_m, key.rest) => {
+                            derived.day_profile = Some(if filled {
+                                obc_app::device_core::DerivedInput::filled(now)
+                            } else {
+                                obc_app::device_core::DerivedInput::failed(now)
+                            });
+                        }
+                        _ => {
+                            defmt::info!("derived: the day-profile subject moved under the read — re-asking next pass")
+                        }
+                    }
                 } else if let Some(key) = exec.needs.nav_preview {
                     // The Route overview's shape preview. The previewed route is the active one, and
                     // its reader was built just above. It is answered either way, because a failure is
@@ -2399,7 +2432,9 @@ pub(crate) async fn run_app(
                 // revision and the recorder's finalized fact across two passes and makes the domain
                 // read the store twice for one save.
                 exec.facts.note_store_revision(crate::flat_store::catalog_scope(flat));
-                peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
+                if crate::flpr_mux::storage_admitted() {
+                    peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
+                }
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources are call-expression temporaries: they are stateless one-pointer
                 // drains, and binding them for the loop's lifetime would park one hub pointer per
@@ -2573,7 +2608,7 @@ pub(crate) async fn run_app(
             #[cfg(not(has_nav))]
             let find_can_prepare = true;
             let review_pending = app.assistant_route_pending();
-            if (find_loading_painted || review_pending) && find_can_prepare {
+            if (find_loading_painted || review_pending) && find_can_prepare && crate::flpr_mux::storage_admitted() {
                 let reader = Reader::new(flat_map, map_tables, map_cache);
                 app.prepare_find(Some(&reader), route.as_ref());
                 if (find_loading_painted && !app.find_preparing()) || (review_pending && !app.assistant_route_pending())
@@ -2613,17 +2648,27 @@ pub(crate) async fn run_app(
             // emits no gesture, so nothing else dirties the map. It is gated so the expensive map
             // view is never re-rendered for a hold, and so a hold where no fill would draw repaints
             // nothing.
-            if (hold_p > 0.0 || prev_hold_p > 0.0) && !app.base_draws_map() && app.top_wants_hold_fill() {
+            let hold_redraw = (hold_p > 0.0 || prev_hold_p > 0.0) && app.top_wants_hold_fill();
+            if hold_redraw && !app.base_draws_map() {
                 dirty.map = true;
                 dirty.region = None;
             }
+            // A static map base (the Route overview) names the region its hold fill draws in, below
+            // its map band: a hold step repaints that region alone, with no `Reader` and no map
+            // render. A live map base names none and keeps the deferral below.
+            let hold_region = app.hold_fill_region();
+            if hold_redraw && !dirty.map && hold_region.is_some() {
+                dirty.map = true;
+                dirty.region = hold_region;
+            }
+            let hold_only = dirty.map && hold_region.is_some() && dirty.region == hold_region;
             prev_hold_p = hold_p;
 
             // While a hold charges on the map view, defer expensive map redraws instead of rendering
             // them: a 150 to 300 ms map frame between two bulge pushes is the mid-charge freeze that
             // made the bulge jerky while riding. Only the map base is deferred. Once the hold fires,
             // charging drops to 0, so a navigation's redraw is never held up.
-            if dirty.map && app.base_draws_map() && display.hold_charging() {
+            if dirty.map && app.base_draws_map() && display.hold_charging() && !hold_only {
                 pending_map_redraw = true;
                 dirty.map = false;
             }
@@ -2686,15 +2731,18 @@ pub(crate) async fn run_app(
                 // its own draw and the push. `sources.map` is the pass's own answer to "the base
                 // screen draws the map", so the reader this frame opens is the one the pass planned
                 // for rather than a second derivation of the same predicate.
-                let needs_map = sources.map;
+                let map_blocked = sources.map && !hold_only && !crate::flpr_mux::storage_admitted();
+                let needs_map = sources.map && !hold_only && !map_blocked;
                 // The flat map source is resolved once at boot and skipped on chrome-only frames,
                 // which keeps menu redraws free of map I/O.
                 let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
-                if needs_map && reader.is_none() {
+                if map_blocked || (needs_map && reader.is_none()) {
                     pending_map_redraw = true;
-                    defmt::warn!(
-                        "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
-                    );
+                    if needs_map {
+                        defmt::warn!(
+                            "map: reader build failed this frame (flaky SD?) — kept frame, retrying redraw next frame"
+                        );
+                    }
                     None
                 } else {
                     // A base that draws the map claims the arena's render arm for the render span and
@@ -2702,7 +2750,7 @@ pub(crate) async fn run_app(
                     // `render ⊥ usb` enforcement: a live search or a live transfer is literally the
                     // holder. A chrome base claims nothing and renders with no scratch at all, which
                     // is what keeps those frames drawing while another arm is out.
-                    let draws_map = app.base_draws_map();
+                    let draws_map = app.base_draws_map() && !hold_only;
                     let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
                     let photo_active = app.photo_base_active();
                     let mut photo_guard = if photo_active { crate::arena::claim_photo() } else { None };
@@ -2784,7 +2832,7 @@ pub(crate) async fn run_app(
                         }
                     }
                 }
-            } else if app.photo_pending() {
+            } else if app.photo_pending() && crate::flpr_mux::storage_admitted() {
                 if let Some(mut photo) = crate::arena::claim_photo() {
                     let reader = Reader::new(flat_map, map_tables, map_cache);
                     let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {

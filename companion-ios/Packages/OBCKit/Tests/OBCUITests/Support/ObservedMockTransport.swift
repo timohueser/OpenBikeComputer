@@ -14,8 +14,6 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
     private let lock = NSLock()
     private var routeCatalogStarted = 0
     private var routeCatalogCompleted = 0
-    private var rideDetailStarted = 0
-    private var rideDetailCompleted = 0
     private var observedCatalogChanges = false
 
     init(control: MockControl, gateFirstRouteCatalog: Bool = false) {
@@ -25,8 +23,6 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
 
     var routeCatalogStartedCount: Int { lock.withLock { routeCatalogStarted } }
     var routeCatalogCompletedCount: Int { lock.withLock { routeCatalogCompleted } }
-    var rideDetailStartedCount: Int { lock.withLock { rideDetailStarted } }
-    var rideDetailCompletedCount: Int { lock.withLock { rideDetailCompleted } }
     var catalogChangesObserved: Bool { lock.withLock { observedCatalogChanges } }
 
     func releaseFirstRouteCatalog() {
@@ -66,18 +62,12 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
     func listTrips() async throws -> [TripCatalogEntry] { try await base.listTrips() }
-    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         try await base.downloadTrip(id)
     }
     func uploadTrip(_ trip: TripBlob) -> TransferHandle { base.uploadTrip(trip) }
     func deleteTrip(_ id: DeviceObjectID) async throws { try await base.deleteTrip(id) }
     func listRides() async throws -> RideCatalog { try await base.listRides() }
-
-    func rideDetail(_ id: RideID) async throws -> RideDetail {
-        lock.withLock { rideDetailStarted += 1 }
-        defer { lock.withLock { rideDetailCompleted += 1 } }
-        return try await base.rideDetail(id)
-    }
 
     func downloadRides(_ ids: [RideID]) -> RideDownload { base.downloadRides(ids) }
 }

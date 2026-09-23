@@ -1,11 +1,11 @@
 import Foundation
 import OBCDomain
 
-/// Ride object v3: verbatim 20-byte recorded samples followed by one fixed 84-byte `OBRF` footer.
+/// Ride object v4: verbatim 20-byte recorded samples followed by one fixed 144-byte `OBRF` footer.
 public enum RideObjectCodec {
-    static let version: UInt8 = 3
+    static let version: UInt8 = 4
     static let sampleLength = 20
-    static let footerLength = 84
+    static let footerLength = 144
     static let nameCapacity = 48
     static let noSensorU8: UInt8 = 0xFF
     static let noSensorU16: UInt16 = 0xFFFF
@@ -44,6 +44,15 @@ public enum RideObjectCodec {
         data.appendLE(sensorU16(summary.maxPower))
         data.append(name)
         data.append(Data(repeating: 0, count: nameCapacity - name.count))
+        let trip = summary.trip
+        let tripName = clippedUTF8(trip?.name ?? "", capacity: nameCapacity)
+        data.appendLE(trip?.key ?? 0)
+        data.append(UInt8(clamping: trip?.dayIndex ?? 0))
+        data.append(UInt8(clamping: trip?.dayCount ?? 0))
+        data.append(summary.bikeType.rawValue)
+        data.append(UInt8(tripName.count))
+        data.append(tripName)
+        data.append(Data(repeating: 0, count: nameCapacity - tripName.count))
         return data
     }
 
@@ -72,11 +81,22 @@ public enum RideObjectCodec {
         guard try footer.u8() == 0 else { throw DeviceError.readFailed }
         let avgPower = optSensorU16(try footer.u16())
         let maxPower = optSensorU16(try footer.u16())
-        let nameField = try footer.bytes(nameCapacity)
+        let name = try nameField(&footer, length: nameLength)
+        let tripKey = try footer.u64()
+        let dayIndex = Int(try footer.u8())
+        let dayCount = Int(try footer.u8())
+        guard let bikeType = BikeType(rawValue: try footer.u8()) else { throw DeviceError.readFailed }
+        let tripName = try nameField(&footer, length: Int(try footer.u8()))
+        let trip: RideTrip?
+        if tripKey == 0 {
+            guard dayIndex == 0, dayCount == 0, tripName.isEmpty else { throw DeviceError.readFailed }
+            trip = nil
+        } else {
+            guard dayIndex < dayCount else { throw DeviceError.readFailed }
+            trip = RideTrip(key: tripKey, dayIndex: dayIndex, dayCount: dayCount, name: tripName)
+        }
         let sampleBytes = pointCount.multipliedReportingOverflow(by: sampleLength)
-        guard nameField.dropFirst(nameLength).allSatisfy({ $0 == 0 }),
-              let name = String(data: nameField.prefix(nameLength), encoding: .utf8),
-              !sampleBytes.overflow, sampleBytes.partialValue == footerOffset else {
+        guard !sampleBytes.overflow, sampleBytes.partialValue == footerOffset else {
             throw DeviceError.readFailed
         }
 
@@ -111,8 +131,18 @@ public enum RideObjectCodec {
             movingTime: movingTime, averageSpeedMps: averageSpeed, climbMeters: climb,
             trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: avgHR, maxHeartRate: maxHR, avgCadence: avgCadence,
-            avgPower: avgPower, maxPower: maxPower)
+            avgPower: avgPower, maxPower: maxPower, bikeType: bikeType, trip: trip)
         return Ride(summary: summary, points: points)
+    }
+
+    /// A zero-padded UTF-8 field of `nameCapacity` bytes, `length` of them used.
+    private static func nameField(_ reader: inout LEReader, length: Int) throws -> String {
+        let field = try reader.bytes(nameCapacity)
+        guard length <= nameCapacity, field.dropFirst(length).allSatisfy({ $0 == 0 }),
+              let name = String(data: field.prefix(length), encoding: .utf8) else {
+            throw DeviceError.readFailed
+        }
+        return name
     }
 
     private static func clippedUTF8(_ value: String, capacity: Int) -> Data {
@@ -156,6 +186,7 @@ private struct LEReader {
     mutating func u8() throws -> UInt8 { try fixed() }
     mutating func u16() throws -> UInt16 { try fixed() }
     mutating func u32() throws -> UInt32 { try fixed() }
+    mutating func u64() throws -> UInt64 { try fixed() }
     mutating func i16() throws -> Int16 { try fixed() }
     mutating func i32() throws -> Int32 { try fixed() }
 

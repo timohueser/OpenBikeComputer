@@ -1,77 +1,163 @@
-//! The list of stored rides, reached from the Rides station of the main menu. Each row shows the
-//! ride name, a check mark when the ride is synced, and a `D MON · distance` metadata line.
-//! Press opens the ride detail, which also holds the delete.
+//! The list of stored rides, reached from the Rides station of the main menu. The rides of one trip
+//! group into a trip folder, placed at its newest ride; a folder press pushes the trip's rides, a
+//! second list scoped to that trip. A ride press opens the ride detail, which also holds the delete.
+//! A synced ride has a tick at the right of its name.
 //!
-//! The rides come from the app's ride catalog, which the host fills from the flat catalog.
+//! The rides come from the app's ride catalog, newest first, which the host fills from the flat
+//! catalog. Folders form from those rides only.
+
+use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Surface,
 };
 
 use crate::input::Gesture;
-use crate::settings::{Language, Units};
-use crate::Msg;
+use crate::ride::{RideEntry, RideTrip};
+use crate::settings::{DateTime, Units};
+use crate::trip::TripSummary;
+use crate::{CatalogObjectId, Msg, UI_RIDES_CAP};
 
-use super::vocab::chrome::empty_state;
-use super::vocab::fmt::{write_date_short, write_distance_spaced};
-use super::vocab::list::{self, ListGeometry, Separators};
+use super::vocab::chrome::{empty_state, row_check, title_frame, ROW_CHECK_HALF};
+use super::vocab::fmt::{write_date_short, write_date_weekday, write_distance_spaced};
+use super::vocab::list;
+use super::vocab::marquee::fit;
+use super::vocab::two_line::{self, LINE2, LINE2_FONT};
 use super::{palette, Ctx, Render, RideDetailScreen, Screen, Transition};
 
-/// The height of a row pane, which holds the name line and the metadata line.
-const ROW_H: i32 = 66;
+/// The synced tick's clearance from the right edge of the row box, clear of the rounded corner, and
+/// the name's clearance from the tick. Both are tight, so "Day 1 Andermatt" fits whole.
+const MARK_RIGHT_GAP: i32 = 10;
+const MARK_NAME_GAP: i32 = 4;
 
-/// Text inset from the edge of the row box. It is the Route menu inset, so the two list screens
-/// keep the same gap between the cursor edge and the first character.
-const TEXT_INSET: i32 = 12;
+/// The trip header: the totals line under the title bar, and the hairline between it and the list.
+const HEADER_Y: i32 = 40;
+const HEADER_RULE: i32 = 66;
 
-/// The half-width of the synced check mark, and its clearance from the right edge of the row box.
-/// The clearance keeps the mark clear of the rounded corner.
-const MARK_HALF: i32 = 5;
-const MARK_RIGHT_GAP: i32 = 12;
+/// What this list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Trip folders and loose rides.
+    TopLevel,
+    /// The rides of one trip.
+    Trip { key: u64 },
+}
 
-#[derive(Debug, Default)]
+/// One row: a trip folder by the catalog index of its newest ride, or a ride by catalog index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Folder(usize),
+    Ride(usize),
+}
+
+/// The identity of the highlighted row, so the highlight follows it across a catalog rescan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelId {
+    Trip(u64),
+    Ride(CatalogObjectId),
+}
+
+type Rows = heapless::Vec<Row, UI_RIDES_CAP>;
+
+#[derive(Debug)]
 pub struct RidesScreen {
     selected: usize,
+    sel_id: Option<SelId>,
+    scope: Scope,
+}
+
+impl Default for RidesScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RidesScreen {
     pub fn new() -> Self {
-        RidesScreen { selected: 0 }
+        RidesScreen { selected: 0, sel_id: None, scope: Scope::TopLevel }
     }
 
-    /// Re-point the highlight after a catalog rescan: the selection follows the identity of the
-    /// highlighted ride to its new index, or clamps near its old position when the ride vanished.
-    pub(crate) fn remap_rides(&mut self, remap: &dyn Fn(usize) -> Option<usize>, new_len: usize) {
-        self.selected = remap(self.selected).unwrap_or_else(|| self.selected.min(new_len.saturating_sub(1)));
+    fn trip(key: u64) -> Self {
+        RidesScreen { selected: 0, sel_id: None, scope: Scope::Trip { key } }
+    }
+
+    /// Re-point the highlight after a catalog rescan: find the pinned identity in the rebuilt list,
+    /// or clamp near the old position when it vanished.
+    pub(crate) fn remap_rides(&mut self, rides: &[RideEntry]) {
+        let rows = rows(rides, self.scope);
+        self.selected = self
+            .sel_id
+            .and_then(|id| rows.iter().position(|&r| identity(rides, r) == id))
+            .unwrap_or_else(|| self.selected.min(rows.len().saturating_sub(1)));
+        self.pin(rides, &rows);
+    }
+
+    /// Whether this is a trip's page whose trip has no ride left. The app removes it on a rescan,
+    /// so a delete of the trip's last ride lands on the ride list.
+    pub(crate) fn trip_is_gone(&self, rides: &[RideEntry]) -> bool {
+        matches!(self.scope, Scope::Trip { key } if Folder::gone(rides, key))
+    }
+
+    fn pin(&mut self, rides: &[RideEntry], rows: &[Row]) {
+        self.sel_id = rows.get(self.selected).map(|&r| identity(rides, r));
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let len = cx.rides.len();
-        match g {
+        let rows = rows(cx.rides, self.scope);
+        let len = rows.len();
+        self.selected = self.selected.min(len.saturating_sub(1));
+        let t = match g {
             Gesture::Step(n) => list::on_step(&mut self.selected, n, len),
-            // `viewed_ride` keys the host's track fill for the detail page.
-            Gesture::Press if len > 0 => {
-                let i = self.selected.min(len - 1);
-                cx.activity.viewed_ride = Some(i);
-                Transition::Push(Screen::RideDetail(RideDetailScreen::new(i)))
-            }
+            Gesture::Press if len > 0 => match rows[self.selected] {
+                Row::Folder(i) => match cx.rides[i].summary.trip {
+                    Some(trip) => Transition::Push(Screen::Rides(RidesScreen::trip(trip.key()))),
+                    None => Transition::None,
+                },
+                // `viewed_ride` keys the host's track fill for the detail page.
+                Row::Ride(i) => {
+                    cx.activity.viewed_ride = Some(i);
+                    Transition::Push(Screen::RideDetail(RideDetailScreen::new(i)))
+                }
+            },
             Gesture::Back => Transition::Pop,
             _ => Transition::None,
-        }
+        };
+        self.pin(cx.rides, &rows);
+        t
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         let rides = rx.rides;
-        let total = rides.len();
+        let rows = rows(rides, self.scope);
+        let total = rows.len();
         let units = rx.settings.units;
-        let geo = ListGeometry::below_title(w, h, ROW_H, 8, 12, Separators::Unselected);
+        let lang = rx.settings.language;
 
+        let mut geo = two_line::geometry(w, h);
+        if let Scope::Trip { .. } = self.scope {
+            geo.top = HEADER_RULE + 4;
+            geo.visible = ((h - geo.top - 6) / geo.row_h).max(1) as usize;
+        }
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list::list_frame(cv, w, h, rx.t(Msg::RidesTitle), pos, total, geo.visible);
+        let counter = list::counter(pos, total, geo.visible);
+        match self.scope {
+            Scope::TopLevel => title_frame(cv, w, h, rx.t(Msg::RidesTitle), &counter),
+            Scope::Trip { key } => {
+                let trip = Folder::of(rides, key);
+                let name = trip_name(rx.trips, rx.ride_trips, key).unwrap_or(rx.t(Msg::RidesTrip));
+                // The title and the counter both keep 14 px from the bar's ends, and 8 px apart.
+                let counter_w = if counter.is_empty() { 0 } else { text_width(&counter, Font::Label) as i32 + 8 };
+                let title = fit(name, w - 28 - counter_w, Font::Body);
+                title_frame(cv, w, h, &title, &counter);
+                if let Some(trip) = trip {
+                    draw_header(cv, w, &trip, units);
+                }
+            }
+        }
 
         if total == 0 {
             empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
@@ -81,88 +167,217 @@ impl RidesScreen {
         let sel = self.selected.min(total - 1);
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
-            let ride = &rides[row.index].summary;
-            let (bx, y) = (row.area.top_left.x, row.area.top_left.y);
-            let ink = if row.selected { ON_ACCENT } else { INK };
-            let accent = if row.selected { SUBTEXT_ON_ACCENT } else { SUBTEXT };
-
-            // The name budget always keeps the mark slot, drawn or not, so the truncation does
-            // not move when a ride syncs.
-            let text_x = bx + TEXT_INSET;
-            let mark_cx = bx + row.area.size.width as i32 - MARK_RIGHT_GAP - MARK_HALF;
-            let name_px = (mark_cx - MARK_HALF - 8) - text_x; // mark's left edge − gap − name start
-            let name = rx.marquee.fit(&ride.name, name_px, Font::Body, row.scroll());
-            cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, ink);
-            if ride.synced {
-                let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_mid() as i32);
-                synced_mark(cv, mark_c, accent);
+            let x = two_line::text_x(&row);
+            let mut line2: heapless::String<48> = heapless::String::new();
+            match rows[row.index] {
+                Row::Folder(i) => {
+                    let Some(key) = rides[i].summary.trip.map(|t| t.key()) else { return };
+                    let Some(folder) = Folder::of(rides, key) else { return };
+                    let name = trip_name(rx.trips, rx.ride_trips, key).unwrap_or(rx.t(Msg::RidesTrip));
+                    two_line::name_line(cv, &row, &rx.marquee, name, (x, two_line::name_right(&row)), INK);
+                    let days = rx.t(if folder.day_count == 1 { Msg::RouteMenuDayOne } else { Msg::RidesDays });
+                    let _ = write!(line2, "{} {} {} {days}", folder.days_ridden, rx.t(Msg::RidesOf), folder.day_count);
+                    push_item(&mut line2, &whole_distance(folder.distance_m, units), two_line::line2_right(&row) - x);
+                }
+                Row::Ride(i) => {
+                    let ride = &rides[i].summary;
+                    // The name budget keeps the tick's slot, drawn or not, so the cut does not move
+                    // when a ride syncs.
+                    let mark = two_line::right_mark(&row, ROW_CHECK_HALF, MARK_RIGHT_GAP);
+                    let mut name: heapless::String<64> = heapless::String::new();
+                    let _ = name.push_str(&ride.name);
+                    if let Scope::Trip { .. } = self.scope {
+                        let n = day_ordinal(rides, i);
+                        if n > 1 {
+                            let _ = write!(name, " ({n})");
+                        }
+                        write_date_weekday(&mut line2, &DateTime::from_unix(ride.start_time), lang);
+                    } else {
+                        write_date_short(&mut line2, ride.start_time, lang);
+                    }
+                    two_line::name_line(
+                        cv,
+                        &row,
+                        &rx.marquee,
+                        &name,
+                        (x, mark.x - ROW_CHECK_HALF - MARK_NAME_GAP),
+                        INK,
+                    );
+                    if ride.synced {
+                        row_check(cv, mark, if row.selected { ON_ACCENT } else { LINE2 });
+                    }
+                    let mut dist: heapless::String<12> = heapless::String::new();
+                    write_distance_spaced(&mut dist, ride.distance_m, units);
+                    push_item(&mut line2, &dist, two_line::line2_right(&row) - x);
+                }
             }
-
-            let meta_px = (w - geo.side_inset - 4) - text_x;
-            let meta = meta_line(ride.start_time, ride.distance_m, units, rx.settings.language, meta_px);
-            cv.text(&meta, Point::new(text_x, y + 35), Font::Label, TextAlign::Left, accent);
+            cv.text(
+                &line2,
+                Point::new(x, two_line::line2_y(&row)),
+                LINE2_FONT,
+                TextAlign::Left,
+                two_line::row_color(&row, LINE2),
+            );
         });
     }
 }
 
-/// The synced check mark, centred at `c` on the cap of the name line: the shared two-stroke
-/// check, at row-glyph scale.
-fn synced_mark(cv: &mut impl Surface, c: Point, color: u16) {
-    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32), color: u16) {
-        const N: i32 = 8;
-        for s in 0..=N {
-            let x = a.0 + (b.0 - a.0) * s / N;
-            let y = a.1 + (b.1 - a.1) * s / N;
-            cv.disc(Point::new(x, y), 1, color);
-        }
+/// Build the rows of `scope` from the newest-first catalog.
+fn rows(rides: &[RideEntry], scope: Scope) -> Rows {
+    let mut out = Rows::new();
+    for (i, ride) in rides.iter().enumerate() {
+        let key = ride.summary.trip.map(|t| t.key());
+        let row = match (scope, key) {
+            (Scope::TopLevel, None) => Row::Ride(i),
+            (Scope::TopLevel, Some(key)) if Folder::newest(rides, key) == Some(i) => Row::Folder(i),
+            (Scope::Trip { key: scoped }, Some(key)) if key == scoped => Row::Ride(i),
+            _ => continue,
+        };
+        let _ = out.push(row);
     }
-    let k = MARK_HALF;
-    seg(cv, (c.x - k, c.y), (c.x - k / 3, c.y + k * 2 / 3), color);
-    seg(cv, (c.x - k / 3, c.y + k * 2 / 3), (c.x + k, c.y - k * 2 / 3), color);
+    out
 }
 
-/// Compose the metadata line of a row, for example `2 JUL · 42.5 km`. When the run is wider than
-/// `budget_px`, the rightmost item drops whole: the date never yields and no gap shrinks. The
-/// geometry is integer arithmetic over the monospace cell, so a drop is deterministic.
-fn meta_line(start_time: u32, dist_m: u32, units: Units, lang: Language, budget_px: i32) -> heapless::String<32> {
-    let cw = Font::Label.char_width() as i32;
-    let mut dist: heapless::String<12> = heapless::String::new();
-    write_distance_spaced(&mut dist, dist_m, units);
-
-    let mut s: heapless::String<32> = heapless::String::new();
-    write_date_short(&mut s, start_time, lang);
-    for part in [dist.as_str()] {
-        let want = s.chars().count() + 3 + part.chars().count(); // " · " + the item
-        if want as i32 * cw > budget_px {
-            break; // drop this item and all items right of it
-        }
-        let _ = s.push_str(" · ");
-        let _ = s.push_str(part);
+fn identity(rides: &[RideEntry], row: Row) -> SelId {
+    match row {
+        Row::Folder(i) => SelId::Trip(rides[i].summary.trip.map_or(0, |t| t.key())),
+        Row::Ride(i) => SelId::Ride(rides[i].id),
     }
+}
+
+/// Which ride of its trip day the ride at `i` is, in the order of start: 1 for the first. Only the
+/// rides of the same plan count, because a re-planned trip keeps its key.
+fn day_ordinal(rides: &[RideEntry], i: usize) -> usize {
+    let (ride, id) = (&rides[i].summary, rides[i].id);
+    let Some(trip) = ride.trip else { return 1 };
+    let earlier = rides
+        .iter()
+        .filter(|r| r.summary.trip == Some(trip))
+        .filter(|r| (r.summary.start_time, r.id) < (ride.start_time, id))
+        .count();
+    earlier + 1
+}
+
+/// The name of trip `key`: the device's trip, then the ride footers' table. `None` when neither
+/// has it; a day ride's own name is never the trip's.
+fn trip_name<'a>(device: &'a [TripSummary], table: &'a [RideTrip], key: u64) -> Option<&'a str> {
+    let stored = || table.iter().find(|t| t.key == key).map(|t| t.name.as_str());
+    device.iter().find(|t| t.key == key).map(|t| t.name.as_str()).or_else(stored)
+}
+
+/// The facts of one trip folder, over the rides the catalog holds.
+struct Folder {
+    /// The distinct days ridden of the newest ride's plan.
+    days_ridden: u32,
+    /// The day count the newest ride stored. A re-planned trip keeps its key, so a ride of an
+    /// older plan counts in the totals but not in the days.
+    day_count: u8,
+    distance_m: u32,
+    climb_m: u32,
+}
+
+impl Folder {
+    /// The catalog index of the newest ride of trip `key`.
+    fn newest(rides: &[RideEntry], key: u64) -> Option<usize> {
+        rides.iter().position(|r| r.summary.trip.is_some_and(|t| t.key() == key))
+    }
+
+    fn of(rides: &[RideEntry], key: u64) -> Option<Folder> {
+        let newest = &rides[Self::newest(rides, key)?].summary;
+        let day_count = newest.trip.map_or(0, |t| t.day_count());
+        let mut folder = Folder { days_ridden: 0, day_count, distance_m: 0, climb_m: 0 };
+        let mut days = [0u64; 4];
+        for ride in rides.iter().map(|r| &r.summary) {
+            let Some(trip) = ride.trip.filter(|t| t.key() == key) else { continue };
+            if trip.day_count() == day_count {
+                let day = usize::from(trip.day_index());
+                days[day / 64] |= 1 << (day % 64);
+            }
+            folder.distance_m = folder.distance_m.saturating_add(ride.distance_m);
+            folder.climb_m += u32::from(ride.climb_m);
+        }
+        folder.days_ridden = days.iter().map(|d| d.count_ones()).sum();
+        Some(folder)
+    }
+
+    /// Whether the rides screen of trip `key` has lost its last ride.
+    fn gone(rides: &[RideEntry], key: u64) -> bool {
+        Self::newest(rides, key).is_none()
+    }
+}
+
+/// Append ` · <item>` to a row's line 2 when the whole run fits `budget_px`. Otherwise the item
+/// drops whole and the text before it stays.
+fn push_item(s: &mut heapless::String<48>, item: &str, budget_px: i32) {
+    let chars = s.chars().count() + 3 + item.chars().count();
+    if chars as i32 * LINE2_FONT.char_width() as i32 <= budget_px {
+        let _ = write!(s, " · {item}");
+    }
+}
+
+/// A trip's distance in whole kilometres or miles, as the route rows show a route's.
+fn whole_distance(m: u32, units: Units) -> heapless::String<12> {
+    let mut s = heapless::String::new();
+    let unit = if units.is_imperial() { "mi" } else { "km" };
+    let _ = write!(s, "{} {unit}", (units.dist(m as f32 / 1000.0) + 0.5) as u32);
     s
+}
+
+/// The trip's totals under the title bar, then the hairline over the list.
+fn draw_header(cv: &mut impl Surface, w: i32, trip: &Folder, units: Units) {
+    use palette::*;
+    let dist = whole_distance(trip.distance_m, units);
+    let x = 14;
+    cv.text(&dist, Point::new(x, HEADER_Y), Font::Label, TextAlign::Left, SUBTEXT);
+    let arrow_x = x + text_width(&dist, Font::Label) as i32 + 8;
+    super::route_overview::climb_arrow(cv, arrow_x, HEADER_Y, true, SUBTEXT);
+    let mut climb: heapless::String<12> = heapless::String::new();
+    let _ = write!(climb, "{} {}", (units.elev(trip.climb_m as f32) + 0.5) as u32, units.elev_label());
+    let climb_x = arrow_x + super::route_overview::ARROW_W + 2;
+    cv.text(&climb, Point::new(climb_x, HEADER_Y), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.hline(5, HEADER_RULE, w - 10, RULE);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
-    use crate::ride::{RideEntry, RideSummary};
+    use crate::ride::RideSummary;
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
+    use obc_formats::ride::TripRef;
 
-    fn summary(name: &str, synced: bool) -> RideEntry {
+    const ALPS: u64 = 0xA1;
+
+    fn ride(id: u64, name: &str, start_time: u32, trip: Option<TripRef>) -> RideEntry {
         RideEntry {
-            id: 1,
+            id,
             summary: RideSummary {
                 name: heapless::String::try_from(name).unwrap(),
-                start_time: 1_720_000_000,
-                distance_m: 42_500,
-                moving_time_s: 2 * 3600 + 31 * 60,
-                climb_m: 640,
-                synced,
-                synced_at_utc: 0,
+                start_time,
+                distance_m: 40_000,
+                climb_m: 500,
+                trip,
+                ..Default::default()
             },
         }
+    }
+
+    /// Seven rides, newest first: a loose ride, the second ride of day 2 (index 1), a loose ride,
+    /// the first ride of day 2, and day 1 of the three-day plan. Then two rides of the trip's
+    /// earlier five-day plan, under the same key: day 2 and day 4.
+    fn journal() -> [RideEntry; 7] {
+        let day = |d| TripRef::new(ALPS, d, 3);
+        let old = |d| TripRef::new(ALPS, d, 5);
+        [
+            ride(50, "Evening loop", 5_000, None),
+            ride(40, "Day 2 Ulrichen", 4_000, day(1)),
+            ride(30, "Commute", 3_000, None),
+            ride(20, "Day 2 Ulrichen", 2_000, day(1)),
+            ride(10, "Day 1 Andermatt", 1_000, day(0)),
+            ride(8, "Day 2 Ulrichen", 800, old(1)),
+            ride(6, "Day 4 Brig", 600, old(3)),
+        ]
     }
 
     fn run(scr: &mut RidesScreen, act: &mut Activity, rides: &[RideEntry], g: Gesture) -> Transition {
@@ -173,14 +388,57 @@ mod tests {
     }
 
     #[test]
-    fn press_opens_the_highlighted_rides_detail() {
-        let rides = [summary("A", true), summary("B", false)];
+    fn a_trip_groups_into_one_folder_at_its_newest_ride() {
+        let rides = journal();
+        assert_eq!(
+            rows(&rides, Scope::TopLevel).as_slice(),
+            [Row::Ride(0), Row::Folder(1), Row::Ride(2)],
+            "the folder sorts by its newest ride among the loose rides"
+        );
+        let trip_rows = rows(&rides, Scope::Trip { key: ALPS });
+        assert_eq!(trip_rows.as_slice(), [Row::Ride(1), Row::Ride(3), Row::Ride(4), Row::Ride(5), Row::Ride(6)]);
+
+        let folder = Folder::of(&rides, ALPS).unwrap();
+        assert_eq!((folder.days_ridden, folder.day_count), (2, 3), "2 of 3 days: the old plan's days do not count");
+        assert_eq!((folder.distance_m, folder.climb_m), (200_000, 2_500), "the sums of all five rides");
+    }
+
+    #[test]
+    fn a_folder_takes_the_device_trip_s_name_then_the_stored_one() {
+        let name = |s: &str| heapless::String::try_from(s).unwrap();
+        // The table is full with keys 1 to 8; the device holds trips 3 and 9.
+        let table: heapless::Vec<RideTrip, 8> = (1..=8).map(|key| RideTrip { key, name: name("Stored") }).collect();
+        let device = [(3, "Renamed"), (9, "Ninth")].map(|(key, trip)| {
+            let input = crate::trip::TripInput { id: key, key, name: trip, start_date: 0, stage_ids: &[] };
+            TripSummary::resolve(&input, &[], &[])
+        });
+        assert_eq!(trip_name(&device, &table, 3), Some("Renamed"), "the device's trip first");
+        assert_eq!(trip_name(&device, &table, 5), Some("Stored"), "then the ride footers' name");
+        assert_eq!(trip_name(&device, &table, 9), Some("Ninth"), "a trip past the table still has its name");
+        assert_eq!(trip_name(&device, &table, 10), None, "never a day ride's name");
+    }
+
+    #[test]
+    fn a_second_ride_of_a_day_takes_its_order_of_start() {
+        let rides = journal();
+        let ordinals: heapless::Vec<usize, 7> = (0..rides.len()).map(|i| day_ordinal(&rides, i)).collect();
+        assert_eq!(ordinals.as_slice(), [1, 2, 1, 1, 1, 1, 1], "only the later ride of day 2 of one plan is \"(2)\"");
+    }
+
+    #[test]
+    fn press_opens_a_folder_then_the_ride_detail() {
+        let rides = journal();
         let mut act = Activity::new(Mode::Idle);
-        let mut scr = RidesScreen::new();
-        run(&mut scr, &mut act, &rides, Gesture::Step(1)); // highlight row 1 ("B")
-        let t = run(&mut scr, &mut act, &rides, Gesture::Press);
-        assert!(matches!(t, Transition::Push(Screen::RideDetail(_))), "press pushes the Ride detail");
-        assert_eq!(act.viewed_ride, Some(1), "the detail's track request is keyed on the pressed row");
+        let mut top = RidesScreen::new();
+        run(&mut top, &mut act, &rides, Gesture::Step(1));
+        let Transition::Push(Screen::Rides(mut trip)) = run(&mut top, &mut act, &rides, Gesture::Press) else {
+            panic!("a folder press pushes the trip's rides");
+        };
+        assert_eq!(act.viewed_ride, None, "a folder opens no detail");
+        run(&mut trip, &mut act, &rides, Gesture::Step(1));
+        let t = run(&mut trip, &mut act, &rides, Gesture::Press);
+        assert!(matches!(t, Transition::Push(Screen::RideDetail(_))));
+        assert_eq!(act.viewed_ride, Some(3), "the second trip row is catalog ride 3");
     }
 
     #[test]
@@ -193,43 +451,30 @@ mod tests {
     }
 
     #[test]
-    fn hold_records_no_delete_from_the_list() {
-        let rides = [summary("A", true)];
+    fn remap_follows_identity_and_clamps_on_vanish() {
+        let rides = journal();
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RidesScreen::new();
-        let t = run(&mut scr, &mut act, &rides, Gesture::Hold);
-        assert!(matches!(t, Transition::None));
-        assert_eq!(act.take_ride_delete(), None, "no delete request from the list");
+        run(&mut scr, &mut act, &rides, Gesture::Step(2)); // "Commute"
+                                                           // The newest ride vanished: "Commute" moves up one row.
+        scr.remap_rides(&rides[1..]);
+        assert_eq!(scr.selected, 1);
+        // "Commute" vanished too: the highlight clamps to the last row.
+        scr.remap_rides(&rides[3..]);
+        assert_eq!(scr.selected, 0, "a vanished highlight clamps to the last row");
     }
 
     #[test]
-    fn remap_follows_identity_and_clamps_on_vanish() {
-        let mut scr = RidesScreen::new();
-        scr.selected = 2;
-        // Row 2 moved to row 0.
-        scr.remap_rides(&|i| if i == 2 { Some(0) } else { None }, 3);
-        assert_eq!(scr.selected, 0);
-        // Row (now 0) vanished; a shorter list clamps to the last row.
-        scr.selected = 5;
-        scr.remap_rides(&|_| None, 2);
-        assert_eq!(scr.selected, 1, "a vanished highlight clamps to the last row");
-    }
-
-    #[test]
-    fn meta_line_is_short_date_plus_distance() {
-        let cw = Font::Label.char_width() as i32;
-        // The line-2 budget of a 240 px panel. 1_720_000_000 = 2024-07-03 UTC.
-        let pane = 200;
-        assert_eq!(meta_line(1_720_000_000, 42_500, Units::Metric, Language::En, pane).as_str(), "3 JUL · 42.5 km");
-        // A three-digit-km ride compacts to whole km. 1_735_257_600 = 2024-12-27.
-        let worst = meta_line(1_735_257_600, 142_500, Units::Metric, Language::En, pane);
-        assert_eq!(worst.as_str(), "27 DEC · 143 km", "tenths compact away past 100 km");
-        let worst_fr = meta_line(1_719_100_800, 142_400, Units::Metric, Language::Fr, pane);
-        assert_eq!(worst_fr.as_str(), "23 JUIN · 142 km");
-        assert!(worst_fr.chars().count() as i32 * cw <= pane, "the worst run fits the budget");
-        // The month table is per-language, and day-first everywhere. 1_709_596_800 = 2024-03-05.
-        assert_eq!(meta_line(1_709_596_800, 8_000, Units::Metric, Language::De, pane).as_str(), "5 MÄR · 8.0 km");
-        // On overflow the distance drops whole and the date stays.
-        assert_eq!(meta_line(1_720_000_000, 42_500, Units::Metric, Language::En, 6 * cw).as_str(), "3 JUL");
+    fn line_2_drops_the_distance_whole() {
+        let budget = 240 - 2 * two_line::SIDE_INSET - 4 - two_line::NAME_INSET;
+        let line = |start: &str, item: &str| {
+            let mut s: heapless::String<48> = heapless::String::try_from(start).unwrap();
+            push_item(&mut s, item, budget);
+            s
+        };
+        let folder = whole_distance(156_400, Units::Metric);
+        assert_eq!(line("2 of 3 days", &folder).as_str(), "2 of 3 days · 156 km", "the folder line fits the row");
+        assert_eq!(line("TUE 30 SEP", "74.3 km").as_str(), "TUE 30 SEP · 74.3 km");
+        assert_eq!(line("MER 30 JUIL", "74.3 km").as_str(), "MER 30 JUIL", "the date never yields");
     }
 }

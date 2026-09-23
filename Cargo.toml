@@ -41,6 +41,7 @@ members = [
     "host/obc-usb",
     # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
     "apps/obc-ios-host",
+    "apps/obc-companion-core",
     "apps/obc-sim",
     "apps/obc-web-demo",
     "apps/obc-web-convert",

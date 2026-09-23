@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # The conversion and export algorithms themselves — the same `no_std` route decoder and finished
-# ride-v3 reader shared with firmware. The nRF54L records final ride bytes directly; this crate is a
+# ride-v4 reader shared with firmware. The nRF54L records final ride bytes directly; this crate is a
 # byte-buffer adapter plus an error vocabulary.
 obc-route = { path = "../../firmware/obc-route" }
 # The byte-I/O seam (`ByteSource`/`ByteSink`/`Error`) and the recorded-track record width — the

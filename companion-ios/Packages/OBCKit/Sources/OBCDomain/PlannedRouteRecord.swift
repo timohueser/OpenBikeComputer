@@ -30,6 +30,8 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     public var summary: RouteSummary
     /// The canonical parsed model, exactly as the import decoder produced it.
     public var route: ImportedRoute
+    /// Written into every upload of this route. The rider picks it in route detail.
+    public var bikeType: BikeType
     /// The original interchange file, byte-exact.
     public var sourceFileName: String
     public var sourceFileData: Data
@@ -50,6 +52,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     public init(
         summary: RouteSummary,
         route: ImportedRoute,
+        bikeType: BikeType = .road,
         sourceFileName: String,
         sourceFileData: Data,
         deviceLink: DeviceRouteLink? = nil,
@@ -58,6 +61,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     ) {
         self.summary = summary
         self.route = route
+        self.bikeType = bikeType
         self.sourceFileName = sourceFileName
         self.sourceFileData = sourceFileData
         self.deviceLink = deviceLink

@@ -40,6 +40,28 @@ pub struct DetourRequest {
     pub progress_m: u32,
     /// The chosen rejoin distance along the route — the corridor's end and the splice point.
     pub target_m: u32,
+    /// What the leg does to the route. An approach has no corridor and no trim, and its splice puts
+    /// it in front of the whole route.
+    pub leg: obc_route::Leg,
+}
+
+impl DetourRequest {
+    /// Ride to start: the way from `from` to the start of `route`.
+    pub fn approach(route: usize, from: (i32, i32)) -> Self {
+        DetourRequest { route, from, progress_m: 0, target_m: 0, leg: obc_route::Leg::Approach }
+    }
+
+    /// The rest of the day before `route`, `[from_m, to_m]` on that day's route, then `route` from
+    /// `join_m`.
+    pub fn rest(route: usize, from_m: u32, to_m: u32, join_m: u32) -> Self {
+        DetourRequest {
+            route,
+            from: (0, 0),
+            progress_m: 0,
+            target_m: join_m,
+            leg: obc_route::Leg::Rest { from_m, to_m },
+        }
+    }
 }
 
 /// Which phase of the firmware update [`DfuState`](crate::dfu::DfuState) asks the board

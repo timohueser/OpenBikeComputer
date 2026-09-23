@@ -808,7 +808,7 @@ fn landmark_only_cell_survives_beyond_osm_feature_bounds() {
             "attribution": {
                 "source_url": "https://en.wikipedia.org/w/index.php?title=Castle&oldid=1",
                 "revision": "1", "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
-                "original_notices": "Authors", "display_pages": ["Wikipedia authors"]
+                "original_notices": "Authors"
             }}]
         }]
     });

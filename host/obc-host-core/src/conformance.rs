@@ -68,7 +68,7 @@ pub fn route_identity_remap(repo: &mut dyn RouteRepository) {
 }
 
 /// Ride-store invariants: delete + id retirement, and the unknown-id track reads. `expects_track`
-/// says whether a *known* id yields a real profile/preview (a folder-backed store with v3 ride
+/// says whether a *known* id yields a real profile/preview (a folder-backed store with ride
 /// object bytes) — a memory store answers `None` for every id.
 pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool) {
     assert!(!repo.catalog().is_empty(), "seed the ride conformance repo with ≥1 ride");
@@ -142,7 +142,7 @@ fn sample(t_ms: u32) -> obc_ports::TrackPoint {
     }
 }
 
-/// Ride totals for the finalize above — the figures a v3 footer carries.
+/// Ride totals for the finalize above — the figures a ride footer carries.
 fn stats() -> obc_route::RideStats {
     obc_route::RideStats {
         distance_m: 1_000,
@@ -157,6 +157,9 @@ fn stats() -> obc_route::RideStats {
         avg_cadence: None,
         avg_power: None,
         max_power: None,
+        bike: obc_formats::bike::BikeType::Road,
+        trip: None,
+        trip_name: obc_formats::ride::Name::EMPTY,
     }
 }
 
@@ -190,6 +193,7 @@ mod tests {
                 climb_m: 1,
                 synced: false,
                 synced_at_utc: 0,
+                ..Default::default()
             },
             RideSummary {
                 name: Default::default(),
@@ -199,6 +203,7 @@ mod tests {
                 climb_m: 2,
                 synced: true,
                 synced_at_utc: 0,
+                ..Default::default()
             },
         ];
         let mut repo = MemRideStore::new(rides);

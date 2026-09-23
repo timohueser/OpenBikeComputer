@@ -220,9 +220,10 @@ mod tests {
             next_waypoint: next,
             now: DateTime::default(),
             now_ms: 0,
-            bike_profile_idx: 0,
+            bike_type: crate::settings::BikeType::Road,
             language: crate::settings::Language::En,
             next_ahead: EMPTY_CACHE,
+            trip_later_m: None,
         }
     }
 

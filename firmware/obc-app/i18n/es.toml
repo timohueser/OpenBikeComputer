@@ -67,6 +67,13 @@ off = "Desact."
 manual = "Manual"
 auto = "Auto"
 
+# --- BikeType labels (the four fixed bike types) ---
+[bike_type]
+road = "Carretera"
+gravel = "Gravel"
+mtb = "BTT"
+touring = "Cicloturismo"
+
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
 off = "Desact."
@@ -95,6 +102,15 @@ sep = "sep"
 oct = "oct"
 nov = "nov"
 dec = "dic"
+
+[weekday]
+mon = "lun"
+tue = "mar"
+wed = "mié"
+thu = "jue"
+fri = "vie"
+sat = "sáb"
+sun = "dom"
 
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
 # line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
@@ -133,6 +149,7 @@ elevation = "Altitud"
 ride_time = "Tiempo"
 time_to_go = "Tiempo rest."
 eta = "Llegada"
+trip_to_go = "Resto viaje"
 clock = "Hora"
 next_waypoint = "Punto sig."
 waypoint_list = "Lista pts"
@@ -151,6 +168,7 @@ grade = "PEND."
 elev = "ALT "
 ride = "TIEMPO"
 eta = "LLEGADA"
+trip = "VIAJE "
 time = "HORA"
 next_wpt = "PTO SIG"
 waypoints = "PUNTOS"
@@ -208,6 +226,7 @@ fields = "Campos"
 pages = "Auto-cambio"
 climb = "Subida"
 waypoints = "Puntos"
+bike_type = "Tipo de bici"
 
 # --- Display settings screen ---
 [display]
@@ -330,8 +349,9 @@ today = "Hoy"
 open = "ABIERTO"
 closed = "CERRADO"
 route_here = "Ruta hasta aquí"
-side_left = "izquierda"
-side_right = "derecha"
+ahead = "Adelante"
+away = "Dist."
+off_route = "Desvío"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -344,11 +364,12 @@ on_phone = "en el móvil"
 title = "SALIDAS"
 no_rides = "Sin salidas"
 no_rides_sub = "Graba una salida"
-not_synced = "sin sincr."
+of = "de"
+days = "días"
+trip = "Viaje"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "sincr."
 delete_ride = "Borrar salida"
 
 # --- Route menu screen ---
@@ -358,6 +379,12 @@ title = "RUTAS"
 no_routes = "Sin rutas"
 no_routes_sub = "Importa un GPX"
 folder_empty_sub = "Este viaje no tiene rutas"
+day = "Día"
+day_next = "sigue"
+trip_done = "Hecho"
+day_one = "día"
+days = "días"
+no_days = "Sin días"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]
@@ -374,7 +401,6 @@ no_route_sub = "Volver a la lista"
 distance = "DISTANCIA"
 est_time = "DURACIÓN"
 climb = "ASCENSO"
-descent = "DESCENSO"
 bike_type = "TIPO BICI"
 start_ride = "EMPEZAR"
 loading_profile = "Cargando"
@@ -430,6 +456,30 @@ too_far_hint = "Prueba un destino más cercano."
 not_found = "No se encontró la ruta."
 not_found_hint = "No hay camino cerca - prueba desde una carretera."
 
+# --- Start away from the route start: Ride to start or Join nearest ---
+[start_away]
+title = "IR AL INICIO"
+you_are = "Estás a "
+from_start = " del inicio."
+no_route = "No hay ruta al inicio desde aquí."
+ride_to_start = "Ir al inicio"
+then_route = ", luego la ruta"
+join_nearest = "Punto más cercano"
+away_at = " lejos, en "
+cancel = "Cancelar"
+
+# --- Arrival at the end of the route ---
+[arrival]
+title = "LLEGADA"
+end_of = "Fin de "
+end_of_day = ", fin del "
+finish = "Terminar salida"
+finish_hint = "Guardar hoy"
+ride_on = "Seguir: "
+to = " hasta "
+keep_riding = "Seguir rodando"
+keep_riding_hint = "Cerrar esta vista"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSA"
@@ -439,6 +489,19 @@ discard = "Descartar"
 ride_time = "TIEMPO"
 distance = "DISTANCIA"
 climb = "ASCENSO"
+
+# --- The card after Finish on a trip day ---
+[day_done]
+# The title "DAY 2 DONE": the day number goes between the two words.
+day = "DÍA"
+done = "HECHO"
+# The title after the last day of a trip.
+trip_done = "VIAJE HECHO"
+# The caption over tomorrow's day, and the title of page 2.
+tomorrow = "MAÑANA"
+# After the time estimate: "~3:30 h est."
+est = "est."
+ok = "OK"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]
@@ -462,6 +525,8 @@ gps = "GPS"
 fix = "fijo"
 searching = "buscando.."
 battery = "Batería"
+show_route = "Ver ruta"
+loading_day = "Cargando día..."
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
@@ -615,13 +680,18 @@ done = "Rutas antiguas borradas. Reintenta el envío. Pulsa para cerrar."
 route_end_to_pin = "Fin ruta a marca"
 straight_line = "(en recta)"
 title = "Asistente"
-find = "Buscar un lugar"
+find = "Buscar lugar"
 next = "¿Qué sigue?"
 easier = "Ruta más fácil"
 blocked = "Vía bloqueada"
 back_route = "Volver a ruta"
 landmarks = "Sitios"
 detour = "Desvío útil"
+find_hint = "Agua y comida"
+next_hint = "En tu ruta"
+easier_hint = "Menos subida"
+landmarks_hint = "Cerca de ti"
+climb_in = "Subida en"
 no_fix = "Se requiere GPS"
 no_route = "Sigue una ruta"
 busy = "Calculando ruta"
@@ -649,7 +719,6 @@ return_extra = "Con vuelta"
 direct = "Destino directo"
 calculating = "Preparando ruta"
 planning_route = "Calculando ruta"
-loading_route = "Cargando ruta"
 add_stop = "Desvío"
 go_here = "Ir aquí"
 saving = "Guardando"
@@ -663,6 +732,16 @@ partial_data = "Datos parciales"
 select_read = "Elegir: leer"
 select_refresh = "Elegir: actualizar"
 back = "Atrás"
+source_text = "Texto"
+source_article = "Artículo"
+source_authors = "Autores"
+source_license = "Licencia"
+source_photo = "Foto"
+source_file = "Archivo"
+source_author = "Autor"
+source_changes = "Cambios"
+source_resized = "Reducida, tramada"
+source_excerpt = "Extracto"
 access_unavailable = "Acceso incierto"
 visit = "Visitar"
 no_access = "Sin acceso mapa"
@@ -708,7 +787,12 @@ preview_route = "Ver ruta"
 search_limit = "Límite de búsqueda"
 no_connection = "Sin conexión"
 no_comparison = "Sin comparación"
-no_useful_route = "Sin ruta útil"
+search_failed = "Búsqueda fallida"
+no_easier = "Sin mejora"
+checked_all = "Revisado: subida,"
+checked_all_goals = "firme, distancia"
+checked_some = "Revisado solo"
+checked_some_goals = "subida, distancia"
 comparing = "Comparando rutas"
 ascent_saved = "de ascenso menos"
 rough_avoided = "irregular evitado"

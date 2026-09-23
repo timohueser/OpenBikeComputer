@@ -50,9 +50,6 @@ synth = []
 # Seed a Kleine Scheidegg test fix and open the selected map's Peak View at boot.
 peak-view-demo = []
 
-# Display-only photo viewer in display_test. The full app is unchanged.
-landmark-photo-demo = []
-
 # On-device SD read profiler. Adds relaxed counters at the concrete BlockDevice boundary and one
 # RTT line per map redraw, splitting the renderer's logical ByteSource requests from the physical
 # sEMMC command shape and wall time. Off in every shipping build; use with `synth` so a moving
@@ -211,6 +208,8 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
 # `default-features=false`), and the SMP CSPRNG is auto-seeded from the controller's `LeRand`
 # at host init (no app-side entropy plumbing). nrf-sdc exports every HCI command the security
 # host requires (LTK reply, enable-encryption, the resolving-list set, LeRand).
+# Keep the host's logging features off. Its security logs format bond keys and identities; the
+# board reports connection and authentication state without formatting bond records.
 # `central` + `scan` (SE6, epic #707): the BLE sensor manager runs the central role on the same
 # `Stack` as the phone-facing peripheral — `stack.central()` scans for + connects to HR/power/cadence
 # sensors while `stack.peripheral()` keeps advertising to the phone (0.7 supports concurrent roles on
@@ -218,7 +217,7 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
 # connect (`LeCreateConn`). nrf-sdc already carries `central` (its cleanup path needs
 # `LeCreateConnCancel`); the SDC's central/scan *buffers* are only allocated once the Builder calls
 # `.support_central()/.support_scan()/.central_count()` (see `ble/mod.rs`).
-trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"] }
+trouble-host = { version = "0.7", features = ["derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"] }
 # trouble-host's `#[gatt_service]` derive impls `AsGatt` for *its* heapless (0.9) `String`/`Vec`, so
 # the A4 GATT string/blob characteristic types (DIS strings, `config`, …) must be 0.9 — the shared
 # crates' 0.8 types don't satisfy the bound. Alias 0.9 under a distinct name so both coexist; the

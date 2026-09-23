@@ -253,9 +253,6 @@ impl App {
                     self.ui.map_dirty = true;
                 }
                 match outcome {
-                    crate::catalog_state::CatalogOutcome::ReviewRemoved { source, .. } => {
-                        self.find_review_removed(source);
-                    }
                     crate::catalog_state::CatalogOutcome::Failed {
                         error: crate::catalog_state::CatalogError::Unreadable,
                         ..
@@ -283,7 +280,7 @@ impl App {
                         self.catalogs.loaded_scope = None;
                         self.catalogs.note_store_moved();
                     }
-                    MetadataOutcome::CheckpointWritten { .. } => {
+                    MetadataOutcome::CheckpointWritten { .. } | MetadataOutcome::ProgressWritten { .. } => {
                         self.catalogs.loaded_scope = None;
                         self.catalogs.note_store_moved();
                     }
@@ -295,10 +292,13 @@ impl App {
             // A committed ride tells the catalog later in this pass. A failure raises the recording
             // warning and changes nothing else: the ride is still on the store, so the close stays
             // pending and re-offers.
-            match self.recorder.apply_outcome(outcome) {
+            match self.recorder.apply_outcome_at(outcome, now_ms) {
                 crate::recorder::RecorderVerdict::Saved(ride) => {
                     let _ = self.pass.connections.ride_finalized.try_put(RideFinalized { ride });
+                    self.note_trip_finish();
+                    let finished = self.recorder.ride_stats();
                     self.end_ride_session();
+                    self.land_day_done(ride, &finished);
                 }
                 crate::recorder::RecorderVerdict::Dropped => self.end_ride_session(),
                 crate::recorder::RecorderVerdict::Failed => {
@@ -485,15 +485,18 @@ impl App {
     }
 
     fn stage_metadata(&mut self, effects: &mut EffectSlots) {
-        if effects.metadata.is_empty() && self.navigator.checkpoint_change().is_some() {
-            let Some(scope) = self.catalogs.loaded_scope else {
-                return;
-            };
+        let Some(scope) = self.catalogs.loaded_scope.filter(|_| effects.metadata.is_empty()) else {
+            return;
+        };
+        if self.navigator.checkpoint_change().is_some() {
             if let Some(mut effect) = self.metadata.next_checkpoint_effect() {
                 effect.bind(Some(scope));
                 self.navigator.checkpoint_issued(effect.token());
                 let _ = effects.metadata.try_put(effect);
             }
+        } else if let Some(mut effect) = self.metadata.next_progress_effect() {
+            effect.bind(Some(scope));
+            let _ = effects.metadata.try_put(effect);
         }
     }
 
@@ -537,13 +540,15 @@ impl App {
     }
 
     /// A ride session opened: re-lock the matcher, restart the trail and the pace window, and — for
-    /// a fresh ride, never a recovered continuation — zero the accumulators and drop any detour in
-    /// flight.
+    /// a fresh ride, never a recovered continuation — zero the accumulators, record the ride's
+    /// origin and drop any detour in flight.
     fn begin_ride_session(&mut self, start: crate::recorder::SessionStart) {
         self.navigator.relock_matcher();
         if start == crate::recorder::SessionStart::Fresh {
             self.navigator.reset_ride();
             self.recorder.reset_totals();
+            self.recorder.set_origin(self.ride_origin());
+            self.metadata.begin_ride();
             self.navigator.reset_detour();
             // Only a measured anchor re-joins the route. A plain route selection records no
             // progress, so re-anchoring a fresh ride to it would drag the matcher back to the route
@@ -900,6 +905,7 @@ mod tests {
             climb_m: 10,
             synced: false,
             synced_at_utc: 0,
+            ..Default::default()
         }
     }
     fn committed(revision: u64) -> ExternalFacts {
@@ -1006,6 +1012,48 @@ mod tests {
             matches!(effects.catalog.take(), Some(CatalogEffect::ReadCatalog { .. })),
             "the committed ride ordered the catalog's own re-read"
         );
+    }
+
+    /// A saved ride without a trip leaves the rider on Home. A saved trip day lands its card: DAY 1
+    /// DONE, which reads Day 2's profile, and TRIP DONE after the last day.
+    #[test]
+    fn a_saved_trip_day_lands_its_card_and_other_rides_go_home() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Day 1"), summary("Day 2")], &[11, 22]);
+        app.set_trips(&[crate::trip::TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[11, 22] }]);
+        let ride = |app: &mut App, day: Option<u8>, ms: u32| {
+            app.activity.mode = Mode::Riding;
+            app.test_start_ride();
+            let trip = day.and_then(|day| obc_formats::ride::TripRef::new(42, day, 2));
+            app.recorder.set_origin(crate::RideOrigin { bike: obc_formats::bike::BikeType::Road, trip });
+            // Finish on the Paused page.
+            let paused = crate::screen::Transition::Push(Screen::RideControl(crate::screen::RideControl::new()));
+            crate::screen::apply(&mut app.ui.stack, paused);
+            app.apply_gesture(Gesture::Step(1));
+            app.apply_gesture(Gesture::Hold);
+            let token = quiet(app, ms).effects.recorder.take().expect("the close").token();
+            let mut outcomes = OutcomeSlots::new();
+            outcomes
+                .recorder
+                .try_put(crate::recorder::RecorderOutcome::Finalized { token, ride: u64::from(ms) })
+                .unwrap();
+            let mut facts = ExternalFacts::NONE;
+            pass_with(app, ms + 10, &[], &mut outcomes, &mut facts);
+        };
+
+        ride(&mut app, None, 100);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "no trip, no card");
+
+        ride(&mut app, Some(0), 200);
+        assert!(matches!(app.top_screen(), Screen::DayDone(card) if !card.trip_done()));
+        assert_eq!(app.derived_needs().day_profile.map(|key| key.day), Some(22), "Day 2's profile is read");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
+        assert!(app.derived_needs().day_profile.is_none(), "OK drops the need");
+
+        ride(&mut app, Some(1), 300);
+        assert!(matches!(app.top_screen(), Screen::DayDone(card) if card.trip_done()));
+        assert!(app.derived_needs().day_profile.is_none(), "no day is left to read");
     }
 
     /// Both halves are the property. Dropping the gate starts a ride with nowhere to put it;
@@ -1361,7 +1409,7 @@ mod tests {
     #[should_panic(expected = "cannot change DeviceCore during a pass")]
     fn a_callback_cannot_mutate_core_state_during_a_pass() {
         let mut app = navigating();
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }], &[]);
         app.activity.viewed_ride = Some(0);
         let plan = quiet(&mut app, 10);
         let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
@@ -1375,7 +1423,7 @@ mod tests {
     #[test]
     fn a_push_outside_a_pass_is_applied_normally() {
         let mut app = navigating();
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }], &[]);
         app.activity.viewed_ride = Some(0);
         let plan = quiet(&mut app, 10);
         let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
@@ -1425,7 +1473,7 @@ mod tests {
     #[test]
     fn one_pass_routes_a_full_fact_batch_and_a_derived_answer() {
         let mut app = navigating();
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }], &[]);
         app.activity.viewed_ride = Some(0);
         let mut quiet_facts = ExternalFacts::NONE;
         let plan = pass_full(

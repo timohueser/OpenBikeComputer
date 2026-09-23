@@ -15,6 +15,18 @@ public enum OBCFormat {
         return "\(value) km"
     }
 
+    /// "480 m" under a kilometre, in steps of 10 m; ``distance(meters:locale:)`` above.
+    public static func shortDistance(meters: Double, locale: Locale = .current) -> String {
+        let meters = abs(meters)
+        guard meters < 1000 else { return distance(meters: meters, locale: locale) }
+        return "\(Int((meters / 10).rounded()) * 10) m"
+    }
+
+    /// "on the line" or "430 m off the line": how far a stop is from a trip line.
+    public static func stopOffset(meters: Double, locale: Locale = .current) -> String {
+        meters <= Trip.onLineMeters ? "on the line" : "\(shortDistance(meters: meters, locale: locale)) off the line"
+    }
+
     /// "840 m ↑" or "1,240 m ↑": climb with grouping.
     public static func climb(meters: Double, locale: Locale = .current) -> String {
         let formatter = numberFormatter(locale: locale)
@@ -24,9 +36,9 @@ public enum OBCFormat {
         return "\(value) m ↑"
     }
 
-    /// Planned estimate: "3h 20m"; multi-day routes read "2 days".
+    /// Planned estimate: "3h 20m"; multi-day routes read "2 days". Minutes floor, as on the device.
     public static func estimatedDuration(_ interval: TimeInterval) -> String {
-        let minutes = Int((interval / 60).rounded())
+        let minutes = Int(interval / 60)
         if minutes >= 24 * 60 {
             let days = Int((Double(minutes) / (24 * 60)).rounded())
             return days == 1 ? "1 day" : "\(days) days"
@@ -80,6 +92,22 @@ public enum OBCFormat {
         return formatter.string(from: date)
     }
 
+    /// A trip day's date: "Mon 29 Sep".
+    public static func tripDay(_ day: CivilDay, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        return formatter.string(from: day.date(calendar: calendar))
+    }
+
+    /// A trip's date range: "Mon 29 Sep – Wed 1 Oct", or one date for a one-day trip.
+    public static func tripDates(_ first: CivilDay, _ last: CivilDay, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let start = tripDay(first, calendar: calendar, locale: locale)
+        return first == last ? start : "\(start) – \(tripDay(last, calendar: calendar, locale: locale))"
+    }
+
     // MARK: Card subtitles
 
     /// Planned-route stat line: "62.4 km · 840 m ↑ · 3h 20m".
@@ -109,15 +137,65 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
+    /// Ride detail stat line: "74.3 km · 5:52 · 12.7 kph · 2,080 m ↑".
+    public static func rideStatsLine(_ ride: RideSummary, locale: Locale = .current) -> String {
+        [
+            distance(meters: ride.distanceMeters, locale: locale),
+            movingTime(ride.movingTime),
+            speed(mps: ride.averageSpeedMps, locale: locale),
+            climb(meters: ride.climbMeters, locale: locale),
+        ].joined(separator: " · ")
+    }
+
+    /// The day note's header, which fills itself in: "Tue 30 Sep · Andermatt → Ulrichen · 74 km".
+    /// The places are the day's ends or the ride's localities; the header goes without them when
+    /// neither is known.
+    public static func dayNoteHeader(
+        date: Date, from: String? = nil, to: String? = nil, distanceMeters: Double,
+        calendar: Calendar = .current, locale: Locale = .current
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        let places = [from, to].compactMap { $0 }.joined(separator: " → ")
+        return [formatter.string(from: date), places.isEmpty ? nil : places, "\(Int((distanceMeters / 1000).rounded())) km"]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    /// The quiet row that asks for the note: "How was Day 2?", or "How was the ride?" without a trip.
+    public static func notePrompt(_ ride: RideSummary) -> String {
+        guard let trip = ride.trip else { return "How was the ride?" }
+        return "How was Day \(trip.dayIndex + 1)?"
+    }
+
+    /// One highlight: "Furka 2,431 m", "2,431 m at km 31", "18.0 km climb", "62 kph descent" or
+    /// "Biggest day 82.0 km". Lengths use `distance(meters:)`, as every other km in the app.
+    public static func highlight(_ highlight: RideHighlight, locale: Locale = .current) -> String {
+        switch highlight {
+        case .highestPoint(let elevation, let distance, let place):
+            let height = "\(climbValue(meters: elevation, locale: locale)) m"
+            if let place { return "\(place) \(height)" }
+            return "\(height) at km \(Int((distance / 1000).rounded()))"
+        case .longestClimb(_, let length):
+            return "\(Self.distance(meters: length, locale: locale)) climb"
+        case .fastestDescent(let speedMps):
+            return "\(Int((speedMps * 3.6).rounded())) kph descent"
+        case .biggestDay(let distance):
+            return "Biggest day \(Self.distance(meters: distance, locale: locale))"
+        }
+    }
+
     /// Trip card stat line: "2 stages · 141 km · 2,050 m ↑".
     public static func tripSubtitle(
-        stageCount: Int,
+        dayCount: Int,
         distanceMeters: Double,
         elevationGainMeters: Double,
         locale: Locale = .current
     ) -> String {
         [
-            stageCount == 1 ? "1 stage" : "\(stageCount) stages",
+            dayCount == 1 ? "1 day" : "\(dayCount) days",
             distance(meters: distanceMeters, locale: locale),
             climb(meters: elevationGainMeters, locale: locale),
         ].joined(separator: " · ")
@@ -153,6 +231,15 @@ public enum OBCFormat {
         return formatter.string(from: NSNumber(value: mps * 3.6)) ?? "\(mps * 3.6)"
     }
 
+    /// A time of day in the locale's short style: "13:40" or "1:40 PM".
+    public static func clock(_ date: Date, locale: Locale = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+
     /// The ride subtitle line: "Yesterday, 8:12 AM".
     public static func rideDateLine(
         _ date: Date,
@@ -160,13 +247,7 @@ public enum OBCFormat {
         calendar: Calendar = .current,
         locale: Locale = .current
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = calendar
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        let time = formatter.string(from: date)
-        return "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(time)"
+        "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(clock(date, locale: locale))"
     }
     /// "today", "in 1 day" or "in N days": the tail of the near-expiry phrase.
     private static func relativeExpiryPhrase(days: Int) -> String {

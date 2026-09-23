@@ -13,18 +13,18 @@ public struct RouteStats: Equatable, Sendable {
     /// Steepest sustained climb over a ~100 m window, in percent. `nil` when the
     /// source carried no elevation.
     public var maxGradePercent: Double?
-    /// Planned-ride estimate: 16 km/h on the flat plus a minute per 10 m of climb. A touring
-    /// rule of thumb, not a fitness model.
-    public var estimatedDuration: TimeInterval
 
     /// Elevation-noise hysteresis: climb only accumulates once the track has
-    /// risen this far above its last confirmed elevation.
+    /// risen this far above its last confirmed elevation. The device's climb figure uses the same
+    /// band (`ELE_DEADBAND_M` in `obc-elevation`).
     public static let climbHysteresisMeters = 3.0
     /// Grades are measured over windows at least this long, so a single noisy sample cannot
     /// spike the MAX stat.
     public static let gradeWindowMeters = 100.0
+    /// Samples in a profile card.
+    public static let profileSampleCount = 64
 
-    public static func compute(from points: [RoutePoint], profileSampleCount: Int = 64) -> RouteStats {
+    public static func compute(from points: [RoutePoint], profileSampleCount: Int = profileSampleCount) -> RouteStats {
         var cumulative: [Double] = [0]
         cumulative.reserveCapacity(points.count)
         for i in 1..<max(points.count, 1) {
@@ -73,14 +73,12 @@ public struct RouteStats: Equatable, Sendable {
         }
 
         let elevations = points.allSatisfy { $0.elevationMeters != nil && !$0.elevationIncomplete } ? points.compactMap(\.elevationMeters) : []
-        let estimateMinutes = distance / 1000 / 16 * 60 + climb / 10
         return RouteStats(
             distanceMeters: distance,
             elevationGainMeters: climb,
             elevationLossMeters: descent,
             elevationProfile: downsample(elevations, to: profileSampleCount),
-            maxGradePercent: maxGrade,
-            estimatedDuration: estimateMinutes * 60
+            maxGradePercent: maxGrade
         )
     }
 
@@ -97,14 +95,12 @@ public struct RouteStats: Equatable, Sendable {
         elevationGainMeters: Double,
         elevationLossMeters: Double = 0,
         elevationProfile: [Double] = [],
-        maxGradePercent: Double? = nil,
-        estimatedDuration: TimeInterval = 0
+        maxGradePercent: Double? = nil
     ) {
         self.distanceMeters = distanceMeters
         self.elevationGainMeters = elevationGainMeters
         self.elevationLossMeters = elevationLossMeters
         self.elevationProfile = elevationProfile
         self.maxGradePercent = maxGradePercent
-        self.estimatedDuration = estimatedDuration
     }
 }

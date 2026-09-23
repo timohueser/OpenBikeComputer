@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "measurement": {
-    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the `embedded` CI job's shipping link on 1d33e67b.",
+    "source_commit": "FS8 #1390 acceptance state on 9f76040f (local uncommitted diff, 2026-08-20). A field re-pinned after that names its own build: the resident band (`measured_resident`, `resident_ram_max`) is the shipping link of claude/sensor-links-concurrent on the pinned host, which holds three live sensor links; the `embedded` CI job re-pins it.",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
@@ -13,8 +13,8 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "measured_resident": 313264,
-      "resident_ram_max": 317360,
+      "measured_resident": 319136,
+      "resident_ram_max": 323232,
       "resident_ram_slack": 4096,
       "_resident_ram_slack_note": "The guard holds the link within one slack of `measured_resident` in each direction: `resident_ram_max` is `measured_resident` plus the slack, and a link more than the slack BELOW `measured_resident` fails too. The slack is what one slice can spend to widen a few protocol structs without a ceiling pull request, and the same figure is what a deletion can save before it must re-pin. A slack of a few dozen bytes is too tight for a single protocol type, and a row nobody can stay inside is a row nobody re-pins. Dead ceiling is therefore bounded by two slacks, instead of growing without limit as it did when only the upper end was gated. Re-pin both figures from the `embedded` CI job; a host toolchain links a little less, which the band absorbs.",
       "uninit_max": 132096,
@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 57384,
+        "app": 60808,
         "map_cache": 37084,
         "map_tables": 7528,
         "route_cache": 9260,
@@ -33,11 +33,11 @@
         "arena_total": 131072,
         "arena_usb": 131072,
         "arena_render": 126888,
-        "arena_nav": 97440,
+        "arena_nav": 97448,
         "terrain": 2152,
         "terrain_window": 24,
         "stack_reserve": 65536,
-        "ble_total": 24957,
+        "ble_total": 24969,
         "ble_mpsl": 0,
         "ble_sdc_memory": 11336,
         "ble_host_resources": 6120,
@@ -46,13 +46,13 @@
         "ble_object_store": 124,
         "ble_server": 2168,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 358,
+        "ble_sensor_manager": 370,
         "usb_named": 35973,
         "sd_bounce": 2048,
         "semmc_driver": 52,
         "flat_store": 10152,
         "flat_requests": 3064,
-        "flat_ride_delta": 500,
+        "flat_ride_delta": 560,
         "flat_catalog_uploads": 740,
         "flat_map_read": 76,
         "flat_route_read": 48,
@@ -65,6 +65,7 @@
         "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
         "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
       },
+      "_app_note": "60,808 B on the head `--features resource-report` link of the `embedded` CI job. Landmark Sources keeps which credited work the loaded page belongs to and that work's first page (`source_photo`, `source_first`), 8 B.",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,
@@ -97,6 +98,24 @@
         "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
         "changes": "App +8 B: the Resume offer keeps the catalog row the standing checkpoint names, so the card can say which route it would resume, and Navigator keeps two flags for what the selection still owes the card. All other named allocations and resource ceilings are unchanged.",
         "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF: 313,096 B linked resident inside the band, residual main stack 46,328 B, poll frame 9,776 B, init_idle frame 1,720 B. Shipping ELF verification remains in CI. No base rebuild and no device flash."
+      },
+      "_start_away_allocation_measurement": {
+        "source_commit": "claude/rtr-start-away head",
+        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
+        "changes": "App +32 B: Navigator keeps the join point Join nearest gives the next fresh ride, whether the detour-family plan is Ride to start, and the adopted splice's and route's ids, so the ride is saved under the route's name. All other named allocations and ceilings are unchanged.",
+        "verification": "One head build compared with the recorded baseline. Board guards passed: 311,576 B linked resident, residual main stack 47,848 B. No base rebuild or device flash."
+      },
+      "_easier_allocation_measurement": {
+        "source_commit": "claude/ra-easier-gpx (PR #2112), merged with develop",
+        "build": "the embedded CI job's resource report on that head (App 59,512 B)",
+        "changes": "App +24 B: the reviewed route keeps the easier candidate's costs, measured at the same stations as the original. All other named allocations and ceilings are unchanged.",
+        "verification": "No local board build: the build host is short of disk. One head build compared with the recorded baseline."
+      },
+      "_ahead_query_allocation_measurement": {
+        "source_commit": "ee00d734f on claude/ra-ahead-query-perf, merged with develop",
+        "build": "the embedded CI job's resource report (App 59,512 B), less the 24 B page-start field the next head removes, measured with size_of on the host",
+        "changes": "App +40 B: each place query keeps its route chunk's clipped search box, and the What's next Overview keeps its place status and quarter hour. All other named allocations and ceilings are unchanged.",
+        "verification": "No local board build: the build host is short of disk. The next embedded CI run confirms the figure."
       },
       "_find_place_allocation_measurement": {
         "source_commit": "45e463b67b2ac69626b1f65ef29b7f74e0e604c7",

@@ -111,6 +111,7 @@ pub(crate) static RIDE: Menu = Menu {
         value(Msg::RidePages, ContextValue::StatCycle),
         value(Msg::RideClimb, ContextValue::ClimbMode),
         value(Msg::RideWaypoints, ContextValue::WaypointMode),
+        value(Msg::RideBikeType, ContextValue::BikeProfile),
     ],
 };
 

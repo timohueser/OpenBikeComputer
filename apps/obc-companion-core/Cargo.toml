@@ -1,0 +1,26 @@
+[package]
+name = "obc-companion-core"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal app crate — not published to crates.io
+description = "The companion app's Rust core: downloaded network and terrain cells assembled into a small map, and routes planned over it with the device's router. The hand-written C ABI the OBCKit routing module links."
+
+[lib]
+# The staticlib the companion links through OBCCompanionCore.xcframework; the rlib beside it is
+# what the workspace type-checks and `cargo test` runs.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# The assembler the website and the desktop app run. `cli` is off: it is the crate's only file
+# access, and this crate reads its own inputs.
+obcm-assemble = { path = "../../host/obcm-assemble", default-features = false }
+# `alloc` for the heap-boxed A* table: the device's NAV_MAX_NODES, never a larger one.
+obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-formats = { path = "../../firmware/obc-formats" }
+heapless = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+

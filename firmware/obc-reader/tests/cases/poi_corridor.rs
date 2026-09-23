@@ -482,3 +482,69 @@ fn a_tie_inside_one_pass_keeps_the_first_segment_side() {
         assert_eq!(hits[0].offset_m, -56, "the eastbound first segment wins the equal-distance tie");
     }
 }
+
+/// The corridor test runs before the hours read, so a closed place must still neither fill a page
+/// nor mark one as having more. A query that starts past a key returns the same page as paging.
+#[test]
+fn closed_places_stay_off_pages_and_a_started_page_matches_paging() {
+    use obc_reader::reader::places::{PlaceKey, PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+    let mut open = [0; 29];
+    for day in 0..7 {
+        open[2 + day * 4] = 96;
+    }
+    // Two closed places before the eight open ones and four after them.
+    let pois = (0..14)
+        .map(|i| PoiSpec {
+            payload: if (2..10).contains(&i) { 1 } else { 0 },
+            ..water(&format!("W{i:02}"), 7_101_000 + 1_500 * i, LAT + 400)
+        })
+        .collect();
+    let bytes = obcm_testkit::build_poi_map_with_hours(BBOX, CS, &[(1, pois)], &[[0; 29], open]);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let path = FixturePath::straight(7_100_000, 1_000, 240, 8);
+    let window = PlaceWindow::Corridor { from_m: 0, to_m: u32::MAX, half_width_m: 300 };
+    let new = || PlaceQuery::new(1, PoiCategorySet::ALL, window, Some((0, 600)));
+    fn settle<const N: usize>(
+        query: &mut PlaceQuery,
+        reader: &Reader,
+        path: &FixturePath,
+        page: &mut heapless::Vec<CorridorPoi, N>,
+    ) -> QueryProgress {
+        page.clear();
+        loop {
+            let state = query.step(reader, Some(path), 1, page);
+            if state != QueryProgress::Pending {
+                return state;
+            }
+        }
+    }
+
+    let mut page = heapless::Vec::<CorridorPoi, PLACE_PAGE_SIZE>::new();
+    let state = settle(&mut new(), &reader, &path, &mut page);
+    assert!(matches!(state, QueryProgress::Ready { more: false, .. }), "{state:?}");
+    let expected: Vec<String> = (2..10).map(|i| format!("W{i:02}")).collect();
+    assert_eq!(names(&page), expected);
+
+    let key = |p: &CorridorPoi| PlaceKey {
+        distance_m: p.poi.distance_m,
+        source: p.poi.metadata.source,
+        occurrence: p.dist_along_m,
+    };
+    let mut small = heapless::Vec::<CorridorPoi, 3>::new();
+    let mut paged = new();
+    settle(&mut paged, &reader, &path, &mut small);
+    assert_eq!(names(&small), expected[..3]);
+    paged.next_page(key(&small[2]));
+    let paged_state = settle(&mut paged, &reader, &path, &mut small);
+    assert_eq!(names(&small), expected[3..6]);
+
+    let mut started = new().starting_after(key(&page[2]), false);
+    assert_eq!(settle(&mut started, &reader, &path, &mut small), paged_state);
+    assert_eq!(names(&small), expected[3..6]);
+    let mut back = new().starting_after(key(&page[3]), true);
+    settle(&mut back, &reader, &path, &mut small);
+    assert_eq!(names(&small), expected[..3]);
+}

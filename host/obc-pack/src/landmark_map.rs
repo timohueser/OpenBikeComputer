@@ -2,7 +2,7 @@
 
 use crate::{
     hours::Schedule,
-    landmarks::{Attribution, Content, Photo},
+    landmarks::{Content, Photo},
     poi::LandmarkLink,
 };
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
@@ -43,6 +43,7 @@ pub fn fingerprint(paths: &[PathBuf]) -> Result<String, String> {
         hash.update(digest);
     }
     hash.update(include_bytes!("landmark_map.rs"));
+    hash.update(include_bytes!("landmarks/credit.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/obcm/landmarks.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
     hash.update(include_bytes!("../../../Cargo.lock"));
@@ -89,21 +90,8 @@ fn pages(fields: &[String]) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn attribution(source: &Attribution) -> Result<Vec<u8>, String> {
-    if source.display_pages.is_empty()
-        || source.display_pages.len() > MAX_CREDIT_PAGES as usize
-        || source.display_pages.iter().any(|page| page.len() > MAX_PAGE_BYTES)
-    {
-        return Err("landmark attribution page budget".into());
-    }
-    let mut fields = vec![
-        source.source_url.clone(),
-        source.revision.clone(),
-        source.license_url.clone(),
-        source.original_notices.clone(),
-    ];
-    fields.extend(source.display_pages.iter().cloned());
-    let bytes = pages(&fields)?;
+fn credit(fields: Result<crate::landmarks::credit::Credit, &str>) -> Result<Vec<u8>, String> {
+    let bytes = pages(&fields.map_err(|reason| format!("landmark credit: {reason}"))?)?;
     if bytes.len() > MAX_ATTRIBUTION_BYTES as usize {
         return Err("landmark attribution byte budget".into());
     }
@@ -141,7 +129,7 @@ fn article_bundle(default_language: &str, text_variants: &[crate::landmarks::Tex
             language,
             text_pages,
             text: append(pages(&variant.text_pages)?),
-            attribution: append(attribution(&variant.attribution)?),
+            attribution: append(credit(crate::landmarks::credit::article(&variant.attribution))?),
         };
         if ArticleVariant::decode(&encoded.encode()).is_none() {
             return Err("article page count".into());
@@ -298,7 +286,7 @@ pub(crate) fn encode_content(
             return Err("landmark compression failed".into());
         }
         blobs[2] = stream.to_vec();
-        blobs[3] = attribution(&photo.attribution)?;
+        blobs[3] = credit(crate::landmarks::credit::photo(&photo.attribution))?;
     }
     Ok(blobs)
 }

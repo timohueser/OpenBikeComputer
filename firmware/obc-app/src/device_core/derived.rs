@@ -50,6 +50,52 @@ pub struct NavPreviewKey {
     pub view: Revision,
 }
 
+/// The subject of one derived day-profile read: the day-done card's tomorrow, the day's route from
+/// `join_m`, after the rest of the day before when the day starts with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayProfileKey {
+    pub day: CatalogObjectId,
+    pub join_m: u32,
+    pub rest: Option<RestStretch>,
+    pub source: Revision,
+    pub view: Revision,
+}
+
+/// The rest of the day before: `[from_m, to_m]` on its route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestStretch {
+    pub route: CatalogObjectId,
+    pub from_m: u32,
+    pub to_m: u32,
+}
+
+/// Answer a [`DayProfileKey`] into `out`. `with_route(id, body)` opens stored route `id`, runs
+/// `body` on it, and returns what `body` returned, or `false` when the route does not open. One
+/// route is open at a time. `false` means the profile must not be published.
+pub fn fill_day_profile(
+    key: DayProfileKey,
+    out: &mut obc_route::Profile,
+    mut with_route: impl FnMut(CatalogObjectId, &mut dyn FnMut(&dyn obc_formats::io::ByteSource) -> bool) -> bool,
+) -> bool {
+    let mut day_m = 0;
+    let read = |src: &dyn obc_formats::io::ByteSource| obc_route::RouteObjectInfo::read(src).map(|i| i.distance_m);
+    if !with_route(key.day, &mut |src| read(src).map(|m| day_m = m).is_ok()) {
+        return false;
+    }
+    let rest_m = key.rest.map_or(0, |r| r.to_m.saturating_sub(r.from_m));
+    let mut day = obc_route::DayProfile::start(rest_m + day_m.saturating_sub(key.join_m), out);
+    if let Some(r) = key.rest {
+        if !with_route(r.route, &mut |src| day.stretch(src, r.from_m, r.to_m, out).is_ok()) {
+            return false;
+        }
+    }
+    if !with_route(key.day, &mut |src| day.stretch(src, key.join_m, u32::MAX, out).is_ok()) {
+        return false;
+    }
+    day.finish(out);
+    true
+}
+
 /// How one derived read ended. The target buffer stays DeviceCore-owned and the executor fills it
 /// in place, so this says only whether it may be shown: never the data, and not a length either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,13 +141,15 @@ pub struct DerivedNeeds {
     pub ride_track: Option<RideTrackKey>,
     /// The previewed route's shape, or `None` when no overview is open or the key is answered.
     pub nav_preview: Option<NavPreviewKey>,
+    /// Tomorrow's profile, into the ride profile's buffer, while the day-done card is the view.
+    pub day_profile: Option<DayProfileKey>,
 }
 
 impl DerivedNeeds {
-    pub const NONE: DerivedNeeds = DerivedNeeds { ride_track: None, nav_preview: None };
+    pub const NONE: DerivedNeeds = DerivedNeeds { ride_track: None, nav_preview: None, day_profile: None };
 
     pub fn is_empty(&self) -> bool {
-        self.ride_track.is_none() && self.nav_preview.is_none()
+        self.ride_track.is_none() && self.nav_preview.is_none() && self.day_profile.is_none()
     }
 }
 
@@ -128,10 +176,11 @@ impl DerivedTargets<'_> {
 pub struct DerivedInputs {
     pub ride_track: Option<DerivedInput<RideTrackKey>>,
     pub nav_preview: Option<DerivedInput<NavPreviewKey>>,
+    pub day_profile: Option<DerivedInput<DayProfileKey>>,
 }
 
 impl DerivedInputs {
-    pub const NONE: DerivedInputs = DerivedInputs { ride_track: None, nav_preview: None };
+    pub const NONE: DerivedInputs = DerivedInputs { ride_track: None, nav_preview: None, day_profile: None };
 
     pub const fn ride_track(input: DerivedInput<RideTrackKey>) -> Self {
         DerivedInputs { ride_track: Some(input), ..DerivedInputs::NONE }
@@ -148,8 +197,8 @@ const _: () = assert!(core::mem::size_of::<RideTrackKey>() <= 24, "an identity a
 const _: () =
     assert!(core::mem::size_of::<Option<NavPreviewKey>>() <= 32, "presentation fits the existing optional key");
 const _: () = assert!(core::mem::size_of::<DerivedResult>() <= 1, "a verdict, not a report");
-const _: () = assert!(core::mem::size_of::<DerivedNeeds>() <= 64, "two optional keys");
-const _: () = assert!(core::mem::size_of::<DerivedInputs>() <= 80, "two optional keyed answers");
+const _: () = assert!(core::mem::size_of::<DerivedNeeds>() <= 120, "three optional keys");
+const _: () = assert!(core::mem::size_of::<DerivedInputs>() <= 136, "three optional keyed answers");
 
 #[cfg(test)]
 mod tests {

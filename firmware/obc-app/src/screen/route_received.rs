@@ -205,13 +205,12 @@ impl TripReceivedScreen {
         match self.actions.handle(g, &ACTION_GUARDS) {
             // A trip deleted while the popup was up dismisses, instead of opening an empty
             // stranger. The card gives way to the folder, so Back returns to what it covered.
-            CardEvent::Activate(VIEW) => {
-                if cx.trips.iter().any(|t| t.id == self.trip_id) {
-                    Transition::Replace(Screen::RouteMenu(RouteMenuScreen::trip(self.trip_id)))
-                } else {
-                    Transition::Pop
+            CardEvent::Activate(VIEW) => match cx.trips.iter().find(|t| t.id == self.trip_id) {
+                Some(t) => {
+                    Transition::Replace(Screen::RouteMenu(RouteMenuScreen::trip(t, t.progress_in(cx.trip_progress))))
                 }
-            }
+                None => Transition::Pop,
+            },
             CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop,
             CardEvent::None => Transition::None,
         }

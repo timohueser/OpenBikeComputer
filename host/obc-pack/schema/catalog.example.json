@@ -95,7 +95,9 @@
       "min_component_edges": 50,
       "profiles": [
         "Road",
-        "Gravel"
+        "Gravel",
+        "MTB",
+        "Touring"
       ]
     },
     "chunk_size": 4096

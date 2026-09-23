@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail when a scheduler-owned card is constructed outside the card scheduler.
 
-Six modal card families belong to `CardScheduler`. Their delivery rules hold only if nothing else
+The modal card families belong to `CardScheduler`. Their delivery rules hold only if nothing else
 builds one of those screens and pushes it, so production code must reach those cards through the
 scheduler's slots and never through their constructors.
 """
@@ -32,6 +32,7 @@ OWNED = [
     re.compile(r"\bDfuConfirmScreen::" + r"new\b"),
     re.compile(r"\bDfuErrorScreen::" + r"new"),
     re.compile(r"\bDfuInstallingScreen::" + r"new\b"),
+    re.compile(r"\bArrivalScreen::" + r"new\b"),
 ]
 
 # Building one is legitimate in the scheduler itself, and in test harnesses that stage a stack to

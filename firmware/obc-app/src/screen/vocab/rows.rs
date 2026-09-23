@@ -1,5 +1,5 @@
 //! The shared row vocabulary: the settings grammar's rows (a door, a value, a switch, an action,
-//! an info line), the stat-ledger row, and the guarded-action option rows.
+//! an info line), the stat-ledger row, the guarded-action option rows, and the prompt options.
 //!
 //! One grammar for the settings pages and both drawers. A row is one line, or a label with a line
 //! under it. Every text starts at the same x, and every chevron is one size in one column, so a
@@ -270,15 +270,21 @@ pub(crate) fn ledger_row(
     // The Display and Label caps both bottom out at `y + 32`, so the baselines agree.
     cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
     cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
-    let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
-    let vx = w - 16 - unit_w - 6;
-    cv.text(value, Point::new(vx, y + 6), Font::Display, TextAlign::Right, INK);
+    cv.text(value, Point::new(value_right(w, unit), y + 6), Font::Display, TextAlign::Right, INK);
     if let Some(up) = arrow {
-        let value_w = value.chars().count() as i32 * Font::Display.char_width() as i32;
-        let ax = vx - value_w - 18;
+        let ax = ledger_value_left(w, value, unit) - 18;
         let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
         cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
     }
+}
+
+/// The left edge of a [`ledger_row`] value, which a mark drawn beside the value must clear.
+pub(crate) fn ledger_value_left(w: i32, value: &str, unit: &str) -> i32 {
+    value_right(w, unit) - value.chars().count() as i32 * Font::Display.char_width() as i32
+}
+
+fn value_right(w: i32, unit: &str) -> i32 {
+    w - 16 - unit.chars().count() as i32 * Font::Label.char_width() as i32 - 6
 }
 
 /// One option in a guarded-action menu. `guard` marks an irreversible option, which needs a hold
@@ -337,6 +343,11 @@ impl GuardedRowsGeometry {
     pub(crate) fn panel(w: i32, top: i32, row_h: i32, gap: i32) -> Self {
         GuardedRowsGeometry { x: 14, w: w - 28, top, row_h, gap, label_dx: 12, label_dy: 5 }
     }
+
+    /// Row `i`'s rectangle.
+    pub(crate) fn row(&self, i: usize) -> Rectangle {
+        rect(self.x, self.top + i as i32 * (self.row_h + self.gap), self.w, self.row_h)
+    }
 }
 
 /// Draw a guarded-action menu's option rows: each [`MenuItem`] gets its [`confirm_row`] background
@@ -350,12 +361,11 @@ pub(crate) fn draw_guarded_rows(
     geo: GuardedRowsGeometry,
 ) {
     for (i, item) in items.iter().enumerate() {
-        let y = geo.top + i as i32 * (geo.row_h + geo.gap);
-        let row = rect(geo.x, y, geo.w, geo.row_h);
+        let row = geo.row(i);
         confirm_row(cv, row, i == selected, item.guard, hold_progress, fill, 6);
         cv.text(
             item.label,
-            Point::new(geo.x + geo.label_dx, y + geo.label_dy),
+            Point::new(row.top_left.x + geo.label_dx, row.top_left.y + geo.label_dy),
             Font::Body,
             TextAlign::Left,
             if i == selected && item.guard {
@@ -366,5 +376,52 @@ pub(crate) fn draw_guarded_rows(
                 palette::INK
             },
         );
+    }
+}
+
+/// One answer to a prompt: a label and, under it, the olive hint that says what it does. A guarded
+/// answer fires only on a completed hold, and its row fills as the rider holds.
+pub(crate) struct PromptOption<'a> {
+    pub label: &'a str,
+    pub hint: Option<&'a str>,
+    pub guard: bool,
+}
+
+/// The question's left edge, first line and line pitch.
+const PROMPT_X: i32 = 10;
+const PROMPT_TOP: i32 = 40;
+const PROMPT_PITCH: i32 = 22;
+/// The option slots' tops, one per option in order.
+const OPTION_TOPS: [i32; 3] = [92, 148, 208];
+const OPTION_H: i32 = 55;
+const OPTION_X: i32 = 6;
+const OPTION_TEXT_X: i32 = 12;
+
+/// Draw a prompt below the title: the question in olive, then up to three options with the cursor
+/// on `selected`. A question the rider must answer reads the same on every screen that asks one.
+pub(crate) fn draw_prompt(
+    cv: &mut impl Surface,
+    w: i32,
+    question: &str,
+    options: &[PromptOption],
+    selected: usize,
+    hold_progress: f32,
+) {
+    use palette::*;
+    let mut y = PROMPT_TOP;
+    super::chrome::wrap(question, w - 2 * PROMPT_X, Font::Caption, |line| {
+        cv.text(line, Point::new(PROMPT_X, y), Font::Caption, TextAlign::Left, SUBTEXT);
+        y += PROMPT_PITCH;
+    });
+    for (i, (option, top)) in options.iter().zip(OPTION_TOPS).enumerate() {
+        let row = rect(OPTION_X, top, w - 2 * OPTION_X, OPTION_H);
+        confirm_row(cv, row, i == selected, option.guard, hold_progress, WARNING, 5);
+        let room = w - OPTION_TEXT_X - OPTION_X;
+        let label = super::marquee::fit(option.label, room, Font::Label);
+        cv.text(&label, Point::new(OPTION_TEXT_X, top + 4), Font::Label, TextAlign::Left, INK);
+        if let Some(hint) = option.hint {
+            let hint = super::marquee::fit(hint, room, Font::Caption);
+            cv.text(&hint, Point::new(OPTION_TEXT_X, top + 30), Font::Caption, TextAlign::Left, SUBTEXT);
+        }
     }
 }

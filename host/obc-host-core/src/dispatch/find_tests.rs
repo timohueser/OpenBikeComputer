@@ -1,6 +1,5 @@
 use super::*;
 use obc_app::{find_place::State, AppState};
-use obc_formats::io::ByteSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_ports::{Fix, InputClock, LocationSource, RideClock};
@@ -21,7 +20,7 @@ impl LocationSource for Position {
 }
 
 #[test]
-fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
+fn find_ranks_from_leg_searches_and_composes_only_the_pressed_result() {
     for scenario in [
         Scenario::Browse,
         Scenario::FreeRide,
@@ -31,10 +30,10 @@ fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
         Scenario::CancelPreview,
         Scenario::Accept,
         Scenario::AcceptEscaped,
-        Scenario::Deleted,
         Scenario::RestartReady,
         Scenario::RestartPartial,
         Scenario::RestartAccepted,
+        Scenario::Unrouteable,
     ] {
         run_find(scenario);
     }
@@ -50,15 +49,16 @@ enum Scenario {
     CancelPreview,
     Accept,
     AcceptEscaped,
-    Deleted,
     RestartReady,
     RestartPartial,
     RestartAccepted,
+    /// The followed route has unresolved avoidance, so no visit can leave it.
+    Unrouteable,
 }
 
 fn run_find(scenario: Scenario) {
     let free_ride = matches!(scenario, Scenario::FreeRide | Scenario::FreeAccept);
-    let expected_plans = if free_ride { 4 } else { 8 };
+    let expected_measures = if free_ride { 4 } else { 8 };
     let mut points: Vec<_> = (1..=8).rev().map(|n| (500_000, 503_400 + n * 100)).collect();
     points.push((500_000, 500_000));
     points.extend((1..=8).map(|n| (500_000 + n * 10_000, 500_000)));
@@ -117,10 +117,14 @@ fn run_find(scenario: Scenario) {
     let gpx =
         br#"<gpx><trk><trkseg><trkpt lon="0.500" lat="0.500"/><trkpt lon="0.580" lat="0.500"/></trkseg></trk></gpx>"#;
     obc_route::gpx_to_obcr(&obc_formats::io::SliceSource(gpx), "Original", &mut output).unwrap();
-    let source = obc_formats::io::SliceSource(output.bytes());
+    let mut output = output.into_bytes();
+    if scenario == Scenario::Unrouteable {
+        output[5] |= obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE;
+    }
+    let source = obc_formats::io::SliceSource(&output);
     let index = obc_route::RouteIndex::read(&source).unwrap();
     let route = obc_route::RouteReader::new(&index, &source);
-    let mut routes = crate::FlatRouteStore::new(owner, &[output.bytes()]).unwrap();
+    let mut routes = crate::FlatRouteStore::new(owner, &[&output]).unwrap();
     let original = routes.ids()[0];
     let mut app = App::new_idle(AppState::new(500_000, 500_000, 0.1));
     feed_routes(&mut app, &routes, &mut NoTrace);
@@ -135,9 +139,8 @@ fn run_find(scenario: Scenario) {
     let mut frame = crate::RgbaFrame::new(240, 320);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
     let mut failures = Vec::new();
-    let mut previews = 0;
+    let mut measures = 0;
     let mut acquisitions = 0;
-    let mut restores = 0;
     let mut releases = 0;
     let mut selected_preview: Option<obc_app::navigator::ReviewedRoute> = None;
     let mut selected_shape = Vec::new();
@@ -145,7 +148,6 @@ fn run_find(scenario: Scenario) {
     let mut reentered = false;
     let mut recording_before_mode = false;
     let mut pending_without_render = 0;
-    let mut calculated = Vec::new();
     let mut ordinary = None;
     let cancel_at = match scenario {
         Scenario::CancelPlanning => Some(obc_app::navigator::ReviewStatus::Planning),
@@ -178,22 +180,20 @@ fn run_find(scenario: Scenario) {
             tests::SUPPORT,
         );
         if let Some(effect) = plan.effects.navigator.take() {
-            if let NavigatorEffect::Acquire { work, .. } = effect {
-                assert!(host.plan_token().is_none());
-                if matches!(work, PlannerWork::RestoreReview(_)) {
-                    restores += 1;
-                } else {
+            match effect {
+                NavigatorEffect::Acquire { work: PlannerWork::MeasureLegs(_), .. } => {
+                    assert!(host.plan_token().is_none());
+                    measures += 1;
+                }
+                NavigatorEffect::Acquire { .. } => {
+                    assert!(host.plan_token().is_none());
                     acquisitions += 1;
                 }
-            }
-            if phase > 0 && phase != 16 && !(19..=21).contains(&phase) {
-                assert!(
-                    !matches!(effect, NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. }),
-                    "selection and reopening must not run A* or publish another route"
-                );
-            }
-            if matches!(effect, NavigatorEffect::Release { .. }) {
-                releases += 1;
+                NavigatorEffect::CommitRoute { .. } => {
+                    assert_ne!(phase, 0, "ranking publishes nothing");
+                }
+                NavigatorEffect::Release { .. } => releases += 1,
+                _ => {}
             }
             plan.effects.navigator.try_put(effect).unwrap();
         }
@@ -212,14 +212,9 @@ fn run_find(scenario: Scenario) {
         if let obc_app::navigator::ReviewStatus::Failed(error) = app.assistant_review_status() {
             failures.push(error);
         }
-        if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview {
-            previews += 1;
-            if phase == 0 {
-                let preview = app.assistant_preview().unwrap();
-                if !calculated.contains(&preview.source) {
-                    calculated.push(preview.source);
-                }
-            }
+        if phase == 0 {
+            assert!(app.assistant_preview().is_none(), "ranking previews nothing");
+            assert_eq!(routes.ids(), &[original], "ranking stores nothing");
         }
         let mode_cycle = (19..=21).contains(&phase);
         if mode_cycle && app.assistant_route_pending() && !host.owns_navigation() {
@@ -256,32 +251,24 @@ fn run_find(scenario: Scenario) {
             assert!(matches!(app.top_screen(), obc_app::screen::Screen::Menu(_)));
             phase = 8;
         }
-        let restart = phase == 0
-            && ((scenario == Scenario::RestartReady
-                && app.find_place_state() == State::Ready
-                && routes.ids().len() == 5)
-                || (scenario == Scenario::RestartPartial && calculated.len() == 4))
+        let restart = (phase == 0 && scenario == Scenario::RestartPartial && measures == 4)
+            || phase == 2
+                && scenario == Scenario::RestartReady
+                && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview
             || phase == 12
                 && scenario == Scenario::RestartAccepted
                 && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted;
         if restart {
             if scenario == Scenario::RestartReady {
-                let fingerprint = *calculated
-                    .iter()
-                    .find(|fingerprint| routes.fingerprint(fingerprint.object) == Some(**fingerprint))
-                    .unwrap();
-                let source = obc_formats::obcr::RouteSourceKey {
-                    store: routes.store_scope().unwrap().store.bytes(),
-                    object: fingerprint.object,
-                    revision: fingerprint.revision,
-                };
-                let bytes = routes.pin_review(source).unwrap();
-                let mut payload = vec![0; bytes.len() as usize];
-                bytes.read_at(0, &mut payload).unwrap();
+                // Leftovers of interrupted reviews: many candidates nobody holds, and one ordinary route.
+                let preview = app.assistant_preview().unwrap();
+                let bytes = routes.source(preview.source.object).unwrap();
+                let mut payload = vec![0; obc_formats::io::ByteSource::len(&bytes) as usize];
+                obc_formats::io::ByteSource::read_at(&bytes, 0, &mut payload).unwrap();
                 for _ in 0..20 {
                     routes.publish_review_route(&payload).unwrap();
                 }
-                ordinary = Some(routes.publish_nav_route(output.bytes()).unwrap().id);
+                ordinary = Some(routes.publish_nav_route(&output).unwrap().id);
             }
             app = App::new_idle(AppState::new(500_000, 500_000, 0.1));
             feed_routes(&mut app, &routes, &mut NoTrace);
@@ -324,14 +311,13 @@ fn run_find(scenario: Scenario) {
                     "only the selected ordinary route is checkpointed, never a candidate"
                 );
                 assert!(app.assistant_preview_shape().is_empty());
-                assert!(releases >= acquisitions + restores, "all planner owners receive release ACKs");
+                assert!(releases >= acquisitions + measures, "all planner owners receive release ACKs");
                 if free_ride && !reentered {
                     app.open_find_place();
                     app.apply_gesture(Gesture::Press);
                     acquisitions = 0;
-                    restores = 0;
+                    measures = 0;
                     releases = 0;
-                    calculated.clear();
                     reentered = true;
                     phase = 0;
                     continue;
@@ -339,14 +325,20 @@ fn run_find(scenario: Scenario) {
                 phase = 9;
                 break;
             }
-            0 if app.find_place_state() == State::Ready && routes.ids().len() == 5 => {
-                assert_eq!(acquisitions, expected_plans, "all eligible nearby and forward places are measured");
-                assert_eq!(calculated.len(), expected_plans);
-                assert_eq!(restores, 0);
-                assert_eq!(routes.unaccepted_routes().count_ones(), 4, "only the ranked choices remain after pruning");
-                assert!(releases >= acquisitions);
+            0 if scenario == Scenario::Unrouteable && app.find_place_state() == State::Ready => {
+                assert_eq!((measures, app.find_place_result_count()), (0, 0), "nothing is measured on this route");
+                phase = 30;
+            }
+            30..=34 => {
+                assert_eq!(app.find_place_state(), State::Ready, "the empty list stays, without a search-changed card");
+                phase += 1;
+            }
+            0 if app.find_place_state() == State::Ready => {
+                assert_eq!(measures, expected_measures, "all eligible nearby and forward places are measured");
+                assert_eq!(acquisitions, 0, "ranking composes no route");
+                assert!(releases >= measures);
                 assert!(app.assistant_planner_released());
-                assert_eq!(app.find_place_result_count(), 4, "previews={previews}, failures={failures:?}");
+                assert_eq!(app.find_place_result_count(), 4, "failures={failures:?}");
                 assert!(
                     routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
                     "only the selected ordinary route is checkpointed, never a candidate"
@@ -364,10 +356,15 @@ fn run_find(scenario: Scenario) {
             2 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview
                 && app.assistant_planner_released() =>
             {
-                assert_eq!(acquisitions, expected_plans);
-                assert_eq!(restores, 1);
+                assert_eq!(acquisitions, 1, "the pressed result composes its route");
                 let preview = app.assistant_preview().unwrap();
-                assert!(calculated.contains(&preview.source), "selection reuses a measured candidate");
+                assert_eq!(routes.ids().len(), 2);
+                app.prepare_find(Some(&map.reader()), pass_route);
+                let (list, review) = (app.find_place_costs(0).unwrap(), app.find_review_costs().unwrap());
+                assert!(review.arrival_m.abs_diff(list.arrival_m) <= 5, "list {list:?} review {review:?}");
+                assert!(review.added_m.zip(list.added_m).is_none_or(|(a, b)| a.abs_diff(b) <= 5));
+                assert_eq!(review.added_m.is_some(), list.added_m.is_some());
+                assert_eq!(review.arrival_ascent_m.is_some(), list.arrival_ascent_m.is_some());
                 assert!(!app.assistant_preview_shape().is_empty(), "published shape is token-bound and readable");
                 assert!(
                     routes.read_checkpoint().unwrap().is_none_or(|saved| saved.route.object == original),
@@ -417,7 +414,7 @@ fn run_find(scenario: Scenario) {
                 let source = routes.source(preview.source.object).unwrap();
                 let info = obc_route::RouteObjectInfo::read(&source).unwrap();
                 assert_eq!(info.visit.is_none(), destination);
-                assert_eq!(acquisitions, expected_plans + phase as usize - 18);
+                assert_eq!(acquisitions, phase as usize - 17);
                 assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
                 assert_eq!(app.recorder.recording(), recording_before_mode);
                 if phase == 21 {
@@ -432,6 +429,7 @@ fn run_find(scenario: Scenario) {
             10 if app.assistant_planner_released() => {
                 assert!(settled(&app), "no review is in progress: {:?}", app.assistant_review_status());
                 assert!(app.assistant_preview_shape().is_empty());
+                assert_eq!(routes.ids(), &[original], "Back retracts the composed route");
                 if free_ride {
                     assert_eq!(
                         frame.as_rgba(),
@@ -439,34 +437,15 @@ fn run_find(scenario: Scenario) {
                         "Back must repaint the choices without preview geometry"
                     );
                 }
-                let preview = selected_preview.unwrap();
-                assert_eq!(routes.fingerprint(preview.source.object), Some(preview.source), "Back retains exact bytes");
-                if scenario == Scenario::Deleted {
-                    routes
-                        .retract_nav_route(crate::RoutePublication {
-                            store: routes.store_scope().map(|scope| scope.store),
-                            id: preview.source.object,
-                            revision: preview.source.revision,
-                        })
-                        .unwrap();
-                    feed_routes(&mut app, &routes, &mut NoTrace);
-                }
                 app.apply_gesture(Gesture::Press);
                 phase = 11;
             }
-            11 if scenario == Scenario::Deleted
-                && matches!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Failed(_)) =>
-            {
-                assert_eq!(acquisitions, expected_plans);
-                assert!(app.assistant_preview().is_none(), "a removed source cannot be restored");
-                app.apply_gesture(Gesture::BackHold);
-                phase = 8;
-            }
             11 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview => {
-                assert_eq!(acquisitions, expected_plans);
-                assert_eq!(restores, 2);
-                assert_eq!(app.assistant_preview(), selected_preview);
+                assert_eq!(acquisitions, 2, "a second press composes again");
+                let preview = app.assistant_preview().unwrap();
+                assert_eq!(preview.distance_m, selected_preview.unwrap().distance_m);
                 assert_eq!(app.assistant_preview_shape(), selected_shape);
+                selected_preview = Some(preview);
                 if free_ride {
                     assert!(app.assistant_review_context().unwrap().original.is_none());
                     app.apply_gesture(Gesture::BackHold);
@@ -545,7 +524,7 @@ fn run_find(scenario: Scenario) {
             5 => {
                 app.apply_gesture(Gesture::Press);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiDetail(_)));
-                assert_eq!(acquisitions, expected_plans, "paging does not plan more candidates");
+                assert_eq!(measures, expected_measures, "paging does not measure more candidates");
                 app.apply_gesture(Gesture::Back);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiList(_)));
                 app.apply_gesture(Gesture::Back);
@@ -555,6 +534,7 @@ fn run_find(scenario: Scenario) {
                 phase = 6;
             }
             6 if routes.ids() == [original] => break,
+            35 => break,
             _ => {}
         }
     }
@@ -563,6 +543,7 @@ fn run_find(scenario: Scenario) {
         Scenario::ModeCycle | Scenario::Accept | Scenario::AcceptEscaped => 13,
         Scenario::Browse => 6,
         Scenario::RestartReady | Scenario::RestartPartial | Scenario::RestartAccepted => 15,
+        Scenario::Unrouteable => 35,
         _ => 9,
     };
     assert_eq!(
@@ -582,6 +563,6 @@ fn run_find(scenario: Scenario) {
             | Scenario::RestartPartial
             | Scenario::RestartAccepted
     ) {
-        assert_eq!(routes.ids(), &[original], "{scenario:?}: no retained route leaks after leaving Find");
+        assert_eq!(routes.ids(), &[original], "{scenario:?}: no composed route leaks after leaving Find");
     }
 }

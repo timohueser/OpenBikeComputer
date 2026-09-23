@@ -90,12 +90,14 @@ impl FindPlaceScreen {
             let first = list::window_start(self.selected, 6, PoiCategory::ALL.len());
             for (slot, cat) in PoiCategory::ALL.iter().skip(first).take(6).enumerate() {
                 let y = 43 + slot as i32 * 44;
-                if first + slot == self.selected {
+                let bg = if first + slot == self.selected { AMBER } else { PARCHMENT };
+                if bg == AMBER {
                     cv.round(rect(10, y, rx.w - 20, 40), 6, AMBER);
                 }
+                super::poi_menu::draw_category_icon(cv, *cat, Point::new(30, y + 20), INK, bg);
                 cv.text(
                     rx.t(super::poi_menu::category_msg(*cat)),
-                    Point::new(18, y + 5),
+                    Point::new(50, y + 5),
                     Font::Body,
                     TextAlign::Left,
                     if first + slot == self.selected { ON_ACCENT } else { INK },
@@ -114,17 +116,17 @@ impl FindPlaceScreen {
         let vp = fit(min, max, rx.w, rx.h, RESULTS_PANEL_TOP);
         let chrome = [super::landmarks::header_box(rx.w), panel(rx.w, rx.h, RESULTS_PANEL_TOP)];
         let _ = super::map::draw_map_scene(cv, rx, &vp, None, &chrome);
-        for i in 0..rx.find.results.len() {
+        // The selected pin is drawn last, so a neighbour never covers it. It is inverted, which
+        // keeps it legible on an amber road.
+        let count = rx.find.results.len();
+        let sel = self.selected;
+        for i in (0..count).filter(|&i| i != sel).chain((sel < count).then_some(sel)) {
             if let Some(p) = rx.find.selected(i, rx.poi_scratch, rx.corridor) {
                 let (x, y) = vp.to_screen(p.lon, p.lat);
-                cv.round(rect(x - 11, y - 12, 23, 24), 4, if i == self.selected { AMBER } else { PARCHMENT });
-                cv.text(
-                    letter(i),
-                    Point::new(x, y - 12),
-                    Font::Label,
-                    TextAlign::Center,
-                    if i == self.selected { ON_ACCENT } else { INK },
-                );
+                let (ring, fill, ink) = if i == sel { (PARCHMENT, INK, PARCHMENT) } else { (INK, PARCHMENT, INK) };
+                cv.round(rect(x - 13, y - 14, 27, 28), 5, ring);
+                cv.round(rect(x - 11, y - 12, 23, 24), 4, fill);
+                cv.text(letter(i), Point::new(x, y - 12), Font::Label, TextAlign::Center, ink);
             }
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
@@ -138,7 +140,6 @@ impl FindPlaceScreen {
         );
         cv.fill(panel(rx.w, rx.h, RESULTS_PANEL_TOP), PARCHMENT);
         cv.round(rect(10, 210, rx.w - 20, 104), 6, AMBER);
-        let count = rx.find.results.len();
         if self.selected >= count.max(1) {
             cv.text(
                 rx.t(Msg::AssistantMorePlaces),
@@ -506,9 +507,9 @@ fn figures(
     let mut d = heapless::String::<20>::new();
     super::vocab::fmt::write_distance_coarse(&mut d, if extra { "+" } else { "" }, distance, units);
     cv.text(&d, Point::new(18, y), Font::Label, TextAlign::Left, INK);
-    cv.triangle(Point::new(125, y + 18), Point::new(132, y + 6), Point::new(139, y + 18), INK);
-    let c = super::vocab::fmt::elevation_short(climb, units);
-    cv.text(&c, Point::new(146, y), Font::Label, TextAlign::Left, INK);
+    if climb.is_some() {
+        super::poi_display::draw_climb_figure(cv, 125, y, &super::vocab::fmt::elevation_short(climb, units), INK);
+    }
 }
 
 #[cfg(test)]

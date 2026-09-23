@@ -61,7 +61,7 @@ impl<'a, D, F> Canvas<'a, D, F> {
     /// Whether a primitive with bounding box `bbox` can be skipped outright. `false` on a full
     /// frame, so the normal path draws everything.
     #[inline]
-    pub(crate) fn rejects(&self, bbox: &Rectangle) -> bool {
+    pub fn rejects(&self, bbox: &Rectangle) -> bool {
         self.clip.is_some_and(|c| bbox.intersection(&c).is_zero_sized())
     }
 

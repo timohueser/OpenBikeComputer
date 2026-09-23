@@ -1,7 +1,7 @@
 //! OBCR routes and the trip object, read through `obc-route`.
 
 use obc_formats::io::ByteSource;
-use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, TripMeta, TripSummary};
+use obc_route::{for_each_waypoint, read_trip_day, RouteIndex, RouteObjectInfo, TripSummary};
 
 use crate::report::{degrees, Report};
 
@@ -53,20 +53,26 @@ pub fn route(source: &dyn ByteSource) -> Result<Report, String> {
     Ok(out)
 }
 
-/// The trip object (`.obt`): a name and the ordered route ids it stages. It carries no magic, so
-/// the file name selects it.
+/// The trip object (`.obt`): a name, a key, a start date and the days in ride order. It carries no
+/// magic, so the file name selects it.
 pub fn trip(source: &dyn ByteSource) -> Result<Report, String> {
     let summary = TripSummary::read(source).map_err(|error| format!("trip header: {error:?}"))?;
-    let meta = TripMeta::read(source).map_err(|error| format!("trip stages: {error:?}"))?;
     let mut version = [0u8; 1];
     source.read_at(0, &mut version).map_err(|error| format!("trip header: {error:?}"))?;
 
     let mut out = Report::new();
     out.put("version", version[0]).put("bytes", source.len());
-    out.put("name", summary.name.as_str()).put("stage_count", summary.stage_count);
-    out.put("stages", meta.stage_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
-    if meta.truncated {
-        out.put("listed", meta.stage_ids.len());
+    out.put("name", summary.name.as_str())
+        .put("key", format!("{:#018x}", summary.key))
+        .put("start_date", summary.start_date)
+        .put("day_count", summary.day_count);
+    let mut days = Vec::new();
+    for k in 0..summary.day_count {
+        let day = read_trip_day(source, k).map_err(|error| format!("trip day {k}: {error:?}"))?;
+        let mut row = Report::new();
+        row.put("route", day.route.to_string()).put("join_m", day.join_m).put("leave_m", day.leave_m);
+        days.push(row);
     }
+    out.list("days", days);
     Ok(out)
 }

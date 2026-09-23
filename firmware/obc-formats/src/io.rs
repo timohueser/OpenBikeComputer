@@ -49,6 +49,13 @@ pub trait ByteSink {
     fn write(&mut self, buf: &[u8]) -> Result<(), Error>;
     /// Overwrite an already-written range at absolute `offset`.
     fn patch_at(&mut self, offset: u32, buf: &[u8]) -> Result<(), Error>;
+    /// Append one OBCR chunk body: point records that are deltas from `anchor` (lon, lat, ele).
+    /// The chunk index at the end of the stream holds the anchor, so a sink that reads the
+    /// geometry while it streams gets it here.
+    fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+        let _ = anchor;
+        self.write(body)
+    }
 }
 
 /// A [`ByteSource`] over an in-memory slice.

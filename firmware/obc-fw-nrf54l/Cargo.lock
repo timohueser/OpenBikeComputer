@@ -1295,6 +1295,7 @@ dependencies = [
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
+ "heapless 0.8.0",
  "obc-crc",
  "obc-ports",
 ]
@@ -1401,6 +1402,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-crc",
  "obc-elevation",
  "obc-formats",
  "obc-map-scene",
@@ -1877,7 +1879,6 @@ dependencies = [
  "aes",
  "bt-hci",
  "cmac",
- "defmt 1.1.0",
  "embassy-futures",
  "embassy-sync",
  "embassy-time",

@@ -3,6 +3,7 @@ schema = 1
 # Native reports remain unchanged. Summaries exclude test-only Rust syntax items.
 # Baselines and their measurement provenance live in coverage-baseline.json.
 exclude = [
+  { path = "firmware/obc-sensor-sim/src/**", evidence = "Development-only BLE sensor mock. Its standalone nextest suite checks wire measurements, crank timing, controls and calibration; the embedded job builds and lints the radio adapter." },
   { path = "**/tests/**", evidence = "Test source; the containing production component is measured." },
   { path = "**/tests.rs", evidence = "Test source; the containing production component is measured." },
   { path = "**/*_tests.rs", evidence = "Test source; the containing production component is measured." },
@@ -96,7 +97,7 @@ enforcement = "report"
 
 [[component]]
 id = "ios"
-include = ["apps/obc-ios-host/src/**", "companion-ios/Packages/OBCKit/Sources/**", "companion-ios/OBCCompanion/**"]
+include = ["apps/obc-ios-host/src/**", "apps/obc-companion-core/src/**", "companion-ios/Packages/OBCKit/Sources/**", "companion-ios/Packages/OBCRouting/Sources/**", "companion-ios/OBCCompanion/**"]
 exclude = []
 enforcement = "report"
 

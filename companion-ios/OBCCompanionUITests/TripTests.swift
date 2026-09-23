@@ -1,9 +1,9 @@
 import XCTest
 
 /// The trip card in the routes list and the trip page behind it, driven through the real UI
-/// against the trips fixture: one trip grouping two routes, plus three loose routes. The model
-/// logic is host-tested in `TripListModelTests`; this proves the wiring from launch argument to
-/// interleaved list to trip page to stage detail.
+/// against the trips fixture: one two-day trip, plus three routes. The model logic is host-tested
+/// in `TripListModelTests`; this proves the wiring from launch argument to interleaved list to
+/// trip page.
 final class TripTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -34,21 +34,23 @@ final class TripTests: XCTestCase {
     }
 
     private let tripCardID = "main.trip.driftless-weekender"
-    private let stageAID = "trip.stage.devils-lake-overnighter"
-    private let stageBID = "trip.stage.cross-plains-gravel"
-
-    /// Open the trip page and wait until its stage rows are up: the drill-in the other flows share.
+    /// Open the trip page and wait until its day rows are up: the drill-in the other flows share.
     @MainActor
     private func openTrip(_ app: XCUIApplication) {
         waitForMain(app)
         let card = app.buttons[tripCardID]
         XCTAssertTrue(card.waitForExistence(timeout: 10), "trip card missing")
         card.tap()
-        XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "trip page did not open")
+        XCTAssertTrue(day(app, 0).waitForExistence(timeout: 10), "trip page did not open")
     }
 
-    /// The trip card renders in the interleaved list, named and with the summed stage line, and
-    /// the filed routes are not loose rows.
+    @MainActor
+    private func day(_ app: XCUIApplication, _ index: Int) -> XCUIElement {
+        app.descendants(matching: .any)["trip.day.\(index)"].firstMatch
+    }
+
+    /// The trip card renders in the interleaved list, named and with the summed day line, and
+    /// the joined routes are not route rows.
     @MainActor
     func testTripCardRendersInterleavedWithLooseRoutes() {
         let app = launch()
@@ -56,37 +58,24 @@ final class TripTests: XCTestCase {
 
         XCTAssertTrue(app.buttons[tripCardID].waitForExistence(timeout: 10), "trip card missing")
         XCTAssertTrue(app.staticTexts["Driftless Weekender"].exists)
-        // Loose routes still show; filed routes do not appear at the top level.
-        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists, "loose route missing")
-        XCTAssertFalse(app.staticTexts["Devil's Lake Overnighter"].exists, "filed route leaked to top level")
+        // Routes still show; the joined routes live only in the trip's line.
+        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists, "route missing")
+        XCTAssertFalse(app.staticTexts["Devil's Lake Overnighter"].exists, "joined route leaked to top level")
         snap(app, "TR6-trip-card")
     }
 
-    /// Tapping the trip card opens the trip page with both stages and the Upload trip action,
+    /// Tapping the trip card opens the trip page with both days and the Upload trip action,
     /// enabled because the connected device holds no copy of this trip yet.
     @MainActor
     func testDrillIntoTripPage() {
         let app = launch()
         openTrip(app)
 
-        XCTAssertTrue(app.buttons[stageBID].exists, "second stage row missing")
+        XCTAssertTrue(day(app, 1).exists, "second day row missing")
         let upload = app.buttons["trip.upload"]
         XCTAssertTrue(upload.exists, "Upload trip action missing")
         XCTAssertTrue(upload.isEnabled, "Upload trip must be enabled on a connected device (TR8)")
         snap(app, "TR6-trip-page")
-    }
-
-    /// A stage opens the ordinary route detail, exactly as a top-level card does.
-    @MainActor
-    func testStageTapsThroughToRouteDetail() {
-        let app = launch()
-        openTrip(app)
-        app.buttons[stageAID].tap()
-
-        XCTAssertTrue(
-            app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 10),
-            "route detail missing")
-        XCTAssertTrue(app.staticTexts["Devil's Lake Overnighter"].waitForExistence(timeout: 5))
     }
 
     /// Rename the trip through the overflow menu.
@@ -111,30 +100,9 @@ final class TripTests: XCTestCase {
             "renamed trip title missing")
     }
 
-    /// Remove a stage through its swipe action: the route returns to the top level and the trip
-    /// keeps its remaining stage.
+    /// Delete the trip: the trip card is gone, and the routes survive.
     @MainActor
-    func testRemoveStageReturnsRouteToTopLevel() {
-        let app = launch()
-        openTrip(app)
-
-        app.buttons[stageAID].swipeLeft()
-        app.buttons["Remove"].firstMatch.tap()
-
-        // The first stage is gone from the trip; the second remains.
-        XCTAssertFalse(app.buttons[stageAID].waitForExistence(timeout: 3), "removed stage still in trip")
-        XCTAssertTrue(app.buttons[stageBID].exists, "remaining stage missing")
-
-        // Back on the list, the removed route is now a loose top-level card.
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(
-            app.staticTexts["Devil's Lake Overnighter"].waitForExistence(timeout: 5),
-            "removed route did not return to the top level")
-    }
-
-    /// Ungroup: the trip disappears, and its routes stay in the library as loose top-level cards.
-    @MainActor
-    func testDeleteTripUngroupKeepsRoutes() {
+    func testDeleteTrip() {
         let app = launch()
         openTrip(app)
 
@@ -142,32 +110,28 @@ final class TripTests: XCTestCase {
         let delete = app.buttons["trip.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")
         delete.tap()
-        app.sheets.buttons["Ungroup"].tap()
-
-        // Popped back to the list: the trip card is gone but the routes remain.
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived ungroup")
-        XCTAssertTrue(app.staticTexts["Devil's Lake Overnighter"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Cross-Plains Gravel"].exists)
-    }
-
-    /// Delete trip and routes: the trip and both member routes are gone, and the loose routes
-    /// survive.
-    @MainActor
-    func testDeleteTripAndRoutesRemovesMembers() {
-        let app = launch()
-        openTrip(app)
-
-        app.buttons["trip.overflow"].tap()
-        let delete = app.buttons["trip.delete"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")
-        delete.tap()
-        app.sheets.buttons["Delete trip & routes"].tap()
+        app.sheets.buttons["Delete trip"].tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")
-        XCTAssertFalse(app.staticTexts["Devil's Lake Overnighter"].exists, "member route survived delete")
-        // A loose route that was never in the trip is untouched.
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists)
+    }
+
+    /// Day 1 ends at a transfer: Day 2 starts 35 km away. The stops sheet lists the fixture
+    /// campground, says why the day end stays, and does not offer the pick.
+    @MainActor
+    func testStopsAtATransferAreShownButNotPicked() {
+        let app = launch()
+        openTrip(app)
+
+        day(app, 0).press(forDuration: 1)
+        let stops = app.buttons["trip.day.stops"]
+        XCTAssertTrue(stops.waitForExistence(timeout: 5), "day menu did not open")
+        stops.tap()
+        let camp = app.buttons["stops.row"].firstMatch
+        XCTAssertTrue(camp.waitForExistence(timeout: 10), "no stop in the sheet")
+        XCTAssertTrue(app.staticTexts["Devil's Lake State Park Campgrounds"].exists)
+        XCTAssertTrue(app.staticTexts["This day ends at a transfer."].exists)
+        XCTAssertFalse(camp.isEnabled, "a pick would put the gap inside a day")
     }
 }

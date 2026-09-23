@@ -14,9 +14,8 @@ use crate::{
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_map_scene::BBox;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
-use obc_reader::{MapTables, SliceSource};
 
-use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ride_summary, ReplayFix};
+use super::support::{build_min_obcm, keys, quiet_pass, render_120, ride_summary, ReplayFix};
 
 fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
     (0..n as crate::CatalogObjectId).collect()
@@ -1028,15 +1027,9 @@ fn pan_back_exits_and_recenters() {
 /// adopts the blob. A drawer is not a settings subtree, so the commit arms the save on its own pass.
 #[test]
 fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
-    let bytes = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).expect("valid fixture");
-
+    use crate::settings::BikeType;
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.test_mount_store();
-    app.set_nav_profiles(tables.nav_profiles()); // the host's map-load mirror
-    assert_eq!(app.nav_profiles().len(), 4, "all four §8.6 names resident");
-    assert_eq!(app.nav_profiles().name(2), Some("MTB"));
 
     // The confirm card the rider reaches from a POI detail, seeded directly: the browse that gets
     // there needs a fix, a corridor snapshot and a queried map, none of which this test is about.
@@ -1052,16 +1045,16 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     assert!(matches!(app.top_screen(), crate::Screen::ContextDrawer(_)), "the sheet, over the card");
     assert!(!owes_a_save(&mut app, ms), "opening a sheet changes no setting");
 
-    // Row 0 is the only row: press into its editor, browse two profiles on, commit.
+    // Row 0 is the only row: press into its editor, browse two types on, commit.
     app.apply_gesture(Gesture::Press);
     ms += 400; // let the page slide land
     app.advance_animations(obc_ports::InputClock(ms));
     app.apply_gesture(Gesture::Step(2)); // Road → Gravel → MTB
-    assert_eq!(app.settings().bike_profile_idx, 0, "browsing commits nothing");
+    assert_eq!(app.settings().bike_type, BikeType::Road, "browsing commits nothing");
     app.apply_gesture(Gesture::Press);
     ms += 400;
     app.advance_animations(obc_ports::InputClock(ms));
-    assert_eq!(app.settings().bike_profile_idx, 2, "Select wrote the profile the editor was on");
+    assert_eq!(app.settings().bike_type, BikeType::Mtb, "Select wrote the type the editor was on");
     assert!(owes_a_save(&mut app, ms), "a drawer is not a settings subtree: the save is armed now");
 
     app.apply_gesture(Gesture::Back);
@@ -1073,7 +1066,7 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     let mut app2 = App::new_idle(AppState::new(0, 0, 0.05));
     app2.test_mount_store();
     app2.set_settings(restored);
-    assert_eq!(app2.settings().bike_profile_idx, 2, "the bike profile survives the reboot");
+    assert_eq!(app2.settings().bike_type, BikeType::Mtb, "the bike type survives the reboot");
 }
 
 /// The map sheet is the only way to all three display switches, and their answers survive a
@@ -1117,28 +1110,6 @@ fn the_map_sheet_reaches_all_three_settings_and_survives_a_reboot() {
     app2.set_settings(restored);
     let s = app2.settings();
     assert!(!s.map_clock && !s.map_scale_bar && !s.map_contours, "all three choices survive the reboot");
-}
-
-/// A stored index past the loaded map's profile count renders profile 0's name — the profile the
-/// router falls back to — so the UI never names a profile the map does not have.
-#[test]
-fn bike_type_out_of_range_renders_fallback() {
-    let bytes = build_min_obcm_profiles(0, &["Road", "MTB"]);
-    let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).expect("valid fixture");
-
-    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    app.test_mount_store();
-    app.set_nav_profiles(tables.nav_profiles());
-    app.set_settings(Settings { bike_profile_idx: 7, ..Settings::default() }); // stale: map has 2
-
-    let mut label: heapless::String<20> = heapless::String::new();
-    app.nav_profiles().write_label(app.settings().bike_profile_idx, &mut label);
-    assert_eq!(label.as_str(), "Road", "an out-of-range index shows profile 0's name — what routing will use");
-
-    let mut ok: heapless::String<20> = heapless::String::new();
-    app.nav_profiles().write_label(1, &mut ok);
-    assert_eq!(ok.as_str(), "MTB", "an in-range index shows the map's name");
 }
 
 /// Back-hold always reaches the main menu, from one representative of every screen family.
@@ -1429,10 +1400,13 @@ fn the_deepest_descent_stops_short_of_max_depth() {
         app.test_mount_store();
         app.set_backlight_available(true);
         app.set_routes_with_ids(&test_routes(), &IDS3);
-        app.set_rides(&[
-            crate::RideEntry { id: 7, summary: ride_summary("Ride A") },
-            crate::RideEntry { id: 9, summary: ride_summary("Ride B") },
-        ]);
+        app.set_rides(
+            &[
+                crate::RideEntry { id: 7, summary: ride_summary("Ride A") },
+                crate::RideEntry { id: 9, summary: ride_summary("Ride B") },
+            ],
+            &[],
+        );
         // The escape is the way in from a riding view, and [Home, Map, Menu] is the deepest root a
         // descent starts from. On the Map itself a step zooms and a press pauses.
         app.apply_gesture(Gesture::BackHold);

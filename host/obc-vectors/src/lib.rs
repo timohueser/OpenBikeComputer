@@ -97,7 +97,7 @@ impl ByteSink for VecSink {
     }
 }
 
-/// Convert a GPX string to OBCR v3 bytes via the reference converter.
+/// Convert a GPX string to OBCR bytes via the reference converter.
 pub fn build_route(gpx: &str) -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
     gpx_to_obcr(&SliceSource(gpx.as_bytes()), ROUTE_NAME, &mut sink).unwrap();
@@ -157,7 +157,7 @@ pub fn track_log() -> Vec<u8> {
     v
 }
 
-/// The GPX 1.1 export of [`ride_v3`], through the production converter (`track_to_gpx`).
+/// The GPX 1.1 export of [`ride_v4`], through the production converter (`track_to_gpx`).
 ///
 /// Unlike the binary fixtures there is no independent spec to rebuild this from — the exporter's
 /// serialization *is* the contract — so this goes through the real code, exactly like
@@ -165,7 +165,7 @@ pub fn track_log() -> Vec<u8> {
 /// (`obc-web-convert`, compiled to wasm) must reproduce these bytes character-for-character.
 pub fn track_export_gpx() -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
-    obc_route::track_to_gpx(&SliceSource(&ride_v3()), TRACK_NAME, &mut sink).unwrap();
+    obc_route::track_to_gpx(&SliceSource(&ride_v4()), TRACK_NAME, &mut sink).unwrap();
     sink.0
 }
 
@@ -176,9 +176,10 @@ fn le32(v: u32) -> [u8; 4] {
     v.to_le_bytes()
 }
 
-/// Ride object v3: three exact 20-byte recorded samples followed by the fixed 84-byte footer.
-/// Built field-by-field from the specification rather than through the production codec.
-pub fn ride_v3() -> Vec<u8> {
+/// Ride object v4: three exact 20-byte recorded samples followed by the fixed 144-byte footer.
+/// Built field-by-field from the specification rather than through the production codec. The ride
+/// started on day 2 of 3 of the [`TRIP_KEY`] trip, on a Gravel bike.
+pub fn ride_v4() -> Vec<u8> {
     let mut v = Vec::new();
     // lon µdeg, lat µdeg, ele m, flags, t_ms, hr, cadence, power.
     for (lon, lat, ele, flags, t_ms, hr, cad, pwr) in [
@@ -198,9 +199,9 @@ pub fn ride_v3() -> Vec<u8> {
 
     let name = b"Sensor Ride";
     v.extend_from_slice(b"OBRF");
-    v.push(3); // version
+    v.push(4); // version
     v.push(name.len() as u8);
-    v.extend_from_slice(&le16(84)); // fixed footer length
+    v.extend_from_slice(&le16(144)); // fixed footer length
     v.extend_from_slice(&le32(1_751_460_000)); // start_time
     v.extend_from_slice(&le32(12_345)); // distance m
     v.extend_from_slice(&le32(3_600)); // moving_time s
@@ -215,6 +216,13 @@ pub fn ride_v3() -> Vec<u8> {
     v.extend_from_slice(&le16(480)); // max_pwr
     v.extend_from_slice(name);
     v.resize(3 * 20 + 84, 0); // fixed 48-byte name slot
+    v.extend_from_slice(&TRIP_KEY.to_le_bytes());
+    v.push(1); // day index: the second day
+    v.push(3); // day count
+    v.push(1); // bike type: Gravel
+    v.push(TRIP_NAME.len() as u8);
+    v.extend_from_slice(TRIP_NAME.as_bytes());
+    v.resize(3 * 20 + 144, 0); // fixed 48-byte trip-name slot
     v
 }
 
@@ -456,27 +464,37 @@ pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
 /// Trip fixture name (also the trip object header name field).
 pub const TRIP_NAME: &str = "Alpen Traverse";
 
-/// The two ordinary route ids in `trip-v2.bin`.
-pub const TRIP_STAGE_IDS: [u64; 2] = [7, 8];
+/// The full-width trip key in `trip-v3.bin`; every byte differs, so a swapped byte order shows.
+pub const TRIP_KEY: u64 = 0x0123_4567_89AB_CDEF;
 
-/// A deliberately wide third stage id that pins full-width read tolerance.
-pub const TRIP_DANGLING_STAGE: u64 = 0x1_0000_0063;
+/// The start date in `trip-v3.bin`: 2025-09-29, a Monday, in days since 1970-01-01.
+pub const TRIP_START_DATE: u16 = 20_360;
 
-/// Trip object v2 (spec §7.7): a 56-byte header (`version 2 · stage_count u16 · name ≤ 48`) followed
-/// by `stage_count × u64` route object ids in ride order. Length = `56 + 8·stage_count`.
-pub fn trip_v2(name: &str, stages: &[u64]) -> Vec<u8> {
+/// The days in `trip-v3.bin` as `(route, join_m, leave_m)`: a day that ends on the line at its
+/// route end, a day that leaves the line 400 m before its stop, and a day that joins the line
+/// after 400 m and ends on it (`leave_m` past the route end). The third route id is full width.
+pub const TRIP_DAYS: [(u64, u32, u32); 3] = [(7, 0, 82_000), (8, 0, 73_600), (0x1_0000_0063, 400, u32::MAX)];
+
+/// Trip object v3 (spec §7.7): a 64-byte header (`version 3 · day_count u16 · name ≤ 48 ·
+/// start_date u16 · trip_key u64`) followed by `day_count` 16-byte day records
+/// (`route u64 · join_m u32 · leave_m u32`). Length = `64 + 16·day_count`.
+pub fn trip_v3(key: u64, name: &str, start_date: u16, days: &[(u64, u32, u32)]) -> Vec<u8> {
     let mut v = Vec::new();
-    v.push(2); // version
+    v.push(3); // version
     v.push(0); // reserved
-    v.extend_from_slice(&le16(stages.len() as u16)); // stage_count
+    v.extend_from_slice(&le16(days.len() as u16)); // day_count
     v.push(name.len() as u8); // name_len
     let mut padded = [0u8; 48];
     padded[..name.len()].copy_from_slice(name.as_bytes());
     v.extend_from_slice(&padded); // name, zero-padded to 48
-    v.extend_from_slice(&[0u8; 3]); // reserved
-    assert_eq!(v.len(), 56, "trip object header is 56 bytes");
-    for &id in stages {
-        v.extend_from_slice(&id.to_le_bytes()); // full-width flat-store ObjectId, ride order
+    v.push(0); // reserved
+    v.extend_from_slice(&le16(start_date));
+    v.extend_from_slice(&key.to_le_bytes());
+    assert_eq!(v.len(), 64, "trip object header is 64 bytes");
+    for &(route, join_m, leave_m) in days {
+        v.extend_from_slice(&route.to_le_bytes()); // full-width flat-store ObjectId, ride order
+        v.extend_from_slice(&le32(join_m));
+        v.extend_from_slice(&le32(leave_m));
     }
     v
 }
@@ -527,14 +545,14 @@ fn visit_envelopes(plain: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
 pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_wp = build_route(ROUTE_GPX);
     let route_plain = build_route(&route_gpx_plain());
-    let trip = trip_v2(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
+    let trip = trip_v3(TRIP_KEY, TRIP_NAME, TRIP_START_DATE, &TRIP_DAYS);
     let terrain = terrain_shard();
     let envelopes = visit_envelopes(&route_plain);
     let mut fixtures = vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
         // The sample-codec fixture remains a codec vector only. GPX export is pinned from the
-        // finished ride-v3 object; headerless sample arrays are not accepted as rides.
+        // finished ride-v4 object; headerless sample arrays are not accepted as rides.
         ("track-log.obct", track_log()),
         ("track-export.gpx", track_export_gpx()),
         // The OBCT terrain shard (`OBCT_Spec.md`): a 2 × 2 cell rectangle with a hole
@@ -543,7 +561,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the
         // spec's guarantee is that they agree bit-for-bit on the same coordinate.
         ("terrain-shard.obcd", terrain.clone()),
-        ("ride-v3.bin", ride_v3()),
+        ("ride-v4.bin", ride_v4()),
         ("config-v1.bin", config_v1()),
         ("place-train-v15.bin", place_record()),
         ("landmark-section-v16.bin", landmarks::section()),
@@ -560,8 +578,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // still what a fielded bootloader and the device's own rollback snapshot look like, and the pair
         // is what pins the offset-compatibility guarantee across implementations.
         ("update-container-v2.bin", update_container_v2()),
-        // A trip (§7.7): two ordinary route ids plus one wide id that pins read tolerance.
-        ("trip-v2.bin", trip),
+        // A trip (§7.7): three days that pin every header and day field.
+        ("trip-v3.bin", trip),
     ];
     fixtures.extend(envelopes);
     fixtures

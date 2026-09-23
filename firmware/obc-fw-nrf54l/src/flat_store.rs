@@ -25,6 +25,57 @@ use obc_storage::flat::{
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
 
+#[repr(C, align(4))]
+struct IdentityBlock([u8; BLOCK_BYTES]);
+
+fn read_recovery_identity(
+    sd: &mut crate::semmc::Semmc,
+    started: embassy_time::Instant,
+    lba: u64,
+    block: &mut IdentityBlock,
+) -> Result<(), SemmcError> {
+    if started.elapsed().as_millis() >= crate::flpr_mux::RECOVERY_READ_START_CUTOFF_MS {
+        return Err(SemmcError::Timeout);
+    }
+    sd.read_recovery_block(lba as u32, &mut block.0)
+}
+
+fn validate_mounted_media(
+    sd: &mut crate::semmc::Semmc,
+    expected: obc_storage::flat::MountedMediaState,
+    started: embassy_time::Instant,
+) -> Result<(), SemmcError> {
+    let observed = u64::from(sd.num_blocks()?);
+    let mut block = IdentityBlock([0; BLOCK_BYTES]);
+    let mut matched_superblock = false;
+    for lba in obc_storage::flat::SUPERBLOCK_BLOCKS {
+        read_recovery_identity(sd, started, lba, &mut block)?;
+        if let Some(identity) = obc_storage::flat::decode_media_identity(&block.0, observed) {
+            if !obc_storage::flat::media_identity_matches(expected, identity) {
+                return Err(SemmcError::MediaChanged);
+            }
+            matched_superblock = true;
+            break;
+        }
+    }
+    if !matched_superblock {
+        return Err(SemmcError::MediaChanged);
+    }
+
+    let mut gates = [None; 2];
+    for (copy, lba) in obc_storage::flat::CATALOG_GATE_BLOCKS.into_iter().enumerate() {
+        read_recovery_identity(sd, started, lba, &mut block)?;
+        gates[copy] = obc_storage::flat::decode_catalog_identity(&block.0, copy, expected.store);
+    }
+    obc_storage::flat::catalog_state_matches(expected, gates).then_some(()).ok_or(SemmcError::MediaChanged)
+}
+
+/// Run the card and retained-mount checks for the ride loop's dedicated recovery pass.
+pub(crate) fn recover_media(store: &FlatStore<FlatCard>) -> Result<(), SemmcError> {
+    let expected = store.mounted_media_state();
+    crate::flpr_mux::recover_storage(|sd, started| validate_mounted_media(sd, expected, started))
+}
+
 /// Bring the card host up before the flat store reads its first block.
 ///
 /// Card identification is bounded at 1.5 seconds. The call is synchronous so its transient state
@@ -82,13 +133,21 @@ impl FlatCard {
     fn lba(lba: u64) -> Result<u32, SemmcError> {
         u32::try_from(lba).map_err(|_| SemmcError::OutOfRange)
     }
+
+    fn access<R>(f: impl FnOnce(&mut crate::semmc::Semmc) -> Result<R, SemmcError>) -> Result<R, SemmcError> {
+        crate::flpr_mux::with_storage(f)
+    }
+
+    fn finish_pending() -> Result<(), SemmcError> {
+        Self::access(|sd| sd.finish_write_blocks())
+    }
 }
 
 impl BlockDevice for FlatCard {
     type Error = SemmcError;
 
     fn block_count(&self) -> Result<u64, SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.num_blocks()).map(u64::from)
+        FlatCard::access(|sd| sd.num_blocks()).map(u64::from)
     }
 
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
@@ -98,7 +157,7 @@ impl BlockDevice for FlatCard {
         let blocks = buf.len() / BLOCK_BYTES;
         #[cfg(feature = "sd-bench")]
         let bench_started = embassy_time::Instant::now();
-        let result = crate::flpr_mux::with_storage(|sd| {
+        let result = FlatCard::access(|sd| {
             // A staged upload may have left the previous arena half in FLPR DMA while USB filled
             // the other one. No read may pass it; joining here preserves block-device ordering.
             sd.finish_write_blocks()?;
@@ -122,8 +181,10 @@ impl BlockDevice for FlatCard {
         });
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
-        if let Err(error) = result {
-            defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
+        if let Err(error) = &result {
+            if *error != SemmcError::Unhealthy {
+                defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
+            }
         }
         result
     }
@@ -131,7 +192,7 @@ impl BlockDevice for FlatCard {
     fn write(&self, lba: u64, buf: &[u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
-        crate::flpr_mux::with_storage(|sd| {
+        FlatCard::access(|sd| {
             // Two arena halves give the USB task an owned, aligned DMA source. Join the older half,
             // start this one, and return while the card runs, so the engine can receive, CRC and
             // fill the disjoint half. Generic callers stay synchronous.
@@ -169,7 +230,7 @@ impl BlockDevice for FlatCard {
     /// completion signal and every write is already durable when the store's next statement runs. A
     /// transport with a write-back cache would move that cost back here.
     fn sync(&self) -> Result<(), SemmcError> {
-        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
+        FlatCard::finish_pending()
     }
 }
 
@@ -325,6 +386,10 @@ pub(crate) enum Request {
         change: obc_app::navigator::CheckpointChange,
     },
     ReconcileMetadata,
+    WriteProgress {
+        record: obc_app::trip::TripProgress,
+        keys: heapless::Vec<u64, { obc_app::MAX_TRIPS }>,
+    },
     CleanupRoute {
         before_utc: u32,
         store: obc_app::device_core::StoreIdentity,
@@ -361,6 +426,8 @@ pub(crate) enum Request {
         allocation: Allocation,
         name: DisplayName,
         original: Option<(ObjectId, Revision)>,
+        /// The route is a built trip day, which replaces the one the card holds in place.
+        built_day: bool,
     },
     /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried,
     /// so this can never remove a later replacement that happens to share the object id.
@@ -372,6 +439,10 @@ pub(crate) enum Request {
     RemoveObject {
         id: ObjectId,
         kind: obc_app::catalog_state::CatalogObjectKind,
+    },
+    /// Remove candidate route heads in one commit; see `route_cleanup::candidate_removals`.
+    RemoveRoutes {
+        heads: heapless::Vec<(ObjectId, Revision), MAX_BATCH>,
     },
     /// One atomic batch. Replies with the commit sequence.
     Commit {
@@ -926,6 +997,10 @@ fn serve(
             )
             .map_err(metadata_error),
         )),
+        Request::WriteProgress { record, keys } => Ok(Outcome::Metadata(
+            obc_storage::flat::metadata::write_progress(store, record, |key| keys.contains(&key))
+                .map_err(metadata_error),
+        )),
         Request::ReconcileMetadata => {
             Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(metadata_error)))
         }
@@ -950,7 +1025,7 @@ fn serve(
             store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
             Ok(Outcome::Done)
         }
-        Request::PublishComputedRoute { allocation, name, original } => {
+        Request::PublishComputedRoute { allocation, name, original, built_day } => {
             if let Some((id, revision)) = original {
                 if store.current_revision(id)? != Some(revision) {
                     return Err(StoreError::NotFound);
@@ -966,21 +1041,34 @@ fn serve(
             if !store.has_commit_capacity(2) {
                 return Err(StoreError::ReadOnly);
             }
-            let id = store.next_object_id();
+            let previous = if built_day { built_day_head(store)? } else { None };
+            if let Some((id, _)) = previous {
+                obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+                    obc_storage::flat::metadata::Error::Store(error) => error,
+                    _ => StoreError::ReadOnly,
+                })?;
+            }
+            let (id, revision) = match previous {
+                Some((id, revision)) => (id, Revision(revision.0.checked_add(1).ok_or(StoreError::ReadOnly)?)),
+                None => (store.next_object_id(), Revision(1)),
+            };
             let payload_crc = store.allocation_crc(&allocation)?;
             let meta = EntryMeta {
                 added_at_utc: 0,
                 id,
-                revision: Revision(1),
+                revision,
                 kind: ObjectKind::Route,
                 flags: EntryFlags::NONE,
                 payload_len: allocation.written_bytes(),
                 payload_crc,
                 name,
             };
-            store
-                .commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
-                .map(|_| Outcome::Published(id))
+            let put = Mutation::Put { meta, source: PutSource::Fresh(allocation) };
+            match previous {
+                Some((id, revision)) => store.commit(&[Mutation::Remove { id, revision }, put]),
+                None => store.commit(&[put]),
+            }
+            .map(|_| Outcome::Published(id))
         }
         Request::RemoveComputedRoute { id, revision } => {
             check_route_change(store, id)?;
@@ -997,6 +1085,13 @@ fn serve(
             Ok(Outcome::CleanedRoute(Some(id)))
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveRoutes { heads } => {
+            let batch = obc_storage::flat::route_cleanup::candidate_removals(store, &heads)?;
+            if !batch.is_empty() {
+                store.commit(&batch)?;
+            }
+            Ok(Outcome::Done)
+        }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
@@ -1062,7 +1157,7 @@ fn serve(
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::FinishUsbStage => {
-            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks()).map_err(|_| StoreError::Media)?;
+            FlatCard::finish_pending().map_err(|_| StoreError::Media)?;
             Ok(Outcome::Done)
         }
         Request::Pump { link, out } => {
@@ -1368,6 +1463,21 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
     })
 }
 
+/// The current heads of up to one commit's worth of `ids`, in one catalog walk.
+pub(crate) fn route_heads(
+    store: &FlatStore<FlatCard>,
+    ids: impl Iterator<Item = u64>,
+) -> heapless::Vec<(ObjectId, Revision), MAX_BATCH> {
+    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = ids.collect();
+    let mut heads = heapless::Vec::new();
+    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+        if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
+            break;
+        }
+    }
+    heads
+}
+
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,
@@ -1566,32 +1676,15 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
     let mut internal_routes = 0u64;
     for (index, entry) in heads.into_iter().enumerate() {
         match store
-            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_candidate(source))
+            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_flags(source))
         {
-            Ok(Ok((summary, candidate))) => {
-                if candidate {
+            Ok(Ok((summary, flags))) => {
+                let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+                if candidate || flags & obc_formats::obcr::FLAG_BUILT_DAY != 0 {
                     internal_routes |= 1 << routes.len();
                 }
                 if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
-                    let source = obc_formats::obcr::RouteSourceKey {
-                        store: store.store_id().0,
-                        object: entry.id.0,
-                        revision: entry.revision.0,
-                    };
-                    if app.can_reconcile_reviews()
-                        && !app.retains_find_review(source)
-                        && store
-                            .with_source(entry.id, Some(entry.revision), |bytes| {
-                                obc_route::RouteObjectInfo::read(bytes).is_ok_and(|info| {
-                                    info.assistant_candidate
-                                        && info.attribution_map.is_some_and(|map| map.store == source.store)
-                                })
-                            })
-                            .unwrap_or(false)
-                    {
-                        app.reconcile_review_candidate(source);
-                    }
                 }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);
@@ -1661,7 +1754,13 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     }
     let mut inputs: heapless::Vec<obc_app::TripInput<'_>, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
     for (id, meta) in ids.iter().copied().zip(metas.iter()) {
-        let _ = inputs.push(obc_app::TripInput { id, name: meta.name.as_str(), stage_ids: &meta.stage_ids });
+        let _ = inputs.push(obc_app::TripInput {
+            id,
+            key: meta.key,
+            name: meta.name.as_str(),
+            start_date: meta.start_date,
+            stage_ids: &meta.day_routes,
+        });
     }
     app.set_trips(&inputs);
     defmt::info!("flat: Route menu loaded {=usize} trip folder(s)", inputs.len());
@@ -1670,29 +1769,28 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
 
 #[inline(never)]
 pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut rides = obc_app::RideCatalog::new();
+    // The newest ids win, and only their footers are read, newest first, so the first trip name
+    // noted for a trip is its newest ride's.
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
     for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
-        let Ok(Ok(info)) =
-            store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source))
-        else {
-            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
-            return false;
-        };
-        let position = rides.iter().position(|ride| ride.id < entry.id.0).unwrap_or(rides.len());
-        if position < obc_app::UI_RIDES_CAP {
-            if rides.is_full() {
-                rides.pop();
-            }
-            let _ = rides.insert(
-                position,
-                obc_app::RideEntry { id: entry.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) },
-            );
-        }
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
     }
     if !store.entries_ok() {
         return false;
     }
-    app.set_rides(&rides);
+    let mut rides = obc_app::RideCatalog::new();
+    let mut trips = obc_app::RideTrips::new();
+    for head in heads {
+        let Ok(Ok(info)) = store.with_source(head.id, Some(head.revision), |source| obc_route::RideInfo::read(source))
+        else {
+            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
+            return false;
+        };
+        obc_app::RideTrip::note(&mut trips, &info);
+        let _ =
+            rides.push(obc_app::RideEntry { id: head.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) });
+    }
+    app.set_rides(&rides, &trips);
     defmt::info!("flat: Rides menu loaded {=usize} finished ride(s)", rides.len());
     true
 }
@@ -1724,6 +1822,23 @@ pub(crate) fn fill_ride_track(
     valid
 }
 
+/// Answer one keyed day-profile need into the app's resident profile buffer, one route object open
+/// at a time.
+#[inline(never)]
+pub(crate) fn fill_day_profile(
+    store: &'static FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+    key: obc_app::device_core::DayProfileKey,
+) -> bool {
+    let filled = obc_app::device_core::fill_day_profile(key, app.begin_day_profile_fill(), |id, body| {
+        store.with_source(ObjectId(id), None, |source| body(source)).unwrap_or(false)
+    });
+    if !filled {
+        defmt::warn!("flat: day profile fill for route {=u64} failed", key.day);
+    }
+    filled
+}
+
 /// Exact physical catalog identity, also used for admitted policy work.
 pub(crate) fn catalog_scope(store: &FlatStore<FlatCard>) -> obc_app::device_core::StoreRevision {
     obc_app::device_core::StoreRevision {
@@ -1750,5 +1865,63 @@ pub(crate) fn load_metadata(
 ) -> Result<(), obc_app::metadata::MetadataError> {
     obc_storage::flat::metadata::read_rows(store, |row| app.set_ride_archive_proof(row.id.0, row.timestamp))
         .map_err(metadata_error)?;
+    let mut records = obc_formats::trip_progress::Records::new();
+    obc_storage::flat::metadata::read_progress(store, |record| {
+        let _ = records.push(record);
+    })
+    .map_err(metadata_error)?;
+    app.set_trip_progress(records);
+    let join = day_join(store, app);
+    app.set_day_join(join);
     Ok(())
+}
+
+/// The built trip day the card holds, if any.
+fn built_day_head(store: &FlatStore<FlatCard>) -> Result<Option<(ObjectId, Revision)>, StoreError> {
+    let head = store
+        .entries()
+        .filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head())
+        .find(|entry| {
+            store
+                .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_flags(source))
+                .is_ok_and(|read| read.is_ok_and(|(_, flags)| flags & obc_formats::obcr::FLAG_BUILT_DAY != 0))
+        })
+        .map(|entry| (entry.id, entry.revision));
+    if !store.entries_ok() {
+        return Err(StoreError::Media);
+    }
+    Ok(head)
+}
+
+/// Where the active trip's next day meets the day before: the day before's leave point, clamped to
+/// its route's length, the day's join point, and the gap from the day before's end to the day's
+/// start; and the same facts one day on.
+fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::trip::DayJoin> {
+    let (trip, day) = app.next_trip_day()?;
+    // The first day has no day before, so while it is next the facts are the second day's.
+    let day = day.max(1);
+    let read = |k| store.with_source(ObjectId(trip.id), None, |source| obc_route::read_trip_day(source, k)).ok()?.ok();
+    let (before, this) = (read(day.checked_sub(1)?)?, read(day)?);
+    // Where `this` meets `before` on the line.
+    let meet = |before: obc_route::TripDay, this: obc_route::TripDay| {
+        let (length, end) = store
+            .with_source(ObjectId(before.route), None, |source| {
+                Ok::<_, obc_formats::io::Error>((
+                    obc_route::RouteObjectInfo::read(source)?.distance_m,
+                    obc_route::route_end(source)?,
+                ))
+            })
+            .ok()?
+            .ok()?;
+        let start =
+            store.with_source(ObjectId(this.route), None, |source| obc_route::RouteSummary::read(source)).ok()?.ok()?;
+        Some(obc_app::trip::Join {
+            leave_m: before.leave_m.min(length),
+            join_m: this.join_m,
+            gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
+        })
+    };
+    let obc_app::trip::Join { leave_m, join_m, gap_m } = meet(before, this)?;
+    let after = read(day + 1).and_then(|next| meet(this, next));
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m, join_m, gap_m, after })
 }

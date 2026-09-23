@@ -66,7 +66,7 @@ pub use device_input::DeviceInput;
 pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
 pub use gpx::convert_gpx;
-pub use nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady, NavPlan};
+pub use nav::{commit_detour, commit_nav_plan, day_join, plan_detour_preview, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_advance, ReplaySensors};
 pub use repo::{
     AppendStatus, RideRepository, RouteLease, RoutePublication, RouteRepository, TrackRepository, TripCatalog,

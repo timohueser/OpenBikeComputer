@@ -55,6 +55,10 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>OBC uses Bluetooth to connect to your bike computer. It never leaves your phone.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>OBC shows the photos you took during a ride on that ride. It does not change your library.</string>
+	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

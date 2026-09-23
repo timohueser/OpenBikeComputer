@@ -63,8 +63,8 @@ impl RideControl {
                 // The recognizer emits `Hold` only for a completed hold, so this is the
                 // confirmation of a guarded row.
                 match self.selected {
-                    FINISH => self.end_ride(cx, RecorderIntent::Save),
-                    DISCARD => self.end_ride(cx, RecorderIntent::Discard),
+                    FINISH => end_ride(cx, RecorderIntent::Save),
+                    DISCARD => end_ride(cx, RecorderIntent::Discard),
                     _ => Transition::None,
                 }
             }
@@ -75,16 +75,6 @@ impl RideControl {
             // Back-hold is the global escape, resolved above screen dispatch.
             Gesture::BackHold => Transition::None,
         }
-    }
-
-    /// Close the ride: name the disposition to Recorder, go idle, clear the route, and return
-    /// home. The session does not end here. Recorder closes it when the store confirms the close,
-    /// so a finalize that fails leaves a ride the rider can still finish.
-    fn end_ride(&self, cx: &mut Ctx, intent: RecorderIntent) -> Transition {
-        cx.recorder.request(intent);
-        cx.activity.mode = Mode::Idle;
-        cx.navigator.set_active_route(None);
-        Transition::Home
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -121,4 +111,16 @@ impl RideControl {
         ];
         draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
     }
+}
+
+/// Close the ride: name the disposition to Recorder, go idle, clear the route, and return home. The
+/// Paused page's Finish and Discard and the arrival view's Finish ride all end here. The session
+/// does not end here. Recorder closes it when the store confirms the close, so a finalize that fails
+/// leaves a ride the rider can still finish.
+pub(crate) fn end_ride(cx: &mut Ctx, intent: RecorderIntent) -> Transition {
+    cx.recorder.request(intent);
+    cx.activity.mode = Mode::Idle;
+    cx.navigator.note_ride_end();
+    cx.navigator.set_active_route(None);
+    Transition::Home
 }

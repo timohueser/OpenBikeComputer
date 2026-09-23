@@ -123,7 +123,7 @@ impl LandmarkPhotoScreen {
             let label = if matches!(self.selection, crate::photo::ContentSelection::Peak(_)) {
                 Msg::AssistantBack
             } else {
-                match super::landmarks::visit_action(rx.landmarks, rx.poi_scratch, rx.settings.bike_profile_idx) {
+                match super::landmarks::visit_action(rx.landmarks, rx.poi_scratch, rx.settings.bike_type) {
                     Msg::AssistantVisit => Msg::AssistantPhotoVisit,
                     Msg::AssistantNoAccess => Msg::AssistantPhotoNoAccess,
                     _ => Msg::AssistantPhotoUnavailableHint,

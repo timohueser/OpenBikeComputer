@@ -288,13 +288,12 @@ sheet with its screen, so one Back returns to the riding view the rider squeezed
 
 A row can hold a **value** instead of a screen: it states the value under its label and slides
 the sheet to a small editor, a track with a notch per choice and a tick under the committed one.
-The bike type is such a row, and its choices are the routing profile names of the loaded map, so a
-map built with a custom profile offers that profile without a firmware change. A row can also be a
-**switch** that flips in place.
+The bike type is such a row, with four fixed choices. A row can also be a **switch** that flips in
+place.
 
 A setting that belongs to one screen lives on that screen's sheet, and a build check fails when a
 sheet row and a settings page bind the same setting. Brightness and the Bluetooth radio, the quick
-drawer's shortcuts, are the recorded exceptions.
+drawer's shortcuts, and the bike type, also on the Ride page, are the recorded exceptions.
 
 The screen under a drawer is **frozen**: the drawer states its own facts for repaint, so a moving
 map under a sheet causes no work. Whether the screen below is **dimmed** is a property of that
@@ -475,8 +474,9 @@ landmarks, and easier routes. There is no network in any of them.
 ### Find a place
 
 Find combines places near the rider with places along the next part of the route, and alternates
-the two sources so that neither crowds out the other. It plans a real route to each candidate and
-shows the measured cost. The drawer sets how many results to calculate, and four is the default.
+the two sources so that neither crowds out the other. It plans the legs to each candidate and back,
+and shows their measured cost; the complete route is composed when the rider opens a result. The
+drawer sets how many results to calculate, and four is the default.
 
 Places known to be closed now are hidden, which the rider can turn off for every category at once.
 A place with unknown hours stays in the list and is never labelled open. Opening hours are

@@ -1,6 +1,7 @@
 //! The BLE central sensor manager: scan, connect, GATT-subscribe, decode and dispatch for HR, power
-//! and cadence sensors, on the same [`Stack`] as the phone-facing peripheral link. One central-role
-//! task, joined into [`super::run`], driven by signal and latch state.
+//! and cadence sensors, on the same [`Stack`] as the phone-facing peripheral link. Joined into
+//! [`super::run`]: one initiator that scans and connects, and one link future per quantity that
+//! serves its sensor, so all three sensors stay connected at the same time.
 //!
 //! The byte-to-struct half is `obc-ble` (host-tested, with no trouble-host type): the profile
 //! parsers, the crank-to-rpm accumulator, the advertisement classifier and the cadence arbitration.
@@ -22,9 +23,12 @@
 //!   and extended adv/scan/initiate commands are one mutually-exclusive HCI group, where first use
 //!   latches the mode, so the advertiser rides the extended commands too. The PDUs on air stay
 //!   legacy, and phones see no difference.
+//! - One connect at a time, and never during a scan. The SDC refuses a create-connection while the
+//!   scanner is enabled, and trouble-host allows one connect: a second `connect_ext` waits in a
+//!   queue, and dropping it there cancels the active one. So only [`initiate`] scans or connects.
 //! - The `GattClient` event task must be polled beside the notification loop. [`GattClient::task`]
 //!   pumps the ATT rx; without it `subscribe`/`next` never complete. We `select` the two, plus a
-//!   radio or request interrupt, so a disconnect tears the whole session down.
+//!   radio or saved-slot change, so a disconnect tears the whole session down.
 //! - No sensor bonding or SMP. Sensors are open GATT servers, connected by stored address through
 //!   the controller filter-accept-list. `BONDS_MAX` stays 1, for the phone.
 
@@ -32,8 +36,9 @@ use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
+use embassy_futures::join::join4;
 use embassy_futures::select::{select, select3, select4, Either3, Either4};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
@@ -47,6 +52,10 @@ use super::gatt::Server;
 
 /// The three fixed sensor quantities (HR, power, cadence), one saved slot each.
 const QUANTITIES: usize = 3;
+/// The services a link looks up: its sensor service and the battery service. The GATT client
+/// caches each one it finds, and every live link carries that cache. A second instance of either
+/// service overflows it; the battery read is best-effort, so the link survives.
+const LINK_SERVICES: usize = 2;
 /// Deduped scan snapshot cap — enough discovered sensors to fill a scan list without unbounded RAM.
 const MAX_SCAN_HITS: usize = 8;
 
@@ -55,15 +64,15 @@ const SCAN_SECS: u64 = 10;
 /// Active-scan timing while connecting/scanning: ~60 ms interval, ~30 ms window (a 50 % duty).
 const SCAN_INTERVAL: Duration = Duration::from_millis(60);
 const SCAN_WINDOW: Duration = Duration::from_millis(30);
-/// A single connection attempt is bounded — an absent/asleep sensor must not block the one link
-/// forever. On timeout the connect future is dropped (its `OnDrop` issues `LeCreateConnCancel`).
+/// A single connection attempt is bounded, so the initiator duty-cycles while every missing sensor
+/// is absent or asleep. On timeout the connect future is dropped (its `OnDrop` issues
+/// `LeCreateConnCancel`).
 const CONNECT_TIMEOUT_SECS: u64 = 20;
-/// Backoff after a drop or a failed attempt before a retry, woken early by any radio or request
-/// change.
+/// Backoff after a failed attempt, or after a link drops, before that sensor is retried.
 const BACKOFF_SECS: u64 = 15;
 
 /// Steady-state link parameters, applied by [`serve_link`] once subscribed; the connect itself uses
-/// the fast params in [`run_link`]. A 250–500 ms interval keeps the sensor link cheap beside the
+/// the fast params in [`connect`]. A 250–500 ms interval keeps the sensor link cheap beside the
 /// phone link, with a 5 s supervision timeout. The connection-event length is the radio timeslot the
 /// SDC schedules per event, and a sensor exchange (notifications of 20 B or less) needs only a few
 /// ms, so 30 ms is ample and matches the proven phone-link event length. A peer that later requests
@@ -121,17 +130,16 @@ impl SensorSlotStatus {
 
 /// A saved sensor: the stored address to reconnect by. The kind is implied by the slot index. No
 /// name and no bond, because sensors are open GATT servers.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct SavedSensor {
     addr: [u8; 6],
     random: bool,
 }
 
-#[derive(Clone, Copy)]
-struct SaveReq {
-    quantity: usize,
-    addr: [u8; 6],
-    random: bool,
+impl SavedSensor {
+    fn address(self) -> Address {
+        Address::new(if self.random { AddrKind::RANDOM } else { AddrKind::PUBLIC }, BdAddr::new(self.addr))
+    }
 }
 
 type ScanHitsCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Vec<SensorScanHit, MAX_SCAN_HITS>>>;
@@ -143,22 +151,22 @@ type SavedCell = BlockingMutex<CriticalSectionRawMutex, Cell<[Option<SavedSensor
 static SCAN_HITS: ScanHitsCell = BlockingMutex::new(RefCell::new(Vec::new()));
 static SLOT_STATUS: SlotStatusCell =
     BlockingMutex::new(Cell::new([SensorSlotStatus::init(), SensorSlotStatus::init(), SensorSlotStatus::init()]));
-/// The saved-sensor table, reconciled from the app's persisted settings by the ride loop's per-pass
-/// diff. It starts empty and the ride loop seeds it on the first pass, so a saved sensor reconnects
-/// across a reboot.
+/// The saved-sensor table, written by [`request_save_sensor`] and [`request_forget_sensor`] from the
+/// ride loop's per-pass diff of the persisted settings. It starts empty and the ride loop seeds it
+/// on the first pass, so a saved sensor reconnects across a reboot.
 static SAVED: SavedCell = BlockingMutex::new(Cell::new([None, None, None]));
 
 /// Whether a scan is armed — the [`ScanEventHandler`] only records reports while true, so stray
 /// controller reports never pollute the snapshot.
 static SCAN_ARMED: AtomicBool = AtomicBool::new(false);
 
-/// The manager's wake edge: pulsed by every request below and by the radio switch, so the manager
-/// reacts without polling. A burst coalesces into one wake, and the loop then re-reads the latched
-/// requests and the radio level.
+/// The wake edges, pulsed together by every request below and by the radio switch, so the manager
+/// reacts without polling. [`WORK_EDGE`] wakes [`initiate`] and [`LINK_EDGE`] wakes each link
+/// future. A burst coalesces into one wake, and each future then re-reads the level it cares about:
+/// the scan latch, the saved table and the radio switch.
 static WORK_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static LINK_EDGE: [Signal<CriticalSectionRawMutex, ()>; QUANTITIES] = [const { Signal::new() }; QUANTITIES];
 static SCAN_REQUEST: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-static SAVE_REQUEST: Signal<CriticalSectionRawMutex, SaveReq> = Signal::new();
-static FORGET_REQUEST: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 /// The manager's resident statics: the scan snapshot, the slot-status table, the saved table, every
 /// request and wake `Signal`, and the scan-armed flag. The SDC and host central and scan buffers are
@@ -170,9 +178,7 @@ pub const RESIDENT_BYTES: usize = core::mem::size_of::<ScanHitsCell>()
     + core::mem::size_of::<SlotStatusCell>()
     + core::mem::size_of::<SavedCell>()
     + core::mem::size_of::<AtomicBool>() // SCAN_ARMED
-    + 2 * core::mem::size_of::<Signal<CriticalSectionRawMutex, ()>>() // WORK_EDGE + SCAN_REQUEST
-    + core::mem::size_of::<Signal<CriticalSectionRawMutex, SaveReq>>() // SAVE_REQUEST
-    + core::mem::size_of::<Signal<CriticalSectionRawMutex, usize>>(); // FORGET_REQUEST
+    + (2 + QUANTITIES) * core::mem::size_of::<Signal<CriticalSectionRawMutex, ()>>(); // WORK_EDGE, SCAN_REQUEST, LINK_EDGE
 
 pub fn sensor_scan_hits<R>(f: impl FnOnce(&[SensorScanHit]) -> R) -> R {
     SCAN_HITS.lock(|c| f(c.borrow().as_slice()))
@@ -192,12 +198,11 @@ pub fn request_scan() {
 
 /// Drop a pending scan request that has not started yet. Rung by the ride loop on the falling edge
 /// of the Sensors screen's scan mode. Without it, the latched request survives the pick and wins
-/// over the fresh save at the loop top, so the save-from-scan-list flow sits through a useless 10 s
-/// scan before it connects.
+/// over the fresh save at the initiator's loop top, so the save-from-scan-list flow sits through a
+/// useless 10 s scan before it connects.
 ///
-/// Deliberately no [`wake_work`] pulse: a pulse tears down whatever session the manager is in, so
-/// cancelling after a Back with a healthy link up would bounce the link for nothing. A pick's save
-/// request brings its own wake, and a Back lets a running window finish quietly.
+/// No [`wake_work`] pulse: a pick's save brings its own wake, and a Back lets a running window
+/// finish quietly.
 pub fn cancel_scan() {
     SCAN_REQUEST.reset();
 }
@@ -205,20 +210,35 @@ pub fn cancel_scan() {
 /// Save a sensor address to a quantity slot and (re)connect it. `quantity` is 0=HR, 1=power,
 /// 2=cadence.
 pub fn request_save_sensor(quantity: usize, addr: [u8; 6], random: bool) {
-    SAVE_REQUEST.signal(SaveReq { quantity, addr, random });
+    if quantity >= QUANTITIES {
+        return;
+    }
+    set_saved(quantity, Some(SavedSensor { addr, random }));
+    update_status(quantity, |s| s.saved = true);
+    info!("ble: [sensor] saved quantity {} (random={})", quantity, random);
     wake_work();
 }
 
-/// Forget the saved sensor for a quantity slot (drops any live link on the next loop pass).
+/// Forget the saved sensor for a quantity slot, which drops its live link.
 pub fn request_forget_sensor(quantity: usize) {
-    FORGET_REQUEST.signal(quantity);
+    if quantity >= QUANTITIES {
+        return;
+    }
+    set_saved(quantity, None);
+    update_status(quantity, |s| {
+        s.saved = false;
+        s.battery = None;
+    });
+    info!("ble: [sensor] forgot quantity {}", quantity);
     wake_work();
 }
 
-/// Pulse the manager's wake edge, so the manager reacts at once to a request or a radio-switch
-/// change.
+/// Pulse every wake edge, so the manager reacts at once to a request or a radio-switch change.
 pub(crate) fn wake_work() {
     WORK_EDGE.signal(());
+    for edge in &LINK_EDGE {
+        edge.signal(());
+    }
 }
 
 fn update_status(quantity: usize, f: impl FnOnce(&mut SensorSlotStatus)) {
@@ -231,6 +251,14 @@ fn update_status(quantity: usize, f: impl FnOnce(&mut SensorSlotStatus)) {
 
 fn saved_sensor(quantity: usize) -> Option<SavedSensor> {
     SAVED.lock(|c| c.get()[quantity])
+}
+
+fn set_saved(quantity: usize, saved: Option<SavedSensor>) {
+    SAVED.lock(|c| {
+        let mut a = c.get();
+        a[quantity] = saved;
+        c.set(a);
+    });
 }
 
 fn has_dedicated_cadence_saved() -> bool {
@@ -315,11 +343,21 @@ fn observe_report(addr: [u8; 6], random: bool, data: &[u8], rssi: i8) {
 
 type SensorStack = Stack<'static, sdc::SoftdeviceController<'static>, DefaultPacketPool>;
 
-/// The one central-role task, joined into [`super::run`]. Scan xor connect, never both at once, so
-/// the controller never juggles a scan and a connect-initiate on one link. Never returns.
+/// One quantity's link, shared by [`initiate`] and that quantity's [`hold_link`]. Local to [`run`]:
+/// a `Connection` borrows the host, so it cannot sit in a `static`.
+struct Slot {
+    /// A connection [`initiate`] made for this quantity, with the saved entry it matched.
+    handoff: Signal<NoopRawMutex, (Connection<'static, DefaultPacketPool>, SavedSensor)>,
+    /// Set by [`initiate`] at the handoff, and cleared by [`hold_link`] once the link has ended and
+    /// its backoff has run. While set, the initiator leaves this quantity out of its connect.
+    busy: Cell<bool>,
+}
+
+/// The central role, joined into [`super::run`]: [`initiate`] beside one [`hold_link`] per
+/// quantity. Never returns.
 ///
 /// `server` is the shared GATT [`Server`]: every sensor connection attaches it, so the peer's own
-/// GATT client gets answered — see [`run_link`] for why that is load-bearing.
+/// GATT client gets answered — see [`hold_link`] for why that is load-bearing.
 pub async fn run(
     stack: &'static SensorStack,
     server: &'static Server<'static>,
@@ -333,72 +371,183 @@ pub async fn run(
     // while an initiator is active. One second covers the observed ~150 ms init.
     Timer::after_secs(1).await;
 
-    loop {
-        // Drain any stale wake pulse before reading the request latches: every request setter pulses
-        // [`WORK_EDGE`], and a pulse left latched would instantly abort the very connect or scan it
-        // requested, through the teardown selects below. The request latches survive the reset, and
-        // every producer runs on this same thread-mode executor.
-        WORK_EDGE.reset();
-        apply_requests();
+    let slots = [const { Slot { handoff: Signal::new(), busy: Cell::new(false) } }; QUANTITIES];
+    join4(
+        initiate(stack, &slots),
+        hold_link(stack, server, &slots[0], 0, injector),
+        hold_link(stack, server, &slots[1], 1, injector),
+        hold_link(stack, server, &slots[2], 2, injector),
+    )
+    .await
+    .0
+}
 
-        // A user scan request wins — discovery is brief and interactive.
+/// The one initiator: scan xor connect, never both at once. A scan request wins, because discovery
+/// is brief and interactive. Otherwise it connects every saved sensor that has no link, all in one
+/// filter accept list, so the controller takes whichever sensor advertises first and an absent
+/// sensor never holds up a present one. Live links stay up through both.
+async fn initiate(stack: &'static SensorStack, slots: &[Slot; QUANTITIES]) -> ! {
+    loop {
+        // Drain any stale wake pulse before reading the levels: every request setter pulses
+        // [`WORK_EDGE`], and a pulse left latched would instantly abort the very connect or scan it
+        // requested, through the selects below.
+        WORK_EDGE.reset();
+
         if SCAN_REQUEST.try_take().is_some() {
             run_scan(stack).await;
             continue;
         }
 
-        // Radio on and a sensor saved? Serve the link.
+        let mut wanted: Vec<(usize, SavedSensor), QUANTITIES> = Vec::new();
         if super::state::radio_enabled() {
-            if let Some(quantity) = first_saved_quantity() {
-                let interrupted = run_link(stack, server, quantity, injector).await;
-                update_status(quantity, |s| s.state = SensorSlotState::Idle);
-                // Back off before the next attempt, but only after a drop, failure or timeout. An
-                // interrupt means a request or radio change is already waiting at the loop top, and
-                // a Sensors-screen scan rung while connected must start now, not in 15 s.
-                if !interrupted {
-                    let _ = select(Timer::after_secs(BACKOFF_SECS), WORK_EDGE.wait()).await;
+            for (quantity, slot) in slots.iter().enumerate() {
+                if let (false, Some(saved)) = (slot.busy.get(), saved_sensor(quantity)) {
+                    let _ = wanted.push((quantity, saved));
                 }
-                continue;
             }
         }
-
-        // Nothing to do — park until a request or the radio switch pulses the work edge.
-        WORK_EDGE.wait().await;
-    }
-}
-
-fn apply_requests() {
-    if let Some(req) = SAVE_REQUEST.try_take() {
-        if req.quantity < QUANTITIES {
-            SAVED.lock(|c| {
-                let mut a = c.get();
-                a[req.quantity] = Some(SavedSensor { addr: req.addr, random: req.random });
-                c.set(a);
-            });
-            update_status(req.quantity, |s| s.saved = true);
-            info!("ble: [sensor] saved quantity {} (random={})", req.quantity, req.random);
+        if wanted.is_empty() {
+            // Nothing to do — park until a request, the radio switch or a free slot pulses the edge.
+            WORK_EDGE.wait().await;
+            continue;
         }
-    }
-    if let Some(quantity) = FORGET_REQUEST.try_take() {
-        if quantity < QUANTITIES {
-            SAVED.lock(|c| {
-                let mut a = c.get();
-                a[quantity] = None;
-                c.set(a);
-            });
-            update_status(quantity, |s| {
-                s.saved = false;
-                s.battery = None;
-                s.state = SensorSlotState::Idle;
-            });
-            info!("ble: [sensor] forgot quantity {}", quantity);
+
+        for &(quantity, _) in &wanted {
+            update_status(quantity, |s| s.state = SensorSlotState::Connecting);
+        }
+        let backoff = match connect(stack, &wanted).await {
+            Some(Ok((conn, quantity, saved))) => {
+                slots[quantity].busy.set(true);
+                slots[quantity].handoff.signal((conn, saved));
+                false
+            }
+            // An interrupt means a request, the radio switch or a free slot is already waiting at the
+            // loop top, and a Sensors-screen scan must start now, not in 15 s.
+            None => false,
+            Some(Err(())) => true,
+        };
+        for &(quantity, _) in &wanted {
+            if !slots[quantity].busy.get() {
+                update_status(quantity, |s| s.state = SensorSlotState::Idle);
+            }
+        }
+        if backoff {
+            let _ = select(Timer::after_secs(BACKOFF_SECS), WORK_EDGE.wait()).await;
         }
     }
 }
 
-/// The first saved quantity; the one sensor link serves it.
-fn first_saved_quantity() -> Option<usize> {
-    (0..QUANTITIES).find(|&q| saved_sensor(q).is_some())
+/// Connect the first of `wanted` that advertises, and match it back to its quantity. The connect is
+/// bounded — dropped on timeout, which sends `LeCreateConnCancel`. Returns `None` on a
+/// [`WORK_EDGE`] interrupt, and `Err` on a failure or a timeout.
+async fn connect(
+    stack: &'static SensorStack,
+    wanted: &[(usize, SavedSensor)],
+) -> Option<Result<(Connection<'static, DefaultPacketPool>, usize, SavedSensor), ()>> {
+    let filter: Vec<Address, QUANTITIES> = wanted.iter().map(|&(_, saved)| saved.address()).collect();
+    info!("ble: [sensor] connecting {} sensor(s)", filter.len());
+
+    let mut central = stack.central();
+    let config = ConnectConfig {
+        scan_config: ScanConfig {
+            active: true,
+            filter_accept_list: &filter,
+            interval: SCAN_INTERVAL,
+            window: SCAN_WINDOW,
+            ..Default::default()
+        },
+        // Connect fast, cruise slow: GATT runs about one ATT round trip per connection event, so
+        // discovery, the battery read and the CCCD write at a relaxed interval are glacial — on
+        // glass a 250–500 ms initial interval put connect-to-subscribed at 9.0 s. 30–60 ms makes the
+        // chatty phase sub-second, and [`serve_link`] relaxes to [`CRUISE_PARAMS`] once subscribed.
+        // The event length stays small, so the fast phase cannot starve the phone link.
+        connect_params: RequestedConnParams {
+            min_connection_interval: Duration::from_millis(30),
+            max_connection_interval: Duration::from_millis(60),
+            max_latency: 0,
+            min_event_length: Duration::from_micros(0),
+            max_event_length: Duration::from_millis(10),
+            supervision_timeout: Duration::from_millis(5000),
+        },
+    };
+
+    // `connect_ext`, NOT `connect`: the legacy `LeCreateConn` initiator faults the SDC blob the
+    // moment the target's advert arrives (`SoftdeviceController: 50:701` — see the module doc).
+    let conn =
+        match select3(central.connect_ext(&config), Timer::after_secs(CONNECT_TIMEOUT_SECS), WORK_EDGE.wait()).await {
+            Either3::First(Ok(conn)) => conn,
+            Either3::First(Err(e)) => {
+                warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
+                return Some(Err(()));
+            }
+            // Timeout / interrupt: dropping the connect future cancels the create-connection.
+            Either3::Second(()) => {
+                info!("ble: [sensor] connect attempt timed out");
+                return Some(Err(()));
+            }
+            Either3::Third(()) => {
+                info!("ble: [sensor] connect attempt interrupted (radio/request)");
+                return None;
+            }
+        };
+
+    // The accept list admits only `wanted`, but a save or forget can land while the connect runs;
+    // a peer no longer wanted drops here, and its wake is already pending.
+    let peer = conn.peer_address();
+    let &(quantity, saved) = wanted
+        .iter()
+        .find(|&&(quantity, saved)| saved.addr == *peer.addr.raw() && saved_sensor(quantity) == Some(saved))?;
+    Some(Ok((conn, quantity, saved)))
+}
+
+/// Serve `quantity`'s link for each connection [`initiate`] hands over, until it drops or the slot
+/// is released: radio off, or the saved sensor forgotten or replaced. After a drop it backs off
+/// before it frees the slot, so a peer that connects and then fails at once cannot hot-loop.
+async fn hold_link(
+    stack: &'static SensorStack,
+    server: &'static Server<'static>,
+    slot: &Slot,
+    quantity: usize,
+    injector: SampleInjector<'static>,
+) -> ! {
+    loop {
+        let (conn, saved) = slot.handoff.wait().await;
+        // Attach the shared GATT server, so the peer's own GATT client gets answered: a watch probes
+        // whoever collects from it (GAP and DIS reads) right after subscribe. trouble queues inbound
+        // ATT requests per connection, and only an attached attribute server drains them. With none,
+        // the peer's ATT stalls for the spec's 30 s transaction timeout and the peer then hangs up.
+        // The [`Server`]'s `connections_max` is sized for this.
+        let released = match conn.with_attribute_server(server) {
+            Ok(conn) => {
+                // What the SDC actually granted: the interval should read 30–60 ms in the fast
+                // connect phase, then flip to the cruise or peer values in the params-updated event.
+                info!(
+                    "ble: [sensor] quantity {} link up ({:?}), discovering",
+                    quantity,
+                    defmt::Debug2Format(&conn.raw().params())
+                );
+                serve_link(stack, &conn, quantity, saved, injector).await
+                // `conn` drops here → the sensor link is disconnected.
+            }
+            Err(e) => {
+                warn!("ble: [sensor] attribute-server attach failed: {:?}", defmt::Debug2Format(&e));
+                false
+            }
+        };
+        update_status(quantity, |s| s.state = SensorSlotState::Idle);
+        if !released {
+            let _ = select(Timer::after_secs(BACKOFF_SECS), released_wait(quantity, saved)).await;
+        }
+        slot.busy.set(false);
+        WORK_EDGE.signal(());
+    }
+}
+
+/// Resolves once `quantity` must let go of `saved`: the radio is off, or the slot no longer holds it.
+async fn released_wait(quantity: usize, saved: SavedSensor) {
+    while super::state::radio_enabled() && saved_sensor(quantity) == Some(saved) {
+        LINK_EDGE[quantity].wait().await;
+    }
 }
 
 /// Run one active-scan window, recording reports into [`SCAN_HITS`] via [`ScanEventHandler`].
@@ -434,99 +583,18 @@ async fn run_scan(stack: &'static SensorStack) {
     info!("ble: [sensor] scan done — {} sensor(s) found", count);
 }
 
-/// Connect the saved sensor for `quantity` and serve it until it drops, or until the radio or a
-/// request interrupts. The connect is bounded — dropped on timeout, which sends
-/// `LeCreateConnCancel` — so an absent sensor cannot wedge the link. Returns `true` when the session
-/// ended on a [`WORK_EDGE`] interrupt (skip the backoff), `false` on a drop, failure or timeout.
-async fn run_link(
-    stack: &'static SensorStack,
-    server: &'static Server<'static>,
-    quantity: usize,
-    injector: SampleInjector<'static>,
-) -> bool {
-    let Some(saved) = saved_sensor(quantity) else { return false };
-    let kind = kind_of(quantity);
-    update_status(quantity, |s| s.state = SensorSlotState::Connecting);
-    info!("ble: [sensor] connecting quantity {} (random={})", quantity, saved.random);
-
-    let mut central = stack.central();
-    let filter =
-        [Address::new(if saved.random { AddrKind::RANDOM } else { AddrKind::PUBLIC }, BdAddr::new(saved.addr))];
-    let config = ConnectConfig {
-        scan_config: ScanConfig {
-            active: true,
-            filter_accept_list: &filter,
-            interval: SCAN_INTERVAL,
-            window: SCAN_WINDOW,
-            ..Default::default()
-        },
-        // Connect fast, cruise slow: GATT runs about one ATT round trip per connection event, so
-        // discovery, the battery read and the CCCD write at a relaxed interval are glacial — on
-        // glass a 250–500 ms initial interval put connect-to-subscribed at 9.0 s. 30–60 ms makes the
-        // chatty phase sub-second, and [`serve_link`] relaxes to [`CRUISE_PARAMS`] once subscribed.
-        // The event length stays small, so the fast phase cannot starve the phone link.
-        connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(30),
-            max_connection_interval: Duration::from_millis(60),
-            max_latency: 0,
-            min_event_length: Duration::from_micros(0),
-            max_event_length: Duration::from_millis(10),
-            supervision_timeout: Duration::from_millis(5000),
-        },
-    };
-
-    // `connect_ext`, NOT `connect`: the legacy `LeCreateConn` initiator faults the SDC blob the
-    // moment the target's advert arrives (`SoftdeviceController: 50:701` — see the module doc).
-    let conn =
-        match select3(central.connect_ext(&config), Timer::after_secs(CONNECT_TIMEOUT_SECS), WORK_EDGE.wait()).await {
-            Either3::First(Ok(conn)) => conn,
-            Either3::First(Err(e)) => {
-                warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
-                return false;
-            }
-            // Timeout / interrupt: dropping the connect future cancels the create-connection.
-            Either3::Second(()) => {
-                info!("ble: [sensor] connect attempt timed out");
-                return false;
-            }
-            Either3::Third(()) => {
-                info!("ble: [sensor] connect attempt interrupted (radio/request)");
-                return true;
-            }
-        };
-
-    // Attach the shared GATT server, so the peer's own GATT client gets answered: a watch probes
-    // whoever collects from it (GAP and DIS reads) right after subscribe. trouble queues inbound ATT
-    // requests per connection, and only an attached attribute server drains them. With none, the
-    // peer's ATT stalls for the spec's 30 s transaction timeout and the peer then hangs up. The
-    // [`Server`]'s `connections_max` is sized for this.
-    let conn = match conn.with_attribute_server(server) {
-        Ok(conn) => conn,
-        Err(e) => {
-            warn!("ble: [sensor] attribute-server attach failed: {:?}", defmt::Debug2Format(&e));
-            return false;
-        }
-    };
-
-    // What the SDC actually granted: the interval should read 30–60 ms in the fast connect phase,
-    // then flip to the cruise or peer values in the params-updated event below.
-    info!("ble: [sensor] link up ({:?}), discovering", conn.raw().params());
-
-    serve_link(stack, &conn, quantity, kind, injector).await
-    // `conn` drops on return → the sensor link is disconnected.
-}
-
 /// Discover the service + measurement characteristic, read the battery once, subscribe, and pump
 /// notifications — with the GATT client's rx task polled concurrently (required for notifications).
-/// Returns `true` when the session ended on a [`WORK_EDGE`] interrupt (see [`run_link`]).
+/// Returns `true` when the slot was released (skip the backoff), `false` on a drop or a failure.
 async fn serve_link(
     stack: &'static SensorStack,
     conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     quantity: usize,
-    kind: SensorKind,
+    saved: SavedSensor,
     injector: SampleInjector<'static>,
 ) -> bool {
-    let client = match GattClient::<_, _, 4>::new(stack, conn.raw()).await {
+    let kind = kind_of(quantity);
+    let client = match GattClient::<_, _, LINK_SERVICES>::new(stack, conn.raw()).await {
         Ok(client) => client,
         Err(e) => {
             warn!("ble: [sensor] GATT client init failed: {:?}", defmt::Debug2Format(&e));
@@ -576,7 +644,7 @@ async fn serve_link(
             // Soak breadcrumbs: the first proves data flows at all, and every 32nd is dense enough
             // to bracket a drop without flooding RTT.
             if notifications == 1 || notifications.is_multiple_of(32) {
-                info!("ble: [sensor] notification #{} ({} B)", notifications, n.as_ref().len());
+                info!("ble: [sensor] quantity {} notification #{} ({} B)", quantity, notifications, n.as_ref().len());
             }
             decode_and_dispatch(kind, quantity, n.as_ref(), &mut cadence, injector);
         }
@@ -671,22 +739,22 @@ async fn serve_link(
     };
 
     // The GATT rx task returns `Err(Disconnected)` when the link drops; the IO block ends on a GATT
-    // error; the event pump surfaces the disconnect reason; `WORK_EDGE` fires on radio-off / a new
-    // request. Any of the four tears the session down.
-    match select4(client.task(), io, events, WORK_EDGE.wait()).await {
+    // error; the event pump surfaces the disconnect reason; the slot is released on radio-off or a
+    // forget or replace. Any of the four tears the session down.
+    match select4(client.task(), io, events, released_wait(quantity, saved)).await {
         Either4::First(r) => {
             // The rx task usually wins the teardown race over the event pump, so log the actual
             // result rather than a bool. The HCI reason itself lands in trouble's own host log line.
-            info!("ble: [sensor] gatt rx task ended: {:?}", defmt::Debug2Format(&r));
+            info!("ble: [sensor] quantity {} gatt rx task ended: {:?}", quantity, defmt::Debug2Format(&r));
             false
         }
         Either4::Second(_) => false,
         Either4::Third(reason) => {
-            info!("ble: [sensor] link disconnected: {:?}", defmt::Debug2Format(&reason));
+            info!("ble: [sensor] quantity {} link disconnected: {:?}", quantity, defmt::Debug2Format(&reason));
             false
         }
         Either4::Fourth(()) => {
-            info!("ble: [sensor] link interrupted (radio/request)");
+            info!("ble: [sensor] quantity {} link released (radio/forget/replace)", quantity);
             true
         }
     }
@@ -695,7 +763,7 @@ async fn serve_link(
 /// Read Battery Level (0x2A19) once into the slot status. Best-effort: a sensor without a BAS or a
 /// failed read simply leaves `battery` unchanged.
 async fn read_battery_once(
-    client: &GattClient<'_, sdc::SoftdeviceController<'static>, DefaultPacketPool, 4>,
+    client: &GattClient<'_, sdc::SoftdeviceController<'static>, DefaultPacketPool, LINK_SERVICES>,
     quantity: usize,
 ) {
     let Ok(services) = client.services_by_uuid(&Uuid::new_short(obc_ble::UUID_BATTERY_SERVICE)).await else {

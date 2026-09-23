@@ -8,15 +8,15 @@ import OBCTransport
 ///
 /// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
 /// derived from the saved record's own geometry, so the screen never asks the device for a route
-/// the phone already holds. Tracked renders its summary at once and fills the profile when the
-/// ride detail lands; a failed read degrades quietly. Imported computes everything up front.
+/// the phone already holds. Tracked computes its profile and highlights from the synced ride
+/// points in `start()`, which runs once on the live model. Imported computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
     /// Which of the three dressings this instance wears.
     public enum Dressing {
         case planned(RouteSummary)
         case tracked(RideSummary)
-        case imported(ImportedRoute, fileName: String)
+        case imported(ImportedRoute, fileName: String, source: ImportSource = .file)
     }
 
     public let dressing: Dressing
@@ -29,7 +29,11 @@ public final class RouteDetailModel {
     public private(set) var waypoints: [Waypoint] = []
     /// Elevation samples for the profile card; empty hides the card.
     public private(set) var elevationProfile: [Double] = []
+    /// A tracked ride's highlights, the most notable first; empty elsewhere.
+    public private(set) var highlights: [String] = []
     public private(set) var maxGradePercent: Double?
+    /// The type the estimate uses and an upload writes. Changed through `setBikeType(_:)`.
+    public private(set) var bikeType: BikeType
     /// The live link state. Upload is link-bound, so the button dims with it. Starts optimistic;
     /// the stream's replayed value corrects it before the first frame on every transport.
     public private(set) var connection: ConnectionState = .connected
@@ -45,15 +49,20 @@ public final class RouteDetailModel {
         !fullTrackCoordinates.isEmpty ? fullTrackCoordinates : (preview?.coordinates ?? [])
     }
     @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
+    @ObservationIgnored private let ridePoints: [RidePoint]
+    @ObservationIgnored private let rides: [RideSummary]
     /// The soft line under the title: a ride's date, or an imported file's name.
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
     private var climbMeters: Double = 0
     private var descentMeters: Double = 0
-    private var estimatedDuration: TimeInterval?
     private var pointCount = 0
-    /// Stats computed for an imported file, which is also what `makeSummary` saves.
-    private var importedStats: RouteStats?
+    /// The `OBCR_Spec.md` §1.2 estimate. Distance and climb hold the upload's header figures, so it
+    /// is the estimate the device shows for this route and type.
+    private var estimatedDuration: TimeInterval? {
+        if case .tracked = dressing { return nil }
+        return bikeType.estimatedDuration(distanceMeters: distanceMeters, ascentMeters: climbMeters)
+    }
     /// The canonical geometry an upload encodes. The imported dressing carries its own; a planned
     /// route's is threaded from the library, and planned routes are library-first, so it is always
     /// present where Upload shows. A defensive nil yields an empty payload the transports reject.
@@ -86,6 +95,12 @@ public final class RouteDetailModel {
         provenCommittedCRC = crc32
     }
 
+    /// The type rides in the payload, so a change out-dates the device copy until the next upload.
+    public func setBikeType(_ type: BikeType) {
+        bikeType = type
+        cachedPayloadCRC = nil
+    }
+
     private func currentPayloadCRC() -> UInt32 {
         if let cached = cachedPayloadCRC { return cached }
         let crc = CRC32.checksum(uploadPayload())
@@ -109,31 +124,37 @@ public final class RouteDetailModel {
     public init(
         transport: any DeviceLink & DeviceObjects,
         dressing: Dressing,
+        bikeType: BikeType = .road,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         now: @escaping () -> Date = Date.init,
-        // The tracked dressing's full tracklog, threaded from the library's synced ride points. A
-        // ride carries no `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
-        rideGeometry: [Coordinate]? = nil
+        // The tracked dressing's full tracklog, from the library's synced ride. A ride carries no
+        // `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
+        ridePoints: [RidePoint] = [],
+        // Every synced ride summary: the tracked dressing finds its trip's biggest day in it.
+        rides: [RideSummary] = []
     ) {
         self.transport = transport
         self.dressing = dressing
+        self.bikeType = bikeType
         self.uploadTargetObjectID = deviceObjectID
         self.provenCommittedCRC = provenCommittedCRC
         self.now = now
         self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
-        case .imported(let route, _): uploadGeometry = route
+        case .imported(let route, _, _): uploadGeometry = route
         default: uploadGeometry = plannedGeometry
         }
         // The interactive map draws this, never the downsampled `preview`. Full resolution is
-        // already in memory for imported and planned routes; `rideGeometry` threads it in for
+        // already in memory for imported and planned routes; `ridePoints` threads it in for
         // tracked. It falls back to the preview's coordinates when neither is available, which is
         // a coarser map, not a missing one.
-        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? rideGeometry ?? []
+        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? ridePoints.map(\.coordinate)
+        self.ridePoints = ridePoints
+        self.rides = rides
 
         switch dressing {
         case .planned(let route):
@@ -142,7 +163,6 @@ public final class RouteDetailModel {
             preview = route.trackPreview
             distanceMeters = route.distanceMeters
             climbMeters = route.elevationGainMeters
-            estimatedDuration = route.estimatedDuration
             pointCount = route.pointCount
             if let detail = preloadedDetail {
                 waypoints = detail.waypoints
@@ -157,16 +177,22 @@ public final class RouteDetailModel {
             distanceMeters = ride.distanceMeters
             climbMeters = ride.climbMeters
 
-        case .imported(let route, let fileName):
+        case .imported(let route, let fileName, let source):
             let stats = RouteStats.compute(from: route.points)
-            importedStats = stats
             name = route.name ?? fileName
-            subtitle = fileName
+            // A ride's file name is ours, not a file the rider picked.
+            subtitle = source == .file ? fileName : nil
             preview = TrackPreview.normalizing(route.points.map(\.coordinate))
-            distanceMeters = stats.distanceMeters
-            climbMeters = stats.elevationGainMeters
-            descentMeters = stats.elevationLossMeters
-            estimatedDuration = stats.estimatedDuration
+            // The header figures, which are what the device shows for this route.
+            if let totals = RouteObjectCodec.totals(points: route.points) {
+                distanceMeters = Double(totals.distanceMeters)
+                climbMeters = Double(totals.ascentMeters)
+                descentMeters = Double(totals.descentMeters)
+            } else {
+                distanceMeters = stats.distanceMeters
+                climbMeters = stats.elevationGainMeters
+                descentMeters = stats.elevationLossMeters
+            }
             pointCount = route.points.count
             waypoints = route.waypoints
             elevationProfile = stats.elevationProfile
@@ -174,24 +200,20 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Fetch the tracked dressing's detail read; failures degrade quietly. Planned and imported
-    /// already have everything.
+    /// Watch the link, and fill a tracked ride's profile and highlights. A host may build throwaway
+    /// models on every render, so this whole-track work waits for the live one.
     public func start() {
         guard !started else { return }
         started = true
+        if case .tracked(let summary) = dressing {
+            let ride = Ride(summary: summary, points: ridePoints)
+            elevationProfile = MeasuredLine.elevationProfile(ridePoints: ridePoints)
+            highlights = RideHighlights.compute(ride, library: rides).map { OBCFormat.highlight($0) }
+        }
         connectionWatch = Task { [weak self, transport] in
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-            }
-        }
-        switch dressing {
-        case .planned, .imported:
-            break
-        case .tracked(let ride):
-            Task { [transport] in
-                guard let detail = try? await transport.rideDetail(ride.id) else { return }
-                elevationProfile = detail.elevationProfile
             }
         }
     }
@@ -211,9 +233,16 @@ public final class RouteDetailModel {
         }
     }
 
+    /// The landing's navigation title.
+    public var landingTitle: String {
+        guard case .imported(_, _, .ride) = dressing else { return "Imported route" }
+        return "New route"
+    }
+
     /// The import banner line; nil on the other dressings.
     public var importedFromLine: String? {
-        guard case .imported(let route, let fileName) = dressing else { return nil }
+        guard case .imported(let route, let fileName, let source) = dressing else { return nil }
+        if case .ride(let date) = source { return "From ride · \(OBCFormat.rideDay(date))" }
         let creator = route.creator?.lowercased() ?? ""
         if creator.contains("komoot") { return "Imported from Komoot" }
         if creator.contains("strava") { return "Imported from Strava" }
@@ -230,26 +259,32 @@ public final class RouteDetailModel {
             [
                 OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
                 OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
-                OBCStat(value: estimatedDuration.map { OBCFormat.movingTime($0) } ?? "—", key: "Est. time"),
+                estimateStat,
                 maxGradePercent.map {
                     OBCStat(value: "\(Int($0.rounded()))", unit: "%", key: "Max")
                 } ?? OBCStat(value: "—", key: "Max"),
             ]
-        case .tracked(let ride):
-            [
-                OBCStat(value: OBCFormat.distanceValue(meters: ride.distanceMeters), unit: "km", key: "Distance"),
-                OBCStat(value: OBCFormat.movingTime(ride.movingTime), key: "Moving"),
-                OBCStat(value: OBCFormat.speedValue(mps: ride.averageSpeedMps), unit: "kph", key: "Avg"),
-                OBCStat(value: OBCFormat.climbValue(meters: ride.climbMeters), unit: "m", key: "Climb"),
-            ]
+        case .tracked:
+            []  // a ride has the one stats line instead
         case .imported:
             [
                 OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
                 OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
                 OBCStat(value: OBCFormat.climbValue(meters: descentMeters), unit: "m", key: "Descent"),
-                OBCStat(value: estimatedDuration.map { OBCFormat.movingTime($0) } ?? "—", key: "Est. time"),
+                estimateStat,
             ]
         }
+    }
+
+    /// A tracked ride's one stats line under its title; nil on the other dressings.
+    public var statsLine: String? {
+        guard case .tracked(let ride) = dressing else { return nil }
+        return OBCFormat.rideStatsLine(ride)
+    }
+
+    /// Whole minutes, floored, as the device route overview shows the same estimate.
+    private var estimateStat: OBCStat {
+        OBCStat(value: estimatedDuration.map { OBCFormat.movingTime(($0 / 60).rounded(.down) * 60) } ?? "—", key: "Est. time")
     }
 
     // MARK: Ride sensor summary (tracked only)
@@ -292,20 +327,19 @@ public final class RouteDetailModel {
     /// reuses that route's id, so the save overwrites instead of adding a duplicate.
     @ObservationIgnored private let importedID: RouteID
 
-    /// The summary an import's save or upload lands in the library: the parsed geometry's stats.
+    /// The summary an import's save or upload lands in the library: the stat strip's figures.
     public func makeSummary() -> RouteSummary {
-        let stats = importedStats ?? RouteStats(distanceMeters: distanceMeters, elevationGainMeters: climbMeters)
         var source = RouteSource.gpx
-        if case .imported(_, let fileName) = dressing,
+        if case .imported(_, let fileName, _) = dressing,
             (fileName as NSString).pathExtension.lowercased() == "tcx" {
             source = .tcx
         }
         return RouteSummary(
             id: importedID,
             name: name,
-            distanceMeters: stats.distanceMeters,
-            elevationGainMeters: stats.elevationGainMeters,
-            estimatedDuration: stats.estimatedDuration,
+            distanceMeters: distanceMeters,
+            elevationGainMeters: climbMeters,
+            estimatedDuration: estimatedDuration,
             pointCount: pointCount,
             source: source,
             trackPreview: preview
@@ -320,6 +354,7 @@ public final class RouteDetailModel {
         switch dressing {
         case .planned(var route):
             route.name = name  // a rename rides along
+            route.estimatedDuration = estimatedDuration
             summary = route
         case .imported, .tracked:  // tracked never uploads
             summary = makeSummary()
@@ -334,7 +369,7 @@ public final class RouteDetailModel {
     /// date" always means byte-identical to this.
     private func uploadPayload() -> Data {
         uploadGeometry.map {
-            RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
+            RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name, bikeType: bikeType)
         } ?? Data()
     }
 
@@ -348,4 +383,12 @@ public final class RouteDetailModel {
             maxGradePercent: maxGradePercent
         )
     }
+}
+
+/// Where a route on the import landing comes from, which picks the landing's copy.
+public enum ImportSource: Equatable, Sendable {
+    /// A route file the rider picked or shared.
+    case file
+    /// A tracked ride saved as a route, recorded on this date.
+    case ride(Date)
 }

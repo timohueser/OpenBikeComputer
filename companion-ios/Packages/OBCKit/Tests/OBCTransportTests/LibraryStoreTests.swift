@@ -61,7 +61,9 @@ final class LibraryStoreTests: XCTestCase {
                 trackPreview: TrackPreview.normalizing([
                     Coordinate(latitude: 47.0, longitude: 7.0),
                     Coordinate(latitude: 47.1, longitude: 7.2),
-                ])
+                ]),
+                bikeType: .touring,
+                trip: RideTrip(key: 42, dayIndex: 1, dayCount: 3, name: "Alpen Traverse")
             ),
             points: [
                 RidePoint(timestamp: Date(timeIntervalSince1970: 2_000),
@@ -275,6 +277,44 @@ final class LibraryStoreTests: XCTestCase {
         }
 
         XCTAssertEqual(store.rideSummaries().count, 200)
+    }
+
+    /// The map line is built once: a later read needs no points file, and a re-saved ride
+    /// rebuilds it from the new points.
+    func testRideMapLineIsCachedUntilThePointsChange() throws {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        try store.saveRide(ride)
+        let line = try XCTUnwrap(store.rideMapLine(ride.id))
+        XCTAssertEqual(line.pieces, [ride.points.map(\.coordinate)])
+
+        try Data("not json".utf8).write(to: try pointsURL(in: dir, id: "ride-1"))
+        XCTAssertEqual(FileLibraryStore(directory: dir).rideMapLine(ride.id), line)
+
+        let moved = Ride(summary: ride.summary, points: [ride.points[0]] + [
+            RidePoint(timestamp: Date(timeIntervalSince1970: 2_060), coordinate: Coordinate(latitude: 47.2, longitude: 7.3)),
+        ])
+        try store.saveRide(moved)
+        XCTAssertEqual(store.rideMapLine(ride.id)?.pieces, [moved.points.map(\.coordinate)])
+
+        store.deleteRide(ride.id)
+        XCTAssertNil(store.rideMapLine(ride.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("ride-lines/ride-1.json").path))
+    }
+
+    /// A line cached by another build of the simplifier rebuilds from the points.
+    func testRideMapLineFromAnotherFormatRebuilds() throws {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        try store.saveRide(ride)
+        _ = store.rideMapLine(ride.id)
+        let url = dir.appendingPathComponent("ride-lines/ride-1.json")
+        var cached = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        cached["version"] = RideMapLine.formatVersion + 1
+        cached["pieces"] = [[0.0, 0.0, 1.0, 1.0]]
+        try JSONSerialization.data(withJSONObject: cached).write(to: url)
+
+        XCTAssertEqual(store.rideMapLine(ride.id)?.pieces, [ride.points.map(\.coordinate)])
     }
 
     func testMissingPointsFileKeepsTheSummaryRow() throws {

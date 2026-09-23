@@ -255,6 +255,37 @@ impl crate::App {
     pub fn request_destination(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {
         self.request_place_route(target, name, true)
     }
+    /// The frozen inputs of a place route from where the rider is now. An active route makes it
+    /// a visit unless `destination` asks for the plain route to the place.
+    pub(crate) fn place_review_context(
+        &self,
+        map: obc_formats::obcr::RouteSourceKey,
+        destination: bool,
+    ) -> Result<ReviewContext, VisitUnavailable> {
+        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
+        if scope.store.bytes() != map.store {
+            return Err(VisitUnavailable::SourceChanged);
+        }
+        let fix = self.fresh_position().ok_or(VisitUnavailable::NoFix)?;
+        let original = self.active_route_index().and_then(|i| self.route_ids().get(i)).copied();
+        if original.is_some() && (!self.navigator.route_match.started() || self.navigator.following.off_route) {
+            return Err(VisitUnavailable::Unmatched);
+        }
+        let progress = self.navigator.following.progress_m;
+        Ok(ReviewContext {
+            purpose: if original.is_some() && !destination { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
+            map,
+            store: scope.store,
+            original: None,
+            origin: (fix.lon, fix.lat),
+            progress_m: progress,
+            occurrence: self.navigator.route_match.occurrence(),
+            required_anchors_m: [progress; 3],
+            profile: self.settings().bike_type,
+            facts_policy: super::REVIEW_FACTS_POLICY,
+            unresolved_avoidance: false,
+        })
+    }
     fn request_place_route(
         &mut self,
         target: VisitTarget,
@@ -270,38 +301,17 @@ impl crate::App {
         {
             return Err(VisitUnavailable::Busy);
         }
-        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
-        if scope.store.bytes() != target.map.store {
-            return Err(VisitUnavailable::SourceChanged);
-        }
-        let fix = self.fresh_position().ok_or(VisitUnavailable::NoFix)?;
+        let context = self.place_review_context(target.map, destination)?;
         if !target.metadata.source.is_valid() || target.metadata.approach.is_some_and(|a| !a.source.is_valid()) {
             return Err(VisitUnavailable::NoMappedAccess);
         }
-        let profile = self.settings().bike_profile_idx;
-        let approach = target.approach(target.map, profile).ok_or(VisitUnavailable::Profile)?;
-        let original = self.active_route_index().and_then(|i| self.route_ids().get(i)).copied();
-        if original.is_some() && (!self.navigator.route_match.started() || self.navigator.following.off_route) {
-            return Err(VisitUnavailable::Unmatched);
-        }
-        let progress = self.navigator.following.progress_m;
-        let context = ReviewContext {
-            purpose: if original.is_some() && !destination { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
-            map: target.map,
-            store: scope.store,
-            original: None,
-            origin: (fix.lon, fix.lat),
-            progress_m: progress,
-            occurrence: self.navigator.route_match.occurrence(),
-            required_anchors_m: [progress; 3],
-            profile,
-            facts_policy: super::REVIEW_FACTS_POLICY,
-            unresolved_avoidance: false,
-        };
+        let approach = target.approach(target.map, context.profile).ok_or(VisitUnavailable::Profile)?;
+        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
         self.navigator.visit = VisitState::new();
         self.navigator.visit.target = Some((target.metadata, target.display));
         self.navigator.visit.catalog_revision = scope.revision.raw();
-        self.navigator.visit.requested_route = original.unwrap_or(0);
+        self.navigator.visit.requested_route =
+            self.active_route_index().and_then(|i| self.route_ids().get(i)).copied().unwrap_or(0);
         self.navigator.visit.needs_bind = true;
         self.plan_assistant(crate::NavRequest::new(context.origin, approach, name), context);
         if self.assistant_review_status() == ReviewStatus::Planning {
@@ -310,6 +320,7 @@ impl crate::App {
             Err(VisitUnavailable::Busy)
         }
     }
+
     pub(crate) fn request_easier(
         &mut self,
         map: obc_formats::obcr::RouteSourceKey,
@@ -335,7 +346,7 @@ impl crate::App {
             progress_m: origin.progress_m,
             occurrence: origin.occurrence,
             required_anchors_m: [origin.progress_m; 3],
-            profile: self.settings().bike_profile_idx,
+            profile: self.settings().bike_type,
             facts_policy: super::REVIEW_FACTS_POLICY,
             unresolved_avoidance: false,
         };
@@ -343,7 +354,7 @@ impl crate::App {
         self.navigator.visit.catalog_revision = scope.revision.raw();
         self.navigator.visit.requested_route = original;
         self.navigator.visit.needs_bind = true;
-        self.plan_assistant(crate::NavRequest::new(origin.fix, destination, "Easier route"), context);
+        self.measure_easier(crate::NavRequest::new(origin.fix, destination, "Easier route"), context);
         if self.assistant_review_status() == ReviewStatus::Planning {
             Ok(())
         } else {
@@ -376,9 +387,9 @@ impl crate::App {
         self.navigator.visit.needs_bind = false;
         true
     }
-    /// Place queries supply a map-bound approach or an ordinary coordinate destination.
-    /// No active route means a direct destination, with no implied continuation.
-    pub fn plan_visit(&mut self, target: VisitTarget, mut context: ReviewContext) -> bool {
+    /// Measure a candidate's legs for the Find list: from `from` on the route to the place and,
+    /// for a visit, back again. No route is composed and no source is bound.
+    pub fn measure_visit(&mut self, target: VisitTarget, context: ReviewContext, from: (i32, i32)) -> bool {
         if self.navigator.active_visit()
             || self.navigator.review.status == ReviewStatus::Unresolved
             || self.navigator.review.status == ReviewStatus::Planning
@@ -391,11 +402,10 @@ impl crate::App {
         let Some(approach) = target.approach(context.map, context.profile) else {
             return false;
         };
-        context.purpose = if context.original.is_some() { ReviewPurpose::Visit } else { ReviewPurpose::Destination };
-        context.required_anchors_m = [context.progress_m; 3];
         self.navigator.visit = VisitState::new();
         self.navigator.visit.target = Some((target.metadata, target.display));
-        self.plan_assistant(crate::NavRequest::new(context.origin, approach, "Visit"), context);
+        self.navigator.request_review(crate::NavRequest::new(from, approach, "Visit"), context, true);
+        self.ui.map_dirty = true;
         self.assistant_review_status() == ReviewStatus::Planning
     }
     pub fn assistant_visit_target(&self) -> Option<VisitTarget> {
@@ -487,7 +497,7 @@ impl crate::App {
                 progress_m: self.navigator.following.progress_m,
                 occurrence: self.navigator.route_match.occurrence(),
                 required_anchors_m: [rejoin; 3],
-                profile: self.settings().bike_profile_idx,
+                profile: self.settings().bike_type,
                 facts_policy: super::REVIEW_FACTS_POLICY,
                 unresolved_avoidance: false,
             };
@@ -662,6 +672,29 @@ mod tests {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Planning);
                 assert_eq!(app.assistant_review_context().unwrap().purpose, ReviewPurpose::ReturnToRoute);
                 assert!(app.assistant_preview().is_none());
+                // The connector back is reviewed against the rest of the route being ridden.
+                app.navigator.reviewed(crate::navigator::ReviewedRoute {
+                    source: PayloadFingerprint { object: 9, revision: 1, length: 1, crc: 1 },
+                    distance_m: 500,
+                    ascent_m: 0,
+                    descent_m: 0,
+                    visit_anchors_m: None,
+                    visit_costs: Some(obc_route::visit::VisitCosts {
+                        arrival_ascent_m: 0,
+                        rough_m: 0,
+                        unknown_m: 0,
+                        arrival_elevation_complete: true,
+                        complete_elevation: true,
+                        legs_m: None,
+                        legs_ascent_m: None,
+                    }),
+                    easier: None,
+                });
+                app.prepare_find(None, Some(&route));
+                let costs = app.ui.find.review_costs.unwrap();
+                assert_eq!(costs.arrival_m, 500);
+                assert_eq!(costs.added_m, Some(500 - (route.total_distance_m - app.progress_m())));
+                assert_eq!(costs.added_ascent_m, None);
                 app.apply_gesture(Gesture::Back);
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
                 assert_eq!(app.assistant_checkpoint(), checkpoint);
@@ -1113,7 +1146,7 @@ mod tests {
                 progress_m: 0,
                 occurrence: 0,
                 required_anchors_m: [0; 3],
-                profile: 0,
+                profile: crate::settings::BikeType::Road,
                 facts_policy: REVIEW_FACTS_POLICY,
                 unresolved_avoidance: false,
             });
@@ -1124,11 +1157,12 @@ mod tests {
                 descent_m: 0,
                 visit_anchors_m: Some([0, stop, stop]),
                 visit_costs: None,
+                easier: None,
             });
             app.navigator.review.status = ReviewStatus::Preview;
             app.navigator.accept_review(
                 ReviewOrigin { fix: (0, 0), progress_m: 0, occurrence: 0, lateral_m: 0, trustworthy: true },
-                0,
+                crate::settings::BikeType::Road,
             );
             let mut tokens = TokenSource::new();
             ack(&mut app, &mut tokens, &route);

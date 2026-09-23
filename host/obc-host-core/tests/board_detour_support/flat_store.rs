@@ -24,14 +24,40 @@ pub enum Kind {
     Close,
 }
 pub enum Request {
-    Allocate { bytes: u64 },
-    WriteComputedRoute { allocation: Allocation, bytes: &'static [u8], header: &'static [u8] },
-    Seal { allocation: Allocation, out: &'static mut Option<SealedAllocation<'static>> },
-    ReleaseSealed { sealed: SealedAllocation<'static> },
-    PublishComputedRoute { allocation: Allocation, name: DisplayName, original: Option<(ObjectId, Revision)> },
-    RemoveComputedRoute { id: ObjectId, revision: Revision },
-    Cancel { allocation: Allocation },
-    Close { handle: Handle },
+    Allocate {
+        bytes: u64,
+    },
+    WriteComputedRoute {
+        allocation: Allocation,
+        bytes: &'static [u8],
+        header: &'static [u8],
+    },
+    Seal {
+        allocation: Allocation,
+        out: &'static mut Option<SealedAllocation<'static>>,
+    },
+    ReleaseSealed {
+        sealed: SealedAllocation<'static>,
+    },
+    PublishComputedRoute {
+        allocation: Allocation,
+        name: DisplayName,
+        original: Option<(ObjectId, Revision)>,
+        built_day: bool,
+    },
+    RemoveComputedRoute {
+        id: ObjectId,
+        revision: Revision,
+    },
+    RemoveRoutes {
+        heads: heapless::Vec<(ObjectId, Revision), { obc_storage::flat::store::MAX_BATCH }>,
+    },
+    Cancel {
+        allocation: Allocation,
+    },
+    Close {
+        handle: Handle,
+    },
 }
 impl Request {
     fn kind(&self) -> Kind {
@@ -41,7 +67,7 @@ impl Request {
             Self::Seal { .. } => Kind::Seal,
             Self::ReleaseSealed { .. } => Kind::ReleaseSealed,
             Self::PublishComputedRoute { .. } => Kind::Publish,
-            Self::RemoveComputedRoute { .. } => Kind::Remove,
+            Self::RemoveComputedRoute { .. } | Self::RemoveRoutes { .. } => Kind::Remove,
             Self::Cancel { .. } => Kind::Cancel,
             Self::Close { .. } => Kind::Close,
         }
@@ -133,7 +159,8 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
             store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
             Ok(Outcome::Done)
         }
-        Request::PublishComputedRoute { allocation, name, original } => {
+        Request::PublishComputedRoute { allocation, name, original, built_day } => {
+            assert!(!built_day, "these tests publish detours, not built trip days");
             if original.is_some_and(|(id, revision)| store.current_revision(id) != Ok(Some(revision)))
                 || !planner_map_current()
             {
@@ -158,6 +185,13 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
         }
         Request::RemoveComputedRoute { id, revision } => {
             store.commit(&[Mutation::Remove { id, revision }])?;
+            Ok(Outcome::Done)
+        }
+        Request::RemoveRoutes { heads } => {
+            let batch = obc_storage::flat::route_cleanup::candidate_removals(store, &heads)?;
+            if !batch.is_empty() {
+                store.commit(&batch)?;
+            }
             Ok(Outcome::Done)
         }
         Request::Cancel { allocation } => {
@@ -215,6 +249,20 @@ pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
         ids.push(meta.id.0);
     }
     app.set_routes_with_ids(&summaries, &ids);
+}
+
+pub fn route_heads(
+    store: &FlatStore<FlatCard>,
+    ids: impl Iterator<Item = u64>,
+) -> heapless::Vec<(ObjectId, Revision), { obc_storage::flat::store::MAX_BATCH }> {
+    let ids: Vec<u64> = ids.collect();
+    let mut heads = heapless::Vec::new();
+    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+        if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
+            break;
+        }
+    }
+    heads
 }
 
 pub fn fingerprint_reads() -> u32 {

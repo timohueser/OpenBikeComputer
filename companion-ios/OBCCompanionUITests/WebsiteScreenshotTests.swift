@@ -130,14 +130,7 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.staticTexts["Grimsel Pass"].waitForExistence(timeout: 10),
             "the imported route landing did not appear"
         )
-        let upload = app.buttons["detail.upload"]
-        XCTAssertTrue(upload.exists, "the imported route upload action is missing")
-        // The call to action names the device, off the same unwaited name the top bar uses, so
-        // this page has the identity race too, although it never shows the top bar.
-        let named = expectation(
-            for: NSPredicate(format: "label == %@", "Upload to Trailhead"), evaluatedWith: upload
-        )
-        wait(for: [named], timeout: 15)
+        XCTAssertTrue(app.buttons["import.newRoute"].exists, "the import rows are missing")
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the imported route's hero did not draw"
@@ -149,6 +142,18 @@ final class WebsiteScreenshotTests: XCTestCase {
         )
         capture(app, name: "route-imported")
 
+        // Land it as a route, then upload it from its route page.
+        app.buttons["import.newRoute"].tap()
+        let savedRoute = app.staticTexts["Grimsel Pass"].firstMatch
+        XCTAssertTrue(savedRoute.waitForExistence(timeout: 10), "the imported route did not land in the list")
+        savedRoute.tap()
+        let upload = app.buttons["detail.upload"]
+        XCTAssertTrue(upload.waitForExistence(timeout: 10), "the route upload action is missing")
+        // The call to action names the device, off the same unwaited name the top bar uses.
+        let named = expectation(
+            for: NSPredicate(format: "label == %@", "Upload to Trailhead"), evaluatedWith: upload
+        )
+        wait(for: [named], timeout: 15)
         upload.tap()
 
         XCTAssertTrue(
@@ -171,9 +176,10 @@ final class WebsiteScreenshotTests: XCTestCase {
             "the upload sheet dismissed itself during the capture — the confirmation hold is broken"
         )
         app.buttons["upload.done"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(
             app.otherElements["main.screen"].waitForExistence(timeout: 10),
-            "the completed import did not return to the main screen"
+            "the route page did not return to the main screen"
         )
 
         // Pull the fixture ride off the same mock device, then open it through the ordinary
@@ -222,15 +228,16 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "the downloaded ride detail did not open"
         )
-        XCTAssertTrue(app.staticTexts["4.9 km"].exists)
+        XCTAssertTrue(app.staticTexts["detail.statsLine"].label.hasPrefix("4.9 km · "))
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the real Grimsel geometry should be visible in the ride hero"
         )
-        // The one genuinely async element on this screen: a tracked ride's profile samples come
-        // from the detail read, so the card, and everything the card pushes down, appears a beat
-        // after the stats do.
+        // The profile and highlights fill when the live model starts, a beat after the stats line.
         waitFor(app, "detail.elevationProfile", "the ride's elevation profile did not arrive")
+        waitFor(app, "detail.highlights", "the ride's highlights did not arrive")
+        waitFor(app, "quietRow.open", "the ride's photo offer did not arrive")
+        waitFor(app, "dayNote.offer", "the ride's note prompt did not arrive")
         // The services block is static markup on the tracked dressing.
         XCTAssertTrue(
             app.descendants(matching: .any)["detail.services"].firstMatch.exists,

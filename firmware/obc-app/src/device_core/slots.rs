@@ -46,6 +46,12 @@ impl<T> Slot<T> {
         self.held.take()
     }
 
+    /// Take the held value only when `pick` accepts it, so an executor serves one kind and leaves
+    /// the rest.
+    pub fn take_if(&mut self, pick: impl FnOnce(&T) -> bool) -> Option<T> {
+        self.held.take_if(|value| pick(value))
+    }
+
     /// Whether the slot holds nothing: the admission test before issuing a new operation.
     pub fn is_empty(&self) -> bool {
         self.held.is_none()
@@ -212,7 +218,13 @@ mod tests {
             })
             .unwrap();
         second.recorder.try_put(RecorderEffect::Finalize { token: recorder_ops.issue() }).unwrap();
-        let work = PlannerWork::Detour(DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 });
+        let work = PlannerWork::Detour(DetourRequest {
+            route: 0,
+            from: (0, 0),
+            progress_m: 0,
+            target_m: 500,
+            leg: obc_route::Leg::Detour,
+        });
         second.navigator.try_put(NavigatorEffect::Acquire { token: navigator_ops.issue(), work }).unwrap();
         second.settings.try_put(SettingsEffect::PersistRevision { token: settings_ops.issue(), revision: 4 }).unwrap();
 

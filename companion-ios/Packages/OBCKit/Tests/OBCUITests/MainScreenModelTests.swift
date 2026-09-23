@@ -208,11 +208,11 @@ final class MainScreenModelTests: XCTestCase {
         try await waitFor("first sync") { model.sync.lastSyncCount != nil }
 
         let ride = model.rides.first { $0.name == "Kettle Moraine Loop" }
-        let geometry = ride.flatMap { model.rideGeometry(for: $0.id) }
+        let geometry = ride.flatMap { model.ride($0.id)?.points }
         XCTAssertNotNil(geometry, "a synced ride's points should be available for the map")
         XCTAssertFalse(geometry?.isEmpty ?? true)
 
-        XCTAssertNil(model.rideGeometry(for: RideID("nonexistent")))
+        XCTAssertNil(model.ride(RideID("nonexistent")))
     }
 
     /// One banner at a time: while a dropped sync waits for Resume the link banner yields to the
@@ -389,7 +389,7 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.rides.count, countBefore)
         XCTAssertEqual(model.rides[1].id, id, "a recovered ride returns to its date slot")
         XCTAssertTrue(model.trashedRides.isEmpty)
-        XCTAssertNotNil(model.rideGeometry(for: id), "the tracklog survived the round trip")
+        XCTAssertNotNil(model.ride(id), "the tracklog survived the round trip")
 
         let (relaunched, _) = makeModel(.happyPath, library: library)
         try await startLoaded(relaunched)
@@ -457,6 +457,9 @@ final class MainScreenModelTests: XCTestCase {
 
         model.renameRide(model.rides[1].id, to: "Sunday Espresso Spin")
         XCTAssertEqual(model.rides[1].name, "Sunday Espresso Spin")
+
+        model.setRideBikeType(model.rides[1].id, to: .mtb)
+        XCTAssertEqual(model.rides[1].bikeType, .mtb)
     }
 
     func testAddImportedRouteLandsOnTopOfPlannedAndKeepsItsDetail() async throws {
@@ -769,7 +772,7 @@ final class MainScreenModelTests: XCTestCase {
             summary: renamed.summary, waypoints: renamed.route.waypoints,
             payload: RouteObjectCodec.encode(
                 points: renamed.route.points, waypoints: renamed.route.waypoints,
-                name: renamed.summary.name),
+                name: renamed.summary.name, bikeType: renamed.bikeType),
             targetObjectID: model.plannedDeviceObjectID(for: renamed.id))
         _ = await MockTransport(control: control).uploadRoute(blob).outcome
         XCTAssertEqual(

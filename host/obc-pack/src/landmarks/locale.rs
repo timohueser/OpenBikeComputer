@@ -80,7 +80,6 @@ mod tests {
                 revision: String::new(),
                 license_url: String::new(),
                 original_notices: String::new(),
-                display_pages: vec![],
             },
         };
         let available = [variant("de"), variant("fr")];

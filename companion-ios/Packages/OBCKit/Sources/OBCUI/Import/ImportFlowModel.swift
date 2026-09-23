@@ -28,6 +28,14 @@ public final class ImportFlowModel {
     public var newRouteName = ""
     /// The "couldn't read that file" alert.
     public var importFailed = false
+    /// Several files that arrived together, behind the "Make a trip" sheet; nil closes it.
+    public var pendingJoin: PendingJoin?
+
+    /// A share of several files arrives as one URL at a time. URLs closer together than this
+    /// are one share.
+    private let batchWindow: Duration
+    @ObservationIgnored private var batch: [URL] = []
+    @ObservationIgnored private var batchTask: Task<Void, Never>?
 
     // MARK: Injected seams
 
@@ -37,15 +45,60 @@ public final class ImportFlowModel {
     /// Bond state at arrival picks the framing. A narrow closure, not the whole `BondStore`,
     /// because the launch flow owns the record itself.
     private let isBonded: () -> Bool
+    private let lastBikeType: LastBikeTypeStore
 
     public init(
         decode: @escaping (Data, String) throws -> ImportedRoute,
         library: any LibraryStore,
-        isBonded: @escaping () -> Bool
+        isBonded: @escaping () -> Bool,
+        lastBikeType: LastBikeTypeStore = LastBikeTypeStore(),
+        batchWindow: Duration = .milliseconds(400)
     ) {
+        self.batchWindow = batchWindow
         self.decode = decode
         self.library = library
         self.isBonded = isBonded
+        self.lastBikeType = lastBikeType
+    }
+
+    // MARK: Opening files
+
+    /// One shared file URL. URLs that arrive within ``batchWindow`` of each other open together.
+    public func receive(_ url: URL) {
+        batch.append(url)
+        guard batchTask == nil else { return }
+        batchTask = Task { [weak self, batchWindow] in
+            try? await Task.sleep(for: batchWindow)
+            guard let self else { return }
+            let urls = batch
+            batch = []
+            batchTask = nil
+            await openFiles(at: urls)
+        }
+    }
+
+    /// Picked or shared files. One file opens the landing; several open the "Make a trip" sheet.
+    /// When one of several does not decode, nothing opens and the rider sees the alert.
+    public func openFiles(at urls: [URL]) async {
+        guard urls.count > 1 else {
+            if let url = urls.first { await openFile(at: url) }
+            return
+        }
+        var files: [PendingImport] = []
+        for url in urls {
+            guard let data = await Self.read(url), let route = try? decode(data, url.lastPathComponent) else {
+                importFailed = true
+                return
+            }
+            files.append(PendingImport(
+                route: route, fileName: url.lastPathComponent, fileData: data,
+                noDevicePaired: !isBonded(), bikeType: lastBikeType.value))
+        }
+        pendingJoin = PendingJoin(files: files)
+    }
+
+    public func closeJoin() {
+        pendingJoin = nil
     }
 
     // MARK: Opening a file
@@ -56,12 +109,7 @@ public final class ImportFlowModel {
     /// until the download lands, and that must not freeze the UI. An unreadable file fails the
     /// same way an undecodable one does.
     public func openFile(at url: URL) async {
-        let data = await Task.detached(priority: .userInitiated) { () -> Data? in
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            return try? Data(contentsOf: url)
-        }.value
-        guard let data else {
+        guard let data = await Self.read(url) else {
             importFailed = true
             return
         }
@@ -72,21 +120,31 @@ public final class ImportFlowModel {
     /// saved route already carries this name, offer update-in-place against new.
     public func open(data: Data, fileName: String) {
         do {
-            let route = try decode(data, fileName)
-            let pending = PendingImport(
-                route: route,
-                fileName: fileName,
-                fileData: data,
-                noDevicePaired: !isBonded()
-            )
-            // A route by this name is already saved, so offer update-in-place against new.
-            if let existing = plannedRoute(named: route.name ?? fileName) {
-                collision = ImportCollision(pending: pending, existing: existing)
-            } else {
-                pendingImport = pending
-            }
+            open(route: try decode(data, fileName), fileName: fileName, fileData: data)
         } catch {
             importFailed = true
+        }
+    }
+
+    /// A route already in hand, such as a ride saved as a route: the same landing and the same
+    /// name-collision rule as a decoded file. A nil `bikeType` takes the last one picked.
+    public func open(
+        route: ImportedRoute, fileName: String, fileData: Data, source: ImportSource = .file,
+        bikeType: BikeType? = nil
+    ) {
+        let pending = PendingImport(
+            route: route,
+            fileName: fileName,
+            fileData: fileData,
+            source: source,
+            noDevicePaired: !isBonded(),
+            bikeType: bikeType ?? lastBikeType.value
+        )
+        // A route by this name is already saved, so offer update-in-place against new.
+        if let existing = plannedRoute(named: route.name ?? fileName) {
+            collision = ImportCollision(pending: pending, existing: existing)
+        } else {
+            pendingImport = pending
         }
     }
 
@@ -134,6 +192,14 @@ public final class ImportFlowModel {
         addAsNewPrompt = nil
     }
 
+    private static func read(_ url: URL) async -> Data? {
+        await Task.detached(priority: .userInitiated) { () -> Data? in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            return try? Data(contentsOf: url)
+        }.value
+    }
+
     // MARK: Closing the cover
 
     /// Close the cover: a completed hand-off, or a plain cancel.
@@ -169,8 +235,11 @@ public struct PendingImport: Identifiable, Sendable {
     public let fileName: String
     /// The original bytes, kept for the library record.
     public let fileData: Data
+    public let source: ImportSource
     /// Bond state at arrival, which picks the framing.
     public let noDevicePaired: Bool
+    /// The rider's last-used type at arrival.
+    public let bikeType: BikeType
     /// The existing route this import replaces, or nil for a fresh import. Its id and device
     /// object id carry through.
     public var replacing: PlannedRouteRecord? = nil
@@ -179,13 +248,17 @@ public struct PendingImport: Identifiable, Sendable {
         route: ImportedRoute,
         fileName: String,
         fileData: Data,
+        source: ImportSource = .file,
         noDevicePaired: Bool,
+        bikeType: BikeType = .road,
         replacing: PlannedRouteRecord? = nil
     ) {
         self.route = route
         self.fileName = fileName
         self.fileData = fileData
+        self.source = source
         self.noDevicePaired = noDevicePaired
+        self.bikeType = bikeType
         self.replacing = replacing
     }
 
@@ -214,11 +287,22 @@ public struct PendingImport: Identifiable, Sendable {
         PlannedRouteRecord(
             summary: detail.summary,
             route: route,
+            bikeType: bikeType,
             sourceFileName: fileName,
             sourceFileData: fileData,
             deviceLink: replacing?.deviceLink,
             uploadedCRC32: replacing?.uploadedCRC32
         )
+    }
+}
+
+/// Several route files that arrived together, in arrival order.
+public struct PendingJoin: Identifiable, Sendable {
+    public let id = UUID()
+    public let files: [PendingImport]
+
+    public init(files: [PendingImport]) {
+        self.files = files
     }
 }
 

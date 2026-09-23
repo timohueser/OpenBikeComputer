@@ -22,11 +22,11 @@ pub struct NavPlan {
 }
 
 impl NavPlan {
-    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) under bike profile
-    /// `profile_idx` (the rider's [`Settings::bike_profile_idx`](obc_app::Settings)).
-    pub fn start(req: &obc_app::NavRequest, profile_idx: u8) -> Self {
+    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) for `bike` (the rider's
+    /// [`Settings::bike_type`](obc_app::Settings)).
+    pub fn start(req: &obc_app::NavRequest, bike: obc_route::BikeType) -> Self {
         NavPlan {
-            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx)),
+            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), bike)),
             // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero is
             // `new()`" invariant; the host just asks for one.
             scratch: obc_route::nav::NavScratch::new_boxed(),
@@ -65,6 +65,14 @@ impl NavPlan {
         self.sink.bytes()
     }
 
+    /// The graph coordinates the endpoints snapped to, once the search has run.
+    pub fn snapped_start(&self) -> (i32, i32) {
+        self.planner.snapped_start()
+    }
+    pub fn snapped_goal(&self) -> (i32, i32) {
+        self.planner.snapped_goal()
+    }
+
     /// The plan's cumulative graph-chunk and route-index cache counters.
     pub fn tile_stats(&self) -> obc_reader::NavCacheStats {
         self.tiles.stats()
@@ -81,6 +89,7 @@ pub struct DetourPlan {
     sink: VecSink,
     progress_m: u32,
     target_m: u32,
+    leg: obc_route::Leg,
 }
 
 impl DetourPlan {
@@ -88,7 +97,11 @@ impl DetourPlan {
     /// rejoin coordinate at `target_m` on the resident active route and build the corridor over
     /// the skipped span. `None` when the route can't resolve the rejoin (vanished / unreadable) —
     /// the caller answers `DetourPlanned(Err)` immediately.
-    pub fn start(req: &obc_app::DetourRequest, profile_idx: u8, orig: &obc_route::RouteReader) -> Option<Self> {
+    pub fn start(
+        req: &obc_app::DetourRequest,
+        bike: obc_route::BikeType,
+        orig: &obc_route::RouteReader,
+    ) -> Option<Self> {
         let to = orig.position_at(req.target_m)?;
         let corridor = obc_route::Corridor::build(orig, req.progress_m, req.target_m);
         Some(DetourPlan {
@@ -96,7 +109,7 @@ impl DetourPlan {
                 req.from,
                 (to.lon, to.lat),
                 "Detour leg",
-                profile_idx,
+                bike,
                 corridor,
             )),
             scratch: obc_route::nav::NavScratch::new_boxed(),
@@ -104,6 +117,7 @@ impl DetourPlan {
             sink: VecSink::default(),
             progress_m: req.progress_m,
             target_m: req.target_m,
+            leg: req.leg,
         })
     }
 
@@ -126,11 +140,76 @@ pub struct DetourReady {
     detour_len_m: u32,
     progress_m: u32,
     rejoin_m: u32,
+    leg: obc_route::Leg,
     /// The plan's own [`RouteStats::has_elevation`](obc_route::RouteStats) — did the mounted
     /// terrain answer for this detour? Carried (never re-derived from the bytes: `0 m` is a real
     /// height) so the splice knows whether the leg's stored heights are sampled terrain to keep or
     /// the `0` placeholder to replace.
     has_elevation: bool,
+}
+
+/// The rest of the day before a trip day, ready to splice in front of it. `request` names the day's
+/// route, its leg the span on the day before, and its target where the day joins the line.
+pub fn rest_ready(
+    app: &obc_app::App,
+    request: &obc_app::DetourRequest,
+    routes: &dyn crate::RouteRepository,
+) -> Option<DetourReady> {
+    let obc_route::Leg::Rest { from_m, to_m } = request.leg else { return None };
+    let route = *app.route_ids().get(request.route)?;
+    let day = obc_app::trip::trip_day(app.trips(), route)?;
+    let trip = app.trips().iter().find(|trip| trip.key == day.key())?;
+    let before = *trip.stage_ids.get(usize::from(day.day_index()).checked_sub(1)?)?;
+    Some(DetourReady {
+        bytes: routes.route_bytes(before)?,
+        detour_len_m: to_m.checked_sub(from_m)?,
+        progress_m: 0,
+        rejoin_m: request.target_m,
+        leg: request.leg,
+        has_elevation: true,
+    })
+}
+
+/// Where the active trip's next day meets the day before, for [`App::set_day_join`]: the day
+/// before's leave point, clamped to its route's length, the day's join point, and the gap from the
+/// day before's end to the day's start; and the same facts one day on.
+pub fn day_join(
+    app: &obc_app::App,
+    routes: &dyn crate::RouteRepository,
+    trips: &dyn crate::TripCatalog,
+) -> Option<obc_app::trip::DayJoin> {
+    use obc_formats::io::SliceSource;
+    let (trip, day) = app.next_trip_day()?;
+    // The first day has no day before, so while it is next the facts are the second day's.
+    let day = day.max(1);
+    let (before, this) = (trips.day(trip.key, day.checked_sub(1)?)?, trips.day(trip.key, day)?);
+    // Where `this` meets `before` on the line.
+    let meet = |before: obc_route::TripDay, this: obc_route::TripDay| {
+        let bytes = routes.route_bytes(before.route)?;
+        let length = obc_route::RouteObjectInfo::read(&SliceSource(&bytes)).ok()?.distance_m;
+        let end = obc_route::route_end(&SliceSource(&bytes)).ok()?;
+        let start = obc_route::RouteSummary::read(&SliceSource(&routes.route_bytes(this.route)?)).ok()?;
+        Some(obc_app::trip::Join {
+            leave_m: before.leave_m.min(length),
+            join_m: this.join_m,
+            gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
+        })
+    };
+    let obc_app::trip::Join { leave_m, join_m, gap_m } = meet(before, this)?;
+    let after = trips.day(trip.key, day + 1).and_then(|next| meet(this, next));
+    Some(obc_app::trip::DayJoin { key: trip.key, day, leave_m, join_m, gap_m, after })
+}
+
+impl DetourReady {
+    /// The preview a lead-in answers with: the leg's length and where it joins the route.
+    pub fn lead_preview(&self) -> obc_app::DetourPreview {
+        obc_app::DetourPreview {
+            cost_delta_m: 0,
+            total_distance_m: self.detour_len_m,
+            rejoin_m: self.rejoin_m,
+            ascent_m: None,
+        }
+    }
 }
 
 /// The detour plan finished: the preview figures the typed
@@ -169,7 +248,14 @@ pub fn plan_detour_preview(
                 let didx = obc_route::RouteIndex::read(&src).ok()?;
                 let det = obc_route::RouteReader::new(&didx, &src);
                 let mut trim_sink = VecSink::default();
-                match obc_route::trim_detour_to_tail(orig, &det, plan.target_m, stats.has_elevation, &mut trim_sink) {
+                match obc_route::trim_detour_to_tail(
+                    plan.leg,
+                    orig,
+                    &det,
+                    plan.target_m,
+                    stats.has_elevation,
+                    &mut trim_sink,
+                ) {
                     Ok(Some(o)) => Some((o, trim_sink.into_bytes())),
                     _ => None,
                 }
@@ -214,6 +300,7 @@ pub fn plan_detour_preview(
                 detour_len_m,
                 progress_m: plan.progress_m,
                 rejoin_m,
+                leg: plan.leg,
                 has_elevation: stats.has_elevation,
             };
             (Some(ready), Ok(preview))
@@ -251,6 +338,7 @@ pub fn commit_detour(
             let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavigatorError::Store)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
             obc_route::splice_detour(
+                ready.leg,
                 orig,
                 &det,
                 ready.progress_m,
@@ -336,6 +424,7 @@ mod tests {
             detour_len_m: index.total_distance_m,
             progress_m: 0,
             rejoin_m: index.total_distance_m,
+            leg: obc_route::Leg::Detour,
             has_elevation: true,
         };
         let mut app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));

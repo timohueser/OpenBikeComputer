@@ -1,4 +1,4 @@
-# OBCR File Format Specification (v4)
+# OBCR File Format Specification (v5)
 
 OBCR (OpenStreetMap Binary Chunked Route) is the binary **route** format, the sibling of
 the [`OBCM`](OBCM_Spec.md) map format. A route is one ordered polyline with per-point
@@ -12,7 +12,7 @@ code authority for versions, fixed lengths, magic, and sentinels;
 `firmware/obc-formats/src/io.rs` owns the byte-source/sink traits and the checked
 little-endian primitives used by both producer and reader.
 
-**Versions.** v4 is the only accepted version. Re-import older routes from their source files.
+**Versions.** v5 is the only accepted version. Re-import older routes from their source files.
 
 All multi-byte integers are **little-endian**. Coordinates are **microdegrees**
 (1e-6 degrees). Distances and elevations are whole **meters**. Every section is reached
@@ -41,10 +41,10 @@ streamed out (§5).
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCR"` |
-| 4 | Version | 1 | `uint8` | `0x04`; readers reject anything else |
-| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; bit 3 Assistant candidate; other bits zero |
+| 4 | Version | 1 | `uint8` | `0x05`; readers reject anything else |
+| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; bit 3 Assistant candidate; bit 4 built trip day; other bits zero |
 | 6 | Name Len | 1 | `uint8` | Used bytes of the Name field (≤ 48) |
-| 7 | Reserved | 1 | `uint8` | `0` |
+| 7 | Bike Type | 1 | `uint8` | §1.2; readers reject values above `3` |
 | 8 | Min Lon | 4 | `int32` | Global bbox, microdegrees |
 | 12 | Min Lat | 4 | `int32` | |
 | 16 | Max Lon | 4 | `int32` | |
@@ -94,6 +94,36 @@ with the same object ID, revision, length, and CRC. An orphan candidate stays un
 after reboot. The optional Navigator checkpoint and the accepted route row are published in
 the same Metadata operation. Clearing that checkpoint preserves the accepted row. Replacing
 the route does not inherit the old acceptance.
+
+A built trip day is the rest of one trip day spliced in front of the next day. A device builds it
+for one ride. Route lists do not show it. A card holds at most one: the next build replaces it in
+place, with the same object ID and the next revision.
+
+### 1.2 Bike type and estimated time
+
+Every route has one of four fixed bike types. The value is also the index of the map's routing
+profile for that type ([`OBCM_Spec.md`](OBCM_Spec.md) §8.6).
+
+| Value | Type | Flat speed `v` (km/h) | Climb cost `k` (0.1 s per metre of ascent) |
+| :-- | :-- | :-- | :-- |
+| 0 | Road | 22 | 16 |
+| 1 | Gravel | 19 | 19 |
+| 2 | MTB | 16 | 23 |
+| 3 | Touring | 17 | 22 |
+
+The estimated time to ride `d` metres with `a` metres of ascent is, in whole seconds:
+
+```text
+t = floor((36·d + a·k·v) / (10·v))
+```
+
+Use integer arithmetic with at least 64-bit intermediates. A result above `2^32 − 1` saturates.
+Descent never subtracts time. The route estimate uses Total Distance and Total Ascent. Time to go
+uses the remaining distance and the remaining ascent. [`vectors/eta.csv`](vectors/eta.csv) holds
+the reference cases.
+
+A producer writes the type the rider chose. A transform of a stored route (detour splice, trim,
+visit) keeps the source route's type.
 
 ---
 

@@ -7,12 +7,13 @@ use obc_route::{gpx_to_obcr_attributed, RouteStats};
 use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 
-/// Convert the GPX at `path` into OBCR bytes. With a map, every segment carries the surface and
+/// Convert the GPX at `path` into OBCR bytes typed `bike`. With a map, every segment carries the surface and
 /// road class the map knows plus the source key that binds the route to that exact map revision;
 /// without one the route is unattributed. Filename accents are composed and common typography
 /// uses device-font equivalents before the route name is capped.
 pub fn convert_gpx(
     path: &Path,
+    bike: obc_route::BikeType,
     map: Option<(&Reader, obc_formats::obcr::RouteSourceKey)>,
 ) -> Result<(Vec<u8>, RouteStats), String> {
     let gpx = std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
@@ -29,7 +30,7 @@ pub fn convert_gpx(
         .collect();
     let mut sink = VecSink::default();
     let mut tiles = NavTileCache::new();
-    let stats = gpx_to_obcr_attributed(&SliceSource(&gpx), &name, &mut sink, map.map(|(_, key)| key), |a, b| {
+    let stats = gpx_to_obcr_attributed(&SliceSource(&gpx), &name, bike, &mut sink, map.map(|(_, key)| key), |a, b| {
         map.map_or(Ok(0), |(reader, _)| obc_route::attribution::attribute_segment(reader, &mut tiles, a, b))
     })
     .map_err(|error| format!("convert {}: {error:?}", path.display()))?;
@@ -58,7 +59,7 @@ mod tests {
         ] {
             let path = dir.path().join(format!("{input}.gpx"));
             std::fs::write(&path, gpx).unwrap();
-            let (bytes, _) = convert_gpx(&path, None).unwrap();
+            let (bytes, _) = convert_gpx(&path, obc_route::BikeType::Road, None).unwrap();
             let route = obc_route::RouteSummary::read(&SliceSource(&bytes)).unwrap();
             assert_eq!(route.name.as_str(), expected);
             assert!(route.name.chars().all(obc_render::glyph_supported));
