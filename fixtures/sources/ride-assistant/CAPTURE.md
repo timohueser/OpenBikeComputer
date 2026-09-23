@@ -54,8 +54,8 @@ Never run two capture processes against one output directory.
 
 Manifest schema 2 records the request identity of every Commons category page. You can resume a
 schema 1 capture in the same output directory to add missing continuation pages and write schema
-2. The capture verifies and reuses each successful page. The compiler rejects a schema 1 category
-response that contains a continuation token, so it cannot treat the truncated page as complete.
+2. The capture verifies and reuses each successful page. The compiler rejects all schema 1
+category records because they cannot prove that every page was consumed.
 
 An incomplete acquisition exits with status 2 and keeps the bytes it captured. Unresolved source
 requests, sweep queries or class closure make country coverage incomplete: do not report their
