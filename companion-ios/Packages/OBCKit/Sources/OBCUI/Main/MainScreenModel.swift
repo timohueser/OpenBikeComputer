@@ -925,7 +925,7 @@ public final class MainScreenModel {
     /// The stops of one day end, for the stops sheet. Nil for the last day, which ends at the line
     /// end.
     public func tripStops(_ id: TripID, day: Int, isOnline: Bool) -> TripStopsModel? {
-        guard let trip = trip(id), trip.endRange(of: day) != nil else { return nil }
+        guard let trip = trip(id), day >= 0, day < trip.dayCount - 1 else { return nil }
         return TripStopsModel(trip: trip, day: day, finder: stopFinder, isOnline: isOnline) { [weak self] stop in
             self?.endTripDay(id, day: day, at: stop)
         }

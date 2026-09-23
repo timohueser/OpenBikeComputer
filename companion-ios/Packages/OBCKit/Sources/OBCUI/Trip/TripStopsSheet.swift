@@ -23,6 +23,7 @@ public struct TripStopsSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 header
+                if model.endsAtTransfer { message("This day ends at a transfer.") }
                 OBCSearchField(text: $model.query, prompt: "Search places")
                     .onSubmit { Task { await model.search() } }
                     .disabled(!model.canSearch)

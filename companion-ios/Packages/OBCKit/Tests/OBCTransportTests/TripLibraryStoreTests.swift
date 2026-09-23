@@ -25,7 +25,7 @@ struct TripLibraryStoreTests {
 
     private func trip(_ id: String, addedAt: Date = Date(timeIntervalSince1970: 1_000)) -> Trip {
         Trip.joining(
-            [file([8.00, 8.01, 8.02]), file([8.03, 8.04], ele: nil)],
+            [file([8.00, 8.01, 8.02]), file([8.02, 8.03, 8.04], ele: nil)],
             waypoints: [[Waypoint(
                 index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: Coordinate(latitude: 46.5, longitude: 8.01),
                 category: .water)]],

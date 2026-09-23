@@ -35,6 +35,7 @@ public final class TripStopsModel: Identifiable {
         self.finder = finder
         self.isOnline = isOnline
         self.onPick = onPick
+        endsAtTransfer = trip.endsAtTransfer(day)
     }
 
     public var dayEnd: DayEnd { trip.dayEnds[day] }
@@ -42,6 +43,8 @@ public final class TripStopsModel: Identifiable {
     public var lineLength: Double { trip.dayEnds.last?.distance ?? 0 }
 
     public var canSearch: Bool { isOnline && finder != nil }
+    /// The day end cannot move: the next day starts elsewhere.
+    public let endsAtTransfer: Bool
 
     /// Show the waypoints at once, then add what Apple Maps finds.
     public func load() async {
