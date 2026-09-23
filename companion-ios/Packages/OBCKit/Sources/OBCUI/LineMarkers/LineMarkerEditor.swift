@@ -38,7 +38,8 @@ public struct LineMarkerEditor: View {
                 lineVersion: model.lineVersion,
                 markers: model.markers,
                 activeID: model.activeID,
-                segmentColors: model.segmentColors
+                segmentColors: model.segmentColors,
+                stops: model.stops
             )
         } else {
             grid

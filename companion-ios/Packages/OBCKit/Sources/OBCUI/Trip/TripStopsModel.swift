@@ -37,10 +37,9 @@ public final class TripStopsModel: Identifiable {
         self.onPick = onPick
     }
 
-    private var dayEnd: DayEnd { trip.dayEnds[day] }
-
-    /// The day end's distance along the line, which the rows measure "before" and "after" from.
-    public var dayEndDistance: Double { dayEnd.distance }
+    public var dayEnd: DayEnd { trip.dayEnds[day] }
+    /// The last day end sits at the line end.
+    public var lineLength: Double { trip.dayEnds.last?.distance ?? 0 }
 
     public var canSearch: Bool { isOnline && finder != nil }
 

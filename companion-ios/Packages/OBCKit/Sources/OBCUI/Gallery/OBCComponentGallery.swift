@@ -116,6 +116,10 @@ public struct OBCComponentGallery: View {
                     LineMarkerGallerySection()
                 }
 
+                section("Trip stops sheet") {
+                    TripStopsGallerySection()
+                }
+
                 section("Disclosure Row + Waypoints Dropdown") {
                     OBCDisclosureRow(
                         systemImage: "mappin.and.ellipse",

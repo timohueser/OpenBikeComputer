@@ -65,6 +65,15 @@ struct TripStopsTests {
     }
 
     @Test
+    func aDayWithoutItsOwnNameTakesTheStopsName() {
+        var trip = trip()
+        let hut = trip.place([stop("Hut", 21_000, 0)], near: 20_000)[0]
+        trip.endDay(1, at: hut)
+        #expect(trip.dayEnds[1].title == nil, "no name of its own, so the day reads \"to Hut\"")
+        #expect(trip.dayEnds[1].name == "Hut")
+    }
+
+    @Test
     func aStopPastTheNextDayEndOrOnTheLastDayEndsNothing() {
         var trip = trip()
         let before = trip.dayEnds

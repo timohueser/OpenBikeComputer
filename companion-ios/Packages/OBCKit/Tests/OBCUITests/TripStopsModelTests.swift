@@ -111,6 +111,8 @@ struct TripStopsModelTests {
 
         let end = try #require(model.trip(id)).dayEnds[0]
         #expect(end.name == "Camp Baraboo")
+        #expect(end.title == before.title, "the day keeps its route's own name")
+        #expect(end.title != nil)
         #expect(abs(end.distance - placed.distance) < 1)
         #expect(end.distance < before.distance - 1_000)
         #expect(library.trips().first { $0.id == id }?.dayEnds[0] == end)

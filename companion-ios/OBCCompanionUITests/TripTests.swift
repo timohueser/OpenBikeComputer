@@ -116,4 +116,27 @@ final class TripTests: XCTestCase {
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists)
     }
+
+    /// End Day 1 at a stop: the sheet lists the fixture campground, and the pick keeps the day's
+    /// own name and notes the stop's offset on the day row.
+    @MainActor
+    func testEndDayAtAStop() {
+        let app = launch()
+        openTrip(app)
+
+        day(app, 0).press(forDuration: 1)
+        let stops = app.buttons["trip.day.stops"]
+        XCTAssertTrue(stops.waitForExistence(timeout: 5), "day menu did not open")
+        stops.tap()
+        let camp = app.buttons["stops.row"].firstMatch
+        XCTAssertTrue(camp.waitForExistence(timeout: 10), "no stop in the sheet")
+        XCTAssertTrue(app.staticTexts["Devil's Lake State Park Campgrounds"].exists)
+        camp.tap()
+
+        XCTAssertFalse(app.otherElements["stops.sheet"].waitForExistence(timeout: 2), "sheet stayed open")
+        let row = expectation(
+            for: NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "Devil's Lake Overnighter", "off the line"),
+            evaluatedWith: day(app, 0))
+        wait(for: [row], timeout: 5)
+    }
 }
