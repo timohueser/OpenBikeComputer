@@ -99,11 +99,11 @@ pub struct RouteSummary {
 
 impl RouteSummary {
     pub fn read(src: &dyn ByteSource) -> Result<RouteSummary, Error> {
-        Self::read_with_candidate(src).map(|(summary, _)| summary)
+        Self::read_with_flags(src).map(|(summary, _)| summary)
     }
-    pub fn read_with_candidate(src: &dyn ByteSource) -> Result<(RouteSummary, bool), Error> {
+    /// The summary and the header's `FLAG_*` bits.
+    pub fn read_with_flags(src: &dyn ByteSource) -> Result<(RouteSummary, u8), Error> {
         let h = read_header(src)?;
-        let candidate = h.flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
         Ok((
             RouteSummary {
                 name: h.name,
@@ -113,7 +113,7 @@ impl RouteSummary {
                 start_lon: h.start_lon,
                 start_lat: h.start_lat,
             },
-            candidate,
+            h.flags,
         ))
     }
 }
@@ -1134,7 +1134,7 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let Some(bike) = BikeType::from_u8(h[obc_formats::obcr::BIKE_TYPE_OFF]) else {
         return Err(Error::BadOffset);
     };
-    if h[5] & !15 != 0 || h[119] != 0 {
+    if h[5] & !31 != 0 || h[119] != 0 {
         return Err(Error::BadOffset);
     }
     if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 && h[128..160].iter().any(|b| *b != 0) {

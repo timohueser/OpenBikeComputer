@@ -25,6 +25,8 @@ pub enum PlanKind {
     Detour,
     /// The way to a route's start, which pops to the Start-away prompt.
     Approach,
+    /// The rest of the day before and the next day, which the start card asked for.
+    Day,
 }
 
 /// The planning screen: it stays up from the accepted confirmation until the host's answer
@@ -62,6 +64,12 @@ impl NavPlanningScreen {
         NavPlanningScreen { kind: PlanKind::Approach, name: heapless::String::new(), spin: Spinner::default() }
     }
 
+    /// The planning screen for a trip day built from the rest of the day before. Its splice is a
+    /// detour-family operation, so it cancels like one.
+    pub fn day(name: &str) -> Self {
+        NavPlanningScreen { kind: PlanKind::Day, ..NavPlanningScreen::new(name) }
+    }
+
     /// The event router keys the landing of an answer on this.
     pub fn kind(&self) -> PlanKind {
         self.kind
@@ -74,7 +82,9 @@ impl NavPlanningScreen {
             Gesture::Back => {
                 match self.kind {
                     PlanKind::Nav => cx.navigator.admit_intent(NavigatorIntent::CancelPlan),
-                    PlanKind::Detour | PlanKind::Approach => cx.navigator.admit_intent(NavigatorIntent::CancelDetour),
+                    PlanKind::Detour | PlanKind::Approach | PlanKind::Day => {
+                        cx.navigator.admit_intent(NavigatorIntent::CancelDetour)
+                    }
                 }
                 Transition::Pop
             }
@@ -95,6 +105,7 @@ impl NavPlanningScreen {
             PlanKind::Nav => (Msg::NavRouteTitle, Msg::NavRouteFinding),
             PlanKind::Detour => (Msg::DetourTitle, Msg::DetourPlanning),
             PlanKind::Approach => (Msg::StartAwayTitle, Msg::NavRouteFinding),
+            PlanKind::Day => (Msg::RideStartTitle, Msg::RideStartLoadingDay),
         };
         title_frame(cv, w, h, rx.t(title), "");
         if !self.name.is_empty() {
