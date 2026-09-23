@@ -181,7 +181,8 @@ pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32))
     Ok(best.1)
 }
 
-/// The same bounded search counter serves visits and constrained replacements.
+/// Counts the searches of one operation and bounds a visit's. An easier replacement is bounded by
+/// its anchors instead: each leg reaches at least one of them.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VisitChoice {
     searches: u8,
@@ -190,14 +191,8 @@ impl VisitChoice {
     pub fn new() -> Self {
         Self { searches: 0 }
     }
-    pub fn search(&mut self) -> Result<(), Error> {
-        self.search_with_limit(MAX_VISIT_SEARCHES)
-    }
-    pub fn search_easier(&mut self) -> Result<(), Error> {
-        self.search_with_limit(crate::MAX_WAYPOINTS as u8 + 1)
-    }
-    fn search_with_limit(&mut self, limit: u8) -> Result<(), Error> {
-        if self.searches >= limit {
+    pub fn search(&mut self, visit: bool) -> Result<(), Error> {
+        if visit && self.searches >= MAX_VISIT_SEARCHES {
             return Err(Error::TooLarge);
         }
         self.searches += 1;
@@ -483,11 +478,16 @@ impl VisitBuilder {
             return Ok(false);
         }
         if let Some(anchors) = &mut self.easier {
-            if self.last.is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > APPROACH_TOLERANCE_M) {
+            // The planner ends a leg where it snaps the anchor onto the graph. An imported route can
+            // lie beside the road, so the anchor counts as reached there, and no connector with
+            // unknown height and surface is added.
+            if self
+                .last
+                .is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > crate::nav::SNAP_RADIUS_M)
+            {
                 self.phase = Phase::RejectedGeometry;
                 return Err(Error::BadOffset);
             }
-            // The destination is the original route's terminal anchor.
             self.chunk = 0;
             self.segment_started = false;
             return Ok(true);
