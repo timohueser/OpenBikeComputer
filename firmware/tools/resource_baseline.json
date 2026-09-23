@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 60808,
+        "app": 60816,
         "map_cache": 37084,
         "map_tables": 7528,
         "route_cache": 9260,
@@ -65,7 +65,7 @@
         "changes": "MapTables +3088 B for the second authored style table, backdrop and marker. All RAM, stack and flash ceilings are unchanged.",
         "verification": "The same CI build measured map_tables at 7528 B. Board RAM, stack and flash guards passed before the allocation inventory check. No base rebuild."
       },
-      "_app_note": "60,808 B on the head `--features resource-report` link of the `embedded` CI job. Landmark Sources keeps which credited work the loaded page belongs to and that work's first page (`source_photo`, `source_first`), 8 B.",
+      "_app_note": "60,816 B on head fad99a888 in CI run 35885424922, embedded resource-report build. The persisted theme adds 8 B to the App allocation. RAM, stack and flash ceilings stay unchanged.",
       "_flat_catalog_uploads_note": "The entry measures `size_of::<Mutex<CS, RefCell<UploadFacts>>>()`. It was 737 B while the loss bit was a separate 1-byte `AtomicBool` beside a 736 B queue container. The bit now lives inside `UploadFacts`, so it pays the queue's alignment instead of packing beside it: 740 B, measured on the head `--features resource-report` link. The 3 B buys the eviction that raises the bit and the drain that clears it one owner, which a host test can reach.",
       "full_frame_sized_writable_count": 2,
       "task_frame_measured": 1100,
