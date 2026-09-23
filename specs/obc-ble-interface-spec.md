@@ -279,8 +279,11 @@ any other length, which also rejects a torn write.
   same trip writes the same key. Device progress and rides refer to the key, not to the object id.
   Key 0 means "no trip" in those records, so a reader rejects a trip object with key 0. Reversing a
   trip makes a new trip with a new key, so its progress starts empty.
-- **Day names and stats.** The display name of a day ("Day 2 Ulrichen") is the OBCR name of its
-  route. Distance and climb come from the route's OBCR header. The trip object repeats neither.
+- **Day names and stats.** The display name of a day is the OBCR name of its route. The name is
+  the day's own name, such as the name of the route or file it came from. A day without one is
+  named after its number and end place ("Day 2 Ulrichen"). The day number itself comes from the
+  day's position in the trip. Distance and climb come from the route's OBCR header. The trip
+  object repeats neither.
 - **Main line.** A day that starts on the main line has `join_m = 0`. A day that ends on the main
   line has `leave_m` at or past the end of its route; readers clamp `leave_m` to the route length.
   Other values mark an out-and-back spur to a stop off the line. The device skips the spur when it
