@@ -148,7 +148,8 @@ async fn peripheral(
             serve(&connection, &server, measurement, control, sim).await;
             Ok::<(), BleHostError<nrf_sdc::Error>>(())
         };
-        if let Either::First(Err(e)) = select(session, changed.wait()).await {
+        // Cancel before polling session work that could use the newly selected profile.
+        if let Either::Second(Err(e)) = select(changed.wait(), session).await {
             warn!("BLE session: {:?}", defmt::Debug2Format(&e));
         }
         connected.set(false);
