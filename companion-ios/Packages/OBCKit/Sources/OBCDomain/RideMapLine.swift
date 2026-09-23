@@ -8,6 +8,9 @@ public struct RideMapLine: Equatable, Sendable {
     public let pieces: [[Coordinate]]
 
     public static let baseToleranceMeters = 10.0
+    /// Names how a line is built. Change it with `baseToleranceMeters` or `simplify`, so a cached
+    /// line built the old way rebuilds.
+    public static let formatVersion = 1
 
     public init(id: RideID, pieces: [[Coordinate]]) {
         self.id = id
@@ -83,8 +86,8 @@ public struct RideMapLines: Sendable {
 
     public init(_ lines: [RideMapLine]) {
         var levels = [lines]
-        // Each level simplifies the one below it. The errors add up to at most 4/3 of the level's
-        // tolerance, which is still under one point at the zoom that picks it.
+        // Each level simplifies the one below it, so its errors add up to at most 4/3 of its own
+        // tolerance: at most 4/3 of a point at a zoom that picks it.
         for level in 1..<Self.levelCount {
             let tolerance = Self.tolerance(ofLevel: level)
             levels.append(levels[level - 1].map { $0.simplified(toleranceMeters: tolerance) })
@@ -101,7 +104,8 @@ public struct RideMapLines: Sendable {
     }
 
     /// The lines to draw where one screen point spans `metersPerPoint`: the coarsest level whose
-    /// tolerance is at most one point.
+    /// tolerance is at most one point, so a line is within 4/3 pt of its ride. Closer than
+    /// 10 m/pt, level 0 is the finest there is and its 10 m can span more than one point.
     public func lines(metersPerPoint: Double) -> [RideMapLine] {
         levels[level(metersPerPoint: metersPerPoint)]
     }
@@ -110,18 +114,16 @@ public struct RideMapLines: Sendable {
         RideMapLines(levels: levels.map { $0.filter { ids.contains($0.id) } })
     }
 
-    /// The ride whose drawn line passes nearest `coordinate`, if it is within `radiusMeters`.
-    public func ride(
-        nearest coordinate: Coordinate, withinMeters radiusMeters: Double, metersPerPoint: Double
-    ) -> RideID? {
-        var best: (id: RideID, distance: Double)?
-        for line in lines(metersPerPoint: metersPerPoint) {
-            let distance = line.distance(to: coordinate)
-            if distance <= radiusMeters, distance < best?.distance ?? .infinity {
-                best = (line.id, distance)
-            }
-        }
-        return best?.id
+    /// Every ride whose drawn line passes within `radiusMeters` of `coordinate`, nearest first.
+    /// Rides on the same road all match, so the screen can offer a choice.
+    public func rides(
+        near coordinate: Coordinate, withinMeters radiusMeters: Double, metersPerPoint: Double
+    ) -> [RideID] {
+        lines(metersPerPoint: metersPerPoint)
+            .map { ($0.id, $0.distance(to: coordinate)) }
+            .filter { $0.1 <= radiusMeters }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
     }
 
     func level(metersPerPoint: Double) -> Int {
