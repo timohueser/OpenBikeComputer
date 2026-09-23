@@ -156,6 +156,9 @@ waypoint_list = "Liste PT"
 heart_rate = "Fréq. card."
 power = "Puissance"
 cadence = "Cadence"
+kj = "Énergie"
+hr_graph = "Graphe FC"
+power_graph = "Graphe W"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
@@ -174,6 +177,9 @@ next_wpt = "PT SUIV"
 waypoints = "POINTS"
 hr = "FC"
 pwr = "PUISS"
+# The power graph block leaves three glyphs beside the zone.
+pwr_short = "W"
+kj = "KJ"
 rpm = "CAD"
 
 # --- The Climb (ClimbPro) riding screen ---
@@ -227,6 +233,9 @@ pages = "Défil. auto"
 climb = "Montée"
 waypoints = "Points"
 bike_type = "Type de vélo"
+max_hr = "FC max."
+ftp = "FTP"
+not_set = "Non défini"
 
 # --- Display settings screen ---
 [display]
@@ -688,11 +697,6 @@ blocked = "Route barrée"
 back_route = "Retour tracé"
 landmarks = "Sites à voir"
 detour = "Détour utile"
-find_hint = "Eau et vivres"
-next_hint = "Sur le parcours"
-easier_hint = "Moins de montée"
-landmarks_hint = "À proximité"
-climb_in = "Montée à"
 no_fix = "GPS requis"
 no_route = "Suivre un trajet"
 busy = "Calcul en cours"

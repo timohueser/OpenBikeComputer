@@ -2661,14 +2661,17 @@ pub(crate) async fn run_app(
                 dirty.map = true;
                 dirty.region = hold_region;
             }
-            let hold_only = dirty.map && hold_region.is_some() && dirty.region == hold_region;
+            // A region of opaque chrome repaints with no `Reader` and no map render: a static map
+            // base's hold fill, or the Map's effort band, which the app marks opaque.
+            let map_free = dirty.map
+                && ((hold_region.is_some() && dirty.region == hold_region) || dirty.map_free_region().is_some());
             prev_hold_p = hold_p;
 
             // While a hold charges on the map view, defer expensive map redraws instead of rendering
             // them: a 150 to 300 ms map frame between two bulge pushes is the mid-charge freeze that
             // made the bulge jerky while riding. Only the map base is deferred. Once the hold fires,
             // charging drops to 0, so a navigation's redraw is never held up.
-            if dirty.map && app.base_draws_map() && display.hold_charging() && !hold_only {
+            if dirty.map && app.base_draws_map() && display.hold_charging() && !map_free {
                 pending_map_redraw = true;
                 dirty.map = false;
             }
@@ -2731,8 +2734,8 @@ pub(crate) async fn run_app(
                 // its own draw and the push. `sources.map` is the pass's own answer to "the base
                 // screen draws the map", so the reader this frame opens is the one the pass planned
                 // for rather than a second derivation of the same predicate.
-                let map_blocked = sources.map && !hold_only && !crate::flpr_mux::storage_admitted();
-                let needs_map = sources.map && !hold_only && !map_blocked;
+                let map_blocked = sources.map && !map_free && !crate::flpr_mux::storage_admitted();
+                let needs_map = sources.map && !map_free && !map_blocked;
                 // The flat map source is resolved once at boot and skipped on chrome-only frames,
                 // which keeps menu redraws free of map I/O.
                 let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
@@ -2750,7 +2753,7 @@ pub(crate) async fn run_app(
                     // `render ⊥ usb` enforcement: a live search or a live transfer is literally the
                     // holder. A chrome base claims nothing and renders with no scratch at all, which
                     // is what keeps those frames drawing while another arm is out.
-                    let draws_map = app.base_draws_map() && !hold_only;
+                    let draws_map = app.base_draws_map() && !map_free;
                     let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
                     let photo_active = app.photo_base_active();
                     let mut photo_guard = if photo_active { crate::arena::claim_photo() } else { None };

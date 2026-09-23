@@ -1,16 +1,14 @@
 //! The ordinary Ride Assistant question list.
+mod icons;
 use super::{
     palette::*,
     vocab::{
         chrome::{title_frame, LIST_TOP},
-        fmt::write_distance_coarse,
-        list::{self, scrollbar},
-        rows::{self, Line2, ROW_GAP},
+        list, rows,
     },
     Ctx, Render, Transition,
 };
 use crate::{navigator::VisitUnavailable, Gesture, Msg};
-use core::fmt::Write;
 use embedded_graphics::prelude::Point;
 use obc_render::{
     text::{Font, TextAlign},
@@ -28,9 +26,10 @@ pub(crate) const QUESTIONS: [Msg; 7] = [
     Msg::AssistantBackRoute,
     Msg::AssistantDetour,
 ];
-/// The hint under each live question, index for index. Every question with a hint is live.
-const HINTS: [Msg; 4] =
-    [Msg::AssistantFindHint, Msg::AssistantNextHint, Msg::AssistantEasierHint, Msg::AssistantLandmarksHint];
+const LIVE_QUESTIONS: usize = 4;
+const ROW_H: i32 = 36;
+const ROW_PITCH: i32 = 38;
+const TEXT_X: i32 = 52;
 
 #[derive(Debug, Default)]
 pub struct AssistantScreen {
@@ -65,50 +64,22 @@ impl AssistantScreen {
             cv.text(rx.t(Msg::AssistantRetry), Point::new(rx.w / 2, 164), Font::Label, TextAlign::Center, SUBTEXT);
             return;
         }
-        let heights: [i32; QUESTIONS.len()] = core::array::from_fn(|i| rows::row_height(i < HINTS.len()));
-        let avail = rx.h - LIST_TOP - 6;
-        let (first, end) = rows::window_by_height(&heights, self.selected, avail);
-        let mut next = heapless::String::<24>::new();
-        let mut y = LIST_TOP;
-        for i in first..end {
-            let area = rows::row_rect(y, rx.w, heights[i]);
-            let hint = match HINTS.get(i) {
-                Some(Msg::AssistantNextHint) => Some(next_hint(rx, &mut next).unwrap_or(rx.t(Msg::AssistantNextHint))),
-                Some(hint) => Some(rx.t(*hint)),
-                None => None,
+        for (i, question) in QUESTIONS.iter().enumerate() {
+            let y = LIST_TOP + i as i32 * ROW_PITCH;
+            let area = rows::row_rect(y, rx.w, ROW_H);
+            let selected = i == self.selected;
+            rows::row_cursor(cv, area, selected, false);
+            let ink = if i >= LIVE_QUESTIONS {
+                CONTOUR
+            } else if selected {
+                ON_ACCENT
+            } else {
+                INK
             };
-            // No chevron: its column would leave the hint too few characters.
-            rows::nav_row(
-                cv,
-                area,
-                rx.t(QUESTIONS[i]),
-                hint.map(Line2::text),
-                i == self.selected,
-                hint.is_some(),
-                false,
-            );
-            y += heights[i] + ROW_GAP;
+            icons::draw(cv, *question, Point::new(22, y + 7), ink);
+            cv.text(rx.t(*question), Point::new(TEXT_X, y + 7), Font::Label, TextAlign::Left, ink);
         }
-        scrollbar(cv, rx.w - 8, LIST_TOP, avail, QUESTIONS.len(), first, end - first);
     }
-}
-
-/// What's next's first answer, from the resident climbs over the same window its overview shows.
-/// It reads no card, so the first frame has it. `None` leaves the static hint.
-fn next_hint<'a>(rx: &Render<'a>, buf: &'a mut heapless::String<24>) -> Option<&'a str> {
-    let nav = rx.navigation;
-    if nav.active_route.is_none() {
-        return Some(rx.t(Msg::AssistantNoRoute));
-    }
-    let start_m = nav.progress_m;
-    let end_m = start_m.saturating_add(rx.ahead.range.meters()).min(nav.route_total_m);
-    let climb = rx.climbs.ahead(start_m, end_m)?;
-    if climb.start_m <= start_m {
-        return Some(rx.t(Msg::AheadOnClimb));
-    }
-    let _ = write!(buf, "{} ", rx.t(Msg::AssistantClimbIn));
-    write_distance_coarse(buf, "", climb.start_m - start_m, rx.settings.units);
-    Some(buf)
 }
 
 #[cfg(test)]
@@ -153,24 +124,17 @@ mod tests {
     #[test]
     fn question_and_photo_labels_fit_all_supported_languages() {
         for language in Language::ALL {
-            // A row without a chevron: wider, and the label drops to the Label cut.
+            // The icon column leaves the same label width in every language.
             for message in QUESTIONS {
                 let text = crate::i18n::t(message, language);
-                assert!(obc_render::text::text_width(text, Font::Body) <= 202, "{language:?}: {text}");
+                assert!(
+                    obc_render::text::text_width(text, Font::Label) <= (240 - rows::ROW_X - TEXT_X) as u32,
+                    "{language:?}: {text}"
+                );
             }
             for message in [Msg::AssistantArrival, Msg::AssistantResumeNavigation] {
                 let text = crate::i18n::t(message, language);
                 assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
-            }
-            // A hint line has the row's width less the text inset; the longest distance is 6 cells.
-            let climb = std::format!("{} 5279ft", crate::i18n::t(Msg::AssistantClimbIn, language));
-            let hints = HINTS.map(|m| crate::i18n::t(m, language));
-            for text in hints.iter().copied().chain([
-                climb.as_str(),
-                crate::i18n::t(Msg::AheadOnClimb, language),
-                crate::i18n::t(Msg::AssistantNoRoute, language),
-            ]) {
-                assert!(obc_render::text::text_width(text, Font::Label) <= 202, "{language:?}: {text}");
             }
             for message in [Msg::AssistantMorePlaces, Msg::AssistantSearchChanged] {
                 let text = crate::i18n::t(message, language);

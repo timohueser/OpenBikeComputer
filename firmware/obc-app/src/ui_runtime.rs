@@ -51,9 +51,9 @@ pub(crate) struct UiRuntime {
     /// first frame paints.
     pub(crate) map_dirty: bool,
     /// Accumulated region-scoped repaint demand: the union of every region-carrying screen-tick
-    /// change since the last drain. It stays apart from [`map_dirty`](App::map_dirty), which
-    /// overrides any region at drain time.
-    pub(crate) region_dirty: Option<Rectangle>,
+    /// change since the last drain, and whether every one of them was opaque chrome. It stays apart
+    /// from [`map_dirty`](App::map_dirty), which overrides any region at drain time.
+    pub(crate) region_dirty: Option<(Rectangle, bool)>,
     /// Panel size (device px) of the last rendered frame, so a reported
     /// [`ScreenTick::region`](screen::ScreenTick::region) is sized to the real panel. `(0, 0)` until
     /// the first frame; region reporting abstains until then.
@@ -193,7 +193,7 @@ impl UiRuntime {
             // demand; `take_dirty` folds the two.
             if tick.changed {
                 match tick.region {
-                    Some(r) => self.region_dirty = Some(self.region_dirty.map_or(r, |acc| union_rect(acc, r))),
+                    Some(r) => self.region_dirty = add_region(self.region_dirty, r, false),
                     None => self.map_dirty = true,
                 }
             }
@@ -569,6 +569,17 @@ impl UiRuntime {
         }
     }
 
+    /// Ask for a repaint contained in `r`, which is `opaque` when the screen redraws every pixel
+    /// of it with no map under it. Before the first frame the panel size is unknown, so the whole
+    /// frame repaints.
+    pub(crate) fn request_region(&mut self, r: Rectangle, opaque: bool) {
+        if self.frame_size.0 == 0 {
+            self.map_dirty = true;
+            return;
+        }
+        self.region_dirty = add_region(self.region_dirty, r, opaque);
+    }
+
     /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`].
     /// The host calls this once per frame and then renders each plane only when its flag is set.
     ///
@@ -578,8 +589,13 @@ impl UiRuntime {
     /// over-redraw is safe and under-redraw is a bug.
     pub(crate) fn take_dirty(&mut self) -> Dirty {
         let full = core::mem::take(&mut self.map_dirty);
-        let region = self.region_dirty.take();
-        Dirty { map: full || region.is_some(), overlay: false, region: if full { None } else { region } }
+        let region = self.region_dirty.take().filter(|_| !full);
+        Dirty {
+            map: full || region.is_some(),
+            overlay: false,
+            region: region.map(|(r, _)| r),
+            opaque: region.is_some_and(|(_, opaque)| opaque),
+        }
     }
 
     /// Cancel every hold in flight, because the stack moved under it: `App`'s own recogniser now,
@@ -596,6 +612,16 @@ impl UiRuntime {
     pub(crate) fn take_hold_cancel(&mut self) -> bool {
         core::mem::take(&mut self.hold_cancel_pending)
     }
+}
+
+/// Fold one region demand into the accumulated one. The union is opaque only when every part is:
+/// the bounding box of two opaque bands covers the map between them.
+fn add_region(acc: Option<(Rectangle, bool)>, r: Rectangle, opaque: bool) -> Option<(Rectangle, bool)> {
+    Some(match acc {
+        None => (r, opaque),
+        Some((a, _)) if a == r => (r, acc.is_some_and(|(_, o)| o) && opaque),
+        Some((a, _)) => (union_rect(a, r), false),
+    })
 }
 
 /// The bounding union of two rects. Both operands are screen regions, so non-empty by

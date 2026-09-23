@@ -138,14 +138,14 @@ struct OBCCompanionApp: App {
         return Self.liveTransport
     }
 
-    /// Hand a bundled sample file to the import path at launch, exactly as a Files pick would, so
+    /// Hand bundled sample files to the import path at launch, exactly as a Files pick would, so
     /// the UI tests and demos run the real decoders. Debug-only, like every launch argument.
-    static func launchImport() -> (data: Data, fileName: String)? {
+    static func launchImport() -> [(data: Data, fileName: String)] {
         #if DEBUG
-        guard let kind = launchOptions.importSample else { return nil }
-        return SampleRouteFile.data(kind).map { ($0, SampleRouteFile.fileName(kind)) }
+        guard let kind = launchOptions.importSample else { return [] }
+        return SampleRouteFile.files(kind)
         #else
-        return nil
+        return []
         #endif
     }
 
