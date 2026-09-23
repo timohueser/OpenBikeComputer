@@ -317,6 +317,7 @@
       "id": "ride-kettle-moraine",
       "name": "Kettle Moraine Loop",
       "date": "2026-06-30T08:12:00Z",
+      "trip": { "key": 7, "dayIndex": 1, "dayCount": 2, "name": "Driftless Weekender" },
       "distanceMeters": 58200,
       "movingTime": 10260,
       "averageSpeedMps": 5.6667,

@@ -18,6 +18,8 @@ public struct RouteDetailView: View {
     private let importAccessory: AnyView?
     /// A tracked ride's photos.
     private let photos: RidePhotosModel?
+    /// A tracked ride's day note.
+    private let dayNote: DayNoteModel?
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -38,7 +40,8 @@ public struct RouteDetailView: View {
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
         importAccessory: AnyView? = nil,
-        photos: RidePhotosModel? = nil
+        photos: RidePhotosModel? = nil,
+        dayNote: DayNoteModel? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -51,6 +54,7 @@ public struct RouteDetailView: View {
         self.onPair = onPair
         self.importAccessory = importAccessory
         self.photos = photos
+        self.dayNote = dayNote
     }
 
     public var body: some View {
@@ -66,6 +70,9 @@ public struct RouteDetailView: View {
 
                 if let photos {
                     RidePhotoOfferRow(model: photos)
+                }
+                if let dayNote {
+                    DayNoteOfferRow(model: dayNote, photos: photos)
                 }
 
                 if !model.stats.isEmpty {
@@ -108,6 +115,9 @@ public struct RouteDetailView: View {
 
                 if let photos {
                     RidePhotoStripSection(model: photos, preview: model.preview)
+                }
+                if let dayNote {
+                    DayNoteEntry(model: dayNote, photos: photos)
                 }
 
                 if !model.sensorRows.isEmpty {
@@ -152,6 +162,7 @@ public struct RouteDetailView: View {
         )
         .task { model.start() }
         .task { await photos?.start() }
+        .task { await dayNote?.start() }
     }
 
     /// Offline keeps the grid and no tap: a map with no network path is blank.
