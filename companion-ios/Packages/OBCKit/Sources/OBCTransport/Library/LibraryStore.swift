@@ -57,7 +57,16 @@ public protocol LibraryStore: Sendable {
     /// Re-encoding a full tracklog to change a name would be exactly the whole-ride coupling the
     /// split read removed.
     func saveRideSummary(_ summary: RideSummary)
+    /// Also deletes the ride's journal and photo thumbnails.
     func deleteRide(_ id: RideID)
+
+    /// The phone's additions to a stored ride; empty for an unknown ride.
+    func rideJournal(_ id: RideID) -> RideJournal
+    /// The cached thumbnail of each photo the journal holds, keyed by asset id.
+    func ridePhotoThumbnails(_ id: RideID) -> [String: Data]
+    /// Writes the journal and the given new thumbnails, and deletes the thumbnails of photos the
+    /// journal no longer holds. A ride that is not stored ignores it.
+    func saveRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID)
 
     /// Current downloaded archives plus explicit local history markers. This is
     /// display/stand-in sync state, never proof for a device source. Explicit history
@@ -117,6 +126,8 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private var synced: Set<RideID> = []
     private var deleted: Set<RideID> = []
     private var trashed: [RideID: Date] = [:]
+    private var journals: [RideID: RideJournal] = [:]
+    private var thumbnails: [RideID: [String: Data]] = [:]
 
     public init() {}
 
@@ -185,6 +196,25 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock {
             summaries[id] = nil
             points[id] = nil
+            journals[id] = nil
+            thumbnails[id] = nil
+        }
+    }
+
+    public func rideJournal(_ id: RideID) -> RideJournal {
+        lock.withLock { journals[id] ?? RideJournal() }
+    }
+
+    public func ridePhotoThumbnails(_ id: RideID) -> [String: Data] {
+        lock.withLock { thumbnails[id] ?? [:] }
+    }
+
+    public func saveRideJournal(_ journal: RideJournal, thumbnails new: [String: Data], for id: RideID) {
+        lock.withLock {
+            guard summaries[id] != nil else { return }
+            journals[id] = journal
+            let kept = Set(journal.photos.map(\.assetID))
+            thumbnails[id] = (thumbnails[id] ?? [:]).merging(new) { $1 }.filter { kept.contains($0.key) }
         }
     }
 

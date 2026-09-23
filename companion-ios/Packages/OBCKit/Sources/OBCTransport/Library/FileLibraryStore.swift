@@ -250,6 +250,39 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         try? FileManager.default.removeItem(at: rideDir(id))
     }
 
+    // MARK: Ride journal
+
+    public func rideJournal(_ id: RideID) -> RideJournal {
+        guard let file: RideJournalFile = read(rideDir(id).appendingPathComponent("journal.json")),
+              file.version == Self.journalSchemaVersion else { return RideJournal() }
+        return file.domain
+    }
+
+    public func ridePhotoThumbnails(_ id: RideID) -> [String: Data] {
+        var thumbnails: [String: Data] = [:]
+        for photo in rideJournal(id).photos {
+            thumbnails[photo.assetID] = try? Data(contentsOf: thumbnailURL(photo.assetID, of: id))
+        }
+        return thumbnails
+    }
+
+    public func saveRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID) {
+        guard rideManifest(id) != nil else { return }
+        for (assetID, data) in thumbnails {
+            try? data.write(to: thumbnailURL(assetID, of: id), options: .atomic)
+        }
+        write(RideJournalFile(journal), to: rideDir(id).appendingPathComponent("journal.json"))
+        let kept = Set(journal.photos.map { thumbnailURL($0.assetID, of: id).lastPathComponent })
+        for file in contents(of: rideDir(id))
+        where file.lastPathComponent.hasPrefix("photo-") && !kept.contains(file.lastPathComponent) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func thumbnailURL(_ assetID: String, of id: RideID) -> URL {
+        rideDir(id).appendingPathComponent("photo-\(Self.fileSafe(assetID)).jpg")
+    }
+
     public func syncedRideIDs() -> Set<RideID> {
         syncedRideHistory().union(downloadedRideIDs())
     }
@@ -326,6 +359,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     /// and the read side, so a future planned-route bump cannot silently stop stored trips from
     /// loading.
     fileprivate static let tripSchemaVersion = 2
+    fileprivate static let journalSchemaVersion = 1
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
     private var tripsDir: URL { directory.appendingPathComponent("trips", isDirectory: true) }
@@ -846,6 +880,35 @@ private struct RideTripDTO: Codable {
     }
 
     var domain: RideTrip { RideTrip(key: key, dayIndex: dayIndex, dayCount: dayCount, name: name) }
+}
+
+private struct RideJournalFile: Codable {
+    var version = FileLibraryStore.journalSchemaVersion
+    var photos: [RidePhotoDTO]
+    var closedRows: [String]
+
+    init(_ journal: RideJournal) {
+        photos = journal.photos.map(RidePhotoDTO.init)
+        closedRows = journal.closedRows.map(\.rawValue).sorted()
+    }
+
+    var domain: RideJournal {
+        RideJournal(photos: photos.map(\.domain), closedRows: Set(closedRows.compactMap(RideQuietRow.init(rawValue:))))
+    }
+}
+
+private struct RidePhotoDTO: Codable {
+    var assetID: String
+    var takenAt: Date
+    var distanceMeters: Double
+
+    init(_ photo: RidePhoto) {
+        assetID = photo.assetID
+        takenAt = photo.takenAt
+        distanceMeters = photo.distanceMeters
+    }
+
+    var domain: RidePhoto { RidePhoto(assetID: assetID, takenAt: takenAt, distanceMeters: distanceMeters) }
 }
 
 private struct SyncedRidesFile: Codable {
