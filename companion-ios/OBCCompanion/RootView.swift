@@ -310,7 +310,9 @@ struct RootView: View {
                 let short = ordered.filter { !Trip.isDay($0.points) }
                 for file in short { saveAsRoute(join.files[file.id]) }
                 mainModel.noteTooShort(short.map(\.fileName))
-                let tripID = mainModel.createTrip(name: "New trip", files: ordered.map(\.points))
+                let tripID = mainModel.createTrip(
+                    name: "New trip", files: ordered.map(\.points),
+                    dayNames: ordered.map { ($0.fileName as NSString).deletingPathExtension })
                 importModel.closeJoin()
                 if let tripID { path = [.trip(id: tripID)] }
             },

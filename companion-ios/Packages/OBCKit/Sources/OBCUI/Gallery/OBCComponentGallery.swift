@@ -171,9 +171,9 @@ public struct OBCComponentGallery: View {
 
                 section("Trip Day Rows") {
                     OBCGroupedSection {
-                        TripDayRow(color: OBCTheme.stageColor(index: 0), title: "Day 1 · to Andermatt",
+                        TripDayRow(color: OBCTheme.stageColor(index: 0), number: 1, title: "Furka Pass",
                                    detail: "Mon 29 Sep · 82.0 km · 1,640 m ↑ · 5h 10m")
-                        TripDayRow(color: OBCTheme.stageColor(index: 1), title: "Day 2",
+                        TripDayRow(color: OBCTheme.stageColor(index: 1), number: 2, title: nil,
                                    detail: "Tue 30 Sep · 74.0 km · 2,100 m ↑ · 5h 0m", showsDivider: false)
                     }
                 }

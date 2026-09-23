@@ -16,11 +16,13 @@ extension Trip {
 
     /// A new trip from route files in ride order: one day per file, the day ends on the file
     /// boundaries. A file shorter than ``minimumDayMeters`` adds nothing.
+    /// `names` gives each file's day its own name, by index; a missing or blank name leaves the
+    /// day to "Day N ‹place›".
     public static func joining(
-        _ files: [[RoutePoint]], id: TripID, name: String, bikeType: BikeType, now: Date
+        _ files: [[RoutePoint]], names: [String?] = [], id: TripID, name: String, bikeType: BikeType, now: Date
     ) -> Trip {
         var trip = Trip(id: id, name: name, bikeType: bikeType, addedAt: now)
-        for file in files { trip.append(file) }
+        for (index, file) in files.enumerated() { trip.append(file, name: index < names.count ? names[index] : nil) }
         return trip
     }
 
@@ -41,7 +43,7 @@ extension Trip {
     /// the gap sits at the day end and the next day starts where the file starts. A file that is
     /// not a day changes nothing. Returns the day ends the change dropped.
     @discardableResult
-    public mutating func append(_ file: [RoutePoint]) -> [DayEnd] {
+    public mutating func append(_ file: [RoutePoint], name: String? = nil) -> [DayEnd] {
         guard Self.isDay(file) else { return [] }
         var points = file
         if let end = line.last {
@@ -52,12 +54,14 @@ extension Trip {
             }
         }
         line += points
-        dayEnds.append(DayEnd(coordinate: points[points.count - 1].coordinate, distance: 0))
+        dayEnds.append(DayEnd(
+            coordinate: points[points.count - 1].coordinate, title: Self.trimmed(name), distance: 0))
         return reproject()
     }
 
     /// Reverse the whole trip: the direction and the order of the days. Every day end keeps its
-    /// place and its name; the start and the last day end swap names. The trip gets a new key,
+    /// place and its place name; the start and the last day end swap place names. Every day keeps
+    /// its own name. The trip gets a new key,
     /// so device progress of the old direction does not carry over. Returns the day ends the
     /// change dropped.
     @discardableResult
@@ -68,11 +72,14 @@ extension Trip {
         line = ImportedRoute(points: line).reversed().points
         // A gap into point i lies between i-1 and i; reversed, it leads into point count-i.
         pieceStarts = pieceStarts.map { count - $0 }.sorted()
-        let interior = dayEnds.dropLast().reversed().map { end in
-            DayEnd(coordinate: end.coordinate, name: end.name, distance: length - end.distance)
+        // Old day k becomes day n-1-k, and now ends where it used to start.
+        let titles = Array(dayEnds.map(\.title).reversed())
+        let interior = dayEnds.dropLast().reversed().enumerated().map { day, end in
+            DayEnd(coordinate: end.coordinate, name: end.name, title: titles[day], distance: length - end.distance)
         }
         let endName = dayEnds.last?.name
-        dayEnds = interior + [DayEnd(coordinate: line[count - 1].coordinate, name: startName, distance: length)]
+        dayEnds = interior + [DayEnd(
+            coordinate: line[count - 1].coordinate, name: startName, title: titles.last ?? nil, distance: length)]
         startName = endName
         key = Self.newKey()
         return reproject()
@@ -107,7 +114,8 @@ extension Trip {
             kept.append(dayEnd)
             previous = fine.distance
         }
-        kept.append(DayEnd(coordinate: end.coordinate, name: dayEnds.last?.name, distance: length))
+        kept.append(DayEnd(
+            coordinate: end.coordinate, name: dayEnds.last?.name, title: dayEnds.last?.title, distance: length))
         dayEnds = kept
         return dropped
     }

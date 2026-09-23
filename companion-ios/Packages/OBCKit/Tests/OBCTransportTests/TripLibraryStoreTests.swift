@@ -33,7 +33,7 @@ struct TripLibraryStoreTests {
     func roundTripsTheWholeTrip(_ kind: StoreKind) {
         let store = makeStore(kind)
         var t = trip("t1")
-        t.renameDay(1, to: "Brig")
+        t.namePlace(1, to: "Brig")
         t.reverse()
         t.renameDay(0, to: "Andermatt")
         t.uploadedKey = 42

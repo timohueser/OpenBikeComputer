@@ -44,7 +44,7 @@ struct TripListModelTests {
         let model = makeModel()
         let days = model.tripDays(tripID)
         let stats = model.tripStats(tripID)
-        #expect(days.map(\.name) == ["Day 1", "Day 2"])
+        #expect(days.map(\.name) == ["Devil's Lake Overnighter", "Cross-Plains Gravel"])
         #expect(stats.dayCount == 2)
         #expect(stats.distanceMeters == days.reduce(0) { $0 + $1.distanceMeters })
         #expect(stats.distanceMeters > 0)

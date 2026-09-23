@@ -37,6 +37,8 @@ struct TripFlowModelTests {
 
         let id = model.groupIntoTrip([kettle, blueMounds], name: "Gravel Weekend")!
         let trip = model.trip(id)!
+        #expect(Set(model.tripDays(id).map(\.name)) == ["Kettle Moraine Loop", "Blue Mounds Backroads"],
+                "each day keeps its route's name")
         #expect(trip.name == "Gravel Weekend")
         #expect(trip.dayCount == 2)
         #expect(library.trips().contains { $0.id == id })
@@ -139,16 +141,18 @@ struct TripFlowModelTests {
     func renameDayNamesTheDayRoute() {
         let (model, _) = makeModel()
         model.renameTripDay(tripID, day: 0, to: "Baraboo")
-        #expect(model.tripDays(tripID).first?.name == "Day 1 Baraboo")
+        #expect(model.tripDays(tripID).first?.name == "Baraboo")
     }
 
     @Test
     func unnamedDayEndsTakeTheirPlaceName() async {
         let (model, _) = makeModel(placeName: { _ in "Mazomanie" })
-        let id = model.groupIntoTrip([kettle, blueMounds], name: "Named")!
-        model.renameTripDay(id, day: 0, to: "Eagle")
+        let points = model.tripDays(tripID).map(\.points)
+        let id = model.createTrip(name: "Named", files: points, dayNames: ["Eagle", nil])!
         for _ in 0..<100 where model.trip(id)?.dayEnds.last?.name == nil { await Task.yield() }
-        #expect(model.trip(id)?.dayEnds.map(\.name) == ["Eagle", "Mazomanie"])
+        // Only the day without a name of its own is looked up.
+        #expect(model.trip(id)?.dayEnds.map(\.name) == [nil, "Mazomanie"])
+        #expect(model.tripDays(id).map(\.name) == ["Eagle", "Day 2 Mazomanie"])
     }
 
     @Test

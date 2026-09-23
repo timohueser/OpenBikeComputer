@@ -52,8 +52,10 @@ public struct TripEntry: Sendable {
 
     /// The library trip this fixture seeds from the fixture routes' geometry.
     public func trip(routes: [RouteEntry], base: Date) -> Trip {
-        let files = routeIDs.compactMap { id in routes.first { $0.summary.id == id }?.points }
-        return Trip.joining(files, id: id, name: name, bikeType: .road, now: base.addingTimeInterval(-order))
+        let members = routeIDs.compactMap { id in routes.first { $0.summary.id == id } }
+        return Trip.joining(
+            members.map(\.points), names: members.map(\.summary.name), id: id, name: name, bikeType: .road,
+            now: base.addingTimeInterval(-order))
     }
 }
 

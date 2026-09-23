@@ -902,7 +902,7 @@ public final class MainScreenModel {
         saveEditedTrip(trip)
     }
 
-    /// Name one day after its end. Nil or blank returns the day to "Day N".
+    /// Give one day its own name. Nil or blank returns the day to "Day N ‹place›".
     public func renameTripDay(_ id: TripID, day: Int, to name: String?) {
         guard var trip = trip(id) else { return }
         trip.renameDay(day, to: name)
@@ -967,12 +967,15 @@ public final class MainScreenModel {
     /// the day ends on the file boundaries. A file shorter than a day adds nothing. Nil when no
     /// file is a day.
     @discardableResult
-    public func createTrip(name: String, files: [[RoutePoint]], bikeType: BikeType? = nil) -> TripID? {
-        let lines = files.filter(Trip.isDay)
-        guard !lines.isEmpty else { return nil }
+    public func createTrip(
+        name: String, files: [[RoutePoint]], dayNames: [String?] = [], bikeType: BikeType? = nil
+    ) -> TripID? {
+        let days = files.indices.filter { Trip.isDay(files[$0]) }
+        guard !days.isEmpty else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trip = Trip.joining(
-            lines, id: TripID(UUID().uuidString.lowercased()),
+            days.map { files[$0] }, names: days.map { $0 < dayNames.count ? dayNames[$0] : nil },
+            id: TripID(UUID().uuidString.lowercased()),
             name: trimmed.isEmpty ? "New trip" : trimmed,
             bikeType: bikeType ?? lastBikeType.value, now: now())
         library.saveTrip(trip)
@@ -984,9 +987,9 @@ public final class MainScreenModel {
     /// Add a route file to a trip as its new last day. False when the file is too short to be a
     /// day, which changes nothing.
     @discardableResult
-    public func appendToTrip(_ id: TripID, file: [RoutePoint]) -> Bool {
+    public func appendToTrip(_ id: TripID, file: [RoutePoint], name: String? = nil) -> Bool {
         guard var trip = trip(id), Trip.isDay(file) else { return false }
-        tell(dropped: trip.append(file))
+        tell(dropped: trip.append(file, name: name))
         saveEditedTrip(trip)
         nameDayEnds(id)
         return true
@@ -1003,7 +1006,8 @@ public final class MainScreenModel {
         guard !days.isEmpty else { return nil }
         let ordered = TripJoin.proposedOrder(days.map(\.joinFile)).map { days[$0] }
         guard let tripID = createTrip(
-            name: name, files: ordered.map(\.route.points), bikeType: ordered[0].bikeType)
+            name: name, files: ordered.map(\.route.points), dayNames: ordered.map(\.summary.name),
+            bikeType: ordered[0].bikeType)
         else { return nil }
         for (day, record) in ordered.enumerated() { moveIntoTrip(record, tripID: tripID, day: day) }
         return tripID
@@ -1024,10 +1028,12 @@ public final class MainScreenModel {
         case .none:
             return nil
         case .existing(let id):
-            guard appendToTrip(id, file: record.route.points) else { return nil }
+            guard appendToTrip(id, file: record.route.points, name: record.summary.name) else { return nil }
             tripID = id
         case .new(let name):
-            guard let id = createTrip(name: name, files: [record.route.points], bikeType: record.bikeType)
+            guard let id = createTrip(
+                name: name, files: [record.route.points], dayNames: [record.summary.name],
+                bikeType: record.bikeType)
             else { return nil }
             tripID = id
         }
@@ -1062,11 +1068,13 @@ public final class MainScreenModel {
             .joined(separator: " ")
     }
 
-    /// Name each unnamed day end after its place. A lookup never replaces a name the rider gave,
-    /// and one that finds nothing leaves "Day N".
+    /// Name each unnamed day end after its place, for the days without a name of their own. A
+    /// lookup never replaces a name, and one that finds nothing leaves "Day N".
     private func nameDayEnds(_ id: TripID) {
         guard let placeName, let trip = trip(id) else { return }
-        let unnamed = trip.dayEnds.enumerated().filter { $0.element.name == nil }.map { ($0.offset, $0.element.coordinate) }
+        let unnamed = trip.dayEnds.enumerated()
+            .filter { $0.element.name == nil && $0.element.title == nil }
+            .map { ($0.offset, $0.element.coordinate) }
         guard !unnamed.isEmpty else { return }
         Task { [weak self] in
             for (day, coordinate) in unnamed {
@@ -1074,7 +1082,7 @@ public final class MainScreenModel {
                 guard let self, var trip = self.trip(id), trip.dayEnds.indices.contains(day),
                     trip.dayEnds[day].coordinate == coordinate, trip.dayEnds[day].name == nil
                 else { continue }
-                trip.renameDay(day, to: name)
+                trip.namePlace(day, to: name)
                 library.saveTrip(trip)
                 reloadTrips()
             }

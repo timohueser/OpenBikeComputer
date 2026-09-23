@@ -519,17 +519,19 @@ private struct DayEndDTO: Codable {
     var lat: Double
     var lon: Double
     var name: String?
+    var title: String?
     var distance: Double
 
     init(_ end: DayEnd) {
         lat = end.coordinate.latitude
         lon = end.coordinate.longitude
         name = end.name
+        title = end.title
         distance = end.distance
     }
 
     var domain: DayEnd {
-        DayEnd(coordinate: Coordinate(latitude: lat, longitude: lon), name: name, distance: distance)
+        DayEnd(coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance)
     }
 }
 

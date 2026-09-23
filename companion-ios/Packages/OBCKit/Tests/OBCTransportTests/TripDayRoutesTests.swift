@@ -18,14 +18,16 @@ struct TripDayRoutesTests {
         var trip = Trip.joining(
             [file(0, 10), file(10, 25), file(26, 30)], id: TripID("t"), name: "Alps", bikeType: .gravel,
             now: Date())
-        trip.renameDay(1, to: "Ulrichen")
+        trip.namePlace(1, to: "Ulrichen")
+        trip.renameDay(2, to: "Rhone Glacier")
         return trip
     }
 
     @Test
     func eachDayIsAnOBCRWithItsNameTypeAndHeaderStats() throws {
         let days = trip.dayRoutes()
-        #expect(days.map(\.name) == ["Day 1", "Day 2 Ulrichen", "Day 3"])
+        // A day's own name wins; a day without one is "Day N ‹place›".
+        #expect(days.map(\.name) == ["Day 1", "Day 2 Ulrichen", "Rhone Glacier"])
         for day in days {
             let decoded = try RouteObjectCodec.decode(day.payload)
             #expect(decoded.name == day.name)
@@ -42,6 +44,7 @@ struct TripDayRoutesTests {
     func unchangedDaysKeepTheirBytes() {
         var changed = trip
         changed.renameDay(2, to: "Brig")
+        #expect(changed.dayRoutes()[2].name == "Brig")
         let before = trip.dayRoutes().map(\.crc32)
         let after = changed.dayRoutes().map(\.crc32)
         #expect(before[0] == after[0] && before[1] == after[1])
@@ -51,10 +54,12 @@ struct TripDayRoutesTests {
     @Test
     func theNameCapCutsThePlaceNeverTheDayNumber() {
         let place = String(repeating: "Ä", count: 30)  // 60 UTF-8 bytes
-        let name = Trip.routeName(day: 11, place: place)
+        let name = Trip.routeName(day: 11, title: nil, place: place)
         #expect(name.hasPrefix("Day 12 Ä"))
         #expect(name.utf8.count <= 48)
         #expect(name == "Day 12 " + String(repeating: "Ä", count: 20))
+        #expect(Trip.routeName(day: 11, title: place, place: "Brig") == String(repeating: "Ä", count: 24),
+                "an own name is cut on a character boundary, with no day number")
     }
 
     @Test
