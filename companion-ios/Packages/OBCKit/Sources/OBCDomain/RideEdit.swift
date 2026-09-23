@@ -72,6 +72,13 @@ public enum RideEdit {
         return first.dropLast() + [last] + second.dropFirst()
     }
 
+    /// "‹name› (n)" with the smallest n from `number` whose name no ride has, ignoring case as the
+    /// import's name collision does.
+    public static func freeName(_ name: String, from number: Int, taken: some Sequence<String>) -> String {
+        let taken = Set(taken.map { $0.lowercased() })
+        return (number...).lazy.map { "\(name) (\($0))" }.first { !taken.contains($0.lowercased()) }!
+    }
+
     /// `views` without the views that share a source with the view `id`, and without the views
     /// that share a source with those, and so on. Each freed source shows again as it was synced.
     public static func reverted(_ views: [RideView], id: RideID) -> [RideView] {

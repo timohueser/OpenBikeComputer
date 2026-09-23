@@ -30,8 +30,11 @@ public struct RideEditMenu: View {
 
     public var body: some View {
         Menu {
-            Button { editorShown = true } label: { Label("Edit ride", systemImage: "scissors") }
-                .accessibilityIdentifier("detail.editRide")
+            // A ride of one point has nothing to edit.
+            if ride.points.count > 1 {
+                Button { editorShown = true } label: { Label("Edit ride", systemImage: "scissors") }
+                    .accessibilityIdentifier("detail.editRide")
+            }
             if isEdited {
                 Button { revertShown = true } label: {
                     Label("Revert to original", systemImage: "arrow.uturn.backward")

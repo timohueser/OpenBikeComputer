@@ -164,6 +164,10 @@ public final class MainScreenModel {
         // The coordinator already persisted the ride; mirror the summary so it shows at once.
         sync.onRideLanded = { [weak self] ride in
             guard let self else { return }
+            // A synced ride under an edit shows through the edit, never as a row of its own.
+            guard !library.rideViews().contains(where: { $0.sources.contains(ride.id) }) else {
+                return reloadRides()
+            }
             rideSummaries[ride.id] = ride.summary
             rides = trackedList()
         }
@@ -1137,7 +1141,8 @@ public final class MainScreenModel {
         let date = now()
         trashedRideIDs[id] = date
         library.markRideTrashed(id, at: date)
-        library.markRideSynced(id)
+        // An edited ride's id can be a synced ride's id that another edit still shows.
+        if !library.isEditedRide(id) { library.markRideSynced(id) }
         trashedRides = trashedList()
     }
 
@@ -1155,9 +1160,15 @@ public final class MainScreenModel {
         trashedRideIDs[id] = nil
         library.unmarkRideTrashed(id)
         rideSummaries[id] = nil
+        let edited = library.isEditedRide(id)
         library.deleteRide(id)
-        deletedRideIDs.insert(id)
-        library.markRideDeleted(id)
+        if edited {
+            // The store marks deleted only the synced rides that no other edit still shows.
+            deletedRideIDs = library.deletedRideIDs()
+        } else {
+            deletedRideIDs.insert(id)
+            library.markRideDeleted(id)
+        }
         trashedRides = trashedList()
     }
 
@@ -1262,20 +1273,30 @@ public final class MainScreenModel {
         return true
     }
 
-    /// Restore the synced rides behind this edited ride, as they were synced.
+    /// Restore the synced rides behind this edited ride, as they were synced. A part of the edit
+    /// in Recently Deleted leaves it: the restored rides show in the list.
     public func revertRide(_ id: RideID) {
-        library.revertRide(id)
+        for released in library.revertRide(id) where trashedRideIDs[released] != nil {
+            trashedRideIDs[released] = nil
+            library.unmarkRideTrashed(released)
+        }
         reloadRides()
     }
 
-    /// The next ride, when the two look like one ride with a break and the rider has not
-    /// dismissed the merge. Decodes both tracklogs, so call it once per detail.
-    public func mergeSuggestion(for id: RideID) -> RideSummary? {
-        guard let next = nextRide(after: id),
+    /// The next ride, when the two look like one ride with a break, do not come from the same
+    /// synced ride, and the rider has not dismissed the merge. The tracklogs decode off the main
+    /// actor.
+    public func mergeSuggestion(for id: RideID) async -> RideSummary? {
+        guard let current = rides.first(where: { $0.id == id }), let next = nextRide(after: id),
               !library.dismissedMerges().contains(RidePair(first: id, second: next.id)),
-              let first = ride(id), let second = ride(next.id), RideEdit.suggestsMerge(first, second)
+              library.rideSources(id).isDisjoint(with: library.rideSources(next.id))
         else { return nil }
-        return next
+        let library = library
+        let suggests = await Task.detached(priority: .utility) {
+            guard let first = library.ridePoints(id), let second = library.ridePoints(next.id) else { return false }
+            return RideEdit.suggestsMerge(Ride(summary: current, points: first), Ride(summary: next, points: second))
+        }.value
+        return suggests ? next : nil
     }
 
     public func dismissMergeSuggestion(for id: RideID) {

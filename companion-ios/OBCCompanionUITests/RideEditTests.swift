@@ -74,7 +74,8 @@ final class RideEditTests: XCTestCase {
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         XCTAssertEqual(title.label, "Day 2 Ulrichen (1)", "the detail shows part 1")
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(card(app, "Day 2 Ulrichen (1)").waitForExistence(timeout: 5), "part 1 is listed")
+        XCTAssertTrue(card(app, "Day 2 Ulrichen (3)").waitForExistence(timeout: 5),
+                      "the second part skips the taken \"(2)\"")
         snap(app, "list-after-split")
 
         // Revert restores the synced ride.
@@ -82,8 +83,7 @@ final class RideEditTests: XCTestCase {
         app.buttons["detail.overflow"].tap()
         app.buttons["detail.revertRide"].tap()
         app.buttons["Revert"].tap()
-        XCTAssertTrue(title.waitForExistence(timeout: 5))
-        XCTAssertEqual(title.label, "Day 2 Ulrichen")
+        XCTAssertTrue(app.buttons["detail.mergeSuggestion"].waitForExistence(timeout: 5))
 
         // Merge from the suggestion: the second ride joins this one.
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5))

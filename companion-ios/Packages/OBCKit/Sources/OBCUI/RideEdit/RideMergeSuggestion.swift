@@ -2,17 +2,17 @@ import SwiftUI
 import OBCDomain
 
 /// The quiet row under a ride's stats line: "Merge with Day 2 Ulrichen (2)?". The row merges
-/// after a confirmation; ✕ dismisses it for good. `load` finds the next ride once, after the
-/// first frame, because it decodes two tracklogs.
+/// after a confirmation; ✕ dismisses it for good. `load` finds the next ride once, off the
+/// first frame.
 public struct RideMergeSuggestion: View {
-    private let load: @MainActor () -> RideSummary?
+    private let load: @MainActor () async -> RideSummary?
     private let onMerge: () -> Void
     private let onDismiss: () -> Void
     @State private var next: RideSummary?
     @State private var confirmShown = false
 
     public init(
-        load: @escaping @MainActor () -> RideSummary?,
+        load: @escaping @MainActor () async -> RideSummary?,
         onMerge: @escaping () -> Void,
         onDismiss: @escaping () -> Void
     ) {
@@ -64,6 +64,6 @@ public struct RideMergeSuggestion: View {
                 .rideMergeConfirmation(next: next, isPresented: $confirmShown, onMerge: onMerge)
             }
         }
-        .task { next = load() }
+        .task { next = await load() }
     }
 }

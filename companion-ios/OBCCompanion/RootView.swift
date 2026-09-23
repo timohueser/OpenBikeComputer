@@ -438,7 +438,7 @@ struct RootView: View {
                     rideShareMenu: tracked.map(rideShareMenu(for:)),
                     rideEditMenu: tracked.map { rideEditMenu(for: $0) },
                     quietRows: AnyView(RideMergeSuggestion(
-                        load: { mainModel.mergeSuggestion(for: id) },
+                        load: { await mainModel.mergeSuggestion(for: id) },
                         onMerge: { mainModel.mergeRideWithNext(id) },
                         onDismiss: { mainModel.dismissMergeSuggestion(for: id) }
                     ))

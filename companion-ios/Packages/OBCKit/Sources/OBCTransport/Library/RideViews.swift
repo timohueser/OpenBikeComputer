@@ -24,6 +24,11 @@ extension LibraryStore {
         rideViews().contains { $0.id == id }
     }
 
+    /// The synced rides a ride shows: its own id for an unedited ride.
+    public func rideSources(_ id: RideID) -> Set<RideID> {
+        rideViews().first { $0.id == id }?.sources ?? [id]
+    }
+
     /// The rename and bike-type write path.
     public func saveRideSummary(_ summary: RideSummary) {
         var views = rideViews()
@@ -61,16 +66,18 @@ extension LibraryStore {
         return true
     }
 
-    /// Make two rides of one at `time`: the first keeps the id, and the names get "(1)" and
-    /// "(2)". Returns the second ride's id, or nil when a part would have fewer than two points.
+    /// Make two rides of one at `time`: "‹name› (1)", which keeps the id, and "‹name› (2)". A name
+    /// another ride has takes the next free number. Returns the second ride's id, or nil when a
+    /// part would have fewer than two points.
     @discardableResult
     public func splitRide(_ id: RideID, at time: Date, summary: RideSummary) -> RideID? {
         var edit = RideEditSession(store: self)
         guard let slices = edit.slices(of: id) else { return nil }
         let parts = RideEdit.split(slices, at: time)
+        let names = rideSummaries().map(\.name)
         var first = summary, second = summary
-        first.name = "\(summary.name) (1)"
-        second.name = "\(summary.name) (2)"
+        first.name = RideEdit.freeName(summary.name, from: 1, taken: names)
+        second.name = RideEdit.freeName(summary.name, from: 2, taken: names + [first.name])
         let secondID = RideID("edit-\(UUID().uuidString.lowercased())")
         guard let before = edit.view(id: id, summary: first, slices: parts.before),
               let after = edit.view(id: secondID, summary: second, slices: parts.after)
@@ -92,9 +99,14 @@ extension LibraryStore {
     }
 
     /// Remove the edits that share a synced ride with `id`, so each of those synced rides shows
-    /// again as it was synced.
-    public func revertRide(_ id: RideID) {
-        saveRideViews(RideEdit.reverted(rideViews(), id: id))
+    /// again as it was synced. Returns the ids of the removed edits and of the synced rides.
+    @discardableResult
+    public func revertRide(_ id: RideID) -> Set<RideID> {
+        let views = rideViews()
+        let kept = RideEdit.reverted(views, id: id)
+        saveRideViews(kept)
+        let keptIDs = Set(kept.map(\.id))
+        return Set(views.filter { !keptIDs.contains($0.id) }.flatMap { [$0.id] + $0.sources })
     }
 }
 
