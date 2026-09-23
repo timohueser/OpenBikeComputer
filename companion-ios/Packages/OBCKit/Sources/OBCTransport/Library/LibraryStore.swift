@@ -68,6 +68,12 @@ public protocol LibraryStore: Sendable {
     /// journal no longer holds. A ride that is not stored ignores it.
     func saveRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID)
 
+    /// The day note under `key`; empty when there is none.
+    func dayNote(_ key: DayNoteKey) -> String
+    /// Writes the note; an empty note removes it. A ride's note goes with `deleteRide`; a trip
+    /// day's note outlives its rides.
+    func saveDayNote(_ note: String, for key: DayNoteKey)
+
     /// Current downloaded archives plus explicit local history markers. This is
     /// display/stand-in sync state, never proof for a device source. Explicit history
     /// markers survive `deleteRide`; phone deletion also has its own tombstone.
@@ -128,6 +134,7 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private var trashed: [RideID: Date] = [:]
     private var journals: [RideID: RideJournal] = [:]
     private var thumbnails: [RideID: [String: Data]] = [:]
+    private var notes: [DayNoteKey: String] = [:]
 
     public init() {}
 
@@ -198,7 +205,16 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
             points[id] = nil
             journals[id] = nil
             thumbnails[id] = nil
+            notes[.ride(id)] = nil
         }
+    }
+
+    public func dayNote(_ key: DayNoteKey) -> String {
+        lock.withLock { notes[key] ?? "" }
+    }
+
+    public func saveDayNote(_ note: String, for key: DayNoteKey) {
+        lock.withLock { notes[key] = note.isEmpty ? nil : note }
     }
 
     public func rideJournal(_ id: RideID) -> RideJournal {
