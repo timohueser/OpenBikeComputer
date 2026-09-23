@@ -1,73 +1,73 @@
-//! The detail page of one recorded ride, the recorded twin of the route detail. Two pages flip on
-//! a dwell. Page 1 is the date line and the ridden track on the device map over one distance
-//! and ride-time line. Page 2 is the profile with its climb total over AVG SPEED and one row for each sensor the
-//! ride recorded. Both pages end with the guarded Delete-ride row, which is hidden while a ride
-//! records.
+//! The detail page of one recorded ride, the recorded twin of the route detail. Up and Down turn
+//! its pages, and the title bar counts them. Page 1 is the date line and the ridden track on the
+//! device map over the distance, ride-time and average-speed totals. Page 2 is the elevation
+//! profile in page 1's map band, with the climb and the descent on page 1's first totals line.
+//! Page 3 shows only for a ride with sensor data: the HR and power graphs over the whole ride, then
+//! AVG RPM and KJ. Every page ends with the guarded Delete-ride row, selected, which is hidden
+//! while a ride records.
 //!
-//! The track and the profile come from the host: entry sets `Activity::viewed_ride`, the host
-//! fills the resident ride-preview and ride-profile buffers, and Back or delete clears the key,
-//! so both buffers invalidate on exit.
+//! The track, the profile, the descent and the sensor series come from the host: entry sets
+//! `Activity::viewed_ride`, the host fills the resident ride-track buffers, and Back or delete
+//! clears the key, so the buffers invalidate on exit.
 
 use core::fmt::Write;
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Canvas, Surface,
 };
 
+use super::route_overview::{climb_arrow, ARROW_W};
 use super::vocab::band::draw_profile;
 use super::vocab::chrome::{empty_state, title_chrome, title_frame};
 use super::vocab::fmt::{duration_hms, write_date_weekday};
-use super::vocab::marquee::fit;
-use super::vocab::pager::ContentPager;
 use super::vocab::rows::{detail_totals, draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::vocab::tiles::{graph_field, GraphBlock};
 use super::vocab::track_map::{draw_track_map, Track};
+use crate::effort::Metric;
 use crate::input::Gesture;
 use crate::ride::RideSummary;
-use crate::screen::ScreenTick;
-use crate::settings::{DateTime, Language, Units};
-use crate::{t, Msg};
+use crate::settings::DateTime;
+use crate::Msg;
 
 use super::{palette, Ctx, RenderFrame, Transition};
 
-/// Page 1's date line under the title bar, and the map band under it.
+/// Page 1's date line under the title bar, and the map band under it. Page 2's profile takes the
+/// same band.
 const DATE_Y: i32 = 40;
 const MAP_X: i32 = 5;
 const MAP_TOP: i32 = 62;
-const MAP_BOT: i32 = 238;
-const TOTALS_Y: i32 = 244;
+const MAP_BOT: i32 = 212;
+/// The two totals lines under the band.
+const TOTALS_Y: i32 = 218;
+const SPEED_Y: i32 = 244;
 
-/// Page 2's profile band. The peak label sits in the headroom above it.
-const PROFILE_TOP: i32 = 62;
+/// Page 3's graph fields, stacked under the title bar.
+const GRAPH_TOP: i32 = 44;
+const GRAPH_H: i32 = 58;
+const GRAPH_GAP: i32 = 6;
 
-/// The ledger: rows at a fixed pitch, each over a rule, stacked up from the bottom rule, so the
-/// band above takes whatever height the rows leave.
-const LEDGER_BOT: i32 = 264;
+/// The ledger rows under the graphs: rows at a fixed pitch, each over a rule.
 const ROW_PITCH: i32 = 36;
 const ROW_RULE: i32 = 40;
 
 /// The Delete-ride row sits where the route detail's Delete-route row sits.
 const DELETE_ROW_H: i32 = 38;
 
-/// The most ledger rows a page holds: AVG SPEED and three sensors.
-const MAX_ROWS: usize = 4;
-
 #[derive(Debug, Default)]
 pub struct RideDetailScreen {
     ride: usize,
-    pager: ContentPager,
+    /// The shown page, from 0. A remap to a ride with fewer pages can leave it past the end, so
+    /// every read clamps it.
+    page: usize,
 }
 
 impl RideDetailScreen {
     /// The caller must also set `Activity::viewed_ride`, which keys the host's track fill.
     pub fn new(ride: usize) -> Self {
-        RideDetailScreen { ride, pager: ContentPager::default() }
-    }
-
-    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
-        self.pager.tick(now_ms)
+        RideDetailScreen { ride, page: 0 }
     }
 
     /// Re-point the shown ride after a catalog rescan. A ride that vanished becomes an
@@ -94,6 +94,13 @@ impl RideDetailScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
+            Gesture::Step(n) => {
+                if let Some(entry) = cx.rides.get(self.ride) {
+                    let pages = page_count(&entry.summary) as i32;
+                    self.page = (self.page(&entry.summary) as i32 + n).rem_euclid(pages) as usize;
+                }
+                Transition::None
+            }
             // The completed hold is the confirmation. The host resolves the index to the
             // catalog object and removes it; the list refreshes on its rescan.
             Gesture::Hold if self.delete_enabled(cx.recorder.recording(), cx.rides.len()) => {
@@ -109,6 +116,17 @@ impl RideDetailScreen {
         }
     }
 
+    fn page(&self, ride: &RideSummary) -> usize {
+        self.page.min(page_count(ride) - 1)
+    }
+
+    /// The title bar's page counter, such as `1/3`.
+    fn counter(&self, ride: &RideSummary) -> heapless::String<8> {
+        let mut s = heapless::String::new();
+        let _ = write!(s, "{}/{}", self.page(ride) + 1, page_count(ride));
+        s
+    }
+
     pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
     where
         D: DrawTarget,
@@ -122,64 +140,147 @@ impl RideDetailScreen {
             return;
         };
         // The title does not scroll: a scroll step on a map base would render the map again.
-        let title = fit(&ride.name, w - 28, Font::Body);
-        let units = rx.settings.units;
-
-        let lang = rx.settings.language;
-        let mut values = Rows::new();
-        let profile_page = self.pager.on_second_page();
-        if profile_page {
-            page_two_rows(ride, units, lang, &mut values);
-        }
-        let top = rows_top(values.len());
-        if profile_page {
-            title_frame(cv, w, h, &title, "");
-            let area = rect(12, PROFILE_TOP, w - 24, top - 24 - PROFILE_TOP + 1);
-            let loading = rx.t(Msg::RouteOverviewLoadingProfile);
-            draw_profile(cv, rx.ride_profile, area, units, loading);
-            let climb = number((units.elev(ride.climb_m as f32) + 0.5) as u32);
-            let mut total = heapless::String::<16>::new();
-            let _ = write!(total, "{climb} {}", units.elev_label());
-            super::route_overview::climb_arrow(cv, 16, top - 20, true, INK);
-            cv.text(&total, Point::new(32, top - 20), Font::Label, TextAlign::Left, INK);
-        } else {
-            let track = Track { points: rx.ride_preview, color: TRAIL, end_dot: false };
-            draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, MAP_BOT - MAP_TOP), track, None);
-            title_chrome(cv, w, h, &title);
-            cv.hline(MAP_X, MAP_BOT, w - 2 * MAP_X, RULE);
-            let mut when: heapless::String<24> = heapless::String::new();
-            let d = DateTime::from_unix(ride.start_time);
-            write_date_weekday(&mut when, &d, lang);
-            let _ = write!(when, " · {:02}:{:02}", d.hour, d.minute);
-            cv.text(&when, Point::new(14, DATE_Y), Font::Label, TextAlign::Left, SUBTEXT);
-            let dist = number(format_args!("{:.1}", units.dist(ride.distance_m as f32 / 1000.0)));
-            let dist_unit = if units.is_imperial() { "mi" } else { "km" };
-            let time = duration_hms(ride.moving_time_s as f32);
-            detail_totals(cv, w, TOTALS_Y, &dist, dist_unit, &time);
+        let counter = self.counter(ride);
+        match self.page(ride) {
+            0 => {
+                totals_page(cv, rx, ride);
+                title_chrome(cv, w, h, &ride.name, &counter);
+            }
+            1 => {
+                title_frame(cv, w, h, &ride.name, &counter);
+                elevation_page(cv, rx, ride);
+            }
+            _ => {
+                title_frame(cv, w, h, &ride.name, &counter);
+                sensor_page(cv, rx, ride);
+            }
         }
 
-        for (i, (caption, value, unit, arrow)) in values.iter().enumerate() {
-            let y = top + i as i32 * ROW_PITCH;
-            ledger_row(cv, w, y, caption, value, unit, *arrow);
-            cv.hline(16, y + ROW_RULE, w - 32, RULE);
-        }
-
-        // A plain row, like Delete route under an unselected cursor; the shaded base and the fill
-        // draw only while a hold charges.
         if self.delete_enabled(rx.recording, rx.rides.len()) {
             let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
-            let selected = if rx.hold_progress > 0.0 { 0 } else { usize::MAX };
-            draw_guarded_rows(cv, &items, selected, rx.hold_progress, WARNING, delete_row(w, h));
+            draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, delete_row(w, h));
         }
     }
 }
 
-/// A ledger row: the caption, the value, its unit, and the climb arrow.
-type Rows = heapless::Vec<(heapless::String<16>, heapless::String<8>, &'static str, Option<bool>), MAX_ROWS>;
+/// Two pages, and a third for a ride with any sensor data.
+fn page_count(ride: &RideSummary) -> usize {
+    if ride.avg_hr.is_some() || ride.avg_cadence.is_some() || ride.avg_power.is_some() {
+        3
+    } else {
+        2
+    }
+}
 
-/// The top of the first of `n` ledger rows.
-fn rows_top(n: usize) -> i32 {
-    LEDGER_BOT - ROW_RULE - (n as i32 - 1) * ROW_PITCH
+/// The date, the map with the track, then distance and time over the average speed.
+fn totals_page<D, F>(cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>, ride: &RideSummary)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    use palette::*;
+    let w = rx.w;
+    let units = rx.settings.units;
+    let track = Track { points: rx.ride_preview, color: TRAIL, end_dot: false };
+    draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, MAP_BOT - MAP_TOP), track, None);
+    cv.hline(MAP_X, MAP_BOT, w - 2 * MAP_X, RULE);
+    let mut when: heapless::String<24> = heapless::String::new();
+    let d = DateTime::from_unix(ride.start_time);
+    write_date_weekday(&mut when, &d, rx.settings.language);
+    let _ = write!(when, " · {:02}:{:02}", d.hour, d.minute);
+    cv.text(&when, Point::new(14, DATE_Y), Font::Label, TextAlign::Left, SUBTEXT);
+    let dist = number(format_args!("{:.1}", units.dist(ride.distance_m as f32 / 1000.0)));
+    let (dist_unit, speed_unit) = if units.is_imperial() { ("mi", "mph") } else { ("km", "km/h") };
+    detail_totals(cv, w, TOTALS_Y, &dist, dist_unit, &duration_hms(ride.moving_time_s as f32));
+    // The stored distance over the stored moving time, and `--` before any moving time.
+    let mut speed = heapless::String::<16>::new();
+    if ride.moving_time_s > 0 {
+        let kmh = ride.distance_m as f32 / 1000.0 / (ride.moving_time_s as f32 / 3600.0);
+        let _ = write!(speed, "{:.1} {speed_unit}", units.speed(kmh));
+    } else {
+        let _ = write!(speed, "-- {speed_unit}");
+    }
+    cv.text(&speed, Point::new(16, SPEED_Y), Font::Label, TextAlign::Left, INK);
+}
+
+/// The profile in page 1's map band, with the climb and the descent on page 1's first totals line.
+/// The descent comes from the opened ride, so it shows `--` until the fill lands.
+fn elevation_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSummary) {
+    use palette::*;
+    let w = rx.w;
+    let units = rx.settings.units;
+    draw_profile(cv, rx.ride_profile, map_band(w), units, rx.t(Msg::RouteOverviewLoadingProfile));
+    let elevation = |m: Option<u16>| {
+        let mut s = heapless::String::<12>::new();
+        let _ = match m {
+            Some(m) => write!(s, "{} {}", (units.elev(m as f32) + 0.5) as u32, units.elev_label()),
+            None => write!(s, "-- {}", units.elev_label()),
+        };
+        s
+    };
+    let up = elevation(Some(ride.climb_m));
+    let down = elevation(rx.ride_facts.map(|f| f.descent_m));
+    climb_arrow(cv, 16, TOTALS_Y, true, INK);
+    cv.text(&up, Point::new(16 + ARROW_W + 4, TOTALS_Y), Font::Label, TextAlign::Left, INK);
+    cv.text(&down, Point::new(w - 16, TOTALS_Y), Font::Label, TextAlign::Right, INK);
+    climb_arrow(cv, w - 16 - text_width(&down, Font::Label) as i32 - ARROW_W - 4, TOTALS_Y, false, INK);
+}
+
+/// The profile's band: page 1's map band, inset like the route detail's profile.
+fn map_band(w: i32) -> Rectangle {
+    rect(12, MAP_TOP, w - 24, MAP_BOT - MAP_TOP)
+}
+
+/// The HR and power graphs over the whole ride, then the AVG RPM and KJ rows. Each shows only when
+/// the ride recorded it.
+fn sensor_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSummary) {
+    use palette::*;
+    let w = rx.w;
+    let limits = rx.settings.effort_limits();
+    let avg = rx.t(Msg::TileAvg);
+    let facts = rx.ride_facts;
+    let mut y = GRAPH_TOP;
+    let mut area = || {
+        let area = rect(MAP_X, y, w - 2 * MAP_X, GRAPH_H);
+        y += GRAPH_H + GRAPH_GAP;
+        area
+    };
+    if let Some(hr) = ride.avg_hr {
+        let series = facts.map_or(&[][..], |f| f.hr()).iter().map(|&v| u16::from(v));
+        let caption = caption(avg, rx.t(Msg::TileHr));
+        ride_graph(cv, area(), &caption, hr.into(), series, Metric::Hr, limits.of(Metric::Hr));
+    }
+    if let Some(power) = ride.avg_power {
+        let series = facts.map_or(&[][..], |f| f.power()).iter().copied();
+        let caption = caption(avg, rx.t(Msg::TilePwrShort));
+        ride_graph(cv, area(), &caption, power, series, Metric::Power, limits.of(Metric::Power));
+    }
+    let mut row = y + 2;
+    let mut ledger = |caption: &str, value: heapless::String<8>| {
+        ledger_row(cv, w, row, caption, &value, "", None);
+        cv.hline(16, row + ROW_RULE, w - 32, RULE);
+        row += ROW_PITCH;
+    };
+    if let Some(cadence) = ride.avg_cadence {
+        ledger(&caption(avg, rx.t(Msg::TileRpm)), number(cadence));
+    }
+    if let Some(kj) = ride.energy_kj {
+        ledger(rx.t(Msg::TileKj), number(kj));
+    }
+}
+
+/// One whole-ride graph field, tinted in the zone of the ride's average.
+fn ride_graph(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    caption: &str,
+    avg: u16,
+    series: impl ExactSizeIterator<Item = u16> + Clone,
+    m: Metric,
+    limit: Option<u32>,
+) {
+    let zone = limit.map(|l| m.zone_of(avg.into(), l));
+    graph_field(cv, area, GraphBlock::Ride, caption, &number(avg), zone, series, m, limit);
 }
 
 fn delete_row(w: i32, h: i32) -> GuardedRowsGeometry {
@@ -192,36 +293,12 @@ fn number(v: impl core::fmt::Display) -> heapless::String<8> {
     s
 }
 
-/// A caption from catalog fragments, such as `AVG ` and `HR`.
-fn caption(parts: &[&str]) -> heapless::String<16> {
+/// A caption from two catalog fragments, such as `AVG ` and `HR`.
+fn caption(avg: &str, metric: &str) -> heapless::String<16> {
     let mut s = heapless::String::new();
-    for part in parts {
-        let _ = s.push_str(part);
-    }
+    let _ = s.push_str(avg);
+    let _ = s.push_str(metric);
     s
-}
-
-/// The average speed, then one row for each sensor the ride recorded. The captions are the riding
-/// tiles' own, because "AVG SPEED" and a value with its unit overrun the row.
-fn page_two_rows(ride: &RideSummary, units: Units, lang: Language, out: &mut Rows) {
-    let avg = t(Msg::TileAvg, lang);
-    // The stored distance over the stored moving time, and `--` before any moving time.
-    let speed = if ride.moving_time_s > 0 {
-        let kmh = ride.distance_m as f32 / 1000.0 / (ride.moving_time_s as f32 / 3600.0);
-        number(format_args!("{:.1}", units.speed(kmh)))
-    } else {
-        number("--")
-    };
-    let _ = out.push((caption(&[avg, units.speed_label()]), speed, "", None));
-    if let Some(hr) = ride.avg_hr {
-        let _ = out.push((caption(&[avg, t(Msg::TileHr, lang)]), number(hr), "bpm", None));
-    }
-    if let Some(cadence) = ride.avg_cadence {
-        let _ = out.push((caption(&[avg, t(Msg::TileRpm, lang)]), number(cadence), "", None));
-    }
-    if let Some(power) = ride.avg_power {
-        let _ = out.push((caption(&[avg, t(Msg::TilePwr, lang)]), number(power), "W", None));
-    }
 }
 
 #[cfg(test)]
@@ -304,13 +381,34 @@ mod tests {
     }
 
     #[test]
-    fn the_pager_drives_this_screen_s_paired_pages() {
-        use super::super::vocab::pager::PAGE_FLIP_MS;
+    fn up_and_down_turn_the_pages_and_the_title_counts_them() {
+        let mut rec = crate::RecorderMachine::new();
+        let mut act = Activity::new(Mode::Idle);
+        let plain = [summary("A")];
+        let mut hr = summary("B");
+        hr.summary.avg_hr = Some(128);
+        let hr = [hr];
+        let mut cadence = summary("C");
+        cadence.summary.avg_cadence = Some(85);
+
         let mut scr = RideDetailScreen::new(0);
-        assert!(!scr.tick_timers(0).changed, "the first poll only anchors the dwell");
-        assert!(!scr.pager.on_second_page(), "entry shows the track shape + DISTANCE page");
-        assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "the dwell flips the page");
-        assert!(scr.pager.on_second_page(), "now on the AVG + CLIMBED page");
+        let mut turn = |rides: &[RideEntry], n| {
+            let t = run(&mut scr, &mut act, &mut rec, rides, Gesture::Step(n));
+            assert!(matches!(t, Transition::None), "a page turn stays on the screen");
+            scr.counter(&rides[0].summary)
+        };
+        assert_eq!(turn(&plain, 0), "1/2", "a ride without sensor data has two pages");
+        assert_eq!(turn(&plain, 1), "2/2");
+        assert_eq!(turn(&plain, 1), "1/2", "Down past the last page comes back to the first");
+        assert_eq!(turn(&plain, -1), "2/2", "and Up before the first goes to the last");
+        assert_eq!(turn(&hr, 1), "3/3", "any sensor adds the third page");
+        assert_eq!(turn(&hr, -2), "1/3");
+        assert_eq!(page_count(&cadence.summary), 3, "cadence alone also counts");
+
+        let mut scr = RideDetailScreen { ride: 0, page: 2 };
+        assert_eq!(scr.counter(&plain[0].summary), "2/2", "a page past a remapped ride's end clamps");
+        run(&mut scr, &mut act, &mut rec, &plain, Gesture::Step(1));
+        assert_eq!(scr.counter(&plain[0].summary), "1/2", "and turns on from the clamped page");
     }
 
     #[test]

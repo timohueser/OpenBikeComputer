@@ -1801,12 +1801,12 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
 }
 
 /// Answer one keyed ride-track derived need from one immutable flat object revision: the elevation
-/// profile, filled in place into the app's resident buffer, and the decimated track shape, into the
-/// caller's stack buffer.
+/// profile and the ride facts, filled in place into the app's resident buffers, and the decimated
+/// track shape, into the caller's stack buffer.
 ///
 /// The polyline goes to the caller rather than into the app because it reaches DeviceCore beside
 /// the key that guards it, and because at `NAV_PREVIEW_MAX` it is 512 B that must not become
-/// resident. Both outputs come from one sample pass; a failure clears the preview and leaves the
+/// resident. All outputs come from one sample pass; a failure clears the preview and leaves the
 /// profile unpublished.
 #[inline(never)]
 pub(crate) fn fill_ride_track(
@@ -1815,9 +1815,9 @@ pub(crate) fn fill_ride_track(
     ride: u64,
     preview: &mut heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
 ) -> bool {
-    let profile = app.begin_ride_profile_fill();
+    let (profile, facts) = app.begin_ride_track_fill();
     let valid = matches!(
-        store.with_source(ObjectId(ride), None, |source| obc_route::ride_track_into(source, profile, preview)),
+        store.with_source(ObjectId(ride), None, |source| obc_route::ride_track_into(source, profile, facts, preview)),
         Ok(Ok(()))
     );
     if !valid {

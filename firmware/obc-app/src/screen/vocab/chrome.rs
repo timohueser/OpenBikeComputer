@@ -27,25 +27,32 @@ pub(crate) fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, ri
 /// change.
 pub(crate) fn title_frame_ble(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str, ble_connected: bool) {
     use palette::*;
-    const GAP: i32 = 8;
     cv.clear(PARCHMENT);
-    let right_x = if ble_connected { w - 14 - BLE_GLYPH_W - GAP } else { w - 14 };
-    let right_w = if right.is_empty() { 0 } else { text_width(right, Font::Label) as i32 + GAP };
-    title_chrome(cv, w, h, &super::marquee::fit(title, right_x - right_w - 14, Font::Body));
+    let right_x = if ble_connected { w - 14 - BLE_GLYPH_W - TITLE_GAP } else { w - 14 };
+    chrome(cv, w, h, title, right, right_x);
     if ble_connected {
         ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, BAR_TEXT);
     }
-    // The two y values differ because the Body and Label glyphs have different baselines.
-    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, BAR_TEXT);
 }
 
 /// The outline and the titled wood bar of [`title_frame`], without its clear: for a page whose
 /// map band has already painted the background.
-pub(crate) fn title_chrome(cv: &mut impl Surface, w: i32, h: i32, title: &str) {
+pub(crate) fn title_chrome(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str) {
+    chrome(cv, w, h, title, right, w - 14);
+}
+
+/// The gap between the title and the right readout, and between the readout and the BLE rune.
+const TITLE_GAP: i32 = 8;
+
+fn chrome(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str, right_x: i32) {
     use palette::*;
+    let right_w = if right.is_empty() { 0 } else { text_width(right, Font::Label) as i32 + TITLE_GAP };
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
     cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
-    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, BAR_TEXT);
+    let title = super::marquee::fit(title, right_x - right_w - 14, Font::Body);
+    cv.text(&title, Point::new(14, 8), Font::Body, TextAlign::Left, BAR_TEXT);
+    // The two y values differ because the Body and Label glyphs have different baselines.
+    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, BAR_TEXT);
 }
 
 /// Total width (px) the [`ble_glyph`] rune occupies, so callers can reserve its slot.

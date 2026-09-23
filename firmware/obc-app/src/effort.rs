@@ -296,7 +296,7 @@ impl Effort {
     }
 
     /// The closed bucket averages, oldest first. `0` is a bucket with no data.
-    pub fn history(&self, m: Metric) -> impl Iterator<Item = u16> + '_ {
+    pub fn history(&self, m: Metric) -> impl ExactSizeIterator<Item = u16> + Clone + '_ {
         let oldest = (self.bucket % HISTORY_BARS as u32) as usize;
         (0..HISTORY_BARS).map(move |i| m.bar_value(self.hist[m as usize][(oldest + i) % HISTORY_BARS]))
     }
