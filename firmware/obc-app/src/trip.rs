@@ -15,6 +15,7 @@
 use heapless::{String, Vec};
 
 use obc_formats::obcr::NAME_CAP;
+use obc_formats::ride::TripRef;
 use obc_route::MAX_TRIP_DAYS;
 
 use crate::route::RouteSummary;
@@ -119,6 +120,14 @@ impl TripSummary {
             }
         }
     }
+}
+
+/// The trip day whose route is `route`. A route is in at most one trip.
+pub fn trip_day(trips: &[TripSummary], route: CatalogObjectId) -> Option<TripRef> {
+    trips.iter().find_map(|trip| {
+        let day = trip.stage_ids.iter().position(|&id| id == route)?;
+        TripRef::new(trip.key, day as u8, trip.stage_ids.len() as u8)
+    })
 }
 
 /// A route object as the store holds it. A replace keeps the id and bumps the revision.

@@ -358,7 +358,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     private static let schemaVersion = 1
     /// The summary manifest and complete canonical point records share one version.
-    private static let rideSchemaVersion = 3
+    fileprivate static let rideSchemaVersion = 4
     /// Trips version independently of planned routes, and the version is used on both the write
     /// and the read side, so a future planned-route bump cannot silently stop stored trips from
     /// loading.
@@ -687,7 +687,7 @@ private struct WaypointDTO: Codable {
 }
 
 private struct RideSummaryFile: Codable {
-    var version = 3
+    var version = FileLibraryStore.rideSchemaVersion
     var summary: RideSummaryDTO
     var pointsFile: String
     var pointsLength: Int
@@ -716,7 +716,7 @@ private struct RideSummaryFile: Codable {
 }
 
 private struct RidePointsFile: Codable {
-    var version = 3
+    var version = FileLibraryStore.rideSchemaVersion
     var points: [RidePointDTO]
     init(_ points: [RidePoint]) { self.points = points.map(RidePointDTO.init) }
 }
@@ -766,6 +766,8 @@ private struct RideSummaryDTO: Codable {
     var avgCadence: Int?
     var avgPower: Int?
     var maxPower: Int?
+    var bikeType: UInt8
+    var trip: RideTripDTO?
 
     init(_ summary: RideSummary) {
         source = summary.source
@@ -782,6 +784,8 @@ private struct RideSummaryDTO: Codable {
         avgCadence = summary.avgCadence
         avgPower = summary.avgPower
         maxPower = summary.maxPower
+        bikeType = summary.bikeType.rawValue
+        trip = summary.trip.map(RideTripDTO.init)
     }
 
     var domain: RideSummary {
@@ -791,9 +795,26 @@ private struct RideSummaryDTO: Codable {
             averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
             trackPreview: preview?.domain,
             avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
-            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower, source: source
+            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower,
+            bikeType: BikeType(rawValue: bikeType) ?? .road, trip: trip?.domain, source: source
         )
     }
+}
+
+private struct RideTripDTO: Codable {
+    var key: UInt64
+    var dayIndex: Int
+    var dayCount: Int
+    var name: String
+
+    init(_ trip: RideTrip) {
+        key = trip.key
+        dayIndex = trip.dayIndex
+        dayCount = trip.dayCount
+        name = trip.name
+    }
+
+    var domain: RideTrip { RideTrip(key: key, dayIndex: dayIndex, dayCount: dayCount, name: name) }
 }
 
 private struct SyncedRidesFile: Codable {

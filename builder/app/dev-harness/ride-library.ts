@@ -61,7 +61,7 @@ function loopRide(
     }
     const distanceM = Math.round(radiusDeg * 111_000 * 2 * Math.PI * 1.2);
     return {
-        version: 3,
+        version: 4,
         name,
         startTime,
         distanceM,
@@ -73,6 +73,8 @@ function loopRide(
         avgCadence: 78,
         avgPower: null,
         maxPower: null,
+        bikeType: 0,
+        trip: null,
         points,
     };
 }

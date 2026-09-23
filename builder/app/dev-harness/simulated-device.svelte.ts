@@ -283,7 +283,7 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
         });
     }
     return {
-        version: 3,
+        version: 4,
         name,
         startTime,
         distanceM: points * 7,
@@ -295,6 +295,8 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
         avgCadence: sensors ? 79 : null,
         avgPower: sensors ? 209 : null,
         maxPower: sensors ? 410 : null,
+        bikeType: 0,
+        trip: null,
         points: list,
     };
 }

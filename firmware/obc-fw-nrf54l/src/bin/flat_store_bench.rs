@@ -113,7 +113,7 @@ const COMMIT_SAMPLES: usize = 3;
 
 const RIDE_RESERVE: u64 = 32 * EXTENT_SIZE;
 /// The shipping recorder checkpoints every ten seconds. At the minimum one-second fix cadence that
-/// is ten exact ride-v3 records, not an arbitrary byte-growth surrogate.
+/// is ten exact ride-v4 records, not an arbitrary byte-growth surrogate.
 const SAMPLES_PER_CHECKPOINT: u32 = 10;
 const CHECKPOINT_SAMPLE_BYTES: usize = SAMPLES_PER_CHECKPOINT as usize * SAMPLE_LEN;
 /// Enough ten-sample checkpoints to cross the 16 KiB boundary and turn the 16-slot ring repeatedly.

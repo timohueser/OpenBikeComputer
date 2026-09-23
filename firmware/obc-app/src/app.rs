@@ -1053,6 +1053,26 @@ impl App {
         self.catalogs.trips()
     }
 
+    /// What a ride that starts now records: the current bike type, and the trip day when the
+    /// loaded route is one.
+    pub(crate) fn ride_origin(&self) -> crate::RideOrigin {
+        let route = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
+        crate::RideOrigin {
+            bike: self.settings.bike_type,
+            trip: route.and_then(|route| crate::trip::trip_day(self.trips(), route)),
+        }
+    }
+
+    /// The open ride's footer facts. The trip name is read from the trip catalog as the footer is
+    /// written, so a ride continued after a reset names its trip too.
+    pub fn ride_stats(&self) -> obc_route::RideStats {
+        let mut stats = self.recorder.ride_stats();
+        if let Some(trip) = stats.trip.and_then(|day| self.trips().iter().find(|t| t.key == day.key())) {
+            stats.trip_name = obc_formats::ride::Name::new(&trip.name);
+        }
+        stats
+    }
+
     /// Whether the route at catalog index `idx` is filed into a trip. A filed route shows only
     /// inside its folder.
     pub fn route_filed(&self, idx: usize) -> bool {

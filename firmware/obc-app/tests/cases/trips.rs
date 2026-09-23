@@ -153,3 +153,29 @@ fn reresolves_across_a_route_rescan() {
         assert!(!app.route_filed(1)); // catalog index 1 is now route 9 — unfiled
     }
 }
+
+/// A ride records the bike type that is current at its start, and the trip day when the loaded
+/// route is a day route. A ride on a loose route records no trip.
+#[test]
+fn a_ride_records_its_trip_day_and_bike_type() {
+    use obc_app::{RecorderIntent, Settings};
+    use obc_formats::{bike::BikeType, ride::TripRef};
+
+    let start_on = |route: usize| {
+        let mut app = app_with_three_routes();
+        app.set_trips(&[TripInput { id: 1, key: 42, name: "Alpen Traverse", start_date: 0, stage_ids: &[7, 8] }]);
+        app.set_settings(Settings { bike_type: BikeType::Gravel, ..Settings::default() });
+        crate::common::mount_store(&mut app);
+        app.activate_route(route);
+        app.recorder.request(RecorderIntent::Start);
+        crate::common::quiet_pass(&mut app, 1);
+        assert!(app.recording());
+        let stats = app.ride_stats();
+        (stats.bike, stats.trip, stats.trip_name)
+    };
+
+    let (bike, trip, name) = start_on(1);
+    assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, TripRef::new(42, 1, 2), "Alpen Traverse"));
+    let (bike, trip, name) = start_on(2);
+    assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, None, ""));
+}

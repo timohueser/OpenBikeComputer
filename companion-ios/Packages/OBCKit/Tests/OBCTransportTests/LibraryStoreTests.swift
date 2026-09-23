@@ -61,7 +61,9 @@ final class LibraryStoreTests: XCTestCase {
                 trackPreview: TrackPreview.normalizing([
                     Coordinate(latitude: 47.0, longitude: 7.0),
                     Coordinate(latitude: 47.1, longitude: 7.2),
-                ])
+                ]),
+                bikeType: .touring,
+                trip: RideTrip(key: 42, dayIndex: 1, dayCount: 3, name: "Alpen Traverse")
             ),
             points: [
                 RidePoint(timestamp: Date(timeIntervalSince1970: 2_000),
