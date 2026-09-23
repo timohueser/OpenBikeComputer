@@ -64,7 +64,8 @@ struct OBCCompanionApp: App {
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
                 syncTiming: Self.launchSyncTiming(),
-                placeName: Self.makePlaceName())
+                placeName: Self.makePlaceName(),
+                stopSearch: Self.makeStopSearch())
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -108,6 +109,15 @@ struct OBCCompanionApp: App {
         if mockControl != nil { return nil }
         #endif
         return PlaceNames.locality(at:)
+    }
+
+    /// Stops near a trip line come from Apple Maps. Mock runs use fixed stops, offline and
+    /// deterministic.
+    static func makeStopSearch() -> any StopSearch {
+        #if DEBUG
+        if mockControl != nil { return MockStopSearch() }
+        #endif
+        return AppleMapsStopSearch()
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {

@@ -4,7 +4,8 @@ import OBCTransport
 
 /// The trip page, behind a trip card in the routes list: the map in day colours, the totals, the
 /// Upload trip action, one row per day with its number and its name, then the start date and the
-/// bike type. A tap on a day renames it. The overflow menu carries Rename, Reverse and Delete trip.
+/// bike type. A tap on a day renames it; a long press also offers
+/// to end the day at a stop. The overflow menu carries Rename, Reverse and Delete trip.
 ///
 /// Driven straight off `MainScreenModel`: the model owns the trip edits and the library, and this
 /// view binds them. It pops itself the moment the trip is deleted.
@@ -27,6 +28,8 @@ public struct TripDetailView: View {
     @State private var startDateShown = false
     /// The full-screen interactive trip map.
     @State private var mapShown = false
+    /// The stops sheet of one day end.
+    @State private var stopsModel: TripStopsModel?
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -110,6 +113,11 @@ public struct TripDetailView: View {
         .sheet(item: $tripUploadModel) { model in
             TripUploadSheetView(model: model)
         }
+        .sheet(item: $stopsModel) { model in
+            TripStopsSheet(model: model)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         #if os(iOS)
         .fullScreenCover(isPresented: $mapShown) { tripMapCover }
         #else
@@ -183,15 +191,35 @@ public struct TripDetailView: View {
                     number: index + 1,
                     title: end?.title ?? end?.name.map { "to \($0)" },
                     detail: ([dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) }]
-                        + [OBCFormat.plannedSubtitle(day)]).compactMap { $0 }.joined(separator: " · "),
+                        + [OBCFormat.plannedSubtitle(day), offLineNote(end)]).compactMap { $0 }
+                        .joined(separator: " · "),
                     showsDivider: index < routes.count - 1
                 ) {
-                    dayDraft = end?.title ?? ""
-                    dayRename = index
+                    renameDay(index)
+                }
+                .contextMenu {
+                    Button { renameDay(index) } label: { Label("Rename day", systemImage: "pencil") }
+                    if index < routes.count - 1 {
+                        Button {
+                            stopsModel = model.tripStops(tripID, day: index, isOnline: isOnline)
+                        } label: { Label("End day at a stop", systemImage: "tent") }
+                        .accessibilityIdentifier("trip.day.stops")
+                    }
                 }
                 .accessibilityIdentifier("trip.day.\(index)")
             }
         }
+    }
+
+    private func renameDay(_ day: Int) {
+        dayDraft = trip?.dayEnds[safe: day]?.title ?? ""
+        dayRename = day
+    }
+
+    /// "330 m off the line" when the day ends at a stop away from the line.
+    private func offLineNote(_ end: DayEnd?) -> String? {
+        guard let offset = end?.stopOffset, offset > Trip.onLineMeters else { return nil }
+        return OBCFormat.stopOffset(meters: offset)
     }
 
     private var header: some View {

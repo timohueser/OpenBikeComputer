@@ -8,6 +8,8 @@ struct LineMarkerProfileView: View {
     let model: LineMarkerEditorModel
     var height: CGFloat = 132
 
+    private static let stopMarkSize: CGFloat = 14
+
     /// Room above the curve for a handle and its label.
     private let inset = EdgeInsets(top: 52, leading: 14, bottom: 8, trailing: 14)
 
@@ -22,6 +24,12 @@ struct LineMarkerProfileView: View {
                 Canvas { context, _ in
                     drawGrid(in: &context, plot: plot)
                     drawSegments(in: &context, plot: plot)
+                    drawStopTies(in: &context, plot: plot)
+                }
+                ForEach(Array(model.stops.enumerated()), id: \.offset) { _, placed in
+                    StopIcon(kind: placed.stop.kind, size: Self.stopMarkSize, isRound: true)
+                        .position(x: stopX(placed, plot: plot), y: Self.stopMarkSize / 2 + 4)
+                        .allowsHitTesting(false)
                 }
                 ForEach(model.markers) { marker in
                     handle(marker, plot: plot)
@@ -93,6 +101,24 @@ struct LineMarkerProfileView: View {
             y -= 24
         }
         context.stroke(grid, with: .color(OBCTheme.gridLine), lineWidth: 1)
+    }
+
+    /// A stop mark's x, held inside the card.
+    private func stopX(_ placed: PlacedStop, plot: CGRect) -> CGFloat {
+        min(max(x(placed.distance, plot: plot), plot.minX + Self.stopMarkSize / 2), plot.maxX - Self.stopMarkSize / 2)
+    }
+
+    /// A faint dotted tie from each stop mark down to the floor.
+    private func drawStopTies(in context: inout GraphicsContext, plot: CGRect) {
+        for placed in model.stops {
+            let x = stopX(placed, plot: plot)
+            var tie = Path()
+            tie.move(to: CGPoint(x: x, y: Self.stopMarkSize + 4))
+            tie.addLine(to: CGPoint(x: x, y: plot.maxY))
+            context.stroke(
+                tie, with: .color(StopIcon.color(placed.stop.kind).opacity(0.25)),
+                style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
+        }
     }
 
     /// One area and one stroke per segment, split at the markers by interpolation so the

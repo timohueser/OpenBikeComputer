@@ -54,7 +54,8 @@ public struct TripEntry: Sendable {
     public func trip(routes: [RouteEntry], base: Date) -> Trip {
         let members = routeIDs.compactMap { id in routes.first { $0.summary.id == id } }
         return Trip.joining(
-            members.map(\.points), names: members.map(\.summary.name), id: id, name: name, bikeType: .road,
+            members.map(\.points), names: members.map(\.summary.name), waypoints: members.map(\.waypoints),
+            id: id, name: name, bikeType: .road,
             now: base.addingTimeInterval(-order))
     }
 }
