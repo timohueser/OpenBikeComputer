@@ -482,12 +482,11 @@ public final class MainScreenModel {
 
     public func trip(_ id: TripID) -> Trip? { trips.first { $0.id == id } }
 
+    /// The trips a route can join, most recently edited first.
     public var tripPickerItems: [TripPickerItem] {
-        trips.map { TripPickerItem(id: $0.id, name: $0.name, dayCount: $0.dayCount) }
+        trips.sorted { $0.editedAt > $1.editedAt }
+            .map { TripPickerItem(id: $0.id, name: $0.name, dayCount: $0.dayCount) }
     }
-
-    /// The trip an import offers to extend: the one the rider changed last.
-    public var lastEditedTrip: Trip? { trips.max { $0.editedAt < $1.editedAt } }
 
     /// A trip's day routes as an upload sends them, with the names and the stats the device shows.
     public func tripDays(_ id: TripID) -> [TripDayRoute] {

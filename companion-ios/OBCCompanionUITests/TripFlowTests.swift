@@ -99,42 +99,26 @@ final class TripFlowTests: XCTestCase {
 
     // MARK: Import row → New trip
 
-    /// The import-save screen's optional Add-to-trip row makes the new import the first day of a
-    /// fresh trip on save.
+    /// The import landing's Start a trip row makes the import the first day of a new trip and
+    /// opens the trip page.
     @MainActor
-    func testImportWithNewTrip() {
+    func testImportStartsATrip() {
         let app = launch(fixtures: "trips", importSample: "gpx")
 
-        // The landing is up; find the opt-in Add-to-trip row.
-        let row = app.buttons["import.addToTrip"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "import Add to trip row missing")
-        for _ in 0..<4 where !row.isHittable { app.swipeUp(velocity: .fast) }
+        let row = app.buttons["import.startTrip"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "import Start a trip row missing")
+        XCTAssertTrue(app.buttons["import.addToTrip"].exists, "the one fixture trip must be offered")
+        snap(app, "TR7-import-rows")
         row.tap()
 
-        let newTripRow = app.buttons["tripPicker.newTrip"]
-        XCTAssertTrue(newTripRow.waitForExistence(timeout: 5), "picker missing")
-        newTripRow.tap()
-        let nameField = app.textFields["tripPicker.newName"]
-        XCTAssertTrue(nameField.waitForExistence(timeout: 5), "new-trip name field missing")
-        nameField.tap()
-        nameField.clearText()
-        nameField.typeText("Schwarzwald Trip")
-        app.buttons["tripPicker.create"].tap()
-        snap(app, "TR7-import-newtrip")
-
-        // Save the import; it lands as the new trip's first day.
-        let save = app.buttons["detail.saveToPlanned"]
-        for _ in 0..<4 where !save.isHittable { app.swipeUp(velocity: .fast) }
-        save.tap()
-
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
-        let tripCard = app.staticTexts["Schwarzwald Trip"]
-        XCTAssertTrue(tripCard.waitForExistence(timeout: 5), "new trip card missing after import")
-        // The imported route is part of the trip, not a route card.
-        XCTAssertFalse(app.staticTexts["Schwarzwald Tour · Tag 2"].exists, "imported route leaked to top level")
-        tripCard.tap()
         XCTAssertTrue(
-            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 5),
-            "imported route is not the first day of the new trip")
+            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 10),
+            "Start a trip must open the new trip's page")
+        XCTAssertTrue(app.navigationBars["Schwarzwald Tour · Tag 2"].exists, "the trip takes the route's name")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'main.card.'"))
+            .matching(NSPredicate(format: "label CONTAINS 'Schwarzwald'")).firstMatch.exists,
+            "the imported route must not also be a route card")
     }
 }
