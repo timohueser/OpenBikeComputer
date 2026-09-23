@@ -15,6 +15,7 @@ public struct RideEditView: View {
     private let name: String
     private let nextRide: RideSummary?
     private let onClose: (Edit?) -> Void
+    /// Merge with next expands the toolbar in place with the next ride and Merge and Cancel.
     @State private var mergeShown = false
 
     /// Nil for a ride with fewer than two points.
@@ -59,21 +60,46 @@ public struct RideEditView: View {
                         .accessibilityIdentifier("rideEdit.save")
                 }
             }
-            .rideMergeConfirmation(next: nextRide, isPresented: $mergeShown) { onClose(.mergeWithNext) }
         }
         .tint(OBCTheme.tint)
         .accessibilityIdentifier("rideEdit.screen")
     }
 
+    @ViewBuilder
     private var actions: some View {
-        HStack(spacing: 0) {
-            action("Trim", selected: model.mode == .trim, id: "trim") { model.select(.trim) }
-            action("Split here", selected: model.mode == .split, id: "split") { model.select(.split) }
-            action("Merge with next", selected: false, id: "merge") { mergeShown = true }
-                .disabled(nextRide == nil)
+        Group {
+            if mergeShown, let nextRide {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Merge with \(nextRide.name)?")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                    Text(nextRide.mergeLine)
+                        .font(.obcMono(size: 13))
+                        .foregroundStyle(OBCTheme.inkSoft)
+                    HStack(spacing: 10) {
+                        Button("Merge") { onClose(.mergeWithNext) }
+                            .buttonStyle(.obcPrimary)
+                            .accessibilityIdentifier("rideEdit.mergeConfirm")
+                        Button("Cancel") { mergeShown = false }
+                            .buttonStyle(.obcGhost)
+                            .accessibilityIdentifier("rideEdit.mergeCancel")
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: 0) {
+                    action("Trim", selected: model.mode == .trim, id: "trim") { model.select(.trim) }
+                    action("Split here", selected: model.mode == .split, id: "split") { model.select(.split) }
+                    action("Merge with next", selected: false, id: "merge") { mergeShown = true }
+                        .disabled(nextRide == nil)
+                }
+            }
         }
         .background(OBCTheme.panel.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(OBCTheme.line).frame(height: 1) }
+        .animation(.default, value: mergeShown)
     }
 
     private func action(_ title: String, selected: Bool, id: String, perform: @escaping () -> Void) -> some View {
@@ -99,26 +125,6 @@ public struct RideEditView: View {
             onClose(.trim(range))
         } else if let time = model.splitTime {
             onClose(.split(time))
-        }
-    }
-}
-
-extension View {
-    /// "Merge with Day 2 Ulrichen (2)?" with the next ride's start and length, and one Merge
-    /// button. Shared by edit mode and the merge suggestion.
-    func rideMergeConfirmation(
-        next: RideSummary?, isPresented: Binding<Bool>, onMerge: @escaping () -> Void
-    ) -> some View {
-        confirmationDialog(
-            "Merge with \(next?.name ?? "the next ride")?",
-            isPresented: isPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Merge", action: onMerge)
-        } message: {
-            if let next {
-                Text("\(OBCFormat.rideDateLine(next.date)) · \(OBCFormat.distance(meters: next.distanceMeters))")
-            }
         }
     }
 }
