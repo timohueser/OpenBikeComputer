@@ -38,7 +38,7 @@ struct TripJoinTests {
     func gapsMeasureEveryBoundary() {
         let gaps = TripJoin.gaps([file("a", 0, 20), file("b", 20.05, 40), file("c", 43.4, 60)])
         #expect(gaps.count == 2)
-        #expect(gaps[0] < Trip.transferMinMeters)
+        #expect(gaps[0] < TripJoin.joinMeters)
         #expect(abs(gaps[1] - 3_400) < 5)
     }
 }

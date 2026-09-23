@@ -296,7 +296,9 @@ impl App {
                 crate::recorder::RecorderVerdict::Saved(ride) => {
                     let _ = self.pass.connections.ride_finalized.try_put(RideFinalized { ride });
                     self.note_trip_finish();
+                    let finished = self.recorder.ride_stats();
                     self.end_ride_session();
+                    self.land_day_done(ride, &finished);
                 }
                 crate::recorder::RecorderVerdict::Dropped => self.end_ride_session(),
                 crate::recorder::RecorderVerdict::Failed => {
@@ -1010,6 +1012,48 @@ mod tests {
             matches!(effects.catalog.take(), Some(CatalogEffect::ReadCatalog { .. })),
             "the committed ride ordered the catalog's own re-read"
         );
+    }
+
+    /// A saved ride without a trip leaves the rider on Home. A saved trip day lands its card: DAY 1
+    /// DONE, which reads Day 2's profile, and TRIP DONE after the last day.
+    #[test]
+    fn a_saved_trip_day_lands_its_card_and_other_rides_go_home() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Day 1"), summary("Day 2")], &[11, 22]);
+        app.set_trips(&[crate::trip::TripInput { id: 1, key: 42, name: "Alps", start_date: 0, stage_ids: &[11, 22] }]);
+        let ride = |app: &mut App, day: Option<u8>, ms: u32| {
+            app.activity.mode = Mode::Riding;
+            app.test_start_ride();
+            let trip = day.and_then(|day| obc_formats::ride::TripRef::new(42, day, 2));
+            app.recorder.set_origin(crate::RideOrigin { bike: obc_formats::bike::BikeType::Road, trip });
+            // Finish on the Paused page.
+            let paused = crate::screen::Transition::Push(Screen::RideControl(crate::screen::RideControl::new()));
+            crate::screen::apply(&mut app.ui.stack, paused);
+            app.apply_gesture(Gesture::Step(1));
+            app.apply_gesture(Gesture::Hold);
+            let token = quiet(app, ms).effects.recorder.take().expect("the close").token();
+            let mut outcomes = OutcomeSlots::new();
+            outcomes
+                .recorder
+                .try_put(crate::recorder::RecorderOutcome::Finalized { token, ride: u64::from(ms) })
+                .unwrap();
+            let mut facts = ExternalFacts::NONE;
+            pass_with(app, ms + 10, &[], &mut outcomes, &mut facts);
+        };
+
+        ride(&mut app, None, 100);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "no trip, no card");
+
+        ride(&mut app, Some(0), 200);
+        assert!(matches!(app.top_screen(), Screen::DayDone(card) if !card.trip_done()));
+        assert_eq!(app.derived_needs().day_profile.map(|key| key.day), Some(22), "Day 2's profile is read");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
+        assert!(app.derived_needs().day_profile.is_none(), "OK drops the need");
+
+        ride(&mut app, Some(1), 300);
+        assert!(matches!(app.top_screen(), Screen::DayDone(card) if card.trip_done()));
+        assert!(app.derived_needs().day_profile.is_none(), "no day is left to read");
     }
 
     /// Both halves are the property. Dropping the gate starts a ride with nowhere to put it;
