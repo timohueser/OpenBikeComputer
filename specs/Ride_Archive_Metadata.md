@@ -30,7 +30,7 @@ and 40-byte rows. Integers use little-endian encoding.
 | 34 | 6 | zero |
 
 Rows have strictly increasing nonzero object IDs and revisions. Duplicate IDs, other kinds,
-unknown versions, nonzero reserved bytes, invalid lengths, and trailing bytes are errors.
+unknown versions, nonzero reserved bytes, and invalid lengths are errors.
 Absence of a row means no proof. A zero timestamp still proves archive possession.
 There is no background timestamp update.
 
@@ -81,7 +81,30 @@ completes the media sync barrier before offering Resume. Route removal or
 replacement must refuse while the checkpoint depends on that exact object.
 Clearing or completing the journey releases its original dependency.
 
-The image holds all 128 ride proof rows and the optional checkpoint: at most 5,248 bytes.
+## Trip progress records
+
+The trip progress records follow the checkpoint, or the rows when there is no checkpoint. The
+record count is the remaining payload length divided by 96, at most `16`. Records are in write
+order, each with a unique nonzero trip key. `obc-ble-interface-spec.md` §7.7 has the rules. A
+record never holds a route: route removal and replacement ignore it.
+
+| Record offset | Bytes | Value |
+| --: | --: | :-- |
+| 0 | 8 | trip key, nonzero |
+| 8 | 8 | position day route ObjectId |
+| 16 | 8 | position day route Revision |
+| 24 | 4 | position metres |
+| 28 | 2 | position day, from 0 |
+| 30 | 2 | last finished day; `0xFFFF` when none |
+| 32 | 64 | 32 finish dates, `u16` days since 1970-01-01; 0 = none |
+
+A remaining length that is not a multiple of 96, more than 16 records, a zero key or a duplicate
+key is an error. Proof-row and checkpoint edits preserve the records.
+
+## Size
+
+The image holds all 128 ride proof rows, the optional checkpoint and 16 progress records: at most
+6,784 bytes.
 It has no route proof rows. Acceptance adds a route-only `ASSISTANT_ACCEPTED` catalog amendment
 to the same batch that replaces Metadata. The amendment preserves the exact source tuple and
 payload extents. Readback checks both the Metadata bytes and the accepted catalog entry.

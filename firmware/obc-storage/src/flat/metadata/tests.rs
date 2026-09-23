@@ -559,3 +559,44 @@ fn corrupt_checkpoint_metadata_does_not_block_unrelated_ride_mutations() {
     assert_eq!(check_route_change(&store, route.id), Err(Error::Invalid));
     assert!(crate::flat::route_cleanup::next(&store, 20, None).is_err());
 }
+
+fn progress(key: u64) -> TripProgress {
+    TripProgress {
+        key,
+        day: 1,
+        day_route: obc_formats::trip_progress::RouteVersion { id: 7, revision: 2 },
+        metres: 20_000,
+        last_finished: Some(0),
+        dates: [0; obc_formats::trip_progress::MAX_DAYS],
+    }
+}
+
+#[test]
+fn progress_records_survive_row_and_checkpoint_edits_and_a_remount() {
+    let disk = SparseDisk::blank(BLOCKS, 1);
+    let store = FlatStore::initialize(&disk, CARD).unwrap();
+    let route = publish(&store, ObjectKind::Route, b"route");
+    let ride = publish(&store, ObjectKind::Ride, b"ride");
+    let records = [progress(3), progress(1)];
+    write_progress(&store, &records).unwrap();
+    write_proof(&store, ride).unwrap();
+    write_checkpoint(&store, CARD, store.sequence(), None, Some(checkpoint(route, None))).unwrap();
+    disk.reboot();
+    let store = FlatStore::mount(&disk);
+    let mut read = Vec::new();
+    read_progress(&store, |p| read.push(p)).unwrap();
+    assert_eq!(read, records, "write order stays");
+    let mut bytes = [0; MAX_LEN];
+    let mut image = Metadata::new(&store).load(&store, &mut bytes).unwrap();
+    assert_eq!(image.rows().count(), 1);
+    image.set_checkpoint(None).unwrap();
+    assert_eq!(image.progress().collect::<Vec<_>>(), records);
+    assert_eq!(image.set_progress(&[progress(3), progress(3)]), Err(Error::Invalid), "one record per key");
+
+    let len = image.bytes().len();
+    let mut torn = image.bytes()[..len - 1].to_vec();
+    assert!(Image::decode(&mut torn, len - 1).is_err());
+    let mut duplicate = image.bytes().to_vec();
+    duplicate[len - RECORD_LEN..len - RECORD_LEN + 8].copy_from_slice(&3u64.to_le_bytes());
+    assert!(Image::decode(&mut duplicate, len).is_err());
+}
