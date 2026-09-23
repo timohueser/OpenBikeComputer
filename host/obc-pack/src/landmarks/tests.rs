@@ -175,7 +175,7 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
 }
 
 #[test]
-fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_photo() {
+fn offline_compiler_and_filtered_photo_requests_preserve_production_order() {
     let root = obcm_testkit::scratch::scratch_dir("landmarks", "compile");
     let mut sources = Vec::new();
     let mut pin = |path: &str, url: &str, bytes: Vec<u8>| {
@@ -197,15 +197,24 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
     pin("locales/Q29.json", "https://www.wikidata.org/wiki/Special:EntityData/Q29.json",
         serde_json::to_vec(&json!({"entities":{"Q29":{"id":"Q29", "claims":{"P37":[{"mainsnak":{"datavalue":{"value":{"id":"Q1321"}}}}]}}}})).unwrap());
     let mut places = Vec::new();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2).write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+    let usable_photo = encoded.into_inner();
     // One `wbgetentities` response holds both places, the way the capture batches them.
     let batch = "entities/batch-0.json";
     let mut entities = serde_json::Map::new();
-    for qid in ["Q1", "Q2"] {
+    for qid in ["Q1", "Q2", "Q3"] {
+        let filenames: &[&str] = match qid {
+            "Q1" => &["Settled.png"],
+            "Q2" => &["A-rejected.png", "B-fallback.png"],
+            _ => &["Unrelated.png"],
+        };
         let entity = json!({"id":qid,"labels":{"de":{"value":"Burg"}, "es":{"value":"Castillo"}},
         "sitelinks":{"dewiki":{"title":"Burg"}, "enwiki":{"title":"Castle"}, "eswiki":{"title":"Castillo"}},"claims":{
             "P17":[{"mainsnak":{"datavalue":{"value":{"id":"Q29"}}}}],
             "P31":[{"rank":"preferred","mainsnak":{"datavalue":{"value":{"id":"Q999"}}}},
                 {"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q35666"}}}}],
+            "P18":filenames.iter().map(|filename| json!({"mainsnak":{"datavalue":{"value":filename}}})).collect::<Vec<_>>(),
             "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]
         }});
         entities.insert(qid.into(), entity);
@@ -235,7 +244,32 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
                 json!({"language":language,"title":title,"revision":42,"url":url,"path":path,"html_path":html_path}),
             );
         }
-        places.push(json!({"qid":qid,"entity_path":batch,"articles":articles,"images":[]}));
+        let mut images = Vec::new();
+        for filename in filenames {
+            let metadata_path = format!("photos/{qid}-{filename}.json");
+            let original = match (qid, *filename) {
+                ("Q1", _) => Some(usable_photo.clone()),
+                ("Q2", "A-rejected.png") => Some(b"not an image".to_vec()),
+                _ => None,
+            };
+            let sha1 = original.as_ref().map(|bytes| {
+                <sha1::Sha1 as sha1::Digest>::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+            });
+            let metadata = json!({"query":{"pages":{"1":{"title":format!("File:{filename}"),"imageinfo":[{
+                "url":format!("https://upload.wikimedia.org/{filename}"),"descriptionurl":format!("https://commons.wikimedia.org/wiki/File:{filename}"),
+                "timestamp":"2026-01-01T00:00:00Z","sha1":sha1.clone().unwrap_or_else(|| "0".repeat(40)),
+                "extmetadata":{"Artist":{"value":"Example"},"Credit":{"value":"Own work"},"LicenseUrl":{"value":"https://creativecommons.org/licenses/by/4.0/"}}
+            }]}}}});
+            pin(&metadata_path, "https://commons.wikimedia.org/w/api.php", serde_json::to_vec(&metadata).unwrap());
+            let mut image = json!({"source":"P18","metadata_path":metadata_path});
+            if let Some(bytes) = original {
+                let path = format!("photos/{qid}-{filename}");
+                pin(&path, &format!("https://upload.wikimedia.org/{filename}"), bytes);
+                image["path"] = path.into();
+            }
+            images.push(image);
+        }
+        places.push(json!({"qid":qid,"entity_path":batch,"articles":articles,"images":images}));
     }
     pin(batch, "https://www.wikidata.org/", serde_json::to_vec(&json!({"entities":entities})).unwrap());
     let manifest = root.join("manifest.json");
@@ -243,28 +277,34 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
     let boundary = root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
     let first = compile(&manifest, &boundary, &root.join("first"), false).unwrap();
-    assert_eq!(first.counts.candidates, 2);
-    assert_eq!(first.counts.texts, 2);
-    assert_eq!(first.counts.images, 0);
+    assert_eq!(first.counts.candidates, 3);
+    assert_eq!(first.counts.texts, 3);
+    assert_eq!(first.counts.images, 1);
     assert_eq!(first.counts.mapped_approaches, None);
-    assert_eq!(first.records.iter().map(|record| record.qid.as_str()).collect::<Vec<_>>(), ["Q1", "Q2"]);
+    assert_eq!(first.records.iter().map(|record| record.qid.as_str()).collect::<Vec<_>>(), ["Q1", "Q2", "Q3"]);
     assert!(first.records.iter().all(|record| record.default_language == "es"
-        && record.photo.is_none()
         && record.variants.len() == 2
         && record.fallback_sources == ["Q29"]));
-    assert!(first
-        .omissions
-        .iter()
-        .all(|omission| omission.reason == "no_usable_captured_image" || omission.reason.starts_with("en:")));
+    assert!(first.records[0].photo.is_some());
+    assert!(first.records[1..].iter().all(|record| record.photo.is_none()));
+    assert!(first.omissions.iter().all(|omission| omission.reason == "no_usable_captured_image"
+        || omission.reason == "image_format"
+        || omission.reason.starts_with("en:")));
     assert!(first
         .records
         .iter()
         .all(|record| record.variants.iter().map(|v| v.language.as_str()).collect::<Vec<_>>() == ["de", "es"]));
     compile(&manifest, &boundary, &root.join("second"), false).unwrap();
     assert_eq!(fs::read(root.join("first/content.json")).unwrap(), fs::read(root.join("second/content.json")).unwrap());
+    let full_output = root.join("full-requests");
+    let full = photo_requests(&manifest, &boundary, &full_output, None).unwrap();
     let request_output = root.join("requests");
-    let requests = photo_requests(&manifest, &boundary, &request_output, Some(&BTreeSet::from(["Q1".into()]))).unwrap();
-    assert!(requests.requests.is_empty());
+    let requests = photo_requests(&manifest, &boundary, &request_output, Some(&BTreeSet::from(["Q2".into()]))).unwrap();
+    let expected: Vec<_> = full.requests.iter().filter(|request| request.qid == "Q2").collect();
+    assert_eq!(full.requests.iter().map(|request| request.qid.as_str()).collect::<Vec<_>>(), ["Q2", "Q3"]);
+    assert_eq!(requests.requests.len(), 1);
+    assert_eq!(requests.requests[0].metadata_path, "photos/Q2-B-fallback.png.json");
+    assert_eq!(serde_json::to_value(&requests.requests).unwrap(), serde_json::to_value(expected).unwrap());
     assert_eq!(fs::read_dir(&request_output).unwrap().count(), 1);
     assert!(request_output.join(PHOTO_REQUESTS_DOC).is_file());
     fs::write(root.join(batch), b"changed source").unwrap();
