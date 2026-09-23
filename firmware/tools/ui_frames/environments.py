@@ -11,6 +11,7 @@ frames expect: the two ride fixtures, the trip folder and the imported routes ar
 
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import struct
@@ -160,6 +161,26 @@ def day_route(stage: Stage) -> Staging:
     return Staging(("--routes-dir", str(where)))
 
 
+def long_route(stage: Stage) -> Staging:
+    """A synthetic day of about 80 km across the Grimsel map and beyond, imported through the
+    simulator's GPX path. It fits the route overview's map band past the band's map scale ceiling,
+    so page 1 draws the track on the plain page.
+    """
+    where = stage.dir("long-route")
+    track = where / "long-day.gpx"
+    points = []
+    for i in range(61):
+        t = i / 60
+        lat = 46.40 + 0.32 * t + 0.04 * math.sin(t * 6 * math.pi)
+        lon = 8.05 + 0.57 * t
+        ele = 1500 + 800 * math.sin(t * 3 * math.pi)
+        points.append(f'<trkpt lat="{lat:.5f}" lon="{lon:.5f}"><ele>{ele:.0f}</ele></trkpt>')
+    track.write_text("<gpx><trk><trkseg>" + "".join(points) + "</trkseg></trk></gpx>")
+    stage.run(["--import", str(track), "--routes-dir", str(where)])
+    track.unlink()
+    return Staging(("--routes-dir", str(where)))
+
+
 def monaco_route(stage: Stage) -> Staging:
     """The real Monaco loop, imported at run time so no second `.obcr` is committed to re-cut on a
     format bump: a ~2.7 km line across central Monaco whose 300 m corridor catches real Resupply,
@@ -228,6 +249,7 @@ ENVIRONMENTS = {
     "eta-route": eta_route,
     "eta-flat": eta_flat,
     "day-route": day_route,
+    "long-route": long_route,
     "monaco-route": monaco_route,
     "journey": journey,
     "elevation": elevation,

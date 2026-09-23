@@ -25,7 +25,7 @@ use obc_render::{
 use super::vocab::band::{ElevationBand, PeakLabel};
 use super::vocab::chrome::{empty_state, stroke2, title_chrome, title_frame, LIST_TOP, TITLE_BAR_H};
 use super::vocab::fmt::{duration_hms, write_distance_split};
-use super::vocab::marquee::Fitted;
+use super::vocab::marquee::{fit, Fitted};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use super::vocab::track_map::{draw_track_map, Track};
@@ -253,9 +253,10 @@ impl RouteOverviewScreen {
     }
 }
 
-/// The route's name, fitted to the title bar.
+/// The route's name, cut to the title bar. It does not scroll: a scroll step on a map base would
+/// render the map band again on every step.
 fn route_title(rx: &Render, summary: &RouteSummary) -> Fitted {
-    rx.marquee.fit(&summary.name, rx.w - 28, Font::Body, Some(rect(0, 0, rx.w, TITLE_BAR_H)))
+    fit(&summary.name, rx.w - 28, Font::Body)
 }
 
 /// A whole number of metres or feet, in the rider's units.
