@@ -76,7 +76,7 @@ beforeAll(async () => {
 describe("gpxToObcr", () => {
     it("reproduces the native converter's OBCR byte-for-byte, waypoints and all", async () => {
         const gpx = text("host/obc-vectors/src/route-source.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME, 0);
         expectSameBytes(obcr, vector("route-waypoints.obcr"), "route-waypoints.obcr");
     });
 
@@ -91,15 +91,24 @@ describe("gpxToObcr", () => {
             .filter((line) => !line.trimStart().startsWith("<wpt "))
             .join("\n");
 
-        const obcr = await gpxToObcr(new TextEncoder().encode(plain), ROUTE_NAME);
+        const obcr = await gpxToObcr(new TextEncoder().encode(plain), ROUTE_NAME, 0);
         expectSameBytes(obcr, vector("route-plain.obcr"), "route-plain.obcr");
+    });
+
+    it("writes the picked bike type into the header and changes nothing else", async () => {
+        const gpx = new TextEncoder().encode(text("host/obc-vectors/src/route-source.gpx"));
+        const road = await gpxToObcr(gpx, ROUTE_NAME, 0);
+        const mtb = await gpxToObcr(gpx, ROUTE_NAME, 2);
+        // Byte 7 is the OBCR header's bike type.
+        expect(mtb[7]).toBe(2);
+        expect(Uint8Array.from(mtb).fill(0, 7, 8)).toEqual(Uint8Array.from(road).fill(0, 7, 8));
     });
 
     it("returns a JS-owned copy that survives later conversions", async () => {
         const gpx = new TextEncoder().encode(text("host/obc-vectors/src/route-source.gpx"));
-        const first = await gpxToObcr(gpx, ROUTE_NAME);
+        const first = await gpxToObcr(gpx, ROUTE_NAME, 0);
         const snapshot = Uint8Array.from(first);
-        await gpxToObcr(gpx, "Something Else"); // reallocates + grows wasm memory
+        await gpxToObcr(gpx, "Something Else", 0); // reallocates + grows wasm memory
         expect(first).toEqual(snapshot);
     });
 });
@@ -130,7 +139,7 @@ describe("routeTrack", () => {
         }
         // Round-trip a fresh conversion: a stored point count equals the read-back count.
         const gpx = text("host/obc-vectors/src/route-source.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME, 0);
         const view = new DataView(obcr.buffer, obcr.byteOffset, obcr.byteLength);
         expect((await routeTrack(obcr)).length).toBe(view.getUint32(32, true));
     });
@@ -173,7 +182,7 @@ describe("routeWaypoints", () => {
         // The other way the device gets waypoints: `gpxToObcr` on a GPX with `<wpt>`s. The
         // fixture is byte-pinned to that conversion above, so the tables must agree exactly.
         const gpx = text("host/obc-vectors/src/route-source.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME, 0);
         expect(await routeWaypoints(obcr)).toEqual(await routeWaypoints(vector("route-waypoints.obcr")));
     });
 
@@ -196,7 +205,7 @@ describe("captured planner exports", () => {
      */
     it("reads the komoot export's waypoints the way the Rust importer does", async () => {
         const gpx = text("fixtures/sources/route-import/komoot-schwarzwald.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), "Schwarzwald");
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), "Schwarzwald", 0);
         const wps = await routeWaypoints(obcr);
 
         expect(wps.length).toBe(gpx.split("<wpt ").length - 1);
@@ -232,10 +241,17 @@ describe("failures", () => {
     }
 
     it("tells an empty file, a non-GPX file and a track-less GPX apart", async () => {
-        expect((await failure(() => gpxToObcr(new Uint8Array(), "x"))).code).toBe("empty-file");
-        expect((await failure(() => gpxToObcr(new Uint8Array([0, 1, 2, 3]), "x"))).code).toBe("not-gpx");
-        const noTrack = await failure(() => gpxToObcr(bytes('<?xml version="1.0"?><gpx></gpx>'), "x"));
+        expect((await failure(() => gpxToObcr(new Uint8Array(), "x", 0))).code).toBe("empty-file");
+        expect((await failure(() => gpxToObcr(new Uint8Array([0, 1, 2, 3]), "x", 0))).code).toBe("not-gpx");
+        const noTrack = await failure(() => gpxToObcr(bytes('<?xml version="1.0"?><gpx></gpx>'), "x", 0));
         expect(noTrack.code).toBe("gpx-no-track-points");
+    });
+
+    it("refuses a bike type the device does not have", async () => {
+        const gpx = bytes(text("host/obc-vectors/src/route-source.gpx"));
+        for (const bike of [4, -1, 258, 2.7, NaN]) {
+            expect((await failure(() => gpxToObcr(gpx, "x", bike))).code, String(bike)).toBe("internal");
+        }
     });
 
     it("tells an empty file from bytes that are not a finished ride", async () => {
@@ -254,11 +270,11 @@ describe("failures", () => {
      * a sentence long enough to be a sentence, mentioning the thing it is complaining about.
      */
     it("explains each failure instead of saying the file is invalid", async () => {
-        const noTrack = await failure(() => gpxToObcr(bytes("<gpx></gpx>"), "x"));
+        const noTrack = await failure(() => gpxToObcr(bytes("<gpx></gpx>"), "x", 0));
         expect(noTrack.message).toContain("<trkpt>");
         expect(noTrack.message).toMatch(/re-export/i);
 
-        const notGpx = await failure(() => gpxToObcr(new Uint8Array([0xff, 0xd8, 0xff]), "x"));
+        const notGpx = await failure(() => gpxToObcr(new Uint8Array([0xff, 0xd8, 0xff]), "x", 0));
         expect(notGpx.message).toMatch(/\.fit|\.tcx/);
 
         const shortLog = await failure(() => trackToGpx(new Uint8Array(9), "x"));
@@ -281,7 +297,7 @@ describe("failures", () => {
         }
         parts.push("</trkseg></trk></gpx>");
 
-        const e = await failure(() => gpxToObcr(bytes(parts.join("")), "Too long"));
+        const e = await failure(() => gpxToObcr(bytes(parts.join("")), "Too long", 0));
         expect(e.code).toBe("gpx-too-many-points");
         expect(e.message).toContain("65281");
         expect(e.message).toMatch(/stages|density/);

@@ -19,6 +19,34 @@ import { viewOf } from "../usb/protocol";
 /** The route name field's cap, and the OBCR header's own. */
 export const ROUTE_NAME_MAX = 48;
 
+/** The device's bike types in the device's order. The index is the OBCR header's type byte. */
+export const BIKE_TYPES = ["Road", "Gravel", "MTB", "Touring"] as const;
+
+const BIKE_TYPE_KEY = "obcm.routeBikeType";
+
+/** This page's pick, which holds when storage is denied. */
+let picked: number | null = null;
+
+/** The bike type last picked for a dropped route. Road when there is no pick. */
+export function rememberedBikeType(): number {
+    if (picked !== null) return picked;
+    try {
+        const bike = Number(globalThis.localStorage?.getItem(BIKE_TYPE_KEY));
+        return Number.isInteger(bike) && bike >= 0 && bike < BIKE_TYPES.length ? bike : 0;
+    } catch {
+        return 0;
+    }
+}
+
+export function rememberBikeType(bike: number): void {
+    picked = bike;
+    try {
+        globalThis.localStorage?.setItem(BIKE_TYPE_KEY, String(bike));
+    } catch {
+        // The pick still applies to this page; denied storage means the next visit starts at Road.
+    }
+}
+
 /** Complete current OBCR header, including waypoint and Visit descriptors. */
 const HEADER_LEN = 160;
 const MAGIC = 0x4f424352; // "OBCR", big-endian read of the four ASCII bytes
@@ -80,16 +108,16 @@ export interface PreparedRoute {
 }
 
 /**
- * Convert a dropped file to OBCR and read back what it contains.
+ * Convert a dropped file to an OBCR typed `bike` and read back what it contains.
  *
  * The route's name is the file's stem, trimmed to the format's 48 **bytes** — the OBCR header
  * measures the field in bytes, so trimming by JavaScript string length would produce a name the
  * converter then truncates differently. Anything the conversion rejects arrives as a `ConvertError`
  * with a message written for a rider; it is not re-wrapped, because that message is already right.
  */
-export async function prepareRoute(file: File): Promise<PreparedRoute> {
+export async function prepareRoute(file: File, bike: number): Promise<PreparedRoute> {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const obcr = await gpxToObcr(bytes, routeNameFrom(file.name));
+    const obcr = await gpxToObcr(bytes, routeNameFrom(file.name), bike);
     return { obcr, header: decodeRouteHeader(obcr), sourceName: file.name };
 }
 

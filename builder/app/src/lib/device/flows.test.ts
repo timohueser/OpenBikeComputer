@@ -311,7 +311,7 @@ describe("route upload", () => {
             const gpx = readFileSync(join(ROOT, "host/obc-vectors/src/route-source.gpx"));
             // The route's name comes from the file's stem, which is what makes this comparable to
             // the checked-in vector: same input, same name, same bytes.
-            const prepared = await prepareRoute(new File([gpx], "Vector Loop.gpx"));
+            const prepared = await prepareRoute(new File([gpx], "Vector Loop.gpx"), 0);
             expect(prepared.obcr).toEqual(vector("route-waypoints.obcr"));
             expect(prepared.header).toMatchObject({
                 name: "Vector Loop",
@@ -333,7 +333,7 @@ describe("route upload", () => {
 
     it("rejects a file that is not a route before anything is sent", async () => {
         await withDevice({}, async ({ client, device }) => {
-            await expect(prepareRoute(new File([new Uint8Array(64)], "notes.txt"))).rejects.toMatchObject({
+            await expect(prepareRoute(new File([new Uint8Array(64)], "notes.txt"), 0)).rejects.toMatchObject({
                 name: "ConvertError",
             });
             expect(device.entries).toEqual([]);

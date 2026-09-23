@@ -6,6 +6,9 @@
   what the tile shows is what the device will show, and a file that converts to something
   unexpected is caught before it is on the card rather than on a hill.
 
+  The bike type goes into the route, and loading the route sets the device's type, so the pick is
+  remembered: a rider who rides MTB is not switched to Road by every drop.
+
   A send is a `PUT` and nothing else. There is no "keep on device" choice: retention is not on the
   cable — no command sets it and a catalog entry carries no expiry — so a control offering it would
   be a promise this link cannot keep.
@@ -13,7 +16,13 @@
 <script lang="ts">
     import { formatBytes } from "../../lib/format";
     import { DeviceJob } from "../../lib/device/job.svelte";
-    import { prepareRoute, type PreparedRoute } from "../../lib/device/route";
+    import {
+        BIKE_TYPES,
+        prepareRoute,
+        rememberBikeType,
+        rememberedBikeType,
+        type PreparedRoute,
+    } from "../../lib/device/route";
     import { sendRoute } from "../../lib/device/write";
     import { initConvert } from "../../lib/convert/bridge";
     import type { FlatStoreClient } from "../../lib/usb/client";
@@ -45,19 +54,39 @@
 
     const job = new DeviceJob("route");
     let route = $state<PreparedRoute | null>(null);
+    let dropped: File | null = null;
+    let bike = $state(rememberedBikeType());
     let readError = $state<string | null>(null);
     let dragging = $state(false);
     let picker = $state<HTMLInputElement>();
+    // Conversions can overlap (a new drop, a type change); only the latest one may land.
+    let generation = 0;
 
     async function accept(file: File) {
+        const mine = ++generation;
+        dropped = file;
         route = null;
         readError = null;
         job.reset();
         try {
-            route = await prepareRoute(file);
+            const prepared = await prepareRoute(file, bike);
+            if (mine === generation) route = prepared;
         } catch (cause) {
-            readError = cause instanceof Error ? cause.message : String(cause);
+            if (mine === generation) readError = cause instanceof Error ? cause.message : String(cause);
         }
+    }
+
+    function forget() {
+        generation++;
+        dropped = null;
+        route = null;
+    }
+
+    function pickBike(event: Event) {
+        bike = Number((event.currentTarget as HTMLSelectElement).value);
+        rememberBikeType(bike);
+        // The type is written at conversion, so a dropped file is converted again.
+        if (dropped) void accept(dropped);
     }
 
     function take(files: File[]) {
@@ -92,7 +121,7 @@
             (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,
         );
         if (!result) return;
-        route = null;
+        forget();
         onsent?.();
     }
 
@@ -160,7 +189,7 @@
                 >
                     Send route to device
                 </button>
-                <button type="button" class="btn ghostbtn" disabled={job.running} onclick={() => (route = null)}>
+                <button type="button" class="btn ghostbtn" disabled={job.running} onclick={forget}>
                     Discard
                 </button>
             </div>
@@ -172,6 +201,15 @@
             or click to choose{#if onmultiple}&nbsp;· several files become a trip{/if}
         </p>
     {/if}
+
+    <label class="bike small">
+        Bike type
+        <select value={bike} disabled={job.running} onchange={pickBike}>
+            {#each BIKE_TYPES as name, index (name)}
+                <option value={index}>{name}</option>
+            {/each}
+        </select>
+    </label>
 
     {#if readError}
         <p class="note small" role="alert">{readError}</p>
@@ -290,6 +328,14 @@
         background: transparent;
         color: var(--ink);
         border-color: var(--wood);
+    }
+
+    .bike {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+        color: var(--ink-soft);
     }
 
     .note {
