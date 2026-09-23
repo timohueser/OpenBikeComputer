@@ -145,6 +145,15 @@ struct RootView: View {
         } message: {
             Text("OBC imports GPX and TCX route files. That one looked like something else.")
         }
+        // A trip change that did not go as asked says so, in one line, where the rider made it.
+        .alert(
+            mainModel.tripNotice ?? "",
+            isPresented: Binding(
+                get: { mainModel.tripNotice != nil },
+                set: { if !$0 { mainModel.tripNotice = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        }
         // A re-import whose name matches a saved route, such as an edited tour: update that route
         // in place, or keep both.
         .confirmationDialog(

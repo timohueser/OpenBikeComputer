@@ -33,7 +33,10 @@ struct TripLibraryStoreTests {
     func roundTripsTheWholeTrip(_ kind: StoreKind) {
         let store = makeStore(kind)
         var t = trip("t1")
+        t.renameDay(1, to: "Brig")
+        t.reverse()
         t.renameDay(0, to: "Andermatt")
+        t.uploadedKey = 42
         t.startDay = CivilDay(daysSince1970: 20_725)
         let link = DeviceRouteLink(serial: "OBC-001", storeID: "000000000000000000000000a1b2c3d4", objectID: DeviceObjectID(5))
         t.deviceLink = link
@@ -41,6 +44,7 @@ struct TripLibraryStoreTests {
         t.dayCopies = [nil, TripDayCopy(link: link, uploadedCRC32: 7)]
         store.saveTrip(t)
 
+        #expect(t.startName == "Brig")
         #expect(store.trips() == [t])
     }
 

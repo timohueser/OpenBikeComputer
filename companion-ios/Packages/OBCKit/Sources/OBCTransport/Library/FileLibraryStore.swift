@@ -469,8 +469,10 @@ private struct TripFile: Codable {
     var line: ImportedRouteDTO
     var pieceStarts: [Int]
     var dayEnds: [DayEndDTO]
+    var startName: String?
     var dayCopies: [DeviceCopyDTO?]
     var device: DeviceCopyDTO?
+    var uploadedKey: UInt64?
     var addedAt: Date
     var editedAt: Date
 
@@ -484,6 +486,8 @@ private struct TripFile: Codable {
         line = ImportedRouteDTO(ImportedRoute(points: trip.line))
         pieceStarts = trip.pieceStarts
         dayEnds = trip.dayEnds.map(DayEndDTO.init)
+        startName = trip.startName
+        uploadedKey = trip.uploadedKey
         dayCopies = trip.dayCopies.map { $0.map { DeviceCopyDTO(link: $0.link, crc32: $0.uploadedCRC32) } }
         device = trip.deviceLink.map { DeviceCopyDTO(link: $0, crc32: trip.uploadedCRC32) }
         addedAt = trip.addedAt
@@ -500,9 +504,11 @@ private struct TripFile: Codable {
             line: line.domain.points,
             pieceStarts: pieceStarts,
             dayEnds: dayEnds.map(\.domain),
+            startName: startName,
             dayCopies: dayCopies.map { $0.map { TripDayCopy(link: $0.link, uploadedCRC32: $0.crc32) } },
             deviceLink: device?.link,
             uploadedCRC32: device?.crc32,
+            uploadedKey: uploadedKey,
             addedAt: addedAt,
             editedAt: editedAt
         )

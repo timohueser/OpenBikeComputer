@@ -89,6 +89,20 @@ struct TripFlowModelTests {
     }
 
     @Test
+    func aRouteTooShortToBeADayStaysARouteAndTheRiderIsTold() {
+        let (model, library) = makeModel()
+        let tiny = [0.0, 0.00001].map { RoutePoint(coordinate: Coordinate(latitude: 43, longitude: -89 + $0)) }
+        model.addImportedRoute(PlannedRouteRecord(
+            summary: RouteSummary(id: RouteID("tiny"), name: "Tiny", distanceMeters: 1, elevationGainMeters: 0),
+            route: ImportedRoute(points: tiny), sourceFileName: "tiny.gpx", sourceFileData: Data()))
+
+        #expect(model.fileRoute(RouteID("tiny"), into: .existing(tripID)) == nil)
+        #expect(model.trip(tripID)?.dayCount == 2)
+        #expect(library.plannedRoutes().contains { $0.id == RouteID("tiny") })
+        #expect(model.tripNotice == "\u{201C}Tiny\u{201D} is too short to be a day. It stays a route.")
+    }
+
+    @Test
     func reverseKeepsTheDaysAndMintsANewKey() {
         let (model, library) = makeModel()
         let before = model.trip(tripID)!

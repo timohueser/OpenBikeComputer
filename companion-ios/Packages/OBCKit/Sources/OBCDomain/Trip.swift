@@ -61,6 +61,9 @@ public struct Trip: Identifiable, Equatable, Sendable {
     public internal(set) var pieceStarts: [Int]
     /// One per day, in ride order. The last one sits at the end of the line.
     public internal(set) var dayEnds: [DayEnd]
+    /// The name of the place where the line starts. A reverse swaps it with the last day end's
+    /// name, so no name is lost.
+    public internal(set) var startName: String?
     /// The device copy of each day route, by day index. A missing or nil entry has no copy.
     public var dayCopies: [TripDayCopy?]
     /// The device copy of the trip object: the same link a planned route keeps. Only meaningful
@@ -68,6 +71,9 @@ public struct Trip: Identifiable, Equatable, Sendable {
     public var deviceLink: DeviceRouteLink?
     /// The CRC-32 of the trip object the device last committed. Nil reads as outdated.
     public var uploadedCRC32: UInt32?
+    /// The trip key of the trip object the device last committed. When it differs from ``key``,
+    /// the device holds progress for the old direction under that object.
+    public var uploadedKey: UInt64?
     /// When the trip entered the library, which is the newest-first list order.
     public var addedAt: Date
     /// When the rider last changed the trip. Import offers to add a file to the most recently
@@ -83,9 +89,11 @@ public struct Trip: Identifiable, Equatable, Sendable {
         line: [RoutePoint] = [],
         pieceStarts: [Int] = [],
         dayEnds: [DayEnd] = [],
+        startName: String? = nil,
         dayCopies: [TripDayCopy?] = [],
         deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
+        uploadedKey: UInt64? = nil,
         addedAt: Date,
         editedAt: Date? = nil
     ) {
@@ -97,9 +105,11 @@ public struct Trip: Identifiable, Equatable, Sendable {
         self.line = line
         self.pieceStarts = pieceStarts
         self.dayEnds = dayEnds
+        self.startName = startName
         self.dayCopies = dayCopies
         self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
+        self.uploadedKey = uploadedKey
         self.addedAt = addedAt
         self.editedAt = editedAt ?? addedAt
     }
@@ -139,8 +149,9 @@ public struct TripStats: Equatable, Sendable {
         self.dayCount = dayCount
     }
 }
+
 /// One entry of the device's trip catalog: the durable trip object id plus the summed display
-/// fields the device computed over its resolvable stages. Deliberately not a `TripRecord`: the
+/// fields the device computed over its resolvable day routes. Deliberately not a `Trip`: the
 /// catalog is per-connection reconcile state from the connected device, so the bare id is
 /// unambiguous here, and its one consumer compares those ids against a trip's device link. It
 /// never feeds list rows. The exact mirror of ``RouteCatalogEntry``.

@@ -35,6 +35,9 @@ public final class MainScreenModel {
     public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
     /// Every saved trip, newest first.
     public private(set) var trips: [Trip] = []
+    /// One line for the rider after a trip change that did not go as asked: a dropped day end,
+    /// or a route too short to be a day. The screen clears it when shown.
+    public var tripNotice: String?
     /// The Planned tab rows: trip cards and loose route cards, newest first. A route filed in
     /// a trip shows only inside that trip; `routes` keeps every planned summary.
     public private(set) var plannedItems: [PlannedItem] = []
@@ -615,6 +618,7 @@ public final class MainScreenModel {
             guard !present || crcMismatch else { continue }
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
+            trip.uploadedKey = nil
             library.saveTrip(trip)
         }
         adoptTripsByContent(scope: scope, catalog: catalog)
@@ -651,6 +655,8 @@ public final class MainScreenModel {
             // The entry's CRC is what the device holds, so the trip reads as out of date and
             // the next send replaces by id.
             trip.uploadedCRC32 = entry.crc32
+            // Both fingerprints the entry can match encode the trip's own key.
+            trip.uploadedKey = trip.key
             library.saveTrip(trip)
             claimed.insert(entry.id)
         }
@@ -717,6 +723,21 @@ public final class MainScreenModel {
         guard let trip = trip(id), let plan = planTripUpload(id) else { return nil }
         let days = dayRoutes(of: trip)
         var steps: [TripUploadModel.QueueStep] = []
+        // A reversed trip has a new key. The device must not keep the old trip object, with the
+        // old key's progress, over day routes that already hold the new days, so it goes first.
+        if let link = trip.deviceLink, let scope = connectedScope, link.matches(scope),
+            let uploadedKey = trip.uploadedKey, uploadedKey != trip.key {
+            steps.append(.command(title: "Old trip details") { [weak self] in
+                guard let self else { return }
+                try await transport.deleteTrip(link.objectID)
+                guard var trip = self.trip(id) else { return }
+                trip.deviceLink = nil
+                trip.uploadedCRC32 = nil
+                trip.uploadedKey = nil
+                library.saveTrip(trip)
+                reloadTrips()
+            })
+        }
         for dayPlan in plan.days {
             let day = dayPlan.day
             let title = days[day].name
@@ -742,12 +763,11 @@ public final class MainScreenModel {
         let tripProven = provenTripCommittedCRC(for: trip)
         let tripObjectUpToDate = tripProven != nil && tripProven == currentTripPayloadCRC(for: trip)
         if !(plan.allDaysSkip && tripObjectUpToDate) {
-            let target: DeviceObjectID? =
-                if case .replace(let objectID) = plan.tripObject { objectID } else { nil }
             steps.append(.transfer(
                 title: "Trip details",
                 makeTransfer: { [weak self] in
-                    guard let self, let blob = self.makeTripBlob(id, target: target) else { return nil }
+                    // The target is read at execution time: the old trip object may be gone.
+                    guard let self, let blob = self.makeTripBlob(id) else { return nil }
                     return (self.transport.uploadTrip(blob), CRC32.checksum(blob.payload))
                 },
                 commit: { [weak self] objectID, crc in
@@ -774,8 +794,12 @@ public final class MainScreenModel {
 
     /// Built at execution time, after the day routes committed, so it carries their fresh
     /// device ids. Nil until every day has a copy.
-    private func makeTripBlob(_ tripID: TripID, target: DeviceObjectID?) -> TripBlob? {
+    private func makeTripBlob(_ tripID: TripID) -> TripBlob? {
         guard let trip = trip(tripID), let object = currentTripObject(for: trip) else { return nil }
+        let target: DeviceObjectID? = {
+            guard let link = trip.deviceLink, let scope = connectedScope, link.matches(scope) else { return nil }
+            return link.objectID
+        }()
         return TripBlob(
             name: trip.name, deviceStageIDs: object.days.map(\.routeID),
             payload: TripObjectCodec.encode(object), targetObjectID: target)
@@ -832,11 +856,13 @@ public final class MainScreenModel {
         if let scope = connectedScope, let objectID {
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             trip.uploadedCRC32 = crc32
+            trip.uploadedKey = trip.key
             // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
             deviceTripCRCs[objectID] = crc32
         } else {
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
+            trip.uploadedKey = nil
         }
         library.saveTrip(trip)
         reloadTrips()
@@ -870,7 +896,7 @@ public final class MainScreenModel {
     /// its device progress starts empty.
     public func reverseTrip(_ id: TripID) {
         guard var trip = trip(id) else { return }
-        trip.reverse()
+        tell(dropped: trip.reverse())
         saveEditedTrip(trip)
         nameDayEnds(id)
     }
@@ -921,10 +947,11 @@ public final class MainScreenModel {
     // MARK: Create & file
 
     /// The one join path: route files in ride order become one trip, one day per file, with
-    /// the day ends on the file boundaries. Nil when no file has a line.
+    /// the day ends on the file boundaries. A file shorter than a day adds nothing. Nil when no
+    /// file is a day.
     @discardableResult
     public func createTrip(name: String, files: [[RoutePoint]], bikeType: BikeType? = nil) -> TripID? {
-        let lines = files.filter { $0.count > 1 }
+        let lines = files.filter(Trip.isDay)
         guard !lines.isEmpty else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trip = Trip.joining(
@@ -937,49 +964,85 @@ public final class MainScreenModel {
         return trip.id
     }
 
-    /// Add a route file to a trip as its new last day.
-    public func appendToTrip(_ id: TripID, file: [RoutePoint]) {
-        guard var trip = trip(id), file.count > 1 else { return }
-        trip.append(file)
+    /// Add a route file to a trip as its new last day. False when the file is too short to be a
+    /// day, which changes nothing.
+    @discardableResult
+    public func appendToTrip(_ id: TripID, file: [RoutePoint]) -> Bool {
+        guard var trip = trip(id), Trip.isDay(file) else { return false }
+        tell(dropped: trip.append(file))
         saveEditedTrip(trip)
         nameDayEnds(id)
+        return true
     }
 
-    /// Group loose routes into one trip, in the proposed join order. The routes move into the
-    /// trip: they leave the library, and the trip keeps no link to them.
+    /// Group routes into one trip, in the proposed join order. Each route moves into the trip
+    /// as one day and leaves the library; its device copy becomes that day's copy, so the upload
+    /// replaces it in place. A route too short to be a day stays a route.
     @discardableResult
     public func groupIntoTrip(_ routeIDs: [RouteID], name: String) -> TripID? {
-        let records = routeIDs.compactMap { plannedRecords[$0] }.filter { $0.route.points.count > 1 }
-        guard !records.isEmpty else { return nil }
-        let order = TripJoin.proposedOrder(records.map(\.joinFile))
-        let ordered = order.map { records[$0] }
+        let records = routeIDs.compactMap { plannedRecords[$0] }
+        let days = records.filter { Trip.isDay($0.route.points) }
+        tellTooShort(records.filter { !Trip.isDay($0.route.points) })
+        guard !days.isEmpty else { return nil }
+        let ordered = TripJoin.proposedOrder(days.map(\.joinFile)).map { days[$0] }
         guard let tripID = createTrip(
             name: name, files: ordered.map(\.route.points), bikeType: ordered[0].bikeType)
         else { return nil }
-        for record in ordered { deleteRoute(record.id) }
+        for (day, record) in ordered.enumerated() { moveIntoTrip(record, tripID: tripID, day: day) }
         return tripID
     }
 
     /// File a route per a picker selection: it becomes the last day of an existing trip, or the
-    /// only day of a new one, and leaves the library. Returns the trip it went into.
+    /// only day of a new one, and leaves the library. Returns the trip it went into, or nil when
+    /// the route is too short to be a day and stays a route.
     @discardableResult
     public func fileRoute(_ routeID: RouteID, into selection: TripSelection) -> TripID? {
-        guard let record = plannedRecords[routeID], record.route.points.count > 1 else { return nil }
+        guard let record = plannedRecords[routeID], selection != .none else { return nil }
+        guard Trip.isDay(record.route.points) else {
+            tellTooShort([record])
+            return nil
+        }
         let tripID: TripID
         switch selection {
         case .none:
             return nil
         case .existing(let id):
-            guard trip(id) != nil else { return nil }
-            appendToTrip(id, file: record.route.points)
+            guard appendToTrip(id, file: record.route.points) else { return nil }
             tripID = id
         case .new(let name):
             guard let id = createTrip(name: name, files: [record.route.points], bikeType: record.bikeType)
             else { return nil }
             tripID = id
         }
-        deleteRoute(routeID)
+        moveIntoTrip(record, tripID: tripID, day: (trip(tripID)?.dayCount ?? 1) - 1)
         return tripID
+    }
+
+    /// The route leaves the library. Its device copy, if any, becomes the copy of `day`: the
+    /// bytes differ, so the next upload replaces that object instead of leaving it an orphan.
+    private func moveIntoTrip(_ record: PlannedRouteRecord, tripID: TripID, day: Int) {
+        if let link = record.deviceLink, var trip = trip(tripID), day >= 0 {
+            while trip.dayCopies.count <= day { trip.dayCopies.append(nil) }
+            trip.dayCopies[day] = TripDayCopy(link: link, uploadedCRC32: record.uploadedCRC32)
+            library.saveTrip(trip)
+            reloadTrips()
+        }
+        deleteRoute(record.id)
+    }
+
+    /// The line the rider sees after a trip change that dropped day ends.
+    private func tell(dropped: [DayEnd]) {
+        guard !dropped.isEmpty else { return }
+        tripNotice = dropped.map { end in
+            "Day end \u{201C}\(end.name ?? "unnamed")\u{201D} was removed. It is no longer on the line."
+        }.joined(separator: " ")
+    }
+
+    private func tellTooShort(_ records: [PlannedRouteRecord]) {
+        guard !records.isEmpty else { return }
+        tripNotice = records.map { record in
+            "\u{201C}\(record.summary.name)\u{201D} is too short to be a day. It stays a route."
+        }.joined(separator: " ")
     }
 
     /// Name each unnamed day end after its place. A lookup never replaces a name the rider gave,
