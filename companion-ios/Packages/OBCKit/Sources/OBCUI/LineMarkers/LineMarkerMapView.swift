@@ -60,9 +60,13 @@ struct LineMarkerMapView: UIViewRepresentable {
             coordinator.stops = stops
             coordinator.showStops(in: mapView)
         }
-        // Which day a stop can end moves with the day ends.
-        for case let stop as StopAnnotation in mapView.annotations {
-            (mapView.view(for: stop) as? StopAnnotationView)?.configure(kind: stop.kind, action: model.stopActionTitle(stop.placed))
+        // Which day a stop can end moves with the day ends at rest; a drag frame and a sheet
+        // resize leave the stop views alone.
+        if activeID == nil, coordinator.restingMarkers != model.restingMarkers {
+            coordinator.restingMarkers = model.restingMarkers
+            for case let stop as StopAnnotation in mapView.annotations {
+                (mapView.view(for: stop) as? StopAnnotationView)?.configure(kind: stop.kind, action: model.stopActionTitle(stop.placed))
+            }
         }
         if coordinator.bottomInset != bottomInset {
             coordinator.bottomInset = bottomInset
@@ -113,6 +117,8 @@ struct LineMarkerMapView: UIViewRepresentable {
         private var stopsShown = false
         /// The sheet height the visible stretch was last reported for.
         var bottomInset: CGFloat = 0
+        /// The day ends the stop callouts were last set up for.
+        var restingMarkers: [LineMarker] = []
         /// The finger on the map, or none: a second finger is ignored until this one lets go.
         private var drag: Drag?
 
@@ -170,11 +176,15 @@ struct LineMarkerMapView: UIViewRepresentable {
             return overlay.mapPoint(at: distance).coordinate
         }
 
-        /// Stop pins come and go with the zoom.
+        /// Stop pins come and go with the zoom. Only the stops that changed are added or
+        /// removed, so an open callout stays open while more stops arrive.
         func showStops(in mapView: MKMapView) {
             let wanted = Self.spanMeters(of: mapView) < LineMarkerMapView.stopsSpanMeters && !stops.isEmpty
-            mapView.removeAnnotations(mapView.annotations.filter { $0 is StopAnnotation })
-            if wanted { mapView.addAnnotations(stops.map(StopAnnotation.init)) }
+            let shown = mapView.annotations.compactMap { $0 as? StopAnnotation }
+            let keep = wanted ? Set(stops.map(\.stop)) : []
+            mapView.removeAnnotations(shown.filter { !keep.contains($0.placed.stop) })
+            let present = Set(shown.map(\.placed.stop))
+            mapView.addAnnotations(stops.filter { keep.contains($0.stop) && !present.contains($0.stop) }.map(StopAnnotation.init))
             stopsShown = wanted
         }
 
@@ -500,8 +510,8 @@ private final class FittingMapView: MKMapView {
     }
 }
 
-/// A small round pin for a stop, under the handles. With an action it takes a tap and shows a
-/// callout with one button; without one it takes no touches, so it never steals a handle's drag.
+/// A small round pin for a stop, under the handles. A tap shows a callout with its name, kind
+/// and distance off the line, and the stop's one action as a button when it has one.
 final class StopAnnotationView: MKAnnotationView {
     private static let size: CGFloat = 20
     private let host = UIHostingController(rootView: AnyView(EmptyView()))
@@ -531,8 +541,7 @@ final class StopAnnotationView: MKAnnotationView {
                 .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 1.5))
                 .frame(width: Self.size, height: Self.size)
         )
-        isUserInteractionEnabled = action != nil
-        canShowCallout = action != nil
+        canShowCallout = true
         rightCalloutAccessoryView = action.map { title in
             var configuration = UIButton.Configuration.filled()
             configuration.title = title

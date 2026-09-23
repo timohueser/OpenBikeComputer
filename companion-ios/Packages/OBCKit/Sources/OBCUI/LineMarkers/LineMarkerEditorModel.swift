@@ -59,8 +59,11 @@ public final class LineMarkerEditorModel {
     @ObservationIgnored public var stopActionTitle: (PlacedStop) -> String? = { _ in nil }
     @ObservationIgnored public var onStopAction: (PlacedStop) -> Void = { _ in }
 
-    /// The profile resampled by distance, so a 50,000-point line draws as a few hundred.
+    /// The window resampled by distance: a 50,000-point line draws as a few hundred samples,
+    /// and a 1 km window of a 600 km line keeps its shape.
     private(set) var profile: [ProfileSample] = []
+    /// About one sample per point of plot width.
+    static let profileSamples = 400
     private(set) var elevationRange: ClosedRange<Double> = 0...1
 
     /// `nil` for a line with fewer than two vertices: there is nothing to put a marker on.
@@ -119,14 +122,18 @@ public final class LineMarkerEditorModel {
         return pieces.min { gap($0) < gap($1) }
     }
 
-    /// The window held inside the line; the elevation scale follows it.
+    /// The window held inside the line, sampled afresh; the elevation scale follows it.
     func setWindow(_ range: ClosedRange<Double>) {
         let low = min(max(range.lowerBound, 0), line.length)
         window = low...max(min(range.upperBound, line.length), low + 1)
-        let inside = profile.filter { window.contains($0.distance) }.map(\.elevation)
-        let edges = [line.elevation(at: window.lowerBound), line.elevation(at: window.upperBound)]
-        let lo = (inside + edges).min() ?? 0
-        let hi = (inside + edges).max() ?? 0
+        let count = min(max(line.vertices.count, 2), Self.profileSamples)
+        let span = window.upperBound - window.lowerBound
+        profile = (0..<count).map { i -> ProfileSample in
+            let distance = window.lowerBound + span * Double(i) / Double(count - 1)
+            return ProfileSample(distance: distance, elevation: line.elevation(at: distance))
+        }
+        let lo = profile.map(\.elevation).min() ?? 0
+        let hi = profile.map(\.elevation).max() ?? 0
         elevationRange = lo...max(hi, lo + 1)
     }
 
@@ -154,15 +161,8 @@ public final class LineMarkerEditorModel {
     }
 
     private func resample() {
-        let count = min(max(line.vertices.count, 2), 1_200)
-        profile = (0..<count).map { i -> ProfileSample in
-            let distance = line.length * Double(i) / Double(count - 1)
-            return ProfileSample(distance: distance, elevation: line.elevation(at: distance))
-        }
-        window = 0...max(line.length, 1)
-        let lo = profile.map(\.elevation).min() ?? 0
-        let hi = profile.map(\.elevation).max() ?? 0
-        elevationRange = lo...max(hi, lo + 1)
+        pendingWindow = nil
+        setWindow(0...line.length)
     }
 
     // MARK: Lookups

@@ -67,9 +67,9 @@ extension Trip {
 
     /// The distances where `day` can end: after the day before it and before the day after it,
     /// each by at least ``minimumDayMeters``. Nil for the last day, which ends at the line end,
-    /// and for a day that ends at a transfer.
-    public func endRange(of day: Int) -> ClosedRange<Double>? {
-        guard day >= 0, day < dayCount - 1, !endsAtTransfer(day) else { return nil }
+    /// and for a day that ends at a transfer. A caller that holds the measured line passes it.
+    public func endRange(of day: Int, on measured: MeasuredLine? = nil) -> ClosedRange<Double>? {
+        guard day >= 0, day < dayCount - 1, !endsAtTransfer(day, on: measured) else { return nil }
         let lower = (day > 0 ? dayEnds[day - 1].distance : 0) + Self.minimumDayMeters
         let upper = dayEnds[day + 1].distance - Self.minimumDayMeters
         return lower <= upper ? lower...upper : nil

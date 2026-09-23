@@ -47,6 +47,9 @@ public final class TripDayEditorModel {
     /// One handle id per interior day end. Ids outlive moves and re-balances, so a handle
     /// animates to its new place instead of being replaced.
     @ObservationIgnored private var handleIDs: [Int] = []
+    /// The day each stop can end, worked out once per stop and change: the map asks for every
+    /// stop callout, and a line walk per ask would stall a drag frame.
+    @ObservationIgnored private var stopDays: [Stop: Int?] = [:]
     @ObservationIgnored private var nextHandleID = 1
 
     /// `nil` for a trip whose line has no positions to edit.
@@ -69,7 +72,7 @@ public final class TripDayEditorModel {
         handles.onTap = { [weak self] id in self?.select(self?.day(of: id)) }
         handles.onCloseUp = { [weak self] stretch in self?.loadStops(along: stretch) }
         handles.stopActionTitle = { [weak self] stop in
-            self?.trip.day(thatCanEndAt: stop).map { "End Day \($0 + 1) here" }
+            self?.day(thatCanEndAt: stop).map { "End Day \($0 + 1) here" }
         }
         handles.onStopAction = { [weak self] stop in self?.endDay(at: stop) }
         handles.stops = trip.place(trip.waypoints)
@@ -176,7 +179,7 @@ public final class TripDayEditorModel {
     /// End the day nearest `stop` there: the map callout's action.
     public func endDay(at stop: PlacedStop) {
         settle()
-        guard let day = trip.day(thatCanEndAt: stop) else { return }
+        guard let day = day(thatCanEndAt: stop) else { return }
         commit { $0.endDay(day, at: stop) }
         syncHandles()
     }
@@ -299,6 +302,7 @@ public final class TripDayEditorModel {
             handles.setMarkers(markers, segmentColors: colors)
         }
         stats = line.dayStats(ends: markers.map(\.distance), bikeType: trip.bikeType)
+        stopDays = [:]
     }
 
     private func takeHandleID() -> Int {
@@ -323,5 +327,12 @@ public final class TripDayEditorModel {
                 self.trip.namePlace(day, to: name)
             }
         }
+    }
+
+    private func day(thatCanEndAt stop: PlacedStop) -> Int? {
+        if let known = stopDays[stop.stop] { return known }
+        let day = trip.day(thatCanEndAt: stop, on: line)
+        stopDays[stop.stop] = day
+        return day
     }
 }

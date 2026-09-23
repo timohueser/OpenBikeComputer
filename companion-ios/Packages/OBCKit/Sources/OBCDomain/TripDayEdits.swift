@@ -72,10 +72,10 @@ extension Trip {
     }
 
     /// The day whose end a stop can take: the nearest end along the line among those it may
-    /// move. Nil when no day can end there.
-    public func day(thatCanEndAt stop: PlacedStop) -> Int? {
+    /// move. Nil when no day can end there. A caller that holds the measured line passes it.
+    public func day(thatCanEndAt stop: PlacedStop, on measured: MeasuredLine? = nil) -> Int? {
         (0..<dayCount)
-            .filter { endRange(of: $0)?.contains(stop.distance) ?? false }
+            .filter { endRange(of: $0, on: measured)?.contains(stop.distance) ?? false }
             .min { abs(dayEnds[$0].distance - stop.distance) < abs(dayEnds[$1].distance - stop.distance) }
     }
 
