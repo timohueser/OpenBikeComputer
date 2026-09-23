@@ -162,8 +162,17 @@ pub struct DayJoin {
     pub leave_m: u32,
     /// Where the next day joins the line.
     pub join_m: u32,
-    /// Straight-line metres from the last point of the day before to the first point of the day.
+    /// Straight-line metres from the last point of the day before to the first point of the day:
+    /// [`gap_m`].
     pub gap_m: u32,
+}
+
+/// The straight-line gap from `end` to `start`, `(lon, lat)` µdeg, rounded up so a gap a fraction
+/// past [`TRANSFER_MIN_M`] is a transfer, as the phone reads it.
+pub fn gap_m(end: (i32, i32), start: (i32, i32)) -> u32 {
+    let d = obc_map_scene::ground_dist_m(end, start);
+    let m = d as u32;
+    m + u32::from((m as f32) < d)
 }
 
 /// A position on a trip: a day, that day's route, and metres into it.
@@ -390,6 +399,10 @@ mod tests {
             |gap_m| t.load_day(2, Some(&early), Some(&DayJoin { key: KEY, day: 2, leave_m: 74_000, join_m: 0, gap_m }));
         assert_eq!(at(TRANSFER_MIN_M), DayLoad::Rest { from_m: 54_000, to_m: 74_000, join_m: 0 });
         assert_eq!(at(TRANSFER_MIN_M + 1), DayLoad::AsIs, "a train from the end of Day 2 to the start of Day 3");
+        // 1,801 µdeg of latitude is 200.5 m.
+        let (end, start) = ((8_000_000, 46_000_000), (8_000_000, 46_001_801));
+        assert!((200.4..200.6).contains(&obc_map_scene::ground_dist_m(end, start)));
+        assert_eq!(at(gap_m(end, start)), DayLoad::AsIs, "200.5 m is a transfer");
     }
 
     #[test]
