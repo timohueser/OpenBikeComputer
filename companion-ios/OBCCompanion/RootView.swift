@@ -375,6 +375,7 @@ struct RootView: View {
                     transport: transport,
                     activity: transferActivity,
                     dressing: .tracked(ride),
+                    bikeType: ride.bikeType,
                     // The full tracklog: the interactive map draws this, never the preview.
                     rideGeometry: mainModel.rideGeometry(for: id),
                     deviceName: mainModel.deviceName,
@@ -383,7 +384,8 @@ struct RootView: View {
                         mainModel.deleteRide(id)
                         path.removeAll()
                     },
-                    onRename: { mainModel.renameRide(id, to: $0) }
+                    onRename: { mainModel.renameRide(id, to: $0) },
+                    onBikeTypeChange: { mainModel.setRideBikeType(id, to: $0) }
                 )
             }
         case .trip(let id):
