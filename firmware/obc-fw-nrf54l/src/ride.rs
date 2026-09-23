@@ -1454,7 +1454,7 @@ pub(crate) async fn run_app(
                 let visit_effect = false;
                 #[cfg(has_nav)]
                 if visit_effect {
-                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard) {
+                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard, &mut *nav.elev) {
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
@@ -1966,8 +1966,13 @@ pub(crate) async fn run_app(
                                                                                     NavigatorError::Unavailable
                                                                                 })?;
                                                                         }
+                                                                        // An easier review never
+                                                                        // plans here, so no terrain.
                                                                         obc_app::navigator::ReviewedRoute::read(
-                                                                            source, bytes, context,
+                                                                            source,
+                                                                            bytes,
+                                                                            context,
+                                                                            &mut obc_route::NullElevation,
                                                                         )
                                                                     },
                                                                 )

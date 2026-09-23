@@ -69,6 +69,8 @@ pub struct ReviewedRoute {
     pub descent_m: u32,
     pub visit_anchors_m: Option<[u32; 3]>,
     pub visit_costs: Option<obc_route::visit::VisitCosts>,
+    /// An easier candidate measured like the original it replaces.
+    pub easier: Option<obc_route::easier::Costs>,
 }
 
 impl ReviewedRoute {
@@ -77,6 +79,7 @@ impl ReviewedRoute {
         source: PayloadFingerprint,
         bytes: &dyn obc_formats::io::ByteSource,
         context: ReviewContext,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Result<Self, NavigatorError> {
         let info = obc_route::RouteObjectInfo::read(bytes).map_err(|_| NavigatorError::Unavailable)?;
         if !info.assistant_candidate
@@ -103,14 +106,17 @@ impl ReviewedRoute {
             }
             None
         };
-        let visit_costs = if matches!(
-            context.purpose,
-            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)
-        ) {
-            let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
-            Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
-        } else {
-            None
+        let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
+        let (visit_costs, easier) = match context.purpose {
+            ReviewPurpose::Easier(_) => {
+                let (facts, costs) = obc_route::easier::Costs::candidate(bytes, arrival, elev)
+                    .map_err(|_| NavigatorError::Unavailable)?;
+                (Some(facts), Some(costs))
+            }
+            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute => (
+                Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?),
+                None,
+            ),
         };
         Ok(Self {
             source,
@@ -119,6 +125,7 @@ impl ReviewedRoute {
             descent_m: info.descent_m,
             visit_anchors_m,
             visit_costs,
+            easier,
         })
     }
 }
@@ -977,6 +984,7 @@ mod tests {
             descent_m: 3,
             visit_anchors_m: None,
             visit_costs: None,
+            easier: None,
         });
         nav.review_index(Some(1));
         nav.route = PlanPhase::PreviewReady;
@@ -1075,7 +1083,7 @@ mod tests {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
             }
             app.advance_easier();
-            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Unavailable });
+            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Stale });
             app.apply_gesture(crate::Gesture::Press);
             assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
             assert_eq!(app.active_route_index(), Some(0));

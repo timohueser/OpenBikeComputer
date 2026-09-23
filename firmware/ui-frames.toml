@@ -1158,13 +1158,14 @@ script = "p p d p p f d p b"
 expect = "Statistics"
 args = ["--gpx", "{wptgpx}", "--at", "233"]
 
-# Easier compares the actual matched route; no alternative is fabricated when none improves it.
+# Easier compares the imported Grimsel climb with plans measured on the same terrain. The script runs
+# at the replay endpoint, so the rider holds still and the result stays current.
 [[frame]]
 name = "easier-route"
 env = ["elevation", "eta-route"]
 script = "p*4 b T A d d p f"
 expect = "Easier"
-args = ["--gpx", "{gpx}", "--at", "30"]
+args = ["--gpx", "{gpx}", "--script-at", "30", "--at", "30"]
 
 [[frame]]
 name = "ridecontrol"
@@ -1181,10 +1182,11 @@ args = ["--gpx", "{gpx}", "--at", "30"]
 # frames — a real map under the device-64 dim LUT — so the two sheets can be judged against each
 # other.
 #
-# Grimsel carries **no routing graph**, so this frame is also the inert-row case: Detour draws
-# recessed with no chevron and a press does nothing. The drawer's dim means inert, unlike the
-# compass dial's, which dimmed a station a press still opened. The all-live arrangement is
-# `map-context-live.png`, shot on the Monaco graph down in the detour block.
+# Grimsel carries a routing graph, but at this replay point the rider reads off the route, so this
+# frame is also the inert-row case: Detour draws recessed with no chevron and a press does nothing.
+# The drawer's dim means inert, unlike the compass dial's, which dimmed a station a press still
+# opened. The all-live arrangement is `map-context-live.png`, shot on the Monaco graph down in the
+# detour block.
 [[frame]]
 name = "map-context"
 map = "{grimsel}"

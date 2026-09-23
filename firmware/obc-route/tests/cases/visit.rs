@@ -134,9 +134,9 @@ fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
     .unwrap();
     assert_eq!(seen, 4);
     let mut choice = VisitChoice::new();
-    choice.search().unwrap();
-    choice.search().unwrap();
-    assert!(choice.search().is_err());
+    choice.search(true).unwrap();
+    choice.search(true).unwrap();
+    assert!(choice.search(true).is_err());
 }
 #[test]
 fn preview_keeps_a_short_excursion_after_a_dense_prefix() {
@@ -452,6 +452,46 @@ fn easier_composition_preserves_access_order_full_metadata_and_clean_provenance(
     let index = RouteIndex::read(&out).unwrap();
     let accepted = RouteReader::new(&index, &out);
     builder.prepare_easier(&accepted).unwrap(); // A clean accepted route permits another comparison.
+}
+
+#[test]
+fn easier_accepts_a_leg_that_ends_where_the_planner_snapped_an_imported_end() {
+    // An imported route ends 3 m beside the road. The planner's leg ends on the road.
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &[], 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let compose = |off_road: i32| {
+        let mut slot = Box::<VisitBuilder>::new_uninit();
+        let mut builder = unsafe {
+            VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+            slot.assume_init()
+        };
+        builder.prepare_easier(&original).unwrap();
+        let mut sink = VecSink::default();
+        builder.begin(&mut sink).unwrap();
+        let (from, to) = builder.easier_leg(&original, (0, 0)).unwrap().unwrap();
+        let leg = route(vec![(from.0, from.1, 10), (to.0, to.1 + off_road, 30)], &[], 222);
+        let leg_source = SliceSource(&leg);
+        let leg_index = RouteIndex::read(&leg_source).unwrap();
+        let leg = RouteReader::new(&leg_index, &leg_source);
+        let appended = (0..100)
+            .find_map(|_| builder.append_leg_step(&leg, &mut sink).map_or(Some(false), |done| done.then_some(true)));
+        if appended != Some(true) {
+            assert!(builder.rejected_geometry());
+            return None;
+        }
+        builder.finish_easier_leg(&original).unwrap();
+        assert_eq!(builder.easier_leg(&original, (0, 0)).unwrap(), None);
+        Some(loop {
+            if let Some(stats) = builder.finish_step(&original, &mut sink).unwrap() {
+                break stats;
+            }
+        })
+    };
+    let stats = compose(27).expect("a 3 m snap gap still yields a candidate");
+    assert!(stats.total_distance_m >= 221 && stats.total_distance_m <= 223);
+    assert!(compose(1_350).is_none(), "a leg ending 150 m away does not reach the anchor");
 }
 
 #[test]
