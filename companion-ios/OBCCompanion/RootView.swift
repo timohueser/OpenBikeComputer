@@ -306,21 +306,28 @@ struct RootView: View {
                 TripJoinSheet.File(id: index, fileName: file.fileName, points: file.route.points)
             },
             onMakeTrip: { ordered in
+                // A file too short to be a day stays a route, and the rider is told.
+                let short = ordered.filter { !Trip.isDay($0.points) }
+                for file in short { saveAsRoute(join.files[file.id]) }
+                mainModel.noteTooShort(short.map(\.fileName))
                 let tripID = mainModel.createTrip(name: "New trip", files: ordered.map(\.points))
                 importModel.closeJoin()
                 if let tripID { path = [.trip(id: tripID)] }
             },
             onNotNow: {
-                for file in join.files {
-                    let detail = RouteDetailModel(
-                        transport: transport, dressing: .imported(file.route, fileName: file.fileName),
-                        bikeType: file.bikeType
-                    ).makeDetail()
-                    mainModel.addImportedRoute(file.record(for: detail))
-                }
+                join.files.forEach(saveAsRoute)
                 importModel.closeJoin()
             }
         )
+    }
+
+    /// Save one file of a join as a route, with the summary the import landing would make.
+    private func saveAsRoute(_ file: PendingImport) {
+        let detail = RouteDetailModel(
+            transport: transport, dressing: .imported(file.route, fileName: file.fileName),
+            bikeType: file.bikeType
+        ).makeDetail()
+        mainModel.addImportedRoute(file.record(for: detail))
     }
 
     /// The collision dialog's title: the imported route's name, or the file name, quoted.
