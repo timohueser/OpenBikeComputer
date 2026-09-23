@@ -708,7 +708,7 @@ not render at all.
 
 Each screen declares which facts its drawing reads. Each frame reads those facts before and after
 its work, and a change requests a repaint. The rule is per screen: a new heart-rate reading
-repaints the grid that shows it and not the map beside it. Some changes cannot move a key, such as
+repaints the grid that shows it and just the map's effort band. Some changes cannot move a key, such as
 a selection a screen keeps to itself, and they request their repaint directly. Drawing too often is
 safe; drawing too rarely is a defect.
 
