@@ -125,14 +125,17 @@ impl RideDetailScreen {
 
         let lang = rx.settings.language;
         let mut values = Rows::new();
-        if self.pager.on_second_page() {
+        let profile_page = self.pager.on_second_page();
+        if profile_page {
             page_two_rows(ride, units, lang, &mut values);
-            let top = rows_top(values.len());
+        } else {
+            page_one_rows(ride, units, lang, &mut values);
+        }
+        let top = rows_top(values.len());
+        if profile_page {
             title_frame(cv, w, h, &title, "");
             draw_profile(cv, rx, top + 4);
         } else {
-            page_one_rows(ride, units, lang, &mut values);
-            let top = rows_top(values.len());
             let track = Track { points: rx.ride_preview, color: TRAIL, end_dot: false };
             draw_track_map(cv, rx, rect(MAP_X, MAP_TOP, w - 2 * MAP_X, top + 4 - MAP_TOP), track, None);
             title_chrome(cv, w, h, &title);
@@ -144,7 +147,6 @@ impl RideDetailScreen {
             cv.text(&when, Point::new(14, DATE_Y), Font::Label, TextAlign::Left, SUBTEXT);
         }
 
-        let top = rows_top(values.len());
         for (i, (caption, value, unit, arrow)) in values.iter().enumerate() {
             let y = top + i as i32 * ROW_PITCH;
             ledger_row(cv, w, y, caption, value, unit, *arrow);
