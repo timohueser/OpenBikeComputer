@@ -501,11 +501,8 @@ not move while the rider reads them; a hold refreshes it.
 
 Landmarks answers what a place is. It keeps a page of the nearest sites, with the map and the card
 stable while the rider moves the selection. Select opens short text pages and, where the map has
-one, a photo. **Down + Back** opens the sources, because credits must travel with the content.
-Sources gives the text and the photo their own pages. Each page is a short list of source, title,
-author and licence, and the device wraps it by word. The credit fields are in
-[the map format](src:specs/OBCM_Spec.md). A closed site stays readable and can still be visited: a
-rider can look at a castle from outside it.
+one, a photo. **Down + Back** opens the sources, because credits must travel with the content. A
+closed site stays readable and can still be visited: a rider can look at a castle from outside it.
 
 ### Easier routes
 
