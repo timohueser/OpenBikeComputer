@@ -81,14 +81,11 @@ env = "routes"
 script = "p p"
 expect = "RouteMenu"
 
-# The Route menu with a trip folder (epic #526, TR3): the `--routes-dir` staged with `TP1.OBT` +
-# routes, so the top level shows the "Alpen Traverse" folder row (folder glyph + name + `N routes` +
-# summed km/climb) above the loose grimsel route. `p p p` then drills into the folder — the stage
-# list, the trip's member routes as standard route rows under the trip's own name as the title.
-# Weak spot, stated so nobody mistakes it for coverage: both member routes are specs/vectors routes
-# named "Vector Loop", so the stage list's two rows are identical and a refactor that swapped or
-# collapsed them would not move a pixel. Distinguishing them needs differently-named member routes,
-# which means new committed vectors — worth doing when the stage list is next touched.
+# The Route menu with a trip (the `trips` env): the "Alpen Traverse" row, its full name over
+# "Day 1 next · 3 days", above the loose grimsel route. `p p p` opens the trip's day list: the trip
+# name as the title, one row per resolvable day ("Day 1 Andermatt" over "Mon · 2 km ▲76 m"), the
+# cursor on the next day. No progress record reaches the app, so no day is ticked and the trip is
+# never done in these frames.
 [[frame]]
 name = "routemenu-trips"
 map = "{grimsel}"
@@ -100,6 +97,14 @@ expect = "RouteMenu"
 name = "trip-stage-list"
 map = "{grimsel}"
 env = "trips"
+script = "p p p"
+expect = "RouteMenu"
+
+# A seven-day day list scrolls: the title bar cuts the trip name clear of the "1 / 7" counter.
+[[frame]]
+name = "trip-days-week"
+map = "{grimsel}"
+env = "trip-week"
 script = "p p p"
 expect = "RouteMenu"
 

@@ -58,6 +58,9 @@ pub struct TripSummary {
     /// The resolved catalog indices, ride order — one per resolvable stage, so a dangling id makes
     /// this shorter than [`stage_ids`](TripSummary::stage_ids).
     pub stage_indices: Vec<u16, MAX_TRIP_DAYS>,
+    /// Bit `k` is set when day `k` resolves, so [`days`](TripSummary::days) can pair each resolved
+    /// index with its day.
+    resolved: u32,
     /// Summed distance over the resolvable stages, km — the catalog's display unit.
     pub distance_km: u32,
     pub climb_m: u32,
@@ -77,30 +80,19 @@ impl TripSummary {
         let mut name = String::new();
         let _ = name.push_str(truncate_on_char_boundary(input.name, NAME_CAP));
 
-        let mut stage_ids = Vec::new();
-        let mut stage_indices = Vec::new();
-        let mut distance_km = 0u32;
-        let mut climb_m = 0u32;
-        for &sid in input.stage_ids.iter().take(MAX_TRIP_DAYS) {
-            let _ = stage_ids.push(sid);
-            if let Some(idx) = catalog_ids.iter().position(|&x| x == sid) {
-                let _ = stage_indices.push(idx as u16);
-                if let Some(r) = catalog.get(idx) {
-                    distance_km = distance_km.saturating_add(r.distance_km);
-                    climb_m = climb_m.saturating_add(r.climb_m);
-                }
-            }
-        }
-        TripSummary {
+        let mut trip = TripSummary {
             id: input.id,
             key: input.key,
             name,
             start_date: input.start_date,
-            stage_ids,
-            stage_indices,
-            distance_km,
-            climb_m,
-        }
+            stage_ids: input.stage_ids.iter().take(MAX_TRIP_DAYS).copied().collect(),
+            stage_indices: Vec::new(),
+            resolved: 0,
+            distance_km: 0,
+            climb_m: 0,
+        };
+        trip.reresolve(catalog, catalog_ids);
+        trip
     }
 
     /// Re-resolve this trip's [`stage_indices`](TripSummary::stage_indices) and stats from
@@ -108,11 +100,13 @@ impl TripSummary {
     /// vanished re-files without the host re-feeding the trips.
     pub fn reresolve(&mut self, catalog: &[RouteSummary], catalog_ids: &[CatalogObjectId]) {
         self.stage_indices.clear();
+        self.resolved = 0;
         self.distance_km = 0;
         self.climb_m = 0;
-        for &sid in self.stage_ids.iter() {
+        for (day, &sid) in self.stage_ids.iter().enumerate() {
             if let Some(idx) = catalog_ids.iter().position(|&x| x == sid) {
                 let _ = self.stage_indices.push(idx as u16);
+                self.resolved |= 1 << day;
                 if let Some(r) = catalog.get(idx) {
                     self.distance_km = self.distance_km.saturating_add(r.distance_km);
                     self.climb_m = self.climb_m.saturating_add(r.climb_m);
@@ -155,7 +149,22 @@ pub struct TripProgress {
     pub dates: [u16; MAX_TRIP_DAYS],
 }
 
+const _: () = assert!(MAX_TRIP_DAYS <= u32::BITS as usize, "TripSummary::resolved is a u32 day mask");
+
 impl TripSummary {
+    /// The resolved days in ride order: `(day, catalog index)`. A dangling day is skipped, and the
+    /// days after it keep their own numbers.
+    pub fn days(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        (0..self.stage_ids.len() as u16)
+            .filter(|&k| self.resolved & (1 << k) != 0)
+            .zip(self.stage_indices.iter().copied())
+    }
+
+    /// This trip's record among the device's progress records.
+    pub fn progress_in<'p>(&self, records: &'p [TripProgress]) -> Option<&'p TripProgress> {
+        records.iter().find(|p| p.key == self.key)
+    }
+
     fn own<'p>(&self, progress: Option<&'p TripProgress>) -> Option<&'p TripProgress> {
         progress.filter(|p| p.key == self.key)
     }
@@ -249,6 +258,13 @@ mod tests {
             last_finished,
             dates: all,
         }
+    }
+
+    #[test]
+    fn days_keep_their_numbers_past_a_dangling_day() {
+        let input = TripInput { id: 1, key: KEY, name: "Alps", start_date: 0, stage_ids: &[10, 20, 30] };
+        let t = TripSummary::resolve(&input, &[], &[30, 10]);
+        assert_eq!(t.days().collect::<std::vec::Vec<_>>(), [(0, 1), (2, 0)]);
     }
 
     #[test]

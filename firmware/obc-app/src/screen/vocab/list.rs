@@ -144,16 +144,19 @@ pub(crate) fn draw_rows<S: Surface>(
     scrollbar(cv, geo.w - 8, geo.top, geo.visible as i32 * geo.row_h, total, sb_first, geo.visible);
 }
 
-/// [`title_frame`] with a `pos / total` counter on the right, but only when the list can scroll.
-/// A counter on a list that fits is noise.
+/// [`title_frame`] with the [`counter`] on the right.
 pub(crate) fn list_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, pos: usize, total: usize, visible: usize) {
+    title_frame(cv, w, h, title, &counter(pos, total, visible));
+}
+
+/// The `pos / total` counter of a list's title bar. It is empty when the list fits, because a
+/// counter on a list that fits is noise.
+pub(crate) fn counter(pos: usize, total: usize, visible: usize) -> heapless::String<12> {
+    let mut counter = heapless::String::new();
     if total > visible {
-        let mut counter: heapless::String<12> = heapless::String::new();
         let _ = write!(counter, "{pos} / {total}");
-        title_frame(cv, w, h, title, &counter);
-    } else {
-        title_frame(cv, w, h, title, "");
     }
+    counter
 }
 
 /// Draw a list scrollbar at the right edge, or nothing when everything fits. `top` and `height`

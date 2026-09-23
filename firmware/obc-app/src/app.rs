@@ -28,6 +28,9 @@ use crate::wall_clock::WallClock;
 use crate::{DeviceStatus, Msg};
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
+/// The app holds no trip progress record, so every trip reads as not started.
+const NO_TRIP_PROGRESS: &[crate::trip::TripProgress] = &[];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
     /// The camera tracks the user: every fix recenters the map.
@@ -2402,6 +2405,7 @@ impl App {
             routes: catalogs.routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
+            trip_progress: NO_TRIP_PROGRESS,
             backlight: backlight_available,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
@@ -2797,6 +2801,7 @@ impl App {
             internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
+            trip_progress: NO_TRIP_PROGRESS,
             route,
             profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),

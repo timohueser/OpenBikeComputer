@@ -14,7 +14,7 @@ use crate::input::Gesture;
 use crate::settings::{Language, Units};
 use crate::Msg;
 
-use super::vocab::chrome::empty_state;
+use super::vocab::chrome::{empty_state, row_check, ROW_CHECK_HALF};
 use super::vocab::fmt::{write_date_short, write_distance_spaced};
 use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, Render, RideDetailScreen, Screen, Transition};
@@ -26,9 +26,8 @@ const ROW_H: i32 = 66;
 /// keep the same gap between the cursor edge and the first character.
 const TEXT_INSET: i32 = 12;
 
-/// The half-width of the synced check mark, and its clearance from the right edge of the row box.
-/// The clearance keeps the mark clear of the rounded corner.
-const MARK_HALF: i32 = 5;
+/// The synced check mark's clearance from the right edge of the row box. The clearance keeps the
+/// mark clear of the rounded corner.
 const MARK_RIGHT_GAP: i32 = 12;
 
 #[derive(Debug, Default)]
@@ -88,13 +87,13 @@ impl RidesScreen {
             // The name budget always keeps the mark slot, drawn or not, so the truncation does
             // not move when a ride syncs.
             let text_x = bx + TEXT_INSET;
-            let mark_cx = bx + row.area.size.width as i32 - MARK_RIGHT_GAP - MARK_HALF;
-            let name_px = (mark_cx - MARK_HALF - 8) - text_x; // mark's left edge − gap − name start
+            let mark_cx = bx + row.area.size.width as i32 - MARK_RIGHT_GAP - ROW_CHECK_HALF;
+            let name_px = (mark_cx - ROW_CHECK_HALF - 8) - text_x; // mark's left edge − gap − name start
             let name = rx.marquee.fit(&ride.name, name_px, Font::Body, row.scroll());
             cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, INK);
             if ride.synced {
                 let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_mid() as i32);
-                synced_mark(cv, mark_c, accent);
+                row_check(cv, mark_c, accent);
             }
 
             let meta_px = (w - geo.side_inset - 4) - text_x;
@@ -102,22 +101,6 @@ impl RidesScreen {
             cv.text(&meta, Point::new(text_x, y + 35), Font::Label, TextAlign::Left, accent);
         });
     }
-}
-
-/// The synced check mark, centred at `c` on the cap of the name line: the shared two-stroke
-/// check, at row-glyph scale.
-fn synced_mark(cv: &mut impl Surface, c: Point, color: u16) {
-    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32), color: u16) {
-        const N: i32 = 8;
-        for s in 0..=N {
-            let x = a.0 + (b.0 - a.0) * s / N;
-            let y = a.1 + (b.1 - a.1) * s / N;
-            cv.disc(Point::new(x, y), 1, color);
-        }
-    }
-    let k = MARK_HALF;
-    seg(cv, (c.x - k, c.y), (c.x - k / 3, c.y + k * 2 / 3), color);
-    seg(cv, (c.x - k / 3, c.y + k * 2 / 3), (c.x + k, c.y - k * 2 / 3), color);
 }
 
 /// Compose the metadata line of a row, for example `2 JUL · 42.5 km`. When the run is wider than
