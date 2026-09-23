@@ -154,15 +154,18 @@ impl RideInfo {
 /// How many bars the ride detail's HR and power graphs hold.
 pub const RIDE_SERIES_BUCKETS: usize = 60;
 
+/// A graph bar stores power in steps of this many watts, so a bar fits a byte up to 1020 W.
+pub const POWER_STEP_W: u16 = 4;
+
 /// What the ride detail shows beside the profile and the shape: the footer's descent, and the
 /// whole ride's HR and power as bucket averages. Each bucket covers an equal share of the samples,
 /// so a ride with fewer samples than [`RIDE_SERIES_BUCKETS`] has one bucket per sample. A bucket
-/// with no reading of a sensor is 0 for it.
+/// with no reading of a sensor is 0 for it. Power is rounded up to [`POWER_STEP_W`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RideTrackFacts {
     pub descent_m: u16,
     hr: [u8; RIDE_SERIES_BUCKETS],
-    power: [u16; RIDE_SERIES_BUCKETS],
+    power: [u8; RIDE_SERIES_BUCKETS],
     len: u8,
 }
 
@@ -174,8 +177,8 @@ impl RideTrackFacts {
         &self.hr[..self.len as usize]
     }
 
-    pub fn power(&self) -> &[u16] {
-        &self.power[..self.len as usize]
+    pub fn power(&self) -> impl ExactSizeIterator<Item = u16> + Clone + '_ {
+        self.power[..self.len as usize].iter().map(|&bar| u16::from(bar) * POWER_STEP_W)
     }
 }
 
@@ -219,7 +222,7 @@ impl SeriesFill {
     fn flush(&mut self, out: &mut RideTrackFacts) {
         let avg = |(sum, n): (u32, u32)| sum.checked_div(n).unwrap_or(0);
         out.hr[self.bucket] = avg(self.hr) as u8;
-        out.power[self.bucket] = avg(self.power) as u16;
+        out.power[self.bucket] = avg(self.power).div_ceil(u32::from(POWER_STEP_W)).min(255) as u8;
         (self.hr, self.power) = ((0, 0), (0, 0));
     }
 }

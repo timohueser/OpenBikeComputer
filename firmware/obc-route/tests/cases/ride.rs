@@ -209,16 +209,18 @@ fn the_track_fill_reads_the_descent_and_averages_each_bucket() {
     assert_eq!(facts.hr().len(), 60);
     assert!((0..30).all(|b| facts.hr()[b] == 100 + 2 * b as u8), "{:?}", facts.hr());
     assert!(facts.hr()[30..].iter().all(|&v| v == 0), "a bucket without a reading is empty");
-    assert!((0..60).all(|b| facts.power()[b] == 4 * b as u16 + 1), "{:?}", facts.power());
+    let power: Vec<u16> = facts.power().collect();
+    assert!((0..60).all(|b| power[b] == (4 * b as u16 + 1).div_ceil(4) * 4), "{power:?}");
 }
 
 #[test]
 fn a_short_ride_has_one_bucket_per_sample_and_an_empty_ride_none() {
     let points = [pt(0, 0, 100, 0, true), TrackPoint { hr: None, power: None, ..pt(0, 1, 100, 1_000, false) }];
     let facts = facts_of(&ride_of(&points, "Short", &STATS));
-    assert_eq!((facts.hr(), facts.power()), (&[140, 0][..], &[205, 0][..]));
+    assert_eq!(facts.hr(), [140, 0], "one bucket per sample");
+    assert_eq!(facts.power().collect::<Vec<_>>(), [208, 0], "power rounds up to its 4 W step");
 
     let facts = facts_of(&ride_of(&[], "Empty", &STATS));
-    assert!(facts.hr().is_empty() && facts.power().is_empty());
+    assert!(facts.hr().is_empty() && facts.power().len() == 0);
     assert_eq!(facts.descent_m, 180);
 }
