@@ -30,5 +30,8 @@ pub(super) fn draw_side_arrow(cv: &mut impl Surface, at: Point, to_right: bool, 
 pub(super) fn draw_climb_figure(cv: &mut impl Surface, x: i32, y: i32, value: &str) {
     use super::palette::INK;
     cv.triangle(Point::new(x, y + 18), Point::new(x + 7, y + 6), Point::new(x + 14, y + 18), INK);
-    cv.text(value, Point::new(x + 21, y), Font::Label, TextAlign::Left, INK);
+    cv.text(value, Point::new(x + CLIMB_TEXT_DX, y), Font::Label, TextAlign::Left, INK);
 }
+
+/// The climb figure's text offset from its triangle's left edge.
+pub(super) const CLIMB_TEXT_DX: i32 = 21;
