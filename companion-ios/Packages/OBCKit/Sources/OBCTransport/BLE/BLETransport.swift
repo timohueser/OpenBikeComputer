@@ -335,11 +335,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         )
     }
 
-    public func rideDetail(_ id: RideID) async throws -> RideDetail {
-        // The synced library copy answers this screen; nothing reads a ride detail from a device.
-        throw DeviceError.readFailed
-    }
-
     public func listTrips() async throws -> [TripCatalogEntry] {
         // Badge and reconcile input, like routes. Stage details are fetched only by a download.
         try await headEntries(kind: .trip).map { entry in

@@ -223,6 +223,14 @@ def semantic_sources(outcomes: list[dict]) -> list[dict]:
             for o in outcomes if o["status"] == "ok"]
 
 
+def category_coverage_complete(places: list[dict]) -> bool:
+    return all(
+        category.get("complete") is True
+        for place in places
+        for category in place.get("commons_categories", [])
+    )
+
+
 def select_candidates(executable: Path, snapshot: Path, boundary: Path, policy_sha256: str) -> dict:
     executable = executable.resolve()
     binary_hash = digest(executable.read_bytes())
@@ -398,15 +406,48 @@ def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict
     return record, parser.filename, "captured"
 
 
-def category_files(capture: Capture, category: str) -> tuple[str, str, list[str]]:
-    """The captured file members of a Commons category: the pinned listing the compiler reads, and
-    the names to take metadata for. One page of members, which a place category stays well inside."""
-    path = f"categories/{digest(category.encode())}.json"
-    raw = capture.json(path, api("commons.wikimedia.org", action="query", list="categorymembers", cmtitle=category, cmtype="file", cmlimit="max"))
-    if raw is None:
-        return path, "acquisition-failed", []
-    members = [m["title"].split(":", 1)[1].replace("_", " ") for m in raw.get("query", {}).get("categorymembers", []) if m.get("title", "").startswith("File:")]
-    return path, ("captured" if members else "no-category-members"), members
+def category_files(capture: Capture, category: str) -> tuple[list[dict], str, list[str]]:
+    """Capture every page of a Commons category and return members only for a complete chain."""
+    key = digest(category.encode())
+    continuation, seen, pages, members = {}, set(), [], []
+    while True:
+        page = len(pages) + 1
+        path = f"categories/{key}{'' if page == 1 else f'-{page}'}.json"
+        identity = dict(path=path, continuation=continuation or None)
+        pages.append(identity)
+        raw = capture.json(
+            path,
+            api(
+                "commons.wikimedia.org",
+                action="query",
+                list="categorymembers",
+                cmtitle=category,
+                cmtype="file",
+                cmlimit="max",
+                **continuation,
+            ),
+        )
+        if raw is None:
+            return pages, "acquisition-failed", []
+        listed = raw.get("query", {}).get("categorymembers")
+        if not isinstance(listed, list) or any(
+            not isinstance(member, dict) or not isinstance(member.get("title"), str) for member in listed
+        ):
+            return pages, "invalid-category-members", []
+        page_members = [member["title"][5:].replace("_", " ") for member in listed if member["title"].startswith("File:")]
+        if len(page_members) != len(listed):
+            return pages, "invalid-category-members", []
+        members.extend(page_members)
+        following = raw.get("continue")
+        if following is None:
+            return pages, ("captured" if members else "no-category-members"), members
+        if not isinstance(following, dict) or not isinstance(following.get("cmcontinue"), str) or any(not isinstance(value, str) for value in following.values()):
+            return pages, "invalid-category-continuation", []
+        continuation = {name: following[name] for name in sorted(following)}
+        identity = json.dumps(continuation, sort_keys=True)
+        if identity in seen:
+            return pages, "repeated-category-continuation", []
+        seen.add(identity)
 
 
 def image_metadata_url(filename: str) -> str:
@@ -514,10 +555,11 @@ def capture_assets(capture: Capture, qid: str, value: dict, photo_without_text: 
         if not isinstance(category, str):
             continue
         title = "Category:" + category.replace("_", " ")
-        path, status, members = category_files(capture, title)
+        pages, status, members = category_files(capture, title)
         place["outcomes"].append(dict(asset="photo", source="commons-category", filename=title, status=status))
-        if members:
-            place["commons_categories"].append(dict(title=title, path=path))
+        place["commons_categories"].append(
+            dict(title=title, pages=pages, complete=status in ("captured", "no-category-members"))
+        )
         candidates.update((name, "commons-category", None) for name in members)
     if not candidates:
         place["outcomes"].append(dict(asset="photo", status="no-supported-candidate"))
@@ -669,16 +711,19 @@ def run(args) -> int:
         sources.append(dict(path="candidates.json", url="urn:openbikecomputer:osm-landmarks:" + candidates["osm_sha256"],
                             bytes=len(candidate_bytes), sha256=digest(candidate_bytes)))
         sources.sort(key=lambda source: source["path"])
+        categories_complete = category_coverage_complete(places)
+        asset_phase_complete = asset_phase_complete and categories_complete
         coverage = dict(kind="osm-wikidata-links", country_complete=asset_phase_complete and entities_complete and all(q["complete"] for q in queries) and not unresolved and not missing,
                     query_coverage_complete=all(q["complete"] for q in queries), bbox=bbox(boundary), boundary_path="boundary.geojson",
                     policy_path="policy.json", candidates_path="candidates.json", queries=queries,
                     candidate_identities=len(qids), acquired_entities=sum("entity_revision" in p for p in places),
                     unresolved_identities=len(unresolved_identities), entity_coverage_complete=entities_complete,
-                    asset_phase_complete=asset_phase_complete, request_failures=len(failures), unresolved_source_failures=len(unresolved),
+                    asset_phase_complete=asset_phase_complete, category_coverage_complete=categories_complete,
+                    request_failures=len(failures), unresolved_source_failures=len(unresolved),
                     split_requests=len(split), missing_classes=missing,
                     selection="Explicit OSM wikidata tags" + (f"; Wikidata class sweep for {SWEEP_GROUP}" if args.sweep else "")
                               + ". No name or coordinate match. The compiler applies the exact polygon, best-rank claims and exclusions.")
-        write_json(args.out / "manifest.json", dict(schema=1, sources=sources, places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))
+        write_json(args.out / "manifest.json", dict(schema=2, sources=sources, places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))
         return coverage
     write_json(args.out / "classes.json", classes)
     manifest(False)

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, bbox, capture_assets, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, query, retry_after, select_candidates, semantic_sources
+from tools.landmark_capture import BACKOFF_ATTEMPTS, BATCH, PHOTO_SOURCES, Capture, Entities, LeadImage, acquire_requested_photos, batches, bbox, capture_assets, category_coverage_complete, category_files, claim_values, class_parents, digest, entity, image_metadata_url, photo_bytes, photo_metadata, query, retry_after, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -89,14 +89,82 @@ class LandmarkCaptureTests(unittest.TestCase):
             error = HTTPError(Response.url, 429, "Too many requests", {"Retry-After": "9"}, None)
             with patch("tools.landmark_capture.urlopen", side_effect=error) as request:
                 with patch("tools.landmark_capture.time.sleep") as sleep:
-                    path, status, members = category_files(capture, "Category:Alpspitz")
+                    pages, status, members = category_files(capture, "Category:Alpspitz")
             self.assertEqual((status, members), ("acquisition-failed", []))
             self.assertEqual(request.call_count, BACKOFF_ATTEMPTS, "the back-off is bounded")
             self.assertGreater(max(call.args[0] for call in sleep.call_args_list), 8)
-            self.assertTrue(path.startswith("categories/"))
+            self.assertTrue(pages[0]["path"].startswith("categories/"))
             asked = request.call_args.args[0].full_url
             self.assertIn("list=categorymembers", asked)
             self.assertIn("cmlimit=max", asked)
+
+    def test_commons_category_follows_every_continuation_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            token = {"cmcontinue": "file|next|7", "continue": "-||"}
+            first = {
+                "continue": token,
+                "query": {"categorymembers": [{"title": f"File:Photo {number}.jpg"} for number in range(500)]},
+            }
+            second = {"query": {"categorymembers": [{"title": "File:Photo 500.jpg"}]}}
+            with patch(
+                "tools.landmark_capture.urlopen",
+                side_effect=[Response(json.dumps(first).encode()), Response(json.dumps(second).encode())],
+            ) as request:
+                pages, status, members = category_files(capture, "Category:Rhine Falls")
+            self.assertEqual(status, "captured")
+            self.assertEqual(len(members), 501)
+            self.assertEqual([page["continuation"] for page in pages], [None, token])
+            self.assertEqual(request.call_count, 2)
+            self.assertIn("cmcontinue=file%7Cnext%7C7", request.call_args_list[1].args[0].full_url)
+            outcomes = {outcome["path"]: outcome for outcome in capture.outcomes()}
+            self.assertEqual(set(outcomes), {page["path"] for page in pages})
+            self.assertTrue(all("sha256" in outcome for outcome in outcomes.values()))
+
+    def test_commons_category_resumes_after_page_two_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            token = {"cmcontinue": "file|next|7", "continue": "-||"}
+            first = {"continue": token, "query": {"categorymembers": [{"title": "File:First.jpg"}]}}
+            failure = HTTPError(Response.url, 404, "Not found", {}, None)
+            with patch(
+                "tools.landmark_capture.urlopen", side_effect=[Response(json.dumps(first).encode()), failure]
+            ):
+                pages, status, members = category_files(capture, "Category:Rhine Falls")
+            self.assertEqual((status, members), ("acquisition-failed", []))
+            self.assertEqual(len(pages), 2)
+            outcomes = {outcome["path"]: outcome["status"] for outcome in capture.outcomes()}
+            self.assertEqual(outcomes, {pages[0]["path"]: "ok", pages[1]["path"]: "http-error"})
+
+            capture.retry_failed()
+            second = {"query": {"categorymembers": [{"title": "File:Second.jpg"}]}}
+            with patch("tools.landmark_capture.urlopen", return_value=Response(json.dumps(second).encode())) as request:
+                resumed_pages, status, members = category_files(capture, "Category:Rhine Falls")
+            self.assertEqual((status, members), ("captured", ["First.jpg", "Second.jpg"]))
+            self.assertEqual(resumed_pages, pages)
+            request.assert_called_once()
+
+    def test_incomplete_commons_category_contributes_no_partial_asset(self):
+        value = {
+            "sitelinks": {"enwiki": {"title": "Example"}},
+            "claims": {"P373": [{"mainsnak": {"datavalue": {"value": "Example"}}}]},
+        }
+        capture = Mock()
+        capture.json.side_effect = [
+            {
+                "continue": {"cmcontinue": "file|next|7", "continue": "-||"},
+                "query": {"categorymembers": [{"title": "File:Partial.jpg"}]},
+            },
+            None,
+        ]
+        with patch("tools.landmark_capture.capture_locales"), patch(
+            "tools.landmark_capture.article", return_value=(None, None, "article-missing")
+        ), patch("tools.landmark_capture.photo_metadata") as metadata:
+            place = capture_assets(capture, "Q5", value)
+        self.assertEqual(place["images"], [])
+        self.assertFalse(place["commons_categories"][0]["complete"])
+        self.assertFalse(category_coverage_complete([place]))
+        metadata.assert_not_called()
 
     def test_entities_are_fetched_fifty_at_a_time_and_read_back_by_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -311,7 +379,7 @@ class LandmarkCaptureTests(unittest.TestCase):
         value = {"sitelinks": {"enwiki": {"title": "Alpspitz"}},
                  "claims": claims(P18=["Lead.jpg"], P4291=["Panorama.jpg"], P373=["Alpspitz", "Alpspitz massif"])}
         capture = Mock()
-        capture.json.return_value = {"query": {"categorymembers": [{"title": "File:In_category.jpg"}, {"title": "Alpspitz"}]}}
+        capture.json.return_value = {"query": {"categorymembers": [{"title": "File:In_category.jpg"}]}}
         for context in (patch("tools.landmark_capture.capture_locales"),
                         patch("tools.landmark_capture.article", return_value=(None, None, "article-missing")),
                         patch("tools.landmark_capture.photo_metadata", side_effect=lambda _, name: (dict(metadata_path="m", filename=name), "captured"))):

@@ -505,7 +505,6 @@ private struct TruncatedRideCatalogTransport: DeviceLink, DeviceObjects {
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
     func downloadRides(_ ids: [RideID]) -> RideDownload { base.downloadRides(ids) }
 
     func listRides() async throws -> RideCatalog {
@@ -535,7 +534,6 @@ private struct ScriptedDownloadTransport: DeviceLink, DeviceObjects {
         if let catalog { return catalog }
         return try await base.listRides()
     }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
 
     func downloadRides(_ ids: [RideID]) -> RideDownload {
         let (stream, continuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()

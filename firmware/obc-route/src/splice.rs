@@ -23,6 +23,7 @@ pub(crate) const SPLICE_CHUNKS_PER_STEP: usize = 1;
 /// stacking prefixes.
 const NAME_PREFIX: &str = "Detour · ";
 const APPROACH_PREFIX: &str = "To start · ";
+const REST_PREFIX: &str = "From stop · ";
 
 /// What a planned leg does to the route it joins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,17 @@ pub enum Leg {
     Detour,
     /// Leads to the route's start. The whole route follows it.
     Approach,
+    /// The rest of the previous trip day: its stored route over `[from_m, to_m]`, verbatim. The
+    /// route follows it from its join point.
+    Rest { from_m: u32, to_m: u32 },
+}
+
+impl Leg {
+    /// The leg comes before the route: no head of the route stays, and the route's waypoints move
+    /// behind the leg.
+    fn leads_in(self) -> bool {
+        !matches!(self, Leg::Detour)
+    }
 }
 
 /// The height move (m) that forces the emitter to keep a vertex once the detour carries sampled
@@ -75,8 +87,7 @@ enum Phase {
 /// [`Failed`](SpliceStep::Failed). The caller owns the object; its one big field is the emitter.
 pub struct Splicer {
     phase: Phase,
-    /// The leg rejoins at the route start, so the output is the leg and then the whole route.
-    approach: bool,
+    leg: Leg,
     adds_avoidance: bool,
     assistant_candidate: bool,
     split_m: u32,
@@ -118,6 +129,9 @@ impl Splicer {
     /// An [`Leg::Approach`] is the way to the start, then the whole route: it splits and rejoins at
     /// 0 and skips nothing, so it adds no avoidance. Its heights take one offset, which lands its end
     /// on the start's height, and every waypoint moves behind it.
+    ///
+    /// A [`Leg::Rest`] is a stored route, so its heights stay as stored. The route follows from
+    /// `rejoin_m`, and the output is a built day. The rest's waypoints are not kept.
     pub fn new(
         leg: Leg,
         split_m: u32,
@@ -126,11 +140,21 @@ impl Splicer {
         _detour_has_elevation: bool,
         orig_name: &str,
     ) -> Splicer {
-        let approach = leg == Leg::Approach;
-        let (split_m, rejoin_m) = if approach { (0, 0) } else { (split_m, rejoin_m) };
+        let (split_m, rejoin_m) = match leg {
+            Leg::Detour => (split_m, rejoin_m),
+            Leg::Approach => (0, 0),
+            Leg::Rest { .. } => (0, rejoin_m),
+        };
         let mut name = heapless::String::new();
-        if !orig_name.starts_with(NAME_PREFIX) && !orig_name.starts_with(APPROACH_PREFIX) {
-            let _ = name.push_str(if approach { APPROACH_PREFIX } else { NAME_PREFIX });
+        let prefix = match leg {
+            Leg::Detour => Some(NAME_PREFIX),
+            Leg::Approach => Some(APPROACH_PREFIX),
+            Leg::Rest { .. } => Some(REST_PREFIX),
+        };
+        if let Some(prefix) = prefix
+            .filter(|_| ![NAME_PREFIX, APPROACH_PREFIX, REST_PREFIX].iter().any(|prefix| orig_name.starts_with(prefix)))
+        {
+            let _ = name.push_str(prefix);
         }
         for ch in orig_name.chars() {
             if name.push(ch).is_err() {
@@ -138,8 +162,8 @@ impl Splicer {
             }
         }
         Splicer {
-            approach,
-            adds_avoidance: !approach,
+            leg,
+            adds_avoidance: leg == Leg::Detour,
             assistant_candidate: false,
             phase: Phase::Init,
             split_m,
@@ -214,7 +238,8 @@ impl Splicer {
                         obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE
                     } else {
                         0
-                    } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
+                    } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
+                        | if matches!(self.leg, Leg::Rest { .. }) { obc_formats::obcr::FLAG_BUILT_DAY } else { 0 },
                 );
                 // Preserve the sampled heights the planner densified.
                 if detour.has_elevation() {
@@ -239,13 +264,20 @@ impl Splicer {
                 SpliceStep::Running
             }
             Phase::Measure => {
+                if let Leg::Rest { .. } = self.leg {
+                    self.phase = Phase::Detour;
+                    return SpliceStep::Running;
+                }
                 for _ in 0..SPLICE_CHUNKS_PER_STEP {
                     if self.det_k >= detour.chunks().len() {
                         let (s0, s1) = (self.det_ele_first, self.det_ele_last);
                         self.res_end = f32::from(self.ele_rejoin) - f32::from(s1);
                         // An approach starts off the route, so only its end has a seam to meet.
-                        self.res_start =
-                            if self.approach { self.res_end } else { f32::from(self.ele_split) - f32::from(s0) };
+                        self.res_start = if self.leg == Leg::Approach {
+                            self.res_end
+                        } else {
+                            f32::from(self.ele_split) - f32::from(s0)
+                        };
                         // Restart the detour cursor for the emit pass.
                         self.det_k = 0;
                         self.prev_det = None;
@@ -274,7 +306,14 @@ impl Splicer {
                             .unwrap_or(chunks.len());
                         return SpliceStep::Running;
                     }
-                    if let Err(e) = self.push_detour_chunk(detour, self.det_k, sink) {
+                    let pushed = match self.leg {
+                        Leg::Rest { from_m, to_m } if from_m < to_m => {
+                            self.push_orig_chunk(detour, self.det_k, from_m, to_m, sink, false)
+                        }
+                        Leg::Rest { .. } => Ok(()),
+                        _ => self.push_detour_chunk(detour, self.det_k, sink),
+                    };
+                    if let Err(e) = pushed {
                         return self.fail(e);
                     }
                     self.det_k += 1;
@@ -306,7 +345,7 @@ impl Splicer {
                 }
                 match self.waypoint_cursor.as_mut().unwrap().next(orig.source()) {
                     Ok(Some(w)) => {
-                        let along = if !self.approach && w.dist_along_m <= self.split_m {
+                        let along = if !self.leg.leads_in() && w.dist_along_m <= self.split_m {
                             Some(w.dist_along_m)
                         } else if w.dist_along_m < self.rejoin_m {
                             None
@@ -351,7 +390,7 @@ impl Splicer {
         Ok(())
     }
 
-    /// Stream one original-route chunk clipped to `[lo, hi]`, elevations verbatim. A chunk that
+    /// Stream one chunk of a stored route clipped to `[lo, hi]`, elevations verbatim. A chunk that
     /// misses the interval is a no-op. `tail: true` records the first pushed point's
     /// spliced-route distance as the waypoint shift base.
     ///

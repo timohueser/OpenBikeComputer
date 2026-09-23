@@ -81,6 +81,8 @@ public struct MapTrackPreviewView: View {
         // Always the light tile set: the design's palette is light throughout, and
         // Maps' dark tiles clash with the parchment chrome around it.
         .preferredColorScheme(.light)
+        // The camera frames the track inside the safe area, so this keeps it clear of the tag.
+        .safeAreaPadding(.top, tag == nil ? 0 : TrackPreviewView.tagBandHeight)
         .allowsHitTesting(false)
         .overlay(alignment: .topLeading) {
             if let tag { MapPreviewTag(tag, color: tagColor) }

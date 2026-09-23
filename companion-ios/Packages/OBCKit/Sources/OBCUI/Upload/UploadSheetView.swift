@@ -203,7 +203,6 @@ private struct PreviewUploadTransport: DeviceLink, DeviceObjects {
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
 
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {

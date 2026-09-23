@@ -179,3 +179,56 @@ fn a_ride_records_its_trip_day_and_bike_type() {
     let (bike, trip, name) = start_on(2);
     assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, None, ""));
 }
+
+/// Finish of a ride on a trip day moves the trip's progress: the store gets one record, and the
+/// resident records name the next day at once.
+#[test]
+fn a_saved_ride_on_a_trip_day_writes_the_trip_progress() {
+    use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
+    use obc_app::device_core::{ExternalFacts, OutcomeSlots, Revision, StoreIdentity, StoreRevision};
+    use obc_app::metadata::{MetadataEffect, MetadataOutcome};
+    use obc_app::recorder::{CheckpointStatus, RecorderEffect, RecorderOutcome};
+    use obc_app::RecorderIntent;
+
+    let mut app = app_with_three_routes();
+    app.set_trips(&[TripInput { id: 1, key: 42, name: "Alpen Traverse", start_date: 0, stage_ids: &[7, 8, 9] }]);
+    app.activate_route(1);
+    let scope = StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) };
+    let mut outcomes = OutcomeSlots::new();
+    let mut written = None;
+    for pass in 0..40 {
+        let mut facts = ExternalFacts::NONE;
+        facts.note_store_revision(scope);
+        match pass {
+            1 => app.recorder.request(RecorderIntent::Start),
+            2 => app.recorder.request(RecorderIntent::Save),
+            _ => {}
+        }
+        let mut plan = crate::common::pass(&mut app, pass * 1_000, &mut outcomes, &mut facts, None);
+        if let Some(CatalogEffect::ReadCatalog { token }) = plan.effects.catalog.take() {
+            outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token, scope: Some(scope) }).unwrap();
+        }
+        match plan.effects.recorder.take() {
+            Some(RecorderEffect::Append { token, samples }) => {
+                outcomes.recorder.try_put(RecorderOutcome::Appended { token, samples }).unwrap()
+            }
+            Some(RecorderEffect::Checkpoint { token }) => outcomes
+                .recorder
+                .try_put(RecorderOutcome::Checkpointed { token, status: CheckpointStatus::Durable })
+                .unwrap(),
+            Some(RecorderEffect::Finalize { token }) => {
+                outcomes.recorder.try_put(RecorderOutcome::Finalized { token, ride: 77 }).unwrap()
+            }
+            _ => {}
+        }
+        if let Some(MetadataEffect::WriteProgress { token, .. }) = plan.effects.metadata.take() {
+            written = app.trip_progress_payload(token).cloned();
+            outcomes.metadata.try_put(MetadataOutcome::ProgressWritten { token }).unwrap();
+        }
+    }
+
+    let written = written.expect("the Finish writes the trip's progress");
+    assert_eq!((written.key, written.day, written.day_route.id, written.last_finished), (42, 1, 8, Some(1)));
+    let trip = &app.trips()[0];
+    assert_eq!(trip.next_day(trip.progress_in(app.trip_progress())), Some(2), "Day 3 is next");
+}
