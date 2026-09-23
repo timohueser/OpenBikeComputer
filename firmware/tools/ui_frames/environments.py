@@ -81,6 +81,19 @@ def tracks(stage: Stage) -> Staging:
     return Staging(("--tracks-dir", str(where)))
 
 
+def _shift_route_lon(route: bytearray, dlon: int) -> None:
+    """Move a waypoint-less OBCR east by `dlon` µdeg (`specs/OBCR_Spec.md`: the header start and
+    bbox, and each chunk meta's bbox and anchor). Points are deltas from the anchor, so they follow.
+    """
+    for off in (8, 16, 24):
+        struct.pack_into("<i", route, off, struct.unpack_from("<i", route, off)[0] + dlon)
+    chunks, index = struct.unpack_from("<II", route, 52)
+    for k in range(chunks):
+        for off in (0, 8, 16):
+            at = index + 48 * k + off
+            struct.pack_into("<i", route, at, struct.unpack_from("<i", route, at)[0] + dlon)
+
+
 def _rename_route(route: bytearray, name: str) -> None:
     """Rewrite an OBCR header's name (`specs/OBCR_Spec.md` §1: Name Len at 6, Name at 64)."""
     raw = name.encode()
@@ -96,12 +109,15 @@ def trips(stage: Stage) -> Staging:
     """
     where = stage.dir("trips")
     grimsel = stage.fixtures / "sim-grimsel" / "routes"
-    for source, target, name in [
-        ("route-plain.obcr", "1-plain.obcr", "Day 1 Andermatt"),
-        ("route-waypoints.obcr", "2-waypoints.obcr", "Day 2 Ulrichen"),
+    # Both vector routes run 29,000 µdeg east from the same start. Day 1 moves west by that much,
+    # so it ends where Day 2 starts and no transfer lies between them.
+    for source, target, name, shift in [
+        ("route-plain.obcr", "1-plain.obcr", "Day 1 Andermatt", -29_000),
+        ("route-waypoints.obcr", "2-waypoints.obcr", "Day 2 Ulrichen", 0),
     ]:
         route = bytearray((stage.vectors / source).read_bytes())
         _rename_route(route, name)
+        _shift_route_lon(route, shift)
         (where / target).write_bytes(route)
     shutil.copy(grimsel / "grimsel-climb.obcr", where / "3-grimsel.obcr")
     shutil.copy(grimsel / "TP1.OBT", where / "TP1.OBT")
