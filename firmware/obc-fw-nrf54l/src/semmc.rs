@@ -198,10 +198,11 @@ const CARD_SETTLE: Duration = Duration::from_millis(10);
 /// Conservative command-ladder bound for Default-Speed card re-identification.
 ///
 /// The deadline path is 0.56 s boot/enable/settle + 1.3 s for two CMD0 commands + 1.553 s for the
-/// CMD8 timeout/recovery/abort sequence + 2.61 s for ACMD41's permitted final poll + 2.6 s for
-/// CMD2/3/9/7 + 0.4 s status + 1.3 s bus-width switch. A late command failure can replace its
-/// 0.65 s success with 1.7 s including full firmware recovery: 11.373 s, rounded up here.
-pub const RECOVERY_REIDENTIFY_BOUND_MS: u32 = 11_500;
+/// CMD8 timeout/recovery/abort sequence + 2.8 s for ACMD41's permitted final poll + 2.6 s for
+/// CMD2/3/9/7 + 0.4 s status + 1.3 s bus-width switch. CMD8 can add another 1.1 s recovery after
+/// its ignored final close result. A later command failure can replace its 0.65 s success with
+/// 1.7 s including full recovery: 12.663 s, rounded up here.
+pub const RECOVERY_REIDENTIFY_BOUND_MS: u32 = 12_800;
 /// One successful recovery-only block read: 0.1 s start barriers + 2 s data + 0.05 s close, then
 /// 0.1 s start + 0.25 s status + 0.05 s close.
 pub const RECOVERY_BLOCK_READ_BOUND_MS: u32 = 2_550;
@@ -289,7 +290,7 @@ pub enum SemmcError {
     CardBusy,
     /// Card identification did not complete — no card, an unpowered socket, or a broken bus.
     NoCard,
-    /// Re-identification found a different physical card or flat-store identity.
+    /// Re-identification found a different mounted flat-store identity or catalog.
     MediaChanged,
     /// The card is not an SDHC or SDXC card. SDSC is byte-addressed and caps at 2 GB, and nothing
     /// this device stores fits on one, so it is rejected rather than half-supported.
@@ -334,10 +335,8 @@ impl SemmcError {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Clone, Copy, defmt::Format)]
 pub struct CardInfo {
-    /// The card's immutable CID response, used to reject replacement media after a hot removal.
-    pub cid: [u32; 4],
     /// Relative card address, from CMD3.
     pub rca: u16,
     /// Capacity in 512 B blocks, from the CSD.
@@ -458,8 +457,6 @@ pub struct Semmc {
     counter: u32,
     rca: u32,
     card: Option<CardInfo>,
-    /// CID accepted at boot. Re-identification may update `card`, but never this identity.
-    expected_cid: Option<[u32; 4]>,
     read_clk_hz: u32,
     write_clk_hz: u32,
     /// Whether this card accepted SD's optional pre-erase hint (ACMD23). It starts optimistic and
@@ -491,7 +488,6 @@ impl Semmc {
             counter: 0,
             rca: 0,
             card: None,
-            expected_cid: None,
             read_clk_hz: CLK_DS_HZ,
             write_clk_hz: CLK_WRITE_MAX_HZ,
             preerase_supported: true,
@@ -549,9 +545,7 @@ impl Semmc {
         self.cold_boot()?;
         self.enable()?;
         block_for(CARD_SETTLE);
-        let info = self.init_card(true)?;
-        self.expected_cid = Some(info.cid);
-        Ok(info)
+        self.init_card(true)
     }
 
     /// Re-identify a card after the transport breaker admits its recovery probe.
@@ -560,7 +554,6 @@ impl Semmc {
     /// golden reads keeps the dedicated recovery pass inside the watchdog deadline. Ordinary boot
     /// still qualifies and uses High Speed.
     pub fn reidentify(&mut self) -> Result<CardInfo, SemmcError> {
-        let expected = self.expected_cid.ok_or(SemmcError::NotInitialised)?;
         // A deferred write belonged to the transport session that failed. Re-identification starts
         // a new session and must not join that command against newly inserted media.
         self.pending_write_blocks = 0;
@@ -569,11 +562,7 @@ impl Semmc {
         self.warm_boot()?;
         self.enable()?;
         block_for(CARD_SETTLE);
-        let info = self.init_card(false)?;
-        if info.cid != expected {
-            return Err(SemmcError::MediaChanged);
-        }
-        Ok(info)
+        self.init_card(false)
     }
 
     /// Cold boot: copy the vendored image into the carve and start it. About 47 µs.
@@ -1023,7 +1012,7 @@ impl Semmc {
             return Err(SemmcError::UnsupportedCard);
         }
 
-        let cid = self.cmd(2, 0, RESP_R2, PROC_PROCESS, None, CMD_DEADLINE)?;
+        self.cmd(2, 0, RESP_R2, PROC_PROCESS, None, CMD_DEADLINE)?; // CID
         let r = self.cmd(3, 0, RESP_R1, PROC_PROCESS, None, CMD_DEADLINE)?; // RCA (R6)
         self.rca = (r[0] >> 16) & 0xFFFF;
         let csd = self.cmd(9, self.rca << 16, RESP_R2, PROC_PROCESS, None, CMD_DEADLINE)?;
@@ -1060,7 +1049,6 @@ impl Semmc {
         }
 
         let info = CardInfo {
-            cid,
             rca: self.rca as u16,
             blocks,
             high_speed: self.read_clk_hz == CLK_HS_HZ,
