@@ -765,7 +765,8 @@ fn recovery_scans_the_phase_and_refuses_repeated_occurrences() {
     assert!(matched.progress_m > 10_000, "recovery is not limited to the live forward segment window");
 }
 
-/// The index-free scan finds the point the join scan finds, across chunk seams.
+/// The index-free scan finds the point the live first lock finds, across chunk seams, and keeps the
+/// outbound leg of an out-and-back whose return leg is less than the 8 m tie nearer.
 #[test]
 fn nearest_along_agrees_with_the_join_scan() {
     let pts: Vec<(f64, f64, f64)> = (0..1_200)
@@ -781,9 +782,26 @@ fn nearest_along_agrees_with_the_join_scan() {
     assert!(r.chunks().len() > 1, "the route spans chunk seams");
     for p in decode_all(&r).iter().step_by(11) {
         let fix = (p.lon + 150, p.lat + north_ud(20.0));
-        let scan = RouteMatch::nearest(fix.0, fix.1, &r, 0.0).unwrap();
+        let scan = RouteMatch::nearest(fix.0, fix.1, &r, 8.0).unwrap();
         let (along, away) = obc_route::nearest_along(&src, fix).unwrap().unwrap();
         assert!(along.abs_diff(scan.progress_m) <= 1, "{along} m against {} m", scan.progress_m);
         assert_eq!(away as u32, scan.dist_m);
     }
+
+    // Out along the equator of the fixture and back 5.6 m north of it; the fix is 3 m north of the
+    // return leg, halfway along.
+    let bytes = convert(
+        "OutBack",
+        &gpx_from(&[
+            (48.00000, 7.8000, 200.0),
+            (48.00000, 7.8300, 200.0),
+            (48.00005, 7.8300, 200.0),
+            (48.00005, 7.8000, 200.0),
+        ]),
+    );
+    let src = SliceSource(&bytes);
+    let total = RouteIndex::read(&src).unwrap().total_distance_m;
+    let (along, away) = obc_route::nearest_along(&src, (7_815_000, 48_000_050 + north_ud(3.0))).unwrap().unwrap();
+    assert!(along < total / 2, "the outbound leg wins, got {along} of {total} m");
+    assert!(away > 8.0, "{away} m to the outbound leg");
 }

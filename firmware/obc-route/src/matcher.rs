@@ -21,7 +21,7 @@ const WINDOW_SEGS_ON: i64 = 64;
 const WINDOW_SEGS_OFF: i64 = 320;
 /// GPS tolerance (m) for continuity and earliest-occurrence ties on first lock. This keeps a small
 /// cross-track offset from selecting the finish of an out-and-back instead of its outbound leg.
-const TIE_EPS_M: f32 = 8.0;
+pub(crate) const TIE_EPS_M: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
