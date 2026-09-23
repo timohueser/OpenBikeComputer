@@ -183,6 +183,7 @@ pub(super) struct ReviewState {
     pub preview_index: Option<usize>,
     pub unaccepted: u64,
     pub internal_routes: u64,
+    pub temporary_routes: u64,
     pub checkpoint: Option<NavigatorCheckpoint>,
     pub change: Option<Option<NavigatorCheckpoint>>,
     pub token: Option<OperationToken<MetadataTag>>,
@@ -204,6 +205,7 @@ impl ReviewState {
             preview_index: None,
             unaccepted: 0,
             internal_routes: 0,
+            temporary_routes: 0,
             checkpoint: None,
             change: None,
             token: None,
@@ -267,6 +269,9 @@ impl NavigatorMachine {
     pub(crate) fn set_internal_routes(&mut self, mask: u64) {
         self.review.internal_routes = mask;
     }
+    pub(crate) fn set_temporary_routes(&mut self, mask: u64) {
+        self.review.temporary_routes = mask;
+    }
     pub(crate) fn set_unaccepted_routes(&mut self, mask: u64) {
         self.review.unaccepted = mask;
     }
@@ -314,7 +319,7 @@ impl NavigatorMachine {
         true
     }
     pub(crate) fn remap_review_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        for mask in [&mut self.review.unaccepted, &mut self.review.internal_routes] {
+        for mask in [&mut self.review.unaccepted, &mut self.review.internal_routes, &mut self.review.temporary_routes] {
             let mut next = 0;
             for old in 0..64 {
                 if *mask & (1 << old) != 0 {
@@ -694,10 +699,10 @@ impl crate::App {
     pub(crate) fn assistant_measuring(&self) -> bool {
         self.navigator.review.measure
     }
-    /// Unaccepted candidates no review holds are what an interrupted review left on the card.
+    /// Retire abandoned candidates and temporary directions no ride or checkpoint holds.
     /// Each effect removes a commit's batch of them; a search in progress owns its candidate, so
     /// the removal waits for it and never the other way round.
-    pub(crate) fn cleanup_orphan_reviews(&mut self) {
+    pub(crate) fn cleanup_orphan_routes(&mut self) {
         if self.ui.find.owns_pages()
             || !self.catalogs.can_admit_intent()
             || !self.assistant_planner_released()
@@ -711,20 +716,38 @@ impl crate::App {
         {
             return;
         }
-        if self.orphan_reviews().next().is_some()
-            && self.catalogs.admit_intent(crate::catalog_state::CatalogIntent::RemoveOrphanReviews).is_ok()
+        if self.orphan_routes().next().is_some()
+            && self.catalogs.admit_intent(crate::catalog_state::CatalogIntent::RemoveOrphanRoutes).is_ok()
         {
             self.ui.next_wake_ms = Some(1);
         }
     }
-    /// The unaccepted candidates the standing checkpoint does not name.
-    pub fn orphan_reviews(&self) -> impl Iterator<Item = crate::CatalogObjectId> + '_ {
-        let held =
-            self.assistant_checkpoint().map_or([None; 2], |c| [Some(c.route.object), c.original.map(|o| o.object)]);
+    /// Disposable routes outside the active ride and its recovery sources.
+    pub fn orphan_routes(&self) -> impl Iterator<Item = crate::CatalogObjectId> + '_ {
+        let available = self.assistant_planner_released()
+            && self.assistant_preview().is_none()
+            && self.navigator.review.change.is_none()
+            && !self.assistant_needs_recovery();
+        let checkpoint = self.assistant_checkpoint();
+        let held = [
+            checkpoint.map(|c| c.route.object),
+            checkpoint.and_then(|c| c.original.map(|o| o.object)),
+            self.active_route_index().and_then(|i| self.route_ids().get(i).copied()),
+            self.navigator
+                .lead_in()
+                .filter(|lead| {
+                    self.active_route_index().and_then(|i| self.route_ids().get(i).copied()) == Some(lead.splice)
+                })
+                .map(|lead| lead.route),
+        ];
         self.route_ids()
             .iter()
             .enumerate()
-            .filter(move |(index, id)| self.route_unaccepted(*index) && !held.contains(&Some(**id)))
+            .filter(move |(index, id)| {
+                available
+                    && (self.route_unaccepted(*index) || self.navigator.review.temporary_routes & (1 << index) != 0)
+                    && !held.contains(&Some(**id))
+            })
             .map(|(_, id)| *id)
     }
     pub fn accept_assistant(&mut self, origin: ReviewOrigin) {
@@ -1546,6 +1569,43 @@ mod tests {
                 "and recovery returns to the riding view, not browse"
             );
         }
+    }
+
+    #[test]
+    fn temporary_cleanup_keeps_active_recovery_and_current_lead_in_sources() {
+        use obc_formats::io::SliceSource;
+        let (bytes, _) = ordinary_route();
+        let summary = obc_route::RouteSummary::read(&SliceSource(&bytes)).unwrap();
+        let mut app = mounted(&summary, 4);
+        app.navigator.offer_checkpoint(ordinary_store(), None);
+        app.set_routes_with_ids(&[summary.clone(), summary.clone(), summary.clone(), summary], &[4, 5, 6, 7]);
+        app.set_temporary_routes(0b1111);
+        app.activate_route(2);
+        app.navigator.lead_in =
+            Some(super::super::LeadIn { splice: 6, route: 7, lead_m: 100, join_m: 0, rest_from_m: None });
+        app.navigator.review.checkpoint = Some(NavigatorCheckpoint {
+            route: source(5),
+            original: Some(source(4)),
+            progress_m: 100,
+            occurrence: 2,
+            lon: 8_000_000,
+            lat: 47_000_000,
+            phase: JourneyPhase::Outbound,
+            unresolved_avoidance: false,
+            selection: false,
+            lower_m: 0,
+            upper_m: 500,
+        });
+        assert_eq!(app.orphan_routes().count(), 0);
+        app.navigator.review.checkpoint = None;
+        assert_eq!(app.orphan_routes().collect::<std::vec::Vec<_>>(), [4, 5]);
+        app.activate_route(0);
+        assert_eq!(app.orphan_routes().collect::<std::vec::Vec<_>>(), [5, 6, 7], "a stale lead-in holds nothing");
+        app.cleanup_orphan_routes();
+        assert!(matches!(
+            app.catalogs.next_effect(),
+            Some(crate::catalog_state::CatalogEffect::RemoveOrphanRoutes { .. })
+        ));
     }
 
     #[test]
