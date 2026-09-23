@@ -89,9 +89,8 @@ pub struct PlaceQuery {
     backwards: bool,
     category: usize,
     route_chunk: usize,
-    route_validated: bool,
-    /// The current route chunk's search box, clipped to the window.
-    route_search: BBox,
+    /// The current route chunk's search box, clipped to the window; `None` until the chunk is read.
+    route_search: Option<BBox>,
     encounter: EncounterScan,
     stack: Vec<Branch, 33>,
     leaf: Option<u32>,
@@ -114,8 +113,7 @@ impl PlaceQuery {
             backwards: false,
             category: 0,
             route_chunk: 0,
-            route_validated: false,
-            route_search: BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
+            route_search: None,
             encounter: EncounterScan::default(),
             stack: Vec::new(),
             leaf: None,
@@ -164,7 +162,7 @@ impl PlaceQuery {
         self.after = Some(after);
         self.category = 0;
         self.route_chunk = 0;
-        self.route_validated = false;
+        self.route_search = None;
         self.encounter = EncounterScan::default();
         self.stack.clear();
         self.leaf = None;
@@ -240,27 +238,30 @@ impl PlaceQuery {
                 }
                 if self.route_chunk + 1 < route.chunk_count() && route.chunk_start_m(self.route_chunk + 1) < from_m {
                     self.route_chunk += 1;
-                    self.route_validated = false;
+                    self.route_search = None;
                     return Ok(());
                 }
-                if !self.route_validated {
-                    let k = self.route_chunk;
-                    let mut clipped = None;
-                    route.visit_chunk_points(k, &mut |points| {
-                        clipped = window_bbox(points, route.chunk_start_m(k), from_m, to_m);
-                    });
-                    self.route_search =
-                        crate::corridor::inflate_bbox(clipped.ok_or(Error::BadOffset)?, half_width_m as f32);
-                    self.route_validated = true;
+                match self.route_search {
+                    Some(search) => search,
+                    None => {
+                        let k = self.route_chunk;
+                        let mut clipped = None;
+                        route.visit_chunk_points(k, &mut |points| {
+                            clipped = window_bbox(points, route.chunk_start_m(k), from_m, to_m);
+                        });
+                        let search =
+                            crate::corridor::inflate_bbox(clipped.ok_or(Error::BadOffset)?, half_width_m as f32);
+                        self.route_search = Some(search);
+                        search
+                    }
                 }
-                self.route_search
             }
         };
         self.coverage_complete &= contains(reader.bbox, search);
         let Some(category) = self.categories.iter().nth(self.category) else {
             if matches!(self.window, PlaceWindow::Corridor { .. }) {
                 self.route_chunk += 1;
-                self.route_validated = false;
+                self.route_search = None;
                 self.category = 0;
                 self.started = false;
             } else {

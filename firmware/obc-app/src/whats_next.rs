@@ -231,6 +231,10 @@ impl AheadState {
             anchor_m: self.window.map_or(self.anchor, |w| w.start_m),
         })
     }
+    /// Where a later Timeline page starts its place query.
+    fn start(&self, window: RouteWindow) -> Option<(PlaceKey, bool)> {
+        self.boundary.map(|boundary| (boundary.place_boundary(window.start_m), self.backwards))
+    }
     fn keep(&self, key: Key) -> bool {
         self.boundary.is_none_or(|b| if self.backwards { key < b } else { key > b })
     }
@@ -299,7 +303,7 @@ impl AheadState {
             && self.request(scope).is_some()
             && (scratch.pending() || matches!(scratch.status(), QueryProgress::Failed(_) | QueryProgress::Unavailable))
         {
-            scratch.prepare_to(reader, Some(route), local, window.end_m);
+            scratch.prepare_page(reader, Some(route), local, window.end_m, self.start(window));
             self.status = scratch.status();
             if matches!(self.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
                 self.rows.retain(|row| !matches!(row.item, Item::Place(_)));
@@ -339,9 +343,6 @@ impl AheadState {
             scratch.invalidate();
             if let Some(key) = self.request(scope) {
                 scratch.arm(key);
-                if let Some(boundary) = self.boundary {
-                    scratch.start_after(boundary.place_boundary(window.start_m), self.backwards);
-                }
             } else {
                 scratch.disarm();
                 self.places_done = true;
@@ -389,7 +390,7 @@ impl AheadState {
                 self.places_done = true;
                 return;
             }
-            scratch.prepare_to(reader, Some(route), local, window.end_m);
+            scratch.prepare_page(reader, Some(route), local, window.end_m, self.start(window));
             self.status = scratch.status();
             if let QueryProgress::Ready { more, .. } = self.status {
                 if self.page == Page::Overview {
