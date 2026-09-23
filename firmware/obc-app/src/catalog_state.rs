@@ -18,7 +18,7 @@ use crate::app::NAV_PREVIEW_MAX;
 use crate::device_core::derived::{DerivedInput, NavPreviewKey, RideTrackKey};
 use crate::device_core::Revision;
 use crate::placement::define_placement_constructors;
-use crate::ride::{RideCatalog, RideEntry, UI_RIDES_CAP};
+use crate::ride::{RideCatalog, RideEntry, RideTrip, RideTrips, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 use crate::CatalogObjectId;
@@ -50,6 +50,8 @@ pub(crate) struct CatalogState {
     /// that appeared or vanished re-files.
     trips: Trips,
     rides: RideCatalog,
+    /// The names of the ride catalog's trips, one per trip key.
+    ride_trips: RideTrips,
     /// The viewed ride's recorded-track elevation profile: the Ride detail's band source,
     /// host-filled once per detail entry.
     ride_profile: Profile,
@@ -137,6 +139,7 @@ impl CatalogState {
             route_ids: heapless::Vec::new(),
             trips: Trips::new(),
             rides: RideCatalog::new(),
+            ride_trips: RideTrips::new(),
             ride_profile: Profile::EMPTY,
             ride_profile_present: false,
             ride_profile_for: None,
@@ -236,6 +239,10 @@ impl CatalogState {
     pub(crate) fn rides(&self) -> &[RideEntry] {
         &self.rides
     }
+
+    pub(crate) fn ride_trips(&self) -> &[RideTrip] {
+        &self.ride_trips
+    }
     /// Overlay a fully validated proof during a catalog refresh, in the visible catalog.
     pub(crate) fn set_ride_archive_proof(&mut self, id: CatalogObjectId, timestamp: u32) {
         if let Some(ride) = self.rides.iter_mut().find(|ride| ride.id == id) {
@@ -248,15 +255,15 @@ impl CatalogState {
         self.rides.get(idx)
     }
 
-    pub(crate) fn ride_len(&self) -> usize {
-        self.rides.len()
-    }
-
-    pub(crate) fn replace_rides(&mut self, entries: &[RideEntry]) -> OldRideIds {
+    pub(crate) fn replace_rides(&mut self, entries: &[RideEntry], trips: &[RideTrip]) -> OldRideIds {
         let old_ids = self.rides.iter().map(|ride| ride.id).collect();
         self.rides.clear();
         for entry in entries.iter().take(UI_RIDES_CAP) {
             let _ = self.rides.push(entry.clone());
+        }
+        self.ride_trips.clear();
+        for trip in trips {
+            let _ = self.ride_trips.push(trip.clone());
         }
         // The view caches need no remap: their keys name a durable ride identity, so a surviving
         // ride keeps its answer and a vanished one stops matching any key the need can produce.
@@ -826,6 +833,7 @@ impl CatalogState {
             route_ids,
             trips,
             rides,
+            ride_trips,
             ride_profile,
             ride_profile_present,
             ride_profile_for,
@@ -851,7 +859,7 @@ impl CatalogState {
         assert!(loaded_scope.is_none() && !remount_required && read_retry_at.is_none());
         assert!(routes.is_empty() && route_ids.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
-        assert!(rides.is_empty(), "no rides catalogued");
+        assert!(rides.is_empty() && ride_trips.is_empty(), "no rides catalogued");
         assert_eq!(ride_profile.cols(), Profile::EMPTY.cols(), "the ride-profile buffer is the empty line");
         assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
         assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");

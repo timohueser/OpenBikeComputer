@@ -12,10 +12,9 @@ public struct RouteDetailView: View {
     private let onRename: ((String) -> Void)?
     private let onReverse: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
-    private let onSaveToPlanned: (() -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
-    /// An optional row shown above the actions in the imported dressing.
+    /// The imported dressing's choice rows, under the stats.
     private let importAccessory: AnyView?
 
     @State private var renameShown = false
@@ -34,7 +33,6 @@ public struct RouteDetailView: View {
         onRename: ((String) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
-        onSaveToPlanned: (() -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
         importAccessory: AnyView? = nil
@@ -46,7 +44,6 @@ public struct RouteDetailView: View {
         self.onRename = onRename
         self.onReverse = onReverse
         self.onBikeTypeChange = onBikeTypeChange
-        self.onSaveToPlanned = onSaveToPlanned
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
         self.importAccessory = importAccessory
@@ -69,6 +66,11 @@ public struct RouteDetailView: View {
 
                 if case .planned = model.dressing {
                     bikeTypeRow
+                }
+
+                if case .imported = model.dressing, let importAccessory {
+                    importAccessory
+                        .padding(.top, 14)
                 }
 
                 if !model.waypoints.isEmpty {
@@ -251,24 +253,10 @@ public struct RouteDetailView: View {
 
     private var bikeTypeRow: some View {
         OBCGroupedSection {
-            Menu {
-                Picker("Bike type", selection: Binding(
-                    get: { model.bikeType },
-                    set: { type in
-                        model.setBikeType(type)
-                        onBikeTypeChange?(type)
-                    }
-                )) {
-                    ForEach(BikeType.allCases, id: \.self) { Text($0.name).tag($0) }
-                }
-            } label: {
-                OBCListRow(label: "Bike type", value: model.bikeType.name, showsDivider: false) {
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(OBCTheme.inkFaint)
-                }
+            OBCBikeTypeRow(type: model.bikeType) { type in
+                model.setBikeType(type)
+                onBikeTypeChange?(type)
             }
-            .buttonStyle(.plain)
             .accessibilityIdentifier("detail.bikeType")
         }
         .padding(.top, 12)
@@ -314,32 +302,19 @@ public struct RouteDetailView: View {
                         onConfirm: { onDelete?() }
                     )
             case .imported where noDevicePaired:
-                // A share can arrive before pairing: the route saves now and
-                // uploads later. Trips are app-local, so Add-to-trip still works.
-                importAccessory
+                // A share can arrive before pairing: the route saves now and uploads later.
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     title: "No device paired yet.",
                     message: "Save it now — upload once you pair."
                 )
                 .padding(.bottom, 4)
-                Button("Save to Planned") { onSaveToPlanned?() }
-                    .buttonStyle(.obcPrimary)
-                    .accessibilityIdentifier("detail.saveToPlanned")
                 Button("Pair a device") { onPair?() }
                     .buttonStyle(.obcGhost)
                     .accessibilityIdentifier("detail.pairDevice")
             case .imported:
-                importAccessory
-                uploadButton
-                Button("Save to Planned") { onSaveToPlanned?() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("detail.saveToPlanned")
-                Text("Uploading saves it too. Tap Cancel to discard.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 2)
+                // The rows under the stats land the route; upload is on the route or trip page.
+                EmptyView()
             case .tracked:
                 // The services block above carries the per-ride upload.
                 Button("Delete ride") { deleteConfirmShown = true }
@@ -387,13 +362,11 @@ public struct RouteDetailView: View {
     }
 }
 
-/// The import landing: the detail body framed by Cancel and Save chrome.
+/// The import landing: the detail body under Cancel and "Imported route", with the choice rows.
 /// Shown full-screen when a route file decodes.
 public struct ImportLandingView: View {
     private let model: RouteDetailModel
     private let deviceName: String
-    private let onUpload: () -> Void
-    private let onSave: () -> Void
     private let onCancel: () -> Void
     private let noDevicePaired: Bool
     private let onPair: () -> Void
@@ -402,8 +375,6 @@ public struct ImportLandingView: View {
     public init(
         model: RouteDetailModel,
         deviceName: String,
-        onUpload: @escaping () -> Void = {},
-        onSave: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
         noDevicePaired: Bool = false,
         onPair: @escaping () -> Void = {},
@@ -411,8 +382,6 @@ public struct ImportLandingView: View {
     ) {
         self.model = model
         self.deviceName = deviceName
-        self.onUpload = onUpload
-        self.onSave = onSave
         self.onCancel = onCancel
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
@@ -424,8 +393,6 @@ public struct ImportLandingView: View {
             RouteDetailView(
                 model: model,
                 deviceName: deviceName,
-                onUpload: onUpload,
-                onSaveToPlanned: onSave,
                 noDevicePaired: noDevicePaired,
                 onPair: onPair,
                 importAccessory: importAccessory
@@ -437,10 +404,6 @@ public struct ImportLandingView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: onSave)
-                        .fontWeight(.semibold)
                 }
             }
         }

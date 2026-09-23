@@ -118,7 +118,6 @@ image that advertises as `OBC-XXXX`, the FICR serial tail. These features are op
 | `com-hw` | Drives the COM wave from a zero-CPU TIMER21 → DPPIC20 → GPIOTE20 chain instead of `com::com_task`. Off by default until it is verified on glass and a logic analyzer. |
 | `sd-bench` | Adds SD read counters and one `map SD bench:` RTT line per map redraw. Use with `synth`. |
 | `peak-view-demo` | Seeds a Kleine Scheidegg fix and opens Peak View at boot. |
-| `landmark-photo-demo` | The display-only photo viewer in the `display_test` binary. |
 | `resource-report` | Adds the `.obc_resources` table for `firmware/tools/resource_guard.py`. Diagnostic only — never flash or package this image as the shipping artifact. |
 | `flat-store-reset` | Destructive maintenance mode for `flat_store_bench` only. |
 
@@ -320,7 +319,7 @@ phases and the figures they report.
 > partition table and every object on the card, not only benchmark routes. The bench refuses a
 > card that carries a flat store under another `StoreId`; `FORCE_REINIT` overrides that.
 
-## Peak View and the landmark photo demo
+## Peak View
 
 Peak View is part of the normal firmware; the menu entry appears when the selected map — the
 lowest-ID Map object — holds current indexed terrain. Behaviour and controls are in
@@ -333,15 +332,4 @@ convert it with `obc-dem surface native.obcd indexed.obcd`.
 # Open an extra map object instead of the lowest-ID one. Ignored without peak-view-demo, and the
 # screen still waits for a fresh fix, so send an `F` fix over the debug link.
 OBC_TEST_MAP_OBJECT_ID=201 cargo run --release --features debug-uart,peak-view-demo
-```
-
-The landmark photo demo is display-only: three places from firmware flash, through the production
-framebuffer and FLPR presenter. It does not touch the SD card, and it replaces the application
-image until normal firmware is flashed again. Up and Down change the place, Select cycles through
-the credits, Back returns. Asset format and credits are in
-[`../obc-app/assets/landmarks/README.md`](../obc-app/assets/landmarks/README.md).
-
-```sh
-cargo run --release --bin display_test --features landmark-photo-demo
-cargo run --release --bin obc-fw-nrf54l   # restore the normal application
 ```

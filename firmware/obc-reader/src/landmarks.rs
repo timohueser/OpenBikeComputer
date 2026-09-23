@@ -25,6 +25,10 @@ pub(crate) fn map_region(header: &[u8; HEADER_LEN], total: u64) -> Result<Option
     Ok(Some(start..end))
 }
 
+fn record_offset(index: u32) -> u64 {
+    SECTION_HEADER_LEN as u64 + u64::from(index) * RECORD_LEN as u64
+}
+
 /// Resolve the optional section through the same byte seam as ordinary maps.
 pub fn map_section(source: &dyn ByteSource) -> Result<Option<WindowSource<'_>>, Error> {
     let mut header = [0; HEADER_LEN];
@@ -72,9 +76,7 @@ impl LandmarkDirectory {
             return Err(Error::BadOffset);
         }
         let mut bytes = [0; RECORD_LEN];
-        source
-            .read_at(SECTION_HEADER_LEN as u64 + u64::from(index) * RECORD_LEN as u64, &mut bytes)
-            .map_err(Error::Source)?;
+        source.read_at(record_offset(index), &mut bytes).map_err(Error::Source)?;
         LandmarkRecord::decode(&bytes).ok_or(Error::BadOffset)
     }
 
@@ -164,8 +166,11 @@ pub enum QueryProgress {
     Cancelled,
 }
 
-/// One frozen position, scope and source generation. A page uses one record read
-/// per step, first bisecting the latitude index, then scanning only its latitude band.
+/// Records per scan read: at most one block's worth of bytes.
+const SCAN_RECORDS: usize = 6;
+
+/// One frozen position, scope and source generation. A step makes one read and adds at most one
+/// hit: it bisects the latitude index a record at a time, then scans only its latitude band.
 pub struct LandmarkQuery {
     generation: u32,
     center: (i32, i32),
@@ -255,31 +260,49 @@ impl LandmarkQuery {
             self.progress = QueryProgress::Ready { more: self.more };
             return Ok(());
         }
-        let record = directory.record(source, cursor)?;
-        self.cursor = Some(cursor + 1);
-        if record.lat > self.latitude.1 {
-            self.progress = QueryProgress::Ready { more: self.more };
-            return Ok(());
+        let mut bytes = [0; SCAN_RECORDS * RECORD_LEN];
+        let bytes = &mut bytes[..(directory.count - cursor).min(SCAN_RECORDS as u32) as usize * RECORD_LEN];
+        source.read_at(record_offset(cursor), bytes).map_err(Error::Source)?;
+        for (index, bytes) in (cursor..).zip(bytes.as_chunks::<RECORD_LEN>().0) {
+            let record = LandmarkRecord::decode(bytes).ok_or(Error::BadOffset)?;
+            self.cursor = Some(index + 1);
+            if record.lat > self.latitude.1 {
+                self.progress = QueryProgress::Ready { more: self.more };
+                return Ok(());
+            }
+            if self.consider(index, record, output)? {
+                return Ok(());
+            }
         }
+        Ok(())
+    }
+
+    /// Whether the record entered `output`.
+    fn consider<const N: usize>(
+        &mut self,
+        index: u32,
+        record: LandmarkRecord,
+        output: &mut Vec<LandmarkHit, N>,
+    ) -> Result<bool, Error> {
         let distance = ground_dist_m_cl(self.center, (record.lon, record.lat), self.cosine);
         let key = LandmarkKey { distance_m: (distance + 0.5) as u32, qid: record.qid };
         if distance > self.radius_m as f32 || self.after.is_some_and(|after| key <= after) {
-            return Ok(());
+            return Ok(false);
         }
         if output.iter().any(|hit| hit.key.qid == key.qid) {
-            return Ok(());
+            return Ok(false);
         }
         let at = output.partition_point(|hit| hit.key < key);
         if output.is_full() {
             self.more = true;
             if at == N {
-                return Ok(());
+                return Ok(false);
             }
             output.pop();
         }
         output
-            .insert(at, LandmarkHit { index: cursor, position: (record.lon, record.lat), key })
+            .insert(at, LandmarkHit { index, position: (record.lon, record.lat), key })
             .map_err(|_| Error::BadOffset)?;
-        Ok(())
+        Ok(true)
     }
 }

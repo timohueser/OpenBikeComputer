@@ -502,7 +502,7 @@
     {
       "id": "driftless-weekender",
       "name": "Driftless Weekender",
-      "stages": [
+      "routes": [
         "devils-lake-overnighter",
         "cross-plains-gravel"
       ],

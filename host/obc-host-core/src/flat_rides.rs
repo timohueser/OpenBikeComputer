@@ -5,7 +5,7 @@ use crate::{
 };
 use obc_app::{
     catalog_state::CatalogError, device_core::StoreRevision, metadata::MetadataError, CatalogObjectId, RideEntry,
-    RideSummary,
+    RideSummary, RideTrip, RideTrips,
 };
 use obc_route::{Profile, RideInfo};
 use obc_storage::flat::{metadata, EntryFlags, ObjectId, ObjectKind, Revision, Store};
@@ -13,12 +13,13 @@ use obc_storage::flat::{metadata, EntryFlags, ObjectId, ObjectKind, Revision, St
 pub struct FlatRideStore {
     owner: HostStore,
     catalog: Vec<RideEntry>,
+    trips: RideTrips,
     heads: Vec<(ObjectId, Revision)>,
 }
 
 impl FlatRideStore {
     pub fn new(owner: HostStore) -> Result<Self, MetadataError> {
-        let mut repo = Self { owner, catalog: Vec::new(), heads: Vec::new() };
+        let mut repo = Self { owner, catalog: Vec::new(), trips: RideTrips::new(), heads: Vec::new() };
         repo.refresh_metadata()?;
         Ok(repo)
     }
@@ -37,6 +38,9 @@ impl RideRepository for FlatRideStore {
     fn catalog(&self) -> &[RideEntry] {
         &self.catalog
     }
+    fn trip_names(&self) -> &[RideTrip] {
+        &self.trips
+    }
     fn store_scope(&self) -> Option<StoreRevision> {
         let owner = self.owner.0.lock().ok()?;
         Some(scope(owner.ready().ok()?))
@@ -48,6 +52,7 @@ impl RideRepository for FlatRideStore {
         metadata::reconcile(store).map_err(metadata_error)?;
         let start = scope(store);
         let mut catalog = Vec::new();
+        let mut infos = Vec::new();
         let mut heads = Vec::new();
         for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
             let info = store
@@ -55,6 +60,7 @@ impl RideRepository for FlatRideStore {
                 .map_err(|_| MetadataError::WriteFailed)?
                 .map_err(|_| MetadataError::WriteFailed)?;
             heads.push((entry.id, entry.revision));
+            infos.push((entry.id.0, info.clone()));
             let position = catalog.iter().position(|ride: &RideEntry| ride.id < entry.id.0).unwrap_or(catalog.len());
             if position < obc_app::UI_RIDES_CAP {
                 if catalog.len() == obc_app::UI_RIDES_CAP {
@@ -66,6 +72,12 @@ impl RideRepository for FlatRideStore {
         }
         if !store.entries_ok() {
             return Err(MetadataError::WriteFailed);
+        }
+        let mut trips = RideTrips::new();
+        for ride in &catalog {
+            if let Some((_, info)) = infos.iter().find(|(id, _)| *id == ride.id) {
+                RideTrip::note(&mut trips, info);
+            }
         }
         metadata::read_rows(store, |row| {
             if row.kind == ObjectKind::Ride {
@@ -80,6 +92,7 @@ impl RideRepository for FlatRideStore {
             return Err(MetadataError::Stale);
         }
         self.catalog = catalog;
+        self.trips = trips;
         self.heads = heads;
         Ok(Some(start))
     }

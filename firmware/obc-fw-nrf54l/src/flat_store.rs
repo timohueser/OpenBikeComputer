@@ -1769,29 +1769,28 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
 
 #[inline(never)]
 pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut rides = obc_app::RideCatalog::new();
+    // The newest ids win, and only their footers are read, newest first, so the first trip name
+    // noted for a trip is its newest ride's.
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
     for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
-        let Ok(Ok(info)) =
-            store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source))
-        else {
-            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
-            return false;
-        };
-        let position = rides.iter().position(|ride| ride.id < entry.id.0).unwrap_or(rides.len());
-        if position < obc_app::UI_RIDES_CAP {
-            if rides.is_full() {
-                rides.pop();
-            }
-            let _ = rides.insert(
-                position,
-                obc_app::RideEntry { id: entry.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) },
-            );
-        }
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
     }
     if !store.entries_ok() {
         return false;
     }
-    app.set_rides(&rides);
+    let mut rides = obc_app::RideCatalog::new();
+    let mut trips = obc_app::RideTrips::new();
+    for head in heads {
+        let Ok(Ok(info)) = store.with_source(head.id, Some(head.revision), |source| obc_route::RideInfo::read(source))
+        else {
+            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
+            return false;
+        };
+        obc_app::RideTrip::note(&mut trips, &info);
+        let _ =
+            rides.push(obc_app::RideEntry { id: head.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) });
+    }
+    app.set_rides(&rides, &trips);
     defmt::info!("flat: Rides menu loaded {=usize} finished ride(s)", rides.len());
     true
 }
