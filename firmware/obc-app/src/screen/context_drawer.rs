@@ -850,8 +850,8 @@ impl ContextDrawerScreen {
         let top = rx.h - visible;
         if self.draws_hero() {
             let bike = crate::settings::BikeType::from_u8(self.staged).unwrap_or_default();
-            cv.fill(super::ride_start::hero_box(rx.w), super::dim_color(palette::PARCHMENT));
-            super::ride_start::draw_hero(cv, rx.w, bike);
+            let name = crate::settings::bike_type_name(bike, rx.settings.language);
+            super::ride_start::draw_staged(cv, rx.w, bike, name);
         }
         sheet::frame(cv, rx.w, top, sheet_h, Edge::Bottom);
         match self.motion.page_offsets(rx.now_ms, MOTION, rx.w, self.page == Page::Root) {
