@@ -2,73 +2,21 @@ use super::*;
 use scraper::{Html, Selector};
 
 fn supported_license(url: &str) -> bool {
-    let suffix = url
-        .strip_prefix("https://creativecommons.org/")
-        .or_else(|| url.strip_prefix("http://creativecommons.org/"))
-        .or_else(|| url.strip_prefix("//creativecommons.org/"));
-    let suffix = suffix.map(|value| {
-        let value = value.trim_end_matches('/');
-        value
-            .rsplit_once('/')
-            .filter(|(_, tail)| tail.starts_with("deed.") || tail.starts_with("legalcode"))
-            .map_or(value, |(base, _)| base)
-    });
-    matches!(
-        suffix,
-        Some(
-            "publicdomain/zero/1.0"
-                | "licenses/by/1.0"
-                | "licenses/by/2.0"
-                | "licenses/by/2.5"
-                | "licenses/by/3.0"
-                | "licenses/by/4.0"
-                | "licenses/by-sa/1.0"
-                | "licenses/by-sa/2.0"
-                | "licenses/by-sa/2.5"
-                | "licenses/by-sa/3.0"
-                | "licenses/by-sa/4.0"
-        )
-    )
-}
-fn display_url(url: &str) -> String {
-    url.bytes().map(|b| if b.is_ascii_graphic() { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
-}
-fn credits(markup: &str, origin: &str) -> String {
-    let document = Html::parse_fragment(markup);
-    let mut parts = vec![text::normalize(&document.root_element().text().collect::<String>())];
-    let selector = Selector::parse("a[href]").expect("fixed selector");
-    let mut urls = BTreeSet::new();
-    for link in document.select(&selector) {
-        if let Some(url) = link.value().attr("href") {
-            let url = if url.starts_with("//") {
-                format!("https:{url}")
-            } else if url.starts_with('/') {
-                format!("{origin}{url}")
-            } else {
-                url.to_owned()
-            };
-            if (url.starts_with("https://") || url.starts_with("http://")) && urls.insert(url.clone()) {
-                parts.push(display_url(&url));
-            }
-        }
-    }
-    parts.join("\n")
+    credit::licence(url).is_ok()
 }
 fn attribution(
     source_url: String,
     revision: String,
     license_url: String,
     original_notices: String,
-    display: String,
 ) -> Result<Attribution, String> {
     if !supported_license(&license_url) {
         return Err("unsupported_license".into());
     }
-    if original_notices.len() > text::MAX_CREDIT_BYTES {
+    if original_notices.len() > text::MAX_NOTICE_BYTES {
         return Err("attribution_bytes".into());
     }
-    let display_pages = text::credit_pages(&display).map_err(str::to_owned)?;
-    Ok(Attribution { source_url, revision, license_url, original_notices, display_pages })
+    Ok(Attribution { source_url, revision, license_url, original_notices })
 }
 
 pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: &Value) -> Result<Article, String> {
@@ -123,8 +71,10 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     if !sources.iter().any(|source| source.path == capture["html_path"] && source.url == url) {
         return Err("article_source_mismatch".into());
     }
-    let display = format!("{title}\n{language}\nWikipedia contributors\n{}\nRevision {revision}\n{}\n{}\nExcerpt; typography and page layout changed.", display_url(&url), display_url(&license), credits(&notices, &format!("https://{language}.wikipedia.org")));
-    let attribution = attribution(url, revision.to_string(), license, notices, display)?;
+    let attribution = attribution(url, revision.to_string(), license, notices)?;
+    if credit::article(&attribution)?[1] != text::normalize(title) {
+        return Err("article_identity_mismatch".into());
+    }
     let body = Html::parse_fragment(&body);
     let lead_image = commons_lead_image(&body);
     Ok(Article { language: language.to_owned(), pages, attribution, lead_image })
@@ -247,28 +197,10 @@ pub(super) fn photo(
     let info = &page["imageinfo"][0];
     let ext = &info["extmetadata"];
     let license = ext["LicenseUrl"]["value"].as_str().ok_or("photo_license_missing")?.to_owned();
-    if supported_license(&license)
-        && license.contains("/licenses/")
-        && ext["Artist"]["value"]
-            .as_str()
-            .is_none_or(|value| credits(value, "https://commons.wikimedia.org").trim().is_empty())
-    {
-        return Err("photo_creator_missing".into());
-    }
     let original = serde_json::to_string(ext).map_err(|e| e.to_string())?;
-    let mut display = Vec::new();
-    for key in
-        ["ObjectName", "Artist", "Credit", "Copyright", "Attribution", "Permission", "LicenseShortName", "LicenseUrl"]
-    {
-        if let Some(value) = ext[key]["value"].as_str() {
-            display.push(format!("{key}: {}", credits(value, "https://commons.wikimedia.org")));
-        }
-    }
     let source_url = string(info, "descriptionurl")?.to_owned();
-    display.push(display_url(&source_url));
-    display.push("Resized, white padded and ordered dithered to RGB222.".into());
-    let attribution =
-        attribution(source_url, string(info, "timestamp")?.to_owned(), license, original, display.join("\n"))?;
+    let attribution = attribution(source_url, string(info, "timestamp")?.to_owned(), license, original)?;
+    credit::photo(&attribution)?;
     let input_path = string(capture, "path")?;
     let source = sources.iter().find(|source| source.path == input_path).ok_or("photo_source_missing")?;
     if source.url != string(info, "url")? {

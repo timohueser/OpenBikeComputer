@@ -116,7 +116,6 @@ impl LandmarkDirectory {
 }
 
 /// Length-prefixed UTF-8 fields: count u16, count+1 byte offsets u32, then data.
-/// Attribution uses four original source fields before its display pages.
 pub fn page<'a>(
     source: &dyn ByteSource,
     expected_count: u16,

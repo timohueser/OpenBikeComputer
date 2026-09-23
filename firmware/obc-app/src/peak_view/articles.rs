@@ -70,13 +70,18 @@ mod tests {
         }
         bytes
     }
+    const CREDIT: [&str; 4] = ["en.wikipedia.org/?oldid=1", "Summit", "Wikipedia contributors", "CC BY-SA 4.0"];
+    const PHOTO_CREDIT: [&str; 4] = ["Wikimedia Commons", "Summit.jpg", "A photographer", "CC BY 4.0"];
     fn map(photo: Option<bool>, text: &str, english: bool) -> Vec<u8> {
         use obcm::peaks::{HEADER_LEN, RECORD_LEN, VERSION};
         let mut section = vec![0; HEADER_LEN + 2 * ASSOCIATION_LEN + RECORD_LEN];
         let payload = section.len() as u32;
         let mut record = Record { id: [1; 32], content: [ContentRef::default(); 4] };
-        let credits = ["url", "rev", "license", "authors", "Source credit."];
-        let local_credits = ["url", "rev", "license", "authors", if text == "雪" { "雪" } else { "Source credit." }];
+        let credits = CREDIT;
+        let mut local_credits = CREDIT;
+        if text == "雪" {
+            local_credits[1] = "雪";
+        }
         let variants: &[obcm_testkit::articles::Article<'_>] = if english {
             &[
                 (*b"de", &[text], &local_credits),
@@ -96,7 +101,8 @@ mod tests {
         if photo == Some(false) {
             pixels[0] = 0;
         }
-        let values = [b"Summit".to_vec(), obcm_testkit::articles::bundle(*b"de", variants), pixels, fields(&credits)];
+        let values =
+            [b"Summit".to_vec(), obcm_testkit::articles::bundle(*b"de", variants), pixels, fields(&PHOTO_CREDIT)];
         for (slot, bytes) in values.iter().enumerate() {
             // An empty text is a record with no article bundle at all.
             if (slot >= 2 && photo.is_none()) || (slot == 1 && text.is_empty()) {
@@ -226,7 +232,7 @@ mod tests {
         app.apply_gesture(Gesture::Press);
         prepare(&mut app, &reader);
         assert!(matches!(app.top_screen(), Screen::LandmarkSources(_)));
-        assert_eq!(app.ui.landmarks.text.as_str(), "Source credit.");
+        assert_eq!(app.ui.landmarks.text.as_str(), CREDIT.join("\n"));
         app.apply_gesture(Gesture::Back);
         decode(&mut app, &reader);
         assert_eq!(app.photo_status(), Some(crate::photo::Status::Complete));
@@ -406,7 +412,7 @@ mod tests {
         app.apply_gesture(Gesture::Press);
         prepare(&mut app, &reader);
         assert!(matches!(app.top_screen(), Screen::LandmarkSources(_)));
-        assert_eq!(app.ui.landmarks.text.as_str(), "Source credit.");
+        assert_eq!(app.ui.landmarks.text.as_str(), PHOTO_CREDIT.join("\n"));
         assert_eq!(app.ui.landmarks.source_pages, 1);
         app.apply_gesture(Gesture::Back);
         prepare(&mut app, &reader);

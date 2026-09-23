@@ -7,12 +7,13 @@ struct Fixture {
 }
 impl Fixture {
     fn pin(&mut self, path: &str, bytes: Vec<u8>) {
+        self.pin_at(path, &format!("https://example.test/{path}"), bytes);
+    }
+    fn pin_at(&mut self, path: &str, url: &str, bytes: Vec<u8>) {
         let target = self.root.join(path);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(target, &bytes).unwrap();
-        self.sources.push(
-            json!({"path":path,"url":format!("https://example.test/{path}"),"bytes":bytes.len(),"sha256":hash(&bytes)}),
-        );
+        self.sources.push(json!({"path":path,"url":url,"bytes":bytes.len(),"sha256":hash(&bytes)}));
     }
     fn json(&mut self, path: &str, value: Value) {
         self.pin(path, serde_json::to_vec(&value).unwrap());
@@ -63,13 +64,14 @@ impl Fixture {
         let path = format!("articles/{id}-{language}.json");
         let html = format!("articles/{id}-{language}.html");
         self.json(&path, json!({"query":{"pages":{"42":{"pageid":42,"title":title,"revisions":[{"revid":24}]}}}}));
-        self.pin(&html,format!(r#"<script>{{"wgRevisionId":24}}</script><div id="mw-content-text"><div class="mw-parser-output"><p>{body}</p></div></div><div id="footer-info-copyright">Contributors <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></div>"#).into_bytes());
+        let url = format!("https://{language}.wikipedia.org/w/index.php?title={title}&oldid=24");
+        self.pin_at(&html, &url, format!(r#"<script>{{"wgRevisionId":24}}</script><div id="mw-content-text"><div class="mw-parser-output"><p>{body}</p></div></div><div id="footer-info-copyright">Contributors <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></div>"#).into_bytes());
         if language == "es" {
             let original = fs::read_to_string(self.root.join(&html)).unwrap();
             self.sources.retain(|source| source["path"] != html);
-            self.pin(&html, original.replace("https://creativecommons.org/licenses/by-sa/4.0/", "/wiki/Wikipedia:Texto_de_la_Licencia_Creative_Commons_Atribuci%C3%B3n-CompartirIgual_4.0_Internacional").into_bytes());
+            self.pin_at(&html, &url, original.replace("https://creativecommons.org/licenses/by-sa/4.0/", "/wiki/Wikipedia:Texto_de_la_Licencia_Creative_Commons_Atribuci%C3%B3n-CompartirIgual_4.0_Internacional").into_bytes());
         }
-        json!({"language":language,"title":title,"revision":24,"path":path,"html_path":html,"url":format!("https://example.test/{html}")})
+        json!({"language":language,"title":title,"revision":24,"path":path,"html_path":html,"url":url})
     }
 }
 

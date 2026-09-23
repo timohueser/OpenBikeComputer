@@ -55,6 +55,7 @@ pub fn fingerprint(paths: &[PathBuf]) -> Result<String, String> {
     }
     h.update(include_bytes!("peak_map.rs"));
     h.update(include_bytes!("landmark_map.rs"));
+    h.update(include_bytes!("landmarks/credit.rs"));
     h.update(include_bytes!("../../../firmware/obc-formats/src/obcm/peaks.rs"));
     h.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
     h.update(include_bytes!("../../../Cargo.lock"));
@@ -190,8 +191,9 @@ mod tests {
         let pixels = vec![7; PHOTO_PIXELS];
         fs::write(root.join("photo.rgb222"), &pixels).unwrap();
         let digest: String = Sha256::digest(&pixels).iter().map(|b| format!("{b:02x}")).collect();
-        let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Mountain&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors","display_pages":["Authors"]});
-        let mut catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":crate::landmarks::Counts::default(),"omissions":[],"records":[{"id":"Q7","name":"Mountain","default_language":"en","fallback_sources":[],"variants":[{"language":"en","text_pages":["A mountain."],"attribution":credit}],"photo":{"path":"photo.rgb222","bytes":PHOTO_PIXELS,"sha256":digest,"attribution":credit}}],"associations":[{"node_id":101,"article_id":"Q7","latitude":-80,"longitude":-160},{"node_id":102,"article_id":"Q7","latitude":80,"longitude":160}]});
+        let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Mountain&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors"});
+        let photo_credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Mountain.jpg","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":r#"{"Artist":{"value":"A"}}"#});
+        let mut catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":crate::landmarks::Counts::default(),"omissions":[],"records":[{"id":"Q7","name":"Mountain","default_language":"en","fallback_sources":[],"variants":[{"language":"en","text_pages":["A mountain."],"attribution":credit}],"photo":{"path":"photo.rgb222","bytes":PHOTO_PIXELS,"sha256":digest,"attribution":photo_credit}}],"associations":[{"node_id":101,"article_id":"Q7","latitude":-80,"longitude":-160},{"node_id":102,"article_id":"Q7","latitude":80,"longitude":160}]});
         let a = root.join("a.json");
         fs::write(&a, serde_json::to_vec(&catalogue).unwrap()).unwrap();
         catalogue["records"][0]["variants"][0]["text_pages"][0] = json!("Another captured revision.");
@@ -238,7 +240,7 @@ mod tests {
         let pixels = vec![9; PHOTO_PIXELS];
         fs::write(root.join("photo.rgb222"), &pixels).unwrap();
         let digest: String = Sha256::digest(&pixels).iter().map(|b| format!("{b:02x}")).collect();
-        let credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Peak.png","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":"Example","display_pages":["Example"]});
+        let credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Peak.png","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":"{\"Artist\":{\"value\":\"Example\"}}"});
         let mut catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":crate::landmarks::Counts::default(),"omissions":[],
             "records":[{"id":"Q7","name":"Schafberg","default_language":"","fallback_sources":[],"variants":[],
             "photo":{"path":"photo.rgb222","bytes":PHOTO_PIXELS,"sha256":digest,"attribution":credit}}],
