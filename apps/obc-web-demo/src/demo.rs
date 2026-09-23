@@ -977,8 +977,8 @@ mod tests {
             .collect();
         assert!(points.windows(2).all(|pair| pair[0].t_ms < pair[1].t_ms));
         assert!(points.iter().any(|point| point.lat != points[0].lat));
-        let mut profile = obc_route::Profile::EMPTY;
-        assert!(d.rides.fill_track(saved.id, &mut profile).unwrap().len() > 1);
+        let (mut profile, mut facts) = (obc_route::Profile::EMPTY, obc_route::RideTrackFacts::EMPTY);
+        assert!(d.rides.fill_track(saved.id, &mut profile, &mut facts).unwrap().len() > 1);
         d.cmd("exit");
         d.cmd("pause");
         now += 16.0;

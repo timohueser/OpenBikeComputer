@@ -818,7 +818,12 @@ impl RideRepository for BorrowedRides<'_> {
         Ok(true)
     }
 
-    fn fill_track(&self, _id: u64, _profile: &mut obc_route::Profile) -> Option<Vec<(i32, i32)>> {
+    fn fill_track(
+        &self,
+        _id: u64,
+        _profile: &mut obc_route::Profile,
+        _facts: &mut obc_route::RideTrackFacts,
+    ) -> Option<Vec<(i32, i32)>> {
         None
     }
 }

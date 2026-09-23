@@ -257,9 +257,9 @@ fn ride_vector_reads_through_the_production_codec() {
     assert_eq!(info.trip_name.as_str(), TRIP_NAME);
     assert_eq!(ride.len() as u64, obc_formats::ride::checked_object_len(info.point_count).unwrap());
 
-    let mut p = obc_route::Profile::EMPTY;
+    let (mut p, mut facts) = (obc_route::Profile::EMPTY, obc_route::RideTrackFacts::EMPTY);
     let mut preview = heapless::Vec::<_, 3>::new();
-    obc_route::ride_track_into(&SliceSource(&ride), &mut p, &mut preview).unwrap();
+    obc_route::ride_track_into(&SliceSource(&ride), &mut p, &mut facts, &mut preview).unwrap();
     assert_eq!((p.min_ele_m, p.max_ele_m), (214, 225));
     assert_eq!(preview.as_slice(), &[(7_800_000, 48_000_000), (7_801_200, 48_001_000), (7_803_000, 48_002_000)]);
 }

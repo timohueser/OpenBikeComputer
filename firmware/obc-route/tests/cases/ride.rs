@@ -9,7 +9,7 @@ use obc_formats::{
     track::encode_record,
 };
 use obc_ports::TrackPoint;
-use obc_route::{encode_summary_footer, ride_track_into, Profile, RideInfo, RideStats};
+use obc_route::{encode_summary_footer, ride_track_into, Profile, RideInfo, RideStats, RideTrackFacts};
 
 const STATS: RideStats = RideStats {
     distance_m: 2_224,
@@ -129,9 +129,9 @@ fn profile_and_preview_stream_the_samples() {
     let points = [pt(0, 0, 100, 0, true), pt(0, 10_000, 300, 60_000, false), pt(0, 20_000, 200, 120_000, false)];
     let ride = ride_of(&points, "Bergtour", &STATS);
 
-    let mut profile = Profile::EMPTY;
+    let (mut profile, mut facts) = (Profile::EMPTY, RideTrackFacts::EMPTY);
     let mut preview = heapless::Vec::<_, 3>::new();
-    ride_track_into(&SliceSource(&ride), &mut profile, &mut preview).unwrap();
+    ride_track_into(&SliceSource(&ride), &mut profile, &mut facts, &mut preview).unwrap();
     assert_eq!((profile.min_ele_m, profile.max_ele_m), (100, 300));
     assert_eq!(profile.peak_ele_m(), 300);
     assert_eq!(profile.ascent_to(1.0), 200);
@@ -144,9 +144,9 @@ fn preview_keeps_exact_endpoints_when_decimating() {
     let points: Vec<_> = (0..100).map(|i| pt(i * 10, 42, 100, i as u32 * 1_000, i == 0)).collect();
     let ride = ride_of(&points, "Shape", &STATS);
     let spy = ReadSpy { bytes: &ride, reads: RefCell::new(Vec::new()) };
-    let mut profile = Profile::EMPTY;
+    let (mut profile, mut facts) = (Profile::EMPTY, RideTrackFacts::EMPTY);
     let mut preview = heapless::Vec::<_, 8>::new();
-    ride_track_into(&spy, &mut profile, &mut preview).unwrap();
+    ride_track_into(&spy, &mut profile, &mut facts, &mut preview).unwrap();
     assert_eq!(&*spy.reads.borrow(), &[(2_000, FOOTER_LEN), (0, 640), (640, 640), (1_280, 640), (1_920, 80)]);
     assert_eq!((profile.min_ele_m, profile.max_ele_m), (100, 100));
     assert_eq!(preview.len(), 8);
@@ -158,12 +158,12 @@ fn preview_keeps_exact_endpoints_when_decimating() {
 fn track_fill_handles_empty_rides_small_previews_and_read_failure() {
     let points: Vec<_> = (0..40).map(|i| pt(i, 42, 100, i as u32 * 1_000, i == 0)).collect();
     let ride = ride_of(&points, "Track", &STATS);
-    let mut profile = Profile::EMPTY;
+    let (mut profile, mut facts) = (Profile::EMPTY, RideTrackFacts::EMPTY);
     let mut no_preview = heapless::Vec::<_, 0>::new();
-    ride_track_into(&SliceSource(&ride), &mut profile, &mut no_preview).unwrap();
+    ride_track_into(&SliceSource(&ride), &mut profile, &mut facts, &mut no_preview).unwrap();
     assert_eq!((profile.min_ele_m, profile.max_ele_m), (100, 100));
     let mut preview = heapless::Vec::<_, 1>::new();
-    ride_track_into(&SliceSource(&ride), &mut profile, &mut preview).unwrap();
+    ride_track_into(&SliceSource(&ride), &mut profile, &mut facts, &mut preview).unwrap();
     assert_eq!(preview.as_slice(), &[(0, 42)]);
 
     struct FailSecondBlock<'a>(&'a [u8]);
@@ -178,11 +178,49 @@ fn track_fill_handles_empty_rides_small_previews_and_read_failure() {
             SliceSource(self.0).read_at(offset, out)
         }
     }
-    assert_eq!(ride_track_into(&FailSecondBlock(&ride), &mut profile, &mut preview), Err(Error::Io));
+    assert_eq!(ride_track_into(&FailSecondBlock(&ride), &mut profile, &mut facts, &mut preview), Err(Error::Io));
     assert!(preview.is_empty(), "an error after the first preview point cannot return a partial track");
 
     let empty = ride_of(&[], "Empty", &STATS);
-    ride_track_into(&SliceSource(&empty), &mut profile, &mut preview).unwrap();
+    ride_track_into(&SliceSource(&empty), &mut profile, &mut facts, &mut preview).unwrap();
     assert!(preview.is_empty());
     assert_eq!((profile.min_ele_m, profile.max_ele_m), (0, 0));
+}
+
+fn facts_of(ride: &[u8]) -> RideTrackFacts {
+    let (mut profile, mut facts) = (Profile::EMPTY, RideTrackFacts::EMPTY);
+    let mut preview = heapless::Vec::<_, 2>::new();
+    ride_track_into(&SliceSource(ride), &mut profile, &mut facts, &mut preview).unwrap();
+    facts
+}
+
+#[test]
+fn the_track_fill_reads_the_descent_and_averages_each_bucket() {
+    // Two samples a bucket. HR stops halfway, as when a strap drops out.
+    let points: Vec<_> = (0..120)
+        .map(|i| TrackPoint {
+            hr: (i < 60).then_some(100 + i as u8),
+            power: Some(2 * i as u16),
+            ..pt(i, 42, 100, i as u32 * 1_000, i == 0)
+        })
+        .collect();
+    let facts = facts_of(&ride_of(&points, "Sensors", &STATS));
+    assert_eq!(facts.descent_m, 180, "the footer's descent");
+    assert_eq!(facts.hr().len(), 60);
+    assert!((0..30).all(|b| facts.hr()[b] == 100 + 2 * b as u8), "{:?}", facts.hr());
+    assert!(facts.hr()[30..].iter().all(|&v| v == 0), "a bucket without a reading is empty");
+    let power: Vec<u16> = facts.power().collect();
+    assert!((0..60).all(|b| power[b] == (4 * b as u16 + 1).div_ceil(4) * 4), "{power:?}");
+}
+
+#[test]
+fn a_short_ride_has_one_bucket_per_sample_and_an_empty_ride_none() {
+    let points = [pt(0, 0, 100, 0, true), TrackPoint { hr: None, power: None, ..pt(0, 1, 100, 1_000, false) }];
+    let facts = facts_of(&ride_of(&points, "Short", &STATS));
+    assert_eq!(facts.hr(), [140, 0], "one bucket per sample");
+    assert_eq!(facts.power().collect::<Vec<_>>(), [208, 0], "power rounds up to its 4 W step");
+
+    let facts = facts_of(&ride_of(&[], "Empty", &STATS));
+    assert!(facts.hr().is_empty() && facts.power().len() == 0);
+    assert_eq!(facts.descent_m, 180);
 }

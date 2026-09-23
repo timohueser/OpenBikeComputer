@@ -50,7 +50,12 @@ impl RideRepository for MemRideStore {
     }
 
     /// Memory rides have no stored track. The keyed failure parks the empty detail.
-    fn fill_track(&self, _id: obc_app::CatalogObjectId, _profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
+    fn fill_track(
+        &self,
+        _id: obc_app::CatalogObjectId,
+        _profile: &mut Profile,
+        _facts: &mut obc_route::RideTrackFacts,
+    ) -> Option<Vec<(i32, i32)>> {
         None
     }
 }

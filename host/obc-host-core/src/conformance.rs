@@ -75,11 +75,11 @@ pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool)
 
     // Unknown ids never read.
     let unknown = repo.catalog().iter().map(|entry| entry.id).max().unwrap_or(0).wrapping_add(7);
-    let mut profile = obc_route::Profile::EMPTY;
-    assert!(repo.fill_track(unknown, &mut profile).is_none(), "an unknown ride has no track");
+    let (mut profile, mut facts) = (obc_route::Profile::EMPTY, obc_route::RideTrackFacts::EMPTY);
+    assert!(repo.fill_track(unknown, &mut profile, &mut facts).is_none(), "an unknown ride has no track");
 
     let known = repo.catalog()[0].id;
-    let preview = repo.fill_track(known, &mut profile);
+    let preview = repo.fill_track(known, &mut profile, &mut facts);
     if expects_track {
         assert!(!preview.expect("a stored ride yields its recorded track").is_empty());
     } else {

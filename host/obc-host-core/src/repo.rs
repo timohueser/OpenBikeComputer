@@ -12,7 +12,7 @@ use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinua
 use obc_app::{App, CatalogObjectId, RideEntry};
 use obc_formats::io::ByteSource;
 use obc_ports::TrackPoint;
-use obc_route::{Profile, RideStats, RouteSummary};
+use obc_route::{Profile, RideStats, RideTrackFacts, RouteSummary};
 
 /// Exact publication returned before the executor reports a committed route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,9 +165,14 @@ pub trait RideRepository {
     }
     /// Remove the ride: `Ok(true)` = removed, `Ok(false)` = already absent, `Err` = storage failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
-    /// Fill the keyed ride's profile in place and return its preview from one track read.
-    /// `None` = unknown/unreadable; the caller must not publish the profile on failure.
-    fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>>;
+    /// Fill the keyed ride's profile and facts in place and return its preview from one track
+    /// read. `None` = unknown/unreadable; the caller must not publish the profile on failure.
+    fn fill_track(
+        &self,
+        id: CatalogObjectId,
+        profile: &mut Profile,
+        facts: &mut RideTrackFacts,
+    ) -> Option<Vec<(i32, i32)>>;
     /// Re-scan after a ride was just saved. Folder-backed simulator stores use this hook; a static
     /// in-memory catalog is a no-op.
     fn refresh(&mut self) {}

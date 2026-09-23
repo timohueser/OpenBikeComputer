@@ -107,11 +107,16 @@ impl RideRepository for FlatRideStore {
         }
     }
 
-    fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
+    fn fill_track(
+        &self,
+        id: CatalogObjectId,
+        profile: &mut Profile,
+        facts: &mut obc_route::RideTrackFacts,
+    ) -> Option<Vec<(i32, i32)>> {
         let &(id, revision) = self.heads.iter().find(|(candidate, _)| candidate.0 == id)?;
         let source = self.owner.open(id, revision).ok()?;
         let mut preview = Default::default();
-        obc_route::ride_track_into::<{ obc_app::NAV_PREVIEW_MAX }>(&source, profile, &mut preview).ok()?;
+        obc_route::ride_track_into::<{ obc_app::NAV_PREVIEW_MAX }>(&source, profile, facts, &mut preview).ok()?;
         Some(preview.to_vec())
     }
 }

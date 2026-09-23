@@ -1111,7 +1111,8 @@ impl HostLoop {
     ) {
         if let Some(key) = plan.derived_needs.ride_track {
             // Filling invalidates the view, so answer with its post-fill key below.
-            let preview = rides.fill_track(key.ride, app.begin_ride_profile_fill());
+            let (profile, facts) = app.begin_ride_track_fill();
+            let preview = rides.fill_track(key.ride, profile, facts);
             let filled = preview.is_some();
             self.inbox.ride_preview = preview.unwrap_or_default();
             if let Some(key) = app.derived_needs().ride_track {
@@ -1868,7 +1869,12 @@ mod tests {
             fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {
                 Err(CatalogError::RemoveFailed)
             }
-            fn fill_track(&self, _: u64, _: &mut obc_route::Profile) -> Option<Vec<(i32, i32)>> {
+            fn fill_track(
+                &self,
+                _: u64,
+                _: &mut obc_route::Profile,
+                _: &mut obc_route::RideTrackFacts,
+            ) -> Option<Vec<(i32, i32)>> {
                 None
             }
         }
