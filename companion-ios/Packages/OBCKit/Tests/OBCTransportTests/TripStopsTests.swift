@@ -85,6 +85,23 @@ struct TripStopsTests {
     }
 
     @Test
+    func aDayEndAtATransferDoesNotMoveAndOneAtAJoinDoes() {
+        func trip(gap: Double) -> Trip {
+            Trip.joining(
+                [file(0, 10_000), file(10_000 + gap, 20_000)],
+                id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
+        }
+        var transfer = trip(gap: 1_000)
+        var join = trip(gap: 100)
+        #expect(transfer.endsAtTransfer(0))
+        #expect(!join.endsAtTransfer(0))
+        let movedAtTransfer = transfer.endDay(0, at: transfer.place([stop("Camp", 9_000, 0)], near: 10_000)[0])
+        let movedAtJoin = join.endDay(0, at: join.place([stop("Camp", 9_000, 0)], near: 10_000)[0])
+        #expect(!movedAtTransfer)
+        #expect(movedAtJoin)
+    }
+
+    @Test
     func reverseKeepsTheStopWithItsPlace() {
         var trip = trip()
         let camp = trip.place([stop("Camp", 12_000, 100)], near: 10_000)[0]

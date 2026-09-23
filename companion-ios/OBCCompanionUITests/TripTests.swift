@@ -117,10 +117,10 @@ final class TripTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists)
     }
 
-    /// End Day 1 at a stop: the sheet lists the fixture campground, and the pick keeps the day's
-    /// own name and notes the stop's offset on the day row.
+    /// Day 1 ends at a transfer: Day 2 starts 35 km away. The stops sheet lists the fixture
+    /// campground, says why the day end stays, and does not offer the pick.
     @MainActor
-    func testEndDayAtAStop() {
+    func testStopsAtATransferAreShownButNotPicked() {
         let app = launch()
         openTrip(app)
 
@@ -131,12 +131,7 @@ final class TripTests: XCTestCase {
         let camp = app.buttons["stops.row"].firstMatch
         XCTAssertTrue(camp.waitForExistence(timeout: 10), "no stop in the sheet")
         XCTAssertTrue(app.staticTexts["Devil's Lake State Park Campgrounds"].exists)
-        camp.tap()
-
-        XCTAssertFalse(app.otherElements["stops.sheet"].waitForExistence(timeout: 2), "sheet stayed open")
-        let row = expectation(
-            for: NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "Devil's Lake Overnighter", "off the line"),
-            evaluatedWith: day(app, 0))
-        wait(for: [row], timeout: 5)
+        XCTAssertTrue(app.staticTexts["This day ends at a transfer."].exists)
+        XCTAssertFalse(camp.isEnabled, "a pick would put the gap inside a day")
     }
 }

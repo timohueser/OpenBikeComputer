@@ -86,21 +86,25 @@ struct TripStopsModelTests {
         #expect(model.results.map { $0.map(model.canPick) } == [false, true], "day 1 ends at least 100 m before day 2")
     }
 
-    @Test
-    func pickingAnOnLineStopMovesAndNamesTheDayEnd() async throws {
+    /// A started model over the `trips` fixture, with Apple Maps answering `stops`.
+    private func makeModel(stops: [Stop]) -> (MainScreenModel, InMemoryLibraryStore) {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.loadFixtures("trips")
         let library = InMemoryLibraryStore()
         control.seedLibrary(into: library)
-        // On the loop's last segment, 1.5 km before the day end.
-        let camp = Stop(
-            name: "Camp Baraboo", coordinate: Coordinate(latitude: 43.42995, longitude: -89.745), kind: .campsite)
         let model = MainScreenModel(
-            transport: MockTransport(control: control), library: library, stopSearch: MockStopSearch(stops: [camp]))
+            transport: MockTransport(control: control), library: library, stopSearch: MockStopSearch(stops: stops))
         model.start()
-        let id = TripID("driftless-weekender")
-        let before = try #require(model.trip(id)).dayEnds[0]
+        return (model, library)
+    }
+
+    @Test
+    func pickingAnOnLineStopMovesAndNamesTheDayEnd() async throws {
+        let camp = Stop(name: "Camp Baraboo", coordinate: coordinate(9_000, 50), kind: .campsite)
+        let (model, library) = makeModel(stops: [camp])
+        let id = try #require(model.createTrip(
+            name: "T", files: [file(0, 10_000), file(10_000, 20_000)], dayNames: ["Stage 1"]))
 
         let sheet = try #require(model.tripStops(id, day: 0, isOnline: true))
         await sheet.load()
@@ -111,11 +115,27 @@ struct TripStopsModelTests {
 
         let end = try #require(model.trip(id)).dayEnds[0]
         #expect(end.name == "Camp Baraboo")
-        #expect(end.title == before.title, "the day keeps its route's own name")
-        #expect(end.title != nil)
-        #expect(abs(end.distance - placed.distance) < 1)
-        #expect(end.distance < before.distance - 1_000)
+        #expect(end.title == "Stage 1", "the day keeps its file's own name")
+        #expect(abs(end.distance - 9_000) < 1)
         #expect(library.trips().first { $0.id == id }?.dayEnds[0] == end)
         #expect(model.tripStops(id, day: 1, isOnline: true) == nil, "the last day ends at the line end")
+    }
+
+    @Test
+    func aDayEndAtATransferListsStopsButDoesNotMove() async throws {
+        // On the loop's last segment, 1.5 km before the day end; Day 2 starts 35 km away.
+        let camp = Stop(
+            name: "Camp Baraboo", coordinate: Coordinate(latitude: 43.42995, longitude: -89.745), kind: .campsite)
+        let (model, _) = makeModel(stops: [camp])
+        let id = TripID("driftless-weekender")
+        let before = try #require(model.trip(id)).dayEnds
+
+        let sheet = try #require(model.tripStops(id, day: 0, isOnline: true))
+        await sheet.load()
+        #expect(sheet.endsAtTransfer)
+        let placed = try #require(sheet.stops.first)
+        #expect(!sheet.canPick(placed))
+        sheet.pick(placed)
+        #expect(model.trip(id)?.dayEnds == before)
     }
 }

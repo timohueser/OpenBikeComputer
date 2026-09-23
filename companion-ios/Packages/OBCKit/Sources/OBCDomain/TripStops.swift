@@ -23,10 +23,25 @@ extension Trip {
         }
     }
 
+    /// A day end where the next day starts farther away than this is a transfer.
+    public static let transferMinMeters = TripJoin.joinMeters
+
+    /// Whether the next day starts more than ``transferMinMeters`` from where `day` ends.
+    /// Moving such a day end would put the gap inside a day.
+    public func endsAtTransfer(_ day: Int) -> Bool {
+        guard dayEnds.indices.contains(day) else { return false }
+        let vertices = measuredLine.vertices
+        return pieceStarts.contains { start in
+            abs(vertices[start].distance - dayEnds[day].distance) < MeasuredLine.tieMeters
+                && line[start - 1].coordinate.distance(to: line[start].coordinate) > Self.transferMinMeters
+        }
+    }
+
     /// The distances where `day` can end: after the day before it and before the day after it,
-    /// each by at least ``minimumDayMeters``. Nil for the last day, which ends at the line end.
+    /// each by at least ``minimumDayMeters``. Nil for the last day, which ends at the line end,
+    /// and for a day that ends at a transfer.
     public func endRange(of day: Int) -> ClosedRange<Double>? {
-        guard day >= 0, day < dayCount - 1 else { return nil }
+        guard day >= 0, day < dayCount - 1, !endsAtTransfer(day) else { return nil }
         let lower = (day > 0 ? dayEnds[day - 1].distance : 0) + Self.minimumDayMeters
         let upper = dayEnds[day + 1].distance - Self.minimumDayMeters
         return lower <= upper ? lower...upper : nil
