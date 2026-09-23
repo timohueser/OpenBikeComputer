@@ -19,7 +19,7 @@ use crate::Msg;
 
 use super::vocab::band::ElevationBand;
 use super::vocab::chrome::title_frame;
-use super::vocab::fmt::write_distance_coarse;
+use super::vocab::fmt::{dashes, write_distance_coarse};
 use super::vocab::tiles::{category_tile, graph_tile, tile, waypoint_panel, zone_tile};
 use super::{palette, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
@@ -251,7 +251,7 @@ impl StatisticsScreen {
             if let Some(grade) = stat_fields::grade_at(profile, total, cursor_frac) {
                 let _ = write!(readout, "{}{}%", rx.t(Msg::StatsGrade), grade);
             } else {
-                let _ = readout.push_str("—");
+                let _ = readout.push_str(&dashes());
             }
         }
         title_frame(cv, w, h, rx.t(Msg::StatsTitle), &readout);
@@ -278,7 +278,7 @@ impl StatisticsScreen {
         if cursor_band.0 <= cursor_band.1 {
             let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
         } else {
-            let _ = ele_s.push_str("—");
+            let _ = ele_s.push_str(&dashes());
         }
         let peak_x = band.frac_to_x(profile.peak_frac());
         let near_peak = (chart_x..chart_x + chart_w).contains(&peak_x) && (cursor_x - peak_x).abs() < PEAK_NEAR_PX;
