@@ -21,25 +21,37 @@ extension Trip {
     /// A sample closer than this to the last one adds nothing. It bounds the work on a dense track.
     static let coverSampleMeters = 50.0
 
+    /// A sample may fall this far behind the last match along the line, for GPS jitter at a stop.
+    static let coverBackMeters = 50.0
+
     /// The parts of the line `track` rode. A sample at most ``onLineMeters`` from the line is on
-    /// it, and a sample off the line ends a part. The first sample projects near `hint`, and each
-    /// next one near the last, which keeps the track on its own leg of an out-and-back.
-    public func coverage(of track: [Coordinate], near hint: Double) -> LineCoverage {
+    /// it, and a sample off the line ends a part. The first sample matches inside `day`, the
+    /// day's planned range. Each next one matches in a window ahead of the last match, and a tie
+    /// goes to the far side, so the return of an out-and-back stays on the return leg.
+    public func coverage(of track: [Coordinate], day: ClosedRange<Double>) -> LineCoverage {
         guard line.count > 1 else { return LineCoverage() }
         let measured = measuredLine
+        let ahead = Self.refineWindowMeters, back = Self.coverBackMeters
         var ranges: [ClosedRange<Double>] = []
         var last: Double?
         // The sample at `last`, while no sample off the line came after it.
         var onLine: Coordinate?
-        var near = hint
         var sampled: Coordinate?
         for (index, point) in track.enumerated() {
             if let sampled, index < track.count - 1, sampled.distance(to: point) < Self.coverSampleMeters { continue }
             sampled = point
-            var projection = measured.projection(of: point, near: near, window: Self.refineWindowMeters)
+            var projection: (distance: Double, error: Double)
+            if let last {
+                projection = measured.projection(of: point, near: last + (ahead - back) / 2, window: (ahead + back) / 2)
+            } else {
+                let half = (day.upperBound - day.lowerBound) / 2
+                let coarse = measured.projection(of: point, near: day.lowerBound + half, window: half)
+                projection = measured.projection(of: point, near: coarse.distance, window: Self.refineWindowMeters)
+            }
             if projection.error > Self.onLineMeters {
-                // Off the line near the last place: a detour, or a pause that ended far away.
-                let coarse = measured.projection(of: point, near: near, window: measured.length)
+                // Off the line near the last match: a detour, a pause that ended far away, or a
+                // ride that starts outside its day.
+                let coarse = measured.projection(of: point, near: last ?? day.lowerBound, window: measured.length)
                 projection = measured.projection(of: point, near: coarse.distance, window: Self.refineWindowMeters)
             }
             guard projection.error <= Self.onLineMeters else {
@@ -55,7 +67,6 @@ extension Trip {
             }
             last = at
             onLine = point
-            near = at
         }
         return LineCoverage(ranges: Self.merged(ranges), end: last)
     }
@@ -181,7 +192,9 @@ public struct TripReview: Equatable, Sendable {
         days = trip.dayEnds.enumerated().map { index, end in
             defer { start = end.distance }
             let dayRides = (byDay[index] ?? []).sorted { $0.date < $1.date }
-            let covered = dayRides.map { trip.coverage(of: (tracks[$0.id] ?? []).map(\.coordinate), near: start) }
+            let covered = dayRides.map {
+                trip.coverage(of: (tracks[$0.id] ?? []).map(\.coordinate), day: start...end.distance)
+            }
             coverage += covered
             return Day(planned: start...end.distance, rides: dayRides, endedAt: covered.last?.end)
         }

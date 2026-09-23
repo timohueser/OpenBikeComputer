@@ -33,7 +33,7 @@ struct TripJournalModelTests {
     /// A ride of `day` from `from` to `to` km, saved to the library.
     private func ride(_ id: String, day: Int, of trip: Trip, from: Double, to: Double, hour: Double) throws -> RideSummary {
         let start = Date(timeIntervalSince1970: hour * 3_600)
-        let points = stride(from: from * 1_000, through: to * 1_000, by: 20).enumerated().map {
+        let points = stride(from: from * 1_000, through: to * 1_000, by: to >= from ? 20 : -20).enumerated().map {
             RidePoint(timestamp: start.addingTimeInterval(Double($0.offset) * 5), coordinate: coordinate($0.element))
         }
         let summary = RideSummary(
@@ -53,19 +53,70 @@ struct TripJournalModelTests {
         library.saveDayNote("Train up the gorge.", for: .tripDay(key: trip.key, dayIndex: 0))
         let placeName: @Sendable (Coordinate) async -> String? = { $0.longitude < 8.16 ? "Andermatt" : "Ulrichen" }
 
-        let journal = TripJournalModel(trip: trip, rides: rides, library: library, placeName: placeName)
-        await journal.start()
+        let journal = TripJournalModel(library: library, placeName: placeName)
+        await journal.load(trip: trip, rides: rides)
         #expect(journal.entries.map(\.day) == [0, 1])
         #expect(journal.entries[0].note == "Train up the gorge.")
         #expect(journal.entries[1].header.contains("Andermatt → Reckingen"), "the day after the train starts at its own place")
-        #expect(journal.transferDestinations == [0: "Andermatt"])
+        #expect(journal.transfers == [0: .init(from: "Göschenen", to: "Andermatt")])
         #expect(journal.offerTitle == "Days 3–4 are longer now. Even them out?")
 
         journal.closeOffer()
         #expect(journal.offer == nil)
-        let again = TripJournalModel(trip: trip, rides: rides, library: library, placeName: placeName)
-        await again.start()
+        let again = TripJournalModel(library: library, placeName: placeName)
+        await again.load(trip: trip, rides: rides)
         #expect(again.review?.rebalance != nil)
         #expect(again.offer == nil, "a closed offer never comes back")
+    }
+
+    @Test func afterAReverseTheTransferReadsFromTheOtherSide() async throws {
+        var trip = trip()
+        trip.reverse()
+        // The reversed Day 3 runs from Reckingen to the train, which now leaves from Andermatt.
+        let ride = try ride("d3", day: 2, of: trip, from: 21, to: 11, hour: 0)
+        let journal = TripJournalModel(library: library) { $0.longitude < 8.16 ? "Andermatt" : "Ulrichen" }
+        await journal.load(trip: trip, rides: [ride])
+
+        let places = try #require(journal.transfers[2])
+        #expect(TripJournalTransfer.text(kind: trip.dayEnds[2].transfer, from: places.from, to: places.to)
+            == "Train · Andermatt → Göschenen")
+    }
+
+    @Test func aLoadThatANewerOneOvertookChangesNothing() async throws {
+        let old = trip()
+        var new = old
+        new.setTransfer(0, to: .bus)
+        let rides = [try ride("d1", day: 0, of: old, from: 0, to: 10, hour: 0)]
+        let gate = Gate()
+        // The first load waits in the geocoder until the second one has finished.
+        let journal = TripJournalModel(library: library) { _ in await gate.pass() }
+
+        let first = Task { await journal.load(trip: old, rides: rides) }
+        while await !gate.isWaiting { await Task.yield() }
+        await journal.load(trip: new, rides: rides)
+        await gate.open()
+        await first.value
+
+        #expect(journal.trip?.dayEnds[0].transfer == .bus)
+        #expect(journal.entries[0].header.contains("Late") == false, "the old load's answer is dropped")
+    }
+}
+
+/// A geocoder whose first answer waits until the test opens it.
+private actor Gate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var first = true
+    var isWaiting: Bool { waiter != nil }
+
+    func pass() async -> String? {
+        guard first else { return "Now" }
+        first = false
+        await withCheckedContinuation { waiter = $0 }
+        return "Late"
+    }
+
+    func open() {
+        waiter?.resume()
+        waiter = nil
     }
 }

@@ -124,6 +124,31 @@ struct TripStopsTests {
     }
 
     @Test
+    func aReverseMovesATransferEndAcrossItsGap() throws {
+        // A train from Göschenen (10 km) to Andermatt (11 km), after day 1.
+        var trip = Trip.joining(
+            [file(0, 10_000), file(11_000, 20_000), file(20_000, 30_000)],
+            id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
+        trip.namePlace(0, to: "Göschenen")
+        trip.setTransfer(0, to: .train)
+
+        trip.reverse()
+        #expect(trip.endsAtTransfer(1))
+        let end = trip.dayEnds[1]
+        #expect(end.transfer == .train)
+        #expect(end.coordinate.distance(to: coordinate(11_000)) < 1, "the day now ends at Andermatt")
+        #expect(end.name == nil)
+        let start = try #require(trip.dayStart(2))
+        #expect(start.coordinate.distance(to: coordinate(10_000)) < 1)
+        #expect(start.name == "Göschenen", "the name stays with its place")
+
+        trip.reverse()
+        #expect(trip.dayEnds[0].name == "Göschenen")
+        #expect(trip.dayEnds[0].coordinate.distance(to: coordinate(10_000)) < 1)
+        #expect(trip.dayEnds[0].transfer == .train)
+    }
+
+    @Test
     func aDayAfterATransferStartsWhereItsPieceStarts() throws {
         var trip = Trip.joining(
             [file(0, 10_000), file(11_000, 20_000), file(20_000, 30_000)],

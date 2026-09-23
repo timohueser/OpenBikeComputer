@@ -93,9 +93,14 @@ public struct TripJournalTransfer: View {
         .buttonStyle(.plain)
     }
 
-    private var line: some View {
+    /// "Train · Fischerbach → Teningen"; the places show only when both are known.
+    static func text(kind: TransferKind?, from: String?, to: String?) -> String {
         let places = from.flatMap { from in to.map { "\(from) → \($0)" } }
-        return HStack(spacing: 10) {
+        return [kind?.title ?? "Transfer", places].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private var line: some View {
+        HStack(spacing: 10) {
             Path { path in
                 path.move(to: CGPoint(x: 0, y: 0.5))
                 path.addLine(to: CGPoint(x: 28, y: 0.5))
@@ -103,7 +108,7 @@ public struct TripJournalTransfer: View {
             .stroke(OBCTheme.lineStrong, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [1.5, 4]))
             .frame(width: 28, height: 1)
             Image(systemName: kind?.systemImage ?? "arrow.right").font(.system(size: 11))
-            Text([kind?.title ?? "Transfer", places].compactMap { $0 }.joined(separator: " · "))
+            Text(Self.text(kind: kind, from: from, to: to))
                 .font(.obcMono(size: 12))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
