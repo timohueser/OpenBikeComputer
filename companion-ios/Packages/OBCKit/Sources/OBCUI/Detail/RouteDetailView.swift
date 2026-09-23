@@ -10,6 +10,9 @@ public struct RouteDetailView: View {
     private let onUpload: () -> Void
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    /// Set by a host that rebuilds this view while it is on screen: the host presents the rename
+    /// sheet above the rebuild, because a rebuild closes a sheet presented from inside it.
+    private let onRenameTap: (() -> Void)?
     private let onReverse: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
     private let noDevicePaired: Bool
@@ -36,6 +39,7 @@ public struct RouteDetailView: View {
         onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onRenameTap: (() -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
         noDevicePaired: Bool = false,
@@ -50,6 +54,7 @@ public struct RouteDetailView: View {
         self.onUpload = onUpload
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onRenameTap = onRenameTap
         self.onReverse = onReverse
         self.onBikeTypeChange = onBikeTypeChange
         self.noDevicePaired = noDevicePaired
@@ -235,7 +240,7 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.title")
                 if model.isRenamable {
                     Button {
-                        renameShown = true
+                        if let onRenameTap { onRenameTap() } else { renameShown = true }
                     } label: {
                         Image(systemName: "pencil")
                             .font(.system(size: 15, weight: .medium))

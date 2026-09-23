@@ -22,19 +22,23 @@ public extension View {
         }
     }
 
-    /// The rename sheet, shared by every rename: a field that starts at `name`, under Cancel and
-    /// Save. The draft lives in the sheet, so a refresh of the screen below cannot reset or close
-    /// it. Save hands the draft to `onSave`.
+    /// The name sheet, shared by every rename and name prompt: a field that starts at `name`,
+    /// under Cancel and Save. The draft lives in the sheet, so a refresh of the screen below cannot
+    /// reset or close it. Save, enabled while `canSave` accepts the draft, hands it to `onSave`.
     func obcRenameSheet(
         _ title: String,
         isPresented: Binding<Bool>,
         name: String,
         placeholder: String = "Name",
         message: String? = nil,
+        saveTitle: String = "Save",
+        canSave: @escaping (String) -> Bool = { _ in true },
         onSave: @escaping (String) -> Void
     ) -> some View {
         sheet(isPresented: isPresented) {
-            OBCRenameSheet(title: title, name: name, placeholder: placeholder, message: message, onSave: onSave)
+            OBCRenameSheet(
+                title: title, name: name, placeholder: placeholder, message: message, saveTitle: saveTitle,
+                canSave: canSave, onSave: onSave)
         }
     }
 }
@@ -43,16 +47,23 @@ private struct OBCRenameSheet: View {
     let title: String
     let placeholder: String
     let message: String?
+    let saveTitle: String
+    let canSave: (String) -> Bool
     let onSave: (String) -> Void
 
     @State private var draft: String
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
 
-    init(title: String, name: String, placeholder: String, message: String?, onSave: @escaping (String) -> Void) {
+    init(
+        title: String, name: String, placeholder: String, message: String?, saveTitle: String,
+        canSave: @escaping (String) -> Bool, onSave: @escaping (String) -> Void
+    ) {
         self.title = title
         self.placeholder = placeholder
         self.message = message
+        self.saveTitle = saveTitle
+        self.canSave = canSave
         self.onSave = onSave
         _draft = State(initialValue: name)
     }
@@ -89,8 +100,9 @@ private struct OBCRenameSheet: View {
                         .accessibilityIdentifier("rename.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save)
+                    Button(saveTitle, action: save)
                         .fontWeight(.semibold)
+                        .disabled(!canSave(draft))
                         .accessibilityIdentifier("rename.save")
                 }
             }
@@ -101,6 +113,7 @@ private struct OBCRenameSheet: View {
     }
 
     private func save() {
+        guard canSave(draft) else { return }
         onSave(draft)
         dismiss()
     }
