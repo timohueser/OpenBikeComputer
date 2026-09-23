@@ -49,6 +49,9 @@ pub enum Request {
         id: ObjectId,
         revision: Revision,
     },
+    RemoveRoutes {
+        heads: heapless::Vec<(ObjectId, Revision), { obc_storage::flat::store::MAX_BATCH }>,
+    },
     Cancel {
         allocation: Allocation,
     },
@@ -64,7 +67,7 @@ impl Request {
             Self::Seal { .. } => Kind::Seal,
             Self::ReleaseSealed { .. } => Kind::ReleaseSealed,
             Self::PublishComputedRoute { .. } => Kind::Publish,
-            Self::RemoveComputedRoute { .. } => Kind::Remove,
+            Self::RemoveComputedRoute { .. } | Self::RemoveRoutes { .. } => Kind::Remove,
             Self::Cancel { .. } => Kind::Cancel,
             Self::Close { .. } => Kind::Close,
         }
@@ -184,6 +187,21 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
             store.commit(&[Mutation::Remove { id, revision }])?;
             Ok(Outcome::Done)
         }
+        Request::RemoveRoutes { heads } => {
+            let mut batch: heapless::Vec<Mutation, { obc_storage::flat::store::MAX_BATCH }> = heapless::Vec::new();
+            for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+                if heads.contains(&(meta.id, meta.revision))
+                    && !meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+                    && metadata::check_route_change(store, meta.id).is_ok()
+                {
+                    let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
+                }
+            }
+            if !batch.is_empty() {
+                store.commit(&batch)?;
+            }
+            Ok(Outcome::Done)
+        }
         Request::Cancel { allocation } => {
             store.cancel(allocation);
             Ok(Outcome::Done)
@@ -241,19 +259,18 @@ pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
     app.set_routes_with_ids(&summaries, &ids);
 }
 
-pub fn remove_routes_batch(
+pub fn route_heads(
     store: &FlatStore<FlatCard>,
     ids: impl Iterator<Item = u64>,
-) -> heapless::Vec<Mutation, { obc_storage::flat::store::MAX_BATCH }> {
-    let mut batch = heapless::Vec::new();
-    for id in ids {
-        if let Some(meta) =
-            store.entries().find(|m| m.kind == ObjectKind::Route && m.id.0 == id && m.flags.is_route_head())
-        {
-            let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
+) -> heapless::Vec<(ObjectId, Revision), { obc_storage::flat::store::MAX_BATCH }> {
+    let ids: Vec<u64> = ids.collect();
+    let mut heads = heapless::Vec::new();
+    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+        if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
+            break;
         }
     }
-    batch
+    heads
 }
 
 pub fn fingerprint_reads() -> u32 {

@@ -389,17 +389,17 @@ impl Executor {
                     Step::Failed(error) => return self.fail(NavigatorError::Plan(error)),
                     Step::Done(stats) => LegCost::from(stats),
                 };
-                let goal = planner.goal();
+                let (start, goal) = (planner.snapped_start(), planner.snapped_goal());
                 let Some(context) = app.assistant_review_context() else {
                     return self.fail(NavigatorError::Unavailable);
                 };
                 if self.outbound.is_none() && context.purpose == ReviewPurpose::Visit {
-                    self.outbound = Some(leg);
+                    self.outbound = Some(leg.joined_at(self.return_to, start));
                     g.visit_begin_plan(goal, self.return_to, context);
                     return self.ready(Work::Measure);
                 }
                 let legs = match self.outbound.take() {
-                    Some(outbound) => VisitLegs { outbound, back: Some(leg) },
+                    Some(outbound) => VisitLegs { outbound, back: Some(leg.joined_at(self.return_to, goal)) },
                     None => VisitLegs { outbound: leg, back: None },
                 };
                 let token = self.token.take()?;

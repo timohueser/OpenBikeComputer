@@ -655,6 +655,11 @@ impl CatalogState {
         self.ops.is_current(outcome.token())
     }
 
+    /// The last catalog read failed and its retry waits.
+    pub(crate) fn read_deferred(&self) -> bool {
+        self.read_retry_at.is_some()
+    }
+
     pub(crate) fn defer_read(&mut self, now_ms: u32) {
         self.read_retry_at = Some(now_ms.wrapping_add(30_000));
     }

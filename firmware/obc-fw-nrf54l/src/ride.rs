@@ -1101,12 +1101,12 @@ pub(crate) async fn run_app(
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
                     CatalogEffect::RemoveOrphanReviews { token } => {
-                        let batch = crate::flat_store::remove_routes_batch(flat, app.orphan_reviews());
-                        let result = if batch.is_empty() {
+                        let heads = crate::flat_store::route_heads(flat, app.orphan_reviews());
+                        let result = if heads.is_empty() {
                             Ok(())
                         } else if let Some(writer) = crate::flat_store::writer() {
                             writer
-                                .call(crate::flat_store::Request::Commit { batch }, &CATALOG_STORE_REPLY)
+                                .call(crate::flat_store::Request::RemoveRoutes { heads }, &CATALOG_STORE_REPLY)
                                 .await
                                 .map(|_| ())
                         } else {

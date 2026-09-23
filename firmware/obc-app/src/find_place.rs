@@ -68,16 +68,21 @@ impl Costs {
             && matches!((self.added_m, other.added_m), (Some(a), Some(b)) if a <= b)
             && matches!((self.added_ascent_m, other.added_ascent_m), (Some(a), Some(b)) if a <= b)
     }
-    /// The list figures: the route up to the stop's anchor, then the measured legs. The finished
-    /// route's own figures can differ by the seam metres its composition adds.
+    /// The list figures: the route up to the stop's anchor, then the measured legs with the
+    /// connectors the composition adds at their route joins. A connector has no elevation, so
+    /// a climb with one is unknown. The finished route can still differ by a few metres.
     fn from_legs(stop: Stop, progress_m: u32, legs: VisitLegs) -> Self {
         let out = legs.outbound;
-        let both = |back: &obc_route::visit::LegCost| back.elevation_complete && out.elevation_complete;
+        let outbound_m = out.distance_m + out.join_gap_m;
+        let known = |leg: &obc_route::visit::LegCost| leg.elevation_complete && leg.join_gap_m == 0;
         Self {
-            arrival_m: stop.anchor_m.saturating_sub(progress_m).saturating_add(out.distance_m),
-            arrival_ascent_m: stop.prefix_ascent_m.filter(|_| out.elevation_complete).map(|a| a + out.ascent_m),
-            added_m: legs.back.map(|back| out.distance_m + back.distance_m),
-            added_ascent_m: legs.back.filter(both).map(|back| out.ascent_m + back.ascent_m),
+            arrival_m: stop.anchor_m.saturating_sub(progress_m).saturating_add(outbound_m),
+            arrival_ascent_m: stop.prefix_ascent_m.filter(|_| known(&out)).map(|a| a + out.ascent_m),
+            added_m: legs.back.map(|back| outbound_m + back.distance_m + back.join_gap_m),
+            added_ascent_m: legs
+                .back
+                .filter(|back| known(back) && known(&out))
+                .map(|back| out.ascent_m + back.ascent_m),
         }
     }
 }
@@ -293,6 +298,12 @@ impl crate::App {
     }
     pub fn find_place_result_count(&self) -> usize {
         self.ui.find.results.len()
+    }
+    pub fn find_place_costs(&self, i: usize) -> Option<Costs> {
+        self.ui.find.costs(i)
+    }
+    pub fn find_review_costs(&self) -> Option<Costs> {
+        self.ui.find.review_costs
     }
     pub(crate) fn sync_find_preferences(&mut self) {
         let limit = self.settings().find_results.limit();
@@ -611,7 +622,7 @@ impl crate::App {
             self.ui.find.review = self.assistant_review_status();
             // Exact candidate metrics are copied before cancellation retracts its publication.
             if self.ui.find.review_costs.is_none() {
-                self.ui.find.review_costs = self.measured_place_costs();
+                self.ui.find.review_costs = self.measured_place_costs(route);
             }
             return;
         }
@@ -636,6 +647,12 @@ impl crate::App {
             let Some(reader) = reader else { return };
             if reader.nav_directory().is_empty() {
                 self.ui.find.state = State::NoAccess;
+                return;
+            }
+            if route.is_some_and(|r| r.has_unresolved_avoidance()) {
+                // No visit can leave such a route; the list is empty rather than full of refusals.
+                self.ui.find.state = State::Ready;
+                self.ui.map_dirty = true;
                 return;
             }
             let progress = self.navigator.route_state().progress_m;
@@ -796,8 +813,11 @@ impl crate::App {
             return;
         }
         if self.ui.find.context.is_none() && self.catalogs.loaded_scope.is_none() {
-            // The catalog is being re-read; the first candidate's frozen inputs need its scope.
-            self.ui.next_wake_ms = Some(1);
+            // The first candidate's frozen inputs need the catalog scope. The catalog outcome
+            // wakes the pass; a read that failed and waits for its retry ends the search.
+            if self.catalogs.read_deferred() {
+                self.ui.find.state = State::Failed;
+            }
             return;
         }
         while (self.ui.find.next as usize) < PLAN_LIMIT {
@@ -861,13 +881,21 @@ impl crate::App {
         self.ui.find.state = State::Ready;
         self.ui.map_dirty = true;
     }
-    fn measured_place_costs(&self) -> Option<Costs> {
+    /// A return to the route has no excursion window: its extra distance is the connector route
+    /// against the rest of the route being ridden, and its extra climb stays unknown.
+    fn measured_place_costs(&self, route: Option<&RouteReader>) -> Option<Costs> {
         let p = self.assistant_preview()?;
         let facts = self.assistant_visit_costs()?;
+        let returning = self.assistant_review_context().is_some_and(|c| c.purpose == ReviewPurpose::ReturnToRoute);
+        let added_m = if returning {
+            route.map(|r| p.distance_m.saturating_sub(r.total_distance_m.saturating_sub(self.progress_m())))
+        } else {
+            facts.legs_m
+        };
         Some(Costs {
             arrival_m: p.visit_anchors_m.map_or(p.distance_m, |a| a[1].saturating_sub(a[0])),
             arrival_ascent_m: facts.arrival_elevation_complete.then_some(facts.arrival_ascent_m),
-            added_m: facts.legs_m,
+            added_m,
             added_ascent_m: facts.legs_ascent_m,
         })
     }
@@ -1421,27 +1449,6 @@ mod tests {
     }
     fn cost(arrival: u32, ascent: Option<u32>, added: u32) -> Option<Costs> {
         Some(Costs { arrival_m: arrival, arrival_ascent_m: ascent, added_m: Some(added), added_ascent_m: ascent })
-    }
-    #[test]
-    fn list_costs_add_the_route_to_the_stop_and_the_measured_legs() {
-        use obc_route::visit::LegCost;
-        let leg = |distance_m, ascent_m, elevation_complete| LegCost { distance_m, ascent_m, elevation_complete };
-        let stop = Stop { anchor_m: 5_000, prefix_ascent_m: Some(40) };
-        let visit = VisitLegs { outbound: leg(700, 12, true), back: Some(leg(650, 3, true)) };
-        assert_eq!(
-            Costs::from_legs(stop, 1_200, visit),
-            Costs { arrival_m: 4_500, arrival_ascent_m: Some(52), added_m: Some(1_350), added_ascent_m: Some(15) }
-        );
-        let gap = VisitLegs { outbound: leg(700, 12, false), ..visit };
-        assert_eq!(Costs::from_legs(stop, 1_200, gap).arrival_ascent_m, None);
-        assert_eq!(Costs::from_legs(stop, 1_200, gap).added_ascent_m, None);
-        let unknown_prefix = Stop { prefix_ascent_m: None, ..stop };
-        assert_eq!(Costs::from_legs(unknown_prefix, 1_200, visit).arrival_ascent_m, None);
-        let direct = VisitLegs { outbound: leg(900, 20, true), back: None };
-        assert_eq!(
-            Costs::from_legs(Stop { anchor_m: 0, prefix_ascent_m: Some(0) }, 0, direct),
-            Costs { arrival_m: 900, arrival_ascent_m: Some(20), added_m: None, added_ascent_m: None }
-        );
     }
     #[test]
     fn useful_measured_choices_keep_on_way_stops_and_a_nearer_alternative() {

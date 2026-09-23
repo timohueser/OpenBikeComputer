@@ -82,9 +82,10 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!(seen, 48);
     let facts = RouteReader::new(&index, &emitted).interval_facts(0, stats.total_distance_m).unwrap();
     assert_eq!((facts.ascent_m, facts.descent_m), (stats.total_ascent_m, stats.total_descent_m));
-    let costs = VisitCosts::read(&emitted, [0, 111], None).unwrap();
+    let costs = VisitCosts::read(&emitted, [0, 111], Some([0, 222])).unwrap();
     assert_eq!(costs.arrival_ascent_m, 20);
     assert!(costs.arrival_elevation_complete && costs.complete_elevation);
+    assert_eq!((costs.legs_m, costs.legs_ascent_m), (Some(222), Some(20)), "out climbs 20 m and back descends it");
     let mut corrupt = sink.buf.clone();
     corrupt[40..44].copy_from_slice(&999u32.to_le_bytes());
     assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111], None).is_err());

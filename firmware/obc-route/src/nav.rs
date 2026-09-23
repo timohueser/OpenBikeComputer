@@ -647,8 +647,11 @@ impl NavPlanner {
         self.settles
     }
 
-    /// The graph coordinate the goal snapped to, once the search has run.
-    pub fn goal(&self) -> (i32, i32) {
+    /// The graph coordinates the two endpoints snapped to, once the search has run.
+    pub fn snapped_start(&self) -> (i32, i32) {
+        self.start_c
+    }
+    pub fn snapped_goal(&self) -> (i32, i32) {
         self.goal_c
     }
 

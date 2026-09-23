@@ -66,6 +66,9 @@ pub struct LegCost {
     pub distance_m: u32,
     pub ascent_m: u32,
     pub elevation_complete: bool,
+    /// The connector the composition adds where this leg joins the route: the snap gap there
+    /// when it is over [`APPROACH_TOLERANCE_M`], else 0. Its elevation is unknown.
+    pub join_gap_m: u32,
 }
 impl From<RouteStats> for LegCost {
     fn from(stats: RouteStats) -> Self {
@@ -73,7 +76,15 @@ impl From<RouteStats> for LegCost {
             distance_m: stats.total_distance_m,
             ascent_m: stats.total_ascent_m,
             elevation_complete: stats.elevation_complete,
+            join_gap_m: 0,
         }
+    }
+}
+impl LegCost {
+    /// Charge the connector between the route point `at` and the graph point `snapped`.
+    pub fn joined_at(self, at: (i32, i32), snapped: (i32, i32)) -> Self {
+        let gap = obc_map_scene::ground_dist_m(at, snapped);
+        Self { join_gap_m: if gap > APPROACH_TOLERANCE_M { (gap + 0.5) as u32 } else { 0 }, ..self }
     }
 }
 
