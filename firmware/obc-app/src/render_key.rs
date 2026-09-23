@@ -366,6 +366,7 @@ mod tests {
             [
                 ("Home", RenderKeyKind::Home),
                 ("Map", RenderKeyKind::Map),
+                ("Assistant", RenderKeyKind::UpAhead),
                 ("Landmarks", RenderKeyKind::Map),
                 ("Statistics", RenderKeyKind::Statistics),
                 ("Climb", RenderKeyKind::Climb),
