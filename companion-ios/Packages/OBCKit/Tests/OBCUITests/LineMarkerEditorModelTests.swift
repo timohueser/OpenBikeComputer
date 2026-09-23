@@ -209,4 +209,15 @@ struct LineMarkerEditorModelTests {
         model.end()
         #expect(model.window == 0...model.line.length, "the map's stretch applies on release")
     }
+
+    /// A short window is sampled afresh, so its curve keeps its shape.
+    @Test
+    func aWindowIsSampledAcrossItsOwnStretch() {
+        let model = model()
+        model.showVisible([5_000...6_000], centre: 5_500)
+        #expect(model.profile.first?.distance == 5_000)
+        #expect(model.profile.last?.distance == 6_000)
+        #expect(model.profile.count == 11, "one sample per vertex, up to the cap")
+        #expect(abs(model.elevationRange.lowerBound - 500) < 0.1 && abs(model.elevationRange.upperBound - 600) < 0.1)
+    }
 }

@@ -163,8 +163,8 @@ private struct ProfileStaticLayer: View, Equatable {
             }
             context.stroke(grid, with: .color(OBCTheme.gridLine), lineWidth: 1)
 
-            let length = samples.last?.distance ?? 0
-            let bounds = [0] + splits + [length]
+            // The samples cover the window alone; a segment past its end is cut at it.
+            let bounds = [0] + splits + [window.upperBound]
             for segment in 0..<(bounds.count - 1) {
                 let from = max(bounds[segment], window.lowerBound)
                 let to = min(bounds[segment + 1], window.upperBound)
@@ -205,8 +205,9 @@ private struct ProfileStaticLayer: View, Equatable {
     /// Linear between the two samples around `distance`; the samples are evenly spaced.
     private func elevation(at distance: Double) -> Double {
         guard samples.count > 1 else { return samples.first?.elevation ?? 0 }
-        let step = samples[samples.count - 1].distance / Double(samples.count - 1)
-        let position = min(max(distance / max(step, 1e-9), 0), Double(samples.count - 1))
+        let origin = samples[0].distance
+        let step = (samples[samples.count - 1].distance - origin) / Double(samples.count - 1)
+        let position = min(max((distance - origin) / max(step, 1e-9), 0), Double(samples.count - 1))
         let i = min(Int(position), samples.count - 2)
         let t = position - Double(i)
         return samples[i].elevation + (samples[i + 1].elevation - samples[i].elevation) * t

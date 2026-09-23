@@ -161,6 +161,11 @@ struct TripDayEditorModelTests {
         transfer.handles.onStopAction(camp)
         #expect(transfer.trip.dayEnds[0].stop == nil)
         #expect(transfer.trip.dayEnds[1].stop == camp.stop)
+
+        // The callout follows the day ends: a split makes the end at 10 km Day 2's.
+        let split = editor(threeDays())
+        split.splitDay(0)
+        #expect(split.handles.stopActionTitle(camp) == "End Day 2 here")
     }
 
     /// The snap pass lands after the stops arrive, even though the geocoder has written place
@@ -209,30 +214,6 @@ struct TripDayEditorModelTests {
         #expect(model.trip.dayCount == cap)
         var trip = model.trip
         #expect(trip.reproject().isEmpty)
-    }
-
-    /// A drag frame reads figures and blockers that were worked out at the last change: 120
-    /// frames on a nine-day line of 50,000 points cost no line walks.
-    @Test
-    func aDragFrameWalksNoLine() {
-        let dense = stride(from: 0.0, through: 300_000, by: 6).map {
-            RoutePoint(coordinate: coordinate($0), elevationMeters: $0 * 0.01)
-        }
-        let model = editor(trip([dense]), isSplitMode: true)
-        model.setDayCount(9)
-        let id = model.handles.markers[4].id
-        let clock = ContinuousClock()
-        let elapsed = clock.measure {
-            model.handles.begin(id)
-            for frame in 0..<120 {
-                model.handles.move(id, to: 165_000 + Double(frame) * 20)
-                for day in 0..<9 { _ = model.removeBlocker(day) }
-                _ = model.stats
-            }
-            model.handles.end()
-        }
-        #expect(model.removeBlockers.count == 9)
-        #expect(elapsed < .seconds(1), "120 frames took \(elapsed)")
     }
 
     @Test

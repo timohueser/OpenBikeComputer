@@ -49,8 +49,8 @@ extension MeasuredLine {
     }
 }
 
-/// Balance and snap: the one algorithm behind the split stepper, Even out days and the trip
-/// review's re-balance. Days are equal in riding time, not in kilometres, so a day with a big
+/// Balance and snap: the one algorithm behind the split stepper and the trip review's
+/// re-balance. Days are equal in riding time, not in kilometres, so a day with a big
 /// climb is shorter. Each ideal day end then snaps to a stop near it.
 public enum DayBalance {
     /// A stop within this share of one day's riding time from the ideal day end is a candidate.

@@ -127,9 +127,8 @@ extension Trip {
     }
 }
 
-/// The offer to even out the days after a day that ended far from its plan. It feeds the day
-/// editor's Even out days: the days in ``days`` share the line after ``fixedBefore`` equally,
-/// and nothing before it moves.
+/// The offer to even out the days after a day that ended far from its plan: the days in
+/// ``days`` share the line after ``fixedBefore`` equally, and nothing before it moves.
 public struct RebalanceOffer: Equatable, Sendable {
     /// The ridden day that ended away from its planned end.
     public let day: Int
