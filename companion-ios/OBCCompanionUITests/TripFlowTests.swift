@@ -54,13 +54,11 @@ final class TripFlowTests: XCTestCase {
         snap(app, "TR7-multiselect")
         group.tap()
 
-        let alert = app.alerts["Name the trip"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "name prompt missing")
-        let field = alert.textFields.firstMatch
-        field.tap()
+        let field = app.textFields["rename.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "name prompt missing")
         field.clearText()
         field.typeText("Northwoods Weekend")
-        alert.buttons["Create"].tap()
+        app.buttons["rename.save"].tap()
 
         // The trip card appears, and the two grouped routes left the list.
         XCTAssertTrue(app.staticTexts["Northwoods Weekend"].waitForExistence(timeout: 5), "new trip card missing")
@@ -122,18 +120,19 @@ final class TripFlowTests: XCTestCase {
             "the imported route must not also be a route card")
     }
 
-    /// A trip is a Planned row of its own: with no loose route left, the list still shows the
-    /// trip card, not the empty state.
+    /// Two files that arrive together become one trip through Make trip. A trip is a Planned row
+    /// of its own: with no loose route left, the list still shows the trip card, not the empty
+    /// state.
     @MainActor
-    func testATripWithoutLooseRoutesStaysListed() {
-        let app = launch(fixtures: "empty", importSample: "gpx")
+    func testATripFromSeveralFilesStaysListed() {
+        let app = launch(fixtures: "empty", importSample: "trip")
 
-        let row = app.buttons["import.startTrip"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "import Start a trip row missing")
-        row.tap()
+        let makeTrip = app.buttons["join.makeTrip"]
+        XCTAssertTrue(makeTrip.waitForExistence(timeout: 10), "the Make a trip sheet is missing")
+        makeTrip.tap()
         XCTAssertTrue(
-            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 10),
-            "Start a trip must open the new trip's page")
+            app.descendants(matching: .any)["trip.day.1"].firstMatch.waitForExistence(timeout: 10),
+            "Make trip must open the new two-day trip's page")
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
         waitForMain(app)
