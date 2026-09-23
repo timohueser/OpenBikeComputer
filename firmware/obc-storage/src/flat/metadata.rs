@@ -116,7 +116,7 @@ impl<'a> Image<'a> {
             || buffer[4..10] != [2, 0, 32, 0, 40, 0]
             || !matches!((checkpoint_version, checkpoint_len), (0, 0) | (CHECKPOINT_VERSION, CHECKPOINT_LEN))
             || len < rows_end + checkpoint_len
-            || (len - rows_end - checkpoint_len) % RECORD_LEN != 0
+            || !(len - rows_end - checkpoint_len).is_multiple_of(RECORD_LEN)
             || (len - rows_end - checkpoint_len) / RECORD_LEN > MAX_RECORDS
         {
             return Err(Error::Invalid);
@@ -642,28 +642,48 @@ pub fn write_checkpoint<D: BlockDevice>(
     Ok(())
 }
 
-/// Replace the trip progress records. The app owns them, so the last write wins.
+/// Write one trip progress record by the bound rules of
+/// [`record`](obc_formats::trip_progress::record); `stored` says whether a stored trip holds a key.
+/// The record takes the current Revision of its day route, so a later replace voids its metres.
 #[inline(never)]
-pub fn write_progress<D: BlockDevice>(store: &FlatStore<D>, records: &[TripProgress]) -> Result<(), Error> {
+pub fn write_progress<D: BlockDevice>(
+    store: &FlatStore<D>,
+    mut new: TripProgress,
+    stored: impl Fn(u64) -> bool,
+) -> Result<(), Error> {
+    new.day_route.revision = route_revision(store, new.day_route.id)?.unwrap_or(0);
     let mut bytes = [0; MAX_LEN];
     let mut owner = Metadata::new(store);
     let mut image = owner.load(store, &mut bytes)?;
-    if image.progress().eq(records.iter().cloned()) {
-        return durable(store);
-    }
+    let mut records: obc_formats::trip_progress::Records = image.progress().collect();
+    obc_formats::trip_progress::record(&mut records, new, stored);
     image.reconcile(store)?;
-    image.set_progress(records)?;
+    image.set_progress(&records)?;
     owner.replace(store, &mut image, None)?;
     Ok(())
 }
 
-/// The trip progress records, in write order.
+/// The trip progress records, in write order. A record whose day route has another Revision now
+/// reads its metres as 0.
 #[inline(never)]
-pub fn read_progress<D: BlockDevice>(store: &FlatStore<D>, accept: impl FnMut(TripProgress)) -> Result<(), Error> {
+pub fn read_progress<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(TripProgress)) -> Result<(), Error> {
     let mut bytes = [0; MAX_LEN];
     let image = Metadata::new(store).load(store, &mut bytes)?;
-    image.progress().for_each(accept);
+    for mut record in image.progress() {
+        if route_revision(store, record.day_route.id)? != Some(record.day_route.revision) {
+            record.metres = 0;
+        }
+        accept(record);
+    }
     Ok(())
+}
+
+fn route_revision<D: BlockDevice>(store: &FlatStore<D>, id: u64) -> Result<Option<u64>, Error> {
+    match source_head(store, ObjectId(id), ObjectKind::Route) {
+        Ok(entry) => Ok(Some(entry.revision.0)),
+        Err(Error::Stale) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// A validated recovery offer. No checkpoint means ordinary boot behavior.
