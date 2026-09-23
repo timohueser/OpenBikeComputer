@@ -24,14 +24,37 @@ pub enum Kind {
     Close,
 }
 pub enum Request {
-    Allocate { bytes: u64 },
-    WriteComputedRoute { allocation: Allocation, bytes: &'static [u8], header: &'static [u8] },
-    Seal { allocation: Allocation, out: &'static mut Option<SealedAllocation<'static>> },
-    ReleaseSealed { sealed: SealedAllocation<'static> },
-    PublishComputedRoute { allocation: Allocation, name: DisplayName, original: Option<(ObjectId, Revision)> },
-    RemoveComputedRoute { id: ObjectId, revision: Revision },
-    Cancel { allocation: Allocation },
-    Close { handle: Handle },
+    Allocate {
+        bytes: u64,
+    },
+    WriteComputedRoute {
+        allocation: Allocation,
+        bytes: &'static [u8],
+        header: &'static [u8],
+    },
+    Seal {
+        allocation: Allocation,
+        out: &'static mut Option<SealedAllocation<'static>>,
+    },
+    ReleaseSealed {
+        sealed: SealedAllocation<'static>,
+    },
+    PublishComputedRoute {
+        allocation: Allocation,
+        name: DisplayName,
+        original: Option<(ObjectId, Revision)>,
+        built_day: bool,
+    },
+    RemoveComputedRoute {
+        id: ObjectId,
+        revision: Revision,
+    },
+    Cancel {
+        allocation: Allocation,
+    },
+    Close {
+        handle: Handle,
+    },
 }
 impl Request {
     fn kind(&self) -> Kind {
@@ -133,7 +156,7 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
             store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
             Ok(Outcome::Done)
         }
-        Request::PublishComputedRoute { allocation, name, original } => {
+        Request::PublishComputedRoute { allocation, name, original, .. } => {
             if original.is_some_and(|(id, revision)| store.current_revision(id) != Ok(Some(revision)))
                 || !planner_map_current()
             {

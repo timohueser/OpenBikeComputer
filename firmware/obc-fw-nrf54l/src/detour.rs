@@ -448,7 +448,10 @@ impl Executor {
                     return self.fail(NavigatorError::Store);
                 };
                 let original = self.original.as_ref().map(|s| (s.id(), s.revision()));
-                if let Ok(t) = writer.try_call(Request::PublishComputedRoute { allocation, name, original }, reply) {
+                let built_day = matches!(self.kind, obc_route::Leg::Rest { .. });
+                if let Ok(t) =
+                    writer.try_call(Request::PublishComputedRoute { allocation, name, original, built_day }, reply)
+                {
                     self.phase = Phase::Await(t, After::Publish);
                 }
             }

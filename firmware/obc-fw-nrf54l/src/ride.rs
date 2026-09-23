@@ -1899,6 +1899,7 @@ pub(crate) async fn run_app(
                                             original: review_original
                                                 .as_ref()
                                                 .map(|source| (source.id(), source.revision())),
+                                            built_day: false,
                                         },
                                         None => {
                                             publishing = false;

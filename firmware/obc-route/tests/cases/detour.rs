@@ -682,7 +682,10 @@ fn a_rest_splice_is_the_rest_of_the_day_then_the_next_day_without_the_spur() {
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let joined = RouteReader::new(&idx, &src);
-    assert_eq!(idx.name(), "Day 3 Brig", "the ride takes the day's name");
+    assert_eq!(idx.name(), "From stop · Day 3 Brig", "the built day cannot pass for the day");
+    let info = obc_route::RouteObjectInfo::read(&src).unwrap();
+    assert!(!info.assistant_candidate);
+    assert_ne!(sink.buf[5] & obc_formats::obcr::FLAG_BUILT_DAY, 0, "it is marked as a built day");
     assert_eq!(idx.bike_type(), BikeType::Gravel, "and the day's bike type");
     assert!(!idx.has_unresolved_avoidance(), "a rest avoids nothing");
     let want = (leave_m - from_m) + (next.total_distance_m - join_m);

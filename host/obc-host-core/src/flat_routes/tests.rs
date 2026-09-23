@@ -157,3 +157,21 @@ fn full_route_catalog_refuses_growth_but_keeps_replacement_and_complete_projecti
     assert_eq!(routes.ids(), ids, "the menu stays bounded while the store can hold more routes");
     assert_eq!(FlatRouteStore::new(owner, &[]).unwrap().ids().len(), obc_app::MAX_ROUTES);
 }
+
+/// A built trip day is internal, and each new build replaces the one before it in place: two
+/// presses of the day row leave one built day on the card.
+#[test]
+fn a_built_day_replaces_the_one_before_it_and_stays_out_of_the_list() {
+    let mut built = ROUTE.to_vec();
+    built[5] |= obc_formats::obcr::FLAG_BUILT_DAY;
+    let mut routes = FlatRouteStore::from_bytes(&[ROUTE]).unwrap();
+    let first = routes.publish_nav_route(&built).unwrap();
+    let second = routes.publish_nav_route(&built).unwrap();
+    assert_eq!((second.id, second.revision), (first.id, first.revision + 1), "the same object, replaced");
+    assert_eq!(routes.ids().len(), 2, "the day and one built day");
+    let index = routes.ids().iter().position(|&id| id == first.id).unwrap();
+    assert_eq!(routes.internal_routes(), 1 << index, "the built day is internal");
+    routes.refresh_metadata().unwrap();
+    assert_eq!(routes.internal_routes(), 1 << index, "and stays so after a catalog read");
+    assert_ne!(routes.publish_nav_route(ROUTE).unwrap().id, first.id, "a plain route is its own object");
+}

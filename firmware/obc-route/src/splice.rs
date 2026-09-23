@@ -23,6 +23,7 @@ pub(crate) const SPLICE_CHUNKS_PER_STEP: usize = 1;
 /// stacking prefixes.
 const NAME_PREFIX: &str = "Detour · ";
 const APPROACH_PREFIX: &str = "To start · ";
+const REST_PREFIX: &str = "From stop · ";
 
 /// What a planned leg does to the route it joins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +131,7 @@ impl Splicer {
     /// on the start's height, and every waypoint moves behind it.
     ///
     /// A [`Leg::Rest`] is a stored route, so its heights stay as stored. The route follows from
-    /// `rejoin_m` under its own name. The rest's waypoints are not kept.
+    /// `rejoin_m`, and the output is a built day. The rest's waypoints are not kept.
     pub fn new(
         leg: Leg,
         split_m: u32,
@@ -148,10 +149,10 @@ impl Splicer {
         let prefix = match leg {
             Leg::Detour => Some(NAME_PREFIX),
             Leg::Approach => Some(APPROACH_PREFIX),
-            Leg::Rest { .. } => None,
+            Leg::Rest { .. } => Some(REST_PREFIX),
         };
-        if let Some(prefix) =
-            prefix.filter(|_| !orig_name.starts_with(NAME_PREFIX) && !orig_name.starts_with(APPROACH_PREFIX))
+        if let Some(prefix) = prefix
+            .filter(|_| ![NAME_PREFIX, APPROACH_PREFIX, REST_PREFIX].iter().any(|prefix| orig_name.starts_with(prefix)))
         {
             let _ = name.push_str(prefix);
         }
@@ -237,7 +238,8 @@ impl Splicer {
                         obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE
                     } else {
                         0
-                    } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
+                    } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
+                        | if matches!(self.leg, Leg::Rest { .. }) { obc_formats::obcr::FLAG_BUILT_DAY } else { 0 },
                 );
                 // Preserve the sampled heights the planner densified.
                 if detour.has_elevation() {
