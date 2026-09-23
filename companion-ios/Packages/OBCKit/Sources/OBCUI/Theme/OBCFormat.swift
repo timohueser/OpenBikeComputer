@@ -147,6 +147,29 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
+    /// The day note's header, which fills itself in: "Tue 30 Sep · Andermatt → Ulrichen · 74 km".
+    /// The places are the day's ends or the ride's localities; the header goes without them when
+    /// neither is known.
+    public static func dayNoteHeader(
+        date: Date, from: String? = nil, to: String? = nil, distanceMeters: Double,
+        calendar: Calendar = .current, locale: Locale = .current
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        let places = [from, to].compactMap { $0 }.joined(separator: " → ")
+        return [formatter.string(from: date), places.isEmpty ? nil : places, "\(Int((distanceMeters / 1000).rounded())) km"]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    /// The quiet row that asks for the note: "How was Day 2?", or "How was the ride?" without a trip.
+    public static func notePrompt(_ ride: RideSummary) -> String {
+        guard let trip = ride.trip else { return "How was the ride?" }
+        return "How was Day \(trip.dayIndex + 1)?"
+    }
+
     /// One highlight: "Furka 2,431 m", "2,431 m at km 31", "18.0 km climb", "62 kph descent" or
     /// "Biggest day 82.0 km". Lengths use `distance(meters:)`, as every other km in the app.
     public static func highlight(_ highlight: RideHighlight, locale: Locale = .current) -> String {

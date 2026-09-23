@@ -248,6 +248,32 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         // The line first: a stop before the folder goes leaves a ride that rebuilds its line.
         try? FileManager.default.removeItem(at: rideLineURL(id))
         try? FileManager.default.removeItem(at: rideDir(id))
+        try? FileManager.default.removeItem(at: noteURL(.ride(id)))
+    }
+
+    // MARK: Day notes
+
+    public func dayNote(_ key: DayNoteKey) -> String {
+        (try? String(contentsOf: noteURL(key), encoding: .utf8)) ?? ""
+    }
+
+    public func saveDayNote(_ note: String, for key: DayNoteKey) {
+        let url = noteURL(key)
+        guard !note.isEmpty else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        ensure(notesDir)
+        try? note.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Plain text, one file per key, so a note is readable as it is.
+    private func noteURL(_ key: DayNoteKey) -> URL {
+        let name = switch key {
+        case .ride(let id): "ride-\(Self.fileSafe(id.rawValue))"
+        case .tripDay(let key, let dayIndex): "trip-\(key)-day-\(dayIndex)"
+        }
+        return notesDir.appendingPathComponent("\(name).txt")
     }
 
     // MARK: Ride journal
@@ -363,6 +389,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
     private var tripsDir: URL { directory.appendingPathComponent("trips", isDirectory: true) }
+    private var notesDir: URL { directory.appendingPathComponent("notes", isDirectory: true) }
     private var ridesDir: URL { directory.appendingPathComponent("rides", isDirectory: true) }
     private var syncedURL: URL { directory.appendingPathComponent("synced-rides.json") }
     private var deletedURL: URL { directory.appendingPathComponent("deleted-rides.json") }
