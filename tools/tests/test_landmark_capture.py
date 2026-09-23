@@ -358,6 +358,49 @@ class LandmarkCaptureTests(unittest.TestCase):
             acquired = acquire_requested_photos(Mock(), Path("obc-bake"), "landmark-content", "content.json", Path("m.json"), Path("b.geojson"), places, lambda: None)
         self.assertEqual(acquired, 0)
 
+    def test_later_request_rounds_only_revisit_the_preceding_qids(self):
+        capture = Mock()
+        capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:X.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/x.jpg"}]}}}}
+        capture.fetch.side_effect = [{"status": "http-error"}, {"status": "ok"}, {"status": "ok"}]
+        places = [
+            {"qid": "Q5", "outcomes": [], "images": [
+                {"filename": "shared.jpg", "metadata_path": "images/shared.json", "source": "P18"},
+                {"filename": "fallback.jpg", "metadata_path": "images/fallback.json", "source": "P18"},
+            ]},
+            {"qid": "Q6", "outcomes": [], "images": [
+                {"filename": "shared.jpg", "metadata_path": "images/shared.json", "source": "P18"},
+            ]},
+            {"qid": "Q7", "outcomes": [], "images": [
+                {"filename": "settled.jpg", "metadata_path": "images/settled.json", "source": "P18", "path": "images/settled.jpg"},
+            ]},
+        ]
+        rounds = [
+            [
+                {"qid": "Q5", "filename": "shared.jpg", "metadata_path": "images/shared.json"},
+                {"qid": "Q6", "filename": "shared.jpg", "metadata_path": "images/shared.json"},
+            ],
+            [{"qid": "Q5", "filename": "fallback.jpg", "metadata_path": "images/fallback.json"}],
+            [],
+        ]
+        filters = []
+        def compile_once(command, **_kwargs):
+            self.assertEqual(command[1], "landmark-photo-requests")
+            qids = json.loads(Path(command[command.index("--qids") + 1]).read_text()) if "--qids" in command else None
+            filters.append(qids)
+            Path(command[command.index("--out") + 1], "photo-requests.json").write_text(
+                json.dumps({"schema": 1, "requests": rounds.pop(0)})
+            )
+        with patch("tools.landmark_capture.subprocess.run", side_effect=compile_once):
+            acquired = acquire_requested_photos(
+                capture, Path("obc-bake"), "landmark-photo-requests", "photo-requests.json",
+                Path("m.json"), Path("b.geojson"), places, lambda: None,
+            )
+        self.assertEqual(acquired, 2)
+        self.assertEqual(filters, [None, ["Q5", "Q6"], ["Q5"]])
+        self.assertNotIn("Q7", filters[1], "a settled place is never prepared in a later round")
+        self.assertIsNone(places[0]["images"][0].get("path"), "a failed shared original stays absent for this QID")
+        self.assertIsNotNone(places[1]["images"][0].get("path"), "the other QID owns its acquired-path update")
+
     def test_a_peak_entity_with_no_supported_sitelink_still_reaches_its_photos(self):
         value = {"labels": {"de": {"value": "Schafberg"}}, "sitelinks": {"cebwiki": {"title": "Schafberg"}},
                  "claims": {"P18": [{"mainsnak": {"datavalue": {"value": "Peak.jpg"}}}]}}

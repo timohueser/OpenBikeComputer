@@ -262,6 +262,11 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
         .all(|record| record.variants.iter().map(|v| v.language.as_str()).collect::<Vec<_>>() == ["de", "es"]));
     compile(&manifest, &boundary, &root.join("second"), false).unwrap();
     assert_eq!(fs::read(root.join("first/content.json")).unwrap(), fs::read(root.join("second/content.json")).unwrap());
+    let request_output = root.join("requests");
+    let requests = photo_requests(&manifest, &boundary, &request_output, Some(&BTreeSet::from(["Q1".into()]))).unwrap();
+    assert!(requests.requests.is_empty());
+    assert_eq!(fs::read_dir(&request_output).unwrap().count(), 1);
+    assert!(request_output.join(PHOTO_REQUESTS_DOC).is_file());
     fs::write(root.join(batch), b"changed source").unwrap();
     assert!(compile(&manifest, &boundary, &root.join("changed"), false).unwrap_err().contains("source size changed"));
     fs::remove_dir_all(root).unwrap();

@@ -30,6 +30,7 @@ use std::{
 
 /// The compiled artifact the packer and the device content come from.
 pub const CONTENT_DOC: &str = "content.json";
+pub const PHOTO_REQUESTS_DOC: &str = "photo-requests.json";
 /// The artifact's own declaration, written beside the content by the stage that compiled it. It
 /// carries the digest of everything else in the directory, so it is never part of that digest.
 pub const DECLARATION_DOC: &str = "landmarks.json";
@@ -125,6 +126,12 @@ pub struct Content {
     /// Absent from a compiled catalogue: a production compile has every original it ranked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub photo_requests: Vec<PhotoRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PhotoRequests {
+    pub schema: u32,
+    pub requests: Vec<PhotoRequest>,
 }
 /// One original the compiler wants bytes for, in the order it would use them. A capture acquires
 /// exactly these and never ranks anything itself.
@@ -290,6 +297,38 @@ fn coordinate(entity: &Value) -> Option<(f64, f64)> {
 
 /// `boundary` is a GeoJSON Polygon/MultiPolygon, not a country-claim filter. All inputs are local.
 pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_photos: bool) -> Result<Content, String> {
+    compile_selected(snapshot_path, boundary, output, select_photos, None, true)
+}
+
+pub fn photo_requests(
+    snapshot_path: &Path,
+    boundary: &Path,
+    output: &Path,
+    qids: Option<&BTreeSet<String>>,
+) -> Result<PhotoRequests, String> {
+    fs::create_dir_all(output).map_err(|e| e.to_string())?;
+    if fs::read_dir(output).map_err(|e| e.to_string())?.next().is_some() {
+        return Err("landmark photo-request output directory must be empty".into());
+    }
+    let work = output.join(".compile");
+    let compiled = compile_selected(snapshot_path, boundary, &work, true, qids, false);
+    let cleanup = fs::remove_dir_all(&work);
+    let content = compiled?;
+    cleanup.map_err(|e| e.to_string())?;
+    let requests = PhotoRequests { schema: 1, requests: content.photo_requests };
+    fs::write(output.join(PHOTO_REQUESTS_DOC), serde_json::to_vec_pretty(&requests).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(requests)
+}
+
+fn compile_selected(
+    snapshot_path: &Path,
+    boundary: &Path,
+    output: &Path,
+    select_photos: bool,
+    only_qids: Option<&BTreeSet<String>>,
+    write_content: bool,
+) -> Result<Content, String> {
     let (snapshot, raw) = load_snapshot(snapshot_path)?;
     if snapshot.peaks.is_some() {
         return Err("peak capture requires the peak compiler".into());
@@ -363,6 +402,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_phot
         (length, digits.to_owned())
     });
     let mut seen = BTreeSet::new();
+    let mut selected = BTreeSet::new();
     let mut loaded: Option<(String, Value)> = None;
     for place in places {
         let qid = string(&place, "qid")?.to_owned();
@@ -372,6 +412,10 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_phot
         if !seen.insert(qid.clone()) {
             continue;
         }
+        if only_qids.is_some_and(|qids| !qids.contains(&qid)) {
+            continue;
+        }
+        selected.insert(qid.clone());
         let mut omit = |asset: &str, reason: String| {
             content.omissions.push(Omission { qid: qid.clone(), asset: asset.into(), reason })
         };
@@ -447,8 +491,13 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path, select_phot
             photo,
         });
     }
-    fs::write(output.join("content.json"), serde_json::to_vec_pretty(&content).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    if only_qids.is_some_and(|qids| *qids != selected) {
+        return Err("photo request QID is absent from the snapshot".into());
+    }
+    if write_content {
+        fs::write(output.join(CONTENT_DOC), serde_json::to_vec_pretty(&content).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(content)
 }
 
