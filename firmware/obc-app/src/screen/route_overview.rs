@@ -22,7 +22,7 @@ use obc_render::{
     Canvas, Surface,
 };
 
-use super::vocab::band::{ElevationBand, PeakLabel};
+use super::vocab::band::ElevationBand;
 use super::vocab::chrome::{empty_state, stroke2, title_chrome, title_frame, LIST_TOP, TITLE_BAR_H};
 use super::vocab::fmt::{duration_hms, write_distance_split};
 use super::vocab::marquee::{fit, Fitted};
@@ -221,7 +221,7 @@ impl RouteOverviewScreen {
         } else {
             let track = Track { points: rx.nav_preview, color: ROUTE, end_dot: true };
             let band = rect(MAP_X, MAP_TOP, w - 2 * MAP_X, MAP_BOT - MAP_TOP);
-            draw_track_map(cv, rx, band, track, route_bike_type(rx));
+            draw_track_map(cv, rx, band, track, Some(route_bike_type(rx)));
             title_chrome(cv, w, h, &route_title(rx, summary));
             cv.hline(MAP_X, MAP_BOT, w - 2 * MAP_X, RULE);
 
@@ -283,7 +283,7 @@ fn draw_profile_page(cv: &mut impl Surface, rx: &Render, climb: &str) {
             ElevationBand::whole_route(profile, rect(SIDE_MARGIN, PROFILE_TOP, chart_w, PROFILE_BOT - PROFILE_TOP + 1));
         band.fill(cv, PARCHMENT_SHADE);
         band.stroke(cv, AMBER);
-        band.peak_label(cv, rx.settings.units, PeakLabel::OverPeak);
+        band.peak_label(cv, rx.settings.units);
     } else {
         // While the route still streams open, keep the band's footprint so the page does not jump.
         cv.text(
@@ -303,19 +303,19 @@ fn draw_profile_page(cv: &mut impl Surface, rx: &Render, climb: &str) {
     let mut right: heapless::String<12> = heapless::String::new();
     let _ = write!(right, "{desc} {}", units.elev_label());
     let x = 16;
-    climb_arrow(cv, x, TOTALS_Y, true);
+    climb_arrow(cv, x, TOTALS_Y, true, INK);
     cv.text(climb, Point::new(x + ARROW_W + 4, TOTALS_Y), Font::Label, TextAlign::Left, INK);
     cv.text(&right, Point::new(w - x, TOTALS_Y), Font::Label, TextAlign::Right, INK);
-    climb_arrow(cv, w - x - text_width(&right, Font::Label) as i32 - ARROW_W - 4, TOTALS_Y, false);
+    climb_arrow(cv, w - x - text_width(&right, Font::Label) as i32 - ARROW_W - 4, TOTALS_Y, false, INK);
 }
 
 /// The climb and descent triangles' width, the size of one Label glyph's cap height.
-const ARROW_W: i32 = 12;
+pub(super) const ARROW_W: i32 = 12;
 
 /// A filled climb (`up`) or descent triangle at `x`, centred on the Label text line at `y`.
-fn climb_arrow(cv: &mut impl Surface, x: i32, y: i32, up: bool) {
+pub(super) fn climb_arrow(cv: &mut impl Surface, x: i32, y: i32, up: bool, color: u16) {
     let (flat, tip) = if up { (y + 18, y + 6) } else { (y + 6, y + 18) };
-    cv.triangle(Point::new(x, flat), Point::new(x + ARROW_W, flat), Point::new(x + ARROW_W / 2, tip), palette::INK);
+    cv.triangle(Point::new(x, flat), Point::new(x + ARROW_W, flat), Point::new(x + ARROW_W / 2, tip), color);
 }
 
 /// A computed route has no elevation data, so the page is length only. DISTANCE reads at metre

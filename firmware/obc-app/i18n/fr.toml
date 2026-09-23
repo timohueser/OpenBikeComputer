@@ -357,11 +357,11 @@ on_phone = "sur le tél."
 title = "SORTIES"
 no_rides = "Aucune sortie"
 no_rides_sub = "Faites une sortie"
-not_synced = "non sync."
+of = "sur"
+days = "jours"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "sync."
 delete_ride = "Supprimer"
 
 # --- Route menu screen ---

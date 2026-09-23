@@ -385,11 +385,12 @@ on_phone = "on your phone"
 title = "RIDES"
 no_rides = "No rides yet"
 no_rides_sub = "Record a ride"
-not_synced = "not synced"
+# The trip folder's line 2: "2 of 3 days · 156 km".
+of = "of"
+days = "days"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "synced"
 delete_ride = "Delete ride"
 
 # --- Route menu screen ---

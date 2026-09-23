@@ -19,15 +19,6 @@ use crate::settings::Units;
 /// much headroom above the band.
 const PEAK_LABEL_LIFT: i32 = 22;
 
-/// Where a band's peak-elevation label sits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PeakLabel {
-    /// Centred over the apex, in the headroom above the band, clamped inside the band's ends.
-    OverPeak,
-    /// In the band's top-right corner, for a band too short to carry a label over the apex.
-    TopRight,
-}
-
 /// One elevation band's raster: a profile sampled through a window into a rectangle.
 pub(crate) struct ElevationBand<'a> {
     profile: &'a Profile,
@@ -124,26 +115,21 @@ impl<'a> ElevationBand<'a> {
         }
     }
 
-    /// Draw the profile's peak elevation as a label at `place`, in the rider's units.
-    pub(crate) fn peak_label(&self, cv: &mut impl Surface, units: Units, place: PeakLabel) {
+    /// Draw the profile's peak elevation in the rider's units, centred over the apex in the
+    /// headroom above the band, and clamped inside the band's ends.
+    pub(crate) fn peak_label(&self, cv: &mut impl Surface, units: Units) {
         if self.profile.cols().iter().all(|s| s.0 > s.1) {
             return;
         }
         let mut peak: heapless::String<10> = heapless::String::new();
         let _ = write!(peak, "{} {}", units.elev(self.profile.peak_ele_m() as f32) as i32, units.elev_label());
-        let (at, align) = match place {
-            PeakLabel::OverPeak => {
-                // Clamped by the label's own width, so a peak at either end keeps the whole string
-                // over the band.
-                let half = text_width(&peak, Font::Label) as i32 / 2;
-                let px = (self.x + (self.profile.peak_frac() * self.w as f32) as i32)
-                    .clamp(self.x + half, self.x + self.w - half);
-                let py = self.ele_to_y(self.profile.peak_ele_m()) - PEAK_LABEL_LIFT;
-                (Point::new(px, py), TextAlign::Center)
-            }
-            PeakLabel::TopRight => (Point::new(self.x + self.w - 2, self.top - 2), TextAlign::Right),
-        };
-        cv.text(&peak, at, Font::Label, align, palette::SUBTEXT);
+        // Clamped by the label's own width, so a peak at either end keeps the whole string over the
+        // band.
+        let half = text_width(&peak, Font::Label) as i32 / 2;
+        let px =
+            (self.x + (self.profile.peak_frac() * self.w as f32) as i32).clamp(self.x + half, self.x + self.w - half);
+        let py = self.ele_to_y(self.profile.peak_ele_m()) - PEAK_LABEL_LIFT;
+        cv.text(&peak, Point::new(px, py), Font::Label, TextAlign::Center, palette::SUBTEXT);
     }
 }
 
@@ -288,13 +274,13 @@ mod tests {
     }
 
     #[test]
-    fn peak_labels_sit_over_the_apex_or_in_the_corner() {
+    fn peak_labels_sit_over_the_apex() {
         for eles in [&[1400, 900, 400, 300][..], &[400, 900, 1400, 900][..]] {
             let p = profile(eles);
             let b = ElevationBand::whole_route(&p, area());
 
             let mut probe = Probe::default();
-            b.peak_label(&mut probe, Units::Metric, PeakLabel::OverPeak);
+            b.peak_label(&mut probe, Units::Metric);
             let (text, at, align) = probe.texts.pop().expect("the label draws");
             assert_eq!(text, "1400 m", "the peak reads in the rider's units");
             assert_eq!(align, TextAlign::Center);
@@ -307,10 +293,8 @@ mod tests {
             assert_eq!(at.y, TOP - PEAK_LABEL_LIFT, "the label sits in the headroom over the apex ({eles:?})");
 
             let mut probe = Probe::default();
-            b.peak_label(&mut probe, Units::Imperial, PeakLabel::TopRight);
-            let (text, at, align) = probe.texts.pop().expect("the label draws");
-            assert_eq!(text, "4593 ft", "imperial reads in feet");
-            assert_eq!((at, align), (Point::new(X + W - 2, TOP - 2), TextAlign::Right));
+            b.peak_label(&mut probe, Units::Imperial);
+            assert_eq!(probe.texts.pop().expect("the label draws").0, "4593 ft", "imperial reads in feet");
         }
     }
 }
