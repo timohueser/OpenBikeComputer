@@ -1,0 +1,153 @@
+import Foundation
+
+/// A ride's track read against a trip line.
+public struct LineCoverage: Equatable, Sendable {
+    /// The parts of the line the track rode, in metres along the line: ascending and disjoint.
+    public var ranges: [ClosedRange<Double>]
+    /// Where the track was last on the line; nil when it never was.
+    public var end: Double?
+
+    public init(ranges: [ClosedRange<Double>] = [], end: Double? = nil) {
+        self.ranges = ranges
+        self.end = end
+    }
+}
+
+extension Trip {
+    /// Two on-line samples at most this far apart along the line join one ridden part, so a GPS
+    /// dropout or a short cut does not break it.
+    public static let coverJoinMeters = 500.0
+    /// A sample closer than this to the last one adds nothing. It bounds the work on a dense track.
+    static let coverSampleMeters = 50.0
+
+    /// The parts of the line `track` rode. A sample at most ``onLineMeters`` from the line is on
+    /// it. The first sample projects near `hint`, and each next one near the last, which keeps
+    /// the track on its own leg of an out-and-back.
+    public func coverage(of track: [Coordinate], near hint: Double) -> LineCoverage {
+        guard line.count > 1 else { return LineCoverage() }
+        let measured = measuredLine
+        var ranges: [ClosedRange<Double>] = []
+        var last: Double?
+        var near = hint
+        var sampled: Coordinate?
+        for (index, point) in track.enumerated() {
+            if let sampled, index < track.count - 1, sampled.distance(to: point) < Self.coverSampleMeters { continue }
+            sampled = point
+            var projection = measured.projection(of: point, near: near, window: Self.refineWindowMeters)
+            if projection.error > Self.onLineMeters {
+                // Off the line near the last place: a detour, or a pause that ended far away.
+                let coarse = measured.projection(of: point, near: near, window: measured.length)
+                projection = measured.projection(of: point, near: coarse.distance, window: Self.refineWindowMeters)
+            }
+            guard projection.error <= Self.onLineMeters else { continue }
+            let at = projection.distance
+            if let previous = last, abs(at - previous) <= Self.coverJoinMeters, let open = ranges.popLast() {
+                ranges.append(min(open.lowerBound, at)...max(open.upperBound, at))
+            } else {
+                ranges.append(at...at)
+            }
+            last = at
+            near = at
+        }
+        return LineCoverage(ranges: Self.merged(ranges), end: last)
+    }
+
+    static func merged(_ ranges: [ClosedRange<Double>]) -> [ClosedRange<Double>] {
+        ranges.sorted { $0.lowerBound < $1.lowerBound }.reduce(into: []) { out, range in
+            if let open = out.last, range.lowerBound <= open.upperBound {
+                out[out.count - 1] = open.lowerBound...max(open.upperBound, range.upperBound)
+            } else {
+                out.append(range)
+            }
+        }
+    }
+}
+
+/// The offer to even out the days after a day that ended far from its plan. It feeds the day
+/// editor's Even out days: the days in ``days`` share the line after ``fixedBefore`` equally,
+/// and nothing before it moves.
+public struct RebalanceOffer: Equatable, Sendable {
+    /// The ridden day that ended away from its planned end.
+    public let day: Int
+    /// The last ride of that day. Its journal remembers that the rider used or dismissed the offer.
+    public let ride: RideID
+    /// The unridden days to even out: the days after ``day`` up to the next transfer or the trip end.
+    public let days: ClosedRange<Int>
+    /// Where the day ended, in metres along the line.
+    public let fixedBefore: Double
+    /// The planned day end minus where the day ended. Positive when the day stopped early, so the
+    /// days after it are longer.
+    public let shortfall: Double
+}
+
+/// A trip read against its synced rides: each day planned and ridden, the ridden parts of the
+/// line, the totals, and the re-balance offer. A ride belongs to the trip day it records, so the
+/// grouping needs no dates.
+public struct TripReview: Equatable, Sendable {
+    public struct Day: Equatable, Sendable {
+        /// Metres along the line from the day's start to its planned end. A transfer before the
+        /// day counts nothing.
+        public let planned: ClosedRange<Double>
+        /// The day's rides in start order. A day with two rides counts both.
+        public let rides: [RideSummary]
+        /// Where the day's last ride was last on the line.
+        public let endedAt: Double?
+
+        public var plannedMeters: Double { planned.upperBound - planned.lowerBound }
+        public var totals: RideTotals { RideTotals(rides) }
+    }
+
+    /// A day that ended more than this from its planned end offers to even out the days after it.
+    public static let rebalanceMinMeters = 5_000.0
+
+    public let days: [Day]
+    /// The parts of the line the rides covered: ascending and disjoint.
+    public let ridden: [ClosedRange<Double>]
+    /// The length of the line. A transfer counts nothing.
+    public let plannedMeters: Double
+    /// The sums of the rides only, so a transfer adds nothing.
+    public let totals: RideTotals
+    /// The day after the last ridden day; nil once the last day is ridden.
+    public let currentDay: Int?
+    public let rebalance: RebalanceOffer?
+
+    /// Nil before the trip has a ride: the trip page shows the plan. `rides` are the rides as the
+    /// list shows them, so an edited ride counts once. `tracks` gives each ride's points; a ride
+    /// without them counts in the totals but covers nothing.
+    public init?(trip: Trip, rides: [RideSummary], tracks: [RideID: [Coordinate]]) {
+        var byDay: [Int: [RideSummary]] = [:]
+        for ride in rides {
+            guard let day = ride.trip, day.key == trip.key, day.dayIndex < trip.dayCount else { continue }
+            byDay[day.dayIndex, default: []].append(ride)
+        }
+        guard let lastRidden = byDay.keys.max() else { return nil }
+        var coverage: [LineCoverage] = []
+        var start = 0.0
+        days = trip.dayEnds.enumerated().map { index, end in
+            defer { start = end.distance }
+            let dayRides = (byDay[index] ?? []).sorted { $0.date < $1.date }
+            let covered = dayRides.map { trip.coverage(of: tracks[$0.id] ?? [], near: start) }
+            coverage += covered
+            return Day(planned: start...end.distance, rides: dayRides, endedAt: covered.last?.end)
+        }
+        ridden = Trip.merged(coverage.flatMap(\.ranges))
+        plannedMeters = trip.dayEnds.last?.distance ?? 0
+        totals = RideTotals(days.flatMap(\.rides))
+        currentDay = lastRidden + 1 < trip.dayCount ? lastRidden + 1 : nil
+        rebalance = Self.rebalance(trip: trip, days: days, lastRidden: lastRidden)
+    }
+
+    /// The offer after the last ridden day, when it ended more than ``rebalanceMinMeters`` from
+    /// its plan and at least two unridden days can share the change. A day that ends at a
+    /// transfer passes nothing on, because the next day starts elsewhere.
+    private static func rebalance(trip: Trip, days: [Day], lastRidden day: Int) -> RebalanceOffer? {
+        guard let ended = days[day].endedAt, let ride = days[day].rides.last, !trip.endsAtTransfer(day)
+        else { return nil }
+        let shortfall = days[day].planned.upperBound - ended
+        guard abs(shortfall) > rebalanceMinMeters else { return nil }
+        var last = day + 1
+        while last < trip.dayCount - 1, !trip.endsAtTransfer(last) { last += 1 }
+        guard last < trip.dayCount, last > day + 1 else { return nil }
+        return RebalanceOffer(day: day, ride: ride.id, days: (day + 1)...last, fixedBefore: ended, shortfall: shortfall)
+    }
+}
