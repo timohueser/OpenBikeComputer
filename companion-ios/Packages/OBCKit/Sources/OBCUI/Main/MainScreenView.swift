@@ -13,7 +13,7 @@ import OBCTransport
 public struct MainScreenView: View {
     @Bindable private var model: MainScreenModel
     private let importFileExtensions: Set<String>
-    private let onImportFile: (URL) -> Void
+    private let onImportFile: ([URL]) -> Void
     private let onSelectRoute: (RouteSummary) -> Void
     private let onSelectTrip: (Trip) -> Void
     private let onSelectRide: (RideSummary) -> Void
@@ -37,7 +37,7 @@ public struct MainScreenView: View {
     public init(
         model: MainScreenModel,
         importFileExtensions: Set<String> = ["gpx", "tcx"],
-        onImportFile: @escaping (URL) -> Void = { _ in },
+        onImportFile: @escaping ([URL]) -> Void = { _ in },
         onSelectRoute: @escaping (RouteSummary) -> Void = { _ in },
         onSelectTrip: @escaping (Trip) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
@@ -404,9 +404,10 @@ public struct MainScreenView: View {
                 isPresented: $emptyStatePickerShown,
                 allowedContentTypes: importFileExtensions.sorted().compactMap {
                     UTType(filenameExtension: $0)
-                }
+                },
+                allowsMultipleSelection: true
             ) { result in
-                if case .success(let url) = result { onImportFile(url) }
+                if case .success(let urls) = result, !urls.isEmpty { onImportFile(urls) }
             }
         } else {
             // Trip cards and route cards, interleaved by `addedAt`. While selecting, route cards
