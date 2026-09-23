@@ -1892,6 +1892,6 @@ fn day_join(store: &FlatStore<FlatCard>, app: &obc_app::App) -> Option<obc_app::
         day,
         leave_m: before.leave_m.min(length),
         join_m: this.join_m,
-        gap_m: obc_map_scene::ground_dist_m(end, (start.start_lon, start.start_lat)) as u32,
+        gap_m: obc_app::trip::gap_m(end, (start.start_lon, start.start_lat)),
     })
 }

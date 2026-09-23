@@ -284,8 +284,8 @@ any other length, which also rejects a torn write.
 - **Main line.** A day that starts on the main line has `join_m = 0`. A day that ends on the main
   line has `leave_m` at or past the end of its route; readers clamp `leave_m` to the route length.
   Other values mark an out-and-back spur to a stop off the line. The device skips the spur when it
-  joins the rest of one day to the next day. The `leave_m` of day N−1 and the `join_m` of day N
-  name the same point on the main line.
+  joins the rest of one day to the next day. Unless a transfer lies between them, the `leave_m` of
+  day N−1 and the `join_m` of day N name the same point on the main line.
 - **Transfer.** A day end is a transfer when the next day's route starts more than
   `TRANSFER_MIN_M` = 200 m, straight line, from the last point of the day's route. Readers derive
   it from the two routes; the trip object has no field for it. The device never joins the rest of
