@@ -3,12 +3,29 @@ import OBCDomain
 
 /// Stops from Apple Maps: campsites and hotels around a point, and a free place search.
 struct AppleMapsStopSearch: StopSearch {
-    /// `MKLocalPointsOfInterestRequest` is not used: it clamps its radius to 2 km and returns
-    /// nothing farther than about 1 km, so a day end at the edge of a town misses the town.
+    /// The points-of-interest request gives every stop near `center`, but it clamps its radius to
+    /// 2 km and in practice returns nothing farther than about 1 km. The two text searches reach
+    /// `radius`, but each returns at most 25 results by relevance, so in a town they miss near
+    /// stops. Together they cover both.
     func stops(near center: Coordinate, radius: Double) async throws -> [Stop] {
-        async let hotels = Self.stops(matching: "hotel", [.hotel], near: center, radius: radius)
-        async let campsites = Self.stops(matching: "camping", Self.campsites, near: center, radius: radius)
-        return try await campsites + hotels
+        async let nearby = Self.attempt { try await Self.nearby(center) }
+        async let hotels = Self.attempt { try await Self.stops(matching: "hotel", [.hotel], near: center, radius: radius) }
+        async let campsites = Self.attempt {
+            try await Self.stops(matching: "camping", Self.campsites, near: center, radius: radius)
+        }
+        return try await Stop.merging([nearby, hotels, campsites])
+    }
+
+    private static func nearby(_ center: Coordinate) async throws -> [Stop] {
+        let request = MKLocalPointsOfInterestRequest(
+            center: CLLocationCoordinate2D(latitude: center.latitude, longitude: center.longitude),
+            radius: MKLocalPointsOfInterestRequest.maxRadius)
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: [.hotel] + campsites)
+        return try await run(MKLocalSearch(request: request))
+    }
+
+    private static func attempt(_ search: () async throws -> [Stop]) async -> Result<[Stop], any Error> {
+        do { return .success(try await search()) } catch { return .failure(error) }
     }
 
     /// Apple files some campsites as RV parks.
