@@ -126,7 +126,7 @@ public struct RideMapLines: Sendable {
             .map(\.0)
     }
 
-    func level(metersPerPoint: Double) -> Int {
+    public func level(metersPerPoint: Double) -> Int {
         (1..<Self.levelCount).last { Self.tolerance(ofLevel: $0) <= metersPerPoint } ?? 0
     }
 }
