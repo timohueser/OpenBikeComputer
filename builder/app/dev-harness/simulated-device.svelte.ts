@@ -136,7 +136,7 @@ async function seedWaypointRoute(device: FlatDevice): Promise<void> {
  * count are *payload* facts and no seed has to repeat them.
  */
 async function seedGpxRoute(device: FlatDevice, name: string, gpx: string): Promise<bigint> {
-    const bytes = await gpxToObcr(new TextEncoder().encode(gpx), name);
+    const bytes = await gpxToObcr(new TextEncoder().encode(gpx), name, 0);
     return device.seed({ kind: ObjectKind.Route, displayName: name, bytes }).objectId;
 }
 
