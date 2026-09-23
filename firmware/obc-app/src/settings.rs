@@ -656,9 +656,9 @@ mod tests {
     }
 
     #[test]
-    fn version_22_blob_keeps_existing_values_and_defaults_theme() {
+    fn version_22_blob_keeps_existing_values_and_defaults_the_newer_rows() {
         let mut expected = every_field_set();
-        expected.theme = Theme::Light;
+        (expected.theme, expected.max_hr, expected.ftp_w) = (Theme::Light, 0, 0);
 
         let mut old = encode(&expected);
         old[0] = 22;

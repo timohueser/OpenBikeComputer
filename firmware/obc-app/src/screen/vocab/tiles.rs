@@ -72,7 +72,8 @@ pub(crate) fn tile(
 const ZONE_LABEL: [&str; 5] = ["Z1", "Z2", "Z3", "Z4", "Z5"];
 
 /// The caption, the zone and the value of an effort tile, laid out as [`tile`] lays out a plain
-/// one. With a zone the ink is black on the tint and the zone sits at the top right.
+/// one. With a zone the zone sits at the top right, and the ink is black in both themes, because
+/// the zone tint does not change with the theme either.
 fn effort_block(cv: &mut impl Surface, area: Rectangle, caption: &str, value: &str, zone: Option<u8>) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
@@ -80,12 +81,12 @@ fn effort_block(cv: &mut impl Surface, area: Rectangle, caption: &str, value: &s
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
     let zone_w = zone.map_or(0, |_| text_width("Z0", Font::Label) as i32 + 4);
     let caption = fit(caption, w - 11 - zone_w, Font::Label);
-    let ink = if zone.is_some() { INK } else { SUBTEXT };
-    cv.text(&caption, Point::new(x + 5, cy), Font::Label, TextAlign::Left, ink);
+    let (caption_ink, value_ink) = if zone.is_some() { (ON_ACCENT, ON_ACCENT) } else { (SUBTEXT, INK) };
+    cv.text(&caption, Point::new(x + 5, cy), Font::Label, TextAlign::Left, caption_ink);
     if let Some(z) = zone {
-        cv.text(ZONE_LABEL[z as usize], Point::new(x + w - 6, cy), Font::Label, TextAlign::Right, INK);
+        cv.text(ZONE_LABEL[z as usize], Point::new(x + w - 6, cy), Font::Label, TextAlign::Right, ON_ACCENT);
     }
-    cv.text(value, Point::new(x + 8, cy + 18), Font::Display, TextAlign::Left, INK);
+    cv.text(value, Point::new(x + 8, cy + 18), Font::Display, TextAlign::Left, value_ink);
 }
 
 /// A heart-rate or power tile filled with its zone colour.
@@ -99,8 +100,8 @@ const GRAPH_BLOCK_W: i32 = 78;
 /// The block colour continues as this frame around the graph panel.
 const GRAPH_FRAME: i32 = 2;
 
-/// A graph field: the zone-tinted number block on the left, continuing as a frame around a white
-/// panel of the last five minutes. Tan without a zone, and olive bars without a limit.
+/// A graph field: the zone-tinted number block on the left, continuing as a frame around a page
+/// coloured panel of the last five minutes. Tan without a zone, and olive bars without a limit.
 #[allow(clippy::too_many_arguments)] // the field's whole state, spelled out
 pub(crate) fn graph_tile(
     cv: &mut impl Surface,

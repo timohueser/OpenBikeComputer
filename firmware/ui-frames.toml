@@ -2393,6 +2393,32 @@ script = "{theme_dark} p*4 f d p b"
 expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
+# The effort display in Dark: the zone colours are content and do not change, text on a tint stays
+# black, and the graph panel takes the page colour.
+[[frame]]
+name = "dark-map-effort"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p"
+expect = "Map"
+args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
+
+[[frame]]
+name = "dark-statistics-sensors"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "30", "--sensors", "demo"]
+
+[[frame]]
+name = "dark-statistics-effort-graphs"
+map = "{grimsel}"
+env = "routes"
+script = "{theme_dark} p*4 f d p b"
+expect = "Statistics"
+args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
+
 [[frame]]
 name = "dark-map-context"
 map = "{grimsel}"
