@@ -99,14 +99,25 @@ import OBCTransport
         #expect(photos.requests == 1)
     }
 
-    @Test func refusedAccessOpensNoGrid() async throws {
-        let photos = FakePhotos(.notDetermined, [])
+    /// A refusal opens no grid and closes the row for this ride; with access denied, no ride
+    /// offers photos, because the app cannot tell which rides have them.
+    @Test func refusedAccessClosesTheRow() async throws {
+        let library = try Self.library()
+        let photos = FakePhotos(.notDetermined, [Self.candidate("a", at: 100)])
         photos.grantOnRequest = .denied
-        let model = Self.model(try Self.library(), photos)
+        let model = Self.model(library, photos)
         await model.start()
 
         #expect(await model.openOffer() == false)
+
         #expect(model.accessDenied)
+        #expect(model.offer == nil)
+        #expect(library.rideJournal(Self.rideID).closedRows == [.photos])
+        let other = RideID("other")
+        try library.saveRide(Ride(summary: RideSummary(id: other, name: "Day 3", date: Self.start, distanceMeters: 1_000), points: Self.points))
+        let otherModel = RidePhotosModel(rideID: other, points: Self.points, library: library, photoLibrary: photos)
+        await otherModel.start()
+        #expect(otherModel.offer == nil)
     }
 
     /// Nothing is added before Add; then the chosen photos land in time order and the row goes
@@ -117,6 +128,7 @@ import OBCTransport
         let model = Self.model(library, photos)
         await model.start()
         await model.loadPicks()
+        await model.loadPickThumbnails()
         #expect(model.selected == ["a", "b", "c"])
         #expect(library.rideJournal(Self.rideID).photos.isEmpty)
 
@@ -130,6 +142,21 @@ import OBCTransport
         await reopened.start()
         #expect(reopened.offer == nil)
         #expect(reopened.photos.map(\.assetID) == ["a", "c"])
+    }
+
+    /// Add does not wait for the grid's thumbnails; the strip fills the missing ones and keeps them.
+    @Test func thumbnailsMissingAtAddAreFilledLater() async throws {
+        let library = try Self.library()
+        let model = Self.model(library, FakePhotos(.full, [Self.candidate("a", at: 100)]))
+        await model.start()
+        await model.loadPicks()
+        model.addSelected()
+        #expect(model.thumbnails.isEmpty)
+
+        await model.fillThumbnails()
+
+        #expect(model.thumbnails == ["a": Data("a".utf8)])
+        #expect(library.ridePhotoThumbnails(Self.rideID) == ["a": Data("a".utf8)])
     }
 
     @Test func aDismissedRowNeverReturns() async throws {
@@ -181,6 +208,7 @@ import OBCTransport
         let model = Self.model(library, photos)
         await model.start()
         await model.loadPicks()
+        await model.loadPickThumbnails()
         model.addSelected()
         #expect(model.tickFractions.map { ($0 * 100).rounded() } == [25, 75])
 

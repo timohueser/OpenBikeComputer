@@ -8,20 +8,20 @@ struct RidePhotoPlacementTests {
     private static let start = Date(timeIntervalSince1970: 1_790_000_000)
     private static let metersPerDegree = 111_320.0
 
-    /// `ys` are metres north of the start, one point per 10 s.
-    private func points(_ ys: [Double], gapAt gap: Int? = nil) -> [RidePoint] {
+    /// `ys` are metres north of the start and `xs` metres east, one point per 10 s. The point at
+    /// `gap` resumes the recording 10 minutes later.
+    private func points(_ ys: [Double], xs: [Double]? = nil, gapAt gap: Int? = nil) -> [RidePoint] {
         ys.enumerated().map { index, y in
-            // A pause: the recording resumes 10 minutes later.
             let pause = gap.map { index >= $0 ? 600.0 : 0 } ?? 0
             return RidePoint(
-                timestamp: time(Double(index) * 10 + pause), coordinate: place(north: y),
+                timestamp: time(Double(index) * 10 + pause), coordinate: place(north: y, east: xs?[index] ?? 0),
                 segmentStart: index == gap
             )
         }
     }
 
-    private func straight(_ count: Int = 101) -> [RidePoint] {
-        points((0..<count).map { Double($0) * 10 })
+    private func straight() -> [RidePoint] {
+        points((0...100).map { Double($0) * 10 })
     }
 
     private func time(_ seconds: Double) -> Date { Self.start.addingTimeInterval(seconds) }
@@ -33,78 +33,93 @@ struct RidePhotoPlacementTests {
         )
     }
 
-    private func placeOne(_ candidate: PhotoCandidate, on points: [RidePoint]) -> RidePhotoPlacement.Placed? {
-        RidePhotoPlacement.place([candidate], on: points).first
+    private func place(_ candidates: [PhotoCandidate], on points: [RidePoint]) -> [RidePhotoPlacement.Placed] {
+        RidePhotoPlacement.place(candidates, on: points, line: MeasuredLine(ridePoints: points))
     }
 
-    @Test func aPhotoWithoutGeotagIsPlacedByTimeBetweenPoints() throws {
+    private func placeOne(_ candidate: PhotoCandidate, on points: [RidePoint]) -> RidePhotoPlacement.Placed? {
+        place([candidate], on: points).first
+    }
+
+    @Test func aPhotoIsPlacedByTimeBetweenPoints() throws {
         let placed = try #require(placeOne(PhotoCandidate(assetID: "a", takenAt: time(505)), on: straight()))
 
-        #expect(abs(placed.photo.distanceMeters - 505) < 1)
+        #expect(abs(placed.distanceMeters - 505) < 1)
+        #expect(placed.coordinate.distance(to: place(north: 505)) < 1)
         #expect(!placed.locationOffTrack)
     }
 
-    /// The camera clock says 100 s, the geotag says 800 m: a geotag near the track wins.
-    @Test func aGeotagNearTheTrackPlacesThePhotoAtTheNearestTrackPoint() throws {
-        let candidate = PhotoCandidate(assetID: "a", takenAt: time(100), location: place(north: 800, east: 250))
+    /// Out 500 m on the east lane and back on the west lane, 6 m apart. The geotag sits on the out
+    /// lane, but the time is on the way back.
+    @Test func anOutAndBackKeepsTheLegOfThePhotoTime() throws {
+        let ride = points((0...100).map { Double(50 - abs(50 - $0)) * 10 }, xs: (0...100).map { $0 <= 50 ? 3 : -3 })
+        let candidate = PhotoCandidate(assetID: "a", takenAt: time(790), location: place(north: 210, east: 3))
 
-        let placed = try #require(placeOne(candidate, on: straight()))
+        let placed = try #require(placeOne(candidate, on: ride))
 
-        #expect(abs(placed.photo.distanceMeters - 800) < 1)
+        #expect(placed.distanceMeters == MeasuredLine(ridePoints: ride).vertices[79].distance)
         #expect(!placed.locationOffTrack)
     }
 
-    @Test func aFarGeotagDuringTheRideIsPlacedByTimeAndMarked() throws {
+    @Test func aFarGeotagIsMarkedAndDoesNotMoveThePhoto() throws {
         let candidate = PhotoCandidate(assetID: "a", takenAt: time(300), location: place(north: 300, east: 5_000))
 
         let placed = try #require(placeOne(candidate, on: straight()))
 
-        #expect(abs(placed.photo.distanceMeters - 300) < 1)
+        #expect(abs(placed.distanceMeters - 300) < 1)
         #expect(placed.locationOffTrack)
     }
 
-    /// Ten minutes either side of the ride belong to it, at its start or its end. There, a far
-    /// geotag means the photo is from somewhere else.
-    @Test func theMarginAroundTheRide() {
-        let ride = straight()
-        let before = time(-5 * 60), after = time(1_000 + 5 * 60)
-        let candidates = [
-            PhotoCandidate(assetID: "early", takenAt: before),
-            PhotoCandidate(assetID: "late", takenAt: after),
-            PhotoCandidate(assetID: "farEarly", takenAt: before, location: place(north: 0, east: 5_000)),
-            PhotoCandidate(assetID: "tooEarly", takenAt: time(-11 * 60)),
-            PhotoCandidate(assetID: "tooLate", takenAt: time(1_000 + 11 * 60)),
-        ]
+    @Test func aPhotoOutsideTheRideIsNotOffered() {
+        let placed = place(
+            [PhotoCandidate(assetID: "early", takenAt: time(-1)), PhotoCandidate(assetID: "late", takenAt: time(1_001)),
+             PhotoCandidate(assetID: "first", takenAt: time(0)), PhotoCandidate(assetID: "last", takenAt: time(1_000))],
+            on: straight()
+        )
 
-        let placed = RidePhotoPlacement.place(candidates, on: ride)
-
-        #expect(placed.map(\.photo.assetID) == ["early", "late"])
-        #expect(placed.first?.photo.distanceMeters == 0)
-        #expect(placed.last?.photo.distanceMeters == MeasuredLine(ridePoints: ride).length)
-        #expect(RidePhotoPlacement.window(for: ride) == time(-600)...time(1_600))
-    }
-
-    /// Out 500 m and back on the same road: the geotag fits both legs, and the time picks one.
-    @Test func anOutAndBackKeepsTheLegThePhotoWasTakenOn() throws {
-        let ride = points((0...100).map { Double(50 - abs(50 - $0)) * 10 })
-        let candidate = PhotoCandidate(assetID: "a", takenAt: time(790), location: place(north: 205, east: 20))
-
-        let placed = try #require(placeOne(candidate, on: ride))
-
-        #expect(abs(placed.photo.distanceMeters - 795) < 1)
+        #expect(placed.map(\.photo.assetID) == ["first", "last"])
     }
 
     @Test func aPhotoInARecordingPauseSitsWhereTheRiderStopped() throws {
-        let ride = points((0..<101).map { Double($0) * 10 }, gapAt: 50)
+        let ride = points((0...100).map { Double($0) * 10 }, gapAt: 50)
 
         let placed = try #require(placeOne(PhotoCandidate(assetID: "a", takenAt: time(800)), on: ride))
 
-        #expect(abs(placed.photo.distanceMeters - 490) < 1)
+        #expect(abs(placed.distanceMeters - 490) < 1)
+        #expect(placed.coordinate == ride[49].coordinate)
     }
 
-    @Test func candidatesComeBackInTimeOrder() {
+    /// A trim keeps the photos in the kept part at their places and drops the rest.
+    @Test func aTrimMovesNoPhotoAndDropsTheTrimmedOnes() {
+        let photos = [100.0, 500, 900].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
+        let ride = straight()
+        let trimmed = Array(ride[20...80])
+
+        let before = RidePhotoPlacement.place(photos, on: ride, line: MeasuredLine(ridePoints: ride))
+        let after = RidePhotoPlacement.place(photos, on: trimmed, line: MeasuredLine(ridePoints: trimmed))
+
+        #expect(after.map(\.id) == ["500"])
+        #expect(after.first?.coordinate == before[1].coordinate)
+        #expect(abs((after.first?.distanceMeters ?? 0) - 300) < 1)
+    }
+
+    /// A split part keeps the photos of its own time.
+    @Test func eachSplitPartGetsItsPhotos() {
+        let photos = [100.0, 500, 900].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
+        let ride = straight()
+        let first = Array(ride[...60]), second = Array(ride[60...])
+
+        let placedFirst = RidePhotoPlacement.place(photos, on: first, line: MeasuredLine(ridePoints: first))
+        let placedSecond = RidePhotoPlacement.place(photos, on: second, line: MeasuredLine(ridePoints: second))
+
+        #expect(placedFirst.map(\.id) == ["100", "500"])
+        #expect(placedSecond.map(\.id) == ["900"])
+        #expect(abs((placedSecond.first?.distanceMeters ?? 0) - 300) < 1)
+    }
+
+    @Test func photosComeBackInTimeOrder() {
         let candidates = [900.0, 100, 500].map { PhotoCandidate(assetID: "\(Int($0))", takenAt: time($0)) }
 
-        #expect(RidePhotoPlacement.place(candidates, on: straight()).map(\.photo.assetID) == ["100", "500", "900"])
+        #expect(place(candidates, on: straight()).map(\.photo.assetID) == ["100", "500", "900"])
     }
 }

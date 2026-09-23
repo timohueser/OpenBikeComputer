@@ -900,15 +900,13 @@ private struct RideJournalFile: Codable {
 private struct RidePhotoDTO: Codable {
     var assetID: String
     var takenAt: Date
-    var distanceMeters: Double
 
     init(_ photo: RidePhoto) {
         assetID = photo.assetID
         takenAt = photo.takenAt
-        distanceMeters = photo.distanceMeters
     }
 
-    var domain: RidePhoto { RidePhoto(assetID: assetID, takenAt: takenAt, distanceMeters: distanceMeters) }
+    var domain: RidePhoto { RidePhoto(assetID: assetID, takenAt: takenAt) }
 }
 
 private struct SyncedRidesFile: Codable {

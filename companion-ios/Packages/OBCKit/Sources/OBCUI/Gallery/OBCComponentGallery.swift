@@ -219,7 +219,13 @@ public struct OBCComponentGallery: View {
                     RidePhotoStrip(photos: Self.samplePhotos, thumbnails: Self.sampleThumbnails) { _ in }
                     RidePhotoGrid(
                         picks: Self.samplePhotos.enumerated().map { index, photo in
-                            RidePhotosModel.Pick(photo: photo, locationOffTrack: index == 2, thumbnail: Self.sampleThumbnails[photo.assetID])
+                            RidePhotosModel.Pick(
+                                placed: RidePhotoPlacement.Placed(
+                                    photo: photo, distanceMeters: 0, coordinate: Coordinate(latitude: 0, longitude: 0),
+                                    locationOffTrack: index == 2
+                                ),
+                                thumbnail: Self.sampleThumbnails[photo.assetID]
+                            )
                         },
                         selected: $selectedPhotos
                     )
@@ -310,7 +316,7 @@ public struct OBCComponentGallery: View {
 
     #if os(iOS)
     static let samplePhotos = (0..<6).map {
-        RidePhoto(assetID: "p\($0)", takenAt: Date(timeIntervalSince1970: 1_790_000_000 + Double($0) * 1_500), distanceMeters: Double($0) * 9_000)
+        RidePhoto(assetID: "p\($0)", takenAt: Date(timeIntervalSince1970: 1_790_000_000 + Double($0) * 1_500))
     }
 
     /// Sky gradients through a day, rendered once.

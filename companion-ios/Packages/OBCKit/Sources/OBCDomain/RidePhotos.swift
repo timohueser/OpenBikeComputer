@@ -1,20 +1,18 @@
 import Foundation
 
-/// A photo the rider added to a ride: a reference to the photo library, and its place on the
-/// ride. The library keeps the photo; the ride keeps the reference and a thumbnail.
+/// A photo the rider added to a ride: a reference to the photo library and the time it was
+/// taken. Its place on the ride comes from the ride's current points, so it follows a trim or a
+/// split.
 public struct RidePhoto: Identifiable, Equatable, Sendable {
     /// The photo library's identifier for the asset.
     public let assetID: String
     public let takenAt: Date
-    /// Metres along the ride's `MeasuredLine`.
-    public let distanceMeters: Double
 
     public var id: String { assetID }
 
-    public init(assetID: String, takenAt: Date, distanceMeters: Double) {
+    public init(assetID: String, takenAt: Date) {
         self.assetID = assetID
         self.takenAt = takenAt
-        self.distanceMeters = distanceMeters
     }
 }
 
@@ -32,74 +30,81 @@ public struct PhotoCandidate: Equatable, Sendable {
     }
 }
 
-/// Places library photos on a ride by their geotag and their time.
+/// Places photos on a ride by the time they were taken.
+///
+/// The time decides the place, because a geotag cannot tell the legs of an out-and-back apart.
+/// The geotag only marks a photo whose location is far from that place.
 public enum RidePhotoPlacement {
-    /// A photo taken this long before the start or after the end still belongs to the ride.
-    public static let margin: TimeInterval = 10 * 60
-    /// A geotag this close to the track places the photo on the track.
-    public static let geotagReachMeters = 300.0
+    /// A geotag farther than this from the photo's place on the ride is "off the track".
+    public static let offTrackMeters = 300.0
 
-    public struct Placed: Equatable, Sendable {
+    public struct Placed: Identifiable, Equatable, Sendable {
         public let photo: RidePhoto
-        /// The geotag is far from the track, so the photo is placed by its time.
+        /// Metres along the ride's `MeasuredLine`.
+        public let distanceMeters: Double
+        public let coordinate: Coordinate
         public let locationOffTrack: Bool
+
+        public var id: String { photo.assetID }
+
+        public init(photo: RidePhoto, distanceMeters: Double, coordinate: Coordinate, locationOffTrack: Bool) {
+            self.photo = photo
+            self.distanceMeters = distanceMeters
+            self.coordinate = coordinate
+            self.locationOffTrack = locationOffTrack
+        }
     }
 
-    /// The times a candidate can have: the ride's first to last point, widened by `margin`.
-    public static func window(for points: [RidePoint]) -> ClosedRange<Date>? {
+    /// The times a photo can have: the ride's first point to its last.
+    public static func span(of points: [RidePoint]) -> ClosedRange<Date>? {
         guard let first = points.first?.timestamp, let last = points.last?.timestamp, first <= last
         else { return nil }
-        return first.addingTimeInterval(-margin)...last.addingTimeInterval(margin)
+        return first...last
     }
 
-    /// The candidates that belong to the ride, placed and in time order.
-    ///
-    /// A geotag within reach wins over the time: a camera clock can be wrong, a nearby geotag
-    /// rarely is. A far geotag is a wrong location more often than a wrong photo, so a photo
-    /// taken during the ride stays, placed by time. In the margin, a far geotag drops the photo.
-    public static func place(_ candidates: [PhotoCandidate], on points: [RidePoint]) -> [Placed] {
-        guard let window = window(for: points) else { return [] }
-        let line = MeasuredLine(ridePoints: points)
-        let ride = points[0].timestamp...points[points.count - 1].timestamp
-        return candidates
-            .filter { window.contains($0.takenAt) }
+    /// The candidates taken during the ride, placed and in time order. `line` is the ride's
+    /// `MeasuredLine`; each photo costs one binary search.
+    public static func place(_ candidates: [PhotoCandidate], on points: [RidePoint], line: MeasuredLine) -> [Placed] {
+        candidates
             .compactMap { candidate -> Placed? in
-                let byTime = distance(at: candidate.takenAt, points: points, line: line)
-                var distance = byTime
-                var offTrack = false
-                if let location = candidate.location {
-                    // Searched from the time position, so an out-and-back keeps the leg the
-                    // photo was taken on.
-                    let projection = line.projection(of: location, near: byTime, window: line.length)
-                    if projection.error <= geotagReachMeters {
-                        distance = projection.distance
-                    } else if ride.contains(candidate.takenAt) {
-                        offTrack = true
-                    } else {
-                        return nil
-                    }
-                }
-                let photo = RidePhoto(assetID: candidate.assetID, takenAt: candidate.takenAt, distanceMeters: distance)
-                return Placed(photo: photo, locationOffTrack: offTrack)
+                guard let (distance, coordinate) = position(at: candidate.takenAt, points: points, line: line)
+                else { return nil }
+                let offTrack = candidate.location.map { $0.distance(to: coordinate) > offTrackMeters } ?? false
+                return Placed(
+                    photo: RidePhoto(assetID: candidate.assetID, takenAt: candidate.takenAt),
+                    distanceMeters: distance, coordinate: coordinate, locationOffTrack: offTrack
+                )
             }
             .sorted { $0.photo.takenAt < $1.photo.takenAt }
     }
 
-    /// The distance the ride had covered at `time`, interpolated between points and clamped to
-    /// the ride. A time in a recording gap stays at the end of the piece before it.
-    static func distance(at time: Date, points: [RidePoint], line: MeasuredLine) -> Double {
-        guard time > points[0].timestamp else { return 0 }
-        guard time < points[points.count - 1].timestamp else { return line.length }
+    /// The ride's added photos on its current points. A photo outside them drops out.
+    public static func place(_ photos: [RidePhoto], on points: [RidePoint], line: MeasuredLine) -> [Placed] {
+        place(photos.map { PhotoCandidate(assetID: $0.assetID, takenAt: $0.takenAt) }, on: points, line: line)
+    }
+
+    /// Where the rider was at `time`, interpolated between points; nil outside the ride. A time in
+    /// a recording pause is where the rider stopped.
+    static func position(at time: Date, points: [RidePoint], line: MeasuredLine) -> (Double, Coordinate)? {
+        guard let span = span(of: points), span.contains(time) else { return nil }
         var low = 0
         var high = points.count - 1
         while high - low > 1 {
             let mid = (low + high) / 2
             if points[mid].timestamp <= time { low = mid } else { high = mid }
         }
-        let a = line.vertices[low], b = line.vertices[high]
-        let span = points[high].timestamp.timeIntervalSince(points[low].timestamp)
-        let t = span > 0 ? time.timeIntervalSince(points[low].timestamp) / span : 0
-        return a.distance + (b.distance - a.distance) * t
+        let a = points[low], b = points[high]
+        let interval = b.timestamp.timeIntervalSince(a.timestamp)
+        guard !b.segmentStart, interval > 0 else {
+            return time < b.timestamp ? (line.vertices[low].distance, a.coordinate) : (line.vertices[high].distance, b.coordinate)
+        }
+        let t = time.timeIntervalSince(a.timestamp) / interval
+        let coordinate = Coordinate(
+            latitude: a.coordinate.latitude + (b.coordinate.latitude - a.coordinate.latitude) * t,
+            longitude: a.coordinate.longitude + (b.coordinate.longitude - a.coordinate.longitude) * t
+        )
+        let distance = line.vertices[low].distance + (line.vertices[high].distance - line.vertices[low].distance) * t
+        return (distance, coordinate)
     }
 }
 

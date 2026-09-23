@@ -6,7 +6,8 @@ import OBCTransport
 /// A ride's photos: the offer row, the pick grid, the strip, the pins and the ticks.
 ///
 /// The app never adds a photo without the grid step, and it asks for library access only when
-/// the rider taps the offer.
+/// the rider taps the offer. Places come from the ride's points as they are now, so the model is
+/// built again when the points change.
 @MainActor @Observable
 public final class RidePhotosModel {
     /// The quiet row's state; nil hides the row.
@@ -25,18 +26,17 @@ public final class RidePhotosModel {
 
     /// One photo in the pick grid.
     public struct Pick: Identifiable, Equatable, Sendable {
-        public let photo: RidePhoto
-        public let locationOffTrack: Bool
+        public let placed: RidePhotoPlacement.Placed
         public var thumbnail: Data?
-        public var id: String { photo.assetID }
+        public var id: String { placed.id }
     }
 
     public static let thumbnailPixels = 400
 
     public private(set) var offer: Offer?
-    /// In time order.
-    public private(set) var photos: [RidePhoto] = []
-    /// Keyed by asset id. A photo without one shows a placeholder.
+    /// The added photos on the ride, in time order. A photo outside the ride's points is left out.
+    public private(set) var placed: [RidePhotoPlacement.Placed] = []
+    /// Keyed by asset id. A photo without one shows a placeholder until `fillThumbnails()`.
     public private(set) var thumbnails: [String: Data] = [:]
     /// The grid's photos; nil while they load.
     public private(set) var picks: [Pick]?
@@ -61,50 +61,62 @@ public final class RidePhotosModel {
         access = photoLibrary.access()
     }
 
+    public var photos: [RidePhoto] { placed.map(\.photo) }
+
     /// Loads the ride's photos and the offer. A host may build throwaway models on every render,
     /// so this waits for the live one.
     public func start() async {
-        guard !started else { return }
+        guard !started, !points.isEmpty else { return }
         started = true
         journal = library.rideJournal(rideID)
-        photos = journal.photos
         thumbnails = library.ridePhotoThumbnails(rideID)
-        if !points.isEmpty { line = MeasuredLine(ridePoints: points) }
-        guard !journal.closedRows.contains(.photos), line != nil else { return }
-        guard access.canRead else {
+        let points = points
+        line = await Task.detached { MeasuredLine(ridePoints: points) }.value
+        placed = await place(journal.photos)
+        guard !journal.closedRows.contains(.photos) else { return }
+        switch access {
+        case .notDetermined:
             offer = Offer(count: nil)
-            return
+        case .denied:
+            // Without access the app cannot tell which rides have photos.
+            break
+        case .limited, .full:
+            let count = await placedCandidates().count
+            // Limited access keeps the row at zero, so the rider can reach "Choose more photos…".
+            offer = count > 0 ? Offer(count: count) : access == .limited ? Offer(count: nil) : nil
         }
-        let count = await placedCandidates().count
-        // Limited access keeps the row at zero, so the rider can reach "Choose more photos…".
-        offer = count > 0 ? Offer(count: count) : access == .limited ? Offer(count: nil) : nil
     }
 
     // MARK: Offer and grid
 
-    /// The rider tapped the offer. True when the grid should open.
+    /// The rider tapped the offer. True when the grid should open. A refusal closes the row for
+    /// this ride.
     public func openOffer() async -> Bool {
         if access == .notDetermined { access = await photoLibrary.requestAccess() }
         guard access.canRead else {
             accessDenied = true
+            dismissOffer()
             return false
         }
         return true
     }
 
-    /// Fills the grid, every photo selected. Photos that are already in the grid keep their
-    /// selection.
+    /// Fills the grid, every new photo selected. Photos already in the grid keep their selection
+    /// and their thumbnail.
     public func loadPicks() async {
         let known = Set(picks?.map(\.id) ?? [])
-        let placed = await placedCandidates()
-        var loaded = placed.map { Pick(photo: $0.photo, locationOffTrack: $0.locationOffTrack) }
-        for index in loaded.indices {
-            loaded[index].thumbnail = picks?.first { $0.id == loaded[index].id }?.thumbnail
+        let loaded = await placedCandidates().map { placed in
+            Pick(placed: placed, thumbnail: picks?.first { $0.id == placed.id }?.thumbnail)
         }
         selected.formUnion(loaded.map(\.id).filter { !known.contains($0) })
         selected.formIntersection(loaded.map(\.id))
         picks = loaded
-        for pick in loaded where pick.thumbnail == nil {
+    }
+
+    /// Loads the grid's missing thumbnails. It stops when its task is cancelled.
+    public func loadPickThumbnails() async {
+        for pick in picks ?? [] where pick.thumbnail == nil {
+            guard !Task.isCancelled else { return }
             let data = try? await photoLibrary.image(pick.id, maxPixels: Self.thumbnailPixels)
             if let index = picks?.firstIndex(where: { $0.id == pick.id }) { picks?[index].thumbnail = data }
         }
@@ -121,13 +133,17 @@ public final class RidePhotosModel {
         selected = []
     }
 
-    /// Adds the selected photos. This uses the offer, so its row never returns.
+    /// Adds the selected photos. This uses the offer, so its row never returns. A thumbnail that
+    /// has not loaded yet is filled later by `fillThumbnails()`.
     public func addSelected() {
         let chosen = (picks ?? []).filter { selected.contains($0.id) }
-        journal.add(chosen.map(\.photo))
+        journal.add(chosen.map(\.placed.photo))
         journal.close(.photos)
         var new: [String: Data] = [:]
         for pick in chosen { new[pick.id] = pick.thumbnail }
+        let known = Set(placed.map(\.id))
+        placed = (placed + chosen.map(\.placed).filter { !known.contains($0.id) })
+            .sorted { $0.photo.takenAt < $1.photo.takenAt }
         save(thumbnails: new)
         offer = nil
         closeGrid()
@@ -141,38 +157,55 @@ public final class RidePhotosModel {
 
     // MARK: Strip and viewer
 
+    /// Loads and keeps the thumbnails the strip is missing. It stops when its task is cancelled.
+    public func fillThumbnails() async {
+        for photo in photos where thumbnails[photo.assetID] == nil {
+            guard !Task.isCancelled else { return }
+            guard let data = try? await photoLibrary.image(photo.assetID, maxPixels: Self.thumbnailPixels)
+            else { continue }
+            save(thumbnails: [photo.assetID: data])
+        }
+    }
+
     public func remove(_ assetID: String) {
         journal.remove(assetID)
+        placed.removeAll { $0.id == assetID }
         save(thumbnails: [:])
     }
 
-    /// A screen-size image for the viewer; nil when the photo is gone from the library.
+    /// A screen-size image for the viewer; nil when the photo is deleted from the library.
+    /// Throws `PhotoNotShared` when the access setting hides it.
     public func fullImage(_ assetID: String) async throws -> Data? {
         try await photoLibrary.image(assetID, maxPixels: 2_048)
     }
 
-    /// Where each photo sits on the map, in `photos` order.
-    public var pinCoordinates: [Coordinate] {
-        guard let line else { return [] }
-        return photos.map { line.coordinate(at: $0.distanceMeters) }
-    }
+    /// Where each photo sits on the map, in `placed` order.
+    public var pinCoordinates: [Coordinate] { placed.map(\.coordinate) }
 
     /// Where each photo sits on the profile, from 0 at the start to 1 at the end.
     public var tickFractions: [Double] {
-        guard let line, line.length > 0 else { return [] }
-        return photos.map { $0.distanceMeters / line.length }
+        guard let length = line?.length, length > 0 else { return [] }
+        return placed.map { $0.distanceMeters / length }
     }
 
     // MARK: Private
 
     private func placedCandidates() async -> [RidePhotoPlacement.Placed] {
-        guard let window = RidePhotoPlacement.window(for: points) else { return [] }
-        return RidePhotoPlacement.place(await photoLibrary.candidates(takenIn: window), on: points)
+        guard let span = RidePhotoPlacement.span(of: points), let line else { return [] }
+        let candidates = await photoLibrary.candidates(takenIn: span)
+        let points = points
+        return await Task.detached { RidePhotoPlacement.place(candidates, on: points, line: line) }.value
+    }
+
+    private func place(_ photos: [RidePhoto]) async -> [RidePhotoPlacement.Placed] {
+        guard let line, !photos.isEmpty else { return [] }
+        let points = points
+        return await Task.detached { RidePhotoPlacement.place(photos, on: points, line: line) }.value
     }
 
     private func save(thumbnails new: [String: Data]) {
         library.saveRideJournal(journal, thumbnails: new, for: rideID)
-        photos = journal.photos
-        thumbnails = thumbnails.merging(new) { $1 }.filter { key, _ in photos.contains { $0.assetID == key } }
+        let kept = Set(journal.photos.map(\.assetID))
+        thumbnails = thumbnails.merging(new) { $1 }.filter { kept.contains($0.key) }
     }
 }

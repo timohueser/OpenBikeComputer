@@ -32,7 +32,7 @@ struct RideJournalStoreTests {
     }
 
     private func photo(_ assetID: String, at seconds: Double) -> RidePhoto {
-        RidePhoto(assetID: assetID, takenAt: Date(timeIntervalSince1970: seconds), distanceMeters: seconds)
+        RidePhoto(assetID: assetID, takenAt: Date(timeIntervalSince1970: seconds))
     }
 
     @Test(arguments: StoreKind.allCases)

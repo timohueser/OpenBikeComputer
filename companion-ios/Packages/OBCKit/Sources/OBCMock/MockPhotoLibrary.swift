@@ -35,13 +35,10 @@ public final class MockPhotoLibrary: PhotoLibrary, @unchecked Sendable {
     }
 
     public func candidates(takenIn range: ClosedRange<Date>) async -> [PhotoCandidate] {
-        let (access, choseMore) = lock.withLock { (current, self.choseMore) }
-        guard access.canRead else { return [] }
-        let start = range.lowerBound.addingTimeInterval(RidePhotoPlacement.margin)
-        let span = max(0, range.upperBound.timeIntervalSince(start) - RidePhotoPlacement.margin)
+        let span = range.upperBound.timeIntervalSince(range.lowerBound)
         return (0..<Self.photoCount).compactMap { index in
-            guard access == .full || choseMore || index % 3 == 0 else { return nil }
-            let time = start.addingTimeInterval(span * (Double(index) + 0.5) / Double(Self.photoCount))
+            guard isVisible(index) else { return nil }
+            let time = range.lowerBound.addingTimeInterval(span * (Double(index) + 0.5) / Double(Self.photoCount))
             let far = index == 4 ? Coordinate(latitude: 0, longitude: 0) : nil
             return PhotoCandidate(assetID: Self.assetID(index), takenAt: time, location: far)
         }
@@ -49,12 +46,17 @@ public final class MockPhotoLibrary: PhotoLibrary, @unchecked Sendable {
 
     public func image(_ assetID: String, maxPixels: Int) async throws -> Data? {
         guard let index = (0..<Self.photoCount).first(where: { Self.assetID($0) == assetID }) else { return nil }
+        guard isVisible(index) else { throw PhotoNotShared() }
         if lastPhotoGone, index == Self.photoCount - 1, maxPixels > 400 { return nil }
         return Self.drawPhoto(index, longEdge: maxPixels)
     }
 
     @MainActor public func chooseMore() async {
         lock.withLock { choseMore = true }
+    }
+
+    private func isVisible(_ index: Int) -> Bool {
+        lock.withLock { current == .full || (current == .limited && (choseMore || index % 3 == 0)) }
     }
 
     private static func assetID(_ index: Int) -> String { "mock-photo-\(index + 1)" }
