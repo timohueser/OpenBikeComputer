@@ -106,7 +106,7 @@ record never holds a route: route removal and replacement ignore it.
 | 24 | 4 | position metres |
 | 28 | 2 | position day, from 0 |
 | 30 | 2 | last finished day; `0xFFFF` when none |
-| 32 | 64 | 32 finish dates, `u16` days since 1970-01-01; 0 = none |
+| 32 | 64 | finish dates of days 0 to 31, `u16` days since 1970-01-01; 0 = none |
 
 A remaining length that is not a multiple of 96, more than 16 records, a zero key or a duplicate
 key is an error. Proof-row and checkpoint edits preserve the records.

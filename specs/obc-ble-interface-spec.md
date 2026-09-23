@@ -338,7 +338,8 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   the position day.
 - **Day dates.** Dates follow the rides. For day `k`, take the latest day `j ≤ k` with a finish
   date: `date(k) = date(j) + (k − j)`. Without such a day, `date(k) = start_date + k`. Without a
-  start date either, day `k` has no date and no weekday.
+  start date either, day `k` has no date and no weekday. The progress record stores finish dates
+  for days 0 to 31 only. A later day stores no date, so its date follows the last stored one.
 - **Trip to go.** The rest of the loaded day, plus the distance and climb of the routes of all
   later days.
 
