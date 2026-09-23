@@ -283,7 +283,7 @@ mod tests {
         let input = TripInput { id: 1, key: 9, name: "Alps", start_date: 0, stage_ids: &[70, 80] };
         let trips = [TripSummary::resolve(&input, &routes, &[70, 80])];
         // Day 1 ends on the line at 40 km; Day 2 joins it 2 km in.
-        let join = crate::trip::DayJoin { key: 9, day: 1, leave_m: 40_000, join_m: 2_000 };
+        let join = crate::trip::DayJoin { key: 9, day: 1, leave_m: 40_000, join_m: 2_000, gap_m: 0 };
         let day1 = TripProgress {
             key: 9,
             day: 0,
