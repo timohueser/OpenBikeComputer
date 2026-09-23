@@ -309,27 +309,22 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
                 INK,
             );
         }
-        let mut ascent = heapless::String::<20>::new();
-        if let Some(m) = row.ascent_m {
-            let _ = write!(ascent, "+{}{}", rx.settings.units.elev(m as f32) as u32, rx.settings.units.elev_label());
-        } else {
-            let _ = write!(ascent, "+?{}", rx.settings.units.elev_label());
+        // A climb under 5 m is noise, and an unknown climb shows nothing.
+        if let Some(m) = row.ascent_m.filter(|m| *m >= 5) {
+            let climb = super::vocab::fmt::elevation_short(Some(m), rx.settings.units);
+            super::poi_display::draw_climb_figure(cv, 93, y + 33, &climb);
         }
-        label(cv, &ascent, 90, y + 33, Font::Label, INK);
         let offset = match &row.item {
             Item::Waypoint(w) => w.lateral_offset_m as i32,
             Item::Place(i) => rx.corridor.get(*i as usize).map_or(0, |p| p.offset_m),
             Item::Climb(_) => 0,
         };
-        if offset.abs() > 50 {
-            let mut s = heapless::String::<24>::new();
-            let _ = write!(
-                s,
-                "{} {}",
-                if offset < 0 { "<" } else { ">" },
-                distance(offset.unsigned_abs(), rx.settings.units)
-            );
-            cv.text(&s, Point::new(224, y + 33), Font::Label, TextAlign::Right, INK);
+        if offset.abs() > super::OFF_ROUTE_HINT_M {
+            use super::poi_display::{draw_side_arrow, ARROW_GAP, ARROW_W};
+            let d = distance(offset.unsigned_abs(), rx.settings.units);
+            let arrow_x = 224 - obc_render::text::text_width(&d, Font::Label) as i32 - ARROW_GAP - ARROW_W;
+            draw_side_arrow(cv, Point::new(arrow_x, y + 33 + Font::Label.cap_mid() as i32), offset > 0, INK);
+            cv.text(&d, Point::new(224, y + 33), Font::Label, TextAlign::Right, INK);
         }
     }
     if a.has_next() {

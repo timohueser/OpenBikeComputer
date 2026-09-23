@@ -6,7 +6,7 @@ use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
-use obc_reader::{Interval, Poi, WeeklySchedule};
+use obc_reader::{Interval, Poi, PoiCategory, WeeklySchedule};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -16,9 +16,11 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::poi_display::{draw_side_arrow, ARROW_W};
 use super::poi_list::draw_bearing_arrow;
 use super::vocab::chrome::{title_frame, LIST_TOP};
-use super::vocab::fmt::write_distance_coarse;
+use super::vocab::fmt::write_distance_split;
+use super::vocab::rows::{ledger_row, ledger_value_left};
 use super::{palette, Ctx, Render, Transition};
 
 /// The selected place; its schedule lives in App scratch to keep the screen union small.
@@ -103,13 +105,13 @@ impl PoiDetailScreen {
         use palette::*;
 
         let (w, h) = (rx.w, rx.h);
-        title_frame(
-            cv,
-            w,
-            h,
-            if self.landmark_category > 0 { rx.t(Msg::AssistantLandmark) } else { rx.t(Msg::PoiDetailTitle) },
-            "",
-        );
+        let category = obc_formats::obcm::poi_category_of(self.poi.subtype);
+        let title = if self.landmark_category > 0 {
+            Msg::AssistantLandmark
+        } else {
+            category.map_or(Msg::PoiDetailTitle, super::poi_menu::category_msg)
+        };
+        title_frame(cv, w, h, rx.t(title), "");
 
         // The subtype label is the subtitle, and the whole name line when the POI is unnamed.
         let label = if self.landmark_category > 0 {
@@ -125,7 +127,7 @@ impl PoiDetailScreen {
         let x = 16;
         let name_top = LIST_TOP + 4;
         let mut name_x = x;
-        if let Some(cat) = obc_formats::obcm::poi_category_of(self.poi.subtype) {
+        if let Some(cat) = category {
             let icon_c = Point::new(x + 11, name_top + Font::Body.cap_mid() as i32);
             super::poi_menu::draw_category_icon(cv, cat, icon_c, INK, PARCHMENT);
             name_x = x + 22 + 8;
@@ -140,68 +142,53 @@ impl PoiDetailScreen {
             sub_bot = sub_y + Font::Label.cap_bottom() as i32;
         }
 
-        // The distance and bearing row: the same 8-way arrow as the list rows, at Body-line size,
-        // then the distance. The arrow hides when there is no heading reference; the distance stays.
-        let dist_y = sub_bot + 14;
-        let heading = rx.state.effective_heading_deg();
-        let fix = rx.state.user_fix;
-        let arrow_r = Font::Body.cap_height() as i32 / 2;
-        let mut dist_x = x;
-        if let (Some(fix), Some(heading)) = (fix, heading) {
-            let arrow_mid = dist_y + Font::Body.cap_mid() as i32;
+        // From the Up-ahead timeline the distance runs along the route and the offset has its own
+        // row. Elsewhere it is the straight-line distance, with the 8-way arrow of the list rows
+        // left of the value when there is a heading reference.
+        let units = rx.settings.units;
+        let mut y = sub_bot + 8;
+        let caption = rx.t(if self.off_route_m.is_some() { Msg::PoiDetailAhead } else { Msg::PoiDetailAway });
+        let value_left = distance_row(cv, w, y, caption, self.poi.distance_m, units);
+        let bearing = (self.off_route_m, rx.state.user_fix, rx.state.effective_heading_deg());
+        if let (None, Some(fix), Some(heading)) = bearing {
             draw_bearing_arrow(
                 cv,
-                Point::new(x + arrow_r, arrow_mid),
-                arrow_r,
+                Point::new(value_left - MARK_GAP - BEARING_R, y + VALUE_MID),
+                BEARING_R,
                 (fix.lon, fix.lat),
                 (self.poi.lon, self.poi.lat),
                 heading,
             );
-            dist_x = x + 2 * arrow_r + 8;
         }
-        let mut dist: heapless::String<12> = heapless::String::new();
-        write_distance_coarse(&mut dist, "", self.poi.distance_m, rx.settings.units);
-        cv.text(&dist, Point::new(dist_x, dist_y), Font::Body, TextAlign::Left, INK);
-        cv.text(
-            if self.off_route_m.is_some() { "on route" } else { "by air" },
-            Point::new(dist_x + text_width(&dist, Font::Body) as i32 + 8, dist_y + 5),
-            Font::Label,
-            TextAlign::Left,
-            SUBTEXT,
-        );
-        let mut dist_bot = dist_y + Font::Body.cap_bottom() as i32;
-
-        // The off-route line, only when the Up-ahead timeline handed the offset over. The side is a
-        // word here, because this is a screen the rider reads rather than glances at.
+        y += ROW_PITCH;
         if let Some(off) = self.off_route_m {
-            let mut line: heapless::String<24> = heapless::String::new();
-            write_distance_coarse(&mut line, "", off.unsigned_abs() as u32, rx.settings.units);
-            let _ = line.push(' ');
-            let _ = line.push_str(rx.t(if off > 0 { Msg::PoiDetailSideRight } else { Msg::PoiDetailSideLeft }));
-            let off_y = dist_bot + 6;
-            // The side arrow left of the words: without it "245m left" reads as a remaining
-            // distance, which is exactly the number above it.
-            use super::poi_display::{draw_side_arrow, ARROW_GAP, ARROW_W};
-            draw_side_arrow(cv, Point::new(x, off_y + Font::Label.cap_mid() as i32), off > 0, SUBTEXT);
-            cv.text(&line, Point::new(x + ARROW_W + ARROW_GAP, off_y), Font::Label, TextAlign::Left, SUBTEXT);
-            dist_bot = off_y + Font::Label.cap_bottom() as i32;
+            let caption = rx.t(Msg::PoiDetailOffRoute);
+            let value_left = distance_row(cv, w, y, caption, off.unsigned_abs() as u32, units);
+            draw_side_arrow(cv, Point::new(value_left - MARK_GAP - ARROW_W, y + VALUE_MID), off > 0, INK);
+            y += ROW_PITCH;
         }
 
         // Today's hours: a heading row, then each open interval on its own row. An overnight
         // spillover can add a third range, which the compact rows still fit in the same area.
-        let head_y = dist_bot + 16;
+        let head_y = y + 16;
         let schedule = rx.poi_scratch.detail_schedule.filter(|s| {
             self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
                 && rx.poi_scratch.detail_source == self.poi.metadata.source.0
                 && s.flags() == 0
         });
         let (heading, intervals) = hours_view(schedule.as_ref(), rx.place_local);
-        let head = rx.t(heading);
-        cv.text(head, Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
+        // Drinking water has no opening hours, so "not listed" there would read as missing data.
+        if !(matches!(heading, Msg::PoiDetailHoursNotListed) && category == Some(PoiCategory::Water)) {
+            cv.text(rx.t(heading), Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
+        }
 
         let mut row_y = head_y + Font::Label.cap_bottom() as i32 + 8;
-        let range_font = if intervals.len() > 2 { Font::Label } else { Font::Body };
-        let range_step = if intervals.len() > 2 { range_font.cap_height() + 2 } else { range_font.line_height() };
+        // The compact Label rows take over when full-size rows would not clear the footer bar.
+        let body_bottom =
+            row_y + (intervals.len() as i32 - 1) * Font::Body.line_height() as i32 + Font::Body.cap_bottom() as i32;
+        let compact = intervals.len() > 2 || body_bottom + 6 > super::route_overview::start_button_top(h);
+        let range_font = if compact { Font::Label } else { Font::Body };
+        let range_step = if compact { range_font.cap_height() + 2 } else { range_font.line_height() };
         for iv in &intervals {
             let mut range: heapless::String<16> = heapless::String::new();
             write_interval(&mut range, iv);
@@ -265,6 +252,25 @@ impl PoiDetailScreen {
         };
         super::route_overview::draw_start_button(cv, w, h, label);
     }
+}
+
+/// The distance rows' pitch; each row's rule sits just above the next row.
+const ROW_PITCH: i32 = 40;
+/// The cap centre of a ledger row's value, below the row top: the caps bottom out at `y + 32`.
+const VALUE_MID: i32 = 32 - Font::Display.cap_height() as i32 / 2;
+/// The gap between a row's value and the mark left of it.
+const MARK_GAP: i32 = 6;
+/// The bearing arrow's radius, at Body-line size like the list rows' arrow.
+const BEARING_R: i32 = Font::Body.cap_height() as i32 / 2;
+
+/// One distance ledger row with its rule under it. Returns the value's left edge, for the mark
+/// drawn beside it.
+fn distance_row(cv: &mut impl Surface, w: i32, y: i32, caption: &str, d_m: u32, units: crate::settings::Units) -> i32 {
+    let mut value = heapless::String::<8>::new();
+    let unit = write_distance_split(&mut value, d_m, units);
+    ledger_row(cv, w, y, caption, &value, unit, None);
+    cv.hline(16, y + ROW_PITCH - 2, w - 32, palette::RULE);
+    ledger_value_left(w, &value, unit)
 }
 
 /// How far the Today-line badge lifts above the cap-centre of the caption. Centred, the pill
@@ -494,6 +500,26 @@ mod tests {
         let sun_wd = weekday_from_ymd(sun_noon.year, sun_noon.month, sun_noon.day);
         assert_eq!(sun_wd, 6, "2025-01-05 is Sunday");
         assert!(!s.is_open(sun_wd, sun_noon.hour as u16 * 60 + sun_noon.minute as u16), "closed on Sunday");
+    }
+
+    /// Each row caption clears the widest value its row can show, and the mark left of that value.
+    #[test]
+    fn row_captions_clear_the_value_and_its_mark_in_every_language() {
+        // "5279 ft" is as wide as any figure the 10 km Ahead range or the 50 km nearby radius can
+        // reach. An off-route place is inside the 300 m corridor, so its widest figure is "984 ft".
+        let rows = [
+            (Msg::PoiDetailAhead, "5279", "ft", 0),
+            (Msg::PoiDetailAway, "5279", "ft", MARK_GAP + 2 * BEARING_R),
+            (Msg::PoiDetailOffRoute, "984", "ft", MARK_GAP + ARROW_W),
+        ];
+        for language in crate::settings::Language::ALL {
+            for (msg, value, unit, mark_w) in rows {
+                let caption = crate::i18n::t(msg, language);
+                let caption_right = 16 + text_width(caption, Font::Label) as i32;
+                let mark_left = ledger_value_left(240, value, unit) - mark_w;
+                assert!(caption_right + MARK_GAP <= mark_left, "{language:?}: {caption}");
+            }
+        }
     }
 
     #[test]
