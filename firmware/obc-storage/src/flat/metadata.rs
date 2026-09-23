@@ -644,14 +644,17 @@ pub fn write_checkpoint<D: BlockDevice>(
 
 /// Write one trip progress record by the bound rules of
 /// [`record`](obc_formats::trip_progress::record); `stored` says whether a stored trip holds a key.
-/// The record takes the current Revision of its day route, so a later replace voids its metres.
+/// A record with Revision 0 takes the current Revision of its day route, so a later replace voids
+/// its metres. A record that carries a Revision keeps it: its metres belong to that Revision.
 #[inline(never)]
 pub fn write_progress<D: BlockDevice>(
     store: &FlatStore<D>,
     mut new: TripProgress,
     stored: impl Fn(u64) -> bool,
 ) -> Result<(), Error> {
-    new.day_route.revision = route_revision(store, new.day_route.id)?.unwrap_or(0);
+    if new.day_route.revision == 0 {
+        new.day_route.revision = route_revision(store, new.day_route.id)?.unwrap_or(0);
+    }
     let mut bytes = [0; MAX_LEN];
     let mut owner = Metadata::new(store);
     let mut image = owner.load(store, &mut bytes)?;
