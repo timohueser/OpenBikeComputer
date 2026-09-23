@@ -1,61 +1,68 @@
-//! The Route menu: pick a route, or open a trip folder. Two levels in one screen. The top level
-//! lists the trip folders first and then the unfiled routes; a folder press pushes a second menu
-//! scoped to that trip. A route row is the same code path in both scopes, and never nests further.
+//! The Route menu: pick a route, or open a trip. Two levels in one screen. The top level lists the
+//! trips first and then the unfiled routes; a trip press pushes its day list, a second menu scoped
+//! to that trip. A day row opens its route as a route row does, and never nests further.
 
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
-    rect,
     text::{text_width, Font, TextAlign},
     Surface,
 };
 
 use crate::input::Gesture;
 use crate::route::RouteSummary;
-use crate::trip::TripSummary;
-use crate::Msg;
+use crate::settings::Language;
+use crate::trip::{TripProgress, TripSummary};
+use crate::{t as tr, Msg};
 
-use super::vocab::chrome::empty_state;
-use super::vocab::list::{self, ListGeometry, Separators};
+use super::vocab::chrome::{empty_state, row_check, title_frame, ROW_CHECK_HALF};
+use super::vocab::list;
 use super::vocab::marquee::{fit, MarqueeFrame};
+use super::vocab::two_line::{self, line2_right, LINE2, LINE2_FONT};
 use super::{
     palette, Ctx, MapScreen, Render, RouteOverviewScreen, RouteSwapScreen, Screen, Transition, TripDeleteScreen,
 };
-
-/// Per-route pane height (two lines: name + stats), sized so the routes fill the full list area.
-const ROW_H: i32 = 66;
-
-/// Text inset of the name/stats column from the row area's left edge. The distance on line 2 shares
-/// this x, so the name and the distance form one left column.
-const NAME_INSET: i32 = 12;
-
-/// The list side inset: the row area's margin from the panel edge.
-const SIDE_INSET: i32 = 12;
 
 /// The stats line's second column, the climb group, as a fraction of the row's inner width, so the
 /// climb figures align across every row whatever the width of the distance.
 const CLIMB_COL_PCT: i32 = 55;
 
-/// The count badge box height (px), also its minimum width, so one digit sits in a near-square pill
-/// and two digits widen it symmetrically.
-const BADGE_H: i32 = 24;
-/// Horizontal padding inside the count badge (both sides together).
-const BADGE_PAD: i32 = 14;
+/// The climb triangle's side, and the triangle plus its gap to the climb figure.
+const CLIMB_TRI: i32 = 10;
+const CLIMB_GLYPH_W: i32 = 14;
+
+/// The indent a ridden day's tick takes. Only a ticked row moves its text right by it.
+const TICK_W: i32 = 16;
+
+/// The dim olive of a ridden day's text.
+const RIDDEN: u16 = palette::PARCHMENT_SHADE;
 
 /// The upper bound on rows: every trip folder plus every route, when nothing is filed.
 const ROW_CAP: usize = crate::trip::MAX_TRIPS + crate::route::MAX_ROUTES;
 
-/// One row of the menu: a trip folder by trip-catalog index, or a route by route-catalog index.
-/// The route index is a real catalog index in either scope.
+/// Weekday catalog keys, Monday-first.
+const WEEKDAYS: [Msg; 7] = [
+    Msg::WeekdayMon,
+    Msg::WeekdayTue,
+    Msg::WeekdayWed,
+    Msg::WeekdayThu,
+    Msg::WeekdayFri,
+    Msg::WeekdaySat,
+    Msg::WeekdaySun,
+];
+
+/// One row of the menu: a trip folder by trip-catalog index, a route by route-catalog index, or a
+/// day of the scoped trip with its route's catalog index.
 #[derive(Clone, Copy)]
 enum Row {
     Folder(usize),
     Route(usize),
+    Day { day: u16, route: usize },
 }
 
 /// The identity of the highlighted row, so the highlight can follow it across a live catalog
-/// rescan. A route is pinned by its catalog index, a folder by its trip's durable id.
+/// rescan. A route or a day is pinned by its catalog index, a folder by its trip's durable id.
 #[derive(Debug, Clone, Copy)]
 enum SelId {
     Folder(crate::CatalogObjectId),
@@ -67,14 +74,14 @@ impl Row {
     fn identity(self, trips: &[TripSummary]) -> Option<SelId> {
         match self {
             Row::Folder(ti) => trips.get(ti).map(|t| SelId::Folder(t.id)),
-            Row::Route(ri) => Some(SelId::Route(ri)),
+            Row::Route(ri) | Row::Day { route: ri, .. } => Some(SelId::Route(ri)),
         }
     }
 
     fn is(self, id: SelId, trips: &[TripSummary]) -> bool {
         match (self, id) {
             (Row::Folder(ti), SelId::Folder(tid)) => trips.get(ti).is_some_and(|t| t.id == tid),
-            (Row::Route(ri), SelId::Route(i)) => ri == i,
+            (Row::Route(ri) | Row::Day { route: ri, .. }, SelId::Route(i)) => ri == i,
             _ => false,
         }
     }
@@ -85,8 +92,8 @@ impl Row {
 enum RouteMenuScope {
     /// The top level: trip folders first, then the unfiled routes.
     TopLevel,
-    /// Inside one trip's folder: that trip's member routes only. The durable id is resolved against
-    /// the live trip catalog each frame, so a rescan that reorders the trips cannot mis-scope it.
+    /// One trip's day list. The durable id is resolved against the live trip catalog each frame,
+    /// so a rescan that reorders the trips cannot mis-scope it.
     Trip { trip_id: crate::CatalogObjectId },
 }
 
@@ -111,11 +118,12 @@ impl RouteMenuScreen {
         RouteMenuScreen { selected: 0, sel_id: None, scope: RouteMenuScope::TopLevel }
     }
 
-    /// A stage list scoped to the trip with durable id `trip_id`.
-    pub fn trip(trip_id: crate::CatalogObjectId) -> Self {
-        RouteMenuScreen { selected: 0, sel_id: None, scope: RouteMenuScope::Trip { trip_id } }
+    /// The day list of trip `t`, with the cursor on the next day. A done trip opens on its first
+    /// day.
+    pub fn trip(t: &TripSummary, progress: Option<&TripProgress>) -> Self {
+        let selected = t.next_day(progress).map_or(0, |next| t.days().take_while(|&(day, _)| day < next).count());
+        RouteMenuScreen { selected, sel_id: None, scope: RouteMenuScope::Trip { trip_id: t.id } }
     }
-
     /// Re-point the highlight after a live catalog rescan: map the pinned identity across the
     /// rescan and find it again in the rebuilt list. A route that vanished clamps near its old
     /// position, never to a dangling index.
@@ -169,9 +177,9 @@ impl RouteMenuScreen {
             }
             RouteMenuScope::Trip { trip_id } => {
                 if let Some(t) = trips.iter().find(|t| t.id == trip_id) {
-                    for &idx in t.stage_indices.iter() {
+                    for (day, idx) in t.days() {
                         if internal_routes & (1 << idx) == 0 {
-                            let _ = out.push(Row::Route(idx as usize));
+                            let _ = out.push(Row::Day { day, route: usize::from(idx) });
                         }
                     }
                 }
@@ -194,19 +202,22 @@ impl RouteMenuScreen {
                 t
             }
             Gesture::Press if len > 0 => match rows[self.selected.min(len - 1)] {
-                Row::Folder(ti) => Transition::Push(Screen::RouteMenu(RouteMenuScreen::trip(cx.trips[ti].id))),
-                Row::Route(ri) => self.press_route(ri, cx),
+                Row::Folder(ti) => {
+                    let t = &cx.trips[ti];
+                    Transition::Push(Screen::RouteMenu(RouteMenuScreen::trip(t, t.progress_in(cx.trip_progress))))
+                }
+                Row::Route(ri) | Row::Day { route: ri, .. } => self.press_route(ri, cx),
             },
-            // A long-press on a folder opens the cascade-delete confirm; on a route row it does
-            // nothing, because a route is deleted from the Route overview.
+            // A long-press on a folder opens the cascade-delete confirm; on a route or a day it
+            // does nothing, because a route is deleted from the Route overview.
             Gesture::Hold if len > 0 => match rows[self.selected.min(len - 1)] {
                 Row::Folder(ti) => {
                     let t = &cx.trips[ti];
                     Transition::Push(Screen::TripDelete(TripDeleteScreen::new(t.id, &t.name)))
                 }
-                Row::Route(_) => Transition::None,
+                Row::Route(_) | Row::Day { .. } => Transition::None,
             },
-            Gesture::Back => Transition::Pop, // top level → Home/Menu; stage list → top level
+            Gesture::Back => Transition::Pop, // top level → Home/Menu; day list → top level
             _ => Transition::None,
         }
     }
@@ -237,25 +248,27 @@ impl RouteMenuScreen {
         self.build_rows(trips, routes.len(), rx.internal_routes, &mut rows);
         let total = rows.len();
 
-        let geo = ListGeometry::below_title(w, h, ROW_H, 8, SIDE_INSET, Separators::Unselected);
+        let geo = two_line::geometry(w, h);
 
-        // The title is "ROUTES" at the top level and the trip's name inside a folder. `title_buf`
+        // The title is "ROUTES" at the top level and the trip's name in a day list. `title_buf`
         // is filled only on the trip-name path, so it is declared uninitialized and borrowed there.
         let title_buf: heapless::String<64>;
-        let title = match self.scope {
-            RouteMenuScope::TopLevel => rx.t(Msg::RouteMenuTitle),
-            RouteMenuScope::Trip { trip_id } => match trips.iter().find(|t| t.id == trip_id) {
-                Some(t) => {
-                    // Leave room for the scroll counter the title bar's right slot may show.
-                    title_buf = fit(&t.name, w - 72, Font::Body);
-                    &title_buf
-                }
-                None => rx.t(Msg::RouteMenuTitle),
-            },
+        let trip = match self.scope {
+            RouteMenuScope::TopLevel => None,
+            RouteMenuScope::Trip { trip_id } => trips.iter().find(|t| t.id == trip_id),
         };
-
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list::list_frame(cv, w, h, title, pos, total, geo.visible);
+        let counter = list::counter(pos, total, geo.visible);
+        let title = match trip {
+            Some(t) => {
+                // The title and the counter both keep 14 px from the bar's ends, and 8 px apart.
+                let counter_w = if counter.is_empty() { 0 } else { text_width(&counter, Font::Label) as i32 + 8 };
+                title_buf = fit(&t.name, w - 28 - counter_w, Font::Body);
+                &title_buf
+            }
+            None => rx.t(Msg::RouteMenuTitle),
+        };
+        title_frame(cv, w, h, title, &counter);
 
         if total == 0 {
             let sub = match self.scope {
@@ -266,32 +279,91 @@ impl RouteMenuScreen {
             return;
         }
 
+        let lang = rx.settings.language;
         let sel = self.selected.min(total - 1);
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
-            let accent = if row.selected { ON_ACCENT } else { SUBTEXT };
+            let unaccepted =
+                |ri: usize| (rx.unaccepted_routes & (1 << ri) != 0).then(|| rx.t(Msg::RouteMenuUnaccepted));
             match rows[row.index] {
-                Row::Folder(ti) => draw_folder_row(cv, &row, &rx.marquee, &trips[ti], w, accent),
-                Row::Route(ri) => {
-                    let unaccepted = rx.unaccepted_routes & (1 << ri) != 0;
-                    draw_route_row(
-                        cv,
-                        &row,
-                        &rx.marquee,
-                        &routes[ri],
-                        w,
-                        accent,
-                        unaccepted.then(|| rx.t(Msg::RouteMenuUnaccepted)),
+                Row::Folder(ti) => {
+                    let t = &trips[ti];
+                    let x = name_line(cv, &row, &rx.marquee, &t.name, None, INK);
+                    let meta = trip_meta(t, t.progress_in(rx.trip_progress), lang, line2_right(&row) - x);
+                    cv.text(
+                        &meta,
+                        Point::new(x, two_line::line2_y(&row)),
+                        LINE2_FONT,
+                        TextAlign::Left,
+                        two_line::row_color(&row, LINE2),
                     );
+                }
+                Row::Route(ri) => draw_route_row(cv, &row, &rx.marquee, &routes[ri], unaccepted(ri)),
+                Row::Day { day, route } => {
+                    let Some(t) = trip else { return };
+                    let progress = t.progress_in(rx.trip_progress);
+                    // A ridden day is dim, except under the cursor, where dim olive on amber is
+                    // unreadable.
+                    let (ink, line2, tick) = match (t.is_ticked(day, progress), row.selected) {
+                        (false, _) => (INK, LINE2, None),
+                        (true, false) => (RIDDEN, RIDDEN, Some(LINE2)),
+                        (true, true) => (INK, LINE2, Some(LINE2)),
+                    };
+                    let r = &routes[route];
+                    let x = name_line(cv, &row, &rx.marquee, &r.name, tick, ink);
+                    let sy = two_line::line2_y(&row);
+                    if let Some(label) = unaccepted(route) {
+                        cv.text(
+                            label,
+                            Point::new(x, sy),
+                            LINE2_FONT,
+                            TextAlign::Left,
+                            two_line::row_color(&row, LINE2),
+                        );
+                        return;
+                    }
+                    let mut dist: heapless::String<24> = heapless::String::new();
+                    if let Some(date) = t.day_date(day, progress) {
+                        let _ = write!(dist, "{} · ", tr(weekday(date), lang));
+                    }
+                    let _ = write!(dist, "{} km", r.distance_km);
+                    cv.text(&dist, Point::new(x, sy), LINE2_FONT, TextAlign::Left, two_line::row_color(&row, line2));
+                    // The climb follows the distance, because the weekday leaves no room for a
+                    // column. It drops whole when the row is too narrow.
+                    let climb_x = x + text_width(&dist, LINE2_FONT) as i32 + 8;
+                    let climb = climb_label(r.climb_m);
+                    if climb_x + CLIMB_GLYPH_W + text_width(&climb, LINE2_FONT) as i32 <= line2_right(&row) {
+                        climb_group(cv, climb_x, sy, &climb, two_line::row_color(&row, line2));
+                    }
                 }
             }
         });
     }
 }
 
-/// The x of the climb column, from the row area's left edge.
-fn climb_col_x(area_x: i32, w: i32) -> i32 {
-    area_x + (w - 2 * SIDE_INSET) * CLIMB_COL_PCT / 100
+/// The x of the climb column.
+fn climb_col_x(row: &list::RowCtx) -> i32 {
+    row.area.top_left.x + row.area.size.width as i32 * CLIMB_COL_PCT / 100
+}
+
+/// Line 1 of a route-menu row: the name, cut or scrolled to the row. `tick` draws the ridden tick in
+/// that colour in the text column's indent and moves the text right by [`TICK_W`]. Returns the x
+/// where line 2 starts.
+fn name_line(
+    cv: &mut impl Surface,
+    row: &list::RowCtx,
+    marquee: &MarqueeFrame,
+    name: &str,
+    tick: Option<u16>,
+    color: u16,
+) -> i32 {
+    let mut x = two_line::text_x(row);
+    if let Some(tick_color) = tick {
+        row_check(cv, two_line::mark_at(row, x + ROW_CHECK_HALF), two_line::row_color(row, tick_color));
+        x += TICK_W;
+    }
+    two_line::name_line(cv, row, marquee, name, (x, two_line::name_right(row)), color);
+    x
 }
 
 /// A standard route row: the name on line 1, the distance under it, and the climb group at the
@@ -301,73 +373,72 @@ fn draw_route_row(
     row: &list::RowCtx,
     marquee: &MarqueeFrame,
     route: &RouteSummary,
-    w: i32,
-    accent: u16,
     unavailable: Option<&str>,
 ) {
     use palette::*;
-    let area = &row.area;
-    let y = area.top_left.y;
-    let name_x = area.top_left.x + NAME_INSET;
-    let name = marquee.fit(&route.name, (w - 20) - name_x, Font::Body, row.scroll());
-    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, if row.selected { ON_ACCENT } else { INK });
-
-    let sy = y + 35;
+    let name_x = name_line(cv, row, marquee, &route.name, None, INK);
+    let sy = two_line::line2_y(row);
     if let Some(label) = unavailable {
-        cv.text(label, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
+        cv.text(label, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, two_line::row_color(row, LINE2));
         return;
     }
     let mut dist: heapless::String<12> = heapless::String::new();
     let _ = write!(dist, "{} km", route.distance_km);
-    cv.text(&dist, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
+    cv.text(&dist, Point::new(name_x, sy), LINE2_FONT, TextAlign::Left, two_line::row_color(row, LINE2));
 
-    climb_group(cv, climb_col_x(area.top_left.x, w), sy, route.climb_m, accent);
+    climb_group(cv, climb_col_x(row), sy, &climb_label(route.climb_m), two_line::row_color(row, LINE2));
 }
 
-/// Draw the climb group at `x` and return the x past its text. The triangle is drawn, because the
-/// panel font has no `↑` glyph.
-fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb_m: u32, accent: u16) -> i32 {
-    cv.triangle(Point::new(x, sy + 14), Point::new(x + 9, sy + 14), Point::new(x + 4, sy + 5), accent);
-    let mut climb: heapless::String<12> = heapless::String::new();
+fn climb_label(climb_m: u32) -> heapless::String<12> {
+    let mut climb = heapless::String::new();
     let _ = write!(climb, "{climb_m} m");
-    cv.text(&climb, Point::new(x + 16, sy), Font::Label, TextAlign::Left, accent);
-    x + 16 + text_width(&climb, Font::Label) as i32
+    climb
 }
 
-/// A trip folder row. There is no folder pictogram: the count badge alone marks the trip, so the
-/// name keeps the full remaining width. Line 2 uses the two columns of a route row, so the stats
-/// align down the list.
-fn draw_folder_row(
-    cv: &mut impl Surface,
-    row: &list::RowCtx,
-    marquee: &MarqueeFrame,
-    t: &TripSummary,
-    w: i32,
-    accent: u16,
-) {
-    use palette::*;
-    let area = &row.area;
-    let y = area.top_left.y;
-    let n = t.stage_indices.len();
-    let name_x = area.top_left.x + NAME_INSET;
+/// Draw the climb group at `x`: the triangle, then `climb`. The triangle is drawn, because the
+/// panel font has no `↑` glyph.
+pub(super) fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb: &str, color: u16) {
+    // The base sits on the baseline, so the triangle reads as a capital.
+    let base = sy + LINE2_FONT.cap_bottom() as i32 - 1;
+    cv.triangle(
+        Point::new(x, base),
+        Point::new(x + CLIMB_TRI, base),
+        Point::new(x + CLIMB_TRI / 2, base - CLIMB_TRI),
+        color,
+    );
+    cv.text(climb, Point::new(x + CLIMB_GLYPH_W, sy), LINE2_FONT, TextAlign::Left, color);
+}
 
-    // The badge box is centred on the number and widens with the digit count.
-    let mut nbuf: heapless::String<8> = heapless::String::new();
-    let _ = write!(nbuf, "{n}");
-    let badge_w = (text_width(&nbuf, Font::Label) as i32 + BADGE_PAD).max(BADGE_H);
-    let badge_x = w - 20 - badge_w;
-    let badge_y = y + 8; // box y+8..y+32; Label cap (18 px) at y+11 → 3 px margin above and below
-    cv.round(rect(badge_x, badge_y, badge_w, BADGE_H), 6, WOOD);
-    cv.text(&nbuf, Point::new(badge_x + badge_w / 2, badge_y + 3), Font::Label, TextAlign::Center, BAR_TEXT);
+/// The weekday of `date`, in days since 1970-01-01, which was a Thursday.
+fn weekday(date: u16) -> Msg {
+    WEEKDAYS[(usize::from(date) + 3) % 7]
+}
 
-    let name = marquee.fit(&t.name, (badge_x - 8) - name_x, Font::Body, row.scroll());
-    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, if row.selected { ON_ACCENT } else { INK });
-
-    let sy = y + 35;
-    let mut dist: heapless::String<12> = heapless::String::new();
-    let _ = write!(dist, "{} km", t.distance_km);
-    cv.text(&dist, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
-    climb_group(cv, climb_col_x(area.top_left.x, w), sy, t.climb_m, accent);
+/// Line 2 of a trip row: the next day, or done, then the day count when it fits `budget_px`. A
+/// trip without a day to pick has neither.
+fn trip_meta(t: &TripSummary, progress: Option<&TripProgress>, lang: Language, budget_px: i32) -> heapless::String<48> {
+    let mut s = heapless::String::new();
+    if t.is_empty_folder() {
+        let _ = s.push_str(tr(Msg::RouteMenuNoDays, lang));
+        return s;
+    }
+    match t.next_day(progress) {
+        Some(k) => {
+            let _ = write!(s, "{} {} {}", tr(Msg::RouteMenuDay, lang), k + 1, tr(Msg::RouteMenuDayNext, lang));
+        }
+        None => {
+            let _ = s.push_str(tr(Msg::RouteMenuTripDone, lang));
+        }
+    }
+    let n = t.stage_ids.len();
+    let word = tr(if n == 1 { Msg::RouteMenuDayOne } else { Msg::RouteMenuDays }, lang);
+    let mut count: heapless::String<24> = heapless::String::new();
+    let _ = write!(count, " · {n} {word}");
+    let chars = s.chars().count() + count.chars().count();
+    if chars as i32 * LINE2_FONT.char_width() as i32 <= budget_px {
+        let _ = s.push_str(&count);
+    }
+    s
 }
 
 #[cfg(test)]
@@ -375,6 +446,7 @@ mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
     use crate::screen::test_ctx;
+    use crate::settings::Language;
     use crate::trip::TripInput;
     use crate::{AppState, Settings};
     use obc_map_scene::BBox;
@@ -400,7 +472,7 @@ mod tests {
     ) -> TripSummary {
         let ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> =
             (0..catalog.len() as crate::CatalogObjectId).collect();
-        TripSummary::resolve(&TripInput { id, name, stage_ids: stages }, catalog, &ids)
+        TripSummary::resolve(&TripInput { id, key: 1, name, start_date: 0, stage_ids: stages }, catalog, &ids)
     }
 
     fn run(
@@ -484,8 +556,8 @@ mod tests {
         assert!(matches!(menu.sel_id, Some(SelId::Route(3))));
 
         let trips = [trip(9, "Tour", &[0, 1, 2], &routes)];
-        RouteMenuScreen::trip(9).build_rows(&trips, routes.len(), 0b010, &mut rows);
-        assert!(matches!(rows.as_slice(), [Row::Route(0), Row::Route(2)]));
+        RouteMenuScreen::trip(&trips[0], None).build_rows(&trips, routes.len(), 0b010, &mut rows);
+        assert!(matches!(rows.as_slice(), [Row::Day { day: 0, route: 0 }, Row::Day { day: 2, route: 2 }]));
         RouteMenuScreen::new().build_rows(&[], 1, 1, &mut rows);
         assert!(rows.is_empty(), "an internal-only catalog has no saved routes");
     }
@@ -510,16 +582,16 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_stage_list_presses_the_member_route() {
+    fn a_day_press_opens_the_day_route() {
         let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A"), summary("B"), summary("C")];
         let trips = [trip(9, "Trip", &[1, 2], &routes)]; // members: catalog indices 1, 2
-        let mut scr = RouteMenuScreen::trip(9);
+        let mut scr = RouteMenuScreen::trip(&trips[0], None);
         let mut act = Activity::new(Mode::Idle);
         let mut navigator = crate::navigator::NavigatorMachine::new();
         let t = run_with_nav(&mut scr, &mut act, &mut rec, &mut navigator, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))));
-        assert_eq!(navigator.route_state().active_route, Some(1), "the first stage is catalog route 1");
+        assert_eq!(navigator.route_state().active_route, Some(1), "Day 1 is catalog route 1");
     }
 
     #[test]
@@ -528,11 +600,82 @@ mod tests {
         let routes = [summary("A")];
         let trips = [trip(9, "Trip", &[99], &routes)]; // the only ref dangles
         assert!(trips[0].is_empty_folder());
-        let mut scr = RouteMenuScreen::trip(9);
+        let mut scr = RouteMenuScreen::trip(&trips[0], None);
         let t = run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Back);
         assert!(matches!(t, Transition::Pop), "Back leaves the empty folder");
-        let mut scr = RouteMenuScreen::trip(9);
+        let mut scr = RouteMenuScreen::trip(&trips[0], None);
         let t = run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::None), "a press in an empty folder does nothing");
+    }
+
+    /// Three days on catalog routes 0, 1 and 2, keyed 1, starting Monday 2025-09-29.
+    fn three_days(routes: &[RouteSummary]) -> TripSummary {
+        let ids = [0, 1, 2];
+        TripSummary::resolve(&TripInput { id: 9, key: 1, name: "Alps", start_date: MON, stage_ids: &ids }, routes, &ids)
+    }
+
+    const MON: u16 = 20_360;
+
+    fn finished(last: u16) -> TripProgress {
+        TripProgress {
+            key: 1,
+            day: last,
+            day_route: crate::trip::RouteVersion { id: u64::from(last), revision: 1 },
+            metres: 0,
+            last_finished: Some(last),
+            dates: [0; obc_route::MAX_TRIP_DAYS],
+        }
+    }
+
+    #[test]
+    fn trip_row_says_what_is_next() {
+        let t = three_days(&[]);
+        let meta = |p: Option<&TripProgress>| trip_meta(&t, p, Language::En, 200);
+        assert_eq!(meta(None), "Day 1 next · 3 days");
+        assert_eq!(meta(Some(&finished(0))), "Day 2 next · 3 days");
+        assert_eq!(meta(Some(&finished(2))), "Done · 3 days");
+        assert_eq!(trip_meta(&t, None, Language::En, 180), "Day 1 next", "the count drops whole");
+    }
+
+    #[test]
+    fn every_language_keeps_the_day_count_on_a_panel_wide_row() {
+        let budget = 240 - 2 * two_line::SIDE_INSET - 4 - two_line::NAME_INSET;
+        let t = three_days(&[]);
+        for lang in Language::ALL {
+            for p in [None, Some(&finished(2))] {
+                let meta = trip_meta(&t, p, lang, budget);
+                assert!(meta.ends_with(tr(Msg::RouteMenuDays, lang)), "{lang:?}: {meta}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_trip_without_a_day_route_has_no_days() {
+        let trip = |stage_ids| {
+            TripSummary::resolve(&TripInput { id: 9, key: 1, name: "Alps", start_date: 0, stage_ids }, &[], &[])
+        };
+        assert_eq!(trip_meta(&trip(&[]), None, Language::En, 200), "No days", "not \"Done · 0 days\"");
+        // No day route is in the catalog.
+        let dangling = trip(&[0, 1, 2]);
+        assert_eq!(trip_meta(&dangling, None, Language::En, 200), "No days");
+        let mut rows = heapless::Vec::new();
+        RouteMenuScreen::trip(&dangling, None).build_rows(std::slice::from_ref(&dangling), 0, 0, &mut rows);
+        assert!(rows.is_empty(), "the day list has nothing to pick");
+    }
+
+    #[test]
+    fn the_day_list_opens_on_the_next_day() {
+        let routes = [summary("A"), summary("B"), summary("C")];
+        let t = three_days(&routes);
+        assert_eq!(RouteMenuScreen::trip(&t, None).selected, 0);
+        assert_eq!(RouteMenuScreen::trip(&t, Some(&finished(1))).selected, 2);
+        assert_eq!(RouteMenuScreen::trip(&t, Some(&finished(2))).selected, 0, "a done trip opens on Day 1");
+    }
+
+    #[test]
+    fn weekdays_count_from_a_thursday_epoch() {
+        assert!(matches!(weekday(0), Msg::WeekdayThu));
+        assert!(matches!(weekday(MON), Msg::WeekdayMon));
+        assert!(matches!(weekday(MON + 6), Msg::WeekdaySun));
     }
 }

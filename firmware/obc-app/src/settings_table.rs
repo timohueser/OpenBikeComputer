@@ -47,6 +47,19 @@ impl SettingCodec for u8 {
     }
 }
 
+/// An unknown byte reads as the default type, so a corrupt blob still names a bike.
+impl SettingCodec for obc_formats::bike::BikeType {
+    const LEN: usize = 1;
+    #[inline]
+    fn write(&self, dst: &mut [u8]) {
+        dst[0] = *self as u8;
+    }
+    #[inline]
+    fn read(src: &[u8]) -> Self {
+        Self::from_u8(src[0]).unwrap_or_default()
+    }
+}
+
 impl SettingCodec for bool {
     const LEN: usize = 1;
     #[inline]

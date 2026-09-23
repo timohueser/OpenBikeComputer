@@ -4,9 +4,7 @@ use crate::io::{validate_prefix, DecodeError};
 
 pub const MAGIC: &[u8; 4] = b"OBCR";
 /// The one accepted route version. Older files must be re-imported.
-pub const VERSION_V4: u8 = 4;
-pub const VERSION: u8 = VERSION_V4;
-pub const VERSIONS: core::ops::RangeInclusive<u8> = VERSION_V4..=VERSION_V4;
+pub const VERSION: u8 = 5;
 /// The header's ride core — every field the geometry path needs.
 pub const HEADER_LEN: usize = 112;
 /// The complete fixed header including optional-section metadata.
@@ -14,6 +12,8 @@ pub const HEADER_FULL_LEN: usize = 160;
 pub const CHUNK_META_LEN: usize = 44;
 pub const POINT_RECORD_LEN: usize = 7;
 pub const NAME_CAP: usize = 48;
+/// Header byte holding the route's [`BikeType`](crate::bike::BikeType).
+pub const BIKE_TYPE_OFF: usize = 7;
 pub const WAYPOINT_LEN: usize = 80;
 pub const WAYPOINT_NAME_CAP: usize = 24;
 /// First byte of a waypoint record's name field.
@@ -23,6 +23,9 @@ pub const FLAG_UNRESOLVED_AVOIDANCE: u8 = 1;
 pub const FLAG_HAS_ELEVATION: u8 = 2;
 pub const FLAG_ATTRIBUTION_MAP: u8 = 4;
 pub const FLAG_ASSISTANT_CANDIDATE: u8 = 8;
+/// A trip day the device built from the rest of the day before. Lists hide it, and the device keeps
+/// at most one, which each new build replaces.
+pub const FLAG_BUILT_DAY: u8 = 16;
 pub const WAYPOINT_PROVENANCE_OFF: usize = 44;
 pub const VISIT_DESCRIPTOR_VERSION: u8 = 1;
 pub const VISIT_DESCRIPTOR_LEN: usize = 80;
@@ -33,11 +36,11 @@ pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
 pub const WAYPOINT_CATEGORY_GENERIC: u8 = 0;
 
 pub const fn is_supported_version(version: u8) -> bool {
-    version == VERSION_V4
+    version == VERSION
 }
 
 pub fn validate_header_prefix(bytes: &[u8]) -> Result<u8, DecodeError> {
-    validate_prefix(bytes, MAGIC, VERSION_V4, VERSION_V4)
+    validate_prefix(bytes, MAGIC, VERSION, VERSION)
 }
 
 #[cfg(test)]
@@ -50,7 +53,7 @@ mod tests {
             &include_bytes!("../../../specs/vectors/route-plain.obcr")[..],
             &include_bytes!("../../../specs/vectors/route-waypoints.obcr")[..],
         ] {
-            assert_eq!(validate_header_prefix(fixture), Ok(VERSION_V4));
+            assert_eq!(validate_header_prefix(fixture), Ok(VERSION));
             assert!(fixture.len() >= HEADER_FULL_LEN);
             assert_eq!(u32::from_le_bytes(fixture[60..64].try_into().unwrap()), HEADER_FULL_LEN as u32);
         }
@@ -68,15 +71,15 @@ mod tests {
 
     /// Old versions are rejected outright.
     #[test]
-    fn pre_v4_versions_are_rejected() {
-        assert!(!is_supported_version(1));
-        assert!(!is_supported_version(2));
-        assert!(!is_supported_version(3));
-        assert!(is_supported_version(VERSION_V4));
+    fn old_versions_are_rejected() {
+        for old in 1..VERSION {
+            assert!(!is_supported_version(old));
+        }
+        assert!(is_supported_version(VERSION));
         let mut v2 = *b"OBCR\x02";
         assert_eq!(validate_header_prefix(&v2), Err(DecodeError::Version));
-        v2[4] = VERSION_V4;
-        assert_eq!(validate_header_prefix(&v2), Ok(VERSION_V4));
+        v2[4] = VERSION;
+        assert_eq!(validate_header_prefix(&v2), Ok(VERSION));
     }
 }
 

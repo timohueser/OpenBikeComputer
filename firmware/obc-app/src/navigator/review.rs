@@ -1,6 +1,7 @@
 //! Immutable Assistant review and durable checkpoint policy owned by Navigator.
 use super::NavigatorError;
 use crate::device_core::{MetadataTag, OperationToken, StoreIdentity};
+use crate::settings::BikeType;
 use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
 use obc_formats::obcr::RouteSourceKey;
 
@@ -27,7 +28,7 @@ pub struct ReviewContext {
     pub progress_m: u32,
     pub occurrence: u32,
     pub required_anchors_m: [u32; 3],
-    pub profile: u8,
+    pub profile: BikeType,
     pub facts_policy: u16,
     pub unresolved_avoidance: bool,
 }
@@ -47,7 +48,7 @@ impl ReviewContext {
         active == self.original.map(|source| source.object) && current == self.original && !avoidance
     }
 
-    pub fn accepts_origin(self, profile: u8, current: ReviewOrigin) -> bool {
+    pub fn accepts_origin(self, profile: BikeType, current: ReviewOrigin) -> bool {
         current.trustworthy
             && self.profile == profile
             && self.facts_policy == REVIEW_FACTS_POLICY
@@ -68,6 +69,8 @@ pub struct ReviewedRoute {
     pub descent_m: u32,
     pub visit_anchors_m: Option<[u32; 3]>,
     pub visit_costs: Option<obc_route::visit::VisitCosts>,
+    /// An easier candidate measured like the original it replaces.
+    pub easier: Option<obc_route::easier::Costs>,
 }
 
 impl ReviewedRoute {
@@ -76,6 +79,7 @@ impl ReviewedRoute {
         source: PayloadFingerprint,
         bytes: &dyn obc_formats::io::ByteSource,
         context: ReviewContext,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Result<Self, NavigatorError> {
         let info = obc_route::RouteObjectInfo::read(bytes).map_err(|_| NavigatorError::Unavailable)?;
         if !info.assistant_candidate
@@ -102,14 +106,23 @@ impl ReviewedRoute {
             }
             None
         };
-        let visit_costs = if matches!(
-            context.purpose,
-            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)
-        ) {
-            let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
-            Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
-        } else {
-            None
+        let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
+        // The excursion starts where the retained prefix ends and ends at the accepted rejoin.
+        let legs =
+            info.visit.zip(visit_anchors_m).map(|(d, a)| [d.original_anchors_m[1] - d.original_anchors_m[0], a[2]]);
+        let (visit_costs, easier) = match context.purpose {
+            ReviewPurpose::Easier(_) => {
+                let (facts, costs) = obc_route::easier::Costs::candidate(bytes, arrival, elev)
+                    .map_err(|_| NavigatorError::Unavailable)?;
+                (Some(facts), Some(costs))
+            }
+            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute => (
+                Some(
+                    obc_route::visit::VisitCosts::read(bytes, arrival, legs)
+                        .map_err(|_| NavigatorError::Unavailable)?,
+                ),
+                None,
+            ),
         };
         Ok(Self {
             source,
@@ -118,6 +131,7 @@ impl ReviewedRoute {
             descent_m: info.descent_m,
             visit_anchors_m,
             visit_costs,
+            easier,
         })
     }
 }
@@ -163,7 +177,8 @@ pub(super) enum AfterCheckpoint {
 pub(super) struct ReviewState {
     pub store: Option<StoreIdentity>,
     pub context: Option<ReviewContext>,
-    pub restore: Option<RouteSourceKey>,
+    /// The request measures its legs only; nothing is composed, published or previewed.
+    pub measure: bool,
     pub preview: Option<ReviewedRoute>,
     pub preview_index: Option<usize>,
     pub unaccepted: u64,
@@ -184,7 +199,7 @@ impl ReviewState {
         Self {
             store: None,
             context: None,
-            restore: None,
+            measure: false,
             preview: None,
             preview_index: None,
             unaccepted: 0,
@@ -208,7 +223,13 @@ use crate::metadata::{MetadataError, MetadataOutcome};
 use obc_formats::assistant::JourneyPhase;
 
 impl NavigatorMachine {
-    pub(crate) fn request_review(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
+    /// A measuring request starts its leg wherever the caller says; a route starts at the rider.
+    pub(crate) fn request_review(
+        &mut self,
+        request: crate::activity::NavRequest,
+        context: ReviewContext,
+        measure: bool,
+    ) {
         if (self.active_visit() && context.purpose != ReviewPurpose::ReturnToRoute)
             || self.review.change.is_some()
             || self.review.preview.is_some()
@@ -217,14 +238,16 @@ impl NavigatorMachine {
         {
             return;
         }
-        if context.facts_policy != REVIEW_FACTS_POLICY || context.unresolved_avoidance || request.from != context.origin
+        if context.facts_policy != REVIEW_FACTS_POLICY
+            || context.unresolved_avoidance
+            || (request.from != context.origin && !measure)
         {
             self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
             return;
         }
         self.review.store = Some(context.store);
         self.review.context = Some(context);
-        self.review.restore = None;
+        self.review.measure = measure;
         self.review.status = ReviewStatus::Planning;
         self.route_request = Some(request);
         self.route = PlanPhase::Requested;
@@ -322,6 +345,14 @@ impl NavigatorMachine {
         self.review.status = ReviewStatus::Preview;
     }
 
+    /// The measured legs are with their requester; the review has nothing left to hold.
+    pub(crate) fn measured(&mut self) {
+        self.review.measure = false;
+        self.review.context = None;
+        self.route_request = None;
+        self.review.status = if self.review.checkpoint.is_some() { ReviewStatus::Accepted } else { ReviewStatus::Idle };
+    }
+
     pub(crate) fn review_failed(&mut self, error: NavigatorError) {
         self.review.status = if error == NavigatorError::DurabilityUnknown {
             ReviewStatus::Unresolved
@@ -330,7 +361,7 @@ impl NavigatorMachine {
         };
     }
 
-    pub(super) fn accept_review(&mut self, origin: ReviewOrigin, profile: u8) {
+    pub(super) fn accept_review(&mut self, origin: ReviewOrigin, profile: BikeType) {
         if self.review.status != ReviewStatus::Preview || self.review.change.is_some() || self.live.is_some() {
             return;
         }
@@ -421,7 +452,7 @@ impl NavigatorMachine {
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
-        self.review.restore = None;
+        self.review.measure = false;
     }
 
     pub(super) fn prepare_ordinary_route(&mut self) -> bool {
@@ -623,7 +654,7 @@ impl NavigatorMachine {
                 self.checkpoint_unpublished();
                 None
             }
-            MetadataOutcome::Cancelled { .. } => None,
+            MetadataOutcome::Cancelled { .. } | MetadataOutcome::ProgressWritten { .. } => None,
         }
     }
 }
@@ -643,13 +674,63 @@ impl crate::App {
         outcome
     }
     pub fn plan_assistant(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
-        self.navigator.request_review(request, context);
+        self.navigator.request_review(request, context, false);
         self.ui.map_dirty = true;
+    }
+    /// The executor's answer to a measuring request. The figures go to the Find list; the outcome
+    /// ends the operation without a commit.
+    pub fn assistant_measured_outcome(
+        &mut self,
+        token: OperationToken<crate::device_core::NavigatorTag>,
+        legs: obc_route::visit::VisitLegs,
+    ) -> super::NavigatorOutcome {
+        let outcome = super::NavigatorOutcome::ReviewReady { token };
+        if !self.navigator.accepts(&outcome) || !self.navigator.review.measure || self.ui.find.measured.is_some() {
+            return super::NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged };
+        }
+        self.ui.find.measured = Some(legs);
+        outcome
+    }
+    pub(crate) fn assistant_measuring(&self) -> bool {
+        self.navigator.review.measure
+    }
+    /// Unaccepted candidates no review holds are what an interrupted review left on the card.
+    /// Each effect removes a commit's batch of them; a search in progress owns its candidate, so
+    /// the removal waits for it and never the other way round.
+    pub(crate) fn cleanup_orphan_reviews(&mut self) {
+        if self.ui.find.owns_pages()
+            || !self.catalogs.can_admit_intent()
+            || !self.assistant_planner_released()
+            || self.assistant_needs_recovery()
+            || self.assistant_preview().is_some()
+            || self.navigator.review.change.is_some()
+            || !matches!(
+                self.assistant_review_status(),
+                ReviewStatus::Idle | ReviewStatus::Accepted | ReviewStatus::ResumeAvailable
+            )
+        {
+            return;
+        }
+        if self.orphan_reviews().next().is_some()
+            && self.catalogs.admit_intent(crate::catalog_state::CatalogIntent::RemoveOrphanReviews).is_ok()
+        {
+            self.ui.next_wake_ms = Some(1);
+        }
+    }
+    /// The unaccepted candidates the standing checkpoint does not name.
+    pub fn orphan_reviews(&self) -> impl Iterator<Item = crate::CatalogObjectId> + '_ {
+        let held =
+            self.assistant_checkpoint().map_or([None; 2], |c| [Some(c.route.object), c.original.map(|o| o.object)]);
+        self.route_ids()
+            .iter()
+            .enumerate()
+            .filter(move |(index, id)| self.route_unaccepted(*index) && !held.contains(&Some(**id)))
+            .map(|(_, id)| *id)
     }
     pub fn accept_assistant(&mut self, origin: ReviewOrigin) {
         self.admit_navigator_intent(super::NavigatorIntent::AcceptAssistant {
             origin,
-            profile: self.settings().bike_profile_idx,
+            profile: self.settings().bike_type,
         });
     }
     pub fn cancel_assistant(&mut self) {
@@ -825,22 +906,6 @@ impl crate::App {
     pub fn assistant_review_context(&self) -> Option<ReviewContext> {
         self.navigator.review.context
     }
-    pub fn requested_assistant_restore(&self) -> Option<RouteSourceKey> {
-        self.navigator.review.restore
-    }
-    pub fn restore_visit(
-        &mut self,
-        target: obc_route::visit::VisitTarget,
-        context: ReviewContext,
-        source: RouteSourceKey,
-    ) -> bool {
-        if !self.plan_visit(target, context) {
-            return false;
-        }
-        self.navigator.review.context = Some(context);
-        self.navigator.review.restore = Some(source);
-        true
-    }
     pub fn assistant_preview(&self) -> Option<ReviewedRoute> {
         self.navigator.review.preview
     }
@@ -956,7 +1021,7 @@ mod tests {
             progress_m: 100,
             occurrence: 2,
             required_anchors_m: [0; 3],
-            profile: 0,
+            profile: crate::settings::BikeType::Road,
             facts_policy: REVIEW_FACTS_POLICY,
             unresolved_avoidance: false,
         }
@@ -976,6 +1041,7 @@ mod tests {
             descent_m: 3,
             visit_anchors_m: None,
             visit_costs: None,
+            easier: None,
         });
         nav.review_index(Some(1));
         nav.route = PlanPhase::PreviewReady;
@@ -1012,7 +1078,7 @@ mod tests {
                     app.navigator.following.active_route = None;
                     app.navigator.review.context.as_mut().unwrap().original = None;
                 }
-                app.navigator.accept_review(origin(), 0);
+                app.navigator.accept_review(origin(), crate::settings::BikeType::Road);
                 let effect = app.metadata.next_checkpoint_effect().unwrap();
                 let token = effect.token();
                 app.navigator.checkpoint_issued(token);
@@ -1059,7 +1125,7 @@ mod tests {
             assert!(app.ui.stack.push(crate::screen::Screen::Assistant(crate::screen::AssistantScreen::new())).is_ok());
             assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
             if recovery.is_some() {
-                app.navigator.accept_review(origin(), 0);
+                app.navigator.accept_review(origin(), crate::settings::BikeType::Road);
                 let mut tokens = TokenSource::new();
                 let token = issued(&mut app.navigator, &mut tokens);
                 assert!(app.navigator.checkpoint_submission(token));
@@ -1070,11 +1136,11 @@ mod tests {
             } else {
                 let mut moved = origin();
                 moved.progress_m += REVIEW_ALONG_TOLERANCE_M + 1;
-                app.navigator.accept_review(moved, 0);
+                app.navigator.accept_review(moved, crate::settings::BikeType::Road);
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
             }
             app.advance_easier();
-            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Unavailable });
+            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Stale });
             app.apply_gesture(crate::Gesture::Press);
             assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
             assert_eq!(app.active_route_index(), Some(0));
@@ -1110,7 +1176,7 @@ mod tests {
             app.navigator = preview();
             app.bind_place_map(Some(context().map));
             if unresolved {
-                app.navigator.accept_review(origin(), 0);
+                app.navigator.accept_review(origin(), crate::settings::BikeType::Road);
                 let token = issued(&mut app.navigator, &mut TokenSource::new());
                 assert!(app.navigator.checkpoint_submission(token));
                 app.navigator
@@ -1135,7 +1201,7 @@ mod tests {
     fn changing_cards_cannot_submit_or_recover_an_old_checkpoint() {
         let other = StoreIdentity::from_bytes([9; 16]);
         let mut nav = preview();
-        nav.accept_review(origin(), 0);
+        nav.accept_review(origin(), crate::settings::BikeType::Road);
         nav.review_store_changed(other);
         assert_eq!(nav.review.status, ReviewStatus::Unresolved);
         assert!(nav.checkpoint_change().is_none());
@@ -1155,11 +1221,11 @@ mod tests {
         assert_eq!(nav.following.active_route, Some(0), "ordinary route selection cannot accept the preview");
         let mut moved = origin();
         moved.progress_m += REVIEW_ALONG_TOLERANCE_M + 1;
-        nav.accept_review(moved, 0);
+        nav.accept_review(moved, crate::settings::BikeType::Road);
         assert_eq!(nav.review.status, ReviewStatus::Failed(NavigatorError::Movement));
         assert!(nav.review.change.is_none());
         let mut nav = preview();
-        nav.accept_review(origin(), 0);
+        nav.accept_review(origin(), crate::settings::BikeType::Road);
         let mut tokens = TokenSource::new();
         let token = issued(&mut nav, &mut tokens);
         assert!(nav.checkpoint_submission(token));
@@ -1186,14 +1252,14 @@ mod tests {
     fn cancel_before_submission_annihilates_and_cancel_after_submission_waits_for_clear_ack() {
         let mut tokens = TokenSource::new();
         let mut nav = preview();
-        nav.accept_review(origin(), 0);
+        nav.accept_review(origin(), crate::settings::BikeType::Road);
         let token = issued(&mut nav, &mut tokens);
         nav.cancel_review();
         assert!(!nav.checkpoint_submission(token));
         nav.checkpoint_answer(MetadataOutcome::Cancelled { token });
         assert!(nav.review.checkpoint.is_none());
         let mut nav = preview();
-        nav.accept_review(origin(), 0);
+        nav.accept_review(origin(), crate::settings::BikeType::Road);
         let token = issued(&mut nav, &mut tokens);
         assert!(nav.checkpoint_submission(token));
         nav.cancel_review();
@@ -1213,7 +1279,7 @@ mod tests {
     #[test]
     fn unknown_submission_fences_cancel_and_known_failure_keeps_exact_preview_retryable() {
         let mut nav = preview();
-        nav.accept_review(origin(), 0);
+        nav.accept_review(origin(), crate::settings::BikeType::Road);
         let original_preview = nav.review.preview;
         let mut tokens = TokenSource::new();
         let token = issued(&mut nav, &mut tokens);
@@ -1221,7 +1287,7 @@ mod tests {
         nav.checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::Busy });
         assert_eq!(nav.review.preview, original_preview);
         assert_eq!(nav.review.status, ReviewStatus::Preview);
-        nav.accept_review(origin(), 0);
+        nav.accept_review(origin(), crate::settings::BikeType::Road);
         let token = issued(&mut nav, &mut tokens);
         nav.checkpoint_submission(token);
         nav.checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
@@ -1248,7 +1314,7 @@ mod tests {
                 app.set_routes_with_ids(&[summary.clone(), summary], &[4, 5]);
                 app.navigator = preview();
                 app.navigator.review.recovery_seen = true;
-                app.navigator.accept_review(origin(), 0);
+                app.navigator.accept_review(origin(), crate::settings::BikeType::Road);
                 let next = app.navigator.review.change.unwrap();
                 let effect = app.metadata.next_checkpoint_effect().unwrap();
                 let token = effect.token();
@@ -1509,5 +1575,33 @@ mod tests {
         nav.resume_review(origin());
         assert_eq!(nav.review.change, Some(Some(checkpoint)));
         assert!(nav.following.active_route.is_none());
+    }
+
+    /// An accepted visit and a resume activate a route that changes or continues the loaded one,
+    /// so the rider's own type stays.
+    #[test]
+    fn an_accepted_visit_and_a_resume_keep_the_rider_type() {
+        use crate::harness::support::tick_typed_route;
+        use crate::settings::BikeType::{Gravel, Mtb};
+        let summary = obc_route::RouteSummary {
+            name: heapless::String::new(),
+            distance_km: 1,
+            climb_m: 0,
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+            start_lon: 0,
+            start_lat: 0,
+        };
+        for after in [
+            AfterCheckpoint::Activate { route: 5, record: true },
+            AfterCheckpoint::Activate { route: 5, record: false },
+            AfterCheckpoint::Restore { route: 5, progress_m: 0 },
+        ] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            app.set_routes_with_ids(&[summary.clone(), summary.clone()], &[4, 5]);
+            app.set_settings(crate::Settings { bike_type: Gravel, ..Default::default() });
+            app.apply_assistant_checkpoint_action(Some(after));
+            assert_eq!(app.active_route_index(), Some(1));
+            assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "{after:?}");
+        }
     }
 }

@@ -94,24 +94,4 @@ final class UploadSheetTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["On the device"].exists, "a canceled upload must never read as done")
         XCTAssertFalse(app.buttons["upload.cancel"].exists, "sheet must be gone")
     }
-
-    /// Completing the upload from the import landing also saves the route: the cover closes and
-    /// the route sits in Planned.
-    @MainActor
-    func testUploadFromImportLandingSavesToPlanned() {
-        let app = launch(importSample: true)
-
-        let upload = app.buttons["detail.upload"]
-        XCTAssertTrue(upload.waitForExistence(timeout: 10), "E1 upload action missing")
-        upload.tap()
-
-        XCTAssertTrue(app.staticTexts["On the device"].waitForExistence(timeout: 15), "F₂ missing")
-        app.buttons["upload.done"].tap()
-
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "landing must close after F₂")
-        XCTAssertTrue(
-            app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5),
-            "uploaded import must land in the Planned list"
-        )
-    }
 }

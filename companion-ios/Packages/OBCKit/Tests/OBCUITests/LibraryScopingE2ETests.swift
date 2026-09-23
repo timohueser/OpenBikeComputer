@@ -66,7 +66,6 @@ import OBCTransport
             .immediatelyFinished(.failed(.notConnected))
         }
         func deleteRoute(_ id: DeviceObjectID) async throws {}
-        func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
         /// Scoped minting, like `BLETransport.listRides()`.
         func listRides() async throws -> RideCatalog {
             let (rides, scope) = lock.withLock {

@@ -89,10 +89,6 @@ pub(crate) struct ContextFacts<'a> {
     pub settings: &'a Settings,
     /// Whether a ride is open, at the level [`RecorderMachine`](crate::RecorderMachine) reports.
     pub recording: bool,
-
-    /// The loaded map's routing-profile names: how many choices the bike-type binding has, and
-    /// therefore whether its row is live at all.
-    pub nav_profiles: &'a crate::NavProfiles,
 }
 
 /// A typed value a row edits in the nested editor. The binding owns where the value lives, how
@@ -114,10 +110,8 @@ pub enum ContextValue {
     UpAheadSource,
     FindResults,
 
-    /// The routing profile the on-device planner weights edges by. Its choices are the loaded map's
-    /// own profile names ([`NavProfiles`](crate::NavProfiles)), so a custom web-builder profile
-    /// appears without a hardcoded list, and a map that offers no choice makes the row inert rather
-    /// than a control that walks a ring of one.
+    /// The current [`BikeType`](crate::settings::BikeType). The route-plan sheet, the Ride settings
+    /// page and the start card all open this one editor.
     BikeProfile,
 
     /// The settings pages' values. Each is one [`Settings`] field.
@@ -138,17 +132,15 @@ pub enum ContextValue {
 }
 
 impl ContextValue {
-    /// How many choices this binding offers. Takes the facts because a binding's choices may be
-    /// map data rather than a compiled-in list.
-    pub(crate) fn count(self, f: &ContextFacts) -> u8 {
+    /// How many choices this binding offers.
+    pub(crate) fn count(self) -> u8 {
         match self {
             // "Everything" plus the six categories.
             ContextValue::UpAheadFilter => 1 + PoiCategory::ALL.len() as u8,
             ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
             ContextValue::FindResults => crate::settings::FindResults::COUNT as u8,
 
-            // At most `NAV_MAX_PROFILES`, which is also the notch strip's own ceiling.
-            ContextValue::BikeProfile => f.nav_profiles.len() as u8,
+            ContextValue::BikeProfile => crate::settings::BikeType::ALL.len() as u8,
 
             ContextValue::IdleReturn => IdleReturn::COUNT as u8,
             ContextValue::Theme => Theme::COUNT as u8,
@@ -175,17 +167,6 @@ impl ContextValue {
         )
     }
 
-    /// Whether the row that binds this may be pressed: the row is live exactly when the binding
-    /// accepts. A filter is as meaningful over an empty list as over a full one, and a preference
-    /// is a preference in every ride state, so only the bike profile ever refuses — it needs a map
-    /// that offers more than one profile.
-    fn accepts(self, f: &ContextFacts) -> bool {
-        match self {
-            ContextValue::BikeProfile => f.nav_profiles.len() > 1,
-            _ => true,
-        }
-    }
-
     /// The ordinal currently committed — where the editor opens, and the choice it keeps marked.
     pub(crate) fn committed(self, f: &ContextFacts) -> u8 {
         let s = f.settings;
@@ -194,9 +175,7 @@ impl ContextValue {
             ContextValue::UpAheadSource => s.up_ahead_source as u8,
             ContextValue::FindResults => s.find_results as u8,
 
-            // The effective index, not the stored one: a stale index against a smaller map opens
-            // on profile 0 and marks profile 0, which is the profile the router will use.
-            ContextValue::BikeProfile => f.nav_profiles.effective(s.bike_profile_idx),
+            ContextValue::BikeProfile => s.bike_type as u8,
 
             ContextValue::IdleReturn => s.idle_return as u8,
             ContextValue::Theme => s.theme as u8,
@@ -224,9 +203,7 @@ impl ContextValue {
                 s.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
             }
 
-            // The ordinal came from the editor's ring, which is `count` long, so the loaded map
-            // already has it.
-            ContextValue::BikeProfile => s.bike_profile_idx = ordinal,
+            ContextValue::BikeProfile => s.bike_type = crate::settings::BikeType::from_u8(ordinal).unwrap_or_default(),
 
             ContextValue::IdleReturn => s.idle_return = IdleReturn::from_byte(ordinal),
             ContextValue::Theme => s.theme = Theme::from_byte(ordinal),
@@ -243,9 +220,8 @@ impl ContextValue {
         }
     }
 
-    /// What `ordinal` is called, in the rider's language, or, for the bike profile, in the map's
-    /// own words. A number is written into `buf`; a name is borrowed from the catalog or from
-    /// [`NavProfiles`](crate::NavProfiles), which is why the borrow is `rx`'s.
+    /// What `ordinal` is called, in the rider's language. A number is written into `buf`; a name
+    /// is borrowed from the catalog.
     pub(crate) fn choice_label<'a>(self, ordinal: u8, rx: &'a Render, buf: &'a mut heapless::String<24>) -> &'a str {
         let lang = rx.settings.language;
         match self {
@@ -257,9 +233,9 @@ impl ContextValue {
                 UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)].name(lang)
             }
 
-            // The generic `Profile N` fallback is deliberately not used: it exists for an empty
-            // table, and an empty table makes this row inert, so it has no reachable case here.
-            ContextValue::BikeProfile => rx.nav_profiles.name(ordinal).unwrap_or(""),
+            ContextValue::BikeProfile => {
+                crate::settings::bike_type_name(crate::settings::BikeType::from_u8(ordinal).unwrap_or_default(), lang)
+            }
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
 
             ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
@@ -415,7 +391,7 @@ impl ContextAction {
     /// The row and its destination read one predicate. For Detour that is
     /// [`detour::reachable`](super::detour::reachable), which the chooser's own availability check
     /// is built from, so a row can never be an enabled door onto an inert screen. For a value row
-    /// it is [`ContextValue::accepts`], the same answer the commit obeys.
+    /// is always live.
     fn available(self, f: &ContextFacts) -> bool {
         match self {
             ContextAction::LandmarkSources | ContextAction::ResumeJourney => true,
@@ -426,11 +402,10 @@ impl ContextAction {
             // A detour needs a recorded ride to re-route, a route to leave, a graph to route on,
             // and a rider on the route, because the corridor anchors on live progress.
             ContextAction::Detour => super::detour::reachable(f.navigation, f.recording, f.state.has_nav_graph),
-            ContextAction::Edit(v) => v.accepts(f),
-
-            // A display modifier is a preference no ride state can invalidate, and the door onto
-            // them is as live as they are.
-            ContextAction::MapDisplay
+            // A value or a display modifier is a preference no ride state can invalidate, and the
+            // door onto them is as live as they are.
+            ContextAction::Edit(_)
+            | ContextAction::MapDisplay
             | ContextAction::MapIcons
             | ContextAction::MapPoiCategories
             | ContextAction::Toggle(_) => true,
@@ -635,7 +610,12 @@ pub(crate) enum Page {
 #[derive(Clone, Copy)]
 enum Sheet {
     Menu(&'static ContextMenu),
-    Editor { value: ContextValue, label: Msg },
+    /// `hero`: the sheet draws the staged bike over the start card's hero.
+    Editor {
+        value: ContextValue,
+        label: Msg,
+        hero: bool,
+    },
 }
 
 /// The contextual drawer's whole state: when it opened, what it holds, the cursor, the page, and
@@ -679,12 +659,26 @@ impl ContextDrawerScreen {
     pub(crate) fn editor(value: ContextValue, label: Msg, f: &ContextFacts) -> Self {
         ContextDrawerScreen {
             motion: SheetMotion::opening(),
-            sheet: Sheet::Editor { value, label },
+            sheet: Sheet::Editor { value, label, hero: false },
             lang: f.settings.language,
             selected: 0,
             page: Page::Editor,
             staged: value.committed(f),
         }
+    }
+
+    /// The bike type editor over the start card, which shows the staged bike in the card's hero.
+    pub(crate) fn over_hero(mut self) -> Self {
+        if let Sheet::Editor { hero, .. } = &mut self.sheet {
+            *hero = true;
+        }
+        self
+    }
+
+    /// Whether this sheet draws over its base's hero, so the base must be drawn under it every
+    /// frame the staged value moves.
+    pub(crate) fn draws_hero(&self) -> bool {
+        matches!(self.sheet, Sheet::Editor { hero: true, .. })
     }
 
     /// The declared rows, or none for an editor alone.
@@ -818,7 +812,7 @@ impl ContextDrawerScreen {
             // Named alternatives are a ring, so the cursor wraps; a value axis has ends, so it
             // clamps.
             Gesture::Step(n) => {
-                let count = value.count(&cx.context_facts()) as usize;
+                let count = value.count() as usize;
                 self.staged = if value.wraps() {
                     super::vocab::list::step_selection(self.staged as usize, n, count) as u8
                 } else {
@@ -859,6 +853,11 @@ impl ContextDrawerScreen {
         // The sheet hangs from the bottom edge: it slides up by drawing its full height with its
         // bottom off-screen.
         let top = rx.h - visible;
+        if self.draws_hero() {
+            let bike = crate::settings::BikeType::from_u8(self.staged).unwrap_or_default();
+            let name = crate::settings::bike_type_name(bike, rx.settings.language);
+            super::ride_start::draw_staged(cv, rx.w, bike, name);
+        }
         sheet::frame(cv, rx.w, top, sheet_h, Edge::Bottom);
         match self.motion.page_offsets(rx.now_ms, MOTION, rx.w, self.page == Page::Root) {
             Some((out, incoming)) => {
@@ -966,7 +965,7 @@ impl ContextDrawerScreen {
 
         let (x0, x1, y) = (x + 24, x + rx.w - 24, top + 112);
         let facts = rx.context_facts();
-        let count = value.count(&facts);
+        let count = value.count();
         let committed = value.committed(&facts);
         cv.round(rect(x0, y - 2, x1 - x0, 5), 2, palette::PARCHMENT_SHADE);
         let dense = count > DENSE_ABOVE;
@@ -1005,10 +1004,6 @@ mod tests {
         navigator: crate::navigator::NavigatorMachine,
         settings: Settings,
         recorder: RecorderMachine,
-
-        /// The loaded map's profile names: the bike-type binding's choice list, and the predicate
-        /// its row is live by. Four by default, the fixture maps' own set.
-        nav_profiles: crate::NavProfiles,
         now_ms: u32,
     }
 
@@ -1024,16 +1019,7 @@ mod tests {
             navigator.set_active_route(Some(0));
             let mut recorder = RecorderMachine::new();
             recorder.test_open();
-            World {
-                state,
-                activity,
-                navigator,
-                settings: Settings::default(),
-                recorder,
-
-                nav_profiles: crate::NavProfiles::from_names(&["Road", "Gravel", "MTB", "Touring"]),
-                now_ms: 1_000,
-            }
+            World { state, activity, navigator, settings: Settings::default(), recorder, now_ms: 1_000 }
         }
 
         fn press(&mut self, d: &mut ContextDrawerScreen, g: Gesture) -> Transition {
@@ -1043,8 +1029,6 @@ mod tests {
                 &mut Ctx {
                     recorder: &mut self.recorder,
                     navigator: &mut self.navigator,
-
-                    nav_profiles: &self.nav_profiles,
                     now_ms,
                     ..test_ctx(&mut self.state, &mut self.activity, &mut self.settings)
                 },
@@ -1060,8 +1044,6 @@ mod tests {
                 navigation: self.navigator.route_state(),
                 settings: &self.settings,
                 recording: self.recorder.recording(),
-
-                nav_profiles: &self.nav_profiles,
             }
         }
     }
@@ -1307,39 +1289,24 @@ mod tests {
         w.press(&mut d, Gesture::Step(1));
         assert_eq!(d.staged, 0, "…and forward off the last wraps home");
 
-        let facts = w.facts();
-        assert_eq!(ContextValue::UpAheadFilter.count(&facts), 8);
-        assert_eq!(ContextValue::UpAheadSource.count(&facts), UpAheadSource::COUNT as u8);
-        for ordinal in 0..ContextValue::UpAheadFilter.count(&facts) {
+        assert_eq!(ContextValue::UpAheadFilter.count(), 8);
+        assert_eq!(ContextValue::UpAheadSource.count(), UpAheadSource::COUNT as u8);
+        for ordinal in 0..ContextValue::UpAheadFilter.count() {
             assert_eq!(filter_choice(choice_filter(ordinal)), ordinal, "ordinal {ordinal} round-trips");
         }
         assert_eq!(choice_filter(0), PoiCategorySet::ALL, "ordinal 0 is Everything");
     }
 
-    /// The one-predicate rule for value rows, checked in both directions: a binding that always
-    /// accepts gives a row that is always live, and a binding that refuses gives a recessed row.
+    /// A value row is live without a route, a graph or a ride: every binding is a preference.
     #[test]
-    fn a_value_row_is_live_exactly_where_its_binding_accepts() {
+    fn a_value_row_is_live_on_a_bare_browse_map() {
         let mut w = World::riding();
         w.navigator.set_active_route(None);
         w.state.has_nav_graph = false;
         w.recorder.test_close();
-        w.nav_profiles = crate::NavProfiles::EMPTY; // no map, so the bike binding refuses
-        let d = up_ahead_drawer();
         let facts = w.facts();
-
-        assert_eq!(d.key(&facts).4, 0b11, "both value rows stay live on a bare browse map");
-        for menu in [&UP_AHEAD, &ROUTE_PLAN] {
-            for row in menu.rows {
-                let ContextAction::Edit(v) = row.action else { panic!("these tables are all value rows") };
-                assert_eq!(row.action.available(&facts), v.accepts(&facts), "the row reads the binding's own answer");
-            }
-        }
-        assert_eq!(
-            ContextDrawerScreen::opening(&ROUTE_PLAN, Language::En).key(&facts).4,
-            0,
-            "…and the one binding that refuses leaves its row out of the live mask"
-        );
+        assert_eq!(up_ahead_drawer().key(&facts).4, 0b11, "both value rows stay live on a bare browse map");
+        assert_eq!(route_plan_drawer().key(&facts).4, 1, "…and so does the bike-type row");
 
         // And a press really opens the editor, rather than drawing live and doing nothing.
         let mut d = up_ahead_drawer();
@@ -1396,7 +1363,6 @@ mod tests {
     /// choice fits the editor line.
     #[test]
     fn every_label_and_choice_fits_the_sheet_in_every_language() {
-        use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
         const W: i32 = 240;
         // The row kit's geometry: the row area is inset `ROW_X` from both screen edges, the text
         // starts 10 px inside it, the chevron column is 28 px and the switch column 58 px.
@@ -1406,8 +1372,6 @@ mod tests {
         // `draw_editor` starts the choice at x + 48 with a category icon in the gutter, and the
         // sheet's own right inset is 12.
         let choice_room = W - 48 - 12;
-        let w = World::riding();
-        let facts = w.facts();
         let mut buf = heapless::String::<24>::new();
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
             for menu in [
@@ -1432,11 +1396,7 @@ mod tests {
                     let lw = label.lines().map(|line| text_width(line, Font::Label) as i32).max().unwrap_or(0);
                     assert!(lw <= room, "{lang:?}: row label {label:?} ({lw} px) overruns {room} px even in Label");
                     let ContextAction::Edit(v) = row.action else { continue };
-                    // The map's names are not in the catalog; they are measured at their cap below.
-                    if v == ContextValue::BikeProfile {
-                        continue;
-                    }
-                    for ordinal in 0..v.count(&facts) {
+                    for ordinal in 0..v.count() {
                         buf.clear();
                         let choice = choice_text(v, ordinal, lang, &mut buf);
                         let cw = text_width(choice, Font::Body) as i32;
@@ -1458,7 +1418,7 @@ mod tests {
                 ContextValue::Units,
                 ContextValue::UtcOffset,
             ] {
-                for ordinal in 0..v.count(&facts) {
+                for ordinal in 0..v.count() {
                     buf.clear();
                     let choice = choice_text(v, ordinal, lang, &mut buf);
                     let cw = text_width(choice, Font::Body) as i32;
@@ -1466,14 +1426,9 @@ mod tests {
                 }
             }
         }
-        // The bike binding's worst case is the name field filled: 12 monospace `Body` characters.
-        let widest_profile_name = NAV_PROFILE_NAME_LEN as i32 * Font::Body.char_width() as i32;
-        assert_eq!(widest_profile_name, 168, "12 §8.6 name bytes in Body, pinned");
-        assert!(widest_profile_name <= choice_room, "a full-length profile name overruns the editor line");
     }
 
     /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.
-    /// [`ContextValue::BikeProfile`] has none, because its choices are map data.
     fn choice_text(v: ContextValue, ordinal: u8, lang: Language, buf: &mut heapless::String<24>) -> &str {
         use core::fmt::Write as _;
         match v {
@@ -1505,8 +1460,9 @@ mod tests {
                     .push_str(&super::super::vocab::fmt::utc_offset(UTC_OFFSET_MIN + ordinal as i16 * UTC_OFFSET_STEP));
                 buf.as_str()
             }
-
-            ContextValue::BikeProfile => unreachable!("the map's own names are measured at their §8.6 cap"),
+            ContextValue::BikeProfile => {
+                crate::settings::bike_type_name(crate::settings::BikeType::from_u8(ordinal).unwrap(), lang)
+            }
         }
     }
 
@@ -1632,51 +1588,26 @@ mod tests {
         ContextDrawerScreen::opening(&ROUTE_PLAN, Language::En)
     }
 
-    /// The bike-type row is live exactly where the loaded map offers a choice: with no map and
-    /// with a single-profile map the row is out of the live mask and a press does nothing at all;
-    /// from two profiles up it is live and a press opens the editor.
+    /// Staging writes nothing, Select writes `Settings::bike_type`, Back out of a re-opened editor
+    /// discards, the key reports the staged and the committed ordinal apart, and the ring wraps over
+    /// the four types.
     #[test]
-    fn the_bike_type_row_is_live_exactly_where_a_map_offers_a_choice() {
-        for names in [&[][..], &["Road"][..]] {
-            let mut w = World::riding();
-            w.nav_profiles = crate::NavProfiles::from_names(names);
-            let mut d = route_plan_drawer();
-            assert_eq!(d.key(&w.facts()).4, 0, "{} profile(s): the row draws recessed", names.len());
-            assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None), "…and a press does nothing");
-            assert_eq!(d.page, Page::Root, "not even a page slide");
-        }
-
-        let mut w = World::riding(); // the fixture maps' four profiles
-        let mut d = route_plan_drawer();
-        assert_eq!(d.key(&w.facts()).4, 1, "two or more profiles: the row is live");
-        w.press(&mut d, Gesture::Press);
-        assert_eq!(d.page, Page::Editor, "…and a press opens its editor");
-        assert_eq!(ContextValue::BikeProfile.count(&w.facts()), 4, "the ring is the map's own name list");
-    }
-
-    /// The editor opens on the effective profile and commits an index. A stale stored index
-    /// against a smaller map opens on profile 0 and marks profile 0, the profile the router will
-    /// route under, rather than on a profile the map does not have. Staging writes nothing, Select
-    /// writes `Settings::bike_profile_idx`, Back out of a re-opened editor discards, and the key
-    /// reports the staged and the committed ordinal apart.
-    #[test]
-    fn the_bike_type_editor_opens_on_the_effective_profile_and_commits_an_index() {
+    fn the_bike_type_editor_commits_a_type() {
+        use crate::settings::BikeType;
         let mut w = World::riding();
-        w.settings.bike_profile_idx = 7; // stale: the map carries four
         let mut d = route_plan_drawer();
         w.press(&mut d, Gesture::Press);
         assert_eq!(d.page, Page::Editor);
-        assert_eq!(d.staged, 0, "a stale index opens on the profile the router falls back to");
-        assert_eq!(d.key(&w.facts()).3, 0, "…and marks that one, not the one stored");
+        assert_eq!(d.staged, 0, "the editor opens on the current type");
 
         w.press(&mut d, Gesture::Step(1)); // → Gravel
-        assert_eq!(w.settings.bike_profile_idx, 7, "staging commits nothing");
+        assert_eq!(w.settings.bike_type, BikeType::Road, "staging commits nothing");
         let (_, _, staged, committed, _) = d.key(&w.facts());
-        assert_eq!((staged, committed), (1, 0), "the key carries the browsed and the set profile apart");
+        assert_eq!((staged, committed), (1, 0), "the key carries the browsed and the set type apart");
 
         w.press(&mut d, Gesture::Press);
         assert_eq!(d.page, Page::Root, "Select returns to the row table");
-        assert_eq!(w.settings.bike_profile_idx, 1, "…having written the settings field");
+        assert_eq!(w.settings.bike_type, BikeType::Gravel, "…having written the settings field");
 
         // Back out of a re-opened editor discards the staged choice.
         w.press(&mut d, Gesture::Press);
@@ -1684,14 +1615,11 @@ mod tests {
         w.press(&mut d, Gesture::Step(2)); // → Touring
         w.press(&mut d, Gesture::Back);
         assert_eq!(d.page, Page::Root, "Back closes the editor, not the sheet");
-        assert_eq!(w.settings.bike_profile_idx, 1, "…and the field is untouched");
+        assert_eq!(w.settings.bike_type, BikeType::Gravel, "…and the field is untouched");
 
-        // The ring wraps over exactly the map's profiles, and every ordinal names one of them.
         w.press(&mut d, Gesture::Press);
-        w.press(&mut d, Gesture::Step(-1));
-        assert_eq!(d.staged, 0, "stepping back off Gravel lands on Road");
-        w.press(&mut d, Gesture::Step(-1));
-        assert_eq!(d.staged, 3, "…and off Road wraps to the last profile the map carries");
+        w.press(&mut d, Gesture::Step(-2));
+        assert_eq!(d.staged, 3, "stepping back off Road wraps to Touring");
     }
     #[test]
     fn map_categories_scroll_and_survive_master_switch_and_restart() {

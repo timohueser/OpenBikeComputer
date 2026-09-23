@@ -80,6 +80,23 @@ impl Session {
                 other => other,
             };
         }
+        if let (Some((day, metres, last_finished)), Some(trip)) = (args.trip_progress, trips.inputs().first()) {
+            let record = obc_app::trip::TripProgress {
+                key: trip.key,
+                day,
+                day_route: obc_app::trip::RouteVersion {
+                    id: trip.stage_ids.get(usize::from(day)).copied().unwrap_or(0),
+                    revision: 0,
+                },
+                metres,
+                last_finished,
+                dates: Default::default(),
+            };
+            let keys = [trip.key];
+            obc_host_core::TripCatalog::write_progress(&mut trips, record, &keys)
+                .map_err(|error| format!("trip progress: {error:?}"))?;
+            obc_host_core::TripCatalog::rescan(&mut trips).map_err(|error| format!("trips: {error:?}"))?;
+        }
         let mut rides = FlatRideStore::new(owner.clone()).map_err(|error| format!("rides: {error:?}"))?;
         if args.card.is_none() {
             crate::rides::import(Path::new(&args.tracks_dir()), &mut rides)?;

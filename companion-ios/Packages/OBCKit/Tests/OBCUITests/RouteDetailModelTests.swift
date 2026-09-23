@@ -5,7 +5,7 @@ import OBCTransport
 @testable import OBCUI
 
 /// The detail model's three dressings against `MockTransport`: the library-first planned render
-/// (waypoints and profile from the record, with no device round-trip), the tracked profile fill,
+/// (waypoints and profile from the record, with no device round-trip), the tracked profile,
 /// the per-dressing stat strips, rename, and the save summary.
 @MainActor
 final class RouteDetailModelTests: XCTestCase {
@@ -17,9 +17,9 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: Planned
 
-    func testPlannedRendersFromItsLibraryRecordWithNoDeviceRoundTrip() async {
+    func testPlannedRendersFromItsLibraryRecordWithNoDeviceRoundTrip() {
         let control = makeControl()
-        let transport = ObservedMockTransport(control: control)
+        let transport = MockTransport(control: control)
         let entry = control.fixtures.routes[0]  // Kettle Moraine Loop
         // What RootView threads in: the saved record's own detail. Planned is library-first.
         let model = RouteDetailModel(
@@ -39,10 +39,6 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.maxGradePercent, 9)
 
         model.start()
-        let skippedRead = await neverHolds({
-            transport.rideDetailStartedCount > 0
-        }, for: .milliseconds(50))
-        XCTAssertTrue(skippedRead, "planned detail must stay library-first")
         XCTAssertEqual(model.waypoints.count, 4, "start() must not clobber the record's detail")
     }
 
@@ -55,7 +51,7 @@ final class RouteDetailModelTests: XCTestCase {
         // Assert against the formatter, not an en-US literal: the numbers are locale-aware.
         XCTAssertEqual(model.stats[0].value, OBCFormat.distanceValue(meters: 62_400))
         XCTAssertEqual(model.stats[0].unit, "km")
-        XCTAssertEqual(model.stats[2].value, "3:20")
+        XCTAssertEqual(model.stats[2].value, "3:12")  // Road, 62.4 km and 840 m, floored to the minute
         // Max shows an em dash until the detail read lands the grade.
         XCTAssertEqual(model.stats[3].value, "—")
     }
@@ -100,48 +96,54 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.makeUploadBlob().targetObjectID, DeviceObjectID(42), "…and the update still targets the same object")
     }
 
-    func testTrackedDetailReadFailureDegradesQuietly() async {
-        let control = makeControl()
-        let transport = ObservedMockTransport(control: control)
-        let ride = control.fixtures.rides[0].summary
-        control.failNextOp(.readFailed)
-        let model = RouteDetailModel(transport: transport, dressing: .tracked(ride))
-
-        model.start()
-        do {
-            try await waitFor("failed detail read") { transport.rideDetailCompletedCount == 1 }
-        } catch {
-            XCTFail(String(describing: error))
-        }
-        XCTAssertTrue(model.elevationProfile.isEmpty, "no profile card on a failed read")
-        XCTAssertEqual(model.name, ride.name, "summary content stays up")
-    }
-
     // MARK: Tracked
 
-    func testTrackedDressingShowsRideStatsAndFillsProfile() async throws {
+    func testTrackedDressingShowsItsStatsLineProfileAndHighlights() {
         let control = makeControl()
-        let ride = control.fixtures.rides[0].summary  // Kettle Moraine Loop (ride)
-        let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .tracked(ride))
+        let entry = control.fixtures.rides[0]  // Kettle Moraine Loop (ride)
+        let ride = entry.summary
+        let model = RouteDetailModel(
+            transport: MockTransport(control: control), dressing: .tracked(ride), ridePoints: entry.points
+        )
 
-        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Moving", "Avg", "Climb"])
+        XCTAssertTrue(model.stats.isEmpty, "the stats line replaces the strip")
+        XCTAssertEqual(model.statsLine, OBCFormat.rideStatsLine(ride))
         XCTAssertTrue(model.tag.text.hasPrefix("Tracked · "))
         XCTAssertTrue(model.tag.isAccent)
         XCTAssertNotNil(model.subtitle)
         XCTAssertTrue(model.isRenamable)
+        XCTAssertTrue(model.elevationProfile.isEmpty && model.highlights.isEmpty, "whole-track work waits for start()")
 
         model.start()
-        try await waitFor("ride profile", timeout: .seconds(5)) { !model.elevationProfile.isEmpty }
-        XCTAssertEqual(model.elevationProfile.count, 9)
+        let highlights = RideHighlights.compute(entry.ride()).map { OBCFormat.highlight($0) }
+        XCTAssertFalse(highlights.isEmpty)
+        XCTAssertEqual(model.highlights, highlights)
+        XCTAssertEqual(model.elevationProfile.count, RouteStats.profileSampleCount)
+        XCTAssertEqual(model.elevationProfile.first, entry.points.first?.elevationMeters)
+        XCTAssertEqual(model.elevationProfile.last, entry.points.last?.elevationMeters)
+    }
+
+    func testTrackedRideWithoutElevationOrPointsHasNoProfile() {
+        let control = makeControl()
+        let entry = control.fixtures.rides[0]
+        let flat = entry.points.map { RidePoint(timestamp: $0.timestamp, coordinate: $0.coordinate) }
+        for points in [flat, []] {
+            let model = RouteDetailModel(
+                transport: MockTransport(control: control), dressing: .tracked(entry.summary), ridePoints: points
+            )
+            model.start()
+            XCTAssertTrue(model.elevationProfile.isEmpty, "no profile card without elevation")
+        }
     }
 
     func testTrackedMapCoordinatesUseTheThreadedGeometryOrFallBackToThePreview() {
         let control = makeControl()
         let ride = control.fixtures.rides[0].summary
         let fullTrack = (0..<500).map { Coordinate(latitude: 47.0 + 0.0001 * Double($0), longitude: 11.0) }
+        let points = fullTrack.map { RidePoint(timestamp: ride.date, coordinate: $0) }
 
         let withGeometry = RouteDetailModel(
-            transport: MockTransport(control: control), dressing: .tracked(ride), rideGeometry: fullTrack
+            transport: MockTransport(control: control), dressing: .tracked(ride), ridePoints: points
         )
         XCTAssertEqual(withGeometry.mapCoordinates, fullTrack, "full resolution, not the ride card's preview cap")
 
@@ -193,6 +195,26 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.stats[1].value, OBCFormat.climbValue(meters: 50))
         XCTAssertEqual(model.stats[2].value, OBCFormat.climbValue(meters: 40))
         XCTAssertEqual(model.distanceMeters, 9 * 1112.0, accuracy: 20)
+    }
+
+    /// A file import names its file; a ride saved as a route is a new route from that ride, with no
+    /// file the rider ever picked.
+    func testTheLandingCopyFollowsTheSource() {
+        let file = RouteDetailModel(
+            transport: MockTransport(control: makeControl()),
+            dressing: .imported(importedRoute, fileName: "schwarzwald.gpx")
+        )
+        XCTAssertEqual(file.landingTitle, "Imported route")
+        XCTAssertEqual(file.subtitle, "schwarzwald.gpx")
+
+        let rideDate = Date(timeIntervalSince1970: 1_757_577_600)
+        let ride = RouteDetailModel(
+            transport: MockTransport(control: makeControl()),
+            dressing: .imported(importedRoute, fileName: "Schwarzwald.gpx", source: .ride(rideDate))
+        )
+        XCTAssertEqual(ride.landingTitle, "New route")
+        XCTAssertEqual(ride.importedFromLine, "From ride · \(OBCFormat.rideDay(rideDate))")
+        XCTAssertNil(ride.subtitle)
     }
 
     func testImportedMapCoordinatesAreFullResolutionNotThePreviewCap() {
@@ -313,9 +335,9 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.makeUploadBlob().summary.id, model.makeDetail().summary.id)
     }
 
-    func testPreloadedDetailSkipsTheTransportFetch() async {
+    func testPreloadedDetailRendersAtOnce() {
         let control = makeControl()
-        let transport = ObservedMockTransport(control: control)
+        let transport = MockTransport(control: control)
         // A phone-only id: the mock would throw for it, so the preload must cover it.
         let summary = RouteSummary(
             id: RouteID("imported-abc"), name: "Saved Import",
@@ -339,10 +361,6 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.maxGradePercent, 6)
 
         model.start()
-        let skippedRead = await neverHolds({
-            transport.rideDetailStartedCount > 0
-        }, for: .milliseconds(100))
-        XCTAssertTrue(skippedRead, "a preloaded route must not ask the device for detail")
         XCTAssertEqual(model.waypoints.count, 1, "start() must not clobber the preload")
     }
 

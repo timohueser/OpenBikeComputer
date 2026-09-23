@@ -130,6 +130,8 @@ struct Args {
     boot: bool,
     /// One-time route/trip fixture import directory; defaults to `routes/`.
     routes_dir: Option<String>,
+    /// A progress record for the first imported trip: `(day, metres, last finished day)`.
+    pub(crate) trip_progress: Option<(u16, u32, Option<u16>)>,
     card: Option<String>,
     create_card: Option<String>,
     /// Folder for saved `.gpx` tracks + the in-progress `.obct` log; defaults to `tracks/`.
@@ -200,6 +202,7 @@ impl Default for Args {
             expect_screen: None,
             boot: false,
             routes_dir: None,
+            trip_progress: None,
             card: None,
             create_card: None,
             tracks_dir: None,
@@ -298,6 +301,7 @@ fn stat_field_id(f: obc_app::StatField) -> &'static str {
         F::RideTime => "ride-time",
         F::TimeToGo => "time-to-go",
         F::Eta => "eta",
+        F::TripToGo => "trip-to-go",
         F::Clock => "clock",
         F::NextWaypoint => "next-waypoint",
         F::WaypointList => "waypoint-list",
@@ -537,6 +541,18 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--card" => a.card = Some(it.next().ok_or("--card needs a path")?),
             "--create-card" => a.create_card = Some(it.next().ok_or("--create-card needs a path")?),
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
+            "--trip-progress" => {
+                let value = it.next().ok_or("--trip-progress needs DAY:METRES:LAST")?;
+                let mut parts = value.split(':');
+                let mut next = || parts.next().ok_or("--trip-progress needs DAY:METRES:LAST");
+                let day = next()?.parse().map_err(|_| "bad --trip-progress day")?;
+                let metres = next()?.parse().map_err(|_| "bad --trip-progress metres")?;
+                let last = match next()? {
+                    "-" => None,
+                    last => Some(last.parse().map_err(|_| "bad --trip-progress last day")?),
+                };
+                a.trip_progress = Some((day, metres, last));
+            }
             "--tracks-dir" => a.tracks_dir = Some(it.next().ok_or("--tracks-dir needs a path")?),
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
             "--physical" => a.physical = true,
@@ -1011,6 +1027,8 @@ Scripted snapshots:
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer tap, A held Up+Select (Assistant), C context-drawer squeeze,
                            w wait, f frame, T tick, I idle)
+  --trip-progress D:M:L   The first trip's progress: day D (from 0), M metres into it, and the
+                          last finished day L (or -)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
   --diagnostics PATH      Write a new JSONL journey trace (requires --png)
   --expect-screen NAME    Refuse unless the script lands on this screen
@@ -1093,6 +1111,7 @@ fn main() {
                 routes::import_gpx(
                     &mut routes,
                     std::path::Path::new(gpx),
+                    obc_route::BikeType::Road,
                     map.as_ref()
                         .map(|map| map.reader())
                         .as_ref()
@@ -1113,6 +1132,7 @@ fn main() {
                 routes::export_gpx(
                     std::path::Path::new(gpx),
                     std::path::Path::new(&args.routes_dir()),
+                    obc_route::BikeType::Road,
                     map.as_ref()
                         .map(|map| map.reader())
                         .as_ref()
@@ -1285,9 +1305,7 @@ fn main() {
             app.set_settings(settings);
         }
         args.stamp_initial_clock(&mut app);
-        // Mirror the map's routing-profile names for the bike-type editor and overview label, and
-        // whether it carries a nav graph at all, which gates the ride menu's Detour station.
-        app.set_nav_profiles(tables.nav_profiles());
+        // Whether the map carries a nav graph at all, which gates the ride menu's Detour station.
         app.set_map_nav_graph(tables.has_nav_graph());
         // Device-info built-ins for the System settings screen: the running firmware version, with
         // the sim's crate version standing in for the board's tag, and the loaded map's name and
@@ -1325,9 +1343,12 @@ fn main() {
         }
         let mut trip_store = trips;
         app.set_trips(&trip_store.inputs());
+        app.set_trip_progress(trip_store.progress().iter().cloned());
+        let join = obc_host_core::day_join(&app, &store, &trip_store);
+        app.set_day_join(join);
         // The complete saved-ride projection comes from the same card as the map and routes.
         let mut ride_store = rides;
-        app.set_rides(ride_store.catalog());
+        app.set_rides(ride_store.catalog(), ride_store.trip_names());
         // Inject BLE before the script. `+` keeps independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
         app.set_ble_status(obc_app::BleStatus {

@@ -139,7 +139,7 @@ impl Geometry {
 }
 
 /// The first block of catalog copy `copy`'s gate.
-pub fn catalog_gate(copy: usize) -> u64 {
+pub const fn catalog_gate(copy: usize) -> u64 {
     CATALOG[copy] + CATALOG_GATE_BLOCK
 }
 

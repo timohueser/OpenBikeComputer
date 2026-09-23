@@ -20,7 +20,7 @@ use crate::screen::*;
 use crate::settings::Language;
 use crate::{App, AppState, Gesture, Settings, WarningFlags};
 
-use super::support::{build_min_obcm_profiles, selected_place, Buf};
+use super::support::{build_min_obcm, selected_place, Buf};
 
 /// The panel, in pixels. Every screen lays out against the size the frame hands it, so the gate
 /// renders at the size the board has.
@@ -37,6 +37,9 @@ const COPY_W: i32 = crate::screen::vocab::chrome::copy_w(PANEL.width as i32);
 /// draws is the one [`the_article_page_fits_the_panel_in_every_language`] renders through
 /// `Landmarks`. What is unmeasured is only the article a peak's own section carries.
 const NO_SEED: [&str; 1] = ["PeakArticle"];
+
+/// A long day's ride, for the day-done card's ledger.
+const DAY: RideTotals = RideTotals { distance_m: 184_300, moving_s: 11 * 3600 + 52 * 60, climb_m: 3_080 };
 
 /// A seed: a screen, and a walk over it. Every frame of the walk is measured, not only the last
 /// one, so a page a gesture opens is measured as well as the page it opened from.
@@ -73,6 +76,8 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Climb(ClimbScreen::new()),
         Screen::RideControl(RideControl::new()),
         Screen::RideStart(RideStartScreen::new()),
+        Screen::DayDone(DayDoneScreen::new(DAY, 1, 7, 11, Some(12))),
+        Screen::DayDone(DayDoneScreen::new(DAY, 1, 7, 11, None)),
         Screen::Menu(MenuScreen::new()),
         Screen::PeakView(PeakViewScreen::new(None)),
         Screen::Detour(DetourScreen::new(&RouteState::default())),
@@ -85,6 +90,10 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::VisitReview(VisitReviewScreen::new("Fontaine du Mont Ventoux")),
         Screen::PoiList(PoiListScreen::new(PoiCategory::Water)),
         Screen::Easier(EasierScreen::new()),
+        Screen::Easier(EasierScreen::sample(crate::easier::Phase::Failed, true)),
+        Screen::Easier(EasierScreen::sample(crate::easier::Phase::NoBetter, true)),
+        Screen::Easier(EasierScreen::sample(crate::easier::Phase::NoBetter, false)),
+        Screen::Easier(EasierScreen::sample(crate::easier::Phase::Stale, true)),
         selected_place(),
         Screen::NavPlanning(NavPlanningScreen::new("Fontaine du Mont Ventoux")),
         Screen::NavPlanning(NavPlanningScreen::detour()),
@@ -98,6 +107,10 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Rides(RidesScreen::new()),
         Screen::RideDetail(RideDetailScreen::new(0)),
         Screen::RouteOverview(RouteOverviewScreen::new(0, None)),
+        Screen::StartAway(StartAwayScreen::sample(false)),
+        Screen::StartAway(StartAwayScreen::sample(true)),
+        Screen::Arrival(ArrivalScreen::new(ArrivalView { route: 0, day: Some(1), next: Some(1) })),
+        Screen::Arrival(ArrivalScreen::new(ArrivalView { route: 0, day: None, next: None })),
         Screen::RouteSwap(RouteSwapScreen::new(0)),
         Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
         Screen::RouteUpdated(RouteUpdatedScreen::new(0, 0)),
@@ -231,7 +244,6 @@ fn walk(
     let reader = Reader::new(&src, &tables, &cache);
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.set_settings(Settings { language, ..Default::default() });
-    app.set_nav_profiles(tables.nav_profiles());
     // A panel light adds the quick drawer's brightness control, which is the row its editor hangs
     // off, so the walk below reaches that page.
     app.set_backlight_available(true);
@@ -303,9 +315,7 @@ fn every_screen_is_seeded() {
 
 #[test]
 fn every_string_fits_the_panel_in_every_language() {
-    // A profile name filled to the OBCM cap is the bike-type row's worst case, and it is map data
-    // rather than catalog copy, so the fixture carries one.
-    let bytes = build_min_obcm_profiles(0xF800, &["Road", "Gravel", "MTB", "Cicloturismo"]);
+    let bytes = build_min_obcm(0xF800);
     let mut offenders: Vec<String> = Vec::new();
     for language in Language::ALL {
         for seed in seeds(language) {

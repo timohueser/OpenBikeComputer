@@ -46,7 +46,7 @@ map-wide language argument.
 | Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no originals. `--photo-requests` names the two the compiler would use: the second covers a rejection only the bytes can prove. Without that flag the field is never written, and a candidate with no bytes is one the compiler cannot use. |
 | Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
 | Records | Sorted by QID: category 1–16, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
-| Attribution | Article and photo source, revision, licence, the exact original notices and readable Sources pages. At most 8 KiB per asset, 256 pages per pair. |
+| Attribution | Article and photo source, revision, licence and the exact original notices, at most 8 KiB per asset. The map serializer derives the device credit from them (`credit.rs`, `OBCM_Spec.md` §9.2). |
 | Omissions | QID, asset and reason. A rejected photo leaves usable text available. |
 
 ### In the bake tree
@@ -77,8 +77,8 @@ All variants of a site share one photo. Both sides read the pool order from
 the next candidate. A `Views from <category>` member is refused; a `Views of <category>` member,
 a `depicts` (P180) statement naming the record, and, for a peak, a camera over 500 m from the
 summit rank a file up. Ties keep the pool order, then the normalized filename; selection never
-depends on device language. **Reject a photo if its credits cannot fit beside every retained
-article's credits**, and keep those articles.
+depends on device language. **Reject a photo if its credit does not fit the 1,024-byte credit
+bundle**, and keep the articles.
 
 A CC BY or CC BY-SA photo needs a nonempty captured Artist identity. A generic credit such as "Own
 work" does not identify a creator, and empty Artist metadata gives `photo_creator_missing`: the

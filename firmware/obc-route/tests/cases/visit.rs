@@ -3,7 +3,7 @@ use obc_formats::io::SliceSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_formats::obcr::RouteSourceKey;
 use obc_route::visit::{visit_anchor, VisitBuilder, VisitChoice, VisitCosts, VisitTarget};
-use obc_route::{for_each_waypoint, RouteIndex, RouteReader};
+use obc_route::{for_each_waypoint, BikeType, RouteIndex, RouteReader};
 
 fn key(id: u64) -> RouteSourceKey {
     RouteSourceKey { store: [1; 16], object: id, revision: 1 }
@@ -17,7 +17,7 @@ fn route(points: Vec<(i32, i32, i16)>, waypoints: &[WpRec<'_>], distance: u32) -
     })
     .0
 }
-fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut VecSink) {
+fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut dyn obc_formats::io::ByteSink) {
     let source = SliceSource(bytes);
     let index = RouteIndex::read(&source).unwrap();
     let reader = RouteReader::new(&index, &source);
@@ -32,7 +32,8 @@ fn append(builder: &mut VisitBuilder, bytes: &[u8], sink: &mut VecSink) {
 fn composition_preserves_all_waypoints_and_measures_both_directions() {
     let wps: Vec<WpRec<'_>> =
         (0..48).map(|i| (10 + i * 4, 100 + i as i32 * 40, 100, 30, 1, 4, 11, b"same" as &[u8])).collect();
-    let original = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let mut original = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    original[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Mtb as u8;
     let outbound = route(vec![(0, 0, 10), (0, 1000, 30)], &[], 111);
     let returning = route(vec![(0, 1000, 30), (0, 0, 10)], &[], 111);
     let mut builder = VisitBuilder::new(key(2), key(3), 0, 0, SourceId::osm(1, 99), (0, 1000)).unwrap();
@@ -53,6 +54,7 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!((stats.total_ascent_m, stats.total_descent_m), (40, 20));
     let emitted = SliceSource(&sink.buf);
     let index = RouteIndex::read(&emitted).unwrap();
+    assert_eq!(index.bike_type(), BikeType::Mtb, "the visit keeps the original route's type");
     let visit = RouteReader::new(&index, &emitted).visit_descriptor().unwrap().unwrap();
     assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
     let reader = RouteReader::new(&index, &emitted);
@@ -80,12 +82,13 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!(seen, 48);
     let facts = RouteReader::new(&index, &emitted).interval_facts(0, stats.total_distance_m).unwrap();
     assert_eq!((facts.ascent_m, facts.descent_m), (stats.total_ascent_m, stats.total_descent_m));
-    let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+    let costs = VisitCosts::read(&emitted, [0, 111], Some([0, 222])).unwrap();
     assert_eq!(costs.arrival_ascent_m, 20);
     assert!(costs.arrival_elevation_complete && costs.complete_elevation);
+    assert_eq!((costs.legs_m, costs.legs_ascent_m), (Some(222), Some(20)), "out climbs 20 m and back descends it");
     let mut corrupt = sink.buf.clone();
     corrupt[40..44].copy_from_slice(&999u32.to_le_bytes());
-    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111]).is_err());
+    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111], None).is_err());
 }
 #[test]
 fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
@@ -132,9 +135,9 @@ fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
     .unwrap();
     assert_eq!(seen, 4);
     let mut choice = VisitChoice::new();
-    choice.search().unwrap();
-    choice.search().unwrap();
-    assert!(choice.search().is_err());
+    choice.search(true).unwrap();
+    choice.search(true).unwrap();
+    assert!(choice.search(true).is_err());
 }
 #[test]
 fn preview_keeps_a_short_excursion_after_a_dense_prefix() {
@@ -203,21 +206,20 @@ fn coordinate_destinations_use_normal_snap_but_mapped_approaches_remain_exact() 
         display: (500, 500),
         metadata: PoiMetadata { source: SourceId::osm(1, 2), approach: None },
     };
-    assert_eq!(target.approach(key(1), 0), Some(target.display));
-    assert!(target.approach(key(2), 0).is_none());
-    assert!(target.approach(key(1), 8).is_none());
+    assert_eq!(target.approach(key(1), BikeType::Road), Some(target.display));
+    assert!(target.approach(key(2), BikeType::Road).is_none());
     let snapped = route(vec![(0, 0, 0), (0, 500, 0)], &[], 55);
-    assert_eq!(target.destination(&SliceSource(&snapped), 0).unwrap(), (0, 500));
+    assert_eq!(target.destination(&SliceSource(&snapped), BikeType::Road).unwrap(), (0, 500));
     let distant = route(vec![(0, 0, 0), (0, 2000, 0)], &[], 222);
-    assert!(target.validate_destination(&SliceSource(&distant), 0).is_err());
+    assert!(target.validate_destination(&SliceSource(&distant), BikeType::Road).is_err());
     target.metadata.approach = Some(PoiApproach { source: SourceId::osm(1, 3), lon: 0, lat: 0, profile_mask: 1 });
-    assert_eq!(target.approach(key(1), 0), Some((0, 0)));
-    assert!(target.approach(key(2), 0).is_none());
-    assert!(target.approach(key(1), 1).is_none());
+    assert_eq!(target.approach(key(1), BikeType::Road), Some((0, 0)));
+    assert!(target.approach(key(2), BikeType::Road).is_none());
+    assert!(target.approach(key(1), BikeType::Gravel).is_none());
     let nearby = route(vec![(0, 1000, 0), (100, 0, 0)], &[], 111);
-    assert!(target.validate_destination(&SliceSource(&nearby), 0).is_err());
+    assert!(target.validate_destination(&SliceSource(&nearby), BikeType::Road).is_err());
     let exact = route(vec![(0, 1000, 0), (0, 0, 0)], &[], 111);
-    assert!(target.validate_destination(&SliceSource(&exact), 0).is_ok());
+    assert!(target.validate_destination(&SliceSource(&exact), BikeType::Road).is_ok());
 }
 #[test]
 fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
@@ -233,8 +235,8 @@ fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
     let mut sink = VecSink::default();
     builder.begin(&mut sink).unwrap();
     let wrong = VisitTarget { metadata: PoiMetadata { source: SourceId::osm(1, 10), approach: None }, ..target };
-    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), 0).is_err());
-    builder.resolve_destination(target, &SliceSource(&outbound), 0).unwrap();
+    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), BikeType::Road).is_err());
+    builder.resolve_destination(target, &SliceSource(&outbound), BikeType::Road).unwrap();
     assert_eq!(builder.destination(), Some((0, 1000)));
     append(&mut builder, &outbound, &mut sink);
     append(&mut builder, &returning, &mut sink);
@@ -311,7 +313,7 @@ fn quantized_return_seam_is_coalesced_but_a_disconnected_tail_is_rejected() {
         let visit = reader.visit_descriptor().unwrap().unwrap();
         assert_eq!(visit.original_anchors_m, [0; 3]);
         assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
-        let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+        let costs = VisitCosts::read(&emitted, [0, 111], None).unwrap();
         assert!(costs.arrival_elevation_complete);
         assert!(!costs.complete_elevation);
     }
@@ -355,7 +357,7 @@ fn imported_route_connections_are_retained_measured_and_bounded() {
             assert_eq!(descriptor.original_anchors_m, [0, anchor, anchor]);
             assert!((anchor + 443..=anchor + 445).contains(&descriptor.accepted_anchors_m[2]));
             assert!((777..=779).contains(&composed.total_distance_m), "composed {} m", composed.total_distance_m);
-            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]], None).unwrap();
             assert!(!costs.arrival_elevation_complete && !costs.complete_elevation);
         }
     }
@@ -451,6 +453,107 @@ fn easier_composition_preserves_access_order_full_metadata_and_clean_provenance(
     let index = RouteIndex::read(&out).unwrap();
     let accepted = RouteReader::new(&index, &out);
     builder.prepare_easier(&accepted).unwrap(); // A clean accepted route permits another comparison.
+}
+
+/// A trial keeps no bytes, so what it measures from the stream must be what the store would read
+/// back: the stored copy's costs and its CRC-32. The legs span several output chunks, and waypoint
+/// records follow the first header patch.
+#[test]
+fn a_measured_trial_is_its_stored_copy() {
+    use obc_formats::io::{ByteSink, Error};
+    use obc_route::easier::{Costs, Measure, MeasureSink};
+    struct Tee<'a>(VecSink, MeasureSink<'a>);
+    impl ByteSink for Tee<'_> {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            self.0.write(bytes)?;
+            self.1.write(bytes)
+        }
+        fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+            self.0.write(body)?;
+            self.1.write_chunk(anchor, body)
+        }
+        fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
+            self.0.patch_at(offset, bytes)?;
+            self.1.patch_at(offset, bytes)
+        }
+    }
+    struct Hills;
+    impl obc_route::ElevationSource for Hills {
+        fn sample(&mut self, lat: i32, lon: i32) -> Option<i16> {
+            Some((500 + (lon / 7 % 40) * 3 + lat / 20) as i16)
+        }
+    }
+    let wps = [(55, 450, 500, 17, 4, 4, -50, b"Cafe" as &[u8]), (166, 1400, 400, 19, 1, 4, 40, b"Shop" as &[u8])];
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let mut slot = Box::<VisitBuilder>::new_uninit();
+    let mut builder = unsafe {
+        VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+        slot.assume_init()
+    };
+    builder.prepare_easier(&original).unwrap();
+    let (mut measure, mut hills) = (Measure::new(), Hills);
+    let mut tee = Tee(VecSink::default(), MeasureSink::new(&mut measure, &mut hills));
+    builder.begin(&mut tee).unwrap();
+    while let Some((from, to)) = builder.easier_leg(&original, (0, 0)).unwrap() {
+        let points = (0..=200)
+            .map(|i| (from.0 + (to.0 - from.0) * i / 200, from.1 + 300 * i * (200 - i) / 10_000, 10 + i as i16))
+            .collect();
+        append(&mut builder, &route(points, &[], 100), &mut tee);
+        builder.finish_easier_leg(&original).unwrap();
+    }
+    let stats = loop {
+        if let Some(stats) = builder.finish_step(&original, &mut tee).unwrap() {
+            break stats;
+        }
+    };
+    let Tee(stored, _) = tee;
+    assert!(stats.chunk_count > 1 && stats.waypoint_count == 2);
+    let (_, costs) = Costs::candidate(&SliceSource(&stored.buf), [0, stats.total_distance_m], &mut Hills).unwrap();
+    assert!(costs.ascent_m > 0 && costs.distance_m > 0);
+    assert_eq!(measure.finish(&mut Hills).unwrap(), (costs, obc_crc::crc32(&stored.buf)));
+}
+
+#[test]
+fn easier_accepts_a_leg_that_ends_where_the_planner_snapped_an_imported_end() {
+    // An imported route ends 3 m beside the road. The planner's leg ends on the road.
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &[], 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let compose = |off_road: i32| {
+        let mut slot = Box::<VisitBuilder>::new_uninit();
+        let mut builder = unsafe {
+            VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+            slot.assume_init()
+        };
+        builder.prepare_easier(&original).unwrap();
+        let mut sink = VecSink::default();
+        builder.begin(&mut sink).unwrap();
+        let (from, to) = builder.easier_leg(&original, (0, 0)).unwrap().unwrap();
+        let leg = route(vec![(from.0, from.1, 10), (to.0, to.1 + off_road, 30)], &[], 222);
+        let leg_source = SliceSource(&leg);
+        let leg_index = RouteIndex::read(&leg_source).unwrap();
+        let leg = RouteReader::new(&leg_index, &leg_source);
+        let appended = (0..100)
+            .find_map(|_| builder.append_leg_step(&leg, &mut sink).map_or(Some(false), |done| done.then_some(true)));
+        if appended != Some(true) {
+            assert!(builder.rejected_geometry());
+            return None;
+        }
+        builder.finish_easier_leg(&original).unwrap();
+        assert_eq!(builder.easier_leg(&original, (0, 0)).unwrap(), None);
+        Some(loop {
+            if let Some(stats) = builder.finish_step(&original, &mut sink).unwrap() {
+                break stats;
+            }
+        })
+    };
+    let stats = compose(27).expect("a 3 m snap gap still yields a candidate");
+    assert!(stats.total_distance_m >= 221 && stats.total_distance_m <= 223);
+    assert!(compose(1_350).is_none(), "a leg ending 150 m away does not reach the anchor");
 }
 
 #[test]

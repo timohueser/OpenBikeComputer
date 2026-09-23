@@ -18,6 +18,7 @@ behind `#if DEBUG`. Tests enforce these boundaries.
 OBCDomain -> OBCTransport -> OBCMock
          \-> OBCFormats
 OBCUI -> OBCDomain + OBCTransport
+OBCRouting -> OBCDomain + OBCCompanionCore (Rust; its own package, only the app links it)
 ```
 
 `OBCCompanion/` is the composition root and the only target that chooses a concrete transport.
@@ -26,13 +27,16 @@ pbxproj.**
 
 ## Build and test
 
-Needs Xcode 26.x, an iOS simulator runtime and XcodeGen.
+Needs Xcode 26.x, an iOS simulator runtime, XcodeGen and the Rust toolchain.
 
 ```sh
+obc companion-core   # the Rust router the app links; run it again after a Rust change
 cd companion-ios
 xcodegen generate
 
 cd Packages/OBCKit
+swift test
+cd ../OBCRouting
 swift test
 ```
 

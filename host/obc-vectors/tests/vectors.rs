@@ -5,11 +5,13 @@
 use obc_elevation::{TerrainReader, TileCache};
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::{ride::FOOTER_LEN as RIDE_FOOTER_LEN, track::RECORD_LEN as TRACK_RECORD_LEN};
-use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_route::{
+    for_each_waypoint, track_to_gpx, BikeType, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK,
+};
 use obc_vectors::{
-    all, crc32, dir, ride_v3, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
-    TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME,
-    TRIP_DANGLING_STAGE, TRIP_NAME, TRIP_STAGE_IDS,
+    all, crc32, dir, ride_v4, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
+    TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME, TRIP_DAYS,
+    TRIP_KEY, TRIP_NAME, TRIP_START_DATE,
 };
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -142,6 +144,17 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
 }
 
+/// Header byte 7 is the bike type: a known value reads back, anything above 3 is rejected.
+#[test]
+fn route_vector_carries_its_bike_type() {
+    let mut bytes = fixture("route-plain.obcr");
+    assert_eq!(RouteIndex::read(&SliceSource(&bytes)).unwrap().bike_type(), BikeType::Road);
+    bytes[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Mtb as u8;
+    assert_eq!(RouteIndex::read(&SliceSource(&bytes)).unwrap().bike_type(), BikeType::Mtb);
+    bytes[obc_formats::obcr::BIKE_TYPE_OFF] = 4;
+    assert!(RouteIndex::read(&SliceSource(&bytes)).is_err());
+}
+
 #[test]
 fn route_descriptor_envelopes_match_the_shared_overlap_contract() {
     let bytes = fixture("route-visit.obcr");
@@ -156,7 +169,7 @@ fn route_descriptor_envelopes_match_the_shared_overlap_contract() {
 
 /// The sample-codec vector and the finished-ride GPX export. `track-log.obct` is exactly five
 /// complete 20-byte records used only to pin the sample codec. The exporter consumes
-/// `ride-v3.bin`; unfinished/headerless arrays are deliberately not a ride input.
+/// `ride-v4.bin`; unfinished/headerless arrays are deliberately not a ride input.
 #[test]
 fn track_vectors_pin_the_log_and_its_export() {
     let log = fixture("track-log.obct");
@@ -187,10 +200,10 @@ fn track_vectors_pin_the_log_and_its_export() {
     assert_eq!((point(0).segment_start, point(3).segment_start), (true, true), "two segments");
     assert_eq!((point(3).lon, point(3).lat, point(3).ele), (-122_419_400, -37_774_900, -12), "negative signs");
 
-    // The export re-derives from the checked-in finished ride-v3 object.
+    // The export re-derives from the checked-in finished ride-v4 object.
     let mut sink = VecSink::default();
-    track_to_gpx(&SliceSource(&fixture("ride-v3.bin")), TRACK_NAME, &mut sink).unwrap();
-    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from ride-v3.bin");
+    track_to_gpx(&SliceSource(&fixture("ride-v4.bin")), TRACK_NAME, &mut sink).unwrap();
+    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from ride-v4.bin");
 
     // The shapes the exporter's branches produce, spelled out once (the browser bridge reproduces
     // this exact text, so a change here is a change to a cross-language contract).
@@ -210,23 +223,23 @@ fn track_vectors_pin_the_log_and_its_export() {
     assert!(!gpx.contains("<time>"), "no fabricated timestamps");
 }
 
-/// A ride-v3 object's length is exactly its verbatim samples plus one fixed footer.
+/// A ride-v4 object's length is exactly its verbatim samples plus one fixed footer.
 #[test]
 fn ride_vector_length_is_self_describing() {
-    let v3 = ride_v3();
-    assert_eq!(fixture("ride-v3.bin"), v3);
-    let footer = &v3[v3.len() - RIDE_FOOTER_LEN..];
-    assert_eq!(&footer[..5], b"OBRF\x03");
+    let v4 = ride_v4();
+    assert_eq!(fixture("ride-v4.bin"), v4);
+    let footer = &v4[v4.len() - RIDE_FOOTER_LEN..];
+    assert_eq!(&footer[..5], b"OBRF\x04");
     let point_count = u32::from_le_bytes(footer[24..28].try_into().unwrap());
-    assert_eq!(v3.len(), TRACK_RECORD_LEN * point_count as usize + RIDE_FOOTER_LEN);
+    assert_eq!(v4.len(), TRACK_RECORD_LEN * point_count as usize + RIDE_FOOTER_LEN);
 }
 
 /// The independent vector reads through the production footer and detail codecs.
 #[test]
 fn ride_vector_reads_through_the_production_codec() {
-    let v3 = fixture("ride-v3.bin");
-    let info = obc_route::RideInfo::read(&SliceSource(&v3)).unwrap();
-    assert_eq!(info.version, 3);
+    let v4 = fixture("ride-v4.bin");
+    let info = obc_route::RideInfo::read(&SliceSource(&v4)).unwrap();
+    assert_eq!(info.version, 4);
     assert_eq!(info.name.as_str(), "Sensor Ride");
     assert_eq!(info.start_time, 1_751_460_000);
     assert_eq!(info.distance_m, 12_345);
@@ -237,34 +250,47 @@ fn ride_vector_reads_through_the_production_codec() {
     assert_eq!(
         (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
         (Some(142), Some(176), Some(85), Some(210), Some(480)),
-        "v3 carries the per-ride sensor summary"
+        "the footer carries the per-ride sensor summary"
     );
-    assert_eq!(v3.len() as u64, obc_formats::ride::checked_object_len(info.point_count).unwrap());
+    assert_eq!(info.bike, obc_formats::bike::BikeType::Gravel);
+    assert_eq!(info.trip, obc_formats::ride::TripRef::new(TRIP_KEY, 1, 3));
+    assert_eq!(info.trip_name.as_str(), TRIP_NAME);
+    assert_eq!(v4.len() as u64, obc_formats::ride::checked_object_len(info.point_count).unwrap());
 
     let mut p = obc_route::Profile::EMPTY;
     let mut preview = heapless::Vec::<_, 3>::new();
-    obc_route::ride_track_into(&SliceSource(&v3), &mut p, &mut preview).unwrap();
+    obc_route::ride_track_into(&SliceSource(&v4), &mut p, &mut preview).unwrap();
     assert_eq!((p.min_ele_m, p.max_ele_m), (214, 225));
     assert_eq!(preview.as_slice(), &[(7_800_000, 48_000_000), (7_801_200, 48_001_000), (7_803_000, 48_002_000)]);
 }
 
-/// The trip vector pins §7.7, including full-width route ids and its self-describing length.
+/// The trip vector pins §7.7, including full-width ids and its self-describing length.
 #[test]
 fn trip_vectors_are_self_consistent() {
-    let trip = fixture("trip-v2.bin");
-    // Header: version 2, reserved 0, stage_count 3, name "Alpen Traverse".
-    assert_eq!(trip[0], 2, "trip object version");
+    let trip = fixture("trip-v3.bin");
+    assert_eq!(trip[0], 3, "trip object version");
     assert_eq!(trip[1], 0, "reserved");
-    let stage_count = u16::from_le_bytes([trip[2], trip[3]]);
-    assert_eq!(stage_count, 3);
+    let day_count = u16::from_le_bytes([trip[2], trip[3]]);
+    assert_eq!(day_count as usize, TRIP_DAYS.len());
     let name_len = trip[4] as usize;
     assert_eq!(&trip[5..5 + name_len], TRIP_NAME.as_bytes());
-    // Length is self-describing: 56-byte header + 8 bytes/stage.
-    assert_eq!(trip.len(), 56 + 8 * stage_count as usize);
-    let stages: Vec<u64> = (0..stage_count as usize)
-        .map(|k| u64::from_le_bytes(trip[56 + 8 * k..64 + 8 * k].try_into().unwrap()))
+    assert_eq!(u16::from_le_bytes([trip[54], trip[55]]), TRIP_START_DATE);
+    assert_eq!(u64::from_le_bytes(trip[56..64].try_into().unwrap()), TRIP_KEY);
+    // Length is self-describing: 64-byte header + 16 bytes/day.
+    assert_eq!(trip.len(), 64 + 16 * day_count as usize);
+    let days: Vec<(u64, u32, u32)> = trip[64..]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|d| {
+            (
+                u64::from_le_bytes(d[0..8].try_into().unwrap()),
+                u32::from_le_bytes(d[8..12].try_into().unwrap()),
+                u32::from_le_bytes(d[12..16].try_into().unwrap()),
+            )
+        })
         .collect();
-    assert_eq!(stages, vec![TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
+    assert_eq!(days, TRIP_DAYS);
 }
 
 /// The OBCT terrain shard (`OBCT_Spec.md`): the checked-in bytes parse through the production

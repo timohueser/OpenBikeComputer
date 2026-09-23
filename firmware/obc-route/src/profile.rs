@@ -124,16 +124,7 @@ impl Profile {
     /// `ascent_to(1.0)` is exactly the route's total ascent.
     #[inline]
     pub fn ascent_to(&self, t: f32) -> u32 {
-        let last = ASCENT_COLS - 1;
-        let x = t.clamp(0.0, 1.0) * last as f32;
-        let i = x as usize;
-        if i >= last {
-            return self.cum_ascent[last];
-        }
-        let f = x - i as f32;
-        let a = self.cum_ascent[i] as f32;
-        let b = self.cum_ascent[i + 1] as f32;
-        (a + (b - a) * f) as u32
+        ascent_at(&self.cum_ascent, t)
     }
 
     /// The distance-indexed twin of [`ascent_to`](Self::ascent_to), for every consumer that
@@ -362,6 +353,122 @@ pub fn ride_track_into<const N: usize>(
     out.min_ele_m = min_ele;
     out.max_ele_m = max_ele;
     Ok(())
+}
+
+/// The elevation [`Profile`] of one day made of stretches of stored routes, ridden one after the
+/// other: the rest of the day before, then the day. The host streams one route at a time into the
+/// resident profile, so it never holds two routes or a second profile.
+///
+/// A stretch climbs what its route's own ascent curve says between its two ends. That curve is
+/// normalised to the route header's total as [`RouteReader::elevation_profile`] does, so a whole
+/// route climbs exactly its header figure.
+pub struct DayProfile {
+    length_m: f64,
+    /// Where the next stretch starts on the day.
+    offset_m: f64,
+    /// The day's running ascent per ascent column, scaled to the stretches' climb at the end.
+    casc: [f32; ASCENT_COLS],
+    ascent: DeadBand<f32>,
+    climb_m: u32,
+    min_ele: i16,
+    max_ele: i16,
+}
+
+impl DayProfile {
+    /// Start a day `length_m` long in `out`.
+    pub fn start(length_m: u32, out: &mut Profile) -> Self {
+        out.reset();
+        DayProfile {
+            length_m: f64::from(length_m.max(1)),
+            offset_m: 0.0,
+            casc: [0.0; ASCENT_COLS],
+            ascent: DeadBand::new(),
+            climb_m: 0,
+            min_ele: i16::MAX,
+            max_ele: i16::MIN,
+        }
+    }
+
+    /// Append `[from_m, to_m]` of the route in `src`. `to_m` clamps to the route's length.
+    pub fn stretch(&mut self, src: &dyn ByteSource, from_m: u32, to_m: u32, out: &mut Profile) -> Result<(), Error> {
+        let h = read_header(src)?;
+        let total = f64::from(h.total_distance_m.max(1));
+        let to = to_m.min(h.total_distance_m);
+        let from = from_m.min(to);
+        let (base_last, asc_last) = (PROFILE_COLS - 1, ASCENT_COLS - 1);
+        let mut route_casc = [0f32; ASCENT_COLS];
+        let mut route_ascent = DeadBand::<f32>::new();
+        // The gap between two stretches is not climbed.
+        self.ascent.pause();
+        let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
+        let mut meta_bytes = [0u8; CHUNK_META_LEN];
+        for k in 0..h.chunk_count {
+            let off = k.checked_mul(CHUNK_META_LEN as u32).and_then(|rel| h.index_offset.checked_add(rel));
+            src.read_at(off.ok_or(Error::BadOffset)?.into(), &mut meta_bytes)?;
+            let m = parse_chunk_meta(&meta_bytes, src.len())?;
+            buf.clear();
+            decode_chunk_from(src, &m, m.point_count as usize, &mut buf)?;
+            let mut dist = f64::from(m.cum_distance_m);
+            let mut prev: Option<(i32, i32)> = None;
+            for p in &buf {
+                if let Some(pr) = prev {
+                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
+                }
+                prev = Some((p.lon, p.lat));
+                if p.elevation().is_none() {
+                    route_ascent.pause();
+                    self.ascent.pause();
+                    continue;
+                }
+                if p.elevation_incomplete {
+                    route_ascent.pause();
+                    self.ascent.pause();
+                }
+                route_ascent.push(p.ele as f32);
+                route_casc[((dist / total * asc_last as f64) as usize).min(asc_last)] = route_ascent.ascent();
+                if dist < f64::from(from) || dist > f64::from(to) {
+                    continue;
+                }
+                let frac = (self.offset_m + dist - f64::from(from)) / self.length_m;
+                let slot = &mut out.cols[((frac * base_last as f64) as usize).min(base_last)];
+                slot.0 = slot.0.min(p.ele);
+                slot.1 = slot.1.max(p.ele);
+                self.min_ele = self.min_ele.min(p.ele);
+                self.max_ele = self.max_ele.max(p.ele);
+                self.ascent.push(p.ele as f32);
+                self.casc[((frac * asc_last as f64) as usize).min(asc_last)] = self.ascent.ascent();
+            }
+        }
+        let curve = cumulative_ascent(&route_casc, h.total_ascent_m);
+        let at = |m: u32| ascent_at(&curve, (f64::from(m) / total) as f32);
+        self.climb_m += at(to).saturating_sub(at(from));
+        self.offset_m += f64::from(to - from);
+        Ok(())
+    }
+
+    /// Finish `out`, and return the day's climb.
+    pub fn finish(self, out: &mut Profile) -> u32 {
+        let (min_ele, max_ele) = if self.min_ele > self.max_ele { (0, 0) } else { (self.min_ele, self.max_ele) };
+        fill_gaps(&mut out.cols[..PROFILE_COLS], (min_ele, max_ele), band_is_set);
+        out.cum_ascent = cumulative_ascent(&self.casc, self.climb_m);
+        out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
+        out.min_ele_m = min_ele;
+        out.max_ele_m = max_ele;
+        self.climb_m
+    }
+}
+
+/// The ascent at fraction `t` of a cumulative ascent curve, interpolated between its columns.
+fn ascent_at(cum: &[u32; ASCENT_COLS], t: f32) -> u32 {
+    let last = ASCENT_COLS - 1;
+    let x = t.clamp(0.0, 1.0) * last as f32;
+    let i = x as usize;
+    if i >= last {
+        return cum[last];
+    }
+    let f = x - i as f32;
+    let (a, b) = (cum[i] as f32, cum[i + 1] as f32);
+    (a + (b - a) * f) as u32
 }
 
 /// Buckets in the received-route card's mini elevation sparkline: one normalized `u8` height each.

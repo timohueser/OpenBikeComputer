@@ -120,9 +120,14 @@ pub struct Trimmer {
 }
 
 impl Trimmer {
-    pub fn new(target_m: u32, has_elevation: bool) -> Self {
+    /// Only a detour is trimmed: an approach has no tail to meet before the start, and a rest is
+    /// a stored route that ends where it should.
+    pub fn new(leg: crate::splice::Leg, target_m: u32, has_elevation: bool) -> Self {
         Self {
-            phase: Phase::Tail,
+            phase: match leg {
+                crate::splice::Leg::Detour => Phase::Tail,
+                _ => Phase::Terminal(TrimStep::Done(None)),
+            },
             target_m,
             has_elevation,
             tail: Tail { pts: Vec::new(), bbox: BBox { min_lon: 0, max_lon: 0, min_lat: 0, max_lat: 0 }, cl: 1.0 },
@@ -248,6 +253,7 @@ impl Trimmer {
                 }
                 ObcrEmitter::begin(sink)?;
                 self.emitter.set_attribution_map(detour.attribution_map()?);
+                self.emitter.set_bike_type(detour.bike_type());
                 self.emitter.set_flags(
                     (if detour.has_unresolved_avoidance() { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 })
                         | if detour.is_assistant_candidate() { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
@@ -294,13 +300,14 @@ impl Trimmer {
 /// Must stay `#[inline(never)]`: the trimmer and its decode buffer stay out of the caller's frame.
 #[inline(never)]
 pub fn trim_detour_to_tail(
+    leg: crate::splice::Leg,
     orig: &RouteReader,
     detour: &RouteReader,
     target_m: u32,
     has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<Option<TrimOutcome>, Error> {
-    let mut trim = Trimmer::new(target_m, has_elevation);
+    let mut trim = Trimmer::new(leg, target_m, has_elevation);
     loop {
         match trim.step(orig, detour, sink) {
             TrimStep::Running => {}

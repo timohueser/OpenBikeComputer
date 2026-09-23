@@ -7,7 +7,7 @@ use core::fmt::Write;
 
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Surface,
 };
 use obc_route::{Profile, Window};
@@ -15,21 +15,31 @@ use obc_route::{Profile, Window};
 use crate::screen::palette;
 use crate::settings::Units;
 
-/// Side inset (px) the over-the-peak label clamps to, so a peak at either end keeps its whole
-/// string inside the band.
-const PEAK_LABEL_INSET: i32 = 30;
-
-/// How far above the apex (px) the over-the-peak label sits.
-const PEAK_LABEL_LIFT: i32 = 22;
-
-/// Where a band's peak-elevation label sits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PeakLabel {
-    /// Centred over the apex, clamped inside the band's ends.
-    OverPeak,
-    /// In the band's top-right corner, for a band too short to carry a label over the apex.
-    TopRight,
+/// A whole route's or ride's profile in `area`: the shaded fill, the amber top stroke and the peak
+/// label over the apex, in the headroom above `area`. Without a profile, because the track still
+/// streams in, `loading` holds the band's place, so the page does not jump.
+pub(crate) fn draw_profile(
+    cv: &mut impl Surface,
+    profile: Option<&Profile>,
+    area: Rectangle,
+    units: Units,
+    loading: &str,
+) {
+    let Some(profile) = profile else {
+        let bot = area.top_left.y + area.size.height as i32 - 1;
+        let at = Point::new(area.top_left.x + area.size.width as i32 / 2, (area.top_left.y + bot) / 2 - 9);
+        cv.text(loading, at, Font::Label, TextAlign::Center, palette::SUBTEXT);
+        return;
+    };
+    let band = ElevationBand::whole_route(profile, area);
+    band.fill(cv, palette::PARCHMENT_SHADE);
+    band.stroke(cv, palette::AMBER);
+    band.peak_label(cv, units);
 }
+
+/// How far above the apex (px) the over-the-peak label's text box starts. The caller leaves this
+/// much headroom above the band.
+const PEAK_LABEL_LIFT: i32 = 22;
 
 /// One elevation band's raster: a profile sampled through a window into a rectangle.
 pub(crate) struct ElevationBand<'a> {
@@ -127,23 +137,21 @@ impl<'a> ElevationBand<'a> {
         }
     }
 
-    /// Draw the profile's peak elevation as a label at `place`, in the rider's units.
-    pub(crate) fn peak_label(&self, cv: &mut impl Surface, units: Units, place: PeakLabel) {
+    /// Draw the profile's peak elevation in the rider's units, centred over the apex in the
+    /// headroom above the band, and clamped inside the band's ends.
+    pub(crate) fn peak_label(&self, cv: &mut impl Surface, units: Units) {
         if self.profile.cols().iter().all(|s| s.0 > s.1) {
             return;
         }
         let mut peak: heapless::String<10> = heapless::String::new();
         let _ = write!(peak, "{} {}", units.elev(self.profile.peak_ele_m() as f32) as i32, units.elev_label());
-        let (at, align) = match place {
-            PeakLabel::OverPeak => {
-                let px = (self.x + (self.profile.peak_frac() * self.w as f32) as i32)
-                    .clamp(self.x + PEAK_LABEL_INSET, self.x + self.w - PEAK_LABEL_INSET);
-                let py = (self.ele_to_y(self.profile.peak_ele_m()) - PEAK_LABEL_LIFT).max(self.top - 2);
-                (Point::new(px, py), TextAlign::Center)
-            }
-            PeakLabel::TopRight => (Point::new(self.x + self.w - 2, self.top - 2), TextAlign::Right),
-        };
-        cv.text(&peak, at, Font::Label, align, palette::SUBTEXT);
+        // Clamped by the label's own width, so a peak at either end keeps the whole string over the
+        // band.
+        let half = text_width(&peak, Font::Label) as i32 / 2;
+        let px =
+            (self.x + (self.profile.peak_frac() * self.w as f32) as i32).clamp(self.x + half, self.x + self.w - half);
+        let py = self.ele_to_y(self.profile.peak_ele_m()) - PEAK_LABEL_LIFT;
+        cv.text(&peak, Point::new(px, py), Font::Label, TextAlign::Center, palette::SUBTEXT);
     }
 }
 
@@ -288,28 +296,27 @@ mod tests {
     }
 
     #[test]
-    fn peak_labels_stay_within_the_band() {
+    fn peak_labels_sit_over_the_apex() {
         for eles in [&[1400, 900, 400, 300][..], &[400, 900, 1400, 900][..]] {
             let p = profile(eles);
             let b = ElevationBand::whole_route(&p, area());
 
             let mut probe = Probe::default();
-            b.peak_label(&mut probe, Units::Metric, PeakLabel::OverPeak);
+            b.peak_label(&mut probe, Units::Metric);
             let (text, at, align) = probe.texts.pop().expect("the label draws");
             assert_eq!(text, "1400 m", "the peak reads in the rider's units");
             assert_eq!(align, TextAlign::Center);
+            let half = text_width(&text, Font::Label) as i32 / 2;
             assert!(
-                (X + PEAK_LABEL_INSET..=X + W - PEAK_LABEL_INSET).contains(&at.x),
-                "the label is clamped inside the band ({eles:?}: x = {})",
+                at.x - half >= X && at.x + half <= X + W,
+                "the whole label stays over the band ({eles:?}: x = {})",
                 at.x
             );
-            assert!(at.y >= TOP - 2 && at.y < BOT, "the label sits in the band ({eles:?}: y = {})", at.y);
+            assert_eq!(at.y, TOP - PEAK_LABEL_LIFT, "the label sits in the headroom over the apex ({eles:?})");
 
             let mut probe = Probe::default();
-            b.peak_label(&mut probe, Units::Imperial, PeakLabel::TopRight);
-            let (text, at, align) = probe.texts.pop().expect("the label draws");
-            assert_eq!(text, "4593 ft", "imperial reads in feet");
-            assert_eq!((at, align), (Point::new(X + W - 2, TOP - 2), TextAlign::Right));
+            b.peak_label(&mut probe, Units::Imperial);
+            assert_eq!(probe.texts.pop().expect("the label draws").0, "4593 ft", "imperial reads in feet");
         }
     }
 }

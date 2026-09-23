@@ -56,12 +56,16 @@ struct OBCCompanionApp: App {
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
+                photoLibrary: Self.makePhotoLibrary(),
+                lastBikeType: Self.makeLastBikeTypeStore(),
                 reachability: Self.makeReachability(),
                 updateSurface: Self.makeUpdateSurfaceStore(),
                 updateNotifier: SystemUpdateNotifier(),
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
-                syncTiming: Self.launchSyncTiming())
+                syncTiming: Self.launchSyncTiming(),
+                placeName: Self.makePlaceName(),
+                stopSearch: Self.makeStopSearch())
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -86,6 +90,34 @@ struct OBCCompanionApp: App {
         .backgroundTask(.appRefresh(BackgroundUpdateRefresh.identifier)) {
             await BackgroundUpdateRefresh.run()
         }
+    }
+
+    /// Mock runs start from Road on every launch, like their in-memory library.
+    static func makeLastBikeTypeStore() -> LastBikeTypeStore {
+        #if DEBUG
+        if mockControl != nil, let defaults = UserDefaults(suiteName: "obc.mock") {
+            defaults.removePersistentDomain(forName: "obc.mock")
+            return LastBikeTypeStore(defaults: defaults)
+        }
+        #endif
+        return LastBikeTypeStore()
+    }
+
+    /// Day ends take their locality's name. Mock runs stay offline and deterministic.
+    static func makePlaceName() -> (@Sendable (Coordinate) async -> String?)? {
+        #if DEBUG
+        if mockControl != nil { return nil }
+        #endif
+        return PlaceNames.locality(at:)
+    }
+
+    /// Stops near a trip line come from Apple Maps. Mock runs use fixed stops, offline and
+    /// deterministic.
+    static func makeStopSearch() -> any StopSearch {
+        #if DEBUG
+        if mockControl != nil { return MockStopSearch() }
+        #endif
+        return AppleMapsStopSearch()
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {
@@ -177,6 +209,17 @@ struct OBCCompanionApp: App {
         }
         #endif
         return FileLibraryStore.standard()
+    }
+
+    /// The simulator has no photos worth placing, so mock runs draw their own.
+    static func makePhotoLibrary() -> any PhotoLibrary {
+        #if DEBUG
+        if mockControl != nil {
+            return MockPhotoLibrary(
+                access: launchOptions.photoAccess ?? .notDetermined, lastPhotoGone: launchOptions.photoGone)
+        }
+        #endif
+        return PhotoKitLibrary()
     }
 
     /// The reachability seam behind the basemap. The real path watches `NWPathMonitor`, and a

@@ -113,7 +113,7 @@ public struct MockTransport: DeviceTransport {
         return control.deviceTripCatalog()
     }
 
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         try await preludeThrowing()
         guard let decoded = control.deviceTripDecoded(id) else { throw DeviceError.readFailed }
         return decoded
@@ -140,14 +140,6 @@ public struct MockTransport: DeviceTransport {
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
         try await preludeThrowing()
         guard let entry = control.deviceRouteEntry(id) else {
-            throw DeviceError.readFailed
-        }
-        return entry.detail()
-    }
-
-    public func rideDetail(_ id: RideID) async throws -> RideDetail {
-        try await preludeThrowing()
-        guard let entry = control.fixtures.rides.first(where: { $0.summary.id == id }) else {
             throw DeviceError.readFailed
         }
         return entry.detail()

@@ -5,19 +5,22 @@ use crate::{
     flat_store::{HostStore, ImportError},
     TripCatalog,
 };
-use obc_app::{catalog_state::CatalogError, App, CatalogObjectId, TripInput};
+use obc_app::{
+    catalog_state::CatalogError, metadata::MetadataError, trip::TripProgress, App, CatalogObjectId, TripInput,
+};
 use obc_formats::io::SliceSource;
 use obc_route::TripMeta;
-use obc_storage::flat::{DisplayName, ObjectId, ObjectKind, Revision, StoreError};
+use obc_storage::flat::{metadata, DisplayName, ObjectId, ObjectKind, Revision, StoreError};
 
 pub struct FlatTripStore {
     owner: HostStore,
     rows: Vec<(CatalogObjectId, Revision, TripMeta)>,
+    progress: Vec<TripProgress>,
 }
 
 impl FlatTripStore {
     pub fn new(owner: HostStore) -> Result<Self, CatalogError> {
-        let mut store = Self { owner, rows: Vec::new() };
+        let mut store = Self { owner, rows: Vec::new(), progress: Vec::new() };
         store.rescan()?;
         Ok(store)
     }
@@ -25,8 +28,19 @@ impl FlatTripStore {
     pub fn inputs(&self) -> Vec<TripInput<'_>> {
         self.rows
             .iter()
-            .map(|(id, _, trip)| TripInput { id: *id, name: trip.name.as_str(), stage_ids: trip.stage_ids.as_slice() })
+            .map(|(id, _, trip)| TripInput {
+                id: *id,
+                key: trip.key,
+                name: trip.name.as_str(),
+                start_date: trip.start_date,
+                stage_ids: trip.day_routes.as_slice(),
+            })
             .collect()
+    }
+
+    /// The trip progress records as the last rescan read them.
+    pub fn progress(&self) -> &[TripProgress] {
+        &self.progress
     }
 
     pub fn import(&mut self, bytes: &[u8]) -> Result<CatalogObjectId, ImportError> {
@@ -88,12 +102,28 @@ impl TripCatalog for FlatTripStore {
         if !store.entries_ok() {
             return Err(CatalogError::Unreadable);
         }
+        let mut progress = Vec::new();
+        metadata::read_progress(store, |record| progress.push(record)).map_err(|_| CatalogError::Unreadable)?;
         self.rows = rows;
+        self.progress = progress;
         Ok(())
     }
 
     fn refeed(&self, app: &mut App) {
         app.set_trips(&self.inputs());
+        app.set_trip_progress(self.progress.iter().cloned());
+    }
+
+    fn day(&self, key: u64, k: u16) -> Option<obc_route::TripDay> {
+        let (id, revision, _) = self.rows.iter().find(|(_, _, trip)| trip.key == key)?;
+        let source = self.owner.open(ObjectId(*id), *revision).ok()?;
+        obc_route::read_trip_day(&source, k).ok()
+    }
+
+    fn write_progress(&mut self, record: TripProgress, keys: &[u64]) -> Result<(), MetadataError> {
+        let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;
+        metadata::write_progress(store, record, |key| keys.contains(&key)).map_err(crate::flat_routes::metadata_error)
     }
 }
 
@@ -105,7 +135,8 @@ mod tests {
 
     fn trip(ids: &[u64]) -> Vec<u8> {
         let mut bytes = VecSink::default();
-        obc_route::write_trip("Stages", ids, &mut bytes).unwrap();
+        let days: Vec<_> = ids.iter().copied().map(obc_route::TripDay::whole).collect();
+        obc_route::write_trip(1, "Stages", 0, &days, &mut bytes).unwrap();
         bytes.bytes().to_vec()
     }
 

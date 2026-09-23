@@ -21,6 +21,7 @@ pub struct NavGuard {
     sealed: Box<Option<SealedAllocation<'static>>>,
     preview_chunk: usize,
     visit: Option<Box<obc_route::visit::VisitBuilder>>,
+    measure: Box<obc_route::easier::Measure>,
 }
 pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
     Ok(NavGuard {
@@ -33,6 +34,7 @@ pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
         sealed: Box::new(None),
         preview_chunk: 0,
         visit: None,
+        measure: Box::default(),
     })
 }
 impl Drop for NavGuard {
@@ -66,11 +68,11 @@ impl NavGuard {
         let Work::Plan(planner) = &mut self.work else { return None };
         Some((planner, &mut self.scratch, &mut self.tiles, &mut self.output))
     }
-    pub fn begin_trim(&mut self, target: u32, elevation: bool) {
-        self.work = Work::Trim(Box::new(Trimmer::new(target, elevation)));
+    pub fn begin_trim(&mut self, leg: obc_route::Leg, target: u32, elevation: bool) {
+        self.work = Work::Trim(Box::new(Trimmer::new(leg, target, elevation)));
     }
-    pub fn begin_splice(&mut self, split: u32, rejoin: u32, len: u32, elevation: bool) {
-        self.work = Work::Splice(Box::new(Splicer::new(split, rejoin, len, elevation, self.original.name())));
+    pub fn begin_splice(&mut self, leg: obc_route::Leg, split: u32, rejoin: u32, len: u32, elevation: bool) {
+        self.work = Work::Splice(Box::new(Splicer::new(leg, split, rejoin, len, elevation, self.original.name())));
     }
     pub fn transform(&mut self, original: &dyn ByteSource, leg: &dyn ByteSource) -> (TransformStep, usize, usize) {
         let orig = RouteReader::new(&self.original, original);
@@ -153,6 +155,7 @@ impl NavGuard {
             }
             self.visit = Some(slot.assume_init());
         }
+        *self.measure = obc_route::easier::Measure::new();
         self.begin_sources();
         Ok(())
     }
@@ -178,6 +181,11 @@ impl NavGuard {
     ) -> (&mut obc_route::visit::VisitBuilder, &mut RouteIndex, &mut RouteIndex, &mut [u8; NAV_OUTPUT_STAGE_BYTES])
     {
         (self.visit.as_mut().unwrap(), &mut self.original, &mut self.leg, &mut self.output)
+    }
+    pub fn visit_measure_parts(
+        &mut self,
+    ) -> (&mut obc_route::visit::VisitBuilder, &mut RouteIndex, &mut RouteIndex, &mut obc_route::easier::Measure) {
+        (self.visit.as_mut().unwrap(), &mut self.original, &mut self.leg, &mut self.measure)
     }
     pub fn visit_seal_request(&mut self, allocation: Allocation) -> Request {
         self.seal_request(allocation)

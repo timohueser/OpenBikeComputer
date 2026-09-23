@@ -129,18 +129,26 @@ public struct Ride: Identifiable, Equatable, Sendable {
         self.summary = summary
         self.points = points
     }
-}
 
-/// Everything the ride-detail screen renders beyond the list summary.
-public struct RideDetail: Equatable, Sendable {
-    public var summary: RideSummary
-    /// Elevation samples along the ride in metres, evenly spaced from start to end. Empty when the
-    /// tracklog carried no elevation.
-    public var elevationProfile: [Double]
-
-    public init(summary: RideSummary, elevationProfile: [Double] = []) {
-        self.summary = summary
-        self.elevationProfile = elevationProfile
+    /// This ride as a planned route under the ride's name: the tracked line with its elevation,
+    /// without time or sensors. It is not simplified here, because the route codec decimates
+    /// every route at upload, so a ride keeps the density of an imported GPX track.
+    ///
+    /// A route is one line, so it joins the ride's segments with a straight leg at each break.
+    /// The device does not count a break's jump as ridden, but the route counts it and navigates
+    /// it. Nil when those legs would add more than 1 % to the ridden distance.
+    public func plannedRoute() -> ImportedRoute? {
+        var ridden = 0.0
+        var bridged = 0.0
+        for (from, to) in zip(points, points.dropFirst()) {
+            let leg = from.coordinate.routeDistance(to: to.coordinate)
+            if to.segmentStart { bridged += leg } else { ridden += leg }
+        }
+        guard bridged <= ridden * 0.01 else { return nil }
+        return ImportedRoute(
+            name: summary.name,
+            points: points.map { RoutePoint(coordinate: $0.coordinate, elevationMeters: $0.elevationMeters) }
+        )
     }
 }
 
@@ -169,6 +177,12 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     public var avgPower: Int?
     public var maxPower: Int?
 
+    /// The bike type that was current when the ride started. The rider can change it on the phone;
+    /// the device copy does not change.
+    public var bikeType: BikeType
+    /// The trip day the ride started on, or nil.
+    public var trip: RideTrip?
+
     public init(
         id: RideID,
         name: String,
@@ -183,6 +197,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         avgCadence: Int? = nil,
         avgPower: Int? = nil,
         maxPower: Int? = nil,
+        bikeType: BikeType = .road,
+        trip: RideTrip? = nil,
         source: RideSource? = nil
     ) {
         self.id = id
@@ -198,7 +214,29 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.avgCadence = avgCadence
         self.avgPower = avgPower
         self.maxPower = maxPower
+        self.bikeType = bikeType
+        self.trip = trip
         self.source = source
+    }
+}
+
+/// The trip day a ride started on (`specs/obc-ble-interface-spec.md` §7.2).
+public struct RideTrip: Equatable, Sendable {
+    /// The trip key of the trip object; never 0.
+    public var key: UInt64
+    /// 0-based; the rider sees Day 1 for index 0.
+    public var dayIndex: Int
+    /// The trip's day count when the ride started.
+    public var dayCount: Int
+    /// The trip's name when the ride was saved. It stays after the trip is deleted, and it is empty
+    /// when the device no longer held the trip.
+    public var name: String
+
+    public init(key: UInt64, dayIndex: Int, dayCount: Int, name: String) {
+        self.key = key
+        self.dayIndex = dayIndex
+        self.dayCount = dayCount
+        self.name = name
     }
 }
 

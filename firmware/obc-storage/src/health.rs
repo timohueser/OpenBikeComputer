@@ -119,6 +119,19 @@ impl Breaker {
         !self.open() || now_ms.wrapping_sub(self.opened_at_ms) >= Self::COOL_DOWN_MS
     }
 
+    /// Whether this ride-loop pass may run the half-open probe.
+    ///
+    /// A due probe still waits for proof that this pass fed the watchdog. This makes recovery a
+    /// complete pass with a fresh deadline, instead of extra work appended to an old pass.
+    pub const fn recovery_due(self, watchdog_fed: bool, now_ms: u32) -> bool {
+        watchdog_fed && self.open() && self.admits(now_ms)
+    }
+
+    /// Whether background work may touch storage without becoming a half-open probe.
+    pub const fn background_admitted(self) -> bool {
+        !self.open()
+    }
+
     /// Fold one operation's outcome in.
     pub const fn record(self, outcome: Outcome, now_ms: u32) -> Self {
         match outcome {
@@ -200,6 +213,25 @@ mod tests {
         let b = opened(T0);
         assert!(!b.admits(T0 + Breaker::COOL_DOWN_MS - 1));
         assert!(b.admits(T0 + Breaker::COOL_DOWN_MS));
+    }
+
+    #[test]
+    fn recovery_requires_a_fresh_watchdog_feed_and_an_open_cool_down() {
+        let due = T0 + Breaker::COOL_DOWN_MS;
+        let open = opened(T0);
+        assert!(!open.recovery_due(false, due), "a stale input heartbeat cannot start the long pass");
+        assert!(!open.recovery_due(true, due - 1), "the cool-down still applies");
+        assert!(open.recovery_due(true, due));
+        assert!(!Breaker::healthy().recovery_due(true, due), "a healthy pass has nothing to recover");
+    }
+
+    #[test]
+    fn background_work_stays_suppressed_at_the_half_open_edge() {
+        let open = opened(T0);
+        assert!(!open.background_admitted());
+        assert!(open.admits(T0 + Breaker::COOL_DOWN_MS), "the dedicated probe is due");
+        assert!(!open.background_admitted(), "map reads do not become the probe");
+        assert!(Breaker::healthy().background_admitted());
     }
 
     #[test]

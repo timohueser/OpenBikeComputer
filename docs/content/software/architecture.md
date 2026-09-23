@@ -294,6 +294,11 @@ table and not a distance limit. The constants are in
 If the map carries terrain, the planner samples it for route elevations, and the shared integrator
 calculates climb and descent. A map without terrain still plans routes.
 
+The companion app plans short pieces with the same router. It downloads the network and terrain
+cells near the two endpoints from the published catalog and assembles them on the phone. The search
+uses the device's table size, so the phone and the device plan the same route.
+[`obc-companion-core`](src:apps/obc-companion-core) is the phone's side of this link.
+
 A **visit** is one complete route: a ride to a mapped approach for the selected place, a return or
 forward connection, and the remaining original route. The rider reviews it before it becomes
 active, and acceptance is one durable transaction, so a restart can offer to resume it. The

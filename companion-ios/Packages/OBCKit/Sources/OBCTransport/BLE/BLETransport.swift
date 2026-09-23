@@ -322,7 +322,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             name: decoded.name,
             distanceMeters: Double(decoded.totalDistanceMeters),
             elevationGainMeters: Double(decoded.totalAscentMeters),
-            estimatedDuration: geometry.estimatedDuration,
+            estimatedDuration: TimeInterval(decoded.bikeType.estimatedSeconds(
+                distanceMeters: decoded.totalDistanceMeters, ascentMeters: decoded.totalAscentMeters)),
             pointCount: decoded.points.count,
             trackPreview: TrackPreview.normalizing(decoded.points.map(\.coordinate))
         )
@@ -332,11 +333,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             elevationProfile: geometry.elevationProfile,
             maxGradePercent: geometry.maxGradePercent
         )
-    }
-
-    public func rideDetail(_ id: RideID) async throws -> RideDetail {
-        // The synced library copy answers this screen; nothing reads a ride detail from a device.
-        throw DeviceError.readFailed
     }
 
     public func listTrips() async throws -> [TripCatalogEntry] {
@@ -349,7 +345,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         // The stored trip blob, decoded app-side for its name and stage ids. Reconcile falls back
         // to it only when the trip catalog's CRC cannot confirm the fingerprint.
         try TripObjectCodec.decode(try await download(id))

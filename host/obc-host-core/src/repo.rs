@@ -105,6 +105,10 @@ pub trait RouteRepository {
     fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
         None
     }
+    /// The current bytes of stored route `id`.
+    fn route_bytes(&self, _id: CatalogObjectId) -> Option<Vec<u8>> {
+        None
+    }
     /// Whether the stored checkpoint's route still accepts `map` as its attribution — the current
     /// map key, or `None` when no current map is open. An imported route attributes no map.
     fn resume_map_matches(&self, _map: Option<obc_formats::obcr::RouteSourceKey>) -> bool {
@@ -119,6 +123,10 @@ pub trait RouteRepository {
     fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {
         Err(CatalogError::Unsupported)
     }
+    /// Remove as many of these unaccepted candidates as one commit carries.
+    fn retract_reviews(&mut self, _ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
     /// Make the active route match `want`, (re)reading its bytes only on a change. **Returns whether
     /// the active bytes were (re)loaded this call** — the signal [`ActiveRouteSession`](crate::ActiveRouteSession)
     /// gates its index reparse on, so a settled view never reparses.
@@ -127,9 +135,6 @@ pub trait RouteRepository {
     fn active_source(&self) -> Option<&dyn ByteSource>;
     /// Retain the exact active snapshot. Repositories without leases cannot plan detours.
     fn pin_active(&self) -> Option<RouteLease> {
-        None
-    }
-    fn pin_review(&self, _source: obc_formats::obcr::RouteSourceKey) -> Option<RouteLease> {
         None
     }
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
@@ -151,6 +156,10 @@ pub trait RouteRepository {
 pub trait RideRepository {
     /// The ride catalog (paired entries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
     fn catalog(&self) -> &[RideEntry];
+    /// The names of the catalog's trips, one per trip key.
+    fn trip_names(&self) -> &[obc_app::RideTrip] {
+        &[]
+    }
     /// Remove the ride: `Ok(true)` = removed, `Ok(false)` = already absent, `Err` = storage failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
     /// Fill the keyed ride's profile in place and return its preview from one track read.
@@ -256,10 +265,24 @@ pub trait TripCatalog {
     fn rescan(&mut self) -> Result<(), CatalogError> {
         Ok(())
     }
-    /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) — call **after** the
-    /// route catalog is re-fed so the stage ids resolve.
+    /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) and progress
+    /// records — call **after** the route catalog is re-fed so the stage ids resolve.
     fn refeed(&self, app: &mut App) {
         let _ = app;
+    }
+    /// Day `k` of the stored trip with key `key`.
+    fn day(&self, key: u64, k: u16) -> Option<obc_route::TripDay> {
+        let _ = (key, k);
+        None
+    }
+    /// Write one trip progress record by the bound rules; `keys` are the stored trips' keys.
+    fn write_progress(
+        &mut self,
+        record: obc_app::trip::TripProgress,
+        keys: &[u64],
+    ) -> Result<(), obc_app::metadata::MetadataError> {
+        let _ = (record, keys);
+        Err(obc_app::metadata::MetadataError::Unsupported)
     }
 }
 

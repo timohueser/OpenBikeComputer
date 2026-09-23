@@ -420,6 +420,21 @@ impl HostStore {
         Ok(entries)
     }
 
+    /// Remove several candidate route heads in one commit; see `route_cleanup::candidate_removals`.
+    pub(crate) fn remove_routes(&self, heads: &[(ObjectId, Revision)]) -> Result<(), StoreError> {
+        let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
+        let store = owner.ready()?;
+        let batch = obc_storage::flat::route_cleanup::candidate_removals(store, heads)?;
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let result = store.commit(&batch);
+        if result == Err(StoreError::Media) {
+            owner.remount_required = true;
+        }
+        result.map(|_| ())
+    }
+
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
@@ -462,10 +477,15 @@ impl HostStore {
         self.import_with_capacity(kind, previous, input, len, name, 1)
     }
 
-    pub(crate) fn import_computed_route(&self, bytes: &[u8]) -> Result<EntryMeta, ImportError> {
+    /// `previous` is the exact head a computed route replaces in place.
+    pub(crate) fn import_computed_route(
+        &self,
+        bytes: &[u8],
+        previous: Option<(ObjectId, Revision)>,
+    ) -> Result<EntryMeta, ImportError> {
         self.import_with_capacity(
             ObjectKind::Route,
-            None,
+            previous,
             &mut &bytes[..],
             bytes.len() as u64,
             DisplayName::default(),

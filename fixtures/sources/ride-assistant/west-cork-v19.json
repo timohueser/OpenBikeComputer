@@ -2,16 +2,15 @@
   "schema": 3,
   "package": "sim-assistant-west-cork",
   "archive": {
-    "bytes": 2436517,
-    "sha256": "c3d51471ecb28070c1590a8a470413f0fd8f5173b79a4446dd27ea83c8fdaf5f"
+    "bytes": 2471294,
+    "sha256": "fc404bb72c741f2c88e72673a17c1b937d429ea8b253ea778b1b490bc2788d33"
   },
-  "base_artifact_producer": {
-    "source_commit": "3d835f672",
+  "producer": {
+    "source_commit": "e0a047c6c",
     "executables_sha256": {
-      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
-      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
-      "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
-      "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
+      "obc-bake": "8a0432cd30a86388bccf99afea28e53eacd34f851aa947735e6b59fe4b86618f",
+      "obc-dem": "ee482ccc01ca46f2a494d1031764b4785d1c0d1dabeea3f9e5cbbddda5da2c6f",
+      "obcm-assemble": "9b40f409db738018228bab6c1ce6b37139aecace78422dfa01f3951bce62e9a6"
     }
   },
   "bounds_lon_lat": [
@@ -32,11 +31,11 @@
     "sha256": "1c4a40f4887b23854e618ad3c5e38777e034941014b042046dafe494896876d5"
   },
   "map": {
-    "bytes": 4783897,
-    "sha256": "57df6aa4b339187f63645fab85c79356fb02c356451be2f7478410c07cbae4c1",
+    "bytes": 4821401,
+    "sha256": "1d541f33e8ad145b280ab14140319a45fb63b7b499488e341b73b0f98ff4cdc7",
     "obcm_version": 19,
     "format_upgrade": {
-      "input_sha256": "61ad73d12a06ae6224c2594659edd9b9d30e4d8948e4e7a759e836b875fa6105",
+      "input_sha256": "0f5b9cbc16dd15e79a5d39682f798e6a9f33b06cae52496f2c2e974a12510760",
       "input_obcm_version": 18,
       "dark_skin": {
         "path": "builder/presets/skins/dusk.json",
@@ -88,8 +87,8 @@
   "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
   "recipe": "python3 fixtures/build-assistant-package.py west-cork",
   "packaged_build": {
-    "bytes": 8645,
-    "sha256": "5ecf611917ce0410ef719be6f11f7e13eb43e6e8649e9aa617f28fc06f14b881",
+    "bytes": 8122,
+    "sha256": "992a12998ec7d79419efd8f8303ec5b57629088b339ab2781434f626b51a82b9",
     "note": "The packaged build.json holds the bake commands, executable digests and content counts."
   },
   "terrain": {

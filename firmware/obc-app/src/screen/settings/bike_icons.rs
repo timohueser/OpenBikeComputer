@@ -1,10 +1,10 @@
 //! Pixel-art bike sprites for the [ride-start card](crate::screen::RideStartScreen), one per
-//! routing profile, matched by the profile name. Each sprite is a grid of ASCII rows, where a
-//! non-space cell is one ink pixel. An unknown profile gets the [`GENERIC`] bike.
+//! [`BikeType`]. Each sprite is a grid of ASCII rows, where a non-space cell is one ink pixel.
 
 use obc_render::{rect, Surface};
 
 use crate::screen::palette;
+use crate::settings::BikeType;
 
 /// One sprite: ASCII rows, where a non-space cell is an ink pixel. All sprites are the same size.
 pub type Bike = &'static [&'static str];
@@ -149,95 +149,24 @@ pub const TOURING: Bike = &[
     "                                                  ",
 ];
 
-/// Generic bike for an unrecognised custom profile: a plain flat-bar frame.
-#[rustfmt::skip]
-pub const GENERIC: Bike = &[
-    "                                                  ",
-    "                                                  ",
-    "                                                  ",
-    "                             #########            ",
-    "                 ######          #                ",
-    "                     #######     #                ",
-    "                    ##      ######                ",
-    "                    ##          ##                ",
-    "                   #  #        #  #               ",
-    "                  #   #        #  #               ",
-    "          #####   #   #       #    ######         ",
-    "        ##     ###    #      #    ##     ##       ",
-    "      ##        ###    #    #   ## #       ##     ",
-    "      ##       # ##    #    #   ##  #      ##     ",
-    "     #  #      ##  #   #   #   #  # #     #  #    ",
-    "     #   #    ##   #   #  #    #   # #   #   #    ",
-    "    #     #  ##     #  ###    #     ##  #     #   ",
-    "    #      ###      # # ###   #      ###      #   ",
-    "    #      ############## #   #      ###      #   ",
-    "    #      ###      # # # #   #      ###      #   ",
-    "    #     #   #     #  ###    #     #   #     #   ",
-    "     #   #     #   #   #       #   #     #   #    ",
-    "     #  #       #  #  ##       #  #       #  #    ",
-    "      ##         ##             ##         ##     ",
-    "      ##         ##             ##         ##     ",
-    "        ##     ##                 ##     ##       ",
-    "          #####                     #####         ",
-    "                                                  ",
-    "                                                  ",
-    "                                                  ",
-];
-
-/// The bike type a profile name gives. One classifier keeps the [sprite](for_name) and the
-/// [colour](color_for) in agreement.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Road,
-    Gravel,
-    Mtb,
-    Touring,
-    Generic,
-}
-
-/// Classify a profile name by a case-insensitive substring match. It accepts the shipped names and
-/// common synonyms, so a custom profile that mentions a bike type still resolves.
-fn kind_for(name: &str) -> Kind {
-    let mut lower: heapless::String<20> = heapless::String::new();
-    for c in name.chars().take(20) {
-        for lc in c.to_lowercase() {
-            let _ = lower.push(lc);
-        }
-    }
-    let n = lower.as_str();
-    if n.contains("mtb") || n.contains("mountain") {
-        Kind::Mtb
-    } else if n.contains("gravel") || n.contains("cyclocross") || n.contains("cx") {
-        Kind::Gravel
-    } else if n.contains("tour") {
-        Kind::Touring
-    } else if n.contains("road") || n.contains("race") {
-        Kind::Road
-    } else {
-        Kind::Generic
+pub const fn sprite(bike: BikeType) -> Bike {
+    match bike {
+        BikeType::Road => ROAD,
+        BikeType::Gravel => GRAVEL,
+        BikeType::Mtb => MTB,
+        BikeType::Touring => TOURING,
     }
 }
 
-pub fn for_name(name: &str) -> Bike {
-    match kind_for(name) {
-        Kind::Road => ROAD,
-        Kind::Gravel => GRAVEL,
-        Kind::Mtb => MTB,
-        Kind::Touring => TOURING,
-        Kind::Generic => GENERIC,
-    }
-}
-
-/// The ink colour for a profile's bike. A custom profile stays plain ink. The colours land on
-/// clean device-64 colours over the parchment background.
-pub fn color_for(name: &str) -> u16 {
+/// The ink colour for a bike. The colours land on clean device-64 colours over the parchment
+/// background.
+pub fn color(bike: BikeType) -> u16 {
     use palette::rgb565;
-    match kind_for(name) {
-        Kind::Road => rgb565(200, 30, 30),    // red
-        Kind::Gravel => rgb565(240, 90, 20),  // orange
-        Kind::Mtb => rgb565(20, 130, 40),     // green
-        Kind::Touring => rgb565(30, 70, 180), // blue
-        Kind::Generic => palette::INK,
+    match bike {
+        BikeType::Road => rgb565(200, 30, 30),    // red
+        BikeType::Gravel => rgb565(240, 90, 20),  // orange
+        BikeType::Mtb => rgb565(20, 130, 40),     // green
+        BikeType::Touring => rgb565(30, 70, 180), // blue
     }
 }
 
@@ -268,23 +197,11 @@ pub fn draw(cv: &mut impl Surface, bike: Bike, center_x: i32, top_y: i32, scale:
 mod tests {
     use super::*;
 
-    #[test]
-    fn matches_shipped_names_case_insensitively() {
-        // `const` slices have no stable address, so compare the sprites by content.
-        assert_eq!(for_name("Road"), ROAD);
-        assert_eq!(for_name("gravel"), GRAVEL);
-        assert_eq!(for_name("MTB"), MTB);
-        assert_eq!(for_name("Mountain"), MTB);
-        assert_eq!(for_name("Touring"), TOURING);
-        assert_eq!(for_name("Commuter"), GENERIC);
-        assert_eq!(for_name(""), GENERIC);
-    }
-
     /// A ragged ASCII row, such as one with a trimmed trailing space, misaligns the blit.
     #[test]
     fn sprites_are_uniform_rectangles() {
         let (rows, cols) = (ROAD.len(), ROAD[0].len());
-        for bike in [ROAD, GRAVEL, MTB, TOURING, GENERIC] {
+        for bike in BikeType::ALL.map(sprite) {
             assert_eq!(bike.len(), rows, "all sprites have the same row count");
             for row in bike {
                 assert_eq!(row.len(), cols, "every row is the same width");
@@ -294,13 +211,11 @@ mod tests {
 
     #[test]
     fn each_type_has_a_distinct_colour() {
-        let cols = [color_for("Road"), color_for("Gravel"), color_for("MTB"), color_for("Touring")];
+        let cols = BikeType::ALL.map(color);
         for (i, a) in cols.iter().enumerate() {
-            assert_ne!(*a, palette::INK, "a shipped type is coloured, not ink");
             for b in &cols[i + 1..] {
                 assert_ne!(a, b, "the four bike colours must be distinct");
             }
         }
-        assert_eq!(color_for("Commuter"), palette::INK, "a custom profile stays ink");
     }
 }

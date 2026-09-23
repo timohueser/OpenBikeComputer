@@ -1,6 +1,11 @@
 //! Fixed route trials and measured eligibility. Costs describe physical stored geometry.
-use crate::{nav::Objective, IntervalFacts};
-use obc_formats::{io::Error, obcr::RouteSourceKey};
+use crate::{nav::Objective, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_elevation::{DeadBand, ElevationSource};
+use obc_formats::{
+    io::{ByteSink, ByteSource, Error},
+    obcr::{RouteSourceKey, HEADER_FULL_LEN},
+};
+use obc_map_scene::ground_dist_m;
 
 pub type LegEndpoints = ((i32, i32), (i32, i32));
 
@@ -18,6 +23,19 @@ pub enum Goal {
 }
 impl Goal {
     pub const ALL: [Self; 3] = [Self::LessClimb, Self::Smoother, Self::Shorter];
+    /// The goal a trial weights. `Profile` weights none and serves every goal.
+    fn of(objective: Objective) -> Option<Self> {
+        match objective {
+            Objective::Profile => None,
+            Objective::LessClimb | Objective::LeastClimb => Some(Self::LessClimb),
+            Objective::Smoother | Objective::Smoothest => Some(Self::Smoother),
+            Objective::Shorter | Objective::Shortest => Some(Self::Shorter),
+        }
+    }
+    /// Every goal needs terrain along the original. Surface also needs the original attributed.
+    pub fn evaluable(self, current: Costs) -> bool {
+        current.elevation_complete && (self != Self::Smoother || current.surface_attributed)
+    }
     pub fn saving(self, current: Costs, next: Costs) -> u32 {
         match self {
             Self::LessClimb => current.ascent_m.saturating_sub(next.ascent_m),
@@ -25,8 +43,19 @@ impl Goal {
             Self::Shorter => current.distance_m.saturating_sub(next.distance_m),
         }
     }
+    /// A climb or distance saving must also be a share of the remaining route: 10 % of the climb and
+    /// 3 % of the distance, chosen by the owner. On the same road an imported track still measures a
+    /// little more climb and distance than a plan, and a long route would turn that into a saving.
+    fn saves_enough(self, current: Costs, next: Costs) -> bool {
+        self.saving(current, next)
+            >= match self {
+                Self::LessClimb => MIN_CLIMB_SAVING_M.max(current.ascent_m / 10),
+                Self::Smoother => MIN_ROUGH_SAVING_M,
+                Self::Shorter => MIN_DISTANCE_SAVING_M.max(current.distance_m / 100 * 3),
+            }
+    }
     pub fn eligible(self, current: Costs, next: Costs) -> bool {
-        if !current.elevation_complete || !next.elevation_complete {
+        if !self.evaluable(current) || !next.elevation_complete || !self.saves_enough(current, next) {
             return false;
         }
         let distance_ok =
@@ -34,18 +63,32 @@ impl Goal {
         let ascent_ok =
             next.ascent_m.saturating_sub(current.ascent_m) <= MIN_ASCENT_ALLOWANCE_M.max(current.ascent_m / 4);
         match self {
-            Self::LessClimb => self.saving(current, next) >= MIN_CLIMB_SAVING_M && distance_ok,
+            Self::LessClimb => distance_ok,
             Self::Smoother => {
-                self.saving(current, next) >= MIN_ROUGH_SAVING_M
-                    && distance_ok
-                    && ascent_ok
-                    && current.surface_attributed
-                    && next.surface_attributed
-                    && next.unknown_m <= current.unknown_m
+                distance_ok && ascent_ok && next.surface_attributed && next.unknown_m <= current.unknown_m
             }
-            Self::Shorter => self.saving(current, next) >= MIN_DISTANCE_SAVING_M && ascent_ok,
+            Self::Shorter => ascent_ok,
         }
     }
+}
+
+/// The index in [`Objective::TRIALS`] that runs after trial `done`, or `None` when the batch is
+/// complete. `result` is that trial's candidate. A trial whose goal is not evaluable does not run.
+/// A milder twin runs only when its strong trial saved enough, because a milder weight rarely
+/// saves more. The planner accepts paths up to 1.3x the optimum, so this is approximate.
+pub fn next_trial(done: usize, result: Option<Costs>, current: Costs) -> Option<usize> {
+    let objective = Objective::TRIALS[done];
+    let strong = matches!(objective, Objective::LeastClimb | Objective::Smoothest | Objective::Shortest);
+    let mut next = done + 1;
+    if let (true, Some(goal), Some(result)) = (strong, Goal::of(objective), result) {
+        if !goal.saves_enough(current, result) {
+            next += 1;
+        }
+    }
+    while Objective::TRIALS.get(next).is_some_and(|&o| Goal::of(o).is_some_and(|g| !g.evaluable(current))) {
+        next += 1;
+    }
+    (next < Objective::TRIALS.len()).then_some(next)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -58,15 +101,249 @@ pub struct Costs {
     pub surface_attributed: bool,
 }
 impl Costs {
-    pub fn from_facts(f: IntervalFacts, map: RouteSourceKey) -> Self {
+    /// The rest of `route` from `start_m`, measured by [`Stations`]. Surface comes from the stored
+    /// attribution. The walk starts at the rider's chunk.
+    pub fn remaining(
+        route: &RouteReader,
+        start_m: u32,
+        map: RouteSourceKey,
+        elev: &mut dyn ElevationSource,
+    ) -> Result<Self, Error> {
+        // Two sibling frames, so only one chunk buffer is on the stack at a time.
+        let facts = route.interval_facts(start_m, route.total_distance_m)?;
+        let (distance_m, ascent_m, elevation_complete) = Stations::remaining(route, start_m, elev)?;
+        Ok(Self {
+            distance_m,
+            ascent_m,
+            rough_m: facts.rough_m(),
+            unknown_m: facts.surface_m[0],
+            elevation_complete,
+            surface_attributed: facts.attribution_map == Some(map),
+        })
+    }
+    /// A complete stored candidate, measured by [`Measure`] in the same walk that reads its visit
+    /// costs. The caller has checked that it is attributed to the current map.
+    pub fn candidate(
+        src: &dyn ByteSource,
+        arrival: [u32; 2],
+        elev: &mut dyn ElevationSource,
+    ) -> Result<(crate::visit::VisitCosts, Self), Error> {
+        let total_m = crate::reader::read_header(src)?.total_distance_m;
+        let mut measure = Measure::new();
+        let facts = crate::visit::VisitCosts::read_with(src, arrival, None, |p| measure.push(p, elev))?;
+        Ok((facts, measure.costs(total_m, elev)?))
+    }
+}
+
+/// A candidate measured from the points its stored copy holds, in stored order: from the stored
+/// bytes by [`Costs::candidate`], or from the stream by [`MeasureSink`] while it is composed.
+pub struct Measure {
+    stations: Stations,
+    facts: crate::facts::FactsAccumulator,
+    points: u32,
+    previous: Option<(i32, i32, i16)>,
+    written: u32,
+    crc: obc_crc::Crc32,
+    /// The stored checksum, point count and distance, known once the header is patched.
+    patched: Option<(u32, u32, u32)>,
+}
+impl Measure {
+    pub fn new() -> Self {
         Self {
-            distance_m: f.distance_m(),
-            ascent_m: f.ascent_m,
-            rough_m: f.rough_m(),
-            unknown_m: f.surface_m[0],
-            elevation_complete: f.complete_elevation(),
-            surface_attributed: f.attribution_map == Some(map),
+            stations: Stations::new(),
+            facts: crate::facts::FactsAccumulator::new(0, None, 0, u32::MAX),
+            points: 0,
+            previous: None,
+            written: 0,
+            crc: obc_crc::Crc32::new(),
+            patched: None,
         }
+    }
+    fn push(&mut self, p: RoutePoint, elev: &mut dyn ElevationSource) {
+        self.facts.push(p, &mut |_| {});
+        self.stations.push((p.lon, p.lat), elev);
+        self.points += 1;
+    }
+    fn costs(self, total_m: u32, elev: &mut dyn ElevationSource) -> Result<Costs, Error> {
+        let facts = self.facts.finish(total_m)?;
+        let (distance_m, ascent_m, elevation_complete) = self.stations.finish(elev);
+        Ok(Costs {
+            distance_m,
+            ascent_m,
+            rough_m: facts.rough_m(),
+            unknown_m: facts.surface_m[0],
+            elevation_complete,
+            surface_attributed: true,
+        })
+    }
+    /// The costs and the CRC-32 the store computes over the stored copy, once a [`MeasureSink`]
+    /// has taken the complete stream.
+    pub fn finish(self, elev: &mut dyn ElevationSource) -> Result<(Costs, u32), Error> {
+        let (crc, points, total_m) = self.patched.ok_or(Error::BadOffset)?;
+        if points != self.points {
+            return Err(Error::BadOffset);
+        }
+        Ok((self.costs(total_m, elev)?, crc))
+    }
+}
+impl Default for Measure {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A sink that keeps no bytes. It decodes each chunk body as the store would read it back, and
+/// folds every byte into the stored copy's checksum.
+pub struct MeasureSink<'a> {
+    measure: &'a mut Measure,
+    elev: &'a mut dyn ElevationSource,
+    /// Bytes appended through this sink, so a caller can pace its steps.
+    pub appended: usize,
+}
+impl<'a> MeasureSink<'a> {
+    pub fn new(measure: &'a mut Measure, elev: &'a mut dyn ElevationSource) -> Self {
+        Self { measure, elev, appended: 0 }
+    }
+}
+impl ByteSink for MeasureSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let m = &mut *self.measure;
+        // The header is patched at the end over the zeros the stream starts with.
+        let header = (HEADER_FULL_LEN as u32).saturating_sub(m.written) as usize;
+        if bytes.iter().take(header).any(|&b| b != 0) {
+            return Err(Error::BadOffset);
+        }
+        m.crc.update(bytes);
+        m.written = u32::try_from(bytes.len()).ok().and_then(|n| m.written.checked_add(n)).ok_or(Error::TooLarge)?;
+        m.patched = None;
+        self.appended += bytes.len();
+        Ok(())
+    }
+    fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+        let Self { measure: m, elev, .. } = self;
+        if m.written < HEADER_FULL_LEN as u32 {
+            return Err(Error::BadOffset);
+        }
+        // Each chunk repeats the last point of the chunk before it.
+        match m.previous {
+            None => m.push(crate::reader::chunk_anchor(anchor), &mut **elev),
+            Some(previous) if previous == anchor => {}
+            Some(_) => return Err(Error::BadOffset),
+        }
+        let mut last = anchor;
+        crate::reader::decode_records((anchor.0, anchor.1), body, |p| {
+            m.push(p, &mut **elev);
+            last = (p.lon, p.lat, p.ele);
+        })?;
+        m.previous = Some(last);
+        self.write(body)
+    }
+    fn patch_at(&mut self, offset: u32, header: &[u8]) -> Result<(), Error> {
+        let m = &mut *self.measure;
+        if offset != 0 || header.len() != HEADER_FULL_LEN || m.written < HEADER_FULL_LEN as u32 {
+            return Err(Error::BadOffset);
+        }
+        // CRC-32 is affine: the stored checksum is the streamed one plus the header's own term,
+        // which is the header followed by zeros for the rest of the stream, from a zero register.
+        let mut term = obc_crc::Crc32::from_checksum(u32::MAX);
+        term.update(header);
+        let mut rest = (m.written - HEADER_FULL_LEN as u32) as usize;
+        while rest > 0 {
+            let n = rest.min(64);
+            term.update(&[0; 64][..n]);
+            rest -= n;
+        }
+        let crc = m.crc.finalize() ^ term.finalize() ^ u32::MAX;
+        let at = |i: usize| u32::from_le_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]]);
+        m.patched = Some((crc, at(32), at(36)));
+        Ok(())
+    }
+}
+
+/// Along-track spacing of the measuring stations. The planner stores a candidate point about every
+/// 30 m on mountain roads and the terrain postings are about 40 m apart, so a finer spacing only
+/// measures GPS noise and lateral offset on a slope.
+const STATION_SPACING_M: f64 = 40.0;
+
+/// Measures an original and a candidate the same way: a station every [`STATION_SPACING_M`] of
+/// stored geometry and one at the end. Distance is the sum of the chords between stations, and
+/// climb is the dead band over terrain at the stations. Neither the stored point density nor an
+/// imported route's own heights enter the result.
+struct Stations {
+    band: DeadBand<f64>,
+    complete: bool,
+    distance: f64,
+    along: f64,
+    next: f64,
+    previous: Option<(i32, i32)>,
+    station: Option<(i32, i32)>,
+}
+impl Stations {
+    fn new() -> Self {
+        Self {
+            band: DeadBand::new(),
+            complete: true,
+            distance: 0.0,
+            along: 0.0,
+            next: STATION_SPACING_M,
+            previous: None,
+            station: None,
+        }
+    }
+    #[inline(never)]
+    fn remaining(route: &RouteReader, start_m: u32, elev: &mut dyn ElevationSource) -> Result<(u32, u32, bool), Error> {
+        let start = route.position_at(start_m).ok_or(Error::BadOffset)?;
+        let mut stations = Self::new();
+        stations.push((start.lon, start.lat), elev);
+        let first = route.chunks().iter().rposition(|c| c.cum_distance_m <= start_m).unwrap_or(0);
+        let mut along = f64::from(route.chunks().get(first).ok_or(Error::BadOffset)?.cum_distance_m);
+        let mut last = None;
+        let mut points = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        for k in first..route.chunks().len() {
+            route.decode_chunk(k, &mut points)?;
+            for p in points.iter().skip(usize::from(k > first)) {
+                let p = (p.lon, p.lat);
+                along += last.map_or(0.0, |l| f64::from(ground_dist_m(l, p)));
+                last = Some(p);
+                if along > f64::from(start_m) {
+                    stations.push(p, elev);
+                }
+            }
+        }
+        Ok(stations.finish(elev))
+    }
+    fn push(&mut self, p: (i32, i32), elev: &mut dyn ElevationSource) {
+        let Some(a) = self.previous else {
+            self.previous = Some(p);
+            return self.station(p, elev);
+        };
+        let length = f64::from(ground_dist_m(a, p));
+        // `next` stays ahead of `along`, so a zero-length step adds no station.
+        while self.next <= self.along + length {
+            let t = (self.next - self.along) / length;
+            let at = |s: i32, e: i32| s + (f64::from(e - s) * t) as i32;
+            self.station((at(a.0, p.0), at(a.1, p.1)), elev);
+            self.next += STATION_SPACING_M;
+        }
+        self.along += length;
+        self.previous = Some(p);
+    }
+    fn station(&mut self, q: (i32, i32), elev: &mut dyn ElevationSource) {
+        self.distance += self.station.map_or(0.0, |s| f64::from(ground_dist_m(s, q)));
+        self.station = Some(q);
+        match elev.sample(q.1, q.0) {
+            Some(h) => self.band.push(f64::from(h)),
+            None => {
+                self.complete = false;
+                self.band.pause();
+            }
+        }
+    }
+    fn finish(mut self, elev: &mut dyn ElevationSource) -> (u32, u32, bool) {
+        if let Some(end) = self.previous.filter(|&end| self.station != Some(end)) {
+            self.station(end, elev);
+        }
+        (self.distance as u32, self.band.ascent() as u32, self.complete)
     }
 }
 
@@ -138,26 +415,20 @@ impl Anchors {
     }
 }
 
-/// A deterministic winner descriptor; the owner reconstructs its exact candidate before review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Choice {
-    pub objective: Objective,
-    pub costs: Costs,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    const CURRENT: Costs = Costs {
+        distance_m: 10_000,
+        ascent_m: 400,
+        rough_m: 2_000,
+        unknown_m: 100,
+        elevation_complete: true,
+        surface_attributed: true,
+    };
     #[test]
     fn exact_gain_and_tradeoff_boundaries_require_known_comparable_facts() {
-        let current = Costs {
-            distance_m: 10_000,
-            ascent_m: 400,
-            rough_m: 2_000,
-            unknown_m: 100,
-            elevation_complete: true,
-            surface_attributed: true,
-        };
+        let current = CURRENT;
         let mut next = current;
         next.ascent_m = 350;
         next.distance_m = 12_500;
@@ -186,5 +457,25 @@ mod tests {
             !Goal::Smoother.eligible(Costs { surface_attributed: false, ..current }, Costs { rough_m: 0, ..current })
         );
         assert_eq!(Objective::TRIALS.len(), 7);
+    }
+    #[test]
+    fn a_strong_trial_that_misses_its_threshold_skips_its_milder_twin() {
+        let order = |current: Costs, result: Costs| {
+            let mut run = heapless::Vec::<Objective, 7>::new();
+            let mut done = Some(0);
+            while let Some(i) = done {
+                run.push(Objective::TRIALS[i]).unwrap();
+                done = next_trial(i, Some(result), current);
+            }
+            run
+        };
+        use Objective::*;
+        assert_eq!(order(CURRENT, CURRENT), [Profile, LeastClimb, Smoothest, Shortest]);
+        let better = Costs { ascent_m: 300, rough_m: 1_000, distance_m: 9_000, ..CURRENT };
+        assert_eq!(order(CURRENT, better), Objective::TRIALS);
+        let imported = Costs { surface_attributed: false, ..CURRENT };
+        assert_eq!(order(imported, better), [Profile, LeastClimb, LessClimb, Shortest, Shorter]);
+        assert_eq!(order(Costs { elevation_complete: false, ..CURRENT }, better), [Profile]);
+        assert_eq!(next_trial(1, None, CURRENT), Some(2), "a failed strong trial still runs its twin");
     }
 }

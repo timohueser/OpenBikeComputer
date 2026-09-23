@@ -23,7 +23,7 @@ import {
     updateTrip,
 } from "./manage";
 import { decodeRouteHeader } from "./route";
-import { decodeTripObject, type TripObject } from "../usb/objects";
+import { decodeTripObject, wholeDay, type TripObject } from "../usb/objects";
 import { flatDevice } from "../usb/flat-device";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { ObjectKind } from "../usb/protocol";
@@ -33,7 +33,7 @@ function obcrWithName(name: string): Uint8Array {
     const out = new Uint8Array(160);
     const view = new DataView(out.buffer);
     view.setUint32(0, 0x4f424352, false); // "OBCR"
-    out[4] = 4; // version
+    out[4] = 5; // version
     const bytes = new TextEncoder().encode(name);
     out[6] = bytes.length;
     out.set(bytes, 64);
@@ -74,14 +74,15 @@ describe("renameRouteBytes", () => {
 });
 
 describe("stage mutators", () => {
-    const trip: TripObject = { name: "T", stages: [1n, 2n, 3n] };
+    const trip: TripObject = { key: 1n, name: "T", startDate: 0, days: [1n, 2n, 3n].map(wholeDay) };
+    const routes = (t: TripObject) => t.days.map((day) => day.route);
 
     it("add dedupes, remove drops by index, move clamps", () => {
         expect(addStage(trip, 2n)).toBe(trip);
-        expect(addStage(trip, 4n).stages).toEqual([1n, 2n, 3n, 4n]);
-        expect(removeStage(trip, 1).stages).toEqual([1n, 3n]);
-        expect(moveStage(trip, 0, 1).stages).toEqual([2n, 1n, 3n]);
-        expect(moveStage(trip, 2, 5).stages).toEqual([1n, 2n, 3n]);
+        expect(routes(addStage(trip, 4n))).toEqual([1n, 2n, 3n, 4n]);
+        expect(routes(removeStage(trip, 1))).toEqual([1n, 3n]);
+        expect(routes(moveStage(trip, 0, 1))).toEqual([2n, 1n, 3n]);
+        expect(routes(moveStage(trip, 2, 5))).toEqual([1n, 2n, 3n]);
         expect(moveStage(trip, 0, -1)).toBe(trip);
     });
 });
@@ -146,9 +147,10 @@ describe("against the real device", () => {
     it("creates, edits and reorders a trip through replace-at-same-id", async () => {
         await withDevice(async ({ client, device }) => {
             const created = await createTrip(client, "  Tour du Mont Blanc  ", [3n, 1n]);
-            expect(decodeTripObject(device.payloadOf(created.objectId)!)).toEqual({
+            expect(decodeTripObject(device.payloadOf(created.objectId)!)).toMatchObject({
                 name: "Tour du Mont Blanc",
-                stages: [3n, 1n],
+                startDate: 0,
+                days: [wholeDay(3n), wholeDay(1n)],
             });
 
             // The page re-lists after every mutation, so the revision each edit expects is the one
@@ -161,8 +163,8 @@ describe("against the real device", () => {
                 moveStage(t, 2, -2),
             );
 
-            expect(moved.stages).toEqual([7n, 3n, 1n]);
-            expect(decodeTripObject(device.payloadOf(created.objectId)!).stages).toEqual([7n, 3n, 1n]);
+            expect(moved.days.map((day) => day.route)).toEqual([7n, 3n, 1n]);
+            expect(decodeTripObject(device.payloadOf(created.objectId)!)).toEqual(moved);
             const trips = await client.list({ kind: ObjectKind.Trip });
             expect(trips.entries.map((entry) => [entry.objectId, entry.revision, entry.displayName])).toEqual([
                 [created.objectId, 3n, "Tour du Mont Blanc"],

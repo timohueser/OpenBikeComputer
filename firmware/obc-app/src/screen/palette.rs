@@ -14,6 +14,7 @@ pub const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
 // checked by the palette integration test.
 pub const PARCHMENT: u16 = rgb565(245, 243, 238); // → (255,255,255) white
 pub const PARCHMENT_SHADE: u16 = rgb565(180, 170, 105); // → (170,170,85) tan
+pub const RECESSED_BASE: u16 = rgb565(174, 174, 174); // → (170,170,170) grey
 pub const HUD: u16 = rgb565(46, 37, 26); // → (0,0,0) near-black frame
 pub const WOOD: u16 = rgb565(150, 100, 40); // → (170,85,0) wood brown
 pub const WOOD_LIGHT: u16 = rgb565(180, 168, 100); // → (170,170,85) tan
@@ -36,6 +37,9 @@ pub const CLIMB_TILE: u16 = rgb565(255, 170, 85); // → (255,170,85) apricot
 pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
 pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
 pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
+pub const TRACK_START: u16 = rgb565(0, 90, 0); // → (0,85,0) dark green
+pub const TRACK_END: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
+pub const TRAIL: u16 = rgb565(170, 0, 0); // → (170,0,0) dark red
 /// Stable white for authored symbols such as national flags.
 pub const ART_WHITE: u16 = rgb565(250, 250, 250); // → (255,255,255) white
 
@@ -47,7 +51,7 @@ pub(crate) fn resolve(theme: Theme, color: u16) -> u16 {
         return color;
     }
     match color {
-        PARCHMENT => rgb565(0, 0, 0),
+        PARCHMENT | RECESSED_BASE => rgb565(0, 0, 0),
         PARCHMENT_SHADE | WOOD_LIGHT => rgb565(85, 85, 0),
         INK | BAR_TEXT => rgb565(255, 255, 255),
         SUBTEXT => rgb565(170, 170, 85),

@@ -8,9 +8,10 @@
 //! touches the card.
 //!
 //! Each refresh arms the scratch for a single category ([`PoiCategorySet::only`]). That is a
-//! correctness requirement, not an optimisation: the corridor query caps at
-//! [`MAX_CORRIDOR_RESULTS`](obc_reader::MAX_CORRIDOR_RESULTS) entries across the whole filter, so a
-//! union query could return sixteen nearby fountains and never mention the pharmacy 12 km on.
+//! correctness requirement, not an optimisation: a corridor page holds
+//! [`PLACE_PAGE_SIZE`](obc_reader::reader::places::PLACE_PAGE_SIZE) entries across the whole
+//! filter, so a union query could return eight nearby fountains and never mention the pharmacy
+//! 12 km on.
 //! Filtered to one category, the nearest of it is entry `0` by construction.
 //!
 //! Refreshes run only for categories a tile is placed for, and only while the Statistics screen is

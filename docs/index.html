@@ -1020,7 +1020,8 @@
             { cmds: ['upload'], until: ["Home"], label: 'The device is ready for today’s route', companionFrame: 0, dwell: 1500 },
             { cmds: ['receive'], until: ["RouteReceived"], label: 'Route received on the device', companionFrame: 1, dwell: 2200 },
             { cmds: ['press'], until: ["RouteOverview"], label: 'View the route on the device', dwell: 2800 },
-            { cmds: ['press'], until: ["Map"], label: 'Start the ride — the route is on the map', dwell: 3600 }
+            { cmds: ['press'], until: ["StartAway"], label: 'Start the ride — you are away from the start', dwell: 2800 },
+            { cmds: ['step:1', 'press'], until: ["Map"], label: 'Join the route here — it is on the map', dwell: 3600 }
           ]
         },
         {

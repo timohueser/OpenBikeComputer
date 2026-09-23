@@ -1,6 +1,7 @@
 #if DEBUG
 import SwiftUI
 import OBCDomain
+import OBCTransport
 
 /// The component gallery: every kit component with sample data, for on-simulator
 /// screenshot review and quick visual checks. Debug-only; reach it with
@@ -13,6 +14,9 @@ public struct OBCComponentGallery: View {
     @State private var name = "Trailhead"
     @State private var progress = 0.62
     @State private var waypointsExpanded = true
+    @State private var rideLibrary = Self.sampleRideLibrary()
+    @State private var selectedPhotos: Set<String> = ["p0", "p1", "p3", "p4", "p5"]
+    @State private var dayNote = Self.sampleDayNote()
 
     public init() {}
 
@@ -80,6 +84,11 @@ public struct OBCComponentGallery: View {
                         tag: "Planned"
                     )
                 }
+                section("Ride Library Header") {
+                    RideLibraryHeader(model: rideLibrary) {}
+                        .task { await rideLibrary.loadMapLines() }
+                }
+
                 section("Skeleton Loader") {
                     RouteCardSkeleton()
                 }
@@ -102,6 +111,18 @@ public struct OBCComponentGallery: View {
                 section("Elevation Profile") {
                     OBCEyebrow("Elevation profile")
                     ElevationProfileView(samples: [220, 260, 240, 380, 330, 470, 360, 450, 390, 410])
+                }
+
+                section("Marker-on-line editor") {
+                    LineMarkerGallerySection()
+                }
+
+                section("Trip stops sheet") {
+                    TripStopsGallerySection()
+                }
+
+                section("Ride edit") {
+                    RideEditGallerySection()
                 }
 
                 section("Disclosure Row + Waypoints Dropdown") {
@@ -152,6 +173,19 @@ public struct OBCComponentGallery: View {
                         OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.wood, label: "Firmware update", comingSoon: true)
                         OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.warning, label: "Forget this device", showsDivider: false) { confirmShown = true }
                     }
+                    OBCGroupedSection {
+                        OBCListRow(label: "Add to Alps traverse", detail: "Becomes Day 4", showsChevron: true) {}
+                        OBCBikeTypeRow(type: .gravel) { _ in }
+                    }
+                }
+
+                section("Trip Day Rows") {
+                    OBCGroupedSection {
+                        TripDayRow(color: OBCTheme.stageColor(index: 0), number: 1, title: "Furka Pass",
+                                   detail: "Mon 29 Sep · 82.0 km · 1,640 m ↑ · 5h 10m")
+                        TripDayRow(color: OBCTheme.stageColor(index: 1), number: 2, title: nil,
+                                   detail: "Tue 30 Sep · 74.0 km · 2,100 m ↑ · 5h 0m", showsDivider: false)
+                    }
                 }
 
                 section("Connected Services") {
@@ -175,6 +209,48 @@ public struct OBCComponentGallery: View {
                     launchScreen { PairFailedView(failure: .timeout, onRetry: {}, onHelp: {}) }
                     launchScreen { RadioBlockedView(block: .off, onBrowseLibrary: {}) }
                 }
+
+                #if os(iOS)
+                section("Share image (offline map fallback)") {
+                    ForEach([false, true], id: \.self) { showsProfile in
+                        ShareCard(content: Self.sampleShareContent, map: nil, photo: nil, showsProfile: showsProfile)
+                            .overlay(Rectangle().strokeBorder(OBCTheme.line))
+                    }
+                }
+                #endif
+
+                #if os(iOS)
+                section("Ride photos") {
+                    OBCQuietRow(systemImage: "photo.on.rectangle", title: "Add 6 photos from this ride", onOpen: {}, onDismiss: {})
+                    ElevationProfileView(
+                        samples: [220, 260, 240, 380, 330, 470, 360, 450, 390, 410], ticks: [0.12, 0.3, 0.34, 0.55, 0.8, 0.93]
+                    )
+                    RidePhotoStrip(photos: Self.samplePhotos, thumbnails: Self.sampleThumbnails) { _ in }
+                    RidePhotoGrid(
+                        picks: Self.samplePhotos.enumerated().map { index, photo in
+                            RidePhotosModel.Pick(
+                                placed: RidePhotoPlacement.Placed(
+                                    photo: photo, distanceMeters: 0, coordinate: Coordinate(latitude: 0, longitude: 0),
+                                    locationOffTrack: index == 2
+                                ),
+                                thumbnail: Self.sampleThumbnails[photo.assetID]
+                            )
+                        },
+                        selected: $selectedPhotos
+                    )
+                }
+                #endif
+
+                section("Day note") {
+                    // Live: the row opens the writer, and the entry shows what it saved.
+                    DayNoteOfferRow(model: dayNote, photos: nil)
+                    DayNoteEntry(model: dayNote, photos: nil)
+                    DayNoteText(
+                        header: "Tue 30 Sep · Andermatt → Ulrichen · 74 km",
+                        note: "Furka in the fog, then sun on the way down. Wild camp by the lake, storm at 3."
+                    )
+                }
+                .task { await dayNote.start() }
 
                 section("Empty / Error Layout") {
                     OBCEmptyStateView(
@@ -220,6 +296,72 @@ public struct OBCComponentGallery: View {
             content()
         }
     }
+
+    #if os(iOS)
+    static let sampleShareContent = ShareCardContent(ride: Ride(
+        summary: RideSummary(
+            id: RideID("gallery"), name: "Kettle Moraine Loop", date: Date(timeIntervalSince1970: 1_790_000_000),
+            distanceMeters: 58_200, movingTime: 10_260, averageSpeedMps: 5.67, climbMeters: 812
+        ),
+        points: zip(TrackPreview.obcSample.coordinates, [260, 280, 310, 350, 330, 300, 290, 270, 265, 262, 260])
+            .map { RidePoint(timestamp: Date(), coordinate: $0, elevationMeters: $1) }
+    ))
+    #endif
+
+    /// Two seasons of loops around the sample track, so the chips and the year menu have choices.
+    static func sampleRideLibrary() -> RideLibraryModel {
+        let store = InMemoryLibraryStore()
+        let loop = TrackPreview.obcSample.coordinates
+        let rides: [(String, String, BikeType, Double)] = [
+            ("Kettle Moraine Loop", "2026-06-30T08:12:00Z", .gravel, 0),
+            ("Blue Mounds Backroads", "2026-05-17T07:40:00Z", .road, 0.03),
+            ("Sugar River Trail", "2026-04-02T09:05:00Z", .road, -0.02),
+            ("Emma Carlin Singletrack", "2025-09-20T15:00:00Z", .mtb, 0.05),
+        ]
+        for (name, iso, type, shift) in rides {
+            let date = ISO8601DateFormatter().date(from: iso)!
+            let points = loop.map {
+                RidePoint(timestamp: date, coordinate: Coordinate(latitude: $0.latitude + shift, longitude: $0.longitude + shift))
+            }
+            store.saveRide(Ride(
+                summary: RideSummary(id: RideID(name), name: name, date: date, distanceMeters: 42_300,
+                                     movingTime: 8_100, climbMeters: 520, bikeType: type),
+                points: points
+            ))
+        }
+        let model = RideLibraryModel(library: store)
+        model.rides = store.rideSummaries()
+        return model
+    }
+
+    /// A Day 2 ride in a fresh in-memory library, so the row and the writer run for real.
+    static func sampleDayNote() -> DayNoteModel {
+        let library = InMemoryLibraryStore()
+        let ride = RideSummary(
+            id: RideID("gallery-day-2"), name: "Ulrichen", date: Date(timeIntervalSince1970: 1_790_000_000),
+            distanceMeters: 74_300, trip: RideTrip(key: 7, dayIndex: 1, dayCount: 3, name: "Alps traverse")
+        )
+        let points = [RidePoint(timestamp: ride.date, coordinate: Coordinate(latitude: 46.6, longitude: 8.6))]
+        try? library.saveRide(Ride(summary: ride, points: points))
+        return DayNoteModel(ride: ride, points: points, library: library)
+    }
+
+    #if os(iOS)
+    static let samplePhotos = (0..<6).map {
+        RidePhoto(assetID: "p\($0)", takenAt: Date(timeIntervalSince1970: 1_790_000_000 + Double($0) * 1_500))
+    }
+
+    /// Sky gradients through a day, rendered once.
+    static let sampleThumbnails: [String: Data] = Dictionary(uniqueKeysWithValues: samplePhotos.enumerated().compactMap { index, photo in
+        let t = Double(index) / 5
+        let sky = LinearGradient(
+            colors: [Color(red: 0.95 - 0.2 * t, green: 0.75, blue: 0.55 + 0.3 * t), OBCTheme.water],
+            startPoint: .top, endPoint: .bottom
+        )
+        .frame(width: 160, height: 120)
+        return ImageRenderer(content: sky).uiImage?.jpegData(compressionQuality: 0.8).map { (photo.assetID, $0) }
+    })
+    #endif
 
     static let sampleWaypoints = [
         Waypoint(index: 0, name: "Ottawa Lake trailhead", note: "Start · parking & water", distanceAlongMeters: 0, coordinate: .init(latitude: 42.9, longitude: -88.6)),

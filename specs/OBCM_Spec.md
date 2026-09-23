@@ -732,7 +732,7 @@ Layout, in file order:
 ```
 [Nav Directory]     (40 bytes — the graph's resident header, §8.1)
 [Filler]            (0..U-1 bytes of 0xFF — the directory is 40 bytes, §1.2)
-[Profile Table]     (§8.6 — 1..=8 bike profiles, always present)
+[Profile Table]     (§8.6 — the four bike-type profiles, always present)
 [Filler]            (0..511 bytes of 0xFF in populated files — the producer's 512-byte alignment)
 [Node Quadtree]     (§4 encoding over the header global bbox)
 [Filler]            (0..U-1 bytes of 0xFF — align_up to the first node chunk, §8.1)
@@ -1038,7 +1038,7 @@ A minimal graph — two junctions `A`(lat 100, lon 200) and `B`(lat 900, lon 800
 joined by one 3-vertex edge of 1234 m and way-kind `0x2A` (tertiary/paved: highway
 class 10 `| (`surface class 1 `<< 5)`) that climbs 300 m from `A` to `B` and
 re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weight
-10), at the default `Offset Scale = 4` (`U = 16`), with the section at a 512-byte-aligned file
+10; a real producer writes four, one is enough to show the layout), at the default `Offset Scale = 4` (`U = 16`), with the section at a 512-byte-aligned file
 offset `S`. Directory fields are **units**, so each is a byte offset divided by 16; `S` is a multiple
 of 512 and therefore of 16, and `s = S / 16` is the section's own scaled address:
 
@@ -1112,15 +1112,17 @@ one ≤ 512-byte read.
 
 ### 8.6 Profile table (bike-type routing)
 
-`Profile Count` (1..=8) consecutive **56-byte** records at `Profile Table Offset`,
-one per selectable bike profile (Road / Gravel / MTB / Touring by default). The
-device picks one by index; A\* weights each edge by it. The table is **always
-present** — even an empty graph carries ≥ 1 profile — and the reader rejects a
-`Profile Count` of `0` or `> 8`.
+`Profile Count` consecutive **56-byte** records at `Profile Table Offset`, one per bike
+type. A producer writes **exactly four**, in the bike-type order of
+[`OBCR_Spec.md`](OBCR_Spec.md) §1.2: Road = 0, Gravel = 1, MTB = 2, Touring = 3. The count,
+the order and the meaning are fixed; only the weights are tunable. The device picks a record
+by bike-type value; A\* weights each edge by it. The table is **always present**, even for an
+empty graph. The reader rejects a `Profile Count` of `0` or `> 8`, and routes a bike type past
+the table under profile 0.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
-| 0 | Name | 12 | `char[12]` | UTF-8, `0xFF`-padded (the §7.3 POI-name convention) |
+| 0 | Name | 12 | `char[12]` | UTF-8, `0xFF`-padded (the §7.3 POI-name convention). A producer writes `Road`, `Gravel`, `MTB` or `Touring`. The device shows its own names, not this field |
 | 12 | Highway Multipliers | 32 | `uint8[32]` | Weight per **highway class**, `1/16` fixed-point; `16` = 1.0×, `0` = **forbidden** |
 | 44 | Surface Multipliers | 8 | `uint8[8]` | Weight per **surface class**, same encoding |
 | 52 | Climb Weight | 1 | `uint8` | Flat metres charged per metre of §8.3 `Ascent M`. `0` = climb-blind |
@@ -1305,9 +1307,9 @@ position and filter generation; changing any of these cancels the old query.
 | 22 | Reserved | 2 | Zero |
 | 24 | OSM metadata | 28 | The §7 service identity/approach encoding; all zero means absent |
 | 52 | Name reference | 8 | Required, at most 256 UTF-8 bytes |
-| 60 | Article bundle reference | 8 | Required multilingual bundle (§9.2), at most 278,696 bytes |
+| 60 | Article bundle reference | 8 | Required multilingual bundle (§9.2), at most 20,652 bytes |
 | 68 | Photo reference | 8 | Optional independent stream (§9.3), at most 52,096 bytes |
-| 76 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 65,535 bytes |
+| 76 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 1,024 bytes |
 
 Each reference is `(offset uint32, length uint32)`. Only `(0, 0)` means absent. A present reference
 has nonzero length, starts at or after payload start, and ends within the exact section length.
@@ -1329,7 +1331,7 @@ and variant count (`uint16`, 1..4). Each following variant occupies 20 bytes:
 | 2 | Text page count | 1 | 1..4 |
 | 3 | Reserved | 1 | Zero |
 | 4 | Text reference | 8 | Required page bundle, at most 4,118 bytes |
-| 12 | Article attribution reference | 8 | Required, at most 65,535 bytes |
+| 12 | Article attribution reference | 8 | Required, at most 1,024 bytes |
 
 References inside this directory are **relative to the article bundle**, not the landmark section.
 They start at or after `4 + count × 20` and end within the bundle. The default language must have a
@@ -1350,10 +1352,19 @@ and the final offset equals the bundle length. A selected field is the bytes bet
 offsets. Readers check its range, UTF-8 and destination capacity before use.
 
 A text bundle has the variant's 1..4 fields. Each field is one prepared page of at most 1,024 bytes.
-The language identifies the actual article text. Attribution bundles have four original fields
-(source URL, revision, licence URL, original notices), then 1..256 prepared display pages of at most
-1,024 bytes each. All original fields remain available; display pagination must not drop them.
-The total attribution bundle, including its offset table, is at most 65,535 bytes.
+The language identifies the actual article text.
+
+An attribution bundle is the credit of one work. It has exactly four fields, in this order: source,
+title, creator and licence. Each field is one line in the device glyph set. Only the creator can be
+empty, and only for a public-domain dedication (CC0). The bundle, including its offset table, is at
+most 1,024 bytes. Readers wrap the fields themselves.
+
+| Field | Article | Photo |
+| :-- | :-- | :-- |
+| Source | URL of the exact revision, `<language>.wikipedia.org/?oldid=<revision>` | `Wikimedia Commons` |
+| Title | Article title | Commons file name, which identifies the file page |
+| Creator | `Wikipedia contributors` | The licensor's requested attribution, else the author |
+| Licence | Creative Commons short name and licence URI, for example `CC BY-SA 4.0 creativecommons.org/licenses/by-sa/4.0/` | Same as the article |
 
 ### 9.3 Independent photo stream
 
@@ -1449,7 +1460,7 @@ The article bundle reference is `(0, 0)` when the record has no text; a record M
 article bundle, the photo, or both. A present reference MUST start at or after Payload Offset,
 contain more than 33 bytes, and end at or before Section Length without integer overflow. Payload
 limits, excluding the guard, are the same as §9: name at most 256 bytes, article bundle at most the
-shared article limit, compressed photo at most 52,096 bytes, and photo attribution at most 65,535
+shared article limit, compressed photo at most 52,096 bytes, and photo attribution at most 1,024
 bytes. The article bundle uses §9.2 unchanged. Its internal offsets are relative to the start of
 that bundle, after the guard. The photo stream uses §9.3 unchanged. One optional photo serves all
 text variants of an article. A record with a photo and no bundle has no language: a consumer shows

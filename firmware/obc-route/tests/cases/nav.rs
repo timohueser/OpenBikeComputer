@@ -10,7 +10,7 @@ use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch};
-use obc_route::{RouteIndex, RouteObjectInfo, RouteReader};
+use obc_route::{BikeType, RouteIndex, RouteObjectInfo, RouteReader};
 
 /// Global bbox, microdegrees. Roomy, so the node quadtree subdivides around the fixtures and the
 /// tile cache is exercised.
@@ -115,7 +115,7 @@ fn plan(
     to: (i32, i32),
     name: &str,
 ) -> (Result<obc_route::RouteStats, NavError>, Vec<u8>, obc_reader::NavCacheStats) {
-    plan_p(bytes, from, to, name, 0)
+    plan_p(bytes, from, to, name, BikeType::Road)
 }
 
 /// The optimum is `4 * EDGE_COST` whatever monotone path A* picks, so the expectation does not
@@ -214,7 +214,8 @@ fn tiny_scratch_exhausts() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let goal = at(2, 2);
-    let res = plan_route(&r, at(0, 0), goal, "x", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
+    let res =
+        plan_route(&r, at(0, 0), goal, "x", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted));
 }
 
@@ -246,7 +247,8 @@ fn goal_tracked_before_fill_survives_exhaustion() {
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let (from, to) = (coord(0), coord(8));
-    let res = plan_route(&r, from, to, "Salvaged", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
+    let res =
+        plan_route(&r, from, to, "Salvaged", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     let route = res.expect("the goal was tracked before the fill ⇒ salvage returns it");
     assert_eq!(route.total_distance_m, 2671, "the direct edge, the full-table path");
     assert_eq!(route_points(&sink.buf).len(), 2, "start → goal over the single direct edge");
@@ -355,7 +357,7 @@ fn far_beyond_range_target_exhausts_instead_of_precheck() {
     let mut sink = VecSink::default();
     let from = BASE;
     let to = (BASE.0 + 1_999 * 135, BASE.1);
-    let res = plan_route(&r, from, to, "x", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
+    let res = plan_route(&r, from, to, "x", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "the search ends at the table, not at a pre-check");
     assert!(sink.buf.is_empty(), "an exhausted plan writes nothing");
 }
@@ -422,7 +424,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
     let mut nav = nav;
 
     // Write the slot and step to completion.
-    nav.planner.write(NavPlanner::new(from, to, "Dev", 0));
+    nav.planner.write(NavPlanner::new(from, to, "Dev", BikeType::Road));
     let mut sink = VecSink::default();
     let stats = loop {
         match step_once(&mut nav, &bytes, &tables, &cache, &mut sink) {
@@ -436,7 +438,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
 
     // A second request is cancelled mid-search: the slot is overwritten without a drop, stepped
     // twice, then never stepped again.
-    nav.planner.write(NavPlanner::new(from, to, "Cancelled", 0));
+    nav.planner.write(NavPlanner::new(from, to, "Cancelled", BikeType::Road));
     let mut cancelled_sink = VecSink::default();
     for _ in 0..2 {
         assert!(matches!(step_once(&mut nav, &bytes, &tables, &cache, &mut cancelled_sink), obc_route::Step::Running));
@@ -444,7 +446,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
     assert!(cancelled_sink.buf.is_empty(), "a cancelled (abandoned) plan wrote nothing");
 
     // A third request replaces the abandoned plan and must emit the first request's bytes.
-    nav.planner.write(NavPlanner::new(from, to, "Dev", 0));
+    nav.planner.write(NavPlanner::new(from, to, "Dev", BikeType::Road));
     let mut sink3 = VecSink::default();
     loop {
         match step_once(&mut nav, &bytes, &tables, &cache, &mut sink3) {
@@ -490,14 +492,14 @@ fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     let mut small = NavScratch::<300>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, "x", 0, &mut small, &mut tiles, &mut NullElevation, &mut sink);
+    let res = plan_route(&r, from, to, "x", BikeType::Road, &mut small, &mut tiles, &mut NullElevation, &mut sink);
     assert_eq!(res, Err(NavError::Exhausted), "a 300-node table cannot span ~9 km");
 
     // The shipped table plans the same route.
     let mut big = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_route(&r, from, to, "x", 0, &mut big, &mut tiles, &mut NullElevation, &mut sink);
+    let res = plan_route(&r, from, to, "x", BikeType::Road, &mut big, &mut tiles, &mut NullElevation, &mut sink);
     let route = res.expect("the shipped table spans the ~9 km line");
     assert_eq!(route.total_distance_m, 9001, "summed edge costs over the whole line");
 }
@@ -541,10 +543,20 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut one_shot = VecSink::default();
-    let reference = plan_route(&r, from, to, "Stepped", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut one_shot)
-        .expect("the line plans one-shot");
+    let reference = plan_route(
+        &r,
+        from,
+        to,
+        "Stepped",
+        BikeType::Road,
+        &mut scratch,
+        &mut tiles,
+        &mut NullElevation,
+        &mut one_shot,
+    )
+    .expect("the line plans one-shot");
 
-    let mut planner = NavPlanner::new(from, to, "Stepped", 0);
+    let mut planner = NavPlanner::new(from, to, "Stepped", BikeType::Road);
     let mut tiles = NavTileCache::new();
     let mut stepped = VecSink::default();
     let mut steps = 0u32;
@@ -614,7 +626,7 @@ fn search_step_budget_is_miss_paced_cold_and_cap_opened_warm() {
     let mut scratch = Box::new(NavScratch::<1536>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let mut planner = NavPlanner::new(from, to, "Budget", 0);
+    let mut planner = NavPlanner::new(from, to, "Budget", BikeType::Road);
     let mut max_step_settles = 0u32;
     let mut first_search_misses: Option<u32> = None;
     loop {
@@ -657,7 +669,7 @@ fn abandoned_mid_search_plan_wrote_nothing() {
     let mut sink = VecSink::default();
     let from = BASE;
     let to = (BASE.0 + 599 * 135, BASE.1);
-    let mut planner = NavPlanner::new(from, to, "x", 0);
+    let mut planner = NavPlanner::new(from, to, "x", BikeType::Road);
     while planner.phase() == NavPhase::Snap {
         assert_eq!(planner.step(&r, &mut scratch, &mut tiles, &mut NullElevation, &mut sink), obc_route::Step::Running);
     }
@@ -715,13 +727,13 @@ fn profile_steers_between_equal_length_corridors() {
     let bytes = map_with_profiles(&graph, &[cycle_loving, primary_loving]);
     let (from, to) = (a, b);
 
-    let (res, obcr, _) = plan_p(&bytes, from, to, "Cycle", 0);
+    let (res, obcr, _) = plan_p(&bytes, from, to, "Cycle", BikeType::Road);
     assert_eq!(res.unwrap().total_distance_m, 3148, "same-length corridors ⇒ identical ground distance");
     let pts = route_points(&obcr);
     assert!(pts.iter().any(|p| (p.lon, p.lat) == c1), "the cycle-loving profile takes the cycleway (north) corridor");
     assert!(!pts.iter().any(|p| (p.lon, p.lat) == c2), "…and not the primary (south) one");
 
-    let (res, obcr, _) = plan_p(&bytes, from, to, "Primary", 1);
+    let (res, obcr, _) = plan_p(&bytes, from, to, "Primary", BikeType::Gravel);
     assert_eq!(res.unwrap().total_distance_m, 3148);
     let pts = route_points(&obcr);
     assert!(pts.iter().any(|p| (p.lon, p.lat) == c2), "the primary-loving profile takes the primary (south) corridor");
@@ -751,10 +763,10 @@ fn detour_is_taken_exactly_when_the_multiplier_math_says_so() {
     let bytes = map_with_profiles(&graph, &[primary_2x, primary_125x]);
     let (from, to) = (a, b);
 
-    let (res, _, _) = plan_p(&bytes, from, to, "Detour", 0);
+    let (res, _, _) = plan_p(&bytes, from, to, "Detour", BikeType::Road);
     assert_eq!(res.unwrap().total_distance_m, 3148, "primary 2.0× > 1.4× ⇒ the cycleway detour wins");
 
-    let (res, _, _) = plan_p(&bytes, from, to, "Direct", 1);
+    let (res, _, _) = plan_p(&bytes, from, to, "Direct", BikeType::Gravel);
     assert_eq!(res.unwrap().total_distance_m, 2226, "primary 1.25× < 1.4× ⇒ the direct primary wins");
 }
 
@@ -777,7 +789,7 @@ fn forbidden_class_detours_then_no_paths() {
         ],
     };
     let bytes = map_with_profiles(&detourable, std::slice::from_ref(&no_steps));
-    let (res, obcr, _) = plan_p(&bytes, a, b, "Around", 0);
+    let (res, obcr, _) = plan_p(&bytes, a, b, "Around", BikeType::Road);
     assert_eq!(res.unwrap().total_distance_m, 3148, "the forbidden direct edge is skipped ⇒ detour");
     assert!(route_points(&obcr).iter().any(|p| (p.lon, p.lat) == d), "the route goes around via the legal apex");
 
@@ -787,7 +799,7 @@ fn forbidden_class_detours_then_no_paths() {
         edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS }],
     };
     let bytes = map_with_profiles(&dead, &[no_steps]);
-    let (res, obcr, _) = plan_p(&bytes, a, b, "Dead", 0);
+    let (res, obcr, _) = plan_p(&bytes, a, b, "Dead", BikeType::Road);
     assert_eq!(res, Err(NavError::NoPath), "every escape forbidden ⇒ the frontier drains to NoPath");
     assert!(obcr.is_empty());
 }
@@ -803,7 +815,7 @@ fn displayed_distance_is_raw_length_not_weighted_g() {
         edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: length, kind: K_PRIMARY }],
     };
     let bytes = map_with_profiles(&graph, &[profile("p2", &[(K_PRIMARY, 32)])]); // 2.0x
-    let (res, _, _) = plan_p(&bytes, a, b, "Honest", 0);
+    let (res, _, _) = plan_p(&bytes, a, b, "Honest", BikeType::Road);
     let route = res.expect("a single-edge route plans");
     assert_eq!(route.total_distance_m, 1113, "displayed distance is the raw ground length");
     assert_ne!(route.total_distance_m, 2 * length, "and not the weighted g, which is 2x");
@@ -831,16 +843,16 @@ fn out_of_range_profile_index_falls_back_to_zero() {
             Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY },
         ],
     };
-    // The second profile exists only to prove that index 200 does not select it.
+    // The second profile exists only to prove that a type past the table does not select it.
     let bytes =
         map_with_profiles(&graph, &[profile("cycle", &[(K_PRIMARY, 48)]), profile("primary", &[(K_CYCLE, 48)])]);
     let (from, to) = (a, b);
-    let (res0, obcr0, _) = plan_p(&bytes, from, to, "Fallback", 0);
-    let (res200, obcr200, _) = plan_p(&bytes, from, to, "Fallback", 200);
-    assert_eq!(res0.unwrap().total_distance_m, res200.unwrap().total_distance_m);
-    assert_eq!(obcr0, obcr200, "an out-of-range index plans identically to profile 0");
+    let (res0, obcr0, _) = plan_p(&bytes, from, to, "Fallback", BikeType::Road);
+    let (res3, obcr3, _) = plan_p(&bytes, from, to, "Fallback", BikeType::Touring);
+    assert_eq!(res0.unwrap().total_distance_m, res3.unwrap().total_distance_m);
+    assert_eq!(route_points(&obcr0), route_points(&obcr3), "a type past the table plans as profile 0");
     // It took the profile-0 corridor, not a fallback-to-neutral tie.
-    assert!(route_points(&obcr200).iter().any(|p| (p.lon, p.lat) == c1));
+    assert!(route_points(&obcr3).iter().any(|p| (p.lon, p.lat) == c1));
 }
 
 /// A grid with mixed per-edge kinds. The found path's weighted cost must stay within the rung's
@@ -876,7 +888,7 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 
     let from = at(0, 0);
     let goal = at(2, 2);
-    let (res, obcr, _) = plan_p(&bytes, from, goal, "Mixed", 0);
+    let (res, obcr, _) = plan_p(&bytes, from, goal, "Mixed", BikeType::Road);
     res.expect("the mixed-kind grid plans");
 
     // Dijkstra over the fixture graph with the same weighted edge costs.
@@ -1005,7 +1017,7 @@ fn dijkstra_weighted(graph: &NavGraph, prof: &NavProfile, goal: usize) -> u32 {
 type LadderOutcome = (Result<obc_route::RouteStats, NavError>, (u32, u32), u32, Option<u32>, Vec<u8>);
 
 /// Step a plan to its terminal outcome on an `N`-slot table, watching `epsilon_used()` change.
-fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), profile_idx: u8) -> LadderOutcome {
+fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), bike: BikeType) -> LadderOutcome {
     use obc_route::nav::Step;
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("a serialized map parses");
@@ -1014,7 +1026,7 @@ fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), p
     let mut scratch = Box::new(NavScratch::<N>::new());
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let mut planner = NavPlanner::new(from, to, "x", profile_idx);
+    let mut planner = NavPlanner::new(from, to, "x", bike);
     let mut eps = planner.epsilon_used();
     let mut first_escalation: Option<u32> = None;
     let res = loop {
@@ -1041,7 +1053,7 @@ fn escalation_succeeds_on_second_rung() {
     let from = at(0, 0);
     let goal = at(8, 11);
     let to = goal;
-    let (res, eps, settles, first_esc, obcr) = plan_ladder::<50>(&bytes, from, to, 0);
+    let (res, eps, settles, first_esc, obcr) = plan_ladder::<50>(&bytes, from, to, BikeType::Road);
     res.expect("the ε = 2.0 rung completes the route the tight bound couldn't fit");
     assert_eq!(eps, (2, 1), "the plan escalated exactly one rung");
     assert!(!obcr.is_empty(), "a completed plan emits an OBCR");
@@ -1058,7 +1070,7 @@ fn ladder_exhausts_honestly_at_top_rung() {
     let from = at(0, 0);
     let goal = at(8, 11);
     let to = goal;
-    let (res, eps, settles, _, obcr) = plan_ladder::<20>(&bytes, from, to, 0);
+    let (res, eps, settles, _, obcr) = plan_ladder::<20>(&bytes, from, to, BikeType::Road);
     assert_eq!(res, Err(NavError::Exhausted), "too dense for every rung");
     assert_eq!(eps, (3, 1), "the ladder climbed to and failed at the top rung");
     assert!(obcr.is_empty(), "an exhausted plan writes nothing");
@@ -1087,7 +1099,7 @@ fn no_retry_on_disconnect_fails_fast_at_rung_zero() {
     };
     let bytes = map_with(&graph);
     let (res, eps, _, first_esc, obcr) =
-        plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, (a0.0 + 100, a0.1), (b0.0 - 100, b0.1), 0);
+        plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, (a0.0 + 100, a0.1), (b0.0 - 100, b0.1), BikeType::Road);
     assert_eq!(res, Err(NavError::NoPath), "disconnected");
     assert_eq!(eps, (13, 10), "NoPath never escalates");
     assert!(first_esc.is_none(), "the plan never retried");
@@ -1134,7 +1146,7 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
     };
 
     // A 40-slot table exhausts the first two rungs and completes greedy, on a suboptimal path.
-    let (res, eps, _, _, obcr) = plan_ladder::<40>(&bytes, from, to, 0);
+    let (res, eps, _, _, obcr) = plan_ladder::<40>(&bytes, from, to, BikeType::Road);
     res.expect("the ε = 3.0 rung completes the mixed grid");
     assert_eq!(eps, (3, 1), "the small table drove the plan to the top rung");
     let found = found_weighted(&obcr);
@@ -1147,7 +1159,7 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
     );
 
     // A roomy table completes optimally on the first try.
-    let (res, eps, _, first_esc, obcr) = plan_ladder::<120>(&bytes, from, to, 0);
+    let (res, eps, _, first_esc, obcr) = plan_ladder::<120>(&bytes, from, to, BikeType::Road);
     res.expect("a roomy table completes at rung 0");
     assert_eq!(eps, (13, 10), "no escalation with room to spare");
     assert!(first_esc.is_none());
@@ -1168,7 +1180,8 @@ fn first_try_success_takes_rung_zero_unchanged() {
     let (reference, one_shot, _) = plan(&bytes, from, to, "x");
     let reference = reference.expect("the shortcut grid plans at 1.3");
 
-    let (res, eps, settles, first_esc, obcr) = plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, from, to, 0);
+    let (res, eps, settles, first_esc, obcr) =
+        plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, from, to, BikeType::Road);
     let route = res.expect("still plans");
     assert_eq!(eps, (13, 10), "a first-rung success never escalates");
     assert!(first_esc.is_none(), "no retry happened");
@@ -1241,7 +1254,7 @@ fn plan_with_elevation(bytes: &[u8], elev: &mut dyn obc_route::ElevationSource) 
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let (c0, c8) = (at(0, 0), at(2, 2));
-    let res = plan_route(&r, c0, c8, "Water stop", 0, &mut scratch, &mut tiles, elev, &mut sink);
+    let res = plan_route(&r, c0, c8, "Water stop", BikeType::Road, &mut scratch, &mut tiles, elev, &mut sink);
     (res.expect("the grid plans"), sink.buf)
 }
 
@@ -1260,7 +1273,7 @@ fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
 }
 
 /// FNV-1a of the no-terrain emit for the fixture above.
-const NULL_PATH_DIGEST: u64 = 13250837968113519770;
+const NULL_PATH_DIGEST: u64 = 2855711472671813495;
 
 /// A real source fills every point's height and the header's min, max and dead-banded climb. The
 /// crest is reachable only through the densification: a vertex-only fill tops out at 900 m.
@@ -1282,6 +1295,29 @@ fn terrain_fills_every_point_and_the_header_stats() {
     assert!(route.total_ascent_m > 0 && route.total_descent_m > 0, "the route climbs the ridge and comes down");
     // Densifying the geometry must not touch the distance.
     assert_eq!(route.total_distance_m, 4474);
+}
+
+/// An imported copy of a plan measures what the plan measures, whatever heights it carries, so an
+/// easier comparison finds no saving on the same road.
+#[test]
+fn an_imported_copy_of_a_plan_measures_what_the_plan_measured() {
+    use crate::common::{build_obcr, ChunkIn, RouteSpec};
+    use obc_route::easier::Costs;
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
+    let (plan, obcr) = plan_with_elevation(&bytes, &mut Ridge);
+    let (_, planned) = Costs::candidate(&SliceSource(&obcr), [0, plan.total_distance_m], &mut Ridge).unwrap();
+    let points = route_points(&obcr).iter().map(|p| (p.lon, p.lat, 0)).collect();
+    let (imported, _) = build_obcr(&RouteSpec {
+        chunks: &[ChunkIn { points, cum_distance_m: 0, cum_ascent_m: 0 }],
+        totals: (plan.total_distance_m, 0, 0),
+        ..RouteSpec::default()
+    });
+    let source = SliceSource(&imported);
+    let index = RouteIndex::read(&source).unwrap();
+    let map = obc_formats::obcr::RouteSourceKey { store: [0; 16], object: 1, revision: 1 };
+    let copy = Costs::remaining(&RouteReader::new(&index, &source), 0, map, &mut Ridge).unwrap();
+    assert!(planned.elevation_complete && planned.ascent_m > 0);
+    assert_eq!((copy.distance_m, copy.ascent_m), (planned.distance_m, planned.ascent_m));
 }
 
 /// Densification is bounded by ground distance, not by vertex count, so the bound is asserted on
@@ -1507,7 +1543,7 @@ const VALLEY_LEG: u32 = 4_000;
 /// Plan over a [`pass_vs_valley`] map and report `(raw distance, took the pass?)`.
 fn plan_corridor(bytes: &[u8]) -> (u32, bool) {
     let (a, b) = (at(0, 0), at(0, 2));
-    let (res, obcr, _) = plan_p(bytes, a, b, "Corridor", 0);
+    let (res, obcr, _) = plan_p(bytes, a, b, "Corridor", BikeType::Road);
     let route = res.expect("both corridors are legal, so one of them plans");
     let over_the_pass = route_points(&obcr).iter().any(|p| (p.lon, p.lat) == at(1, 1));
     (route.total_distance_m, over_the_pass)
@@ -1606,7 +1642,7 @@ fn the_climb_aware_optimum_matches_a_directional_dijkstra() {
     assert!(reference > 0 && reference != u32::MAX, "the reference is a real finite cost");
 
     let (c0, c8) = (at(0, 0), at(2, 2));
-    let (res, obcr, _) = plan_p(&bytes, c0, c8, "Knoll", 0);
+    let (res, obcr, _) = plan_p(&bytes, c0, c8, "Knoll", BikeType::Road);
     res.expect("the knoll grid plans");
     let mut seq: Vec<usize> = Vec::new();
     for pt in route_points(&obcr) {
@@ -1635,7 +1671,7 @@ fn the_displayed_distance_ignores_the_climb_term_entirely() {
         edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 }],
     };
     let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
-    let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", 0);
+    let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", BikeType::Road);
     let route = res.expect("a single uphill edge plans");
     assert_eq!(route.total_distance_m, 1574, "the header total is the raw ground length");
     assert!(route.total_distance_m < ROW_CLIMB_M * 100, "and not the weighted g");
@@ -1658,7 +1694,7 @@ fn a_wholly_saturated_frontier_still_returns_a_route() {
     let graph = grid3(false);
     let bytes = map_with_terrain(&graph, &[climb_profile("Absurd", 255)], &mut Knoll);
     let (c0, c8) = (at(0, 0), at(2, 2));
-    let (res, obcr, _) = plan_p(&bytes, c0, c8, "Saturated", 0);
+    let (res, obcr, _) = plan_p(&bytes, c0, c8, "Saturated", BikeType::Road);
     let route = res.expect("a saturated frontier still drains to the goal");
     assert!(route.total_distance_m >= 4400, "a real path, not a wrapped shortcut");
     let pts = route_points(&obcr);

@@ -8,10 +8,16 @@ public struct ElevationProfileView: View {
     /// Elevation samples in metres, assumed evenly spaced along the route.
     let samples: [Double]
     var height: CGFloat
+    /// False draws the bare profile, for a caller that frames it itself.
+    var card: Bool
+    /// Photo ticks on the floor, each from 0 at the start to 1 at the end.
+    var ticks: [Double]
 
-    public init(samples: [Double], height: CGFloat = 80) {
+    public init(samples: [Double], height: CGFloat = 80, card: Bool = true, ticks: [Double] = []) {
         self.samples = samples
         self.height = height
+        self.card = card
+        self.ticks = ticks
     }
 
     /// From an imported route's points (skips missing elevations).
@@ -19,12 +25,26 @@ public struct ElevationProfileView: View {
         self.init(samples: routePoints.compactMap(\.elevationMeters), height: height)
     }
 
-    /// From a ride's tracklog (skips missing elevations).
-    public init(ridePoints: [RidePoint], height: CGFloat = 80) {
-        self.init(samples: ridePoints.compactMap(\.elevationMeters), height: height)
+    @ViewBuilder
+    public var body: some View {
+        if card {
+            profile
+                .padding(.top, 16)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+                .background(OBCTheme.panel)
+                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
+                .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+                .accessibilityLabel("Elevation profile")
+                // The card only exists once its samples do; on a tracked ride that is an async
+                // read away. Automation waits on this to know the layout is final.
+                .accessibilityIdentifier("detail.elevationProfile")
+        } else {
+            profile
+        }
     }
 
-    public var body: some View {
+    private var profile: some View {
         Canvas { context, size in
             var grid = Path()
             var y: CGFloat = 0
@@ -42,9 +62,11 @@ public struct ElevationProfileView: View {
             // Headroom keeps the line and its markers inside the card.
             let top = size.height * 0.15
             let bottom = size.height - 4
+            // The end markers' dots stay whole inside the canvas.
+            let inset: CGFloat = 4.5
             let points = samples.enumerated().map { index, sample in
                 CGPoint(
-                    x: size.width * CGFloat(index) / CGFloat(samples.count - 1),
+                    x: inset + (size.width - 2 * inset) * CGFloat(index) / CGFloat(samples.count - 1),
                     y: bottom - (bottom - top) * CGFloat((sample - lo) / span)
                 )
             }
@@ -68,18 +90,16 @@ public struct ElevationProfileView: View {
             )
 
             drawExtremeMarkers(in: &context, points: points, size: size)
+
+            for tick in ticks {
+                let x = inset + (size.width - 2 * inset) * CGFloat(min(max(tick, 0), 1))
+                context.fill(
+                    Path(roundedRect: CGRect(x: x - 1, y: size.height - 8, width: 2, height: 8), cornerRadius: 1),
+                    with: .color(OBCTheme.water)
+                )
+            }
         }
         .frame(height: height)
-        .padding(.top, 16)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 10)
-        .background(OBCTheme.panel)
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
-        .accessibilityLabel("Elevation profile")
-        // The card only exists once its samples do; on a tracked ride that is an async
-        // read away. Automation waits on this to know the layout is final.
-        .accessibilityIdentifier("detail.elevationProfile")
     }
 
     /// Dots and mono labels on the highest and lowest samples. The high label tucks
@@ -103,10 +123,13 @@ public struct ElevationProfileView: View {
         context.fill(Path(ellipseIn: dot.insetBy(dx: -1.5, dy: -1.5)), with: .color(OBCTheme.panel))
         context.fill(Path(ellipseIn: dot), with: .color(OBCTheme.trackStroke))
 
-        let label = Text("\(Int(meters.rounded())) m")
-            .font(.obcMono(size: 9, weight: .bold))
-            .foregroundColor(OBCTheme.inkSoft)
-        let x = min(max(point.x, 18), size.width - 18)
+        let label = context.resolve(
+            Text("\(Int(meters.rounded())) m")
+                .font(.obcMono(size: 9, weight: .bold))
+                .foregroundColor(OBCTheme.inkSoft)
+        )
+        let halfWidth = label.measure(in: size).width / 2
+        let x = min(max(point.x, halfWidth), size.width - halfWidth)
         context.draw(
             label,
             at: CGPoint(x: x, y: point.y + labelOffset),

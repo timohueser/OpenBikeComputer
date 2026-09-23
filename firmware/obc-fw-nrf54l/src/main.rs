@@ -961,9 +961,6 @@ async fn main(_spawner: Spawner) {
             let _ = flat_store::load_routes(flat, app);
             let _ = flat_store::load_trips(flat, app);
             let _ = flat_store::load_rides(flat, app);
-            // Mirror the map's routing-profile names into the app for the bike-type editor and the
-            // created-route overview label.
-            app.set_nav_profiles(map_tables.nav_profiles());
             // Device info for the System settings screen: the running firmware version and the
             // loaded map's name and OBCM version.
             {

@@ -12,7 +12,7 @@ use obc_app::settings::Language;
 use obc_app::{App, AppState, Gesture, Screen, Settings};
 use obc_ports::{Button, ButtonEvent, InputClock, InputEvent};
 
-use crate::common::{build_min_obcm, build_min_obcm_profiles, keys, render_120};
+use crate::common::{build_min_obcm, keys, render_120};
 
 /// The four shipped languages, in `Language` discriminant order — the column order of
 /// [`obc_app::i18n::TABLE`].
@@ -158,8 +158,9 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         // The two filter row labels are deliberately absent: "Filter" is the German word and
         // "Sources" the French one, so both would fail this net for being right. They are covered
         // instead by the render sweep below and by `context_drawer`'s width test.
-        ("poi_detail.side_left", Msg::PoiDetailSideLeft),
-        ("poi_detail.side_right", Msg::PoiDetailSideRight),
+        ("poi_detail.ahead", Msg::PoiDetailAhead),
+        ("poi_detail.away", Msg::PoiDetailAway),
+        ("poi_detail.off_route", Msg::PoiDetailOffRoute),
     ] {
         for lang in [Language::De, Language::Fr, Language::Es] {
             assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
@@ -252,15 +253,9 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
     let water = vec![PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fontaine".into(), payload: 0xFFFF }];
     let bytes = build_poi_map(BBOX, 512, &[(1, water)]);
 
-    // The profile names a host mirrors on map load, the set both snapshot fixtures carry.
-    let profile_map = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
-    let src = obc_reader::SliceSource(&profile_map);
-    let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
-
     for lang in LANGS {
         let mut app = App::new_idle(AppState::new(0, 0, 0.05));
         app.set_settings(Settings { language: lang, ..Default::default() });
-        app.set_nav_profiles(tables.nav_profiles());
         app.state.user_fix = Some(Fix::at(POS.1, POS.0));
 
         // Assistant → Find → Water → shared place detail and its route-profile context.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from datetime import datetime
 import json
 import os
@@ -113,7 +114,15 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     tree = work / "tree"
     # The cell bake reads the region's compiled landmarks from the tree, so put them where
     # `obc-bake landmarks` puts them. This recipe compiles one region, from a pinned capture.
-    shutil.copytree(landmarks.parent, tree / "landmarks" / region_id)
+    artifact = tree / "landmarks" / region_id
+    shutil.copytree(landmarks.parent, artifact)
+    # The catalog publishes an artifact only beside the declaration `obc bake landmarks` writes;
+    # its digest is the one `obc_pack::landmarks::artifact_digest` states.
+    listing = "".join(f"{path.name}={sha256_file(path)}\n" for path in sorted(artifact.iterdir())
+                      if path.is_file() and path.name != "landmarks.json")
+    write_json(artifact / "landmarks.json", {"region_id": region_id, "languages": json.loads(landmarks.read_text())["languages"],
+                                             "artifact_sha256": hashlib.sha256(listing.encode()).hexdigest(),
+                                             "built_at": "2026-09-15T00:00:00Z"})
     run(bin_dir / "obc-bake", "bake", region_id, "--regions", regions, "--source", local_source,
         "--dem-sources", store.package_root("assistant-terrain"), *peak_args,
         "--presets-dir", ROOT / "builder/presets", "--skin", "default", "--out", tree, "--base-url", "http://localhost/assistant",

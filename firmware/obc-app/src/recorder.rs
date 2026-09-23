@@ -12,6 +12,8 @@
 pub mod continuation;
 
 use obc_elevation::DeadBand;
+use obc_formats::bike::BikeType;
+use obc_formats::ride::{Name, TripRef};
 use obc_map_scene::ground_dist_m;
 use obc_ports::{Fix, TrackPoint};
 use obc_route::RideStats;
@@ -26,6 +28,10 @@ use crate::CatalogObjectId;
 /// How long a ride may go unjournalled. The cadence is the domain's, so every executor gives the
 /// same ride the same recovery window.
 const CHECKPOINT_MS: u32 = 10_000;
+
+/// Wait for the board storage transport's recovery window before a failed checkpoint is offered
+/// again. The board asserts that this equals its breaker's cool-down.
+pub const CHECKPOINT_RETRY_MS: u32 = 30_000;
 
 /// How many assembled samples Recorder may hold before an executor has written them. Sized against
 /// the executor's delta window (the board's `DELTA_SAMPLES`), so the domain never stages more than
@@ -66,7 +72,14 @@ struct Motion {
     segment_start: bool,
 }
 
-/// The accumulator state that must cross a reset when a journaled ride is continued.
+/// What a ride records about its start: the current bike type and the trip day it started on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RideOrigin {
+    pub bike: BikeType,
+    pub trip: Option<TripRef>,
+}
+
+/// The state that must cross a reset when a journaled ride is continued.
 ///
 /// It is the raw integration state, not the rounded footer summary: averages need their numerators
 /// and denominators to merge post-reset samples without drift. Position and elevation anchors are
@@ -74,6 +87,7 @@ struct Motion {
 /// time.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RideContinuation {
+    pub origin: RideOrigin,
     pub ridden_m: f32,
     pub moving_m: f32,
     pub moving_s: f32,
@@ -164,7 +178,7 @@ pub enum RecorderError {
 /// this domain may attempt — a catalog it could not read completely is not one it may mutate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDamage {
-    /// The recovered bytes are not a ride-v3 sample/footer boundary.
+    /// The recovered bytes are not a ride-v4 sample/footer boundary.
     Payload,
     /// The recovered samples carry no decodable continuation image.
     Metadata,
@@ -332,6 +346,13 @@ pub(crate) enum RecorderVerdict {
     RecoveryLatched,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointOwed {
+    No,
+    Immediate,
+    Backoff,
+}
+
 /// The one owner of the ride lifecycle: the session identity and its monotonic source, whether a
 /// ride is open, the rider's undelivered request, the checkpoint deadline, the boot-recovery
 /// decision, and the per-session buffers a new ride restarts.
@@ -367,9 +388,9 @@ pub struct RecorderMachine {
     /// the request stays pending, so without this the warning would re-raise for ever.
     /// [`request`](Self::request) clears it, so asking again is answered again.
     refusal_told: bool,
-    /// A failed checkpoint owes its retry now rather than at the next deadline: the storage journal
-    /// keeps the failed append staged and refuses further samples until the exact same write lands.
-    checkpoint_owed: bool,
+    /// A blocked journal keeps its checkpoint owed until the exact same write lands. A media
+    /// failure backs off until the storage recovery probe; local refusals retry at once.
+    checkpoint_owed: CheckpointOwed,
     /// Whether a boot-recovered ride has already been put to the rider. A recorder may report the
     /// same resumable object every pass; the rider sees one decision card.
     recovery_offered: bool,
@@ -443,6 +464,8 @@ pub struct RecorderMachine {
     /// coasting counts; a strap that is absent does not.
     cadence_ms_sum: u64,
     cadence_ms: u32,
+    /// Set when a fresh ride opens. A continued ride restores it with the totals.
+    origin: RideOrigin,
 }
 
 /// Which operation is with the executor. The outcome carries a token, not a subject, so this is how
@@ -471,7 +494,7 @@ impl RecorderMachine {
             resume_next: false,
             refusal_told: false,
             restart_after_close: false,
-            checkpoint_owed: false,
+            checkpoint_owed: CheckpointOwed::No,
             recovery_offered: false,
             recovery: RideRecoveryState::None,
             breadcrumb: Breadcrumb::new() => Breadcrumb::init_in_place,
@@ -502,6 +525,7 @@ impl RecorderMachine {
             max_power: 0,
             cadence_ms_sum: 0,
             cadence_ms: 0,
+            origin: RideOrigin { bike: BikeType::Road, trip: None },
         }
     );
 
@@ -603,7 +627,7 @@ impl RecorderMachine {
         let resume = core::mem::take(&mut self.resume_next);
         self.seq = self.seq.wrapping_add(1);
         self.session = Some(self.seq);
-        self.checkpoint_owed = false;
+        self.checkpoint_owed = CheckpointOwed::No;
         // Adopted by this session, or never there to begin with.
         self.recovery = RideRecoveryState::None;
         RecorderAdvance::Opened(if resume { SessionStart::Recovered } else { SessionStart::Fresh })
@@ -649,7 +673,7 @@ impl RecorderMachine {
             return None;
         }
         match self.pending {
-            Some(RecorderIntent::Save) if self.samples.is_empty() && !self.checkpoint_owed => {
+            Some(RecorderIntent::Save) if self.samples.is_empty() && self.checkpoint_owed == CheckpointOwed::No => {
                 self.inflight = Some(InFlight::Close);
                 return Some(RecorderEffect::Finalize { token: self.ops.issue() });
             }
@@ -668,9 +692,12 @@ impl RecorderMachine {
         self.session?;
         if self.checkpoint_due(now_ms) {
             self.last_checkpoint_ms = now_ms;
-            self.checkpoint_owed = false;
+            self.checkpoint_owed = CheckpointOwed::No;
             self.inflight = Some(InFlight::Checkpoint);
             return Some(RecorderEffect::Checkpoint { token: self.ops.issue() });
+        }
+        if self.checkpoint_owed != CheckpointOwed::No {
+            return None;
         }
         if self.samples.is_empty() {
             return None;
@@ -701,7 +728,14 @@ impl RecorderMachine {
     ///
     /// A stale token changes nothing, which stops a late answer closing a session that has since
     /// been replaced.
+    #[cfg(test)]
     pub(crate) fn apply_outcome(&mut self, outcome: RecorderOutcome) -> RecorderVerdict {
+        self.apply_outcome_at(outcome, self.clock.anchor_ms)
+    }
+
+    /// Apply an executor answer at the time DeviceCore received it. A failed checkpoint starts its
+    /// retry window here, after the failed media operation and the transport breaker's verdict.
+    pub(crate) fn apply_outcome_at(&mut self, outcome: RecorderOutcome, now_ms: u32) -> RecorderVerdict {
         if !self.ops.is_current(outcome.token()) {
             return RecorderVerdict::Nothing;
         }
@@ -717,10 +751,19 @@ impl RecorderMachine {
                 RecorderVerdict::Dropped
             }
             RecorderOutcome::Failed { error, .. } => {
-                // A failed journal write keeps its staged append: the retry has to be the same
-                // write, so it is owed now rather than at the next deadline.
-                if matches!(was, Some(InFlight::Checkpoint | InFlight::Append)) && error == RecorderError::Write {
-                    self.checkpoint_owed = true;
+                // A failed journal write keeps its staged append. A failed checkpoint waits for
+                // the storage recovery probe; an append failure still owes its repair at once.
+                if error == RecorderError::Write {
+                    match was {
+                        Some(InFlight::Checkpoint) => {
+                            self.checkpoint_owed = CheckpointOwed::Backoff;
+                            self.last_checkpoint_ms = now_ms;
+                        }
+                        Some(InFlight::Append) => {
+                            self.checkpoint_owed = CheckpointOwed::Immediate;
+                        }
+                        _ => {}
+                    }
                 }
                 // The rider's one attempt is over: a failed removal latches what the store answered
                 // and retires the request, so nothing further is minted without a fresh
@@ -739,7 +782,7 @@ impl RecorderMachine {
             }
             RecorderOutcome::Cancelled { .. } => {
                 if was == Some(InFlight::Checkpoint) {
-                    self.checkpoint_owed = true;
+                    self.checkpoint_owed = CheckpointOwed::Immediate;
                 }
                 // Nothing was attempted, so nothing is latched, but the confirmation went with the
                 // abandoned operation.
@@ -759,14 +802,14 @@ impl RecorderMachine {
                 let keep = self.samples.len() - taken;
                 if keep != 0 {
                     // A full executor delta needs a checkpoint before it can accept the tail.
-                    self.checkpoint_owed = true;
+                    self.checkpoint_owed = CheckpointOwed::Immediate;
                 }
                 self.samples.as_mut_slice().copy_within(taken.., 0);
                 self.samples.truncate(keep);
                 RecorderVerdict::Nothing
             }
             RecorderOutcome::NeedsCheckpoint { .. } => {
-                self.checkpoint_owed = true;
+                self.checkpoint_owed = CheckpointOwed::Immediate;
                 RecorderVerdict::Nothing
             }
             RecorderOutcome::Checkpointed { .. } => RecorderVerdict::Nothing,
@@ -779,16 +822,21 @@ impl RecorderMachine {
         self.samples.clear();
     }
 
-    /// Whether a journal checkpoint is owed: a failed one is owed at once, otherwise the deadline.
+    /// Whether a journal checkpoint may leave now. Local refusals retry at once; a media failure
+    /// waits for the transport recovery probe, and an ordinary checkpoint follows the cadence.
     fn checkpoint_due(&self, now_ms: u32) -> bool {
-        self.checkpoint_owed || now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_MS
+        match self.checkpoint_owed {
+            CheckpointOwed::No => now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_MS,
+            CheckpointOwed::Immediate => true,
+            CheckpointOwed::Backoff => now_ms.wrapping_sub(self.last_checkpoint_ms) >= CHECKPOINT_RETRY_MS,
+        }
     }
 
     /// The ride is over: drop the identity and any owed cadence.
     fn close(&mut self) {
         self.session = None;
         self.samples.clear();
-        self.checkpoint_owed = false;
+        self.checkpoint_owed = CheckpointOwed::No;
         // A committed removal is the repair: the object is gone, so the decision is over and the
         // next Start opens a fresh ride in this same boot.
         self.recovery = RideRecoveryState::None;
@@ -1082,9 +1130,13 @@ impl RecorderMachine {
         (self.cadence_ms > 0).then(|| (self.cadence_ms_sum / self.cadence_ms as u64).min(u8::MAX as u64) as u8)
     }
 
+    pub(crate) fn set_origin(&mut self, origin: RideOrigin) {
+        self.origin = origin;
+    }
+
     /// The ride's footer facts: the totals as they stand, against the anchor stamped when this
-    /// operation was minted.
-    pub fn ride_stats(&self) -> RideStats {
+    /// operation was minted. The trip name is App's to fill ([`App::ride_stats`](crate::App::ride_stats)).
+    pub(crate) fn ride_stats(&self) -> RideStats {
         RideStats {
             distance_m: self.ridden_m as u32, // float→int casts saturate
             moving_time_s: self.moving_s as u32,
@@ -1099,12 +1151,16 @@ impl RecorderMachine {
             avg_cadence: self.avg_cadence(),
             avg_power: self.avg_power(),
             max_power: self.max_power(),
+            bike: self.origin.bike,
+            trip: self.origin.trip,
+            trip_name: Name::EMPTY,
         }
     }
 
     /// Snapshot every accumulator needed to continue footer totals exactly after a reset.
     pub fn continuation(&self) -> RideContinuation {
         RideContinuation {
+            origin: self.origin,
             ridden_m: self.ridden_m,
             moving_m: self.moving_m,
             moving_s: self.moving_s,
@@ -1125,6 +1181,7 @@ impl RecorderMachine {
     /// keeps them. The anchors stay dropped, so the first post-boot sample re-anchors and starts a
     /// fresh segment.
     pub fn restore_continuation(&mut self, state: RideContinuation) {
+        self.origin = state.origin;
         self.ridden_m = state.ridden_m;
         self.moving_m = state.moving_m;
         self.moving_s = state.moving_s;
@@ -1206,13 +1263,14 @@ impl RecorderMachine {
             max_power: _,
             cadence_ms_sum: _,
             cadence_ms: _,
+            origin,
         } = self;
         assert!(session.is_none() && *seq == 0, "no ride has ever been open");
         assert_eq!(*last_checkpoint_ms, 0, "no checkpoint has been issued");
         assert!(inflight.is_none() && pending.is_none(), "nothing requested, nothing in flight");
         assert!(!*resume_next && !*restart_after_close, "no continuation and no restart armed");
         assert!(!*refusal_told, "the rider has not been refused a ride");
-        assert!(!*checkpoint_owed, "no checkpoint owed");
+        assert_eq!(*checkpoint_owed, CheckpointOwed::No, "no checkpoint owed");
         assert!(!*recovery_offered && *recovery == RideRecoveryState::None, "no recovered ride offered this boot");
         assert!(breadcrumb.is_empty(), "no trail");
 
@@ -1221,6 +1279,7 @@ impl RecorderMachine {
         assert!(last_fix.is_none() && last_ms.is_none() && last_alt.is_none(), "no fix and no altitude");
         assert!(!*segment_break, "no gap to break a segment across");
         assert!(hr_last.is_none() && power_last.is_none() && cadence_last.is_none(), "no strap has reported");
+        assert_eq!(*origin, RideOrigin::default(), "no ride has started");
         self.assert_totals_are_zero();
     }
 
@@ -1231,7 +1290,8 @@ impl RecorderMachine {
         assert_eq!(self.moving_s, 0.0, "no moving time");
         assert_eq!(self.avg_kmh(), None, "no average");
         assert_eq!(self.climb_m(), 0.0, "no climb");
-        assert_eq!(self.continuation(), RideContinuation::default(), "and nothing to continue");
+        let zero = RideContinuation { origin: self.origin, ..RideContinuation::default() };
+        assert_eq!(self.continuation(), zero, "and nothing to continue");
         assert_eq!((self.avg_hr(), self.max_hr()), (None, None), "no heart-rate summary");
         assert_eq!((self.avg_power(), self.max_power()), (None, None), "no power summary");
         assert_eq!(self.avg_cadence(), None, "no cadence summary");
@@ -1414,6 +1474,20 @@ mod tests {
     }
 
     #[test]
+    fn a_storage_recovery_pass_preserves_pending_save_and_samples() {
+        let mut rec = ridden(3);
+        let staged = rec.staged().to_vec();
+        rec.request(RecorderIntent::Save);
+
+        assert!(rec.next_effect(NO_STORE, at(3_000)).is_none(), "the recovery pass issues no store effect");
+        assert_eq!(rec.staged(), staged, "accepted samples remain pending");
+        assert!(
+            matches!(rec.next_effect(CAN_RECORD, at(3_001)), Some(RecorderEffect::Append { samples: 3, .. })),
+            "the next normal pass resumes Save in its existing order"
+        );
+    }
+
+    #[test]
     fn save_and_restart_opens_the_new_ride_behind_the_close() {
         let mut rec = recording();
         let first = rec.session();
@@ -1445,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn the_checkpoint_cadence_is_the_deadline_and_a_failed_write_owes_one_now() {
+    fn a_failed_checkpoint_retries_once_at_the_recovery_deadline() {
         let mut rec = recording();
         assert!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS - 1)).is_none(), "not yet due");
         let first = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS)).expect("due");
@@ -1453,11 +1527,44 @@ mod tests {
         assert!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1)).is_none(), "the deadline moved with it");
 
         let second = rec.next_effect(CAN_RECORD, at(2 * CHECKPOINT_MS)).expect("due again");
-        rec.apply_outcome(RecorderOutcome::Failed { token: second.token(), error: RecorderError::Write });
+        let failed_at = 2 * CHECKPOINT_MS + 8_000;
+        rec.apply_outcome_at(RecorderOutcome::Failed { token: second.token(), error: RecorderError::Write }, failed_at);
+        assert!(rec.next_effect(CAN_RECORD, at(failed_at)).is_none(), "no same-pass retry");
         assert!(
-            matches!(rec.next_effect(CAN_RECORD, at(2 * CHECKPOINT_MS + 1)), Some(RecorderEffect::Checkpoint { .. })),
-            "a blocked journal owes the same write now, not in ten seconds"
+            rec.next_effect(CAN_RECORD, at(failed_at + CHECKPOINT_RETRY_MS - 1)).is_none(),
+            "the failed media operation anchors the complete recovery window"
         );
+        let retry = rec
+            .next_effect(CAN_RECORD, at(failed_at + CHECKPOINT_RETRY_MS))
+            .expect("one retry leaves exactly at the deadline");
+        assert!(matches!(retry, RecorderEffect::Checkpoint { .. }));
+
+        let failed_again_at = failed_at + CHECKPOINT_RETRY_MS + 8_000;
+        rec.apply_outcome_at(
+            RecorderOutcome::Failed { token: retry.token(), error: RecorderError::Write },
+            failed_again_at,
+        );
+        assert!(rec.next_effect(CAN_RECORD, at(failed_again_at + CHECKPOINT_RETRY_MS - 1)).is_none());
+        assert!(matches!(
+            rec.next_effect(CAN_RECORD, at(failed_again_at + CHECKPOINT_RETRY_MS)),
+            Some(RecorderEffect::Checkpoint { .. })
+        ));
+    }
+
+    #[test]
+    fn checkpoint_retry_deadline_survives_the_clock_wrap() {
+        let mut rec = recording();
+        let issued_at = u32::MAX - CHECKPOINT_MS;
+        let checkpoint = rec.next_effect(CAN_RECORD, at(issued_at)).expect("the wrapped cadence is due");
+        let failed_at = u32::MAX - CHECKPOINT_RETRY_MS / 2;
+        rec.apply_outcome_at(
+            RecorderOutcome::Failed { token: checkpoint.token(), error: RecorderError::Write },
+            failed_at,
+        );
+        let retry_at = failed_at.wrapping_add(CHECKPOINT_RETRY_MS);
+        assert!(retry_at < failed_at, "the test crosses the clock wrap");
+        assert!(rec.next_effect(CAN_RECORD, at(retry_at.wrapping_sub(1))).is_none());
+        assert!(matches!(rec.next_effect(CAN_RECORD, at(retry_at)), Some(RecorderEffect::Checkpoint { .. })));
     }
 
     #[test]
@@ -1712,20 +1819,30 @@ mod tests {
         assert_eq!(append(&mut rec, 3_002, 3), 3, "the retry is the same batch");
     }
 
-    /// The checkpoint outranks the append, which stops a blocked journal starving its own repair:
-    /// an executor that refuses samples until the failed write lands would never see that write if
-    /// an append could hold the slot in front of it.
+    /// The blocked checkpoint keeps its samples staged during backoff, then outranks them when the
+    /// recovery window ends.
     #[test]
-    fn a_checkpoint_that_is_owed_goes_before_the_staged_samples() {
+    fn a_failed_checkpoint_holds_samples_until_its_successful_retry() {
         let mut rec = ridden(2);
+        let staged = rec.staged().to_vec();
+        let continuation = rec.continuation();
         let checkpoint = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS)).expect("the cadence came due");
         assert!(matches!(checkpoint, RecorderEffect::Checkpoint { .. }), "{checkpoint:?}");
-        rec.apply_outcome(RecorderOutcome::Failed { token: checkpoint.token(), error: RecorderError::Write });
+        let failed_at = CHECKPOINT_MS + 2_000;
+        rec.apply_outcome_at(
+            RecorderOutcome::Failed { token: checkpoint.token(), error: RecorderError::Write },
+            failed_at,
+        );
 
-        let retry = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1)).expect("the blocked journal owes its repair");
+        assert!(rec.next_effect(CAN_RECORD, at(failed_at + CHECKPOINT_RETRY_MS - 1)).is_none());
+        assert_eq!(rec.staged(), staged, "the accepted suffix stays staged during recovery");
+        assert_eq!(rec.continuation(), continuation, "the accepted boundary stays unchanged");
+        let retry = rec
+            .next_effect(CAN_RECORD, at(failed_at + CHECKPOINT_RETRY_MS))
+            .expect("the blocked journal owes its repair");
         assert!(matches!(retry, RecorderEffect::Checkpoint { .. }), "the repair still outranks the samples: {retry:?}");
         rec.apply_outcome(RecorderOutcome::Checkpointed { token: retry.token(), status: CheckpointStatus::Durable });
-        assert_eq!(append(&mut rec, CHECKPOINT_MS + 2, 2), 2, "and the samples follow it");
+        assert_eq!(append(&mut rec, failed_at + CHECKPOINT_RETRY_MS + 1, 2), 2, "and the samples follow it");
     }
 
     #[test]
@@ -1792,20 +1909,21 @@ mod tests {
         assert_eq!(rec.staged(), &original[1..]);
         let repair = rec.next_effect(CAN_RECORD, at(4_000)).unwrap();
         assert!(matches!(repair, RecorderEffect::Checkpoint { .. }));
-        rec.apply_outcome(RecorderOutcome::Failed { token: repair.token(), error: RecorderError::Write });
-        let retry = rec.next_effect(CAN_RECORD, at(4_001)).unwrap();
+        rec.apply_outcome_at(RecorderOutcome::Failed { token: repair.token(), error: RecorderError::Write }, 8_000);
+        assert!(rec.next_effect(CAN_RECORD, at(8_000 + CHECKPOINT_RETRY_MS - 1)).is_none());
+        let retry = rec.next_effect(CAN_RECORD, at(8_000 + CHECKPOINT_RETRY_MS)).unwrap();
         assert!(matches!(retry, RecorderEffect::Checkpoint { .. }));
         // A stale append cannot consume the outstanding tail or the repair token.
         rec.apply_outcome(RecorderOutcome::Appended { token: first.token(), samples: 3 });
         assert_eq!(rec.staged(), &original[1..]);
         rec.apply_outcome(RecorderOutcome::Checkpointed { token: retry.token(), status: CheckpointStatus::Durable });
-        let tail = rec.next_effect(CAN_RECORD, at(4_002)).unwrap();
+        let tail = rec.next_effect(CAN_RECORD, at(8_000 + CHECKPOINT_RETRY_MS + 1)).unwrap();
         assert!(matches!(tail, RecorderEffect::Append { samples: 2, .. }));
         rec.apply_outcome(RecorderOutcome::Appended { token: tail.token(), samples: 2 });
-        let close = rec.next_effect(CAN_RECORD, at(4_003)).unwrap();
+        let close = rec.next_effect(CAN_RECORD, at(8_000 + CHECKPOINT_RETRY_MS + 2)).unwrap();
         assert!(matches!(close, RecorderEffect::Finalize { .. }));
         rec.apply_outcome(RecorderOutcome::Failed { token: close.token(), error: RecorderError::Write });
-        let retry = rec.next_effect(CAN_RECORD, at(4_004)).unwrap();
+        let retry = rec.next_effect(CAN_RECORD, at(8_000 + CHECKPOINT_RETRY_MS + 3)).unwrap();
         assert!(matches!(retry, RecorderEffect::Finalize { .. }));
         rec.apply_outcome(RecorderOutcome::Finalized { token: retry.token(), ride: 3 });
         assert!(!rec.recording());
@@ -1853,7 +1971,11 @@ mod tests {
             if discard {
                 rec.request(RecorderIntent::Discard);
             }
-            let next = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1)).unwrap();
+            let next_at = if discard { CHECKPOINT_MS + 1 } else { CHECKPOINT_MS + CHECKPOINT_RETRY_MS };
+            if !discard {
+                assert!(rec.next_effect(CAN_RECORD, at(next_at - 1)).is_none(), "Save waits for checkpoint recovery");
+            }
+            let next = rec.next_effect(CAN_RECORD, at(next_at)).unwrap();
             if discard {
                 assert!(matches!(next, RecorderEffect::Discard { .. }));
                 rec.apply_outcome(RecorderOutcome::Failed { token: next.token(), error: RecorderError::Write });
@@ -1869,10 +1991,10 @@ mod tests {
                     token: next.token(),
                     status: CheckpointStatus::Durable,
                 });
-                let append = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 2)).unwrap();
+                let append = rec.next_effect(CAN_RECORD, at(next_at + 1)).unwrap();
                 assert!(matches!(append, RecorderEffect::Append { samples: 3, .. }));
                 rec.apply_outcome(RecorderOutcome::Appended { token: append.token(), samples: 3 });
-                let close = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 3)).unwrap();
+                let close = rec.next_effect(CAN_RECORD, at(next_at + 2)).unwrap();
                 assert!(matches!(close, RecorderEffect::Finalize { .. }));
                 rec.apply_outcome(RecorderOutcome::Finalized { token: close.token(), ride: 4 });
                 assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh));
@@ -2140,6 +2262,7 @@ mod tests {
     #[test]
     fn a_recovered_continuation_restores_the_raw_summary_state() {
         let state = RideContinuation {
+            origin: RideOrigin { bike: BikeType::Mtb, trip: TripRef::new(9, 1, 3) },
             ridden_m: 12_345.5,
             moving_m: 12_000.25,
             moving_s: 2_400.0,
@@ -2159,6 +2282,7 @@ mod tests {
         assert_eq!(rec.continuation(), state);
         assert_eq!((rec.avg_hr(), rec.avg_power(), rec.avg_cadence()), (Some(150), Some(245), Some(87)));
         assert_eq!(rec.climb_m(), 321.0);
+        assert_eq!((rec.ride_stats().bike, rec.ride_stats().trip), (BikeType::Mtb, TripRef::new(9, 1, 3)));
     }
 
     #[test]

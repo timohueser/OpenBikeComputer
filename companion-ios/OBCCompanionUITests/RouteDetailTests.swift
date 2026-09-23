@@ -50,7 +50,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
         // A stat renders its value and unit as one text element.
         XCTAssertTrue(app.staticTexts["62.4 km"].exists, "distance stat missing")
-        XCTAssertTrue(app.staticTexts["3:20"].exists, "est. time stat missing")
+        XCTAssertTrue(app.staticTexts["3:12"].exists, "est. time stat missing")
         // The max grade derives from the saved record's geometry, so pin the shape and not a
         // fixture constant.
         let maxGrade = app.staticTexts.matching(
@@ -144,7 +144,7 @@ final class RouteDetailTests: XCTestCase {
 
     // MARK: Tracked dressing
 
-    /// Ride stats, the tracked tag, and the coming-soon services block.
+    /// The ride's stats line, the tracked tag, and the coming-soon services block.
     @MainActor
     func testTrackedDetailShowsRideStatsAndServices() {
         let app = launch()
@@ -158,8 +158,9 @@ final class RouteDetailTests: XCTestCase {
         card.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
 
-        XCTAssertTrue(app.staticTexts["58.2 km"].waitForExistence(timeout: 5), "ride distance stat missing")
-        XCTAssertTrue(app.staticTexts["2:51"].exists, "moving-time stat missing")
+        let stats = app.staticTexts["detail.statsLine"]
+        XCTAssertTrue(stats.waitForExistence(timeout: 5), "ride stats line missing")
+        XCTAssertTrue(stats.label.hasPrefix("58.2 km · 2:51 · "), "distance and moving time lead: \(stats.label)")
         XCTAssertTrue(app.staticTexts["Strava"].exists, "services block missing")
         XCTAssertTrue(app.staticTexts["Komoot"].exists)
         XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")
@@ -211,11 +212,11 @@ final class RouteDetailTests: XCTestCase {
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
-        XCTAssertTrue(app.buttons["detail.saveToPlanned"].exists)
+        XCTAssertTrue(app.buttons["import.newRoute"].exists)
         XCTAssertTrue(app.buttons["Cancel"].exists, "E1 must keep the Cancel escape")
         snap(app, "E1-import-landing")
 
-        app.buttons["detail.saveToPlanned"].tap()
+        app.buttons["import.newRoute"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "save should dismiss E1")
         let savedRow = app.staticTexts["Schwarzwald Tour · Tag 2"]
         XCTAssertTrue(savedRow.waitForExistence(timeout: 5), "saved route must land in the Planned list")
@@ -254,7 +255,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5), "E1 title kept the old name")
         snap(app, "E1-renamed")
 
-        app.buttons["detail.saveToPlanned"].tap()
+        app.buttons["import.newRoute"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5),
                       "the renamed import must land in Planned under the new name")

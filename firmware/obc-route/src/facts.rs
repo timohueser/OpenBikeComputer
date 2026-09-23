@@ -74,6 +74,43 @@ impl RouteReader<'_> {
         }
         accumulator.finish(self.total_distance_m)
     }
+
+    /// Facts from `start_m` to each of `ends`, in one walk that stops after the farthest end.
+    /// A stopped walk cannot check the stored total, so a caller checks it with
+    /// [`interval_facts`](Self::interval_facts) first.
+    #[inline(never)]
+    pub fn interval_facts_to<const N: usize>(
+        &self,
+        start_m: u32,
+        ends: &[u32],
+    ) -> Result<Vec<IntervalFacts, N>, Error> {
+        let start_m = start_m.min(self.total_distance_m);
+        let map = self.attribution_map()?;
+        let mut accumulators = Vec::<FactsAccumulator, N>::new();
+        for &end in ends {
+            let end_m = end.min(self.total_distance_m);
+            if start_m > end_m {
+                return Err(Error::BadOffset);
+            }
+            let accumulator = FactsAccumulator::new(self.identity(), map, start_m, end_m);
+            accumulators.push(accumulator).map_err(|_| Error::BadOffset)?;
+        }
+        let farthest = ends.iter().max().map_or(0, |&end| end.min(self.total_distance_m));
+        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        for k in 0..self.chunks().len() {
+            let Some(walked) = accumulators.first().map(|a| a.distance as u32) else { break };
+            if walked >= farthest {
+                break;
+            }
+            self.decode_chunk(k, &mut buf)?;
+            for &p in buf.iter().skip(usize::from(k > 0)) {
+                for accumulator in &mut accumulators {
+                    accumulator.push(p, &mut |_| {});
+                }
+            }
+        }
+        Ok(accumulators.into_iter().map(|a| a.facts).collect())
+    }
 }
 
 pub(crate) struct FactsAccumulator {

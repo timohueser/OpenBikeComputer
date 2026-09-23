@@ -4,6 +4,7 @@ use core::num::NonZeroUsize;
 
 use obc_route::{Climbs, RouteReader, Waypoints};
 
+use super::arrival::Arrival;
 use super::NavigatorMachine;
 
 /// A route-catalog index stored as `index + 1`, so [`Option`] gets a compact empty state. Catalog
@@ -20,6 +21,16 @@ impl RouteIndex {
     const fn get(self) -> usize {
         self.0.get() - 1
     }
+}
+
+/// Where the rider stood on the loaded route when the ride ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RideEnd {
+    /// The route's catalog index.
+    pub(crate) route: usize,
+    pub(crate) progress_m: u32,
+    /// The rider had arrived at the route's end.
+    pub(crate) arrived: bool,
 }
 
 /// A seam re-anchor waiting for the next tick with matching route geometry.
@@ -41,6 +52,7 @@ pub struct RouteState {
     pub(crate) active_climb: Option<usize>,
     pub(crate) next_waypoint: Option<usize>,
     pub(crate) waypoint_count: usize,
+    pub(crate) arrival: Arrival,
     seam_request: Option<SeamRequest>,
 }
 
@@ -55,6 +67,7 @@ impl RouteState {
             active_climb: None,
             next_waypoint: None,
             waypoint_count: 0,
+            arrival: Arrival::Riding,
             seam_request: None,
         }
     }
@@ -86,6 +99,7 @@ impl RouteState {
             "all route counters start at zero"
         );
         assert!(!self.off_route, "an unloaded route is not off-route");
+        assert_eq!(self.arrival, Arrival::Riding, "nothing has arrived");
     }
 }
 
@@ -203,15 +217,41 @@ impl NavigatorMachine {
         &self.waypoints
     }
 
+    /// Make the next fresh ride follow the active route from `progress_m`: a forward-only floor
+    /// there, as a seam gives.
+    pub(crate) fn join_at(&mut self, progress_m: u32) {
+        self.join_m = Some(progress_m);
+    }
+
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.
     pub(crate) fn reset_ride(&mut self) {
         self.route_match.reset();
-        self.following.seam_request = None;
+        self.ride_end = None;
+        self.following.seam_request = self
+            .join_m
+            .take()
+            .zip(self.following.active_route)
+            .map(|(anchor_m, route)| SeamRequest { route: RouteIndex::new(route), anchor_m });
         self.following.progress_m = 0;
         self.following.off_route = false;
         self.following.dist_to_route_m = 0;
         self.following.active_climb = None;
         self.following.next_waypoint = None;
+        self.following.arrival = Arrival::Riding;
+    }
+
+    /// Keep where the rider stands on the loaded route, just before the ride ends and unloads it.
+    pub(crate) fn note_ride_end(&mut self) {
+        self.ride_end = self.following.active_route.map(|route| RideEnd {
+            route,
+            progress_m: self.following.progress_m,
+            arrived: self.following.arrival.arrived(),
+        });
+    }
+
+    /// Where the rider stood when the ride ended, once.
+    pub(crate) fn take_ride_end(&mut self) -> Option<RideEnd> {
+        self.ride_end.take()
     }
 
     /// Discard the matcher's forward-only floor when a ride session opens or closes.
@@ -235,6 +275,7 @@ impl NavigatorMachine {
             // it must survive into. Stale seams die on the request's own route-key check.
             self.route_match.reset();
             self.matched_route = self.following.active_route;
+            self.following.arrival = Arrival::Riding;
             dirty = true; // route load / swap repaints the route line + recenters
         }
         let route_total_before = self.following.route_total_m;
@@ -267,11 +308,26 @@ impl NavigatorMachine {
 
     /// Snap a fresh fix onto the active route: run the matcher and store the result on
     /// [`RouteState`]. Called once per fresh fix, never on a dropout, so progress is not re-derived
-    /// from a stale position.
+    /// from a stale position. After [`Arrival`] the matcher stands still and progress holds at the
+    /// route end. An Assistant visit has its own arrival at its stop, so the route end does not
+    /// arrive while one is under way.
     pub(crate) fn match_fix(&mut self, fix: obc_ports::Fix, route: &RouteReader) {
+        let at = (fix.lon, fix.lat);
+        if self.following.arrival.arrived() {
+            self.following.arrival = self.following.arrival.on_fix(at, route, &self.following);
+            return;
+        }
         let m = self.route_match.update_to(fix.lon, fix.lat, route, self.visit_ceiling().unwrap_or(u32::MAX));
         self.following.apply_match(m);
-        self.advance_visit((fix.lon, fix.lat), route);
+        self.advance_visit(at, route);
+        if self.active_visit() {
+            return;
+        }
+        self.following.arrival = self.following.arrival.on_fix(at, route, &self.following);
+        if self.following.arrival.arrived() {
+            let end = obc_route::Match { progress_m: route.total_distance_m, off_route: false, dist_m: 0 };
+            self.following.apply_match(end);
+        }
     }
 
     /// A fresh fix went unmatched. The Recalculating freeze holds the matcher for the length of a
@@ -363,6 +419,28 @@ impl NavigatorMachine {
         false
     }
 
+    /// Load catalog route `route`: activate it, and owe the settings its bike type. Only a rider's
+    /// start or swap, and a phone replace of the active route, are loads. A browse preview, a
+    /// detour, a visit and a resume change the active route without changing the rider's type.
+    pub(crate) fn load_route(&mut self, route: usize) {
+        self.set_active_route(Some(route));
+        self.bike_type_owed = Some(route);
+    }
+
+    /// The active route's bytes were replaced, which is a load of the new bytes.
+    pub(crate) fn owe_bike_type(&mut self) {
+        self.bike_type_owed = self.following.active_route;
+    }
+
+    /// The loaded route's bike type, once per load, as soon as it is active and its reader open.
+    /// The index is kept, because a selection can wait behind an Assistant checkpoint.
+    pub(crate) fn take_loaded_bike_type(&mut self, route: Option<&RouteReader>) -> Option<crate::settings::BikeType> {
+        let route =
+            route.filter(|_| self.bike_type_owed.is_some() && self.bike_type_owed == self.following.active_route)?;
+        self.bike_type_owed = None;
+        Some(route.bike_type())
+    }
+
     /// Build once per active route at render time. A missing reader clears stale geometry but
     /// leaves the build pending; an unloaded route has no profile.
     pub(crate) fn refresh_route_profile(&mut self, route: Option<&RouteReader>) {
@@ -393,6 +471,7 @@ impl NavigatorMachine {
         self.following.progress_m = 0;
         self.following.off_route = false;
         self.following.dist_to_route_m = 0;
+        self.following.arrival = Arrival::Riding;
         self.following.seam_request = None;
     }
 
@@ -404,6 +483,7 @@ impl NavigatorMachine {
         // nothing resets. When it vanished, navigation unloads and the per-route state goes with it.
         let old_active = self.following.active_route;
         self.following.active_route = old_active.and_then(remap);
+        self.ride_end = self.ride_end.and_then(|end| Some(RideEnd { route: remap(end.route)?, ..end }));
         // A queued seam re-anchor follows the same durable route identity as `active_route`, or is
         // cancelled if that route vanished. So does Navigator's undelivered detour request.
         self.following.remap_seam(remap);
@@ -411,6 +491,7 @@ impl NavigatorMachine {
             self.route_match.reset();
         }
         self.matched_route = self.matched_route.and_then(remap);
+        self.bike_type_owed = self.bike_type_owed.and_then(remap);
         let old_profile = self.profile_route;
         self.profile_route = old_profile.and_then(remap);
         if old_profile.is_some() && self.profile_route.is_none() {

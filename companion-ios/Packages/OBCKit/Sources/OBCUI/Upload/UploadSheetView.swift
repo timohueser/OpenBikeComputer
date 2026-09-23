@@ -203,7 +203,6 @@ private struct PreviewUploadTransport: DeviceLink, DeviceObjects {
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func deleteRoute(_ id: DeviceObjectID) async throws {}
     func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
-    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
 
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {
@@ -260,7 +259,7 @@ private var previewBlob: RouteBlob {
             distanceMeters: 62_400, elevationGainMeters: 840
         ),
         waypoints: [waypoint],
-        payload: RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Kettle Moraine Loop")
+        payload: RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Kettle Moraine Loop", bikeType: .road)
     )
 }
 #endif

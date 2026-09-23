@@ -53,6 +53,7 @@ fn complete<T>(future: impl Future<Output = T>) -> T {
 }
 fn context(n: u32) -> RideContinuation {
     RideContinuation {
+        origin: Default::default(),
         ridden_m: n as f32 * 4.25,
         moving_m: n as f32 * 3.75,
         moving_s: n as f32,
@@ -94,6 +95,9 @@ fn stats() -> obc_route::RideStats {
         avg_cadence: None,
         avg_power: None,
         max_power: None,
+        bike: obc_formats::bike::BikeType::Road,
+        trip: None,
+        trip_name: obc_formats::ride::Name::EMPTY,
     }
 }
 fn setup() -> (&'static sim::SparseDisk, &'static FlatStore<FlatCard>, Writer, Recorder) {
@@ -300,11 +304,7 @@ fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample(
             } else {
                 assert_eq!(store.entries().count(), 1);
                 assert_eq!(
-                    complete(recorder.checkpoint(
-                        20_000,
-                        &app.recorder.ride_stats(),
-                        app.recorder.checkpoint_context()
-                    )),
+                    complete(recorder.checkpoint(20_000, &app.ride_stats(), app.recorder.checkpoint_context())),
                     Ok(CheckpointStatus::Durable)
                 );
                 assert!(!writer.attempts.borrow().is_empty());

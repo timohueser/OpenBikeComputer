@@ -2,16 +2,13 @@
   "schema": 3,
   "package": "sim-grimsel",
   "archive": {
-    "bytes": 4137554,
-    "sha256": "5d320bd99a0d039590e59121aa9c0279c128501f454c2aa39160d156e3c3fd86"
+    "bytes": 4203719,
+    "sha256": "52f5ef7d1f6ab92d7a05183c5e4c026dab4e0c751c0ec48829d7ffad6e849092"
   },
-  "base_artifact_producer": {
-    "source_commit": "3d835f672",
+  "producer": {
+    "source_commit": "e0a047c6c",
     "executables_sha256": {
-      "obc-pack": "94593bc035466f33eff445914bced6d87acf658c0b58262dac01add7dd5dc01d",
-      "obc-bake": "d54eaf480cfb47b95818891cda3fb770f863f68b58cb6ce00c94c5728ce570bf",
-      "obc-dem": "2f69a941c0de98529e12f31bc28e0f1cd9fc5ac87618593d07b54d31fe3f91dc",
-      "obcm-assemble": "7cdd8f52acce5d99ed3c20599a78a464bf1c7cd51618bc9194ffd83a4aadd222"
+      "obc-pack": "a73373000d77ec3ed7be073fd32d364b5557dca5be1647050de2e08025a48d68"
     }
   },
   "bounds_lon_lat": [
@@ -31,22 +28,9 @@
     "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
   },
   "map": {
-    "bytes": 4775209,
-    "sha256": "d1e22629ab4916d5f66cefd541ca0f843dcced84f75a1625773a0976e7adf374",
+    "bytes": 4802025,
+    "sha256": "0c9703fd13c193c4508ea62db4949b92bddb99d9a8b3ba9ac6627b132c849c17",
     "obcm_version": 19,
-    "format_upgrade": {
-      "input_sha256": "16f826a2e3d4283221dc47cb502cc9c2e7689d94a447d61dc591202de0e5c209",
-      "input_obcm_version": 18,
-      "dark_skin": {
-        "path": "builder/presets/skins/dusk.json",
-        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
-      },
-      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
-      "transformer": {
-        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
-        "name": "upgrade_obcm_v18_to_v19.py"
-      }
-    },
     "settlement_records": 19,
     "landmark_records": 7,
     "landmark_article_variants": 17,
@@ -58,7 +42,20 @@
         "variants": 4,
         "photo": true
       }
-    ]
+    ],
+    "format_upgrade": {
+      "input_sha256": "8b7b72c99286e86a89bb25398e0b646eb55d1a4f0e69ee36ce730fafc90bf712",
+      "input_obcm_version": 18,
+      "dark_skin": {
+        "path": "builder/presets/skins/dusk.json",
+        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+      },
+      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
+      "transformer": {
+        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
+        "name": "upgrade_obcm_v18_to_v19.py"
+      }
+    }
   },
   "land_source": {
     "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",

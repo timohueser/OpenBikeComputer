@@ -10,7 +10,7 @@ import { planTripDelete, type TripStages } from "./tripDelete";
 const trip = (objectId: number, name: string, stages: readonly number[] | null): TripStages => ({
     objectId: BigInt(objectId),
     name,
-    detail: stages === null ? null : { stages: stages.map(BigInt) },
+    detail: stages === null ? null : { days: stages.map((id) => ({ route: BigInt(id) })) },
 });
 
 const routes = (...ids: number[]) => new Set(ids.map(BigInt));

@@ -575,11 +575,9 @@ impl Demo {
         // the last one. That is what lets a drawer's sheet grow over a base the frame no longer
         // draws.
         app.set_resident_frame(true);
-        // Mirror the map's routing-profile names for the bike-type editor and overview label.
-        app.set_nav_profiles(self.map.tables().nav_profiles());
         app.set_map_nav_graph(self.map.tables().has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
-        app.set_rides(self.rides.catalog());
+        app.set_rides(self.rides.catalog(), self.rides.trip_names());
         // Manual climb mode for both baselines: the whole demo ride is a climb, so Auto would swap
         // the opening Map for the Climb profile within the first frames.
         //
@@ -915,8 +913,12 @@ mod tests {
 
         let mut now = 16.0;
         drive(&mut d, &mut now, "press", "RouteOverview");
+        // The replay stands mid-climb, far from the route's first point, so the ride asks first.
+        drive(&mut d, &mut now, "press", "StartAway");
+        drive(&mut d, &mut now, "step:1", "StartAway");
         drive(&mut d, &mut now, "press", "Map");
-        assert!(d.app.recording(), "Start ride begins the session before the next chapter");
+        assert!(d.app.recording(), "Join nearest begins the session before the next chapter");
+        assert!(d.app.progress_m() > 1_000, "the ride joins the route mid-climb");
     }
 
     #[test]
@@ -930,7 +932,7 @@ mod tests {
         assert!(d.rides.catalog().is_empty(), "no fabricated ride or archive proof");
 
         drive(&mut d, &mut now, "enter", "Map");
-        let stats = d.app.recorder.ride_stats();
+        let stats = d.app.ride_stats();
         assert!(stats.distance_m > 1_000, "the visible Finish flow should contain a real partial ride");
         assert!(stats.moving_time_s > 60);
         assert!(stats.climb_m > 50);

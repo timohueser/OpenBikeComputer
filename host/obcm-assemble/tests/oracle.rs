@@ -781,9 +781,19 @@ fn route(map: &[u8], from: (i32, i32), to: (i32, i32)) -> Option<u32> {
     let mut scratch = NavScratch::<4096>::new_boxed();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    plan_route(&reader, from, to, "oracle", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink)
-        .ok()
-        .map(|stats| stats.total_distance_m)
+    plan_route(
+        &reader,
+        from,
+        to,
+        "oracle",
+        obc_route::BikeType::Road,
+        &mut scratch,
+        &mut tiles,
+        &mut NullElevation,
+        &mut sink,
+    )
+    .ok()
+    .map(|stats| stats.total_distance_m)
 }
 
 /// Route equivalence. Endpoint pairs whose straight line crosses one or two cell seams must route
@@ -1659,7 +1669,7 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
     let cfg = config();
     let (mut ing, ways) = fixture(&cfg);
     let dir = scratch("peak-articles");
-    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Massif&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors","display_pages":["Source: Authors"]});
+    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Massif&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors"});
     let write_catalogue = |name: &str, nodes: Vec<i64>| {
         let p = dir.join(name);
         let c = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":{},"omissions":[],
@@ -1780,7 +1790,7 @@ fn a_peak_record_with_a_photo_and_no_text_survives_the_cut_and_the_assembler() {
     let pixels = vec![11u8; PHOTO_PIXELS];
     std::fs::write(dir.join("photo.rgb222"), &pixels).unwrap();
     let digest: String = sha256(&pixels).iter().map(|b| format!("{b:02x}")).collect();
-    let credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Peak.png","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":"Example","display_pages":["Example"]});
+    let credit = json!({"source_url":"https://commons.wikimedia.org/wiki/File:Peak.png","revision":"1","license_url":"https://creativecommons.org/licenses/by/4.0/","original_notices":"{\"Artist\":{\"value\":\"Example\"}}"});
     let catalogue = dir.join("peaks.json");
     std::fs::write(
         &catalogue,

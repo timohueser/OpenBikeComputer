@@ -22,22 +22,30 @@ pub(crate) fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, ri
 }
 
 /// [`title_frame`] plus the BLE connected indicator: a small Bluetooth rune in the title bar's
-/// right slot. The `right` readout is inset left of it, so the two never overlap. The rune does not
-/// animate, so it repaints only on a link change.
+/// right slot. The `right` readout is inset left of it, and the title is cut with `..` left of the
+/// readout, so the three never overlap. The rune does not animate, so it repaints only on a link
+/// change.
 pub(crate) fn title_frame_ble(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str, ble_connected: bool) {
     use palette::*;
+    const GAP: i32 = 8;
     cv.clear(PARCHMENT);
+    let right_x = if ble_connected { w - 14 - BLE_GLYPH_W - GAP } else { w - 14 };
+    let right_w = if right.is_empty() { 0 } else { text_width(right, Font::Label) as i32 + GAP };
+    title_chrome(cv, w, h, &super::marquee::fit(title, right_x - right_w - 14, Font::Body));
+    if ble_connected {
+        ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, BAR_TEXT);
+    }
+    // The two y values differ because the Body and Label glyphs have different baselines.
+    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, BAR_TEXT);
+}
+
+/// The outline and the titled wood bar of [`title_frame`], without its clear: for a page whose
+/// map band has already painted the background.
+pub(crate) fn title_chrome(cv: &mut impl Surface, w: i32, h: i32, title: &str) {
+    use palette::*;
     cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
     cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
-    // The two y values differ because the Body and Label glyphs have different baselines.
     cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, BAR_TEXT);
-    let right_x = if ble_connected {
-        ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, BAR_TEXT);
-        w - 14 - BLE_GLYPH_W - 8
-    } else {
-        w - 14
-    };
-    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, BAR_TEXT);
 }
 
 /// Total width (px) the [`ble_glyph`] rune occupies, so callers can reserve its slot.
@@ -93,6 +101,24 @@ pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
     seg(cv, (cx - k / 3, cy + k * 2 / 3), (cx + k, cy - k * 2 / 3));
 }
 
+/// The half-width of [`row_check`].
+pub(crate) const ROW_CHECK_HALF: i32 = 5;
+
+/// The two-stroke check at list-row scale, centred at `c` on the cap of a row's name line.
+pub(crate) fn row_check(cv: &mut impl Surface, c: Point, color: u16) {
+    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32), color: u16) {
+        const N: i32 = 8;
+        for s in 0..=N {
+            let x = a.0 + (b.0 - a.0) * s / N;
+            let y = a.1 + (b.1 - a.1) * s / N;
+            cv.disc(Point::new(x, y), 1, color);
+        }
+    }
+    let k = ROW_CHECK_HALF;
+    seg(cv, (c.x - k, c.y), (c.x - k / 3, c.y + k * 2 / 3), color);
+    seg(cv, (c.x - k / 3, c.y + k * 2 / 3), (c.x + k, c.y - k * 2 / 3), color);
+}
+
 pub(crate) fn wrapped_line_pitch(font: Font) -> i32 {
     font.line_height() as i32 - 5
 }
@@ -105,11 +131,21 @@ pub(crate) const fn copy_w(w: i32) -> i32 {
 
 /// Greedy word wrap over the monospace cell, one call of `emit` per line. The budget counts
 /// characters, not bytes: the face renders every char of its repertoire in one cell, so a byte
-/// count breaks the accented languages early. A single word wider than the budget clips.
-fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
+/// count breaks the accented languages early. A single word wider than the budget breaks after
+/// its last slash that fits, else its last hyphen, else its last dot, else at the budget.
+pub(crate) fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
     let budget = (width_px / font.char_width() as i32).max(1) as usize;
     let mut line: heapless::String<64> = heapless::String::new();
-    for word in text.split(' ') {
+    for mut word in text.split(' ') {
+        while let Some((limit, _)) = word.char_indices().nth(budget) {
+            let cut = ['/', '-', '.'].iter().find_map(|&c| word[..limit].rfind(c)).map_or(limit, |at| at + 1);
+            if !line.is_empty() {
+                emit(&line);
+                line.clear();
+            }
+            emit(&word[..cut]);
+            word = &word[cut..];
+        }
         let used = line.chars().count();
         if used != 0 && used + 1 + word.chars().count() > budget {
             emit(&line);
@@ -240,6 +276,16 @@ mod tests {
         };
         assert_eq!(lines(18 * Font::Label.char_width() as i32), 1);
         assert_eq!(lines(17 * Font::Label.char_width() as i32), 2);
+    }
+
+    #[test]
+    fn a_word_wider_than_the_budget_breaks_after_a_slash_hyphen_or_dot_or_at_the_budget() {
+        let mut lines = std::vec::Vec::new();
+        let copy = "2019-07-30-Dunlough Castle 12345678901234567890";
+        wrap(copy, 18 * Font::Label.char_width() as i32, Font::Label, |line| {
+            lines.push(std::string::String::from(line))
+        });
+        assert_eq!(lines, ["2019-07-30-", "Dunlough Castle", "123456789012345678", "90"]);
     }
 
     #[test]

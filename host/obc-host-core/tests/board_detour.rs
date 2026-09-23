@@ -180,7 +180,7 @@ impl Harness {
     }
     fn accept(&mut self, effect: Effect) -> Option<Outcome> {
         assert!(self.executor.accepts(&effect));
-        self.executor.accept(effect, &self.app, self.store, &mut self.guard, 0)
+        self.executor.accept(effect, &self.app, self.store, &mut self.guard, obc_route::BikeType::Road)
     }
     fn acquire(&mut self) {
         let token = self.tokens.issue();
@@ -191,7 +191,8 @@ impl Harness {
                     route: 0,
                     from: (500_000, 500_000),
                     progress_m: 0,
-                    target_m: 2226
+                    target_m: 2226,
+                    leg: obc_route::Leg::Detour,
                 })
             }),
             None
@@ -451,7 +452,7 @@ fn assistant_board_admission_and_terminal_release_preserve_original_ownership() 
         progress_m: 0,
         occurrence: 0,
         required_anchors_m: [0; 3],
-        profile: 0,
+        profile: obc_route::BikeType::Road,
         facts_policy: REVIEW_FACTS_POLICY,
         unresolved_avoidance: false,
     };

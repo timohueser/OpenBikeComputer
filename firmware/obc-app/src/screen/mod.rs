@@ -22,9 +22,11 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings, Theme};
 
-mod assistant;
+mod arrival;
+pub(crate) mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
+mod day_done;
 mod detour;
 mod dfu;
 mod find_place;
@@ -56,15 +58,20 @@ mod route_overview;
 mod route_received;
 mod route_swap;
 pub(crate) mod settings;
+mod start_away;
 mod statistics;
 mod trip_delete;
 pub(crate) mod vocab;
 mod warning;
 
+pub use arrival::ArrivalScreen;
+pub(crate) use arrival::ArrivalView;
 pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
+pub use day_done::DayDoneScreen;
+pub(crate) use day_done::RideTotals;
 pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
@@ -75,6 +82,7 @@ pub use home::HomeScreen;
 pub(crate) use journey::JourneyError;
 pub use journey::JourneyScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
+pub(crate) use landmarks::source_layout;
 pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
 pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
@@ -108,6 +116,7 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
+pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 mod whats_next;
@@ -243,9 +252,11 @@ pub struct Ctx<'a> {
     pub routes: &'a [RouteSummary],
     pub rides: &'a [RideEntry],
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names. Empty before a map load and on a router-less image,
-    /// where the bike-type row is inert because there is no choice to offer.
-    pub nav_profiles: &'a crate::NavProfiles,
+    /// The device's trip progress records, at most one per trip key. A trip without one reads as
+    /// not started.
+    pub trip_progress: &'a [crate::trip::TripProgress],
+    /// Where the active trip's next day meets the day before; `None` loads the day as it is.
+    pub day_join: Option<crate::trip::DayJoin>,
     /// The App-owned POI-list snapshot, read-only: the POI list's `Gesture::Press` reads the
     /// highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen.
     pub poi_scratch: &'a PoiScratch,
@@ -280,8 +291,6 @@ impl Ctx<'_> {
             navigation: self.navigator.route_state(),
             settings: self.settings,
             recording: self.recorder.recording(),
-
-            nav_profiles: self.nav_profiles,
         }
     }
 }
@@ -291,7 +300,6 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     // The screens under test read these but never fill them, so one immutable `'static` each
     // serves every caller. A test-local temporary could not outlive this call.
     static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
-    static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
     Ctx {
         find: Box::leak(Box::new(crate::find_place::FindState::new())),
         landmarks: Box::leak(Box::new(crate::landmarks::Landmarks::new())),
@@ -303,7 +311,8 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         routes: &[],
         rides: &[],
         trips: &[],
-        nav_profiles: &EMPTY_PROFILES,
+        trip_progress: &[],
+        day_join: None,
         backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
         corridor: &[],
@@ -357,10 +366,17 @@ pub struct Render<'a> {
     pub unaccepted_routes: u64,
     pub internal_routes: u64,
     pub rides: &'a [RideEntry],
+    /// The names of the ride catalog's trips, one per trip key.
+    pub ride_trips: &'a [crate::RideTrip],
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names; a stale index resolves to profile 0, the router's
-    /// fallback. Resident in the App because these frames draw without a `Reader` on the board.
-    pub nav_profiles: &'a crate::NavProfiles,
+    /// The device's trip progress records, at most one per trip key. A trip without one reads as
+    /// not started.
+    pub trip_progress: &'a [crate::trip::TripProgress],
+    /// Where the active trip's next day meets the day before; `None` loads the day as it is.
+    pub day_join: Option<crate::trip::DayJoin>,
+    /// The length of the loaded trip day's later days, or `None` when the loaded route is not a
+    /// trip day.
+    pub trip_later_m: Option<u32>,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -370,9 +386,13 @@ pub struct Render<'a> {
     /// The viewed ride's recorded-track elevation profile, host-filled on detail entry and
     /// invalidated on exit. `None` while the fill still streams and on every other screen.
     pub ride_profile: Option<&'a Profile>,
+    /// Tomorrow's profile on the day-done card, host-filled into the ride profile's buffer.
+    pub day_profile: Option<&'a Profile>,
     /// The climb the rider is currently on, or `None` between climbs. A `Some` means a climb is
     /// tracked and both halves are valid, so a screen never reads a stale detail buffer.
     pub climb: Option<ActiveClimb<'a>>,
+    /// The active route's detected climbs, in route order. Empty when no route is loaded.
+    pub climbs: &'a obc_route::Climbs,
     /// The active route's named-waypoint table, in route order. Empty when no route is loaded, so a
     /// screen iterates it unconditionally.
     pub waypoints: &'a Waypoints,
@@ -459,8 +479,6 @@ impl Render<'_> {
             navigation: self.navigation,
             settings: self.settings,
             recording: self.recording,
-
-            nav_profiles: self.nav_profiles,
         }
     }
 
@@ -486,9 +504,10 @@ impl Render<'_> {
             next_waypoint: self.navigation.next_waypoint,
             now: self.now,
             now_ms: self.now_ms,
-            bike_profile_idx: self.settings.bike_profile_idx,
+            bike_type: self.settings.bike_type,
             language: self.settings.language,
             next_ahead: self.next_ahead,
+            trip_later_m: self.trip_later_m,
         }
     }
 }
@@ -627,7 +646,7 @@ pub enum RenderKeyKind {
     SensorSettings,
 
     /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
-    /// the rows are merged from.
+    /// the rows are merged from. The Assistant list shares it for its What's next hint.
     UpAhead,
     Drawer,
 }
@@ -863,7 +882,7 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map(),
-    Assistant(AssistantScreen) => Caps::nav(),
+    Assistant(AssistantScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     PeakArticle(PeakArticleScreen) => Caps::nav().reader(ReaderNeed::Articles),
@@ -879,6 +898,9 @@ screens! {
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
+    /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
+    /// totals. OK returns Home.
+    DayDone(DayDoneScreen) => Caps::modal(),
     Menu(MenuScreen) => Caps::nav(),
     /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
     /// platform-fed, so the screen is unreachable when no panorama data is installed.
@@ -909,13 +931,21 @@ screens! {
     /// hold records the trip's durable id for the host to delete the trip and its member routes.
     RouteCleanup(RouteCleanupScreen) => Caps::nav(),
     TripDelete(TripDeleteScreen) => Caps::nav(),
-    /// The stored-rides list: name and sync glyph over a `D MON · distance` line; press opens the
-    /// Ride detail.
+    /// The stored-rides list, with a trip's rides in one folder; a folder press pushes the trip's
+    /// rides, a ride press opens the Ride detail.
     Rides(RidesScreen) => Caps::nav(),
-    /// The recorded sibling of the Route overview: the tracked ride's elevation band, a stat
-    /// ledger, and the guarded Delete-ride row.
-    RideDetail(RideDetailScreen) => Caps::nav(),
-    RouteOverview(RouteOverviewScreen) => Caps::nav(),
+    /// The recorded twin of the Route overview: the ridden track on the device map, then the
+    /// profile, each over a stat ledger, and the guarded Delete-ride row. A static map base.
+    RideDetail(RideDetailScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
+    /// The route on the device map over its stats, then the full-height profile. A map base
+    /// for the map band, but a static page: it is no ride view and redraws on no fix.
+    RouteOverview(RouteOverviewScreen) => Caps { base: BaseContent::Map, reader: ReaderNeed::Always, recess: false, ..Caps::nav() },
+    /// START RIDE away from the route start: Ride to start, Join nearest, or Cancel.
+    StartAway(StartAwayScreen) => Caps::nav(),
+    /// The end of the loaded route during a ride: Finish ride, Ride on to the next trip day, or
+    /// Keep riding. Only the card scheduler opens it, and it waits until the rider has closed
+    /// everything over the riding page.
+    Arrival(ArrivalScreen) => Caps::modal(),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt(),
     /// The idle route-upload prompt: Start navigation or Dismiss. Host-pushed, and auto-closes
     /// after [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory: the route is already committed.
@@ -1002,7 +1032,7 @@ impl Screen {
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.motion.needs_base(),
-            Screen::ContextDrawer(s) => s.motion.needs_base(),
+            Screen::ContextDrawer(s) => s.motion.needs_base() || s.draws_hero(),
             _ => false,
         }
     }
@@ -1061,7 +1091,18 @@ impl Screen {
             Screen::PoiDetail(s) => s.prepare(px),
             Screen::Detour(s) => s.prepare(px),
             Screen::DetourPreview(s) => s.prepare(px),
+            Screen::StartAway(s) => s.prepare(px),
             _ => {}
+        }
+    }
+
+    /// The rectangle this screen's hold fill draws in, for a region-only repaint of a hold step.
+    /// `None` on a screen that has not declared one, which a host then repaints in full.
+    pub(crate) fn hold_fill_region(&self, w: i32, h: i32) -> Option<Rectangle> {
+        match self {
+            Screen::RouteOverview(_) => Some(RouteOverviewScreen::hold_fill_region(w, h)),
+            Screen::RideDetail(_) => Some(RideDetailScreen::hold_fill_region(w, h)),
+            _ => None,
         }
     }
 
@@ -1081,6 +1122,7 @@ impl Screen {
             Screen::RideControl(s) => s.selection_is_guarded(),
             Screen::RideRecovery(s) => s.selection_is_guarded(),
             Screen::RouteSwap(s) => s.selection_is_guarded(),
+            Screen::Arrival(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Connections(s) => s.selection_is_guarded(state),
@@ -1133,6 +1175,7 @@ impl Screen {
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
             Screen::RideDetail(s) => s.tick_timers(now_ms),
+            Screen::DayDone(s) => s.tick_timers(now_ms),
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
             Screen::PeakView(s) => s.tick_timers(now_ms, w, h),
             Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),
@@ -1181,8 +1224,8 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
         return Transition::Pop;
     };
     let (lon, lat) = (route.start_lon, route.start_lat);
-    cx.navigator.set_active_route(Some(i));
-    begin_riding_session(cx, lon, lat)
+    cx.navigator.load_route(i);
+    begin_riding_session(cx.state, cx.activity, cx.recorder, lon, lat)
 }
 
 /// Start a route-less tracking session from a non-tracking state. Identical to [`start_ride`]
@@ -1192,15 +1235,21 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
 pub(crate) fn start_ride_routeless(cx: &mut Ctx) -> Transition {
     let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
     cx.navigator.set_active_route(None);
-    begin_riding_session(cx, lon, lat)
+    begin_riding_session(cx.state, cx.activity, cx.recorder, lon, lat)
 }
 
-/// The session-begin shared by [`start_ride`] and [`start_ride_routeless`]. The caller sets
-/// `active_route` first — the one thing that differs between the two starts.
-fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
-    cx.state.enter_riding_view(lon, lat);
-    cx.activity.mode = Mode::Riding;
-    cx.recorder.request(crate::RecorderIntent::Start);
+/// The session-begin shared by [`start_ride`], [`start_ride_routeless`] and the landing of Ride to
+/// start. The caller sets `active_route` first — the one thing that differs between the starts.
+pub(crate) fn begin_riding_session(
+    state: &mut AppState,
+    activity: &mut Activity,
+    recorder: &mut crate::RecorderMachine,
+    lon: i32,
+    lat: i32,
+) -> Transition {
+    state.enter_riding_view(lon, lat);
+    activity.mode = Mode::Riding;
+    recorder.request(crate::RecorderIntent::Start);
     Transition::Root(Screen::Map(MapScreen::new()))
 }
 
@@ -1307,8 +1356,11 @@ mod tests {
                 }
             }
             if c.base != BaseContent::Chrome {
+                assert!(!c.idle_exempt, "{name}: a map or riding base is not a modal exemption");
+            }
+            // A static page may draw a map, so the base content alone does not make a live view.
+            if c.base != BaseContent::Chrome && c.render_key != RenderKeyKind::Static {
                 assert!(c.ride_view, "{name}: a live-data base must be a ride view");
-                assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
 
             if c.browse_exempt {
@@ -1361,7 +1413,18 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Landmarks", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview", "Easier"],
+            [
+                "Map",
+                "Landmarks",
+                "LandmarkPhoto",
+                "Detour",
+                "DetourPreview",
+                "FindPlace",
+                "VisitReview",
+                "Easier",
+                "RideDetail",
+                "RouteOverview"
+            ],
             "streamed map and prepared photo pixels stay unchanged while covered"
         );
     }

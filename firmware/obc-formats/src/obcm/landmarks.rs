@@ -11,8 +11,9 @@ pub const MAX_NAME_BYTES: u32 = 256;
 pub const MAX_PAGE_BYTES: usize = 1024;
 pub const MAX_TEXT_PAGES: u8 = 4;
 pub const MAX_TEXT_BYTES: u32 = 2 + (MAX_TEXT_PAGES as u32 + 1) * 4 + MAX_TEXT_PAGES as u32 * MAX_PAGE_BYTES as u32;
-pub const MAX_CREDIT_PAGES: u16 = 256;
-pub const MAX_ATTRIBUTION_BYTES: u32 = 65_535;
+/// A credit is one work's source, title, creator and licence, in that order.
+pub const CREDIT_FIELDS: u16 = 4;
+pub const MAX_ATTRIBUTION_BYTES: u32 = MAX_PAGE_BYTES as u32;
 
 /// Byte offsets are relative to the landmark section, independent of OBCM scale.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

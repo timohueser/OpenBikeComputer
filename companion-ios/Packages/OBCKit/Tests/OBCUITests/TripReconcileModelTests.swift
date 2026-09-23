@@ -1,11 +1,11 @@
 import Testing
 import Foundation
-import OBCDomain
+@testable import OBCDomain
 import OBCMock
 import OBCTransport
 @testable import OBCUI
 
-/// Trip reconcile transitions and the adoption rule, driven through `MainScreenModel` over the
+/// Trip reconcile transitions and re-uploads, driven through `MainScreenModel` over the
 /// trips fixture, exactly as the composition root wires it.
 @MainActor
 struct TripReconcileModelTests {
@@ -47,74 +47,133 @@ struct TripReconcileModelTests {
         try await waitFor("trip landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
     }
 
-    /// Land a fresh loose route in the library and on the device, returning its id.
-    private func importAndUploadRoute(
-        _ model: MainScreenModel, control: MockControl, name: String
-    ) async -> RouteID {
-        let id = RouteID("new-\(name)")
-        let points = (0..<20).map { i in
-            RoutePoint(coordinate: Coordinate(latitude: 43.0 + 0.001 * Double(i), longitude: -89.0), elevationMeters: 200)
-        }
-        let route = ImportedRoute(name: name, points: points, waypoints: [])
-        let summary = RouteSummary(id: id, name: name, distanceMeters: 2000, elevationGainMeters: 40)
-        model.addImportedRoute(PlannedRouteRecord(
-            summary: summary, route: route, sourceFileName: "\(name).gpx", sourceFileData: Data()))
-        return id
+    private func dayObjectID(_ model: MainScreenModel, _ day: Int) -> DeviceObjectID? {
+        model.trip(tripID)?.dayCopies[day]?.link.objectID
     }
 
-    private func singleRouteUpload(
-        _ model: MainScreenModel, control: MockControl, routeID: RouteID
-    ) async {
-        // Encode exactly as the production single-route path does, the record's geometry and
-        // waypoints under its library name, so the committed CRC matches the record's fingerprint
-        // and the badge reads current.
-        let name = model.routes.first { $0.id == routeID }!.name
-        let geometry = model.plannedGeometry(for: routeID)!
-        let payload = RouteObjectCodec.encode(points: geometry.points, waypoints: geometry.waypoints, name: name)
-        let blob = RouteBlob(
-            summary: RouteSummary(id: routeID, name: name, distanceMeters: 2000, elevationGainMeters: 40),
-            waypoints: [], payload: payload,
-            targetObjectID: model.plannedDeviceObjectID(for: routeID))
-        let handle = MockTransport(control: control).uploadRoute(blob)
-        #expect(await handle.outcome == .completed)
-        let objectID = await handle.assignedObjectID!
-        model.markRouteUploaded(routeID, objectID: objectID, crc32: CRC32.checksum(payload))
-    }
+    // MARK: Re-cut
 
-    // MARK: Adoption rule
-
+    /// A day added to an uploaded trip leaves the other days' bytes unchanged, so the re-upload
+    /// skips them, sends the new day, and replaces the trip object in place.
     @Test
-    func uploadingARouteFiledInAnOnDeviceTripPushesTheTrip() async throws {
+    func aReCutSkipsTheDaysWhoseBytesDidNotChange() async throws {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
-        #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
+        let file = (0..<20).map { i in
+            RoutePoint(coordinate: Coordinate(latitude: 43.2 + 0.001 * Double(i), longitude: -89.6), elevationMeters: 300)
+        }
+        model.appendToTrip(tripID, file: file)
+        #expect(model.tripOnDeviceState(tripID) == .outdated)
 
-        // File a new route into the on-device trip, which out-dates the trip, then upload just
-        // that route: the adoption rule pushes the updated trip.
-        let newRoute = await importAndUploadRoute(model, control: control, name: "Coda")
-        model.fileRoute(newRoute, into: .existing(tripID))
-        await singleRouteUpload(model, control: control, routeID: newRoute)
-
-        // The adoption push runs in the background, so wait for the page to read up to date again.
-        try await waitFor("trip adopted the route", timeout: .seconds(20), interval: .milliseconds(5)) { model.tripOnDeviceState(tripID) == .upToDate }
+        let plan = model.planTripUpload(tripID)!
+        #expect(plan.days.map(\.action) == [.skip, .skip, .fresh])
+        #expect(plan.tripObject == .replace(deviceTripID))
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        try await waitFor("re-cut landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripStageIDs(deviceTripID).count == 3)
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
     }
 
+    /// A re-cut to fewer days deletes the dropped day routes on the device after the new trip
+    /// object lands, so the device keeps no orphan day routes.
     @Test
-    func uploadingARouteFiledInAnOfflineTripLandsItStandalone() async throws {
-        let (model, control) = try await makeMain()
-        // This trip is not on the device. File a new route into it and upload the route: no trip
-        // object is pushed, and the route lands standalone.
-        let newRoute = await importAndUploadRoute(model, control: control, name: "Loose")
-        model.fileRoute(newRoute, into: .existing(tripID))
-        await singleRouteUpload(model, control: control, routeID: newRoute)
+    func fewerDaysDeleteTheDroppedDayRoutes() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        let file = (0..<20).map { i in
+            RoutePoint(coordinate: Coordinate(latitude: 43.2 + 0.001 * Double(i), longitude: -89.6), elevationMeters: 300)
+        }
+        model.appendToTrip(tripID, file: file)
+        try await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        #expect(control.deviceTripStageIDs(deviceTripID).count == 3)
+        let dropped = dayObjectID(model, 2)!
 
-        let stayedStandalone = await neverHolds({
-            control.deviceTripCount > 0
-        }, for: .milliseconds(80))
-        #expect(stayedStandalone, "an offline trip must not be adopted by a route-only upload")
-        #expect(control.deviceTripCount == 0)
+        var trip = library.trips().first { $0.id == tripID }!
+        trip.dayEnds.remove(at: 1)
+        library.saveTrip(trip)
+        model.reloadTrips()
+        #expect(model.trip(tripID)?.dayCount == 2)
+
+        try await uploadTrip(model)
+        try await waitFor("dropped day deleted", timeout: .seconds(20), interval: .milliseconds(5)) {
+            control.deletedRouteObjectIDs.contains(dropped)
+        }
+        #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
+        #expect(!control.deviceTripStageIDs(deviceTripID).contains(dropped))
+        #expect(model.trip(tripID)?.dayCopies.count == 2)
+        #expect(control.deviceTripCount == 1)
+    }
+
+    /// A route already on the device that moves into a trip hands its device copy to its day,
+    /// so the trip upload replaces that object and the device keeps no orphan.
+    @Test
+    func aRouteMovedIntoATripHandsItsDeviceCopyToTheDay() async throws {
+        let (model, control) = try await makeMain()
+        let kettle = RouteID("kettle-moraine-loop")
+        // The link is scoped, so it reads only once the device identity settled.
+        try await waitFor("identity settled", timeout: .seconds(20), interval: .milliseconds(5)) {
+            model.plannedDeviceObjectID(for: kettle) != nil
+        }
+        let objectID = model.plannedDeviceObjectID(for: kettle)!
+
+        model.fileRoute(kettle, into: .existing(tripID))
+        #expect(dayObjectID(model, 2) == objectID)
+        #expect(model.planTripUpload(tripID)?.days.last?.action == .replace(objectID))
+
+        try await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        #expect(control.deviceTripStageIDs(deviceTripID).last == objectID)
+        #expect(!control.deletedRouteObjectIDs.contains(objectID))
+    }
+
+    /// A reversed trip has a new key. An upload that stops after the first day must not leave
+    /// the old trip object, with the old key, over reversed days: the old object goes first.
+    @Test
+    func anInterruptedReverseUploadNeverLeavesTheOldKeyOverNewDays() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
+        let oldTripID = control.deviceTripObjectIDs.first!
+
+        model.reverseTrip(tripID)
+        control.dropTransfer(atFraction: 0.5)
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        try await waitFor("first day stalls", timeout: .seconds(20), interval: .milliseconds(5)) {
+            upload.phase == .interrupted
+        }
+        #expect(control.deletedTripObjectIDs.contains(oldTripID))
+        #expect(control.deviceTripCount == 0, "no trip object while the reversed days land")
+        upload.cancel()
+
+        let retry = await model.prepareTripUpload(tripID, timing: Self.fastTiming)!
+        retry.start()
+        try await waitFor("retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { retry.phase == .done }
+        #expect(control.deviceTripCount == 1)
+        #expect(model.trip(tripID)?.uploadedKey == model.trip(tripID)?.key)
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
+    }
+
+    /// A reverse changes every day route and the trip key: each day route is replaced in place,
+    /// and the old trip object gives way to one with the new key.
+    @Test
+    func aReversedTripReplacesEveryDayInPlace() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        let dayIDs = [dayObjectID(model, 0)!, dayObjectID(model, 1)!]
+
+        model.reverseTrip(tripID)
+        let plan = model.planTripUpload(tripID)!
+        #expect(plan.days.map(\.action) == dayIDs.map(TripDayAction.replace))
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        try await waitFor("reverse landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
+        #expect(control.deletedTripObjectIDs.contains(deviceTripID), "the old key goes first")
+        #expect(control.deviceTripCount == 1)
+        #expect(control.deviceTripStageIDs(control.deviceTripObjectIDs.first!) == dayIDs)
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
     }
 
     // MARK: Reconcile transitions
@@ -133,42 +192,40 @@ struct TripReconcileModelTests {
     }
 
     @Test
-    func aDeviceSideCascadeDeleteClearsTripAndStageLinks() async throws {
+    func aDeviceSideCascadeDeleteClearsTripAndDayLinks() async throws {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)
-        let stageA = RouteID("devils-lake-overnighter")
-        #expect(model.onDeviceState(stageA) == .upToDate)
+        #expect(dayObjectID(model, 0) != nil)
         let deviceTripID = control.deviceTripObjectIDs.first!
 
-        // The device deletes the trip and its member routes. The cascade notifies two store-change
+        // The device deletes the trip and its day routes. The cascade notifies two store-change
         // edges, route then trip, each triggering a reload that cancels its predecessor, so the
-        // stage link can clear a beat before the trip reconcile lands. Poll both.
+        // day link can clear a beat before the trip reconcile lands. Poll both.
         control.deviceDeletesTripCascade(deviceTripID)
-        try await waitFor("stage link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.onDeviceState(stageA) == .notOnDevice }
+        try await waitFor("day link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { dayObjectID(model, 0) == nil }
         try await waitFor("trip link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.tripOnDeviceState(tripID) == .notOnDevice }
     }
 
-    /// The device deletes one member route. Re-running "Upload trip" must re-send the missing
-    /// stage and replace the existing trip object in place, never mint a second device trip.
+    /// The device deletes one day route. Re-running "Upload trip" must re-send the missing day
+    /// and replace the existing trip object in place, never mint a second device trip.
     @Test
-    func reUploadAfterADeviceSideStageDeleteReplacesTheTripInPlace() async throws {
+    func reUploadAfterADeviceSideDayDeleteReplacesTheTripInPlace() async throws {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
-        let stageA = RouteID("devils-lake-overnighter")
-        let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
+        let dayDeviceID = dayObjectID(model, 0)!
 
-        // The device-side route delete notifies, and the app's reconcile drops the stage link, so
+        // The device-side route delete notifies, and the app's reconcile drops the day link, so
         // the trip badge goes off.
-        control.deviceDeletesRoute(stageDeviceID)
-        try await waitFor("stage link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.onDeviceState(stageA) == .notOnDevice }
+        control.deviceDeletesRoute(dayDeviceID)
+        try await waitFor("day link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { dayObjectID(model, 0) == nil }
         #expect(model.tripOnDeviceState(tripID) != .upToDate)
 
-        // The re-upload plan: the missing stage is fresh, and the trip object is a replace of the
+        // The re-upload plan: the missing day is fresh, and the trip object is a replace of the
         // existing device trip, never a second one.
         let plan = model.planTripUpload(tripID)!
         #expect(plan.tripObject == .replace(deviceTripID))
-        #expect(plan.stages.first { $0.routeID == stageA }?.action == .fresh)
+        #expect(plan.days.map(\.action) == [.fresh, .skip])
 
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
@@ -186,14 +243,13 @@ struct TripReconcileModelTests {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
-        let stageA = RouteID("devils-lake-overnighter")
-        let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
+        let dayDeviceID = dayObjectID(model, 0)!
 
-        // The device deletes a member route. In the reload this triggers, the route catalog
+        // The device deletes a day route. In the reload this triggers, the route catalog
         // succeeds and the trip catalog fails, as a flaky link mid-read would.
         control.failNextTripCatalog(.readFailed)
-        control.deviceDeletesRoute(stageDeviceID)
-        try await waitFor("stage link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.onDeviceState(stageA) == .notOnDevice }
+        control.deviceDeletesRoute(dayDeviceID)
+        try await waitFor("day link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { dayObjectID(model, 0) == nil }
 
         // The trip's link survived the failed read, so the plan still replaces.
         #expect(model.trip(tripID)?.deviceLink != nil, "a failed trip catalog read must not drop the link")
@@ -301,25 +357,22 @@ struct TripReconcileModelTests {
             "the commit links back to the existing object id")
     }
 
-    // MARK: Delete trip & routes while connected
+    // MARK: Delete while connected
 
     @Test
-    func deleteTripAndRoutesWhileConnectedDeletesDeviceCopies() async throws {
+    func deleteTripWhileConnectedDeletesDeviceCopies() async throws {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
-        let stageObjectIDs = control.deviceTripStageIDs(deviceTripID)
-        #expect(stageObjectIDs.count == 2)
+        let dayObjectIDs = control.deviceTripStageIDs(deviceTripID)
+        #expect(dayObjectIDs.count == 2)
 
-        model.deleteTripAndRoutes(tripID)
+        model.deleteTrip(tripID)
 
-        // The device-side cascade: both member routes deleted, then the trip.
         try await waitFor("device cascade landed", timeout: .seconds(20), interval: .milliseconds(5)) {
             control.deletedTripObjectIDs.contains(deviceTripID)
-                && stageObjectIDs.allSatisfy { control.deletedRouteObjectIDs.contains($0) }
+                && dayObjectIDs.allSatisfy { control.deletedRouteObjectIDs.contains($0) }
         }
-        // The phone library is cleaned up too: the trip and its routes are gone.
         #expect(model.trip(tripID) == nil)
-        #expect(model.routes.first { $0.id == RouteID("devils-lake-overnighter") } == nil)
     }
 }

@@ -4,6 +4,7 @@ use crate::convert::{ObcrEmitter, RouteStats};
 use crate::reader::{decode_route_points_between_checked, WaypointCursor};
 use crate::{RouteReader, MAX_POINTS_PER_CHUNK};
 use heapless::Vec;
+use obc_formats::bike::BikeType;
 use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, Error};
 use obc_formats::obcm::{PoiMetadata, SourceId};
 use obc_formats::obcr::{RouteSourceKey, VisitDescriptor, WaypointProvenance, HEADER_FULL_LEN, WAYPOINT_LEN};
@@ -20,21 +21,21 @@ pub struct VisitTarget {
     pub display: (i32, i32),
 }
 impl VisitTarget {
-    pub fn approach(self, map: RouteSourceKey, profile: u8) -> Option<(i32, i32)> {
-        if self.map != map || !self.metadata.source.is_valid() || profile >= 8 {
+    pub fn approach(self, map: RouteSourceKey, profile: BikeType) -> Option<(i32, i32)> {
+        if self.map != map || !self.metadata.source.is_valid() {
             return None;
         }
         match self.metadata.approach {
-            Some(a) => (a.source.is_valid() && a.profile_mask & (1 << profile) != 0).then_some((a.lon, a.lat)),
+            Some(a) => (a.source.is_valid() && a.profile_mask & (1 << profile as u8) != 0).then_some((a.lon, a.lat)),
             None => Some(self.display),
         }
     }
     /// Explicit approaches must be reached exactly. Other places use the bounded graph snap.
-    pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(), Error> {
+    pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: BikeType) -> Result<(), Error> {
         self.destination(src, profile).map(|_| ())
     }
     /// The actual final graph coordinate, validated against this map-bound place.
-    pub fn destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(i32, i32), Error> {
+    pub fn destination(self, src: &dyn obc_formats::io::ByteSource, profile: BikeType) -> Result<(i32, i32), Error> {
         use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
         use obc_formats::obcr::CHUNK_META_LEN;
         let approach = self.approach(self.map, profile).ok_or(Error::BadOffset)?;
@@ -59,6 +60,42 @@ impl VisitTarget {
     }
 }
 
+/// Distance and climb of one planned leg, from the planner's own stats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegCost {
+    pub distance_m: u32,
+    pub ascent_m: u32,
+    pub elevation_complete: bool,
+    /// The connector the composition adds where this leg joins the route: the snap gap there
+    /// when it is over [`APPROACH_TOLERANCE_M`], else 0. Its elevation is unknown.
+    pub join_gap_m: u32,
+}
+impl From<RouteStats> for LegCost {
+    fn from(stats: RouteStats) -> Self {
+        Self {
+            distance_m: stats.total_distance_m,
+            ascent_m: stats.total_ascent_m,
+            elevation_complete: stats.elevation_complete,
+            join_gap_m: 0,
+        }
+    }
+}
+impl LegCost {
+    /// Charge the connector between the route point `at` and the graph point `snapped`.
+    pub fn joined_at(self, at: (i32, i32), snapped: (i32, i32)) -> Self {
+        let gap = obc_map_scene::ground_dist_m(at, snapped);
+        Self { join_gap_m: if gap > APPROACH_TOLERANCE_M { (gap + 0.5) as u32 } else { 0 }, ..self }
+    }
+}
+
+/// The measured legs of one candidate: out to the stop, and back to the route when there is one.
+/// Nothing is composed or published for these figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisitLegs {
+    pub outbound: LegCost,
+    pub back: Option<LegCost>,
+}
+
 /// Elevation confidence and arrival ascent measured from the same complete candidate geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisitCosts {
@@ -67,56 +104,49 @@ pub struct VisitCosts {
     pub unknown_m: u32,
     pub arrival_elevation_complete: bool,
     pub complete_elevation: bool,
+    /// The two excursion legs' distance and ascent, for a candidate that has them.
+    pub legs_m: Option<u32>,
+    pub legs_ascent_m: Option<u32>,
 }
 impl VisitCosts {
-    /// Must stay `#[inline(never)]`: the bounded chunk buffer lives in this popped frame.
-    #[inline(never)]
-    pub fn read(src: &dyn obc_formats::io::ByteSource, arrival: [u32; 2]) -> Result<Self, Error> {
+    /// `arrival` is the span to the stop; `legs` the span the excursion adds to the original.
+    pub fn read(
+        src: &dyn obc_formats::io::ByteSource,
+        arrival: [u32; 2],
+        legs: Option<[u32; 2]>,
+    ) -> Result<Self, Error> {
+        Self::read_with(src, arrival, legs, |_| {})
+    }
+    /// The same walk, also handing each stored point to `visit`.
+    pub(crate) fn read_with(
+        src: &dyn obc_formats::io::ByteSource,
+        arrival: [u32; 2],
+        legs: Option<[u32; 2]>,
+        mut visit: impl FnMut(crate::RoutePoint),
+    ) -> Result<Self, Error> {
         use crate::facts::FactsAccumulator;
-        use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
-        use obc_formats::obcr::CHUNK_META_LEN;
-        let h = read_header(src)?;
-        if h.chunk_count == 0
-            || h.chunk_count as usize > crate::MAX_ROUTE_CHUNKS
-            || arrival[0] > arrival[1]
+        let h = crate::reader::read_header(src)?;
+        if arrival[0] > arrival[1]
             || arrival[1] > h.total_distance_m
+            || legs.is_some_and(|l| l[0] > l[1] || l[1] > h.total_distance_m)
         {
             return Err(Error::BadOffset);
         }
         let mut full = FactsAccumulator::new(0, None, 0, h.total_distance_m);
         let mut to_stop = FactsAccumulator::new(0, None, arrival[0], arrival[1]);
-        let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        let mut previous = None;
-        let mut count = 0u32;
-        for k in 0..h.chunk_count {
-            let offset = k
-                .checked_mul(CHUNK_META_LEN as u32)
-                .and_then(|n| h.index_offset.checked_add(n))
-                .ok_or(Error::BadOffset)?;
-            let mut bytes = [0; CHUNK_META_LEN];
-            src.read_at(u64::from(offset), &mut bytes)?;
-            let meta = parse_chunk_meta(&bytes, src.len())?;
-            if meta.point_count == 0 {
-                return Err(Error::BadOffset);
+        let mut excursion = legs.map(|l| FactsAccumulator::new(0, None, l[0], l[1]));
+        crate::reader::for_each_stored_point(src, &h, |point| {
+            full.push(point, &mut |_| {});
+            to_stop.push(point, &mut |_| {});
+            if let Some(excursion) = excursion.as_mut() {
+                excursion.push(point, &mut |_| {});
             }
-            points.clear();
-            decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
-            if let Some(last) = previous {
-                let first = points[0];
-                if last != (first.lon, first.lat, first.ele) {
-                    return Err(Error::BadOffset);
-                }
-            }
-            for &point in points.iter().skip(usize::from(k > 0)) {
-                full.push(point, &mut |_| {});
-                to_stop.push(point, &mut |_| {});
-                count += 1;
-                previous = Some((point.lon, point.lat, point.ele));
-            }
-        }
+            visit(point);
+        })?;
         let full = full.finish(h.total_distance_m)?;
         let to_stop = to_stop.finish(h.total_distance_m)?;
-        if count != h.point_count || full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
+        let excursion = excursion.map(|e| e.finish(h.total_distance_m)).transpose()?;
+        if full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
             return Err(Error::BadOffset);
         }
         Ok(Self {
@@ -125,6 +155,8 @@ impl VisitCosts {
             unknown_m: full.surface_m[0],
             arrival_elevation_complete: to_stop.complete_elevation(),
             complete_elevation: full.complete_elevation(),
+            legs_m: excursion.as_ref().map(|e| e.distance_m()),
+            legs_ascent_m: excursion.filter(|e| e.complete_elevation()).map(|e| e.ascent_m),
         })
     }
 }
@@ -180,7 +212,8 @@ pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32))
     Ok(best.1)
 }
 
-/// The same bounded search counter serves visits and constrained replacements.
+/// Counts the searches of one operation and bounds a visit's. An easier replacement is bounded by
+/// its anchors instead: each leg reaches at least one of them.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VisitChoice {
     searches: u8,
@@ -189,14 +222,8 @@ impl VisitChoice {
     pub fn new() -> Self {
         Self { searches: 0 }
     }
-    pub fn search(&mut self) -> Result<(), Error> {
-        self.search_with_limit(MAX_VISIT_SEARCHES)
-    }
-    pub fn search_easier(&mut self) -> Result<(), Error> {
-        self.search_with_limit(crate::MAX_WAYPOINTS as u8 + 1)
-    }
-    fn search_with_limit(&mut self, limit: u8) -> Result<(), Error> {
-        if self.searches >= limit {
+    pub fn search(&mut self, visit: bool) -> Result<(), Error> {
+        if visit && self.searches >= MAX_VISIT_SEARCHES {
             return Err(Error::TooLarge);
         }
         self.searches += 1;
@@ -438,6 +465,19 @@ impl VisitBuilder {
     pub fn arrival_m(&self) -> u32 {
         self.descriptor.map_or(0, |descriptor| descriptor.accepted_anchors_m[1])
     }
+    /// The most bytes the next composition step appends, so a staged sink can take several
+    /// steps per flush. A chunk step can close one encoder chunk and open the next.
+    pub fn step_bound(&self) -> usize {
+        const CHUNK: usize = 2 * MAX_POINTS_PER_CHUNK * obc_formats::obcr::POINT_RECORD_LEN;
+        match self.phase {
+            Phase::Begin | Phase::BeginPrefix => HEADER_FULL_LEN,
+            Phase::Prefix | Phase::Outbound | Phase::Return | Phase::Tail => CHUNK,
+            Phase::Geometry => CHUNK + crate::MAX_ROUTE_CHUNKS * obc_formats::obcr::CHUNK_META_LEN,
+            Phase::Waypoints => WAYPOINT_LEN,
+            Phase::Descriptor => obc_formats::obcr::VISIT_DESCRIPTOR_LEN,
+            Phase::Done | Phase::RejectedGeometry => 0,
+        }
+    }
     pub fn original_anchors(&self) -> [u32; 3] {
         self.anchors
     }
@@ -447,7 +487,7 @@ impl VisitBuilder {
         &mut self,
         target: VisitTarget,
         leg: &dyn obc_formats::io::ByteSource,
-        profile: u8,
+        profile: BikeType,
     ) -> Result<(), Error> {
         let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
         if self.phase != Phase::Outbound
@@ -482,11 +522,16 @@ impl VisitBuilder {
             return Ok(false);
         }
         if let Some(anchors) = &mut self.easier {
-            if self.last.is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > APPROACH_TOLERANCE_M) {
+            // The planner ends a leg where it snaps the anchor onto the graph. An imported route can
+            // lie beside the road, so the anchor counts as reached there, and no connector with
+            // unknown height and surface is added.
+            if self
+                .last
+                .is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > crate::nav::SNAP_RADIUS_M)
+            {
                 self.phase = Phase::RejectedGeometry;
                 return Err(Error::BadOffset);
             }
-            // The destination is the original route's terminal anchor.
             self.chunk = 0;
             self.segment_started = false;
             return Ok(true);
@@ -543,6 +588,7 @@ impl VisitBuilder {
                 }
             }
             Phase::Geometry => {
+                self.em.set_bike_type(original.bike_type());
                 let mut capture = HeaderSink { sink, header: &mut self.header };
                 self.stats = Some(self.em.finish(
                     &mut capture,
@@ -687,6 +733,9 @@ struct HeaderSink<'a> {
 impl ByteSink for HeaderSink<'_> {
     fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.sink.write(bytes)
+    }
+    fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
+        self.sink.write_chunk(anchor, body)
     }
     fn patch_at(&mut self, at: u32, bytes: &[u8]) -> Result<(), Error> {
         if at != 0 || bytes.len() != self.header.len() {

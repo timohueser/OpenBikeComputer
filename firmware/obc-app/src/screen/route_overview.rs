@@ -1,9 +1,9 @@
 //! The Route overview: the look-before-you-ride page between picking a route and tracking it.
 //!
-//! It shows the route's name and a content-paired pager, where the media band and the stat rows
-//! flip together: page A is the track-shape preview over DISTANCE and EST TIME, page B the full
-//! elevation profile over CLIMB and DESCENT. The band is not interactive: no cursor, no zoom, no
-//! live shading. Below the pager is a START RIDE row and, when the route is deletable, the guarded
+//! It shows the route's name and two pages that flip on a dwell. Page 1 is the route on the device
+//! map, with the route's bike type in the map's corner, over DISTANCE, CLIMB and EST TIME. Page 2
+//! is the full-height elevation profile over one climb and descent line. Neither band is
+//! interactive. Below the pages is a START RIDE row and, when the route is deletable, the guarded
 //! Delete-route row under it. Entry selects START RIDE; up and down toggle the two rows; press
 //! starts the session only from the START row; hold charges the delete only from the Delete row;
 //! back cancels and returns to the Route menu.
@@ -15,35 +15,45 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::prelude::Point;
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
-    Surface,
+    text::{text_width, Font, TextAlign},
+    Canvas, Surface,
 };
 
-use super::vocab::band::{ElevationBand, PeakLabel};
-use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP, TITLE_BAR_H};
+use super::vocab::band::draw_profile;
+use super::vocab::chrome::{empty_state, stroke2, title_chrome, title_frame, LIST_TOP, TITLE_BAR_H};
 use super::vocab::fmt::{duration_hms, write_distance_split};
+use super::vocab::marquee::{fit, Fitted};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::vocab::track_map::{draw_track_map, Track};
 use crate::input::Gesture;
 use crate::navigator::RouteState;
 use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
 use crate::Msg;
 
-use super::{palette, Ctx, Render, Transition};
+use super::{palette, Ctx, Render, RenderFrame, Transition};
 
-/// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
-const BAND_TOP: i32 = LIST_TOP + 8;
-const BAND_BOT: i32 = 140;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat ledger under the media band: page A carries DISTANCE and EST TIME, page B CLIMB and
-/// DESCENT. [`ROW_PITCH`] is the row spacing within a page.
-const ROWS_TOP: i32 = 146;
-const ROW_PITCH: i32 = 42;
+/// Page 1's map band: the frame's inside, from under the title bar to the rule at [`MAP_BOT`].
+const MAP_X: i32 = 5;
+const MAP_TOP: i32 = 4 + TITLE_BAR_H;
+const MAP_BOT: i32 = 113;
+
+/// Page 1's ledger: DISTANCE, CLIMB and EST TIME, each over a rule.
+const ROWS_TOP: i32 = 109;
+const ROW_PITCH: i32 = 36;
+const ROW_RULE: i32 = 40;
+
+/// Page 2's profile band, with the headroom above it for the peak label, and the climb and descent
+/// line under it.
+const PROFILE_TOP: i32 = 62;
+const PROFILE_BOT: i32 = 190;
+const TOTALS_Y: i32 = 196;
 
 /// The two action rows, in the Pause-menu row family's geometry: START RIDE over the guarded
 /// Delete-route row, because the destructive row ranks under the primary action. START keeps its
@@ -54,6 +64,9 @@ const OPTION_GAP: i32 = 8;
 /// The START RIDE button bar of the computed, length-only page: the screen-bottom anchor shared
 /// with the POI detail's `Route here` footer.
 const BUTTON_H: i32 = 34;
+
+/// The row pitch of the computed page's ledger.
+const COMPUTED_PITCH: i32 = 42;
 
 /// The two action rows the cursor walks: START RIDE and, when the route is deletable, the guarded
 /// Delete-route row under it.
@@ -109,6 +122,12 @@ impl RouteOverviewScreen {
         self.selected == DELETE && self.delete_enabled(navigation, recording, routes)
     }
 
+    /// The Delete row, the one rectangle a hold step repaints on this page. It lies under the map
+    /// band, so a clipped repaint of it renders no map.
+    pub(crate) fn hold_fill_region(w: i32, h: i32) -> Rectangle {
+        action_rows(w, h).row(DELETE)
+    }
+
     /// Flip the two pages on the shared dwell. The computed page has a single fixed layout and no
     /// pager, so it never flips.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
@@ -149,6 +168,9 @@ impl RouteOverviewScreen {
                 if cx.recorder.recording() {
                     return Transition::Push(super::Screen::RouteSwap(super::RouteSwapScreen::new(self.route)));
                 }
+                if let Some(prompt) = super::StartAwayScreen::ask(cx, self.route) {
+                    return Transition::Push(super::Screen::StartAway(prompt));
+                }
                 super::start_ride(cx, self.route)
             }
             // The guarded hold is the confirmation, so there is no popup. It records the delete by
@@ -170,136 +192,64 @@ impl RouteOverviewScreen {
         }
     }
 
-    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        let Some(summary) = rx.routes.get(self.route) else {
+        let routes = rx.routes;
+        let Some(summary) = routes.get(self.route) else {
             title_frame(cv, w, h, rx.t(Msg::RouteOverviewTitle), "");
             empty_state(cv, w, h, rx.t(Msg::RouteOverviewNoRoute), rx.t(Msg::RouteOverviewNoRouteSub));
             return;
         };
 
-        let chart_x = SIDE_MARGIN;
-        let chart_w = w - 2 * SIDE_MARGIN;
-
-        // A computed route has no elevation data, so the page is length only. DISTANCE reads at
-        // metre resolution from the opened geometry, because the whole-kilometre catalog figure
-        // would read "0 km" on a short route.
         if self.computed {
-            // The title is static, and the destination name moves into the body at full card
-            // width, where it is not truncated.
-            title_frame(cv, w, h, rx.t(Msg::RouteOverviewNewRoute), "");
-            let x = 16;
-            let name_row = rect(x, LIST_TOP + 4, w - 2 * x, Font::Body.line_height() as i32);
-            let name = rx.marquee.fit(&summary.name, w - 2 * x, Font::Body, Some(name_row));
-            cv.text(&name, Point::new(x, LIST_TOP + 4), Font::Body, TextAlign::Left, INK);
-
-            let units = rx.settings.units;
-            let total_m = rx.route.map(|r| r.total_distance_m).unwrap_or(summary.distance_km * 1000);
-            // Metres below a kilometre, because "0.6 km" undersells a short route, and one-decimal
-            // kilometres above. Imperial does the same with feet and miles.
-            let mut dist: heapless::String<8> = heapless::String::new();
-            let dist_unit = write_distance_split(&mut dist, total_m, units);
-            let rows_top = LIST_TOP + 34;
-            ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
-            // A computed route's points carry no elevation, so the model's ascent term is zero and
-            // this reads `distance / v_flat`. The BIKE TYPE row under it names the profile the
-            // figure is keyed to.
-            let est = est_time_value(total_m, route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
-            ledger_row(cv, w, rows_top + ROW_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
-            // The profile the route was planned under, so the rider can tell a Road route from an
-            // MTB one. The name resolves against the loaded map for the current selection, which is
-            // the profile the just-finished plan used.
-            draw_profile_label(cv, w, rx, rows_top + 2 * ROW_PITCH);
-            // The shape preview fills the middle between the ledger and the START bar.
-            draw_route_preview(cv, w, rows_top + 3 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
-            draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
+            draw_computed(cv, rx, summary);
             return;
         }
 
-        let name = rx.marquee.fit(&summary.name, w - 28, Font::Body, Some(rect(0, 0, w, TITLE_BAR_H)));
-        title_frame(cv, w, h, &name, "");
-
-        let band_top = BAND_TOP;
-
-        // The auto-flip swaps this band with the stat rows below. Both pages draw in the same
-        // slot, so nothing jumps on the flip.
-        let page_b = self.pager.on_second_page();
-        if !page_b {
-            // An empty slice, for the frame or two before the host hands the preview in, leaves
-            // the slot blank.
-            draw_route_preview(cv, w, band_top, BAND_BOT, rx.nav_preview);
-        } else if let Some(profile) = rx.profile {
-            // The shared full-route elevation band, without any of Statistics' live layers. A peak
-            // label over the apex gives the vertical scale meaning.
-            let band = ElevationBand::whole_route(profile, rect(chart_x, band_top, chart_w, BAND_BOT - band_top + 1));
-            band.fill(cv, PARCHMENT_SHADE);
-            band.stroke(cv, AMBER);
-            band.peak_label(cv, rx.settings.units, PeakLabel::OverPeak);
-        } else {
-            // While the route still streams open, keep the band's footprint so the page does not
-            // jump.
-            cv.text(
-                rx.t(Msg::RouteOverviewLoadingProfile),
-                Point::new(w / 2, (band_top + BAND_BOT) / 2 - 9),
-                Font::Label,
-                TextAlign::Center,
-                SUBTEXT,
-            );
-        }
-        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline marks the band slot on both pages
-
-        // A ledger rather than the riding grid's panes, which read as live data and swallow space
-        // this page does not need. Distance and climb come from the catalog summary, which is
-        // always present; descent needs the opened route.
+        // Distance and climb come from the catalog summary, which is always present; descent needs
+        // the opened route.
         let units = rx.settings.units;
-        let mut dist: heapless::String<8> = heapless::String::new();
-        let _ = write!(dist, "{}", (units.dist(summary.distance_km as f32) + 0.5) as u32);
-        let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+        let climb = elevation_value(units, summary.climb_m);
+        if self.pager.on_second_page() {
+            title_frame(cv, w, h, &route_title(rx, summary), "");
+            draw_profile_page(cv, rx, &climb);
+        } else {
+            let track = Track { points: rx.nav_preview, color: ROUTE, end_dot: true };
+            let band = rect(MAP_X, MAP_TOP, w - 2 * MAP_X, MAP_BOT - MAP_TOP);
+            draw_track_map(cv, rx, band, track, Some(route_bike_type(rx)));
+            title_chrome(cv, w, h, &route_title(rx, summary));
+            cv.hline(MAP_X, MAP_BOT, w - 2 * MAP_X, RULE);
 
-        let mut climb: heapless::String<8> = heapless::String::new();
-        let _ = write!(climb, "{}", (units.elev(summary.climb_m as f32) + 0.5) as u32);
-
-        let mut desc: heapless::String<8> = heapless::String::new();
-        match rx.route {
-            Some(r) => {
-                let _ = write!(desc, "{}", (units.elev(r.total_descent_m as f32) + 0.5) as u32);
-            }
-            None => {
-                let _ = desc.push_str("--");
-            }
-        }
-
-        // The gradient-aware estimate for the whole route, keyed to the rider's bike profile.
-        // Totals come from the opened route once it has streamed in, and from the catalog summary
-        // before that, so the row never has to show a placeholder.
-        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
-
-        // The stats pair with their media: DISTANCE and EST TIME with the track shape, CLIMB and
-        // DESCENT with the elevation band. The flip itself is the affordance, so there are no page
-        // dots.
-        let entries: [(&str, &str, &str, Option<bool>); 4] = [
-            (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
-            (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
-            (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
-            (rx.t(Msg::RouteOverviewEstTime), &est, "h", None),
-        ];
-        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0, 3] };
-        for (slot, &e) in page_rows.iter().enumerate() {
-            let y = ROWS_TOP + slot as i32 * ROW_PITCH;
-            let (caption, value, unit, arrow) = entries[e];
-            ledger_row(cv, w, y, caption, value, unit, arrow);
-            if slot + 1 < page_rows.len() {
-                cv.hline(16, y + ROW_PITCH - 4, w - 32, RULE);
+            let mut dist: heapless::String<8> = heapless::String::new();
+            let _ = write!(dist, "{}", (units.dist(summary.distance_km as f32) + 0.5) as u32);
+            let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+            // The gradient-aware estimate for the whole route, keyed to the route's own bike type.
+            // Totals come from the opened route once it has streamed in, and from the catalog
+            // summary before that, so the row never has to show a placeholder.
+            let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), route_bike_type(rx));
+            let rows: [(&str, &str, &str, Option<bool>); 3] = [
+                (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
+                (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
+                (rx.t(Msg::RouteOverviewEstTime), &est, "h", None),
+            ];
+            for (i, (caption, value, unit, arrow)) in rows.into_iter().enumerate() {
+                let y = ROWS_TOP + i as i32 * ROW_PITCH;
+                ledger_row(cv, w, y, caption, value, unit, arrow);
+                cv.hline(16, y + ROW_RULE, w - 32, RULE);
             }
         }
 
         // The Pause-menu row family: plain labels, the selected row in the amber fill, and the
         // guarded Delete row with its shaded base and warning hold-fill only while selected. While
         // the route is the active ride's the Delete row is not drawn at all, because a state that
-        // cannot act does not show. START keeps the top slot either way, so nothing jumps when the
-        // Delete row re-arms.
-        let geo = GuardedRowsGeometry::panel(w, action_rows_top(h), OPTION_ROW_H, OPTION_GAP);
+        // cannot act does not show. Both pages and both row counts keep START in the same slot, so
+        // nothing jumps on a flip or when the Delete row re-arms.
+        let geo = action_rows(w, h);
         let items = [
             MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
@@ -309,9 +259,85 @@ impl RouteOverviewScreen {
     }
 }
 
-/// Top of the two-row action block. Fixed at the two-row position whether or not Delete is drawn.
-fn action_rows_top(h: i32) -> i32 {
-    h - 10 - 2 * OPTION_ROW_H - OPTION_GAP
+/// The route's name, cut to the title bar. It does not scroll: a scroll step on a map base would
+/// render the map band again on every step.
+fn route_title(rx: &Render, summary: &RouteSummary) -> Fitted {
+    fit(&summary.name, rx.w - 28, Font::Body)
+}
+
+/// A whole number of metres or feet, in the rider's units.
+fn elevation_value(units: crate::settings::Units, m: u32) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    let _ = write!(s, "{}", (units.elev(m as f32) + 0.5) as u32);
+    s
+}
+
+/// Page 2: the whole route's elevation profile at full height, the peak elevation over its apex,
+/// and one line under it with the climb on the left and the descent on the right.
+fn draw_profile_page(cv: &mut impl Surface, rx: &Render, climb: &str) {
+    use palette::*;
+    let w = rx.w;
+    let area = rect(SIDE_MARGIN, PROFILE_TOP, w - 2 * SIDE_MARGIN, PROFILE_BOT - PROFILE_TOP + 1);
+    draw_profile(cv, rx.profile, area, rx.settings.units, rx.t(Msg::RouteOverviewLoadingProfile));
+
+    let units = rx.settings.units;
+    let desc = match rx.route {
+        Some(r) => elevation_value(units, r.total_descent_m),
+        None => heapless::String::try_from("--").unwrap_or_default(),
+    };
+    let mut right: heapless::String<12> = heapless::String::new();
+    let _ = write!(right, "{desc} {}", units.elev_label());
+    let x = 16;
+    climb_arrow(cv, x, TOTALS_Y, true, INK);
+    cv.text(climb, Point::new(x + ARROW_W + 4, TOTALS_Y), Font::Label, TextAlign::Left, INK);
+    cv.text(&right, Point::new(w - x, TOTALS_Y), Font::Label, TextAlign::Right, INK);
+    climb_arrow(cv, w - x - text_width(&right, Font::Label) as i32 - ARROW_W - 4, TOTALS_Y, false, INK);
+}
+
+/// The climb and descent triangles' width, the size of one Label glyph's cap height.
+pub(super) const ARROW_W: i32 = 12;
+
+/// A filled climb (`up`) or descent triangle at `x`, centred on the Label text line at `y`.
+pub(super) fn climb_arrow(cv: &mut impl Surface, x: i32, y: i32, up: bool, color: u16) {
+    let (flat, tip) = if up { (y + 18, y + 6) } else { (y + 6, y + 18) };
+    cv.triangle(Point::new(x, flat), Point::new(x + ARROW_W, flat), Point::new(x + ARROW_W / 2, tip), color);
+}
+
+/// A computed route has no elevation data, so the page is length only. DISTANCE reads at metre
+/// resolution from the opened geometry, because the whole-kilometre catalog figure would read
+/// "0 km" on a short route.
+fn draw_computed(cv: &mut impl Surface, rx: &Render, summary: &RouteSummary) {
+    use palette::*;
+    let (w, h) = (rx.w, rx.h);
+    // The title is static, and the destination name moves into the body at full card width, where
+    // it is not truncated.
+    title_frame(cv, w, h, rx.t(Msg::RouteOverviewNewRoute), "");
+    let x = 16;
+    let name_row = rect(x, LIST_TOP + 4, w - 2 * x, Font::Body.line_height() as i32);
+    let name = rx.marquee.fit(&summary.name, w - 2 * x, Font::Body, Some(name_row));
+    cv.text(&name, Point::new(x, LIST_TOP + 4), Font::Body, TextAlign::Left, INK);
+
+    let units = rx.settings.units;
+    let total_m = rx.route.map(|r| r.total_distance_m).unwrap_or(summary.distance_km * 1000);
+    // Metres below a kilometre, because "0.6 km" undersells a short route, and one-decimal
+    // kilometres above. Imperial does the same with feet and miles.
+    let mut dist: heapless::String<8> = heapless::String::new();
+    let dist_unit = write_distance_split(&mut dist, total_m, units);
+    let rows_top = LIST_TOP + 34;
+    ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
+    // A computed route's points carry no elevation, so the model's ascent term is zero and this
+    // reads `distance / v_flat`. The BIKE TYPE row under it names the type the figure is keyed to.
+    let est = est_time_value(total_m, route_ascent_m(rx, summary), route_bike_type(rx));
+    ledger_row(cv, w, rows_top + COMPUTED_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
+    draw_profile_label(cv, w, rx, rows_top + 2 * COMPUTED_PITCH);
+    // The shape preview fills the middle between the ledger and the START bar.
+    draw_route_preview(cv, w, rows_top + 3 * COMPUTED_PITCH, start_button_top(h), rx.nav_preview);
+    draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
+}
+
+/// The two-row action block. Fixed at the two-row position whether or not Delete is drawn.
+fn action_rows(w: i32, h: i32) -> GuardedRowsGeometry {
+    GuardedRowsGeometry::panel(w, h - 10 - 2 * OPTION_ROW_H - OPTION_GAP, OPTION_ROW_H, OPTION_GAP)
 }
 
 fn route_total_m(rx: &Render, summary: &RouteSummary) -> u32 {
@@ -325,20 +351,24 @@ fn route_ascent_m(rx: &Render, summary: &RouteSummary) -> u32 {
     rx.route.map_or(summary.climb_m, |r| r.total_ascent_m)
 }
 
-/// The EST TIME ledger value: the whole route through the gradient-aware model
-/// ([`obc_route::eta`]) as `H:MM`, the same duration shape the RIDE tile and the ride ledger use.
-/// Not localised and not unit-dependent.
-fn est_time_value(total_m: u32, ascent_m: u32, bike_profile_idx: u8) -> heapless::String<8> {
-    duration_hms(obc_route::route_time_s(total_m, ascent_m, bike_profile_idx) as f32)
+/// The EST TIME ledger value: the whole route through
+/// [`BikeType::ride_time_s`](crate::settings::BikeType::ride_time_s) as `H:MM`, the same duration
+/// shape the RIDE tile and the ride ledger use. Not localised and not unit-dependent.
+fn est_time_value(total_m: u32, ascent_m: u32, bike: crate::settings::BikeType) -> heapless::String<8> {
+    duration_hms(bike.ride_time_s(total_m, ascent_m) as f32)
 }
 
-/// The BIKE TYPE ledger row: the profile name the computed route was planned under, in the same
-/// caption-left, value-right shape as the rows above. A stale index shows profile 0's name, which
-/// is the profile the router fell back to for this plan.
+/// The type the overview's route carries, which a start sets as the current type. Before the
+/// route streams open, the current type stands in.
+fn route_bike_type(rx: &Render) -> crate::settings::BikeType {
+    rx.route.map_or(rx.settings.bike_type, |r| r.bike_type())
+}
+
+/// The BIKE TYPE ledger row: the type the computed route was planned for, in the same
+/// caption-left, value-right shape as the rows above.
 fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render, y: i32) {
-    let mut name: heapless::String<20> = heapless::String::new();
-    rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);
-    ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), &name, "", None);
+    let name = crate::settings::bike_type_name(route_bike_type(rx), rx.settings.language);
+    ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), name, "", None);
 }
 
 /// The track-shape preview's box size. Centred horizontally, and vertically inside whatever slot
@@ -349,9 +379,8 @@ const PREVIEW_H: i32 = 90;
 /// Draw a track's shape preview: the host-decimated polyline, aspect-fit into the
 /// [`PREVIEW_W`]×[`PREVIEW_H`] box with the longitude scaled by cos(mid-latitude) so the shape
 /// keeps its ground aspect. A filled disc marks the start and a hollow diamond the end. An empty or
-/// short slice draws nothing and leaves the box empty. Shared with the Ride detail's recorded-track
-/// page, so the two sketches cannot drift.
-pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
+/// short slice draws nothing and leaves the box empty.
+fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
     use palette::*;
     if pts.len() < 2 {
         return;
@@ -397,12 +426,17 @@ pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i
     cv.line(Point::new(d.x - k, d.y), Point::new(d.x, d.y - k), INK);
 }
 
+/// The top of the [`draw_start_button`] bar, which the content above it must clear.
+pub(super) fn start_button_top(h: i32) -> i32 {
+    h - 10 - BUTTON_H
+}
+
 /// START RIDE at the screen-bottom anchor: the computed-route variant and the POI detail's
 /// `Route here` footer are exactly this bar, so the two cannot drift. Always armed, because these
 /// pages have a single action and no cursor.
 pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
     use palette::*;
-    let by = h - 10 - BUTTON_H;
+    let by = start_button_top(h);
     let bar = rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H);
     cv.round(bar, 8, AMBER);
     let tx = w / 2 + 8;
@@ -546,9 +580,9 @@ mod tests {
         use super::super::vocab::pager::PAGE_FLIP_MS;
         let mut scr = RouteOverviewScreen::new(0, None);
         assert!(!scr.tick_timers(0).changed, "the first poll only anchors the dwell");
-        assert!(!scr.pager.on_second_page(), "entry shows the track shape + DISTANCE page");
+        assert!(!scr.pager.on_second_page(), "entry shows the map and the ledger");
         assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "the dwell flips the page");
-        assert!(scr.pager.on_second_page(), "now on the elevation (CLIMB + DESCENT) page");
+        assert!(scr.pager.on_second_page(), "now on the full-height profile");
     }
 
     /// The computed page has one fixed layout and no pager, so its tick never self-dirties.
@@ -560,21 +594,20 @@ mod tests {
         assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
     }
 
-    /// `H:MM` from the gradient-aware model, keyed by the rider's bike profile. A zero-ascent
+    /// `H:MM` from the gradient-aware model, keyed by the rider's bike type. A zero-ascent
     /// route degrades to plain `distance / v_flat`, so the row never needs a "no elevation" branch
     /// or a `--`.
     #[test]
     fn est_time_value_is_the_gradient_aware_estimate() {
+        use crate::settings::BikeType;
         // The road profile at 22 km/h flat: 44 km with no climbing is two hours.
-        assert_eq!(est_time_value(44_000, 0, 0).as_str(), "2:00", "a flat route is distance / v_flat");
+        assert_eq!(est_time_value(44_000, 0, BikeType::Road).as_str(), "2:00", "a flat route is distance / v_flat");
         // The same 44 km over a 1000 m col costs 1000 × 1.6 s more, so 2:26.
-        assert_eq!(est_time_value(44_000, 1_000, 0).as_str(), "2:26", "the col adds its climb term");
+        assert_eq!(est_time_value(44_000, 1_000, BikeType::Road).as_str(), "2:26", "the col adds its climb term");
         // The same route on the MTB profile, at 16 km/h and 2.3 s/m: 2:45 flat plus 38:20
         // climbing, so 3:23.
-        assert_eq!(est_time_value(44_000, 1_000, 2).as_str(), "3:23", "a slower bike, a longer day");
-        // A stale index falls back to profile 0, which is the router's own rule.
-        assert_eq!(est_time_value(44_000, 1_000, 99), est_time_value(44_000, 1_000, 0));
+        assert_eq!(est_time_value(44_000, 1_000, BikeType::Mtb).as_str(), "3:23", "a slower bike, a longer day");
         // Degenerate inputs read as zero rather than as a placeholder.
-        assert_eq!(est_time_value(0, 0, 0).as_str(), "0:00");
+        assert_eq!(est_time_value(0, 0, BikeType::Road).as_str(), "0:00");
     }
 }

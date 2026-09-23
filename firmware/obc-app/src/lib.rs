@@ -46,7 +46,6 @@ pub mod landmarks;
 pub mod map_catalog;
 mod map_icons;
 pub mod metadata;
-pub mod nav_profiles;
 pub mod navigator;
 pub mod next_ahead;
 pub mod peak_view;
@@ -86,11 +85,10 @@ pub use i18n::{t, Msg};
 pub use input::{Chord, Gesture, Gestures, DEFAULT_CHORD_MS, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use map_catalog::flat_boot_fault;
-pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
-pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage};
-pub use ride::{RideCatalog, RideEntry, RideSummary, MAX_RIDES, UI_RIDES_CAP};
+pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage, RideOrigin};
+pub use ride::{RideCatalog, RideEntry, RideSummary, RideTrip, RideTrips, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
@@ -99,7 +97,7 @@ pub use settings::{
     DATETIME_MIN_YEAR, SENSOR_SLOTS,
 };
 pub use stat_fields::{StatField, StatFieldList};
-pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
+pub use trip::{RouteVersion, TripInput, TripProgress, TripSummary, Trips, MAX_TRIPS};
 pub use upload_facts::{CatalogUpload, CatalogUploadKind, UploadFacts};
 
 /// Durable identity of a catalog object. This is the flat store's `ObjectId` width; UI code keeps

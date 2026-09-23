@@ -78,7 +78,7 @@ pub(crate) async fn serve_connection(
                         };
                         match reply {
                             Ok(reply) => reply.send().await,
-                            Err(e) => warn!("ble: [gatt] error accepting objectControl: {:?}", e),
+                            Err(e) => warn!("ble: [gatt] error accepting objectControl: {:?}", defmt::Debug2Format(&e)),
                         }
                         if matches!(staging, super::v4::Staging::Taken) {
                             // The ATT response is out, so the peer may write again — but the engine
@@ -155,7 +155,7 @@ pub(crate) async fn serve_connection(
                         reply.send().await;
                     }
                     Err(e) => {
-                        warn!("ble: [gatt] error accepting request: {:?}", e);
+                        warn!("ble: [gatt] error accepting request: {:?}", defmt::Debug2Format(&e));
                     }
                 };
                 if let Some((buf, len)) = status_msg {
@@ -232,7 +232,11 @@ pub(crate) async fn serve_connection(
                     warn!("ble: [pair] pairing completed while bonded — dropping the link (not replacing the bond)");
                     conn.raw().disconnect();
                 } else {
-                    info!("ble: [pair] complete — level {:?}, bonded {}", security_level, bond.is_some());
+                    info!(
+                        "ble: [pair] complete — level {:?}, bonded {}",
+                        defmt::Debug2Format(&security_level),
+                        bond.is_some()
+                    );
                     // Persist the single bond (the open-pairing path: nothing was stored).
                     if let Some(bond) = bond {
                         let mut guard = shared.lock().await;
@@ -252,7 +256,11 @@ pub(crate) async fn serve_connection(
             }
             GattConnectionEvent::Encrypted { security_level, bond } => {
                 // Fires for a resumed bonded session too (no pairing UI) — mark the link secured.
-                info!("ble: [pair] encrypted — level {:?}, from bond {}", security_level, bond.is_some());
+                info!(
+                    "ble: [pair] encrypted — level {:?}, from bond {}",
+                    defmt::Debug2Format(&security_level),
+                    bond.is_some()
+                );
                 publish(|s| {
                     s.passkey = None;
                     s.secured = true;

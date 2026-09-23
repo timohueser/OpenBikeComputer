@@ -88,6 +88,13 @@ off = "Off"
 manual = "Manual"
 auto = "Auto"
 
+# --- BikeType labels (the four fixed bike types) ---
+[bike_type]
+road = "Road"
+gravel = "Gravel"
+mtb = "MTB"
+touring = "Touring"
+
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
 off = "Off"
@@ -116,6 +123,16 @@ sep = "Sep"
 oct = "Oct"
 nov = "Nov"
 dec = "Dec"
+
+# --- Weekday abbreviations, Monday-first (the trip day list) ---
+[weekday]
+mon = "Mon"
+tue = "Tue"
+wed = "Wed"
+thu = "Thu"
+fri = "Fri"
+sat = "Sat"
+sun = "Sun"
 
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
 # line (T5, #683: abbreviated weekday + day + month, day-first in every language). Months are
@@ -154,6 +171,7 @@ elevation = "Elevation"
 ride_time = "Ride time"
 time_to_go = "Time to go"
 eta = "ETA"
+trip_to_go = "Trip to go"
 clock = "Clock"
 next_waypoint = "Next waypoint"
 waypoint_list = "Waypoint list"
@@ -175,6 +193,7 @@ ride = "RIDE"
 # (`h TO GO`), the same caption idiom `dist_to_go` uses (`km TO GO`) — a single tile fits 8 Label
 # glyphs, so a spelled-out caption would be ellipsised.
 eta = "ETA"
+trip = "TRIP "
 time = "TIME"
 next_wpt = "NEXT WPT"
 waypoints = "WAYPOINTS"
@@ -235,6 +254,7 @@ fields = "Data fields"
 pages = "Auto-flip"
 climb = "Climb panel"
 waypoints = "Waypoints"
+bike_type = "Bike type"
 
 # --- Display settings screen ---
 [display]
@@ -357,8 +377,9 @@ today = "Today"
 open = "OPEN"
 closed = "CLOSED"
 route_here = "Route here"
-side_left = "left"
-side_right = "right"
+ahead = "Ahead"
+away = "Away"
+off_route = "Off route"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -371,11 +392,14 @@ on_phone = "on your phone"
 title = "RIDES"
 no_rides = "No rides yet"
 no_rides_sub = "Record a ride"
-not_synced = "not synced"
+# The trip folder's line 2: "2 of 3 days · 156 km".
+of = "of"
+days = "days"
+# A trip folder whose trip name is unknown.
+trip = "Trip"
 
 # --- Ride detail screen ---
 [ride_detail]
-synced = "synced"
 delete_ride = "Delete ride"
 
 # --- Route menu screen ---
@@ -386,6 +410,14 @@ no_routes = "No routes yet"
 no_routes_sub = "Import a GPX file"
 # Shown inside a folder whose every route reference dangled (an empty trip).
 folder_empty_sub = "This trip has no routes"
+# The trip row's line 2: "Day 2 next · 3 days", "Done · 3 days" after the last day, or "No days"
+# when no day route is left. It fits 20 Caption cells.
+day = "Day"
+day_next = "next"
+trip_done = "Done"
+day_one = "day"
+days = "days"
+no_days = "No days"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
 [trip_delete]
@@ -402,7 +434,6 @@ no_route_sub = "Back to the list"
 distance = "DISTANCE"
 est_time = "EST TIME"
 climb = "CLIMB"
-descent = "DESCENT"
 bike_type = "BIKE TYPE"
 start_ride = "START RIDE"
 loading_profile = "loading profile"
@@ -458,6 +489,32 @@ too_far_hint = "Try a closer destination."
 not_found = "Couldn't find a route."
 not_found_hint = "No rideable way nearby - try from a road."
 
+# --- Start away from the route start: Ride to start or Join nearest. The sentence and the
+# hint are fragments around a distance: `you_are` + "3.2 km" + `from_start`, and
+# "400 m" + `away_at` + "km 12". ---
+[start_away]
+title = "RIDE TO START"
+you_are = "You are "
+from_start = " from the start."
+no_route = "No route to the start from here."
+ride_to_start = "Ride to start"
+then_route = ", then route"
+join_nearest = "Join nearest"
+away_at = " away, at "
+cancel = "Cancel"
+
+# --- Arrival at the end of the route ---
+[arrival]
+title = "ARRIVED"
+end_of = "End of "
+end_of_day = ", end of "
+finish = "Finish ride"
+finish_hint = "Save today"
+ride_on = "Ride on: "
+to = " to "
+keep_riding = "Keep riding"
+keep_riding_hint = "Close this view"
+
 # --- Ride-control (pause) page ---
 [ride_control]
 title = "PAUSED"
@@ -467,6 +524,19 @@ discard = "Discard"
 ride_time = "RIDE TIME"
 distance = "DISTANCE"
 climb = "CLIMB"
+
+# --- The card after Finish on a trip day ---
+[day_done]
+# The title "DAY 2 DONE": the day number goes between the two words.
+day = "DAY"
+done = "DONE"
+# The title after the last day of a trip.
+trip_done = "TRIP DONE"
+# The caption over tomorrow's day, and the title of page 2.
+tomorrow = "TOMORROW"
+# After the time estimate: "~3:30 h est."
+est = "est."
+ok = "OK"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]
@@ -491,6 +561,10 @@ gps = "GPS"
 fix = "fix"
 searching = "searching.."
 battery = "Battery"
+# The trip day row's second line, before the day's distance.
+show_route = "Show route"
+# The spinner while the rest of the day before joins the next day.
+loading_day = "Loading day..."
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
@@ -654,6 +728,11 @@ blocked = "Road blocked"
 back_route = "Back on route"
 landmarks = "Landmarks"
 detour = "Worth a detour"
+find_hint = "Water and food"
+next_hint = "On your route"
+easier_hint = "Less climbing"
+landmarks_hint = "Sights nearby"
+climb_in = "Climb in"
 no_fix = "GPS required"
 no_route = "Follow a route"
 busy = "Planner busy"
@@ -681,7 +760,6 @@ return_extra = "Extra incl. return"
 direct = "Direct destination"
 calculating = "Preparing route"
 planning_route = "Planning route"
-loading_route = "Loading route"
 add_stop = "Add detour"
 go_here = "Route here"
 saving = "Saving"
@@ -695,6 +773,16 @@ partial_data = "Partial data"
 select_read = "Select to read"
 select_refresh = "Select to refresh"
 back = "Back"
+source_text = "Text"
+source_article = "Article"
+source_authors = "Authors"
+source_license = "License"
+source_photo = "Photo"
+source_file = "File"
+source_author = "Author"
+source_changes = "Changes"
+source_resized = "Resized, dithered"
+source_excerpt = "Excerpt"
 access_unavailable = "Access unknown"
 visit = "Visit"
 no_access = "Unmapped access"
@@ -740,7 +828,12 @@ preview_route = "Preview route"
 search_limit = "Search limit"
 no_connection = "No route connection"
 no_comparison = "Cannot compare"
-no_useful_route = "No useful route"
+search_failed = "Search failed"
+no_easier = "No easier way"
+checked_all = "Checked climb,"
+checked_all_goals = "surface, distance"
+checked_some = "Checked only"
+checked_some_goals = "climb, distance"
 comparing = "Comparing routes"
 ascent_saved = "ascent saved"
 rough_avoided = "rough avoided"

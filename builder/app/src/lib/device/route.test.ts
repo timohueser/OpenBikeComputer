@@ -30,7 +30,7 @@ describe("decodeRouteHeader", () => {
     it("reads the vector's header exactly as the manifest records it", () => {
         const header = decodeRouteHeader(vector("route-waypoints.obcr"));
         expect(header).toMatchObject({
-            version: 4,
+            version: 5,
             name: "Vector Loop",
             pointCount: 9,
             distanceM: 2207,

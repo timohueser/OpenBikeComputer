@@ -15,7 +15,7 @@ use obc_route::corridor::{Corridor, CORRIDOR_MAX_PTS, MIN_DETOUR_SPAN_M};
 use obc_route::nav::{plan_detour, plan_route, NavError, NavScratch};
 use obc_route::reader::for_each_waypoint;
 use obc_route::splice::{splice_detour, trim_detour_to_tail};
-use obc_route::{RouteIndex, RoutePoint, RouteReader, TrimOutcome};
+use obc_route::{BikeType, Leg, RouteIndex, RoutePoint, RouteReader, TrimOutcome};
 
 /// Global bbox, µdeg. Roomy, so the node quadtree subdivides.
 const GLOBAL: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
@@ -149,7 +149,9 @@ fn road_route_obcr() -> Vec<u8> {
         ));
     }
     g.push_str("</trkseg></trk></gpx>");
-    convert("Road trip", &g)
+    let mut obcr = convert("Road trip", &g);
+    obcr[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Touring as u8;
+    obcr
 }
 
 /// Plan a detour with a corridor built over `[progress_m, target_m]` and endpoints resolved on the
@@ -190,7 +192,7 @@ fn detour_over_terrain(
         (from_pos.lon, from_pos.lat),
         (to_pos.lon, to_pos.lat),
         "Detour leg",
-        0,
+        BikeType::Road,
         corridor,
         &mut scratch,
         &mut tiles,
@@ -350,7 +352,7 @@ fn detour_bridge_crossing_edge_stays_usable() {
         road_at(0),
         south,
         "Over the bridge",
-        0,
+        BikeType::Road,
         corridor,
         &mut scratch,
         &mut tiles,
@@ -393,14 +395,25 @@ fn detour_with_degenerate_corridor_matches_plain_plan() {
     let mut tiles = NavTileCache::new();
     let mut plain = VecSink::default();
     let plain_res =
-        plan_route(&r, from, to, "Same", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut plain).unwrap();
+        plan_route(&r, from, to, "Same", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut plain)
+            .unwrap();
 
     let mut scratch2 = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles2 = NavTileCache::new();
     let mut det = VecSink::default();
-    let det_res =
-        plan_detour(&r, from, to, "Same", 0, corridor, &mut scratch2, &mut tiles2, &mut NullElevation, &mut det)
-            .unwrap();
+    let det_res = plan_detour(
+        &r,
+        from,
+        to,
+        "Same",
+        BikeType::Road,
+        corridor,
+        &mut scratch2,
+        &mut tiles2,
+        &mut NullElevation,
+        &mut det,
+    )
+    .unwrap();
 
     assert_eq!(plain_res, det_res);
     assert_eq!(plain.buf, det.buf, "a degenerate corridor must not perturb the plan by a single byte");
@@ -423,7 +436,8 @@ fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
 
     let mut sink = VecSink::default();
     let stats =
-        splice_detour(&orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink).unwrap();
+        splice_detour(Leg::Detour, &orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink)
+            .unwrap();
     (sink.buf, stats, dstats.total_distance_m)
 }
 
@@ -433,6 +447,7 @@ fn splice_output_roundtrips_and_total_is_preview_consistent() {
     let src = SliceSource(&spliced[..]);
     let idx = RouteIndex::read(&src).expect("the spliced OBCR parses");
     assert_eq!(idx.name(), "Detour · Road trip");
+    assert_eq!(idx.bike_type(), BikeType::Touring, "the splice keeps the source route's type, not the detour's");
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
 
     let mut prev = None;
@@ -558,11 +573,128 @@ fn splice_self_input_is_previous_output() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(&orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).expect("a re-spliced route still parses");
     assert_eq!(idx.name(), "Detour · Road trip", "no stacked name prefixes");
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
+}
+
+/// Ride to start: a leg that rejoins at the route start comes first, and the whole route follows
+/// it unchanged, with the waypoints moved behind the leg.
+#[test]
+fn an_approach_splice_is_the_leg_then_the_whole_route() {
+    let obcr = road_route_obcr();
+    // The leg comes down the parallel street at 300 m, a datum 200 m above the route's start.
+    let mut g = String::from("<gpx><trk><trkseg>\n");
+    for (lon, lat) in [street_at(4), street_at(2), street_at(0), road_at(0)] {
+        let (lat, lon) = (lat as f64 * 1e-6, lon as f64 * 1e-6);
+        g.push_str(&format!("  <trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>300.0</ele></trkpt>\n"));
+    }
+    g.push_str("</trkseg></trk></gpx>");
+    let leg = convert("Approach leg", &g);
+
+    let osrc = SliceSource(&obcr[..]);
+    let oidx = RouteIndex::read(&osrc).unwrap();
+    let orig = RouteReader::new(&oidx, &osrc);
+    let lsrc = SliceSource(&leg[..]);
+    let lidx = RouteIndex::read(&lsrc).unwrap();
+    let det = RouteReader::new(&lidx, &lsrc);
+    let (leg_m, route_m) = (det.total_distance_m, orig.total_distance_m);
+
+    let mut trimmed = VecSink::default();
+    assert!(
+        matches!(trim_detour_to_tail(Leg::Approach, &orig, &det, 0, true, &mut trimmed), Ok(None)),
+        "an approach is not trimmed"
+    );
+    let mut sink = VecSink::default();
+    let stats = splice_detour(Leg::Approach, &orig, &det, 0, 0, leg_m, true, &mut sink).unwrap();
+
+    let src = SliceSource(&sink.buf[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let spliced = RouteReader::new(&idx, &src);
+    assert_eq!(idx.name(), "To start · Road trip", "the Routes list tells it from the route");
+    assert!(!idx.has_unresolved_avoidance(), "an approach avoids nothing");
+    assert_eq!(idx.bike_type(), BikeType::Touring, "an approach keeps the route's type, not the leg's");
+    assert!(
+        stats.total_distance_m.abs_diff(leg_m + route_m) <= 2,
+        "length {} is the leg {leg_m} plus the route {route_m}",
+        stats.total_distance_m
+    );
+    let start = spliced.position_at(0).unwrap();
+    assert_eq!((start.lon, start.lat), street_at(4), "the ride starts where the rider is");
+    for along in [0, 600, route_m] {
+        let (a, b) = (orig.position_at(along).unwrap(), spliced.position_at(leg_m + along).unwrap());
+        let drift = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
+        assert!(drift < 5.0, "route km {along} sits one leg further on ({drift} m off)");
+    }
+
+    let along = |bytes: &[u8]| {
+        let mut out = Vec::new();
+        for_each_waypoint(&SliceSource(bytes), |w| out.push(w.dist_along_m)).unwrap();
+        out
+    };
+    let (before, after) = (along(&obcr), along(&sink.buf));
+    assert_eq!(after.len(), before.len(), "every waypoint stays");
+    for (b, a) in before.iter().zip(&after) {
+        assert!((b + leg_m).abs_diff(*a) <= 6, "waypoint at {b} m moves to {a} m, one leg on");
+    }
+    let first = route_points(&sink.buf)[0];
+    assert!((99..=101).contains(&first.ele), "the leg lands on the start's height (got {} m)", first.ele);
+}
+
+/// A day route over `points`, with a height that rises one metre per point from 100 m.
+fn day_route(name: &str, points: &[(i32, i32)]) -> Vec<u8> {
+    let mut g = String::from("<gpx><trk><trkseg>\n");
+    for (i, (lon, lat)) in points.iter().enumerate() {
+        let (lat, lon) = (*lat as f64 * 1e-6, *lon as f64 * 1e-6);
+        g.push_str(&format!("  <trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>{}.0</ele></trkpt>\n", 100 + i));
+    }
+    g.push_str("</trkseg></trk></gpx>");
+    convert(name, &g)
+}
+
+fn length_m(obcr: &[u8]) -> u32 {
+    RouteIndex::read(&SliceSource(obcr)).unwrap().total_distance_m
+}
+
+/// After an early stop, the next day is the rest of the day before and then the next day. Day 2
+/// ends at a camp off the line, and Day 3 comes back from it: the join skips both spurs.
+#[test]
+fn a_rest_splice_is_the_rest_of_the_day_then_the_next_day_without_the_spur() {
+    let camp = (road_at(6).0, BASE.1 + STREET_OFF);
+    let line2: Vec<_> = (0..=6).map(road_at).collect();
+    let line3: Vec<_> = (6..=SEGS).map(road_at).collect();
+    let day2 = day_route("Day 2 Ulrichen", &[&line2[..], &[camp]].concat());
+    let mut day3 = day_route("Day 3 Brig", &[&[camp][..], &line3].concat());
+    day3[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Gravel as u8;
+    let leave_m = length_m(&day_route("line", &line2));
+    let join_m = length_m(&day3) - length_m(&day_route("line", &line3));
+    let from_m = 700;
+
+    let (src2, src3) = (SliceSource(&day2[..]), SliceSource(&day3[..]));
+    let (idx2, idx3) = (RouteIndex::read(&src2).unwrap(), RouteIndex::read(&src3).unwrap());
+    let (rest, next) = (RouteReader::new(&idx2, &src2), RouteReader::new(&idx3, &src3));
+    let mut sink = VecSink::default();
+    let leg = Leg::Rest { from_m, to_m: leave_m };
+    let stats = splice_detour(leg, &next, &rest, 0, join_m, 0, true, &mut sink).unwrap();
+
+    let src = SliceSource(&sink.buf[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let joined = RouteReader::new(&idx, &src);
+    assert_eq!(idx.name(), "From stop · Day 3 Brig", "the built day cannot pass for the day");
+    let info = obc_route::RouteObjectInfo::read(&src).unwrap();
+    assert!(!info.assistant_candidate);
+    assert_ne!(sink.buf[5] & obc_formats::obcr::FLAG_BUILT_DAY, 0, "it is marked as a built day");
+    assert_eq!(idx.bike_type(), BikeType::Gravel, "and the day's bike type");
+    assert!(!idx.has_unresolved_avoidance(), "a rest avoids nothing");
+    let want = (leave_m - from_m) + (next.total_distance_m - join_m);
+    assert!(stats.total_distance_m.abs_diff(want) <= 4, "length {} is rest plus day, {want}", stats.total_distance_m);
+    let (start, stop) = (joined.position_at(0).unwrap(), rest.position_at(from_m).unwrap());
+    assert!(obc_map_scene::ground_dist_m((start.lon, start.lat), (stop.lon, stop.lat)) < 2.0, "it starts at the stop");
+    let points = route_points(&sink.buf);
+    assert!(points.iter().all(|p| p.lat == BASE.1), "the route stays on the line and skips the camp");
+    assert_eq!(points[1].ele, 103, "the stored heights stay as they are");
 }
 
 fn trim_run(
@@ -578,7 +710,7 @@ fn trim_run(
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    let out = trim_detour_to_tail(&orig, &det, target_m, detour_has_elevation, &mut sink).unwrap();
+    let out = trim_detour_to_tail(Leg::Detour, &orig, &det, target_m, detour_has_elevation, &mut sink).unwrap();
     (out, sink.buf)
 }
 
@@ -597,7 +729,7 @@ fn spliced_total(
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    splice_detour(&orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
+    splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
         .unwrap()
         .total_distance_m
 }
@@ -626,9 +758,13 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         "…then descends the tail to land at the exact requested projection near node9"
     );
 
+    let mut detour = detour;
+    detour[obc_formats::obcr::BIKE_TYPE_OFF] = BikeType::Gravel as u8;
     let (out, trimmed) = trim_run(&obcr, &detour, target, dstats.has_elevation);
     let out = out.expect("the retrace is trimmed");
     assert!(out.rejoin_m > target + 500, "rejoin advances toward the road end (got {})", out.rejoin_m);
+    let tsrc = SliceSource(&trimmed[..]);
+    assert_eq!(RouteIndex::read(&tsrc).unwrap().bike_type(), BikeType::Gravel, "the trim keeps the detour's type");
 
     let tpts = route_points(&trimmed);
     assert_eq!(
@@ -728,7 +864,8 @@ fn splice_span_at_route_end() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    splice_detour(&orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink).unwrap();
+    splice_detour(Leg::Detour, &orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink)
+        .unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
@@ -829,8 +966,12 @@ fn plan_either(bytes: &[u8], from: (i32, i32), to: (i32, i32), corridor: Option<
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
     let res = match corridor {
-        Some(c) => plan_detour(&r, from, to, "Leg", 0, c, &mut scratch, &mut tiles, &mut NullElevation, &mut sink),
-        None => plan_route(&r, from, to, "Leg", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink),
+        Some(c) => {
+            plan_detour(&r, from, to, "Leg", BikeType::Road, c, &mut scratch, &mut tiles, &mut NullElevation, &mut sink)
+        }
+        None => {
+            plan_route(&r, from, to, "Leg", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut sink)
+        }
     };
     (res.expect("the fixture always has a legal path").total_distance_m, sink.buf)
 }
@@ -933,8 +1074,17 @@ fn spliced_span(
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(&orig, &det, split_m, rejoin_m, dstats.total_distance_m, dstats.has_elevation, &mut sink)
-        .unwrap();
+    let stats = splice_detour(
+        Leg::Detour,
+        &orig,
+        &det,
+        split_m,
+        rejoin_m,
+        dstats.total_distance_m,
+        dstats.has_elevation,
+        &mut sink,
+    )
+    .unwrap();
     (sink.buf, stats, dstats)
 }
 

@@ -124,21 +124,18 @@ fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
 }
 
 /// The route-plan sheet reaches the plan and the save, through a real chord and real passes. Three
-/// things at once, because they are one property: the commit writes `Settings::bike_profile_idx`
+/// things at once, because they are one property: the commit writes `Settings::bike_type`
 /// and leaves the pass owing a settings persist, because a drawer is not a settings subtree; the
 /// sheet closes onto the confirm card rather than navigating; and the plan request afterwards is
 /// recorded while the settings hold the profile that was just committed.
 #[test]
 fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
+    use crate::settings::BikeType;
     let mut app = lit();
     let mut f = Frames::new();
     app.test_mount_store();
 
-    // A map with four profiles, and a fix — the confirm card routes from where the rider is.
-    let bytes = super::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
-    let src = obc_reader::SliceSource(&bytes);
-    let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
-    app.set_nav_profiles(tables.nav_profiles());
+    // A fix — the confirm card routes from where the rider is.
     app.state.user_fix = Some(obc_ports::Fix::at(7_420_000, 43_735_000));
 
     // The card the POI detail would push, seeded directly: the browse that reaches it needs a
@@ -153,16 +150,16 @@ fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
 
     let ms = at(&mut app, ms, Gesture::Press); // -> the bike-type editor, on Road
     let ms = at(&mut app, ms, Gesture::Step(1)); // stage Gravel
-    assert_eq!(app.settings().bike_profile_idx, 0, "staging commits nothing");
+    assert_eq!(app.settings().bike_type, BikeType::Road, "staging commits nothing");
     let ms = at(&mut app, ms, Gesture::Press); // commit
-    assert_eq!(app.settings().bike_profile_idx, 1, "Select wrote the profile the router will use");
+    assert_eq!(app.settings().bike_type, BikeType::Gravel, "Select wrote the type the router will use");
     assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "…and the pass owes a persist at once");
 
     let ms = at(&mut app, ms, Gesture::Back); // close the sheet
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "the card is still under it — not a navigation");
     assert_eq!(app.debug_stack_len(), depth);
 
-    assert_eq!(app.settings().bike_profile_idx, 1);
+    assert_eq!(app.settings().bike_type, BikeType::Gravel);
     let _ = ms;
 }
 

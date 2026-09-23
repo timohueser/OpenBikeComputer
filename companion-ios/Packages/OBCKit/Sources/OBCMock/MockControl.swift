@@ -246,11 +246,14 @@ public final class MockControl: @unchecked Sendable {
     public func seedLibrary(into store: any LibraryStore) {
         let existing = Set(store.plannedRoutes().map(\.id))
         let routes = lock.withLocked { _fixtures.routes }
+        let trips = lock.withLocked { _fixtures.trips }
+        let tripMembers = Set(trips.flatMap(\.routeIDs))
         // Seeded device links carry the mock device's own serial and StoreId, the same link an
         // upload against this mock would mint, so badges behave as on the real path.
         let scope = deviceInfo.libraryScope
         let base = Date()
-        for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
+        for (index, entry) in routes.enumerated()
+        where !existing.contains(entry.summary.id) && !tripMembers.contains(entry.summary.id) {
             var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)), scope: scope)
             // A fixture the mock device holds boots up to date: the seeded fingerprint matches
             // what an upload of the record would send.
@@ -259,12 +262,10 @@ public final class MockControl: @unchecked Sendable {
             }
             store.savePlannedRoute(record)
         }
-        // Trips group some of those routes. The routes are written above first, so no stage
-        // dangles. Idempotent over trip ids, like the routes.
-        let trips = lock.withLocked { _fixtures.trips }
+        // Idempotent over trip ids, like the routes.
         let existingTrips = Set(store.trips().map(\.id))
         for entry in trips where !existingTrips.contains(entry.id) {
-            store.saveTrip(entry.record(base: base))
+            store.saveTrip(entry.trip(routes: routes, base: base))
         }
     }
 
@@ -422,7 +423,7 @@ public final class MockControl: @unchecked Sendable {
         var id: DeviceObjectID
         var name: String
         var stageIDs: [DeviceObjectID]
-        var payloadByteCount: Int
+        var payload: Data
         var crc32: UInt32
     }
 
@@ -448,9 +449,9 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// The stored trip object behind a device id: a byte-faithful decode of what an upload wrote.
-    func deviceTripDecoded(_ id: DeviceObjectID) -> TripObjectCodec.Decoded? {
+    func deviceTripDecoded(_ id: DeviceObjectID) -> TripObjectCodec.Trip? {
         guard let trip = (lock.withLocked { _deviceTrips.first { $0.id == id } }) else { return nil }
-        return TripObjectCodec.Decoded(version: TripObjectCodec.version, name: trip.name, stageObjectIDs: trip.stageIDs)
+        return try? TripObjectCodec.decode(trip.payload)
     }
 
     /// Begin a simulated trip upload. A new trip takes a fresh id from the trip counter. On commit
@@ -491,7 +492,7 @@ public final class MockControl: @unchecked Sendable {
         let committedCRC = CRC32.checksum(blob.payload)
         let stored = DeviceTrip(
             id: objectID, name: blob.name, stageIDs: blob.deviceStageIDs,
-            payloadByteCount: max(1, blob.payload.count), crc32: committedCRC)
+            payload: blob.payload, crc32: committedCRC)
         lock.withLocked {
             if let index = _deviceTrips.firstIndex(where: { $0.id == objectID }) {
                 _deviceTrips[index] = stored

@@ -8,9 +8,10 @@ use std::path::Path;
 pub fn import_gpx(
     store: &mut FlatRouteStore,
     path: &Path,
+    bike: obc_route::BikeType,
     map: Option<(&Reader, obc_formats::obcr::RouteSourceKey)>,
 ) -> Result<RouteStats, String> {
-    let (bytes, stats) = convert_gpx(path, map)?;
+    let (bytes, stats) = convert_gpx(path, bike, map)?;
     store.import(&bytes).map_err(|error| error.to_string())?;
     Ok(stats)
 }
@@ -18,9 +19,10 @@ pub fn import_gpx(
 pub fn export_gpx(
     path: &Path,
     directory: &Path,
+    bike: obc_route::BikeType,
     map: Option<(&Reader, obc_formats::obcr::RouteSourceKey)>,
 ) -> Result<RouteStats, String> {
-    let (bytes, stats) = convert_gpx(path, map)?;
+    let (bytes, stats) = convert_gpx(path, bike, map)?;
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let name = path.file_stem().unwrap_or_default();
     let output = directory.join(name).with_extension("obcr");
@@ -51,6 +53,6 @@ mod tests {
             "/../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx"
         ));
         let expected = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
-        assert_eq!(super::convert_gpx(source, None).unwrap().0, expected);
+        assert_eq!(super::convert_gpx(source, obc_route::BikeType::Road, None).unwrap().0, expected);
     }
 }

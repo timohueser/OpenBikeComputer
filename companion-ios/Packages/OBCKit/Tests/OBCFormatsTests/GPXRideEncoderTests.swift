@@ -6,16 +6,17 @@ import OBCDomain
 /// The ride to GPX encoder: a Strava-shaped export whose sensor extensions mirror the firmware's
 /// `track_to_gpx`. The `gpxtpx` namespace sits on the root, each point carries a
 /// `gpxtpx:TrackPointExtension` plus a bare `<power>`, and an absent value drops its element.
-/// Segment flags and the v3 microdegree grid are retained.
+/// Segment flags, per-point UTC times and the v3 microdegree grid are retained.
 struct GPXRideEncoderTests {
     private let encoder = GPXRideEncoder()
 
     private func point(
-        _ latE6: Int, _ lonE6: Int, ele: Double?, segmentStart: Bool = false,
+        _ latE6: Int, _ lonE6: Int, ele: Double?, second: Int = 0, segmentStart: Bool = false,
         hr: Int? = nil, cad: Int? = nil, pwr: Int? = nil
     ) -> RidePoint {
         RidePoint(
-            timestamp: .distantPast,
+            // 2025-09-11T08:00:00Z plus `second`.
+            timestamp: Date(timeIntervalSince1970: 1_757_577_600 + Double(second)),
             coordinate: Coordinate(latitude: Double(latE6) / 1e6, longitude: Double(lonE6) / 1e6),
             elevationMeters: ele, heartRate: hr, cadence: cad, power: pwr, segmentStart: segmentStart)
     }
@@ -32,22 +33,23 @@ struct GPXRideEncoderTests {
         // TrackPointExtension wrapper), hr-only. `&` in the name exercises escaping.
         let mixed = ride(name: "Feierabend & Sensors", points: [
             point(48_000_000, 7_800_000, ele: 214, hr: 140, cad: 84, pwr: 205),
-            point(48_001_000, 7_801_200, ele: nil),
-            point(48_002_000, 7_803_000, ele: 219, pwr: 215),
-            point(48_003_000, 7_804_000, ele: 220, segmentStart: true, hr: 150),
+            point(48_001_000, 7_801_200, ele: nil, second: 1),
+            point(48_002_000, 7_803_000, ele: 219, second: 2, pwr: 215),
+            point(48_003_000, 7_804_000, ele: 220, second: 75, segmentStart: true, hr: 150),
         ])
 
         let expected = """
             <?xml version="1.0" encoding="UTF-8"?>
             <gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+            <metadata><time>2025-09-11T08:00:00Z</time></metadata>
             <trk><name>Feierabend &amp; Sensors</name>
             <trkseg>
-            <trkpt lat="48.000000" lon="7.800000"><ele>214</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>140</gpxtpx:hr><gpxtpx:cad>84</gpxtpx:cad></gpxtpx:TrackPointExtension><power>205</power></extensions></trkpt>
-            <trkpt lat="48.001000" lon="7.801200"></trkpt>
-            <trkpt lat="48.002000" lon="7.803000"><ele>219</ele><extensions><power>215</power></extensions></trkpt>
+            <trkpt lat="48.000000" lon="7.800000"><ele>214</ele><time>2025-09-11T08:00:00Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>140</gpxtpx:hr><gpxtpx:cad>84</gpxtpx:cad></gpxtpx:TrackPointExtension><power>205</power></extensions></trkpt>
+            <trkpt lat="48.001000" lon="7.801200"><time>2025-09-11T08:00:01Z</time></trkpt>
+            <trkpt lat="48.002000" lon="7.803000"><ele>219</ele><time>2025-09-11T08:00:02Z</time><extensions><power>215</power></extensions></trkpt>
             </trkseg>
             <trkseg>
-            <trkpt lat="48.003000" lon="7.804000"><ele>220</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>150</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions></trkpt>
+            <trkpt lat="48.003000" lon="7.804000"><ele>220</ele><time>2025-09-11T08:01:15Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>150</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions></trkpt>
             </trkseg>
             </trk>
             </gpx>
@@ -66,10 +68,11 @@ struct GPXRideEncoderTests {
         let expected = """
             <?xml version="1.0" encoding="UTF-8"?>
             <gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+            <metadata><time>2025-09-11T08:00:00Z</time></metadata>
             <trk><name>Plain Ride</name>
             <trkseg>
-            <trkpt lat="47.000000" lon="11.000000"><ele>500</ele></trkpt>
-            <trkpt lat="47.005000" lon="11.001000"></trkpt>
+            <trkpt lat="47.000000" lon="11.000000"><ele>500</ele><time>2025-09-11T08:00:00Z</time></trkpt>
+            <trkpt lat="47.005000" lon="11.001000"><time>2025-09-11T08:00:00Z</time></trkpt>
             </trkseg>
             </trk>
             </gpx>

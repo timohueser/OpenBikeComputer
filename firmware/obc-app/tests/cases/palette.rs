@@ -17,6 +17,7 @@ fn palette_quantizes_to_documented_device64() {
     let cases: &[(&str, u16, (u8, u8, u8))] = &[
         ("PARCHMENT", PARCHMENT, (255, 255, 255)),
         ("PARCHMENT_SHADE", PARCHMENT_SHADE, (170, 170, 85)),
+        ("RECESSED_BASE", RECESSED_BASE, (170, 170, 170)),
         ("HUD", HUD, (0, 0, 0)),
         ("WOOD", WOOD, (170, 85, 0)),
         ("WOOD_LIGHT", WOOD_LIGHT, (170, 170, 85)),
@@ -38,6 +39,9 @@ fn palette_quantizes_to_documented_device64() {
         ("ROUTE", ROUTE, (255, 0, 255)),
         ("BREADCRUMB", BREADCRUMB, (0, 0, 170)),
         ("ART_WHITE", ART_WHITE, (255, 255, 255)),
+        ("TRACK_START", TRACK_START, (0, 85, 0)),
+        ("TRACK_END", TRACK_END, (170, 0, 0)),
+        ("TRAIL", TRAIL, (170, 0, 0)),
         ("CONTOUR", CONTOUR, (85, 85, 85)),
     ];
     for &(name, c, want) in cases {

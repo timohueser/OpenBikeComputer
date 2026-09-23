@@ -317,7 +317,11 @@ pub async fn run(
     let mut peripheral = stack.peripheral();
 
     let server: &'static Server<'static> = init_server(store);
-    info!("ble: host up as '{}', address {:?}", advertised_name(&store.borrow()).as_str(), address);
+    info!(
+        "ble: host up as '{}', address {:?}",
+        advertised_name(&store.borrow()).as_str(),
+        defmt::Debug2Format(&address)
+    );
 
     // Seed the runtime attribute values the macro `value =` cannot hold. `server.set` writes the
     // shared attribute table once, with no connection.
@@ -334,7 +338,7 @@ pub async fn run(
     );
 
     // Advertise → serve → re-advertise, forever, with a parked Off state the rider's Bluetooth
-    // switch gates. The sensor manager's one central-role task rides beside them, gated by the same
+    // switch gates. The sensor manager (the central role) rides beside them, gated by the same
     // switch.
     join(
         sensors::run(stack, server, sensor_injector),

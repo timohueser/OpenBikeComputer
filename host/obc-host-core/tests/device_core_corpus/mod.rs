@@ -309,8 +309,8 @@ impl CorpusState {
         let trip_stage_ids = vec![10, 20];
         let mut app = App::new_idle(AppState::new(8_330_000, 46_570_000, 1.0));
         app.set_routes_with_ids(&routes, &route_ids);
-        app.set_rides(&rides);
-        app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &trip_stage_ids }]);
+        app.set_rides(&rides, &[]);
+        app.set_trips(&[TripInput { id: TRIP, key: 1, name: "Alps", start_date: 0, stage_ids: &trip_stage_ids }]);
         Self {
             app,
             routes,
@@ -365,13 +365,19 @@ impl CorpusState {
     }
 
     pub fn feed_rides(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
-        self.app.set_rides(&self.rides);
+        self.app.set_rides(&self.rides, &[]);
         trace.record_feeder(FeederCall::new(FeederKind::RideCatalog, key, self.rides.len()));
     }
 
     pub fn feed_trips(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
         if self.trip_present {
-            self.app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &self.trip_stage_ids }]);
+            self.app.set_trips(&[TripInput {
+                id: TRIP,
+                key: 1,
+                name: "Alps",
+                start_date: 0,
+                stage_ids: &self.trip_stage_ids,
+            }]);
         } else {
             self.app.set_trips(&[]);
         }
@@ -381,7 +387,7 @@ impl CorpusState {
     fn reset_to_riding_map(&mut self) {
         self.app = App::new_idle(AppState::new(7_500_000, 43_500_000, 1.0));
         self.app.set_routes_with_ids(&self.routes, &self.route_ids);
-        self.app.set_rides(&self.rides);
+        self.app.set_rides(&self.rides, &[]);
         self.app.set_map_nav_graph(true);
         self.app.state.user_fix = Some(road_fix(0.0));
         self.mount_store(); // the ride these gestures start needs somewhere to go
@@ -834,7 +840,7 @@ impl TripCatalog for BorrowedTrips<'_> {
 
     fn refeed(&self, app: &mut App) {
         if *self.present {
-            app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: self.stage_ids }]);
+            app.set_trips(&[TripInput { id: TRIP, key: 1, name: "Alps", start_date: 0, stage_ids: self.stage_ids }]);
         } else {
             app.set_trips(&[]);
         }
@@ -896,8 +902,9 @@ pub fn route(name: &str) -> RouteSummary {
         distance_km: 10,
         climb_m: 100,
         bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 1_000, max_lat: 1_000 },
-        start_lon: 0,
-        start_lat: 0,
+        // The road's first point, so START RIDE from `road_fix(0.0)` starts without the Start-away prompt.
+        start_lon: 7_500_000,
+        start_lat: 43_500_000,
     };
     summary.name.push_str(name).unwrap();
     summary
@@ -912,6 +919,7 @@ pub fn ride(name: &str) -> RideSummary {
         climb_m: 10,
         synced: false,
         synced_at_utc: 0,
+        ..Default::default()
     };
     summary.name.push_str(name).unwrap();
     summary
