@@ -36,6 +36,13 @@ public enum BikeType: UInt8, CaseIterable, Sendable {
         return UInt32(clamping: seconds)
     }
 
+    /// The same table as a continuous figure: no truncation to whole metres or whole seconds,
+    /// so balancing days by it has an exact inverse.
+    public func ridingTime(distanceMeters: Double, ascentMeters: Double) -> TimeInterval {
+        let (v, k) = etaRow
+        return (36 * max(distanceMeters, 0) + max(ascentMeters, 0) * Double(k * v)) / Double(10 * v)
+    }
+
     /// The estimate for a summary's metre figures. They hold the OBCR header's whole metres for a
     /// phone-imported route, so truncation gives back the device's inputs.
     public func estimatedDuration(distanceMeters: Double, ascentMeters: Double) -> TimeInterval {

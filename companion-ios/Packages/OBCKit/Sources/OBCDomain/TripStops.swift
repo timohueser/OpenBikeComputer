@@ -33,9 +33,10 @@ extension Trip {
     }
 
     /// Whether the next day starts more than ``transferMinMeters`` from where `day` ends.
-    /// Moving such a day end would put the gap inside a day.
-    public func endsAtTransfer(_ day: Int) -> Bool {
-        transferStart(after: day) != nil
+    /// Moving such a day end would put the gap inside a day. A caller that holds the measured
+    /// line passes it, so the answer costs no line walk.
+    public func endsAtTransfer(_ day: Int, on measured: MeasuredLine? = nil) -> Bool {
+        transferStart(after: day, on: measured) != nil
     }
 
     /// Label the transfer after `day`. Nil clears it. No change where the day does not end at a
@@ -55,9 +56,9 @@ extension Trip {
     }
 
     /// The line index where the next day starts after a transfer at the end of `day`.
-    func transferStart(after day: Int) -> Int? {
+    func transferStart(after day: Int, on measured: MeasuredLine? = nil) -> Int? {
         guard dayEnds.indices.contains(day) else { return nil }
-        let vertices = measuredLine.vertices
+        let vertices = (measured ?? measuredLine).vertices
         return pieceStarts.first { start in
             abs(vertices[start].distance - dayEnds[day].distance) < MeasuredLine.tieMeters
                 && line[start - 1].coordinate.distance(to: line[start].coordinate) > Self.transferMinMeters
@@ -66,9 +67,9 @@ extension Trip {
 
     /// The distances where `day` can end: after the day before it and before the day after it,
     /// each by at least ``minimumDayMeters``. Nil for the last day, which ends at the line end,
-    /// and for a day that ends at a transfer.
-    public func endRange(of day: Int) -> ClosedRange<Double>? {
-        guard day >= 0, day < dayCount - 1, !endsAtTransfer(day) else { return nil }
+    /// and for a day that ends at a transfer. A caller that holds the measured line passes it.
+    public func endRange(of day: Int, on measured: MeasuredLine? = nil) -> ClosedRange<Double>? {
+        guard day >= 0, day < dayCount - 1, !endsAtTransfer(day, on: measured) else { return nil }
         let lower = (day > 0 ? dayEnds[day - 1].distance : 0) + Self.minimumDayMeters
         let upper = dayEnds[day + 1].distance - Self.minimumDayMeters
         return lower <= upper ? lower...upper : nil

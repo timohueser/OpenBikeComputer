@@ -121,6 +121,10 @@ public struct OBCComponentGallery: View {
                     TripStopsGallerySection()
                 }
 
+                section("Day editor") {
+                    TripDayEditorGallerySection()
+                }
+
                 section("Ride edit") {
                     RideEditGallerySection()
                 }

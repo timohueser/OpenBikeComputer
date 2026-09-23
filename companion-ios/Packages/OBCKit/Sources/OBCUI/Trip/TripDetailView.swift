@@ -20,6 +20,7 @@ public struct TripDetailView: View {
     private let onOpenRide: (RideID) -> Void
     /// Even out the days of a re-balance offer. The offer shows only with it.
     private let onEvenOut: ((RebalanceOffer) -> Void)?
+    private let onEditDays: () -> Void
     private let onOpenDay: (Int) -> Void
 
     @State private var renameShown = false
@@ -50,6 +51,7 @@ public struct TripDetailView: View {
         onClose: @escaping () -> Void = {},
         onOpenRide: @escaping (RideID) -> Void = { _ in },
         onEvenOut: ((RebalanceOffer) -> Void)? = nil,
+        onEditDays: @escaping () -> Void = {},
         onOpenDay: @escaping (Int) -> Void = { _ in }
     ) {
         self.model = model
@@ -57,7 +59,15 @@ public struct TripDetailView: View {
         self.onClose = onClose
         self.onOpenRide = onOpenRide
         self.onEvenOut = onEvenOut
+        self.onEditDays = onEditDays
         self.onOpenDay = onOpenDay
+    }
+
+    private var editDaysButton: some View {
+        Button("Edit days", action: onEditDays)
+            .buttonStyle(.obcGhost)
+            .padding(.top, 12)
+            .accessibilityIdentifier("trip.editDays")
     }
 
     private var trip: Trip? { model.trip(tripID) }
@@ -89,12 +99,14 @@ public struct TripDetailView: View {
                             .padding(.bottom, 8)
                             .padding(.leading, 4)
                         dayRows(unridden)
+                        editDaysButton
                     }
                     uploadButton.padding(.top, 14)
                 } else {
                     header
                     dayRows(Array(days.indices))
                         .padding(.top, 14)
+                    editDaysButton
                 }
                 OBCGroupedSection {
                     OBCListRow(
