@@ -2,6 +2,92 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn commons_category_members_cover_every_page_in_stable_order() {
+    let root = obcm_testkit::scratch::scratch_dir("landmarks", "category-pages");
+    let continuation = json!({"cmcontinue":"file|next|7","continue":"-||"});
+    let captures = [
+        (
+            "categories/category.json",
+            json!({"continue":continuation,"query":{"categorymembers":[
+                {"title":"File:B.jpg"},{"title":"File:A.jpg"}
+            ]}}),
+        ),
+        (
+            "categories/category-2.json",
+            json!({"query":{"categorymembers":[{"title":"File:B.jpg"},{"title":"File:C.jpg"}]}}),
+        ),
+    ];
+    let mut sources = Vec::new();
+    for (path, value) in &captures {
+        let bytes = serde_json::to_vec(value).unwrap();
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), &bytes).unwrap();
+        sources.push(Source {
+            path: (*path).into(),
+            sha256: hash(&bytes),
+            bytes: bytes.len() as u64,
+            url: "https://commons.wikimedia.org/w/api.php".into(),
+        });
+    }
+    let place = json!({"commons_categories":[{
+        "title":"Category:Example",
+        "complete":true,
+        "pages":[
+            {"path":captures[0].0,"continuation":null},
+            {"path":captures[1].0,"continuation":continuation}
+        ]
+    }]});
+    let members = category_members(&root, &sources, &place, &["Category:Example".into()], 2).unwrap();
+    assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg", "C.jpg"]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commons_category_rejects_missing_or_unconsumed_pages() {
+    let root = obcm_testkit::scratch::scratch_dir("landmarks", "incomplete-category-pages");
+    let continuation = json!({"cmcontinue":"file|next|7","continue":"-||"});
+    let raw = json!({"continue":continuation,"query":{"categorymembers":[{"title":"File:A.jpg"}]}});
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    let path = "categories/category.json";
+    fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+    fs::write(root.join(path), &bytes).unwrap();
+    let sources = [Source {
+        path: path.into(),
+        sha256: hash(&bytes),
+        bytes: bytes.len() as u64,
+        url: "https://commons.wikimedia.org/w/api.php".into(),
+    }];
+    let listing = |pages| {
+        json!({"commons_categories":[{
+            "title":"Category:Example","complete":true,"pages":pages
+        }]})
+    };
+    let unconsumed = listing(json!([{"path":path,"continuation":null}]));
+    assert!(category_members(&root, &sources, &unconsumed, &["Category:Example".into()], 2)
+        .unwrap_err()
+        .contains("unconsumed"));
+    let missing = listing(json!([
+        {"path":path,"continuation":null},
+        {"path":"categories/missing.json","continuation":continuation}
+    ]));
+    assert!(category_members(&root, &sources, &missing, &["Category:Example".into()], 2)
+        .unwrap_err()
+        .contains("unregistered source"));
+    let failed = json!({"commons_categories":[{
+        "title":"Category:Example","complete":false,"pages":[
+            {"path":path,"continuation":null},
+            {"path":"categories/missing.json","continuation":continuation}
+        ]
+    }]});
+    assert!(category_members(&root, &sources, &failed, &["Category:Example".into()], 2).unwrap().is_empty());
+    let legacy = json!({"commons_categories":[{"title":"Category:Example","path":path}]});
+    assert!(category_members(&root, &sources, &legacy, &["Category:Example".into()], 1)
+        .unwrap_err()
+        .contains("legacy commons category is truncated"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn photo_revision_and_required_creator_come_from_captured_metadata() {
     let root = obcm_testkit::scratch::scratch_dir("landmarks", "photo-revision");
     let image = image::DynamicImage::new_rgb8(2, 2);
