@@ -118,6 +118,24 @@ struct DayNoteModelTests {
         #expect(day.header.hasSuffix(" · Andermatt → Ulrichen · 74 km"))
     }
 
+    @Test func aDayAfterATransferStartsAtItsOwnPlace() async throws {
+        // Day 1 ends at Göschenen; the train takes the rider on to Andermatt.
+        func file(_ lat: Double, _ lon: Double) -> [RoutePoint] {
+            [0, 0.01].map { RoutePoint(coordinate: Coordinate(latitude: lat, longitude: lon + $0)) }
+        }
+        var trip = Trip.joining(
+            [file(46.67, 8.58), file(46.63, 8.59)], id: TripID("t"), name: "Alps traverse", bikeType: .road, now: Date())
+        trip.namePlace(0, to: "Göschenen")
+        trip.namePlace(1, to: "Ulrichen")
+        #expect(trip.endsAtTransfer(0))
+        library.saveTrip(trip)
+        let ride = try ride("a", trip: RideTrip(key: trip.key, dayIndex: 1, dayCount: 2, name: trip.name))
+
+        let day = model(ride) { $0.latitude > 46.6 ? "Andermatt" : "Brig" }
+        await day.start()
+        #expect(day.header.hasSuffix(" · Andermatt → Ulrichen · 74 km"))
+    }
+
     @Test func aRideWithoutATripAsksTheGeocoder() async throws {
         let ride = try ride("a")
         let lone = model(ride) { $0.latitude > 46.6 ? "Andermatt" : "Ulrichen" }
