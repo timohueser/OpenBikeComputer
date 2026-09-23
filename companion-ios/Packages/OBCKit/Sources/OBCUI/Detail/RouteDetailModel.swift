@@ -8,8 +8,8 @@ import OBCTransport
 ///
 /// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
 /// derived from the saved record's own geometry, so the screen never asks the device for a route
-/// the phone already holds. Tracked renders its summary at once and fills the profile when the
-/// ride detail lands; a failed read degrades quietly. Imported computes everything up front.
+/// the phone already holds. Tracked computes its profile from the synced ride points. Imported
+/// computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
     /// Which of the three dressings this instance wears.
@@ -127,9 +127,9 @@ public final class RouteDetailModel {
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         now: @escaping () -> Date = Date.init,
-        // The tracked dressing's full tracklog, threaded from the library's synced ride points. A
-        // ride carries no `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
-        rideGeometry: [Coordinate]? = nil
+        // The tracked dressing's full tracklog, from the library's synced ride. A ride carries no
+        // `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
+        ridePoints: [RidePoint] = []
     ) {
         self.transport = transport
         self.dressing = dressing
@@ -143,10 +143,10 @@ public final class RouteDetailModel {
         default: uploadGeometry = plannedGeometry
         }
         // The interactive map draws this, never the downsampled `preview`. Full resolution is
-        // already in memory for imported and planned routes; `rideGeometry` threads it in for
+        // already in memory for imported and planned routes; `ridePoints` threads it in for
         // tracked. It falls back to the preview's coordinates when neither is available, which is
         // a coarser map, not a missing one.
-        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? rideGeometry ?? []
+        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? ridePoints.map(\.coordinate)
 
         switch dressing {
         case .planned(let route):
@@ -168,6 +168,8 @@ public final class RouteDetailModel {
             preview = ride.trackPreview
             distanceMeters = ride.distanceMeters
             climbMeters = ride.climbMeters
+            elevationProfile = MeasuredLine(ridePoints: ridePoints)
+                .elevationProfile(count: RouteStats.profileSampleCount)
 
         case .imported(let route, let fileName, let source):
             let stats = RouteStats.compute(from: route.points)
@@ -192,8 +194,7 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Fetch the tracked dressing's detail read; failures degrade quietly. Planned and imported
-    /// already have everything.
+    /// Watch the link. Every dressing already has its content.
     public func start() {
         guard !started else { return }
         started = true
@@ -201,15 +202,6 @@ public final class RouteDetailModel {
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-            }
-        }
-        switch dressing {
-        case .planned, .imported:
-            break
-        case .tracked(let ride):
-            Task { [transport] in
-                guard let detail = try? await transport.rideDetail(ride.id) else { return }
-                elevationProfile = detail.elevationProfile
             }
         }
     }
