@@ -1,5 +1,5 @@
-/// Crank revolution data and offset compensation; force-based measurement context.
-pub const POWER_FEATURES: u32 = (1 << 3) | (1 << 9);
+/// Crank data and offset compensation; force-based total power, not a distributed sensor.
+pub const POWER_FEATURES: u32 = (1 << 3) | (1 << 9) | (1 << 20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Response {
