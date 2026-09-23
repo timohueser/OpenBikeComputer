@@ -33,6 +33,7 @@ fn find_ranks_from_leg_searches_and_composes_only_the_pressed_result() {
         Scenario::RestartReady,
         Scenario::RestartPartial,
         Scenario::RestartAccepted,
+        Scenario::Unrouteable,
     ] {
         run_find(scenario);
     }
@@ -51,6 +52,8 @@ enum Scenario {
     RestartReady,
     RestartPartial,
     RestartAccepted,
+    /// The followed route has unresolved avoidance, so no visit can leave it.
+    Unrouteable,
 }
 
 fn run_find(scenario: Scenario) {
@@ -114,10 +117,14 @@ fn run_find(scenario: Scenario) {
     let gpx =
         br#"<gpx><trk><trkseg><trkpt lon="0.500" lat="0.500"/><trkpt lon="0.580" lat="0.500"/></trkseg></trk></gpx>"#;
     obc_route::gpx_to_obcr(&obc_formats::io::SliceSource(gpx), "Original", &mut output).unwrap();
-    let source = obc_formats::io::SliceSource(output.bytes());
+    let mut output = output.into_bytes();
+    if scenario == Scenario::Unrouteable {
+        output[5] |= obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE;
+    }
+    let source = obc_formats::io::SliceSource(&output);
     let index = obc_route::RouteIndex::read(&source).unwrap();
     let route = obc_route::RouteReader::new(&index, &source);
-    let mut routes = crate::FlatRouteStore::new(owner, &[output.bytes()]).unwrap();
+    let mut routes = crate::FlatRouteStore::new(owner, &[&output]).unwrap();
     let original = routes.ids()[0];
     let mut app = App::new_idle(AppState::new(500_000, 500_000, 0.1));
     feed_routes(&mut app, &routes, &mut NoTrace);
@@ -261,7 +268,7 @@ fn run_find(scenario: Scenario) {
                 for _ in 0..20 {
                     routes.publish_review_route(&payload).unwrap();
                 }
-                ordinary = Some(routes.publish_nav_route(output.bytes()).unwrap().id);
+                ordinary = Some(routes.publish_nav_route(&output).unwrap().id);
             }
             app = App::new_idle(AppState::new(500_000, 500_000, 0.1));
             feed_routes(&mut app, &routes, &mut NoTrace);
@@ -317,6 +324,14 @@ fn run_find(scenario: Scenario) {
                 }
                 phase = 9;
                 break;
+            }
+            0 if scenario == Scenario::Unrouteable && app.find_place_state() == State::Ready => {
+                assert_eq!((measures, app.find_place_result_count()), (0, 0), "nothing is measured on this route");
+                phase = 30;
+            }
+            30..=34 => {
+                assert_eq!(app.find_place_state(), State::Ready, "the empty list stays, without a search-changed card");
+                phase += 1;
             }
             0 if app.find_place_state() == State::Ready => {
                 assert_eq!(measures, expected_measures, "all eligible nearby and forward places are measured");
@@ -519,6 +534,7 @@ fn run_find(scenario: Scenario) {
                 phase = 6;
             }
             6 if routes.ids() == [original] => break,
+            35 => break,
             _ => {}
         }
     }
@@ -527,6 +543,7 @@ fn run_find(scenario: Scenario) {
         Scenario::ModeCycle | Scenario::Accept | Scenario::AcceptEscaped => 13,
         Scenario::Browse => 6,
         Scenario::RestartReady | Scenario::RestartPartial | Scenario::RestartAccepted => 15,
+        Scenario::Unrouteable => 35,
         _ => 9,
     };
     assert_eq!(

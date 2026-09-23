@@ -649,12 +649,6 @@ impl crate::App {
                 self.ui.find.state = State::NoAccess;
                 return;
             }
-            if route.is_some_and(|r| r.has_unresolved_avoidance()) {
-                // No visit can leave such a route; the list is empty rather than full of refusals.
-                self.ui.find.state = State::Ready;
-                self.ui.map_dirty = true;
-                return;
-            }
             let progress = self.navigator.route_state().progress_m;
             self.ui.find.map = Some(map);
             self.ui.find.origin = (fix.lon, fix.lat);
@@ -662,6 +656,12 @@ impl crate::App {
             self.ui.find.clock = (local.is_some(), self.settings().utc_offset_min);
             self.ui.find.profile = self.settings().bike_type;
             self.ui.find.local = local;
+            if route.is_some_and(|r| r.has_unresolved_avoidance()) {
+                // No visit can leave such a route; the list is empty rather than full of refusals.
+                self.ui.find.state = State::Ready;
+                self.ui.map_dirty = true;
+                return;
+            }
             let scratch = &mut self.ui.poi_scratch;
             scratch.query = Some(
                 PlaceQuery::new(
@@ -1449,6 +1449,22 @@ mod tests {
     }
     fn cost(arrival: u32, ascent: Option<u32>, added: u32) -> Option<Costs> {
         Some(Costs { arrival_m: arrival, arrival_ascent_m: ascent, added_m: Some(added), added_ascent_m: ascent })
+    }
+    #[test]
+    fn a_join_connector_is_charged_to_the_list_and_makes_its_climb_unknown() {
+        use obc_route::visit::LegCost;
+        let leg = |distance_m, join_gap_m| LegCost { distance_m, ascent_m: 10, elevation_complete: true, join_gap_m };
+        let stop = Stop { anchor_m: 3_000, prefix_ascent_m: Some(5) };
+        let on_graph = VisitLegs { outbound: leg(700, 0), back: Some(leg(650, 0)) };
+        assert_eq!(
+            Costs::from_legs(stop, 1_000, on_graph),
+            Costs { arrival_m: 2_700, arrival_ascent_m: Some(15), added_m: Some(1_350), added_ascent_m: Some(20) }
+        );
+        let imported = VisitLegs { outbound: leg(700, 40), back: Some(leg(650, 60)) };
+        assert_eq!(
+            Costs::from_legs(stop, 1_000, imported),
+            Costs { arrival_m: 2_740, arrival_ascent_m: None, added_m: Some(1_450), added_ascent_m: None }
+        );
     }
     #[test]
     fn useful_measured_choices_keep_on_way_stops_and_a_nearer_alternative() {
