@@ -44,6 +44,8 @@ public final class MainScreenModel {
     public private(set) var rides: [RideSummary] = [] {
         didSet { rideLibrary.rides = rides }
     }
+    /// Counts ride edits. A ride detail rebuilds on a change, so it shows the edited ride.
+    public private(set) var rideEditCount = 0
     /// Trashed rides, most recently trashed first.
     public private(set) var trashedRides: [RideSummary] = []
     public var tab: Tab = .planned
@@ -1283,6 +1285,7 @@ public final class MainScreenModel {
 
     /// An edit can add, remove or restore rides, so the whole list reloads.
     private func reloadRides() {
+        rideEditCount += 1
         rideSummaries = Dictionary(uniqueKeysWithValues: library.rideSummaries().map { ($0.id, $0) })
         rides = trackedList()
         trashedRides = trashedList()

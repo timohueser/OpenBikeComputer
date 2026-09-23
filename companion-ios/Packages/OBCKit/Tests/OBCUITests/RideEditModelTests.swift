@@ -71,4 +71,27 @@ struct RideEditModelTests {
         #expect(model.mergeSuggestion(for: morning.id) == nil)
         #expect(library.dismissedMerges() == [RidePair(first: morning.id, second: lunch.id)])
     }
+
+    @Test
+    func theEditScreenSavesOnlyWhatTheHandlesCut() throws {
+        let edit = try #require(RideEditModel(
+            ride: ride("a", start: t0, seconds: 600, latitude: 46.5), locale: Locale(identifier: "en_US")))
+        #expect(!edit.canSave, "the trim handles start at the ends")
+
+        // 5 m a second: 512 m is between the points at 102 s and 103 s.
+        edit.editor.begin(0)
+        edit.editor.move(0, to: 512)
+        edit.editor.end()
+        #expect(edit.trimRange == t0.addingTimeInterval(103)...t0.addingTimeInterval(600),
+                "the cut part of a point interval does not stay")
+
+        edit.select(.split)
+        #expect(edit.trimRange == nil)
+        #expect(edit.splitTime == t0.addingTimeInterval(300))
+        edit.editor.begin(0)
+        edit.editor.move(0, to: 0)
+        edit.editor.end()
+        #expect(edit.splitTime == nil, "a part needs two points")
+        #expect(!edit.canSave)
+    }
 }
