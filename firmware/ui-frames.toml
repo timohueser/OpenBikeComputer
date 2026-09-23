@@ -1387,22 +1387,14 @@ expect = "RideStart"
 args = ["--clock", "2025-06-29T14:40", "--battery", "8"]
 
 # The start card with a trip day: Day 1 of "Alpen Traverse" is finished, so the day row offers
-# Day 2 under Start ride. The cursor moves onto the day row, and a press opens that day's route
-# detail.
+# Day 2 under Start ride, and the cursor moves onto it. A press opens the day's own route detail,
+# which is the `routeoverview` frame.
 [[frame]]
 name = "ride-start-trip"
 map = "{grimsel}"
 env = "trips"
 script = "B d d w p p d"
 expect = "RideStart"
-args = ["--battery", "45", "--trip-progress", "0:5000:0"]
-
-[[frame]]
-name = "ride-start-trip-day"
-map = "{grimsel}"
-env = "trips"
-script = "B d d w p p d p w"
-expect = "RouteOverview"
 args = ["--battery", "45", "--trip-progress", "0:5000:0"]
 
 # After an early stop the day row builds the day from the rest of the day before: 1 km into Day 1,
