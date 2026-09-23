@@ -440,8 +440,7 @@ pub(crate) enum Request {
         id: ObjectId,
         kind: obc_app::catalog_state::CatalogObjectKind,
     },
-    /// Remove candidate route heads in one commit; a head that moved, is flagged or is still
-    /// named by an accepted journey is skipped.
+    /// Remove candidate route heads in one commit; see `route_cleanup::candidate_removals`.
     RemoveRoutes {
         heads: heapless::Vec<(ObjectId, Revision), MAX_BATCH>,
     },
@@ -1087,18 +1086,7 @@ fn serve(
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
         Request::RemoveRoutes { heads } => {
-            let mut batch: heapless::Vec<Mutation, MAX_BATCH> = heapless::Vec::new();
-            for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
-                if heads.contains(&(meta.id, meta.revision))
-                    && !meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
-                    && check_route_change(store, meta.id).is_ok()
-                {
-                    let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
-                }
-            }
-            if !store.entries_ok() {
-                return Err(StoreError::Media);
-            }
+            let batch = obc_storage::flat::route_cleanup::candidate_removals(store, &heads)?;
             if !batch.is_empty() {
                 store.commit(&batch)?;
             }

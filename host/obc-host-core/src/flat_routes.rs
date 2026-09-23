@@ -345,13 +345,13 @@ impl RouteRepository for FlatRouteStore {
     }
 
     fn retract_reviews(&mut self, ids: &[CatalogObjectId]) -> Result<(), CatalogError> {
-        let batch: Vec<_> = ids
+        let heads: Vec<_> = ids
             .iter()
             .filter_map(|id| self.ids.iter().position(|candidate| candidate == id))
             .map(|index| (ObjectId(self.ids[index]), self.revisions[index]))
             .take(obc_storage::flat::store::MAX_BATCH)
             .collect();
-        match self.owner.remove_routes(&batch) {
+        match self.owner.remove_routes(&heads) {
             Ok(()) => {
                 self.refresh_metadata().map_err(|_| CatalogError::Unreadable)?;
                 Ok(())

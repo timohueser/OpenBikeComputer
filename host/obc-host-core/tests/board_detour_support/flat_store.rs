@@ -188,15 +188,7 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
             Ok(Outcome::Done)
         }
         Request::RemoveRoutes { heads } => {
-            let mut batch: heapless::Vec<Mutation, { obc_storage::flat::store::MAX_BATCH }> = heapless::Vec::new();
-            for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
-                if heads.contains(&(meta.id, meta.revision))
-                    && !meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
-                    && metadata::check_route_change(store, meta.id).is_ok()
-                {
-                    let _ = batch.push(Mutation::Remove { id: meta.id, revision: meta.revision });
-                }
-            }
+            let batch = obc_storage::flat::route_cleanup::candidate_removals(store, &heads)?;
             if !batch.is_empty() {
                 store.commit(&batch)?;
             }
