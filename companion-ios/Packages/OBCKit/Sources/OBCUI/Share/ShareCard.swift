@@ -155,6 +155,10 @@ struct ShareCard: View {
         return Group {
             if let map {
                 Image(uiImage: map).resizable()
+            } else if content.stages.count > 1 {
+                // `ImageRenderer` cannot draw a live map, so the trip always takes the grid.
+                MultiTrackPreviewView(stages: content.stages, showsChrome: false)
+                    .environment(\.obcIsOnline, false)
             } else {
                 TrackPreviewView(
                     TrackPreview.normalizing(content.coordinates), style: .hero, showsChrome: false

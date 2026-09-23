@@ -6,13 +6,14 @@ import UIKit
 /// route.
 public struct ShareMenu: View {
     private let gpx: GPXFile
-    private let image: ShareCardContent
+    /// Built when the sheet opens: it measures the whole line.
+    private let image: () -> ShareCardContent
     private var photos: [SharePhoto] = []
     private var offersSaveAsRoute = false
     private var onSaveAsRoute: (() -> Void)?
     @State private var imageShown = false
 
-    public init(gpx: GPXFile, image: ShareCardContent) {
+    public init(gpx: GPXFile, image: @autoclosure @escaping () -> ShareCardContent) {
         self.gpx = gpx
         self.image = image
     }
@@ -62,7 +63,7 @@ public struct ShareMenu: View {
         .accessibilityLabel("Share")
         .accessibilityIdentifier("share.menu")
         .sheet(isPresented: $imageShown) {
-            ShareImageSheet(content: image, photos: photos)
+            ShareImageSheet(content: image(), photos: photos)
         }
     }
 }
