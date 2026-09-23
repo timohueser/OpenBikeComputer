@@ -73,6 +73,42 @@ struct RideHighlightsTests {
     }
 
     @Test
+    func aPauseGapIsNeverClimb() {
+        // Ridden at 500 m, then a train up, then ridden at 1,800 m.
+        var gap = ride([(Step(meters: 100, seconds: 10, climb: 0), 10)])
+        let top = ride([(Step(meters: 100, seconds: 10, climb: 0), 10)]).points.map {
+            RidePoint(timestamp: $0.timestamp.addingTimeInterval(3_600),
+                      coordinate: Coordinate(latitude: $0.coordinate.latitude + 0.2, longitude: $0.coordinate.longitude),
+                      elevationMeters: 1_800)
+        }
+        gap.points += top.enumerated().map { index, point in
+            var point = point
+            point.segmentStart = index == 0
+            return point
+        }
+        #expect(RideHighlights.longestClimb(MeasuredLine(ridePoints: gap.points)) == nil)
+    }
+
+    @Test
+    func flatNoiseBeforeAClimbAddsNoLength() throws {
+        // 10 km flat with ±0.4 m noise and a 3 m drift, then 10 km that climbs 800 m.
+        var x = 0.0
+        var points: [RidePoint] = []
+        for i in 0...100 {
+            let noise = i.isMultiple(of: 2) ? -0.4 : 0.4
+            points.append(point(x, Double(i) * 10, 500 + 3 * Double(i) / 100 + noise))
+            x += 100
+        }
+        let foot = points.last!.elevationMeters!
+        for i in 1...100 {
+            points.append(point(x, Double(100 + i) * 10, foot + 8 * Double(i)))
+            x += 100
+        }
+        let climb = try #require(RideHighlights.longestClimb(MeasuredLine(ridePoints: points)))
+        #expect(abs(climb.length - 10_000) <= 200)
+    }
+
+    @Test
     func theDescentSpeedHolds20sSoOneFastSampleDoesNotSetIt() throws {
         let ride = pass
         let speed = try #require(RideHighlights.fastestDescent(ride.points, line: MeasuredLine(ridePoints: ride.points)))

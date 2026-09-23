@@ -68,8 +68,10 @@ public enum RideHighlights {
         return (top.elevation, top.distance, place)
     }
 
-    /// The climb with the most ascent. A climb runs from its last low point to the highest point
-    /// before the line drops `climbDipMeters` below it, or back to the climb's start.
+    /// The climb with the most ascent. A climb runs from its low point to the highest point before
+    /// the line drops `climbDipMeters` below it, or back to the low point. It starts at the last
+    /// vertex within `RouteStats.climbHysteresisMeters` of the low point, so flat noise before it
+    /// adds no length. A pause gap ends it, because the jump across a gap is not ridden.
     public static func longestClimb(_ line: MeasuredLine) -> (ascent: Double, length: Double)? {
         guard line.hasElevation, !line.vertices.isEmpty else { return nil }
         let v = line.vertices
@@ -78,13 +80,18 @@ public enum RideHighlights {
         var top = 0
         func close() {
             let ascent = v[top].elevation - v[bottom].elevation
-            if ascent > 0, ascent > best?.ascent ?? 0 {
-                best = (ascent, v[top].distance - v[bottom].distance)
-            }
+            guard ascent > 0, ascent > best?.ascent ?? 0 else { return }
+            let band = v[bottom].elevation + RouteStats.climbHysteresisMeters
+            let start = (bottom...top).last { v[$0].elevation <= band } ?? bottom
+            best = (ascent, v[top].distance - v[start].distance)
         }
         for i in v.indices.dropFirst() {
             let e = v[i].elevation
-            if e > v[top].elevation {
+            if line.pieceStarts.contains(i) {
+                close()
+                bottom = i
+                top = i
+            } else if e > v[top].elevation {
                 top = i
             } else if e <= v[bottom].elevation || v[top].elevation - e >= climbDipMeters {
                 close()
