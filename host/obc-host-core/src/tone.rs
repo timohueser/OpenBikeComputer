@@ -17,13 +17,13 @@ pub fn render(notes: &[Note], volume: Volume, sample_rate: u32) -> Vec<f32> {
     let ramp = (RAMP_MS * sample_rate / 1000).max(1) as f32;
     let mut out = Vec::new();
     for note in notes {
-        let len = u32::from(note.ms) * sample_rate / 1000;
+        let len = u64::from(note.ms) * u64::from(sample_rate) / 1000;
         out.extend((0..len).map(|i| {
             if note.hz == 0 {
                 return 0.0;
             }
             // Which half period sample `i` falls in: even halves are high, odd halves low.
-            let half = u64::from(i) * u64::from(note.hz) * 2 / u64::from(sample_rate);
+            let half = i * u64::from(note.hz) * 2 / u64::from(sample_rate);
             let square = if half % 2 == 0 { 1.0 } else { -1.0 };
             let envelope = (i as f32 / ramp).min((len - 1 - i) as f32 / ramp).min(1.0);
             amplitude * envelope * square
@@ -44,10 +44,14 @@ mod tests {
         let quiet = render(&notes, Volume::Quiet, rate);
 
         let per_ms = rate as usize / 1000;
-        assert_eq!(loud.len(), 50 * per_ms, "one sample per tick of the pattern's duration");
+        assert_eq!(loud.len(), 50 * per_ms, "the sample count is the pattern duration at the sample rate");
 
         let (first, rest, last) = (0..20 * per_ms, 20 * per_ms..30 * per_ms, 30 * per_ms..50 * per_ms);
         assert!(loud[rest].iter().all(|&s| s == 0.0), "a rest is silent");
+        // 3 kHz for 20 ms is 120 half periods, so the sign flips 119 times.
+        let lit: Vec<f32> = loud[first.clone()].iter().copied().filter(|&s| s != 0.0).collect();
+        let flips = lit.windows(2).filter(|w| w[0].signum() != w[1].signum()).count();
+        assert_eq!(flips, 119, "the first note plays at its own pitch");
         for note in [first, last] {
             assert!(loud[note.start].abs() < 0.01, "a note starts near zero");
             assert!(loud[note.end - 1].abs() < 0.01, "a note ends near zero");
