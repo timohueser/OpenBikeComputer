@@ -101,14 +101,15 @@ struct OffLineStopModelTests {
     }
 
     @Test
-    func aGapInsideADayBridgesOrStaysAStraightLine() async {
+    func aGapInsideADayBridgesOrStaysAStraightLine() async throws {
         var saved: [Trip] = []
         let model = editor([file(0, 10_000), file(10_100, 20_000)], router: FakeLegRouter()) { saved.append($0) }
         model.joinDay(0)
         #expect(model.gaps.count == 1)
         #expect(model.notes[0] == "straight line 100 m")
-        #expect(model.canBridge(0))
-        model.bridgeGap(in: 0)
+        let gap = try #require(model.bridgeableGaps(0).first)
+        #expect(!gap.isTransfer)
+        model.bridge(gap)
         model.save()
         #expect(saved.isEmpty, "Done waits for the bridge")
         while model.bridging != nil { await Task.yield() }
@@ -118,12 +119,14 @@ struct OffLineStopModelTests {
     }
 
     @Test
-    func theDayAfterATransferBridgesItAndUndoBringsItBack() async {
+    func theDayAfterATransferBridgesItAndUndoBringsItBack() async throws {
         let model = editor([file(0, 10_000), file(13_000, 20_000)], router: FakeLegRouter())
         #expect(model.removeBlocker(0) != nil, "a transfer")
-        #expect(!model.canBridge(0) && model.canBridge(1), "the day after the transfer offers the bridge")
+        #expect(model.bridgeableGaps(0).isEmpty, "the day after the transfer offers the bridge")
+        let transfer = try #require(model.bridgeableGaps(1).first)
+        #expect(transfer.isTransfer)
         #expect(model.notes[1] == nil, "a transfer is no straight line")
-        model.bridgeGap(in: 1)
+        model.bridge(transfer)
         while model.bridging != nil { await Task.yield() }
         #expect(model.gaps.isEmpty)
         #expect(model.removeBlocker(0) == nil, "no transfer after the bridge")
@@ -132,5 +135,21 @@ struct OffLineStopModelTests {
         model.undo()
         #expect(model.gaps.count == 1 && model.removeBlocker(0) != nil)
         #expect(model.handles.line.length < 17_100, "the line without the bridge")
+    }
+
+    /// A day with a transfer at its start and a straight line inside it bridges the one the rider
+    /// picks, and the other stays.
+    @Test
+    func aDayWithTwoGapsBridgesTheOneThatIsPicked() async throws {
+        let model = editor(
+            [file(0, 10_000), file(13_000, 20_000), file(20_150, 30_150)], router: FakeLegRouter())
+        model.joinDay(1)
+        let gaps = model.bridgeableGaps(1)
+        #expect(gaps.map(\.isTransfer) == [true, false])
+        model.bridge(gaps[1])
+        while model.bridging != nil { await Task.yield() }
+        #expect(model.removeBlocker(0) != nil, "the transfer stays")
+        #expect(model.bridgeableGaps(1) == [gaps[0]])
+        #expect(model.notes[1] == nil, "no straight line left")
     }
 }
