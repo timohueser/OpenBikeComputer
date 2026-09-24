@@ -13,6 +13,7 @@ use crate::stat_fields::StatFieldList;
 pub use obc_formats::bike::BikeType;
 
 pub(crate) use obc_ports::DateTime;
+use obc_ports::Volume;
 
 pub const DATETIME_MIN_YEAR: u16 = 2020;
 pub const DATETIME_MAX_YEAR: u16 = 2099;
@@ -223,6 +224,20 @@ setting_enum! {
         Auto = 2, key Msg::ClimbModeAuto;
     }
     default Auto;
+}
+
+setting_enum! {
+    /// How loud the cues play. The Sound settings page cycles it.
+    pub enum SoundLevel {
+        /// No cue plays.
+        Off = 0, key Msg::SoundLevelOff, None;
+        /// The piezo is driven from one pin.
+        Quiet = 1, key Msg::SoundLevelQuiet, Some(Volume::Quiet);
+        /// The piezo is driven from two pins in opposite phase, which is about 6 dB louder.
+        Loud = 2, key Msg::SoundLevelLoud, Some(Volume::Loud);
+    }
+    default Loud;
+    payload volume: Option<Volume>;
 }
 
 /// The bike type's name in `lang`. The device never shows a map's profile names.
@@ -464,6 +479,9 @@ settings_table! {
         /// from. `0` is not set, and then that metric has no zones.
         max_hr: u8 = 0, since(24), sanitize_with(crate::effort::sanitize_max_hr);
         ftp_w: u16 = 0, since(24), sanitize_with(crate::effort::sanitize_ftp);
+        sound: SoundLevel = SoundLevel::Loud, since(25);
+        /// A click on every button gesture.
+        key_tones: bool = false, since(25);
     }
 
     pub const DEFAULT;
@@ -493,7 +511,7 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
 /// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
 /// struct widens every one of those.
-const _: () = assert!(core::mem::size_of::<Settings>() == 122, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 124, "Settings grew — was that deliberate?");
 
 impl Settings {
     pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
@@ -517,7 +535,7 @@ impl Settings {
     }
 }
 
-pub const VERSION: u8 = 24;
+pub const VERSION: u8 = 25;
 
 /// The oldest layout [`decode`] accepts. An older blob resets to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
@@ -565,7 +583,9 @@ const _: () = {
     assert!(off::theme == 119);
     assert!(off::max_hr == 120);
     assert!(off::ftp_w == 121);
-    assert!(PAYLOAD_LEN == 123, "the CRC moved");
+    assert!(off::sound == 123);
+    assert!(off::key_tones == 124);
+    assert!(PAYLOAD_LEN == 125, "the CRC moved");
     assert!(ENCODED_LEN == 128, "the blob is no longer 8 RRAM lines");
 };
 
@@ -592,6 +612,7 @@ mod tests {
         assert_eq!(d.up_ahead_source, UpAheadSource::default());
         assert_eq!(d.find_results, FindResults::default());
         assert_eq!(d.theme, Theme::default());
+        assert_eq!(d.sound, SoundLevel::default());
 
         // And the whole const is its type's `Default` — the property the field list guards.
         assert_eq!(d, Settings::default());
@@ -637,6 +658,8 @@ mod tests {
             theme: Theme::Dark,
             max_hr: 185,
             ftp_w: 250,
+            sound: SoundLevel::Quiet,
+            key_tones: true,
 
             brightness: 1,
         }
@@ -659,10 +682,25 @@ mod tests {
     fn version_22_blob_keeps_existing_values_and_defaults_the_newer_rows() {
         let mut expected = every_field_set();
         (expected.theme, expected.max_hr, expected.ftp_w) = (Theme::Light, 0, 0);
+        (expected.sound, expected.key_tones) = (SoundLevel::Loud, false);
 
         let mut old = encode(&expected);
         old[0] = 22;
         let old_payload_len = off::theme;
+        let crc = crate::crc16::crc16(&old[..old_payload_len]);
+        old[old_payload_len..old_payload_len + 2].copy_from_slice(&crc.to_le_bytes());
+
+        assert_eq!(decode(&old), Some(expected));
+    }
+
+    #[test]
+    fn version_24_blob_keeps_existing_values_and_defaults_the_sound_rows() {
+        let mut expected = every_field_set();
+        (expected.sound, expected.key_tones) = (SoundLevel::Loud, false);
+
+        let mut old = encode(&expected);
+        old[0] = 24;
+        let old_payload_len = off::sound;
         let crc = crate::crc16::crc16(&old[..old_payload_len]);
         old[old_payload_len..old_payload_len + 2].copy_from_slice(&crc.to_le_bytes());
 
@@ -772,6 +810,7 @@ mod tests {
         check!(UpAheadSource);
         check!(FindResults);
         check!(Theme);
+        check!(SoundLevel);
         check!(IdleReturn);
 
         check!(Language);

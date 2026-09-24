@@ -698,6 +698,7 @@ impl App {
     fn stage_plan(&mut self, now: PassClock, effects: EffectSlots) -> PassPlan {
         self.pass.record(PassStage::Plan);
         let render = self.take_dirty();
+        let sound = self.plan_sound();
         let immediate = false;
         let next_wake_ms = if immediate { Some(0) } else { self.ms_until_next_wake(now.ui.0) };
         PassPlan {
@@ -710,7 +711,7 @@ impl App {
             },
             effects,
             immediate,
-            sound: None,
+            sound,
         }
     }
 
@@ -1483,6 +1484,35 @@ mod tests {
         assert!(!plan.render.map, "a quiet pass repaints nothing");
         assert!(plan.derived_needs.is_empty(), "no detail is open");
         assert!(!plan.effects.has_pending(), "and nothing physical is owed");
+    }
+
+    /// The plan plays what the rider asked to hear: a key click only with key tones on, a preview
+    /// at the newly chosen level, and nothing with sound off or without a sounder.
+    #[test]
+    fn the_plan_plays_the_raised_cue_at_the_riders_volume() {
+        use crate::settings::SoundLevel;
+        use obc_ports::{Cue, Volume};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_sound_available(true);
+        let play = |app: &mut App, ms: u32, gestures: &[Gesture]| {
+            let mut facts = ExternalFacts::NONE;
+            pass_with(app, ms, gestures, &mut OutcomeSlots::new(), &mut facts).sound
+        };
+        assert_eq!(play(&mut app, 10, &[Gesture::Step(1)]), None, "key tones are off by default");
+
+        app.set_settings(crate::Settings { key_tones: true, ..crate::Settings::default() });
+        assert_eq!(play(&mut app, 20, &[Gesture::Step(1)]), Some(Sound { cue: Cue::KeyClick, volume: Volume::Loud }));
+
+        let page = crate::screen::SettingsPage::new(&crate::screen::settings::page::SOUND);
+        crate::screen::apply(&mut app.ui.stack, crate::screen::Transition::Push(Screen::Sound(page)));
+        let quiet = play(&mut app, 30, &[Gesture::Press, Gesture::Step(-1), Gesture::Press]);
+        assert_eq!(quiet, Some(Sound { cue: Cue::SoundPreview, volume: Volume::Quiet }), "Loud to Quiet previews");
+        assert_eq!(play(&mut app, 40, &[Gesture::Press, Gesture::Step(-1), Gesture::Press]), None, "Off is silent");
+        assert_eq!(app.settings().sound, SoundLevel::Off);
+
+        app.set_settings(crate::Settings { key_tones: true, ..crate::Settings::default() });
+        app.set_sound_available(false);
+        assert_eq!(play(&mut app, 50, &[Gesture::Step(1)]), None, "no sounder, no cue");
     }
 
     /// The pass's routing: every level lands with its owner, every one-shot is taken from the batch,

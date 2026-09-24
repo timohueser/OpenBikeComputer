@@ -28,6 +28,7 @@ pub(crate) mod card_scheduler;
 pub mod catalog_state;
 pub mod corridor;
 mod crc16;
+mod cues;
 pub mod device_core;
 mod device_status;
 pub mod dfu;

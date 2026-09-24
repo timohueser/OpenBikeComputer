@@ -316,6 +316,11 @@ impl CardScheduler {
         self.warnings |= flags;
     }
 
+    /// Whether `flag` was raised this boot, shown or not.
+    pub(crate) fn warning_raised(&self, flag: WarningFlags) -> bool {
+        (self.warnings | self.warned).contains(flag)
+    }
+
     /// Post this boot's one-time update verdict. A second result arriving before the first is shown
     /// is rejected: the board's boot-outcome reconcile yields at most one.
     pub(crate) fn post_update(&mut self, result: BootUpdate) {
