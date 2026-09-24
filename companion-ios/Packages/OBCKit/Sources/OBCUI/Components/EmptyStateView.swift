@@ -7,7 +7,7 @@ import OBCDomain
 public struct OBCEmptyStateView: View {
     /// The glyph treatments the empty and error states use.
     public enum Glyph {
-        /// A gridded track tile with the zigzag route mark.
+        /// A sketch tile with the zigzag route mark.
         case trackTile
         /// A warning-tinted circle around a system image.
         case warning(systemImage: String)
@@ -78,11 +78,9 @@ public struct OBCEmptyStateView: View {
         switch glyph {
         case .trackTile:
             TrackPreviewView(nil, showsChrome: false)
-                .frame(width: 96, height: 96)
-                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge))
-                .overlay(
-                    RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.hairline)
-                )
+                .frame(width: 112, height: 84)
+                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
+                .accessibilityHidden(true)
         case .warning(let systemImage):
             Image(systemName: systemImage)
                 .font(.system(.title, weight: .medium))
