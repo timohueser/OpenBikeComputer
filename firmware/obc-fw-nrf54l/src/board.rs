@@ -49,7 +49,7 @@
 //! - P0: GRTC time driver and MPSL's timing-critical radio lane.
 //! - P1: embassy peripheral default, including VCOM, USBHS/VREGUSB and VPR00;
 //!   MPSL SWI00/CLOCK_POWER with BLE.
-//! - P3: SWI01 input/overlay executor and the SERIAL22 sensor bus.
+//! - P3: SWI01 input/overlay and buzzer executor, and the SERIAL22 sensor bus.
 //! - thread mode: ride loop, BLE task, and sensor task.
 //!
 //! SWI01 is deliberately stable across builds because SWI00 belongs to MPSL. VPR00 is the sEMMC
