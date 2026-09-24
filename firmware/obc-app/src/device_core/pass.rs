@@ -320,7 +320,8 @@ impl App {
                     self.pass.connections.alerts.raise(crate::Alert::RecordingFailed);
                 }
                 // The typed card is the explanation, so no `RecordingFailed` is raised beside it:
-                // that alert means the ride being logged is incomplete, and no ride is being logged.
+                // that alert means the ride being logged is incomplete, and here no ride is being
+                // logged.
                 crate::recorder::RecorderVerdict::RecoveryLatched => {
                     self.raise_ride_recovery();
                 }

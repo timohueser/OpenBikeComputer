@@ -882,7 +882,7 @@ pub(crate) async fn run_app(
         }
 
         // The card transport gave up for this session. Raised every pass: the card shows it once,
-        // and the cue repeats at most once a minute.
+        // and the cue plays once for each outage.
         if crate::flpr_mux::storage_latched() {
             exec.facts.raise_alerts(obc_app::Alert::StorageLost);
         }

@@ -22,6 +22,9 @@ pub enum Alert {
     StorageLost,
 }
 
+// `StorageLost` is the last variant, so this holds every alert inside the one byte of `Alerts`.
+const _: () = assert!((Alert::StorageLost as u8) < u8::BITS as u8, "every alert is one bit of `Alerts`");
+
 /// A set of alerts. A raise never displaces what is already raised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Alerts(u8);
