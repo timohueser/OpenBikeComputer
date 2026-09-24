@@ -17,7 +17,7 @@ use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, Plan
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
-use obc_app::{App, AppState, Gesture, RecorderIntent, WarningFlags};
+use obc_app::{Alert, App, AppState, Gesture, RecorderIntent};
 use obc_host_core::trace::{
     run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
     ALL_FEEDER_KINDS,
@@ -1307,7 +1307,7 @@ fn a_failed_finalize_leaves_the_ride_open_and_warns_the_rider() {
     let mut plan = harness.pass();
     assert!(
         matches!(harness.state.app.top_screen(), Screen::Warning(card)
-            if card.flags().contains(WarningFlags::REC_ERROR)),
+            if card.alerts().contains(Alert::RecordingFailed)),
         "the rider is told rather than left believing the ride was saved"
     );
     // …and the ride the executor still holds is still the app's open ride. A finalize that failed
@@ -1727,12 +1727,12 @@ fn blank_state() -> VisibleState {
 #[test]
 fn a_fact_raised_this_pass_reaches_the_rider_in_it() {
     let mut harness = typed();
-    harness.state.facts.raise_warnings(WarningFlags::NO_GPS);
-    harness.state.facts.raise_warnings(WarningFlags::STORAGE_ERROR);
+    harness.state.facts.raise_alerts(Alert::NoGps);
+    harness.state.facts.raise_alerts(Alert::StorageLost);
     harness.pass();
     assert!(
         matches!(harness.state.app.top_screen(), Screen::Warning(card)
-            if card.flags().contains(WarningFlags::NO_GPS) && card.flags().contains(WarningFlags::STORAGE_ERROR)),
+            if card.alerts().contains(Alert::NoGps) && card.alerts().contains(Alert::StorageLost)),
         "both notices reached one card"
     );
 }

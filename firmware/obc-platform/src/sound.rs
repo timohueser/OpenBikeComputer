@@ -60,7 +60,7 @@ pub fn pattern(cue: Cue) -> &'static [Note] {
 mod tests {
     use super::*;
 
-    const ALL: [Cue; 13] = [
+    const ALL: [Cue; 14] = [
         Cue::KeyClick,
         Cue::HoldDone,
         Cue::ClimbStarts,
@@ -73,6 +73,7 @@ mod tests {
         Cue::SensorDropped,
         Cue::BatteryLow,
         Cue::RecordingError,
+        Cue::StorageLost,
         Cue::BatteryCritical,
     ];
 

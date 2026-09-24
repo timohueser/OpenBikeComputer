@@ -227,6 +227,8 @@ pub enum Cue {
     SensorDropped,
     BatteryLow,
     RecordingError,
+    /// The card transport latched off, so nothing is stored.
+    StorageLost,
     BatteryCritical,
 }
 
@@ -248,7 +250,7 @@ impl Cue {
             Cue::ClimbStarts => Family::HeadsUp,
             Cue::BackOnRoute | Cue::SoundPreview | Cue::GpsBack | Cue::Arrived => Family::Good,
             Cue::OffRoute | Cue::GpsLost | Cue::SensorDropped | Cue::BatteryLow => Family::Problem,
-            Cue::RecordingError | Cue::BatteryCritical => Family::Urgent,
+            Cue::RecordingError | Cue::StorageLost | Cue::BatteryCritical => Family::Urgent,
         }
     }
 }

@@ -79,8 +79,9 @@ mod tests {
     use crate::activity::Mode;
     use crate::device_core::{DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs};
     use crate::harness::support::{VecSink, EVERY_CAPABILITY};
-    use crate::screen::{self, ArrivalView, MapScreen, RouteSwapScreen, Screen, Transition, WarningFlags};
+    use crate::screen::{self, ArrivalView, MapScreen, RouteSwapScreen, Screen, Transition};
     use crate::trip::TripInput;
+    use crate::Alert;
     use crate::{App, AppState, Gesture, RecorderIntent};
 
     /// A route through `points`, `(lon, lat)` in thousandths of a degree (about 111 m at 0°).
@@ -352,7 +353,7 @@ mod tests {
         let route = RouteReader::new(&index, &src);
         let mut app = recording(&[(route.summary(), 7)]);
 
-        app.on_warning(WarningFlags::NO_COMPASS);
+        app.on_alerts(Alert::NoCompass);
         ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
         assert!(matches!(app.top_screen(), Screen::Warning(_)), "a warning stays in front");
         press(&mut app, &route, &[Gesture::Back]);

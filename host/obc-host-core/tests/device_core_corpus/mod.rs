@@ -20,7 +20,7 @@ use obc_app::device_core::{
 use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use obc_app::navigator::NavigatorOutcome;
 use obc_app::screen::Screen;
-use obc_app::{App, AppState, Gesture, Mode, RecorderIntent, RideSummary, RouteSummary, TripInput, WarningFlags};
+use obc_app::{App, AppState, Gesture, Mode, RecorderIntent, RideSummary, RouteSummary, TripInput};
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
     FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep, TimeKey, Trace,
@@ -234,7 +234,7 @@ pub struct VisibleState {
     pub settings_revision: Option<RevisionKey>,
     pub settings_utc_offset_min: i16,
     pub nav_preview_missing: bool,
-    pub warning: Option<WarningFlags>,
+    pub warning: Option<obc_app::Alerts>,
     pub delete_attempts: u16,
 }
 
@@ -754,7 +754,7 @@ pub fn visible_state(app: &App, settings_revision: u16, delete_attempts: u16) ->
         settings_utc_offset_min: app.settings().utc_offset_min,
         nav_preview_missing: app.nav_preview_missing(),
         warning: match app.top_screen() {
-            Screen::Warning(card) => Some(card.flags()),
+            Screen::Warning(card) => Some(card.alerts()),
             _ => None,
         },
         delete_attempts,
