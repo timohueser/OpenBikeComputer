@@ -12,7 +12,7 @@ public enum GPXTripEncoder {
         xml += "<trk><name>\(GPXRideEncoder.escaped(trip.name))</name>\n"
         for day in trip.dayLines() {
             xml += "<trkseg>\n"
-            for point in day {
+            for point in day.points {
                 xml += "<trkpt lat=\"\(GPXRideEncoder.degrees(point.coordinate.latitude))\""
                 xml += " lon=\"\(GPXRideEncoder.degrees(point.coordinate.longitude))\">"
                 if let ele = point.elevationMeters {
