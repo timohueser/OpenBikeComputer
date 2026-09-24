@@ -641,8 +641,6 @@ async fn main(_spawner: Spawner) {
     // The panel's brightness port: PWM20 channel 0 on P1.27, the provisional backlight net. Armed
     // here, where the peripherals live, and driven by the ride loop.
     let backlight = panel_power::PanelBacklight::new(p.PWM20, p.P1_27);
-    // The piezo: PWM21 on P1.06 and P1.07, provisional DK pins until a board revision fits one.
-    let buzzer = buzzer::Buzzer::new(_spawner, p.PWM21, p.P1_06, p.P1_07);
 
     // load, ride, save: stream the map into the framebuffer through the shared `obc-app`, pick a
     // route from the catalog, ride it, map-match and record the samples, and append the ride
@@ -820,6 +818,9 @@ async fn main(_spawner: Spawner) {
                 _com_hw: com_hw,
             }
         };
+        // The piezo: PWM21 on P1.06 and P1.07, provisional DK pins until a board revision fits one.
+        // The display block above started the high-priority executor.
+        let buzzer = buzzer::Buzzer::new(EXECUTOR_HP.spawner(), p.PWM21, p.P1_06, p.P1_07);
 
         // The microSD runs in native 4-bit SD mode over Nordic's sEMMC soft peripheral — the same
         // FLPR the panel runs on, time-multiplexed by `flpr_mux`. There is no SPI instance and no
