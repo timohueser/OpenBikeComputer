@@ -55,6 +55,7 @@ test('Save, browse a ride, reset for route upload, Save again, and reload', asyn
   try {
     await page.goto('/');
     await ready();
+    await expect(page.getByRole('tab', { name: 'Roll out', exact: true })).toHaveAttribute('aria-selected', 'true');
     await saveRide();
     const homeCanvas = await page.locator('#device_canvas').evaluate((canvas) => canvas.toDataURL());
 

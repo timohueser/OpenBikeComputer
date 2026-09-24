@@ -4,16 +4,44 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <!-- Parchment is the brand — the page is light-only, declared so dark-mode UAs
-       don't auto-darken form controls. -->
-  <meta name="color-scheme" content="light" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#A4501E" />
+  <script>
+    (function () {
+      var system = matchMedia('(prefers-color-scheme: dark)');
+      var preference;
+      try { preference = localStorage.getItem('obc-theme'); } catch (_) {}
+      function apply() {
+        var dark = preference === 'dark' || (preference !== 'light' && system.matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.querySelector('meta[name="theme-color"]').content = dark ? '#93461A' : '#A4501E';
+        var button = document.getElementById('theme_toggle');
+        if (button) {
+          button.hidden = false;
+          button.setAttribute('aria-pressed', String(dark));
+          button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+        }
+        dispatchEvent(new Event('obc-theme-change'));
+      }
+      apply(); // Resolve before first paint, including a saved override.
+      system.addEventListener('change', apply);
+      document.addEventListener('DOMContentLoaded', function () {
+        apply();
+        document.getElementById('theme_toggle').addEventListener('click', function () {
+          preference = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+          try { localStorage.setItem('obc-theme', preference); } catch (_) {}
+          apply();
+        });
+      });
+    })();
+  </script>
   <title>OpenBikeComputer — a from-scratch bikepacking GPS computer</title>
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking GPS computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
 
-  <!-- Favicon: the OBC mark (forest rounded square, mono wordmark), inline SVG. -->
+  <!-- Favicon: the OBC mark (rust rounded square, mono wordmark), inline SVG. -->
   <link rel="icon"
-    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233c6b39'/%3E%3Ctext x='32' y='42' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='22' font-weight='700' letter-spacing='1' fill='%23ece8cf' text-anchor='middle'%3EOBC%3C/text%3E%3C/svg%3E" />
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23A4501E'/%3E%3Ctext x='32' y='42' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='22' font-weight='700' letter-spacing='1' fill='%23FFF2D1' text-anchor='middle'%3EOBC%3C/text%3E%3C/svg%3E" />
 
   <!-- Open Graph / Twitter share card. og:image must be ABSOLUTE — scrapers don't
        resolve relative URLs. The PNG is composed by docs/tools/og_card.html (the
@@ -55,30 +83,83 @@
   <link data-trunk rel="copy-file" href="assets/companion/rides-before-sync.webp" />
   <link data-trunk rel="copy-file" href="assets/companion/rides-synced.webp" />
   <link data-trunk rel="copy-file" href="assets/companion/ride-detail.webp" />
+  <!-- Atkinson Hyperlegible Next and Mono (SIL OFL 1.1, latin subsets), self-hosted: the privacy
+       notice promises no externally loaded fonts. Each file carries its licence in its name table. -->
+  <link data-trunk rel="copy-dir" href="assets/fonts" />
+  <!-- The header draws Terminus from the firmware's own glyph strips, so the site and the device
+       share one source. The SIL OFL travels with the strips. -->
+  <link data-trunk rel="copy-file" href="../firmware/obc-render/fonts/terminus/ter_u20b.raw" data-target-path="terminus" />
+  <link data-trunk rel="copy-file" href="../firmware/obc-render/fonts/terminus/ter_u24b.raw" data-target-path="terminus" />
+  <link data-trunk rel="copy-file" href="../firmware/obc-render/fonts/terminus/LICENSE" data-target-path="terminus" />
   <base data-trunk-public-url />
+  <link rel="preload" href="fonts/atkinson-hyperlegible-next-latin.woff2" as="font" type="font/woff2" crossorigin />
 
   <style>
+    @font-face {
+      font-family: "Atkinson Hyperlegible Next";
+      src: url("fonts/atkinson-hyperlegible-next-latin.woff2") format("woff2");
+      font-weight: 200 800; font-style: normal; font-display: swap;
+    }
+    @font-face {
+      font-family: "Atkinson Hyperlegible Mono";
+      src: url("fonts/atkinson-hyperlegible-mono-latin.woff2") format("woff2");
+      font-weight: 200 800; font-style: normal; font-display: swap;
+    }
+
+    /* Same glass: the device palette by role. Rust is the device speaking, amber the one action,
+       magenta on an amber casing the planned route, navy the ridden track. */
     :root {
       color-scheme: light;
-      /* "Field guide" colourway — saturated greens lead, trail-marker orange pops,
-         a moss-tinted cream base. Variable names kept from the old parchment theme so
-         the rest of the sheet re-themes for free. */
-      --parchment: #ece8cf;
-      --parchment-2: #e4dec0;
-      --parchment-3: #d6cda8;
-      --line: rgba(47, 82, 51, 0.14);
-      --ink: #24331c;
-      --ink-soft: #4d5b3c;
-      --wood: #5f7d3d;
-      --amber: #e3ad33;
-      --forest: #3c6b39;
-      --coral: #cf6a2a;
+      --page: #F4F2EB;
+      --surface: #FFFFFF;
+      --sage: #E7ECDF;
+      --hair: rgba(92, 90, 46, 0.15);
+      --hair2: rgba(92, 90, 46, 0.28);
+      --ink: #1C1B14;
+      --ink2: #5C5A2E;
+      --rust: #A4501E;
+      --cream: #FFF2D1;
+      --amber: #F4A81D;
+      --on-amber: #1C1B14;
+      --route: #CC2A93;
+      --casing: #F4A81D;
+      --ride: #2D3E96;
+      --on-ride: #FFFFFF;
+      --link: #A4501E;
+      --emph: #A4501E;
+      --focus: #1C1B14;
+      --topo: rgba(92, 90, 46, 0.2);
+      --shade: rgba(40, 36, 10, 0.2);
       /* The device's own two-tone shell ("Forest / Celadon"), used only by the housing. */
       --device-body: #488781;
       --device-accent: #8be3bc;
-      --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
-      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: "Atkinson Hyperlegible Next", -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "Atkinson Hyperlegible Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+    /* Lantern, warmed: the device's dark theme. */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --page: #16150F;
+      --surface: #201F17;
+      --sage: #232820;
+      --hair: rgba(189, 180, 126, 0.15);
+      --hair2: rgba(189, 180, 126, 0.3);
+      --ink: #F2EFE3;
+      --ink2: #BDB47E;
+      --rust: #93461A;
+      --cream: #FFE9C0;
+      --amber: #F2A93A;
+      --on-amber: #16150F;
+      --route: #E45CB5;
+      --casing: #C98A1E;
+      --ride: #8C9BF0;
+      --on-ride: #16150F;
+      --link: #F2A93A;
+      /* Dark rust is too dim for text on the night page; emphasis takes amber. */
+      --emph: #F2A93A;
+      --focus: #F2A93A;
+      --topo: rgba(189, 180, 126, 0.14);
+      --shade: rgba(0, 0, 0, 0.5);
     }
 
     * { box-sizing: border-box; }
@@ -89,13 +170,16 @@
       margin: 0;
       overflow-x: hidden;
       color: var(--ink);
-      background-color: var(--parchment);
+      background-color: var(--page);
       font-family: var(--sans);
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
     }
 
-    /* cool contour lines drifting behind the whole page (the only backdrop texture) */
+    ::selection { background: var(--amber); color: var(--on-amber); }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+    /* contour lines drifting behind the whole page (the only backdrop texture) */
     .topo {
       position: fixed;
       inset: 0;
@@ -106,30 +190,40 @@
 
     .wrap { width: min(1080px, 92vw); margin: 0 auto; }
 
-    a { color: var(--forest); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+    a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 
     /* ---------- top bar ---------- */
+    /* The header is the device's own title bar: rust, with the wordmark in Terminus. */
     header {
       position: relative;
       z-index: 2;
-      padding: 18px 0 4px;
+      background: var(--rust);
+      color: var(--cream);
+      margin-bottom: 6px;
     }
-    header .wrap { display: flex; align-items: center; justify-content: space-between; }
-    .brand { display: flex; align-items: baseline; gap: 11px; }
-    .brand .mark {
-      font-family: var(--mono);
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      font-size: 15px;
-      color: var(--parchment);
-      background: var(--forest);
-      padding: 4px 8px;
-      border-radius: 7px;
+    header .wrap { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 50px; }
+    .brand { display: flex; align-items: center; flex: none; }
+    /* Until the glyph strip loads, and with JavaScript off, the words show in the mono face. */
+    .px { font-family: var(--mono); font-weight: 700; line-height: 1; display: inline-flex; align-items: center; }
+    .px svg { display: block; shape-rendering: crispEdges; fill: currentColor; }
+    .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .brand .mark { display: none; font-size: 17px; }
+    .brand .name { font-size: 17px; }
+    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 15px; }
+    .nav-links a { color: var(--cream); text-decoration: none; opacity: 0.9; padding: 12px 0; }
+    .nav-links a:hover { opacity: 1; text-decoration: underline; }
+    .theme-toggle {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 44px; height: 44px; padding: 0; flex: none;
+      border: 1px solid currentColor; border-radius: 6px;
+      background: transparent; color: var(--cream); cursor: pointer;
     }
-    .brand .name { font-family: var(--serif); font-size: 17px; font-weight: 600; }
-    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 14px; }
-    .nav-links a { color: var(--ink-soft); text-decoration: none; }
-    .nav-links a:hover { color: var(--ink); }
+    .theme-toggle[hidden] { display: none; }
+    .theme-toggle:hover { background: color-mix(in srgb, var(--cream) 12%, transparent); }
+    .theme-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .theme-toggle .sun, :root[data-theme="dark"] .theme-toggle .moon { display: none; }
+    :root[data-theme="dark"] .theme-toggle .sun { display: block; }
+    header :focus-visible { outline-color: var(--cream); }
 
     /* ---------- showcase hero: one band, one viewport ----------
        Grid areas so the mobile order (H1 → device → tour card → CTA) is pure CSS. */
@@ -154,19 +248,19 @@
       letter-spacing: 0.26em;
       font-size: 12px;
       font-weight: 700;
-      color: var(--forest);
+      color: var(--ink2);
       margin: 0 0 12px;
     }
     h1 {
-      font-family: var(--serif);
-      font-weight: 700;
-      font-size: clamp(32px, 4vw, 46px);
-      line-height: 1.05;
-      letter-spacing: -0.01em;
+      font-family: var(--sans);
+      font-weight: 800;
+      font-size: clamp(34px, 4.2vw, 50px);
+      line-height: 1.02;
+      letter-spacing: -0.03em;
       margin: 0 0 12px;
     }
-    h1 em { font-style: italic; color: var(--coral); }
-    .lede { font-size: clamp(15.5px, 1.5vw, 17.5px); color: var(--ink-soft); max-width: 34rem; margin: 0; }
+    h1 em { font-style: normal; color: var(--emph); }
+    .lede { font-size: clamp(15.5px, 1.5vw, 17.5px); color: var(--ink2); max-width: 34rem; margin: 0; }
     .lede strong { color: var(--ink); font-weight: 600; }
 
     .cta { display: flex; flex-wrap: wrap; gap: 13px; align-items: center; }
@@ -178,17 +272,17 @@
       transition: transform .08s ease, background .15s ease, box-shadow .15s ease;
     }
     .btn:active { transform: translateY(1px); }
-    .btn.primary { background: var(--ink); color: var(--parchment); box-shadow: 0 6px 16px rgba(44, 33, 20, 0.22); }
-    .btn.primary:hover { background: #1c150c; }
+    .btn.primary { background: var(--ink); color: var(--page); box-shadow: 0 6px 16px var(--shade); }
+    .btn.primary:hover { background: color-mix(in srgb, var(--ink) 86%, var(--page)); }
     .btn.primary svg { width: 18px; height: 18px; }
-    .btn.ghost { color: var(--ink); border-color: var(--wood); background: transparent; }
-    .btn.ghost:hover { background: var(--parchment-3); }
+    .btn.ghost { color: var(--ink); border-color: var(--hair2); background: transparent; }
+    .btn.ghost:hover { background: var(--surface); }
     .btn.ghost svg { width: 18px; height: 18px; }
 
     /* ---------- shared card chrome (tour card + feature grid) ---------- */
     .card {
-      background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
-      border: 1px solid var(--parchment-3);
+      background: var(--surface);
+      border: 1px solid var(--hair);
       border-radius: 16px;
     }
 
@@ -201,22 +295,22 @@
       margin: 0 -22px 16px;
       padding: 11px 22px;
       display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
-      border-bottom: 1px solid var(--parchment-3);
-      background: rgba(214, 205, 168, 0.22);
+      border-bottom: 1px solid var(--hair);
+      background: var(--sage);
     }
     .ride-log-head .label {
-      font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
-      color: var(--forest); text-transform: uppercase;
+      font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+      color: var(--ink2); text-transform: uppercase;
     }
     .ride-log-head .route {
-      font-family: var(--serif); font-size: 13px; color: var(--ink-soft); text-align: right;
+      font-size: 13px; color: var(--ink2); text-align: right;
     }
-    .tour h2 { font-family: var(--serif); font-size: clamp(20px, 2.2vw, 25px); margin: 0 0 7px; line-height: 1.12; }
-    .tour .blurb { font-size: 14.5px; color: var(--ink-soft); margin: 0 0 12px; max-width: 34rem; }
+    .tour h2 { font-size: clamp(20px, 2.2vw, 25px); font-weight: 800; letter-spacing: -0.02em; margin: 0 0 7px; line-height: 1.12; }
+    .tour .blurb { font-size: 14.5px; color: var(--ink2); margin: 0 0 12px; max-width: 34rem; }
     .tour .blurb b { color: var(--ink); font-weight: 600; }
     .highlights { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
     .highlights li { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; color: var(--ink); }
-    .highlights svg { flex: none; width: 16px; height: 16px; margin-top: 2px; stroke: var(--wood); fill: none; stroke-width: 2; }
+    .highlights svg { flex: none; width: 16px; height: 16px; margin-top: 2px; stroke: var(--ink2); fill: none; stroke-width: 2; }
     .tour.companion-active .blurb,
     .tour.companion-active .highlights,
     .tour.companion-active .now { display: none; }
@@ -226,49 +320,52 @@
        device (advanced only once `until` resolves, never on a timeout). */
     .now {
       margin-top: auto; display: flex; align-items: center; gap: 10px;
-      border-top: 1px solid var(--parchment-3); padding: 11px 0;
+      border-top: 1px solid var(--hair); padding: 11px 0;
     }
+    /* The device's status stamp, in its own font: rust on the device, outlined in the app. */
     .now .badge {
-      flex: none; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
-      color: var(--parchment); background: var(--wood); border-radius: 999px; padding: 3px 9px; text-transform: uppercase;
+      flex: none; display: inline-flex; align-items: center; font-size: 12px;
+      color: var(--cream); background: var(--rust); border-radius: 4px; padding: 4px 6px;
     }
-    .now .label { font-size: 13px; color: var(--ink-soft); min-height: 20px; }
+    .now .badge.app { color: var(--ink2); background: none; box-shadow: inset 0 0 0 1.5px var(--hair2); }
+    .now .label { font-size: 13px; color: var(--ink2); min-height: 20px; }
     .now .label b { color: var(--ink); font-weight: 600; }
     .ticks { display: flex; gap: 5px; margin-left: auto; flex: none; }
     .ticks.hidden { display: none; }
-    .tick { width: 14px; height: 5px; border-radius: 3px; background: var(--parchment-3); transition: background .15s ease; }
-    .tick.done { background: var(--wood); }
-    .tick.at { background: var(--coral); }
+    .tick { width: 14px; height: 5px; border-radius: 3px; background: var(--hair2); transition: background .15s ease; }
+    .tick.done { background: var(--ride); }
+    .tick.at { background: var(--amber); }
 
     /* Chapter labels sit outside the route so the winding line stays clear. */
     .ride-chapters-label {
-      border-top: 1px solid var(--parchment-3); padding-top: 11px;
-      font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em;
-      color: var(--ink-soft); text-transform: uppercase;
+      border-top: 1px solid var(--hair); padding-top: 11px;
+      font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+      color: var(--ink2); text-transform: uppercase;
     }
     .dots {
       position: relative; height: 168px; margin: 5px 0 -3px;
       border-radius: 12px; overflow: hidden;
-      background: rgba(236, 232, 207, 0.5);
+      background: var(--sage);
     }
     .ride-strip-map {
       position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
     }
-    .ride-contour { fill: none; stroke: var(--line); stroke-width: 1; opacity: 0.75; }
+    /* The route law: the planned route is magenta on an amber casing, the ridden part navy. */
+    .ride-contour { fill: none; stroke: var(--hair); stroke-width: 1; }
     .ride-route-bed {
-      fill: none; stroke: var(--parchment-3); stroke-width: 6; stroke-linecap: round;
+      fill: none; stroke: var(--casing); stroke-width: 7; stroke-linecap: round;
     }
     .ride-leg {
-      fill: none; stroke: var(--wood); stroke-width: 2.4; stroke-linecap: round;
-      stroke-dasharray: 3 7; transition: stroke .18s ease, stroke-width .18s ease;
+      fill: none; stroke: var(--route); stroke-width: 3; stroke-linecap: round;
+      transition: stroke .18s ease, stroke-width .18s ease;
     }
-    .ride-leg.traveled { stroke: var(--coral); stroke-width: 4; stroke-dasharray: none; }
+    .ride-leg.traveled { stroke: var(--ride); stroke-width: 4.5; }
     .dot {
       position: absolute; z-index: 2; left: var(--ride-x); top: var(--ride-y);
       width: 44px; height: 44px; transform: translate(-50%, -50%);
       display: grid; place-items: center;
       font-family: var(--sans); font-size: 11px; font-weight: 600; line-height: 1.1;
-      color: var(--ink-soft); text-align: center;
+      color: var(--ink2); text-align: center;
       background: transparent; border: 0; border-radius: 50%;
       cursor: pointer; padding: 0;
       user-select: none; -webkit-user-select: none;
@@ -281,9 +378,9 @@
     .dot:nth-of-type(5) { --ride-x: 63.6667%; --ride-y: 70%; }
     .dot:nth-of-type(6) { --ride-x: 77.3333%; --ride-y: 30%; }
     .dot:nth-of-type(7) { --ride-x: 91%; --ride-y: 70%; }
-    .dot:hover .pip { transform: scale(1.08); background: var(--parchment-2); }
+    .dot:hover .pip { transform: scale(1.08); background: var(--surface); }
     .dot:focus-visible { outline: none; }
-    .dot:focus-visible .pip { outline: 2px solid var(--amber); outline-offset: 3px; }
+    .dot:focus-visible .pip { outline: 2px solid var(--focus); outline-offset: 3px; }
     .dot .ride-stop-copy {
       position: absolute; left: 50%; width: 60px; transform: translateX(-50%);
       display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -299,22 +396,22 @@
       display: inline-flex; align-items: center; justify-content: center;
       width: 24px; height: 24px; border-radius: 50%; flex: none;
       font-family: var(--mono); font-size: 11.5px; font-weight: 700;
-      color: var(--ink-soft); background: var(--parchment);
-      border: 2px solid var(--wood); box-shadow: 0 0 0 3px rgba(236, 232, 207, 0.78);
+      color: var(--ink); background: var(--surface);
+      border: 2px solid var(--route); box-shadow: 0 0 0 3px var(--sage);
       transition: background .15s ease, color .15s ease, transform .12s ease;
     }
     .dot .pip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; }
-    .dot.past .pip { color: var(--parchment); background: var(--wood); }
-    .dot[aria-selected="true"] .dot-label { color: var(--coral); font-weight: 700; }
+    .dot.past .pip { color: var(--on-ride); background: var(--ride); border-color: var(--ride); }
+    .dot[aria-selected="true"] .dot-label { color: var(--ink); font-weight: 700; }
     .dot[aria-selected="true"] .pip {
-      background: var(--coral); border-color: var(--coral); color: var(--parchment);
-      box-shadow: 0 0 0 4px rgba(207, 106, 42, 0.18), 0 0 0 7px rgba(236, 232, 207, 0.72);
+      background: var(--amber); border-color: var(--amber); color: var(--on-amber);
+      box-shadow: 0 0 0 3px var(--sage), 0 2px 6px var(--shade);
     }
 
     /* Forest / Celadon concept housing; only the panel is drawn by the firmware. */
     .device-col { display: flex; flex-direction: column; align-items: center; }
     .device-stage { position: relative; isolation: isolate; outline: none; }
-    .device-stage:focus-visible .device { outline: 3px solid var(--amber); outline-offset: 10px; }
+    .device-stage:focus-visible .device { outline: 3px solid var(--focus); outline-offset: 10px; }
     .device {
       --device-size: min(310px, 76vw);
       position: relative;
@@ -355,7 +452,7 @@
     }
     .panel { position: relative; aspect-ratio: 3 / 4; box-shadow: 0 0 0 2px #0b1412, 0 1px 2px 3px #00000025; }
     canvas#device_canvas {
-      display: block; width: 100%; height: 100%; background: var(--parchment);
+      display: block; width: 100%; height: 100%; background: #070808;
       border-radius: 2px; outline: none; touch-action: none; image-rendering: pixelated;
     }
     /* Poster: a REAL device frame (native sim --png), shown inside the housing from first paint —
@@ -376,7 +473,7 @@
       position: absolute; left: 50%; bottom: 5%;
       transform: translateX(-50%);
       display: flex; align-items: center; gap: 8px; white-space: nowrap;
-      font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--parchment);
+      font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--cream);
       background: rgba(36, 28, 18, 0.78); border-radius: 999px; padding: 5px 12px;
     }
     .spinner {
@@ -395,8 +492,7 @@
     }
 
     /* the one caption line — the only place the page makes the real-firmware claim */
-    .device-caption { margin: 12px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
-    .device-caption b { color: var(--ink); font-weight: 600; }
+    .device-caption { margin: 12px 0 0; font-size: 13px; color: var(--ink2); text-align: center; max-width: 24rem; }
 
     /* On-screen device controls — drive the demo by tap (works on touch + desktop;
        they queue the same obc_demo_cmd gestures the keyboard does). ≥44px touch targets. */
@@ -405,16 +501,16 @@
     }
     .ctl {
       font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--ink);
-      background: var(--parchment-2); border: 1px solid var(--parchment-3);
+      background: var(--surface); border: 1px solid var(--hair);
       border-radius: 10px; padding: 10px 15px; cursor: pointer;
       min-width: 48px; min-height: 44px;
       user-select: none; -webkit-user-select: none; touch-action: none;
       transition: background .12s ease, color .12s ease, transform .06s ease;
     }
-    .ctl:hover { background: var(--parchment-3); }
-    .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
+    .ctl:hover { background: var(--page); border-color: var(--hair2); }
+    .ctl.pressed, .ctl:active { background: var(--ink); color: var(--page); transform: translateY(1px); }
     /* held past the 500 ms threshold — the gesture has become a long-press */
-    .ctl.held { background: var(--coral); color: var(--parchment); }
+    .ctl.held { background: var(--rust); color: var(--cream); }
     .ctl-arrow { font-size: 15px; line-height: 1; }
     /* Splits the row into the device's two flanks: Up/Down on the left, Select/Back on the right. */
     .ctl-gap { width: 14px; }
@@ -429,41 +525,32 @@
     /* Take-control / play toggle + live-vs-guided mode line (the S2 seam's final form). */
     .demo-bar { margin: 10px 0 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
     .demo-toggle {
-      font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--parchment);
-      background: var(--forest); border: 1px solid var(--forest);
+      font-family: var(--sans); font-size: 13px; font-weight: 700; color: var(--on-amber);
+      background: var(--amber); border: 1px solid var(--amber);
       border-radius: 10px; padding: 9px 16px; cursor: pointer;
       display: inline-flex; align-items: center; gap: 8px; min-height: 44px;
       user-select: none; -webkit-user-select: none;
       transition: background .12s ease, border-color .12s ease, transform .06s ease;
     }
-    .demo-toggle:hover { background: #34602f; }
+    .demo-toggle:hover { background: color-mix(in srgb, var(--amber) 88%, var(--surface)); }
     .demo-toggle:active { transform: translateY(1px); }
     .demo-toggle .dt-icon { font-size: 12px; line-height: 1; }
-    /* "Take control" state — the trail-marker orange, so grabbing the wheel reads as the action. */
-    .demo-toggle.live { background: var(--coral); border-color: var(--coral); }
-    .demo-toggle.live:hover { background: #bd5d22; }
-    .mode-note { margin: 0; font-size: 12.5px; color: var(--ink-soft); text-align: center; max-width: 24rem; min-height: 18px; }
-    .mode-live { display: inline-flex; align-items: center; gap: 6px; color: var(--forest); font-weight: 700; }
-    .mode-live.playing { color: var(--coral); }
+    /* "Take control" state: rust, the device's own colour, so grabbing the wheel reads as the action. */
+    .demo-toggle.live { background: var(--rust); border-color: var(--rust); color: var(--cream); }
+    .demo-toggle.live:hover { background: color-mix(in srgb, var(--rust) 88%, var(--ink)); }
+    .mode-note { margin: 0; font-size: 12.5px; color: var(--ink2); text-align: center; max-width: 24rem; min-height: 18px; }
+    .mode-live { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 700; }
+    .mode-live.playing { color: var(--rust); }
     .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: modepulse 1.8s ease-out infinite; }
-    @keyframes modepulse { 0% { box-shadow: 0 0 0 0 rgba(60,107,57,0.5); } 70%, 100% { box-shadow: 0 0 0 7px rgba(60,107,57,0); } }
+    @keyframes modepulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
 
     .compass-control { width: min(310px, 100%); margin-top: 12px; }
     .compass-control label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; }
-    .compass-control output { font-family: var(--mono); color: var(--forest); }
-    .compass-control input { width: 100%; height: 32px; margin: 0; accent-color: var(--forest); cursor: ew-resize; }
-    .compass-control small { display: block; text-align: center; font-size: 10px; color: var(--ink-soft); }
-    .drawer-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
-    .drawer-ctl { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 8px 10px; min-height: 44px; }
-    .drawer-ctl small { color: var(--ink-soft); font-size: 10px; font-weight: 400; }
-    .drawer-ctl svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-    .drawer-ctl[data-chord="context"] svg { transform: rotate(180deg); }
-    .ctl-hint { margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
-    .ctl-hint kbd {
-      font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
-      background: var(--parchment-2); border: 1px solid var(--parchment-3);
-      border-radius: 4px; padding: 1px 5px;
-    }
+    .compass-control output { font-family: var(--mono); color: var(--ink2); font-variant-numeric: tabular-nums; }
+    .compass-control input { width: 100%; height: 32px; margin: 0; accent-color: var(--rust); cursor: ew-resize; }
+    .compass-control small { display: block; text-align: center; font-size: 12px; color: var(--ink2); }
+
+
 
     /* ---------- companion handoff preview ----------
        Real, CI-captured app screens in a deliberately small phone frame. The images are requested
@@ -472,76 +559,73 @@
     .companion-preview { display: none; position: relative; width: 136px; margin: 10px auto 12px; }
     .companion-preview.visible { display: block; }
     .companion-phone {
-      padding: 5px; border-radius: 23px; background: #21342a;
-      border: 2px solid #5f7d3d;
-      box-shadow: 0 12px 24px rgba(44, 33, 20, 0.28), inset 0 0 0 1px rgba(236, 232, 207, 0.18);
+      padding: 5px; border-radius: 23px; background: #0d0c0a;
+      border: 2px solid #3b3934;
+      box-shadow: 0 12px 24px var(--shade);
     }
     .companion-screen {
       position: relative; overflow: hidden; aspect-ratio: 402 / 874; border-radius: 17px;
-      background: #f5f2df; border: 1px solid rgba(36, 51, 28, 0.18);
+      background: #F4F2EB;
     }
     .companion-screen img { display: block; width: 100%; height: 100%; object-fit: cover; }
     .companion-frame-dots { display: flex; justify-content: center; gap: 5px; margin-top: 7px; }
-    .companion-frame-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--parchment-3); }
-    .companion-frame-dots i.active { background: var(--coral); }
+    .companion-frame-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--hair2); }
+    .companion-frame-dots i.active { background: var(--ride); }
 
     /* ---------- features ---------- */
     section.band { position: relative; z-index: 1; padding: 46px 0; }
     .section-head { margin: 0 0 28px; }
     .section-head h2 {
-      font-family: var(--serif); font-size: clamp(24px, 3vw, 32px); margin: 0 0 8px;
+      font-size: clamp(26px, 3vw, 34px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; margin: 0 0 8px;
     }
-    .section-head p { margin: 0; color: var(--ink-soft); max-width: 40rem; }
+    .section-head p { margin: 0; color: var(--ink2); max-width: 40rem; }
 
     .features {
       display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
     }
-    .features .card { padding: 22px 22px 24px; }
-    .card .ico {
-      width: 38px; height: 38px; border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      background: var(--parchment-3); margin-bottom: 14px;
+    .features .card { padding: 22px 24px 26px; }
+    /* Each card opens with the device's own title bar, labelled in Terminus. */
+    .features .card { overflow: hidden; }
+    .card-bar {
+      display: flex; align-items: center; margin: -22px -24px 20px; padding: 7px 24px;
+      background: var(--rust); color: var(--cream); font-size: 13px;
     }
-    .card .ico svg { width: 21px; height: 21px; stroke: var(--wood); fill: none; stroke-width: 1.7; }
-    .card h3 { font-family: var(--serif); font-size: 19px; margin: 0 0 7px; }
-    .card p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
-    .card .tag { color: var(--coral); }
-    .card .tag svg { stroke: var(--coral); }
+    .card h3 { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 7px; }
+    .card p { margin: 0; font-size: 14.5px; color: var(--ink2); }
 
     /* ---------- specs strip ---------- */
     .specs { display: flex; flex-wrap: wrap; gap: 12px 30px; margin-top: 30px; }
     .spec { display: flex; flex-direction: column; }
-    .spec .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--forest); font-weight: 700; }
-    .spec .v { font-family: var(--serif); font-size: 17px; }
+    .spec .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink2); font-weight: 700; }
+    .spec .v { font-size: 17px; font-weight: 700; }
 
     /* ---------- footer ---------- */
-    footer { position: relative; z-index: 1; border-top: 1px solid var(--parchment-3); margin-top: 30px; padding: 30px 0 46px; }
+    footer { position: relative; z-index: 1; border-top: 1px solid var(--hair); margin-top: 30px; padding: 30px 0 46px; }
     footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
     footer .links { display: flex; flex-wrap: wrap; gap: 20px; font-size: 14px; }
-    footer .links a { color: var(--ink-soft); text-decoration: none; }
+    footer .links a { color: var(--ink2); text-decoration: none; padding: 6px 0; }
     footer .links a:hover { color: var(--ink); }
-    footer .made { font-size: 13px; color: var(--ink-soft); }
-    footer .credit { flex-basis: 100%; font-size: 13px; color: var(--ink-soft); }
-    footer .credit a { color: var(--ink-soft); text-decoration: none; }
+    footer .made { font-size: 13px; color: var(--ink2); }
+    footer .credit { flex-basis: 100%; font-size: 13px; color: var(--ink2); }
+    footer .credit a { color: var(--ink2); text-decoration: underline; text-decoration-color: var(--hair2); }
     footer .credit a:hover { color: var(--ink); }
 
     /* ---------- work-in-progress note ---------- */
     .wip-band { padding: 10px 0 0; }
     .wip {
       display: flex; align-items: flex-start; gap: 12px;
-      background: var(--parchment-2);
-      border: 1px solid var(--parchment-3);
-      border-left: 4px solid var(--amber);
+      background: var(--surface);
+      border: 1px solid var(--hair);
       border-radius: 12px;
       padding: 14px 18px;
     }
-    .wip p { margin: 0; font-size: 14px; color: var(--ink-soft); }
+    .wip p { margin: 0; font-size: 14px; color: var(--ink2); }
     .wip p b { color: var(--ink); font-weight: 700; }
     .wip-dot {
       flex: none; margin-top: 6px;
       width: 9px; height: 9px; border-radius: 50%;
       background: var(--amber);
-      box-shadow: 0 0 0 4px rgba(227, 173, 51, 0.22);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 25%, transparent);
     }
 
     /* ---------- responsive ---------- */
@@ -563,22 +647,22 @@
       .features { grid-template-columns: 1fr; }
       h1 { font-size: clamp(30px, 8vw, 40px); }
     }
-    /* touch devices have no physical keyboard — drop the hint */
-    @media (hover: none) {
-      .ctl-hint { display: none; }
+    @media (max-width: 760px) {
+      .brand .name { display: none; }
+      .brand .mark { display: inline-flex; }
     }
     @media (max-width: 600px) {
-      header { padding-top: 16px; }
-      /* the long name collides with the nav on phones — the mark carries the brand */
-      .brand .name { display: none; }
-      .nav-links { gap: 16px; }
+      .nav-links { gap: 14px; }
+      .nav-links .nav-maps { display: none; }
       .ride-log-head { align-items: flex-start; }
       .ride-log-head .route { max-width: 12rem; }
-      .drawer-ctl small { display: none; }
       .dot .ride-stop-copy { width: 46px; }
       .now .label { flex: 1; }
       .now .ticks { display: none; }
       footer .wrap { gap: 10px; }
+    }
+    @media (max-width: 400px) {
+      .nav-links .nav-blog { display: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -591,7 +675,7 @@
 <body>
   <!-- faint contour-line backdrop -->
   <svg class="topo" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-    <g fill="none" stroke="#2c5e54" stroke-width="1.1" stroke-opacity="0.17">
+    <g fill="none" style="stroke: var(--topo)" stroke-width="1.1">
       <path d="M-50 150 C 240 92, 420 222, 700 172 S 1180 82, 1500 192" />
       <path d="M-50 220 C 240 165, 430 290, 710 240 S 1180 155, 1500 265" />
       <path d="M-50 300 C 260 250, 440 370, 720 315 S 1190 235, 1500 350" />
@@ -608,14 +692,14 @@
   <header>
     <div class="wrap">
       <div class="brand">
-        <span class="mark">OBC</span>
-        <span class="name">OpenBikeComputer</span>
+        <span class="mark px" data-px="24">OBC</span>
+        <span class="name px" data-px="24">OpenBikeComputer</span>
       </div>
       <nav class="nav-links">
         <a href="#demo">Demo</a>
         <a href="#features">Features</a>
         <a href="docs/">Docs</a>
-        <a href="blog/">Blog</a>
+        <a class="nav-blog" href="blog/">Blog</a>
         <!-- The map app, a sibling in the same published artifact (/builder/ — the path is
              the app's, the name is what it does for a visitor: pick a region, pick a style,
              put a map on the card). Written flat, unlike the docs/blog header's version,
@@ -623,7 +707,11 @@
              this page is copied by trunk, not rendered, so a conditional here would mean a
              whole build stage for a state that is now a misconfiguration rather than a
              phase — and a catalog-less builder is a page that explains itself, not a 404. -->
-        <a href="builder/">Maps</a>
+        <a class="nav-maps" href="builder/">Maps</a>
+        <button class="theme-toggle" id="theme_toggle" type="button" aria-label="Dark mode" aria-pressed="false" hidden>
+          <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z" /></svg>
+          <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
+        </button>
       </nav>
     </div>
   </header>
@@ -663,7 +751,7 @@
             <span class="label">Today’s ride</span>
             <span class="route">Grimsel Pass · plan to ride log</span>
           </div>
-          <h2 id="tour_title">Put today’s route on the device</h2>
+          <h2 id="tour_title">Roll out: ride it yourself</h2>
           <div class="companion-preview" id="companion_preview" aria-hidden="true">
             <div class="companion-phone" aria-label="Companion app preview captured from the iOS app">
               <div class="companion-screen" id="companion_screen"></div>
@@ -673,7 +761,7 @@
           <p class="blurb" id="tour_blurb"></p>
           <ul class="highlights" id="tour_highlights"></ul>
           <div class="now">
-            <span class="badge" id="now_badge">In app</span>
+            <span class="badge" id="now_badge"><span class="px" data-px="20">ON DEVICE</span></span>
             <span class="label" id="step_label">Warming up…</span>
             <span class="ticks hidden" id="demo_ticks" aria-hidden="true"></span>
           </div>
@@ -749,8 +837,6 @@
               JavaScript. The image above is a real frame from the device — a map of the Grimsel Pass
               climb, rendered by the same code the hardware runs.</p>
           </noscript>
-          <!-- the one caption line: the page's only real-firmware claim -->
-          <p class="device-caption"><b>The real firmware, compiled to your browser</b> — not a video. Drive it with the controls.</p>
           <!-- Laid out like the device itself: the Up/Down pair on the left, Select/Back on
                the right, so the on-screen row maps onto the four physical buttons. -->
           <div class="controls" role="group" aria-label="Device controls">
@@ -765,10 +851,6 @@
             <input id="compass_heading" type="range" min="0" max="359" value="250" aria-label="Compass heading in degrees" />
             <small>Turn the device · Select returns from peak selection</small>
           </div>
-          <div class="drawer-controls" role="group" aria-label="Device drawers">
-            <button class="ctl drawer-ctl" data-chord="quick" title="Up + Select · keyboard Q" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg> Quick drawer <small>top</small></button>
-            <button class="ctl drawer-ctl" data-chord="context" title="Down + Back · keyboard C" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg> Context drawer <small>bottom</small></button>
-          </div>
           <!-- Play / take-control toggle + live-vs-guided mode line. Tapping the toggle (or any
                device control) while a demo plays "takes control": the scripted step engine cancels
                and the visitor drives from where the demo left off. Everything stays disabled until
@@ -781,7 +863,6 @@
               <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
             </p>
           </div>
-          <p class="ctl-hint">Or on a keyboard: <kbd>↑</kbd> <kbd>↓</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back (hold for the menu). <kbd>Q</kbd> quick drawer · <kbd>C</kbd> context drawer.</p>
         </div>
       </div>
     </section>
@@ -795,33 +876,33 @@
         </div>
         <div class="features">
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">DISPLAY</span></div>
             <h3>Sunlight-readable display</h3>
             <p>Crisp, always on, and it loves direct sun — the reflective screen reads by daylight, and only spends power on pixels that change.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M22 11v2M6 11v2M9 11v2M12 11v2"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">BATTERY</span></div>
             <h3>Lasts for days</h3>
             <p>No nightly charging ritual. One charge covers days of riding — so the computer isn't the thing that dies on day three of the trip.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">REPAIR</span></div>
             <h3>Own it, fix it</h3>
             <p>Every part is replaceable — the battery, the quarter-turn mount, the USB socket, even the buttons. Nothing proprietary between you and a repair.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M15 7l5 5-5 5"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">OPEN SOURCE</span></div>
             <h3>Open-source software</h3>
             <p>Firmware, simulator, map toolchain — every line is open. Read it, build it, and change what you don't like.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">ROUTING</span></div>
             <h3>Routes to anywhere</h3>
             <p>A campsite, a water source, the last bakery before the pass — pick a point and the device plans the route right there, in the field. No phone, no signal.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/><path d="M9.2 12l1.9 1.9 3.7-4"/></svg></div>
-            <h3 class="tag">Completely cloud-free</h3>
+            <div class="card-bar"><span class="px" data-px="20">CLOUD-FREE</span></div>
+            <h3>Completely cloud-free</h3>
             <p>No account, no subscription, no server anywhere. Maps and rides live on the device and your computer — and it all works without a phone.</p>
           </div>
         </div>
@@ -866,6 +947,57 @@
       <div class="credit">Terrain produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.</div>
     </div>
   </footer>
+
+  <script>
+    // Terminus, drawn from the firmware's glyph strips (the `latin` mapping in
+    // firmware/obc-render/src/font_data.rs): 16 glyphs per strip row, one bit per pixel, MSB
+    // first. Each [data-px] element becomes one crisp SVG path in currentColor.
+    var Terminus = (function () {
+      var CELLS = { 20: [10, 20], 24: [12, 24] };
+      var strips = {};
+      function glyph(ch) {
+        var n = ch.codePointAt(0);
+        if (n >= 0x20 && n <= 0x7f) return n - 0x20;
+        if (n >= 0xa0 && n <= 0x17f) return 96 + n - 0xa0;
+        return 31; // '?'
+      }
+      function svg(text, size) {
+        var cell = CELLS[size], cw = cell[0], ch = cell[1], bits = strips[size], stride = 2 * cw;
+        var chars = Array.from(text), path = '', top = ch, bottom = -1;
+        for (var y = 0; y < ch; y++) {
+          var runs = '';
+          chars.forEach(function (c, i) {
+            var g = glyph(c), row = Math.floor(g / 16) * ch + y, x0 = (g % 16) * cw, run = -1;
+            for (var x = 0; x <= cw; x++) {
+              var col = x0 + x, on = x < cw && (bits[row * stride + (col >> 3)] >> (7 - (col & 7))) & 1;
+              if (on && run < 0) run = x;
+              if (!on && run >= 0) { runs += 'M' + (i * cw + run) + ' ' + y + 'h' + (x - run) + 'v1h' + (run - x) + 'z'; run = -1; }
+            }
+          });
+          path += runs;
+          if (runs) { top = Math.min(top, y); bottom = y; }
+        }
+        var w = chars.length * cw, h = bottom - top + 1;
+        return '<svg aria-hidden="true" width="' + w + '" height="' + h + '" viewBox="0 ' + top + ' ' + w + ' ' + h + '"><path d="' + path + '"/></svg>';
+      }
+      function draw(el, text) {
+        if (!el) return;
+        if (text !== undefined) el.dataset.text = text;
+        var t = el.dataset.text || (el.dataset.text = el.textContent.trim());
+        var size = el.getAttribute('data-px');
+        if (!strips[size]) { el.textContent = t; return; }
+        el.innerHTML = '<span class="vh">' + t + '</span>' + svg(t, size);
+      }
+      Object.keys(CELLS).forEach(function (size) {
+        fetch('terminus/ter_u' + size + 'b.raw').then(function (r) { return r.ok ? r.arrayBuffer() : null; }).then(function (buf) {
+          if (!buf) return;
+          strips[size] = new Uint8Array(buf);
+          document.querySelectorAll('[data-px="' + size + '"]').forEach(function (el) { draw(el); });
+        }).catch(function () {});
+      });
+      return { draw: draw };
+    })();
+  </script>
 
   <script>
     // ============================================================================================
@@ -1006,6 +1138,8 @@
       // Scenario order is the whole loop: load route → ride → climb → peaks → next stop → plan B → ride log.
       // Each scenario's `id` is its shareable #demo/<id> deep link.
       // ------------------------------------------------------------------------------------------
+      // After a reset the device offers to resume a saved journey; Back declines it, and on Home
+      // Back does nothing.
       var SCENARIOS = [
         {
           id: 'load-route', title: 'Put today’s route on the device',
@@ -1017,7 +1151,8 @@
           ],
           companion: 'upload', staged: true,
           steps: [
-            { cmds: ['upload'], until: ["Home"], label: 'The device is ready for today’s route', companionFrame: 0, dwell: 1500 },
+            { cmds: ['upload'], until: ["Home", "Journey"], label: 'The device starts up', dwell: 600 },
+            { cmds: ['back'], until: ["Home"], label: 'The device is ready for today’s route', companionFrame: 0, dwell: 1500 },
             { cmds: ['receive'], until: ["RouteReceived"], label: 'Route received on the device', companionFrame: 1, dwell: 2200 },
             { cmds: ['press'], until: ["RouteOverview"], label: 'View the route on the device', dwell: 2800 },
             { cmds: ['press'], until: ["StartAway"], label: 'Start the ride — you are away from the start', dwell: 2800 },
@@ -1029,7 +1164,7 @@
           blurb: '<b>The road starts climbing out of the valley.</b> Take the device from here and ride it exactly like the computer on your bars.',
           highlights: [
             'The map follows your position as you climb',
-            'Zoom with Up/Down · open either drawer below',
+            'Zoom with Up/Down',
             'Everything runs on-device — no signal needed'
           ],
           staged: false, steps: []
@@ -1061,7 +1196,7 @@
           steps: [
             { cmds: ['enter', 'seek:3000', 'pause'], until: ["Map"], label: 'Stop for a look around' },
             { cmds: ['heading:250', 'backhold'], until: ["Menu"], label: 'Open the main menu' },
-            { cmds: ['step:4', 'press'], until: ["PeakView"], label: 'The skyline around the Grimsel', dwell: 6000 }
+            { cmds: ['step:3', 'press'], until: ["PeakView"], label: 'The skyline around the Grimsel', dwell: 6000 }
           ]
         },
         {
@@ -1099,8 +1234,7 @@
             { cmds: ['press'], until: ["Assistant"], label: 'Ride Assistant' },
             { cmds: ['press'], until: ["FindPlace"], label: 'Find a place near the ride' },
             { cmds: ['step:6', 'press'], until: ["FindPlace"], waitFor: 'places', label: 'Compare the mapped station' },
-            { cmds: ['press'], until: ["PoiDetail"], label: 'Gletsch — check the selected place' },
-            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Review the complete Visit route' },
+            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Gletsch — review the complete Visit route' },
             { cmds: ['press'], until: ["Map"], waitFor: 'Accepted', label: 'Visit accepted — recording continues' }
           ]
         },
@@ -1124,7 +1258,7 @@
       ];
 
       // ---- engine state ------------------------------------------------------------------------
-      var scnIdx = 0;         // selected scenario
+      var scnIdx = 1;         // Roll out; deep links can select another chapter
       var demoRunning = false; // a staged script is driving
       var runToken = 0;       // bumped on every mode switch / cancel; async runner re-checks it
       var rafId = null;       // current rAF handle (null = loop stopped)
@@ -1238,7 +1372,10 @@
         if (tourCard) tourCard.classList.toggle('companion-active', !!s.companion);
         if (tourTitle) tourTitle.textContent = s.title;
         if (tourBlurb) tourBlurb.innerHTML = s.blurb;
-        if (nowBadge) nowBadge.textContent = s.companion ? 'In app' : 'On device';
+        if (nowBadge) {
+          nowBadge.classList.toggle('app', !!s.companion);
+          Terminus.draw(nowBadge.firstElementChild, s.companion ? 'IN APP' : 'ON DEVICE');
+        }
         if (tourHighlights) {
           var html = '';
           s.highlights.forEach(function (h) {
@@ -1516,15 +1653,20 @@
         failed = true;
         clearTimeout(fallbackTimer);
         if (loading) loading.remove();               // stop the endless "warming up" pill
-        if (modeNote) modeNote.innerHTML = '<span class="mode-live" style="color:var(--ink-soft)">Offline preview</span> — the live demo couldn’t load, but this is a real device frame.';
+        if (modeNote) modeNote.innerHTML = '<span class="mode-live" style="color:var(--ink2)">Offline preview</span> — the live demo couldn’t load, but this is a real device frame.';
         setStep('A real frame from the device — the live demo couldn’t load.');
         // Controls stay disabled (nothing to drive); the poster + scenario copy carry the story.
       }
+      function syncTheme() {
+        if (api) api.obc_demo_set_dark(document.documentElement.dataset.theme === 'dark');
+      }
+      addEventListener('obc-theme-change', syncTheme);
       addEventListener('TrunkApplicationStarted', function () {
         loaded = true;
         failed = false; // A slow terrain download can complete after the poster fallback.
         clearTimeout(fallbackTimer);
         api = window.wasmBindings;
+        syncTheme();
         renderScenarioChrome();
         // Dev-time drift check: warn (console.error) if a scenario targets a screen the host
         // doesn't know — the CI test is the hard guard, this is the fast local signal.
@@ -1628,15 +1770,6 @@
         grabIfDemo();
         compassValue.textContent = compassHeading.value + '°';
         cmd('heading:' + compassHeading.value);
-      });
-
-      document.querySelectorAll('.drawer-ctl').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          if (!ready()) return;
-          stage.focus({ preventScroll: true });
-          grabIfDemo();
-          cmd(btn.getAttribute('data-chord'));
-        });
       });
 
       // ---- keyboard, scoped to the focused device stage ----------------------------------------

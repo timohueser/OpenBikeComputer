@@ -74,7 +74,7 @@ public enum RouteObjectCodec {
     /// short to carry a header comes back unchanged.
     public static func renamed(_ payload: Data, to name: String) -> Data {
         guard payload.count >= headerLength else { return payload }
-        let nameBytes = truncatedUTF8(name, maxBytes: nameCap)
+        let nameBytes = Data(name.truncatedToUTF8Bytes(nameCap).utf8)
         var out = payload
         let base = out.startIndex
         out.resetBytes(in: (base + 64)..<(base + 64 + nameCap))
@@ -187,7 +187,7 @@ public enum RouteObjectCodec {
         header.replaceSubrange(0..<4, with: magic)
         header[4] = version
         header[5] = encoder.hasElevation ? 2 : 0
-        let nameBytes = truncatedUTF8(name, maxBytes: nameCap)
+        let nameBytes = Data(name.truncatedToUTF8Bytes(nameCap).utf8)
         header[6] = UInt8(nameBytes.count)
         header[7] = bikeType.rawValue
         header.putI32(box.minLon, at: 8)
@@ -229,7 +229,7 @@ public enum RouteObjectCodec {
             record.putI32(toMicrodegrees(waypoint.coordinate.latitude), at: 8)
             record.putI16(waypointElevationUnknown, at: 12)  // Waypoint carries no elevation
             record[14] = WaypointCategory.wireID(waypoint.category)
-            let nameBytes = truncatedUTF8(waypoint.name, maxBytes: waypointNameCap)
+            let nameBytes = Data(waypoint.name.truncatedToUTF8Bytes(waypointNameCap).utf8)
             record[15] = UInt8(nameBytes.count)
             record.putI16(lateralOffsetInt16(waypoint.lateralOffsetMeters), at: 16)  // [18..20] reserved
             record.replaceSubrange(waypointNameOffset..<(waypointNameOffset + nameBytes.count), with: nameBytes)
@@ -447,18 +447,6 @@ public enum RouteObjectCodec {
         let ux = Double(b.lon-a.lon) * cosLat, uy = Double(b.lat-a.lat)
         let vx = Double(c.lon-b.lon) * cosLat, vy = Double(c.lat-b.lat)
         return ux*vx + uy*vy < 0
-    }
-
-    /// UTF-8 bytes of `string`, truncated to at most `maxBytes` on a character
-    /// boundary (never splitting a multi-byte scalar).
-    private static func truncatedUTF8(_ string: String, maxBytes: Int) -> Data {
-        var bytes = Data()
-        for character in string {
-            let encoded = Array(String(character).utf8)
-            if bytes.count + encoded.count > maxBytes { break }
-            bytes.append(contentsOf: encoded)
-        }
-        return bytes
     }
 
     /// Perpendicular distance in metres from `point` to the infinite chord `from` to `to`, in a

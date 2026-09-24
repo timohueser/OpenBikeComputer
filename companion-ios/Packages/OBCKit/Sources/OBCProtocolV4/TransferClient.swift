@@ -174,7 +174,7 @@ public actor TransferClient {
                 !$0.flags.contains(.retained)
                     && $0.payloadLength == UInt64(payload.count)
                     && $0.payloadCRC32 == crc
-                    && $0.displayName == displayName
+                    && $0.displayName == request.displayName
             }
             guard let entry = matches.max(by: { $0.objectID < $1.objectID }) else {
                 return try await putOnLiveLink(request, payload: payload, progress: progress)
