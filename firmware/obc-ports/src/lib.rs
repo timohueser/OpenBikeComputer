@@ -211,6 +211,72 @@ pub trait Backlight {
     fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported>;
 }
 
+/// Something the rider hears. The app decides which cue plays; the platform decides how it sounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cue {
+    KeyClick,
+    HoldDone,
+    ClimbStarts,
+    BackOnRoute,
+    /// The Good pattern at a newly chosen volume, so the rider hears the level they pick.
+    SoundPreview,
+    GpsBack,
+    Arrived,
+    OffRoute,
+    GpsLost,
+    SensorDropped,
+    BatteryLow,
+    RecordingError,
+    BatteryCritical,
+}
+
+/// What a cue means, and so which pattern it plays. The declaration order is the priority order,
+/// lowest first: when two cues meet, the greater family wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Family {
+    Tick,
+    HeadsUp,
+    Good,
+    Problem,
+    Urgent,
+}
+
+impl Cue {
+    pub const fn family(self) -> Family {
+        match self {
+            Cue::KeyClick | Cue::HoldDone => Family::Tick,
+            Cue::ClimbStarts => Family::HeadsUp,
+            Cue::BackOnRoute | Cue::SoundPreview | Cue::GpsBack | Cue::Arrived => Family::Good,
+            Cue::OffRoute | Cue::GpsLost | Cue::SensorDropped | Cue::BatteryLow => Family::Problem,
+            Cue::RecordingError | Cue::BatteryCritical => Family::Urgent,
+        }
+    }
+}
+
+/// One step of a sound pattern. `hz == 0` is a rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Note {
+    pub hz: u16,
+    pub ms: u16,
+}
+
+/// How loud a cue plays. There is no `Off`: with sound off the app raises no cue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Volume {
+    Quiet,
+    Loud,
+}
+
+/// The device's sound output.
+pub trait Sounder {
+    /// Whether this platform can make a sound at all. A standing property of the hardware, stated
+    /// once at composition, like [`Backlight::available`].
+    fn available(&self) -> bool;
+
+    /// Start `notes` at `volume` and return at once. A new call stops the pattern that plays.
+    fn play(&mut self, notes: &'static [Note], volume: Volume);
+}
+
 /// Turning the device off for good, where the quick drawer's guarded confirmation ends.
 ///
 /// It does not return: on hardware the part enters system-off and only a wake source restarts it,

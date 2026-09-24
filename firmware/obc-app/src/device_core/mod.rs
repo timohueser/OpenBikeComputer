@@ -12,7 +12,7 @@ pub use derived::{
 };
 
 pub use core_mode::ModeState;
-pub use pass::{PassClock, PassInputs, PassPlan};
+pub use pass::{PassClock, PassInputs, PassPlan, Sound};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 
