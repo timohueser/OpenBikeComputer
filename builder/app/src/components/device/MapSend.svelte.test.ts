@@ -19,6 +19,50 @@ afterEach(() => {
 });
 
 describe("MapSend lifecycle", () => {
+    it("warns before either send path can replace the active map", async () => {
+        const target = document.createElement("div");
+        document.body.append(target);
+        const send: SendAssembledMap = async () => {
+            throw new Error("must not run");
+        };
+        const component = mount(MapSend, {
+            target,
+            props: { client, ledger, sendAssembled: send, sendReady: true },
+        });
+        await tick();
+
+        expect(target.querySelectorAll(".actions button")).toHaveLength(2);
+        expect(target.querySelector(".hint")?.textContent).toContain("replaces the active map");
+        expect(target.querySelector(".hint")?.textContent).toContain("cannot be recovered");
+        await unmount(component);
+    });
+
+    it("shows the card's no-space refusal, then retries from the same controls", async () => {
+        const target = document.createElement("div");
+        document.body.append(target);
+        let attempts = 0;
+        const send: SendAssembledMap = async () => {
+            if (++attempts === 1) throw new DeviceError("no-space", "The card needs 262144 B for this map.");
+            return { objectId: 7n, revision: 2n, payloadLength: 4n, payloadCrc32: 0 };
+        };
+        const component = mount(MapSend, {
+            target,
+            props: { client, ledger, sendAssembled: send, sendReady: true },
+        });
+        await tick();
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        await tick();
+        await tick();
+
+        expect(target.querySelector('[role="alert"]')?.textContent).toContain("262144 B");
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        await tick();
+        await tick();
+        expect(attempts).toBe(2);
+        expect(target.querySelector(".done")?.textContent).toContain("map 7");
+        await unmount(component);
+    });
+
     it("cancels the owned job when disconnect unmounts the surface", async () => {
         let context: JobContext | null = null;
         const send: SendAssembledMap = (_client, ctx) => {
