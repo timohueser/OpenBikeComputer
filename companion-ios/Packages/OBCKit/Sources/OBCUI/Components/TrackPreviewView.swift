@@ -83,6 +83,8 @@ public struct TrackPreviewView: View {
     var tagColor: Color = OBCTheme.secondary
     var showsChrome: Bool = true
     var markers: [Marker] = []
+    /// A strip along the bottom edge the track keeps clear of, for an overlaid chip.
+    private var clearBottom: CGFloat = 0
 
     public init(
         _ preview: TrackPreview?,
@@ -117,6 +119,13 @@ public struct TrackPreviewView: View {
         self.showsEnds = showsEnds
         self.showsPlaceholder = false
         self.showsChrome = showsChrome
+    }
+
+    /// The same sketch, fitted above a bottom strip of `height` points.
+    public func keepingBottomClear(_ height: CGFloat) -> TrackPreviewView {
+        var copy = self
+        copy.clearBottom = height
+        return copy
     }
 
     public var body: some View {
@@ -158,8 +167,9 @@ public struct TrackPreviewView: View {
             let transform = Self.fittingTransform(
                 for: TrackPreview(points: [], aspectRatio: aspectRatio),
                 in: size,
-                inset: style.casingWidth + 4,
-                topInset: tag == nil ? 0 : Self.tagBandHeight
+                inset: style.dotRadius + 3,
+                topInset: tag == nil ? 0 : Self.tagBandHeight,
+                bottomInset: clearBottom
             )
             let paths = drawn.map { line -> (Path, Ink) in
                 var path = Path()
@@ -199,16 +209,17 @@ public struct TrackPreviewView: View {
 
     /// Maps unit-square track points into `size`, keeping the source aspect ratio
     /// (centred letterbox), with a uniform `inset` so round caps and node dots never
-    /// clip, below a `topInset` band. Internal for the geometry unit tests.
+    /// clip, between a `topInset` and a `bottomInset` band. Internal for the geometry unit tests.
     static func fittingTransform(
         for preview: TrackPreview,
         in size: CGSize,
         inset: CGFloat,
-        topInset: CGFloat = 0
+        topInset: CGFloat = 0,
+        bottomInset: CGFloat = 0
     ) -> (TrackPreview.Point) -> CGPoint {
         let available = CGSize(
             width: max(size.width - 2 * inset, 1),
-            height: max(size.height - 2 * inset - topInset, 1)
+            height: max(size.height - 2 * inset - topInset - bottomInset, 1)
         )
         let aspect = preview.aspectRatio > 0 ? preview.aspectRatio : 1
         // Fit a rect of the track's aspect into the available box.
@@ -218,7 +229,7 @@ public struct TrackPreviewView: View {
         }
         let origin = CGPoint(
             x: (size.width - fitted.width) / 2,
-            y: topInset + (size.height - topInset - fitted.height) / 2
+            y: topInset + (size.height - topInset - bottomInset - fitted.height) / 2
         )
         return { point in
             CGPoint(

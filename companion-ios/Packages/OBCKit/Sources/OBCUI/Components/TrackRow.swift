@@ -105,14 +105,19 @@ public struct TrackRow: View {
 
     private var sketchCell: some View {
         sketch
+            // The track and its end marks stay above the chip's strip.
+            .keepingBottomClear(onDevice == .notOnDevice ? 0 : OnDeviceChip.height + Self.chipInset)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(alignment: .bottomLeading) {
                 if onDevice != .notOnDevice {
-                    OnDeviceChip(upToDate: onDevice == .upToDate).padding(5)
+                    OnDeviceChip(upToDate: onDevice == .upToDate).padding(Self.chipInset)
                 }
             }
             .accessibilityHidden(true)
     }
+
+    /// The chip's distance from the sketch's corner.
+    private static let chipInset: CGFloat = 4
 
     private var text: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -172,6 +177,9 @@ private struct RowStats {
 public struct OnDeviceChip: View {
     let upToDate: Bool
 
+    /// The chip's fixed height, so a sketch can keep its strip clear of the track.
+    static let height: CGFloat = 16
+
     public init(upToDate: Bool = true) {
         self.upToDate = upToDate
     }
@@ -196,7 +204,7 @@ public struct OnDeviceChip: View {
             PixelText("ON DEVICE", scale: 2 / 3, color: OBCTheme.onRust)
         }
         .padding(.horizontal, 4)
-        .padding(.vertical, 3)
+        .frame(height: Self.height)
         .background(OBCTheme.rust, in: RoundedRectangle(cornerRadius: 4))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(upToDate ? "On device" : "On device, out of date")
