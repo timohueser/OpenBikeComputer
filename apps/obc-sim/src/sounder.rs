@@ -4,6 +4,7 @@
 //! Only the window opens a stream. The headless `--png` path and the tests never build one, so
 //! they need no audio device.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -92,7 +93,13 @@ fn build<T: SizedSample + FromSample<f32>>(
                 frame.fill(T::from_sample(sample));
             }
         },
-        |e| eprintln!("obc-sim: sound: {e}"),
+        // ALSA can report an error on every xrun, so only the first one is printed.
+        |e| {
+            static REPORTED: AtomicBool = AtomicBool::new(false);
+            if !REPORTED.swap(true, Ordering::Relaxed) {
+                eprintln!("obc-sim: sound: {e}");
+            }
+        },
         None,
     )
 }

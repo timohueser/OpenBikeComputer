@@ -121,8 +121,8 @@ struct Args {
     /// Model a platform whose panel has no controllable light. The quick drawer then draws three
     /// controls instead of four; nothing else changes.
     no_backlight: bool,
-    /// The window opens no sound output, so the platform has no sounder. The headless path never
-    /// opens one.
+    /// Model a platform with no sounder, in the window and in `--png`. The window then opens no
+    /// sound output; the headless path never opens one.
     no_sound: bool,
     /// Headless `--png` only: refuse to render unless the script landed on that screen, named by
     /// the `screens!` table's own variant string. A recipe that walks a menu depends on that menu's
@@ -1040,7 +1040,7 @@ Scripted snapshots:
   --trip-progress D:M:L   The first trip's progress: day D (from 0), M metres into it, and the
                           last finished day L (or -)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
-  --no-sound              Open no sound output in the window (a platform with no sounder)
+  --no-sound              Model a platform with no sounder (the window opens no sound output)
   --diagnostics PATH      Write a new JSONL journey trace (requires --png)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
@@ -1327,6 +1327,8 @@ fn main() {
         // a lit panel, like the window does, so a snapshot shows the four-icon arrangement;
         // `--no-backlight` renders the three-control one instead.
         app.set_backlight_available(!args.no_backlight);
+        // The sounder capability, stated as the window states it, with no device opened.
+        app.set_sound_available(!args.no_sound);
         // No `set_resident_frame` here: the headless host composes one frame into a buffer that
         // holds nothing, so every screen must be drawn, including a base a resident host would
         // leave standing under a sheet.
