@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// Picks the date of Day 1, or clears it.
+/// Picks the date of Day 1, or removes it. Each day's date follows from it.
 public struct TripStartDateSheet: View {
     @State private var date: Date
     private let hasDate: Bool
@@ -22,9 +22,14 @@ public struct TripStartDateSheet: View {
                     .tint(OBCTheme.tint)
                     .padding(.horizontal, 12)
                     .background(OBCTheme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
+                    .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
+                Text("Each day gets its date from Day 1.")
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
                 if hasDate {
-                    Button("No start date") {
+                    Button("Remove the start date") {
                         onSet(nil)
                         dismiss()
                     }
