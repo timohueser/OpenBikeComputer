@@ -249,7 +249,7 @@ fn app_pass(
 #[test]
 fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample() {
     use obc_app::recorder::{RecorderEffect, RecorderIntent, RecorderOutcome};
-    use obc_app::{App, AppState, WarningFlags};
+    use obc_app::{Alert, App, AppState};
     use obc_storage::flat::Store;
 
     let _owner = RECORDER.lock().unwrap();
@@ -291,7 +291,7 @@ fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample(
             assert!(app.recorder.staged().is_empty());
             if !fail_restart {
                 assert!(
-                    !matches!(app.top_screen(), obc_app::screen::Screen::Warning(w) if w.flags().contains(WarningFlags::REC_ERROR))
+                    !matches!(app.top_screen(), obc_app::screen::Screen::Warning(w) if w.alerts().contains(Alert::RecordingFailed))
                 );
             }
             if now == 1_000 {

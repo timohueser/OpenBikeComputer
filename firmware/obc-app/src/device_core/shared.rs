@@ -8,7 +8,7 @@ use core::marker::PhantomData;
 
 use crate::ble::BleStatus;
 use crate::dfu::{DfuFailure, Version};
-use crate::screen::WarningFlags;
+use crate::Alerts;
 use crate::CatalogObjectId;
 
 // The domain tags an `OperationToken` is typed by, one per domain that owns asynchronous work.
@@ -355,7 +355,7 @@ pub struct ExternalFacts {
     transfer: Option<TransferState>,
     link: Option<BleStatus>,
 
-    warnings: WarningFlags,
+    alerts: Alerts,
     route_upload: Option<RouteUpload>,
     trip_upload: Option<TripUpload>,
     update_result: Option<UpdateResult>,
@@ -367,14 +367,14 @@ impl ExternalFacts {
         transfer: None,
         link: None,
 
-        warnings: WarningFlags::NONE,
+        alerts: Alerts::NONE,
         route_upload: None,
         trip_upload: None,
         update_result: None,
     };
 
     /// Fold `incoming` in, field by field, under the rules documented on this type. The only
-    /// rejection is a second unconsumed [`UpdateResult`], so a partial failure cannot lose a warning
+    /// rejection is a second unconsumed [`UpdateResult`], so a partial failure cannot lose an alert
     /// or an upload.
     pub fn merge(&mut self, incoming: ExternalFacts) -> Result<(), FactMergeError> {
         if let Some(fact) = incoming.store_revision {
@@ -387,7 +387,7 @@ impl ExternalFacts {
             self.note_link(status);
         }
 
-        self.raise_warnings(incoming.warnings);
+        self.raise_alerts(incoming.alerts);
         if let Some(upload) = incoming.route_upload {
             self.note_route_upload(upload);
         }
@@ -424,9 +424,9 @@ impl ExternalFacts {
         self.link = Some(status);
     }
 
-    /// Raise warning flags. They accumulate: nothing clears until DeviceCore takes them.
-    pub fn raise_warnings(&mut self, flags: WarningFlags) {
-        self.warnings |= flags;
+    /// Raise alerts. They accumulate: nothing clears until DeviceCore takes them.
+    pub fn raise_alerts(&mut self, alerts: impl Into<Alerts>) {
+        self.alerts.raise(alerts);
     }
 
     /// A route upload committed; the most recent commit is the one worth announcing.
@@ -462,8 +462,8 @@ impl ExternalFacts {
         self.link
     }
 
-    pub fn take_warnings(&mut self) -> WarningFlags {
-        core::mem::replace(&mut self.warnings, WarningFlags::NONE)
+    pub fn take_alerts(&mut self) -> Alerts {
+        self.alerts.take()
     }
 
     pub fn take_route_upload(&mut self) -> Option<RouteUpload> {
@@ -508,6 +508,7 @@ const _: () = assert!(core::mem::size_of::<ExternalFacts>() <= 240, "the fact sl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Alert;
 
     fn store(revision: u64) -> StoreRevision {
         StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(revision) }
@@ -550,22 +551,22 @@ mod tests {
         assert!(!fresh.is_current(wrapped), "a wrapped token cannot pass as a never-issued one");
     }
 
-    /// Warnings are the one accumulating field: two producers in the same pass both survive.
+    /// Alerts are the one accumulating field: two producers in the same pass both survive.
     #[test]
     fn warnings_accumulate_without_loss() {
         let mut facts = ExternalFacts::NONE;
-        facts.raise_warnings(WarningFlags::NO_GPS);
+        facts.raise_alerts(Alert::NoGps);
 
         let mut batch = ExternalFacts::NONE;
-        batch.raise_warnings(WarningFlags::STORAGE_ERROR);
+        batch.raise_alerts(Alert::StorageLost);
         facts.merge(batch).unwrap();
-        facts.raise_warnings(WarningFlags::REC_ERROR);
+        facts.raise_alerts(Alert::RecordingFailed);
 
-        let taken = facts.take_warnings();
-        assert!(taken.contains(WarningFlags::NO_GPS));
-        assert!(taken.contains(WarningFlags::STORAGE_ERROR));
-        assert!(taken.contains(WarningFlags::REC_ERROR));
-        assert!(facts.take_warnings().is_empty(), "taking clears the set");
+        let taken = facts.take_alerts();
+        assert!(taken.contains(Alert::NoGps));
+        assert!(taken.contains(Alert::StorageLost));
+        assert!(taken.contains(Alert::RecordingFailed));
+        assert!(facts.take_alerts().is_empty(), "taking clears the set");
     }
 
     /// The newest report wins, except that a store cannot walk its own revision backwards. A
@@ -617,7 +618,7 @@ mod tests {
         facts.note_transfer(TransferState::Idle);
         facts.note_link(BleStatus::DISCONNECTED);
 
-        facts.raise_warnings(WarningFlags::NO_GPS);
+        facts.raise_alerts(Alert::NoGps);
 
         let connected = BleStatus { link: crate::ble::BleLink::Connected, ..BleStatus::DISCONNECTED };
         let route = RouteUpload { id: 21, replaced: false, elevation: None };
@@ -627,7 +628,7 @@ mod tests {
         batch.note_transfer(TransferState::Active);
         batch.note_link(connected);
 
-        batch.raise_warnings(WarningFlags::STORAGE_ERROR);
+        batch.raise_alerts(Alert::StorageLost);
         batch.note_route_upload(route);
         batch.note_trip_upload(trip);
         batch.note_update_result(UpdateResult::Confirmed(crate::dfu::clamp("v2"))).unwrap();
@@ -641,8 +642,8 @@ mod tests {
         assert_eq!(facts.take_route_upload(), Some(route));
         assert_eq!(facts.take_trip_upload(), Some(trip));
         assert!(facts.take_update_result().is_some());
-        let warnings = facts.take_warnings();
-        assert!(warnings.contains(WarningFlags::NO_GPS) && warnings.contains(WarningFlags::STORAGE_ERROR));
+        let warnings = facts.take_alerts();
+        assert!(warnings.contains(Alert::NoGps) && warnings.contains(Alert::StorageLost));
 
         // A stale batch loses on the level fields and cannot clear the ones it omits.
         facts.note_store_revision(store(9));
@@ -664,14 +665,14 @@ mod tests {
 
         let route = RouteUpload { id: 31, replaced: true, elevation: None };
         let mut batch = ExternalFacts::NONE;
-        batch.raise_warnings(WarningFlags::REC_ERROR);
+        batch.raise_alerts(Alert::RecordingFailed);
         batch.note_route_upload(route);
         batch.note_store_revision(store(3));
         batch.note_update_result(UpdateResult::Failed { why: DfuFailure::NotStarted, staged: None }).unwrap();
 
         assert_eq!(facts.merge(batch), Err(FactMergeError::UpdateResultUnconsumed));
 
-        assert!(facts.take_warnings().contains(WarningFlags::REC_ERROR), "the warning survived the rejection");
+        assert!(facts.take_alerts().contains(Alert::RecordingFailed), "the warning survived the rejection");
         assert_eq!(facts.take_route_upload(), Some(route), "the upload survived the rejection");
         assert_eq!(facts.store_revision(), Some(store(3)));
         assert_eq!(facts.take_update_result(), Some(first), "the unconsumed result is still the one held");
@@ -683,7 +684,7 @@ mod tests {
     fn consuming_one_fact_leaves_the_others() {
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(store(1));
-        facts.raise_warnings(WarningFlags::NO_COMPASS);
+        facts.raise_alerts(Alert::NoCompass);
         facts.note_route_upload(RouteUpload { id: 11, replaced: false, elevation: None });
         facts.note_trip_upload(TripUpload { id: 12, replaced: true });
         facts.note_update_result(UpdateResult::Confirmed(crate::dfu::clamp("v9"))).unwrap();
@@ -693,7 +694,7 @@ mod tests {
 
         assert_eq!(facts.take_trip_upload(), Some(TripUpload { id: 12, replaced: true }));
         assert_eq!(facts.store_revision(), Some(store(1)));
-        assert!(facts.take_warnings().contains(WarningFlags::NO_COMPASS));
+        assert!(facts.take_alerts().contains(Alert::NoCompass));
         assert!(facts.take_update_result().is_some());
     }
 

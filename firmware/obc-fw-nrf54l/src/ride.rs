@@ -686,7 +686,7 @@ pub(crate) async fn run_app(
         // guarded exact removal, an unreadable one earns none at all.
         let _ = app.offer_damaged_ride(damage);
     } else if recovery_warning {
-        exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
+        exec.facts.raise_alerts(obc_app::Alert::RideRecoveredIncomplete);
     }
 
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
@@ -881,27 +881,27 @@ pub(crate) async fn run_app(
             defmt::info!("xfer: transfer level {=str} (flat engine)", if transferring { "active" } else { "idle" });
         }
 
-        // The card transport gave up for this session. Raised every pass and deduplicated
-        // downstream, so the card opens once and a dismissal is not re-nagged.
+        // The card transport gave up for this session. Raised every pass: the card shows it once,
+        // and the cue repeats at most once a minute.
         if crate::flpr_mux::storage_latched() {
-            exec.facts.raise_warnings(obc_app::WarningFlags::STORAGE_ERROR);
+            exec.facts.raise_alerts(obc_app::Alert::StorageLost);
         }
 
         // The sensor task publishes once GPS responds or its startup deadline passes. Map chips that
         // are absent at that point to a dismissable warning; this is not a live-availability stream.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         if let Some(p) = consumer.take_presence() {
-            let mut w = obc_app::WarningFlags::NONE;
+            let mut w = obc_app::Alerts::NONE;
             if !p.gps {
-                w |= obc_app::WarningFlags::NO_GPS;
+                w.raise(obc_app::Alert::NoGps);
             }
             if !p.altimeter {
-                w |= obc_app::WarningFlags::NO_ALTIMETER;
+                w.raise(obc_app::Alert::NoAltimeter);
             }
             if !p.compass {
-                w |= obc_app::WarningFlags::NO_COMPASS;
+                w.raise(obc_app::Alert::NoCompass);
             }
-            exec.facts.raise_warnings(w);
+            exec.facts.raise_alerts(w);
         }
 
         // The BLE feeding half: everything that hands the app a value the pass below reads. The half
@@ -1268,7 +1268,7 @@ pub(crate) async fn run_app(
                 RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
             }
             if ride_recorder.take_warning() {
-                exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
+                exec.facts.raise_alerts(obc_app::Alert::RecordingFailed);
             }
 
             // The catalog and metadata calls share one physical reply slot.

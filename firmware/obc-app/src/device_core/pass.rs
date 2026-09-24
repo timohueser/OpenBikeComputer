@@ -35,7 +35,7 @@ pub enum PassStage {
     Platform,
     /// Admit heavy work through `CoreMode` and recalculate [`Capabilities`].
     Admission,
-    Faults,
+    Alerts,
     /// Calculate render work, needs, effects and the next wake.
     Plan,
 }
@@ -52,7 +52,7 @@ impl PassStage {
         PassStage::Settings,
         PassStage::Platform,
         PassStage::Admission,
-        PassStage::Faults,
+        PassStage::Alerts,
         PassStage::Plan,
     ];
 }
@@ -238,7 +238,7 @@ impl App {
 
         self.stage_platform(&mut effects, support);
         self.stage_admission(support);
-        self.stage_faults();
+        self.stage_alerts();
         // Every stage has run, so what the visible screens draw is final for this frame. A moved
         // key is a repaint, folded in before the plan stage drains the demand.
         match self.render_key().repaint_since(&key_before) {
@@ -317,10 +317,10 @@ impl App {
                 }
                 crate::recorder::RecorderVerdict::Dropped => self.end_ride_session(),
                 crate::recorder::RecorderVerdict::Failed => {
-                    self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
+                    self.pass.connections.alerts.raise(crate::Alert::RecordingFailed);
                 }
-                // The typed card is the explanation, so no `REC_ERROR` is raised beside it: that
-                // warning means a ride log is now incomplete, and no ride is being logged.
+                // The typed card is the explanation, so no `RecordingFailed` is raised beside it:
+                // that alert means the ride being logged is incomplete, and no ride is being logged.
                 crate::recorder::RecorderVerdict::RecoveryLatched => {
                     self.raise_ride_recovery();
                 }
@@ -333,9 +333,9 @@ impl App {
         }
         if let Some(outcome) = outcomes.settings.take() {
             if self.apply_settings_outcome(outcome) {
-                // Through the fault connection, not straight to a card: every notice raised in a
+                // Through the alert connection, not straight to a card: every alert raised in a
                 // pass reaches the rider together, on one card.
-                self.pass.connections.faults.raise(crate::screen::WarningFlags::SETTINGS_ERROR);
+                self.pass.connections.alerts.raise(crate::Alert::SettingsNotSaved);
             }
         }
         if let Some(outcome) = outcomes.bond.take() {
@@ -395,10 +395,7 @@ impl App {
         if let Some(upload) = facts.take_trip_upload() {
             self.on_trip_uploaded(upload.id, upload.replaced);
         }
-        let warnings = facts.take_warnings();
-        if !warnings.is_empty() {
-            self.pass.connections.faults.raise(warnings);
-        }
+        self.pass.connections.alerts.raise(facts.take_alerts());
         if let Some(result) = facts.take_update_result() {
             let update = match result {
                 UpdateResult::Confirmed(version) => crate::card_scheduler::BootUpdate::Confirmed(version),
@@ -543,7 +540,7 @@ impl App {
             // mounts later still opens the ride — but they are told now, through the recording
             // warning. A riding view that quietly records nothing is what this raise prevents.
             crate::recorder::RecorderAdvance::Refused => {
-                self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
+                self.pass.connections.alerts.raise(crate::Alert::RecordingFailed);
             }
             // A damaged recovered object is still standing, so no session opened. Put the decision
             // back rather than a warning: it is the one thing the rider can act on.
@@ -685,14 +682,12 @@ impl App {
         self.pass.capabilities = Capabilities::calculate(support, facts);
     }
 
-    /// Stage 13 — deliver every notice raised this pass, together. Last, because every producer
+    /// Stage 13 — deliver every alert raised this pass, together. Last, because every producer
     /// runs before it, so one card carries what several domains found.
-    fn stage_faults(&mut self) {
-        self.pass.record(PassStage::Faults);
-        let flags = self.pass.connections.faults.take();
-        if !flags.is_empty() {
-            self.on_warning(flags);
-        }
+    fn stage_alerts(&mut self) {
+        self.pass.record(PassStage::Alerts);
+        let alerts = self.pass.connections.alerts.take();
+        self.on_alerts(alerts);
     }
 
     fn stage_plan(&mut self, now: PassClock, effects: EffectSlots) -> PassPlan {
@@ -762,7 +757,7 @@ mod tests {
     use crate::device_core::Revision;
     use crate::device_core::{StoreIdentity, TokenSource};
     use crate::route::RouteSummary;
-    use crate::screen::WarningFlags;
+    use crate::Alert;
 
     use crate::Screen;
     use obc_ports::{Fix, LocationSource};
@@ -993,14 +988,14 @@ mod tests {
     fn a_fault_raised_earlier_in_the_pass_reaches_the_rider_in_it() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         let mut facts = ExternalFacts::NONE;
-        facts.raise_warnings(WarningFlags::NO_GPS);
-        facts.raise_warnings(WarningFlags::STORAGE_ERROR);
+        facts.raise_alerts(Alert::NoGps);
+        facts.raise_alerts(Alert::StorageLost);
 
         pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
-        assert!(app.pass.connections.faults.take().is_empty(), "delivered, not left pending");
+        assert!(app.pass.connections.alerts.take().is_empty(), "delivered, not left pending");
         assert!(
-            matches!(app.top_screen(), crate::Screen::Warning(w) if w.flags().contains(WarningFlags::NO_GPS)
-                && w.flags().contains(WarningFlags::STORAGE_ERROR)),
+            matches!(app.top_screen(), crate::Screen::Warning(w) if w.alerts().contains(Alert::NoGps)
+                && w.alerts().contains(Alert::StorageLost)),
             "both notices reached one card"
         );
     }
@@ -1090,7 +1085,7 @@ mod tests {
         assert!(!app.recording(), "no store, no ride");
         assert!(plan.effects.recorder.is_empty(), "and nothing physical is offered for it");
         assert!(
-            matches!(app.top_screen(), Screen::Warning(card) if card.flags().contains(WarningFlags::REC_ERROR)),
+            matches!(app.top_screen(), Screen::Warning(card) if card.alerts().contains(Alert::RecordingFailed)),
             "the rider is told, rather than left on a riding view that records nothing"
         );
         // One card per refusal, not one per pass: the request stays pending, so a re-raise every
@@ -1515,6 +1510,24 @@ mod tests {
         assert_eq!(play(&mut app, 50, &[Gesture::Step(1)]), None, "no sounder, no cue");
     }
 
+    /// An incomplete log found at boot is not a failure of this ride: it shows the card and plays
+    /// no cue, so a real failure later in the boot still plays.
+    #[test]
+    fn a_recovered_incomplete_log_plays_no_cue_and_a_later_failure_does() {
+        use obc_ports::{Cue, Volume};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_sound_available(true);
+        let play = |app: &mut App, ms: u32, alert: Alert| {
+            let mut facts = ExternalFacts::NONE;
+            facts.raise_alerts(alert);
+            pass_with(app, ms, &[], &mut OutcomeSlots::new(), &mut facts).sound
+        };
+        assert_eq!(play(&mut app, 10, Alert::RideRecoveredIncomplete), None);
+        assert!(matches!(app.top_screen(), Screen::Warning(_)), "the card tells the rider");
+        let failed = play(&mut app, 20, Alert::RecordingFailed);
+        assert_eq!(failed, Some(Sound { cue: Cue::RecordingError, volume: Volume::Loud }));
+    }
+
     /// The pass's routing: every level lands with its owner, every one-shot is taken from the batch,
     /// and a keyed derived answer clears the need it answers. The two clocks differ here on purpose,
     /// so a stage that reads the ride clock where it owes the UI one trips
@@ -1560,7 +1573,7 @@ mod tests {
 
         // One-shots were consumed rather than left for a second delivery.
         assert!(facts.take_route_upload().is_none() && facts.take_trip_upload().is_none());
-        assert!(facts.take_update_result().is_none() && facts.take_warnings().is_empty());
+        assert!(facts.take_update_result().is_none() && facts.take_alerts().is_empty());
         assert!(app.debug_stack_len() > 1, "and what they post reached the screen");
 
         // The keyed answer cleared the need it answered.

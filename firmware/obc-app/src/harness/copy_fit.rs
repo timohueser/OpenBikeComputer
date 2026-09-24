@@ -18,7 +18,7 @@ use crate::screen::context_drawer::{self as ctx_menu, ContextAction};
 use crate::screen::settings::page;
 use crate::screen::*;
 use crate::settings::Language;
-use crate::{App, AppState, Gesture, Settings, WarningFlags};
+use crate::{Alert, App, AppState, Gesture, Settings};
 
 use super::support::{build_min_obcm, selected_place, Buf};
 
@@ -159,14 +159,15 @@ fn seeds(language: Language) -> Vec<Seed> {
     ));
     v.extend(plain(
         [
-            WarningFlags::NO_GPS,
-            WarningFlags::NO_ALTIMETER,
-            WarningFlags::NO_COMPASS,
-            WarningFlags::REC_ERROR,
-            WarningFlags::SETTINGS_ERROR,
-            WarningFlags::STORAGE_ERROR,
+            Alert::NoGps,
+            Alert::NoAltimeter,
+            Alert::NoCompass,
+            Alert::RecordingFailed,
+            Alert::RideRecoveredIncomplete,
+            Alert::SettingsNotSaved,
+            Alert::StorageLost,
         ]
-        .map(|flags| Screen::Warning(WarningScreen::new(flags)))
+        .map(|alert| Screen::Warning(WarningScreen::new(alert.into())))
         .into(),
     ));
     v.extend(plain(
