@@ -696,7 +696,7 @@ async fn main(_spawner: Spawner) {
         //
         // These gate and BSP lines must match the masks in `src/flpr/flpr_scan.c`. Remap both
         // together.
-        let mut display = {
+        let (mut display, hp) = {
             // Gate and frame lines: one contiguous P1.10-14 run with BSP below, so the gate harness
             // is a single uninterrupted cable on the DK's port-1 header.
             let gate_bus = [
@@ -803,7 +803,7 @@ async fn main(_spawner: Spawner) {
             };
             hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender(), CHORDS.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
-            MapDisplay {
+            let display = MapDisplay {
                 frame,
                 panel,
                 input_plane,
@@ -816,11 +816,11 @@ async fn main(_spawner: Spawner) {
                 _src_bus: src_bus,
                 #[cfg(feature = "com-hw")]
                 _com_hw: com_hw,
-            }
+            };
+            (display, hp)
         };
         // The piezo: PWM21 on P1.06 and P1.07, provisional DK pins until a board revision fits one.
-        // The display block above started the high-priority executor.
-        let buzzer = buzzer::Buzzer::new(EXECUTOR_HP.spawner(), p.PWM21, p.P1_06, p.P1_07);
+        let buzzer = buzzer::Buzzer::new(hp, p.PWM21, p.P1_06, p.P1_07);
 
         // The microSD runs in native 4-bit SD mode over Nordic's sEMMC soft peripheral — the same
         // FLPR the panel runs on, time-multiplexed by `flpr_mux`. There is no SPI instance and no
