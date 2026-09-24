@@ -51,8 +51,8 @@ proposes an order that chains the file ends. The rider can drag the rows into a 
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries.
 
-A gap in the line is allowed only at a day end. The next day starts where its file starts, and the
-device's "Ride to start" covers the way there.
+At a gap between two files, the next day starts where its file starts, and the device's "Ride to
+start" covers the way there.
 
 One long file becomes a trip in the day editor with a day-count stepper (− N +). The phone splits
 the line into days of equal riding time for the trip's bike type. It moves each end to a campsite,
@@ -98,8 +98,8 @@ A stop more than 150 m from the line offers two ways to reach it. The rider pick
 The phone shows what each way adds before the rider picks. When no road is found, the day ends on
 the line point nearest the stop.
 
-A gap inside a day (200 m or less, after a Join) is ridden as a straight line. "Bridge the gap" in
-the day's menu replaces it with a routed piece. A gap at a day end stays.
+A gap inside a day (200 m or less, after a Join) is ridden straight. "Bridge the gap" in the day's
+menu routes it. The day after a transfer offers it too: a bridged gap is line, not a transfer.
 
 ### The router on the phone
 
