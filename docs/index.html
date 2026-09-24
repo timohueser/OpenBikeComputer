@@ -5,8 +5,36 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#A4501E" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#93461A" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#A4501E" />
+  <script>
+    (function () {
+      var system = matchMedia('(prefers-color-scheme: dark)');
+      var preference;
+      try { preference = localStorage.getItem('obc-theme'); } catch (_) {}
+      function apply() {
+        var dark = preference === 'dark' || (preference !== 'light' && system.matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.querySelector('meta[name="theme-color"]').content = dark ? '#93461A' : '#A4501E';
+        var button = document.getElementById('theme_toggle');
+        if (button) {
+          button.hidden = false;
+          button.setAttribute('aria-pressed', String(dark));
+          button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+        }
+        dispatchEvent(new Event('obc-theme-change'));
+      }
+      apply(); // Resolve before first paint, including a saved override.
+      system.addEventListener('change', apply);
+      document.addEventListener('DOMContentLoaded', function () {
+        apply();
+        document.getElementById('theme_toggle').addEventListener('click', function () {
+          preference = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+          try { localStorage.setItem('obc-theme', preference); } catch (_) {}
+          apply();
+        });
+      });
+    })();
+  </script>
   <title>OpenBikeComputer — a from-scratch bikepacking GPS computer</title>
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking GPS computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
@@ -109,31 +137,29 @@
       --mono: "Atkinson Hyperlegible Mono", ui-monospace, Menlo, Consolas, monospace;
     }
     /* Lantern, warmed: the device's dark theme. */
-    @media (prefers-color-scheme: dark) {
-      :root {
-        color-scheme: dark;
-        --page: #16150F;
-        --surface: #201F17;
-        --sage: #232820;
-        --hair: rgba(189, 180, 126, 0.15);
-        --hair2: rgba(189, 180, 126, 0.3);
-        --ink: #F2EFE3;
-        --ink2: #BDB47E;
-        --rust: #93461A;
-        --cream: #FFE9C0;
-        --amber: #F2A93A;
-        --on-amber: #16150F;
-        --route: #E45CB5;
-        --casing: #C98A1E;
-        --ride: #8C9BF0;
-        --on-ride: #16150F;
-        --link: #F2A93A;
-        /* Dark rust is too dim for text on the night page; emphasis takes amber. */
-        --emph: #F2A93A;
-        --focus: #F2A93A;
-        --topo: rgba(189, 180, 126, 0.14);
-        --shade: rgba(0, 0, 0, 0.5);
-      }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --page: #16150F;
+      --surface: #201F17;
+      --sage: #232820;
+      --hair: rgba(189, 180, 126, 0.15);
+      --hair2: rgba(189, 180, 126, 0.3);
+      --ink: #F2EFE3;
+      --ink2: #BDB47E;
+      --rust: #93461A;
+      --cream: #FFE9C0;
+      --amber: #F2A93A;
+      --on-amber: #16150F;
+      --route: #E45CB5;
+      --casing: #C98A1E;
+      --ride: #8C9BF0;
+      --on-ride: #16150F;
+      --link: #F2A93A;
+      /* Dark rust is too dim for text on the night page; emphasis takes amber. */
+      --emph: #F2A93A;
+      --focus: #F2A93A;
+      --topo: rgba(189, 180, 126, 0.14);
+      --shade: rgba(0, 0, 0, 0.5);
     }
 
     * { box-sizing: border-box; }
@@ -175,8 +201,8 @@
       color: var(--cream);
       margin-bottom: 6px;
     }
-    header .wrap { display: flex; align-items: center; justify-content: space-between; min-height: 50px; }
-    .brand { display: flex; align-items: center; }
+    header .wrap { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 50px; }
+    .brand { display: flex; align-items: center; flex: none; }
     /* Until the glyph strip loads, and with JavaScript off, the words show in the mono face. */
     .px { font-family: var(--mono); font-weight: 700; line-height: 1; display: inline-flex; align-items: center; }
     .px svg { display: block; shape-rendering: crispEdges; fill: currentColor; }
@@ -186,6 +212,17 @@
     .nav-links { display: flex; align-items: center; gap: 22px; font-size: 15px; }
     .nav-links a { color: var(--cream); text-decoration: none; opacity: 0.9; padding: 12px 0; }
     .nav-links a:hover { opacity: 1; text-decoration: underline; }
+    .theme-toggle {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 44px; height: 44px; padding: 0; flex: none;
+      border: 1px solid currentColor; border-radius: 6px;
+      background: transparent; color: var(--cream); cursor: pointer;
+    }
+    .theme-toggle[hidden] { display: none; }
+    .theme-toggle:hover { background: color-mix(in srgb, var(--cream) 12%, transparent); }
+    .theme-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .theme-toggle .sun, :root[data-theme="dark"] .theme-toggle .moon { display: none; }
+    :root[data-theme="dark"] .theme-toggle .sun { display: block; }
     header :focus-visible { outline-color: var(--cream); }
 
     /* ---------- showcase hero: one band, one viewport ----------
@@ -456,7 +493,6 @@
 
     /* the one caption line — the only place the page makes the real-firmware claim */
     .device-caption { margin: 12px 0 0; font-size: 13px; color: var(--ink2); text-align: center; max-width: 24rem; }
-    .device-caption b { color: var(--ink); font-weight: 600; }
 
     /* On-screen device controls — drive the demo by tap (works on touch + desktop;
        they queue the same obc_demo_cmd gestures the keyboard does). ≥44px touch targets. */
@@ -513,17 +549,8 @@
     .compass-control output { font-family: var(--mono); color: var(--ink2); font-variant-numeric: tabular-nums; }
     .compass-control input { width: 100%; height: 32px; margin: 0; accent-color: var(--rust); cursor: ew-resize; }
     .compass-control small { display: block; text-align: center; font-size: 12px; color: var(--ink2); }
-    .drawer-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
-    .drawer-ctl { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 8px 10px; min-height: 44px; }
-    .drawer-ctl small { color: var(--ink2); font-size: 11px; font-weight: 400; }
-    .drawer-ctl svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-    .drawer-ctl[data-chord="context"] svg { transform: rotate(180deg); }
-    .ctl-hint { margin: 8px 0 0; font-size: 12px; color: var(--ink2); text-align: center; max-width: 24rem; }
-    .ctl-hint kbd {
-      font-family: var(--mono); font-size: 12px; color: var(--ink);
-      background: var(--surface); border: 1px solid var(--hair2);
-      border-radius: 4px; padding: 1px 5px;
-    }
+
+
 
     /* ---------- companion handoff preview ----------
        Real, CI-captured app screens in a deliberately small phone frame. The images are requested
@@ -620,23 +647,22 @@
       .features { grid-template-columns: 1fr; }
       h1 { font-size: clamp(30px, 8vw, 40px); }
     }
-    /* touch devices have no physical keyboard — drop the hint */
-    @media (hover: none) {
-      .ctl-hint { display: none; }
-    }
-    @media (max-width: 600px) {
-      header { padding-top: 16px; }
-      /* the long name collides with the nav on phones — the mark carries the brand */
+    @media (max-width: 760px) {
       .brand .name { display: none; }
       .brand .mark { display: inline-flex; }
-      .nav-links { gap: 16px; }
+    }
+    @media (max-width: 600px) {
+      .nav-links { gap: 14px; }
+      .nav-links .nav-maps { display: none; }
       .ride-log-head { align-items: flex-start; }
       .ride-log-head .route { max-width: 12rem; }
-      .drawer-ctl small { display: none; }
       .dot .ride-stop-copy { width: 46px; }
       .now .label { flex: 1; }
       .now .ticks { display: none; }
       footer .wrap { gap: 10px; }
+    }
+    @media (max-width: 400px) {
+      .nav-links .nav-blog { display: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -673,7 +699,7 @@
         <a href="#demo">Demo</a>
         <a href="#features">Features</a>
         <a href="docs/">Docs</a>
-        <a href="blog/">Blog</a>
+        <a class="nav-blog" href="blog/">Blog</a>
         <!-- The map app, a sibling in the same published artifact (/builder/ — the path is
              the app's, the name is what it does for a visitor: pick a region, pick a style,
              put a map on the card). Written flat, unlike the docs/blog header's version,
@@ -681,7 +707,11 @@
              this page is copied by trunk, not rendered, so a conditional here would mean a
              whole build stage for a state that is now a misconfiguration rather than a
              phase — and a catalog-less builder is a page that explains itself, not a 404. -->
-        <a href="builder/">Maps</a>
+        <a class="nav-maps" href="builder/">Maps</a>
+        <button class="theme-toggle" id="theme_toggle" type="button" aria-label="Dark mode" aria-pressed="false" hidden>
+          <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z" /></svg>
+          <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
+        </button>
       </nav>
     </div>
   </header>
@@ -721,7 +751,7 @@
             <span class="label">Today’s ride</span>
             <span class="route">Grimsel Pass · plan to ride log</span>
           </div>
-          <h2 id="tour_title">Put today’s route on the device</h2>
+          <h2 id="tour_title">Roll out: ride it yourself</h2>
           <div class="companion-preview" id="companion_preview" aria-hidden="true">
             <div class="companion-phone" aria-label="Companion app preview captured from the iOS app">
               <div class="companion-screen" id="companion_screen"></div>
@@ -731,7 +761,7 @@
           <p class="blurb" id="tour_blurb"></p>
           <ul class="highlights" id="tour_highlights"></ul>
           <div class="now">
-            <span class="badge app" id="now_badge"><span class="px" data-px="20">IN APP</span></span>
+            <span class="badge" id="now_badge"><span class="px" data-px="20">ON DEVICE</span></span>
             <span class="label" id="step_label">Warming up…</span>
             <span class="ticks hidden" id="demo_ticks" aria-hidden="true"></span>
           </div>
@@ -807,8 +837,6 @@
               JavaScript. The image above is a real frame from the device — a map of the Grimsel Pass
               climb, rendered by the same code the hardware runs.</p>
           </noscript>
-          <!-- the one caption line: the page's only real-firmware claim -->
-          <p class="device-caption"><b>The real firmware, compiled to your browser</b> — not a video. Drive it with the controls.</p>
           <!-- Laid out like the device itself: the Up/Down pair on the left, Select/Back on
                the right, so the on-screen row maps onto the four physical buttons. -->
           <div class="controls" role="group" aria-label="Device controls">
@@ -823,10 +851,6 @@
             <input id="compass_heading" type="range" min="0" max="359" value="250" aria-label="Compass heading in degrees" />
             <small>Turn the device · Select returns from peak selection</small>
           </div>
-          <div class="drawer-controls" role="group" aria-label="Device drawers">
-            <button class="ctl drawer-ctl" data-chord="quick" title="Up + Select · keyboard Q" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg> Quick drawer <small>top</small></button>
-            <button class="ctl drawer-ctl" data-chord="context" title="Down + Back · keyboard C" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg> Context drawer <small>bottom</small></button>
-          </div>
           <!-- Play / take-control toggle + live-vs-guided mode line. Tapping the toggle (or any
                device control) while a demo plays "takes control": the scripted step engine cancels
                and the visitor drives from where the demo left off. Everything stays disabled until
@@ -839,7 +863,6 @@
               <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
             </p>
           </div>
-          <p class="ctl-hint">Or on a keyboard: <kbd>↑</kbd> <kbd>↓</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back (hold for the menu). <kbd>Q</kbd> quick drawer · <kbd>C</kbd> context drawer.</p>
         </div>
       </div>
     </section>
@@ -1141,7 +1164,7 @@
           blurb: '<b>The road starts climbing out of the valley.</b> Take the device from here and ride it exactly like the computer on your bars.',
           highlights: [
             'The map follows your position as you climb',
-            'Zoom with Up/Down · open either drawer below',
+            'Zoom with Up/Down',
             'Everything runs on-device — no signal needed'
           ],
           staged: false, steps: []
@@ -1235,7 +1258,7 @@
       ];
 
       // ---- engine state ------------------------------------------------------------------------
-      var scnIdx = 0;         // selected scenario
+      var scnIdx = 1;         // Roll out; deep links can select another chapter
       var demoRunning = false; // a staged script is driving
       var runToken = 0;       // bumped on every mode switch / cancel; async runner re-checks it
       var rafId = null;       // current rAF handle (null = loop stopped)
@@ -1634,11 +1657,16 @@
         setStep('A real frame from the device — the live demo couldn’t load.');
         // Controls stay disabled (nothing to drive); the poster + scenario copy carry the story.
       }
+      function syncTheme() {
+        if (api) api.obc_demo_set_dark(document.documentElement.dataset.theme === 'dark');
+      }
+      addEventListener('obc-theme-change', syncTheme);
       addEventListener('TrunkApplicationStarted', function () {
         loaded = true;
         failed = false; // A slow terrain download can complete after the poster fallback.
         clearTimeout(fallbackTimer);
         api = window.wasmBindings;
+        syncTheme();
         renderScenarioChrome();
         // Dev-time drift check: warn (console.error) if a scenario targets a screen the host
         // doesn't know — the CI test is the hard guard, this is the fast local signal.
@@ -1742,15 +1770,6 @@
         grabIfDemo();
         compassValue.textContent = compassHeading.value + '°';
         cmd('heading:' + compassHeading.value);
-      });
-
-      document.querySelectorAll('.drawer-ctl').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          if (!ready()) return;
-          stage.focus({ preventScroll: true });
-          grabIfDemo();
-          cmd(btn.getAttribute('data-chord'));
-        });
       });
 
       // ---- keyboard, scoped to the focused device stage ----------------------------------------
