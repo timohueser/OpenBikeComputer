@@ -34,10 +34,11 @@ family plays.
 Some events are edges already: a climb starts, the rider arrives, a hold finishes a ride. Their cue
 plays once. Other facts are levels, such as off route or a live GPS fix. A level plays its cue only
 when the new level holds for a few seconds, and after a loss cue the same level is silent for one
-minute. A recovery cue plays only when its loss cue played. So a rider on the edge of the route
-hears one cue, not a stream of cues. The GPS and sensor cues play only while the ride runs. The
-battery cues play once at each threshold. [`cues.rs`](src:firmware/obc-app/src/cues.rs) holds these
-rules.
+minute. A loss that still holds when that minute ends plays its cue then. A recovery cue plays
+only when its loss cue played. So a rider on the edge of the route hears one cue, not a stream of
+cues. The GPS and sensor cues play only while the ride runs, and GPS lost plays only when the GPS
+had a fix after the ride started. The battery cues play once at each threshold.
+[`cues.rs`](src:firmware/obc-app/src/cues.rs) holds these rules.
 
 ## Settings
 
