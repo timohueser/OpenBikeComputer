@@ -16,7 +16,7 @@ final class GalleryLaunchTests: XCTestCase {
 
         // The gallery sheet is up and shows kit content.
         let gallery = app.otherElements["uiGallery"].firstMatch
-        let deviceName = app.staticTexts["Trailhead"].firstMatch
+        let deviceName = app.descendants(matching: .any)["topbar.device"].firstMatch
         XCTAssertTrue(deviceName.waitForExistence(timeout: 10), "gallery did not present")
         XCTAssertTrue(gallery.exists || app.scrollViews.count > 0)
 

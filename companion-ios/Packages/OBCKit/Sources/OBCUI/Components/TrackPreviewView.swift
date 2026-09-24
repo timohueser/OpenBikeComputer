@@ -1,22 +1,56 @@
 import SwiftUI
 import OBCDomain
 
-/// The basemap-free polyline on the gridded sketch ground that identifies every route and
-/// ride in the app. Renders the normalized `TrackPreview` (unit-square points,
-/// y-down), letterboxed to the source aspect ratio. Never a basemap.
-///
-/// The card chrome is on by default; the compact route card turns it off for its
-/// flush left cell.
+/// The track sketch: the basemap-free drawing that identifies every route, trip and ride in a
+/// list, and the detail pages' fallback when the map cannot load. Each line is fitted into the
+/// source aspect ratio on the sage ground, a planned line in `route` over its `routeCasing`, a
+/// ride bare in `ride`. A line starts at an ink dot and ends at a small rust square.
 public struct TrackPreviewView: View {
     public enum Style {
         case thumbnail
         case hero
 
+        /// The half-size of the start dot and the end square.
         var dotRadius: CGFloat {
             switch self {
-            case .thumbnail: 4.5
-            case .hero: 6
+            case .thumbnail: 3.5
+            case .hero: 5
             }
+        }
+
+        var lineWidth: CGFloat {
+            switch self {
+            case .thumbnail: 2.5
+            case .hero: 3.4
+            }
+        }
+
+        var casingWidth: CGFloat {
+            switch self {
+            case .thumbnail: 5.5
+            case .hero: 8
+            }
+        }
+    }
+
+    /// How a line is drawn: its colour, and whether it sits on the amber casing.
+    public struct Ink: Sendable {
+        public let color: Color
+        public let cased: Bool
+
+        public init(color: Color, cased: Bool) {
+            self.color = color
+            self.cased = cased
+        }
+
+        /// A planned route.
+        public static let route = Ink(color: OBCTheme.route, cased: true)
+        /// A recorded ride.
+        public static let ride = Ink(color: OBCTheme.ride, cased: false)
+
+        /// The trip day at `index` in ride order.
+        public static func day(_ index: Int) -> Ink {
+            Ink(color: OBCTheme.stageColor(index: index), cased: true)
         }
     }
 
@@ -34,27 +68,64 @@ public struct TrackPreviewView: View {
         }
     }
 
-    let preview: TrackPreview?
+    private struct Line {
+        let points: [TrackPreview.Point]
+        let ink: Ink
+    }
+
+    private let lines: [Line]
+    private let aspectRatio: Double
+    private let showsEnds: Bool
+    /// The zigzag mark when there is nothing to draw. A many-track sketch stays bare instead.
+    private let showsPlaceholder: Bool
     var style: Style = .thumbnail
     var tag: String? = nil
     var tagColor: Color = OBCTheme.secondary
     var showsChrome: Bool = true
     var markers: [Marker] = []
+    /// A strip along the bottom edge the track keeps clear of, for an overlaid chip.
+    private var clearBottom: CGFloat = 0
 
     public init(
         _ preview: TrackPreview?,
+        ink: Ink = .route,
         style: Style = .thumbnail,
         tag: String? = nil,
         tagColor: Color = OBCTheme.secondary,
         showsChrome: Bool = true,
         markers: [Marker] = []
     ) {
-        self.preview = preview
+        self.lines = preview.map { [Line(points: $0.points, ink: ink)] } ?? []
+        self.aspectRatio = preview?.aspectRatio ?? 1
+        self.showsEnds = true
+        self.showsPlaceholder = true
         self.style = style
         self.tag = tag
         self.tagColor = tagColor
         self.showsChrome = showsChrome
         self.markers = markers
+    }
+
+    /// Several tracks in one frame, such as a trip's days or a year of rides. `showsEnds: false`
+    /// leaves out the start and end marks, which crowd a sketch of many lines.
+    public init(
+        tracks: [(coordinates: [Coordinate], ink: Ink)],
+        showsEnds: Bool = true,
+        showsChrome: Bool = true
+    ) {
+        let shared = TrackPreview.normalizingShared(tracks.map(\.coordinates))
+        self.lines = zip(shared, tracks).map { Line(points: $0.points, ink: $1.ink) }
+        self.aspectRatio = shared.first { !$0.points.isEmpty }?.aspectRatio ?? 1
+        self.showsEnds = showsEnds
+        self.showsPlaceholder = false
+        self.showsChrome = showsChrome
+    }
+
+    /// The same sketch, fitted above a bottom strip of `height` points.
+    public func keepingBottomClear(_ height: CGFloat) -> TrackPreviewView {
+        var copy = self
+        copy.clearBottom = height
+        return copy
     }
 
     public var body: some View {
@@ -87,41 +158,39 @@ public struct TrackPreviewView: View {
 
     private var canvas: some View {
         Canvas { context, size in
-            drawGrid(in: &context, size: size)
-
-            guard let preview, !preview.points.isEmpty else {
-                drawPlaceholderGlyph(in: &context, size: size)
+            let drawn = lines.filter { !$0.points.isEmpty }
+            guard !drawn.isEmpty else {
+                if showsPlaceholder { drawPlaceholderGlyph(in: &context, size: size) }
                 return
             }
 
             let transform = Self.fittingTransform(
-                for: preview,
+                for: TrackPreview(points: [], aspectRatio: aspectRatio),
                 in: size,
-                inset: style.dotRadius + 6,
-                topInset: tag == nil ? 0 : Self.tagBandHeight
+                inset: style.dotRadius + 3,
+                topInset: tag == nil ? 0 : Self.tagBandHeight,
+                bottomInset: clearBottom
             )
-            let points = preview.points.map { transform($0) }
-
-            if points.count > 1 {
+            let paths = drawn.map { line -> (Path, Ink) in
                 var path = Path()
-                path.addLines(points)
-                context.stroke(
-                    path,
-                    with: .color(OBCTheme.routeCasing),
-                    style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
-                )
-                context.stroke(
-                    path,
-                    with: .color(OBCTheme.route),
-                    style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round)
-                )
+                path.addLines(line.points.map(transform))
+                return (path, line.ink)
+            }
+            // Every casing first, so a later line never hides under an earlier one's casing.
+            for (path, ink) in paths where ink.cased {
+                context.stroke(path, with: .color(OBCTheme.routeCasing), style: stroke(style.casingWidth))
+            }
+            for (path, ink) in paths {
+                context.stroke(path, with: .color(ink.color), style: stroke(style.lineWidth))
             }
 
-            if let first = points.first {
-                drawNode(in: &context, at: first, fill: OBCTheme.ink)
-            }
-            if points.count > 1, let last = points.last {
-                drawNode(in: &context, at: last, fill: OBCTheme.rust)
+            if showsEnds {
+                for line in drawn {
+                    drawStart(in: &context, at: transform(line.points[0]))
+                    if line.points.count > 1, let last = line.points.last {
+                        drawEnd(in: &context, at: transform(last))
+                    }
+                }
             }
 
             for marker in markers {
@@ -130,22 +199,27 @@ public struct TrackPreviewView: View {
         }
     }
 
+    private func stroke(_ width: CGFloat) -> StrokeStyle {
+        StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
+    }
+
     /// The corner tag's height with its padding. A tagged fit starts below it, so the tag never
     /// covers a node dot.
     static let tagBandHeight: CGFloat = 34
 
     /// Maps unit-square track points into `size`, keeping the source aspect ratio
     /// (centred letterbox), with a uniform `inset` so round caps and node dots never
-    /// clip, below a `topInset` band. Internal for the geometry unit tests.
+    /// clip, between a `topInset` and a `bottomInset` band. Internal for the geometry unit tests.
     static func fittingTransform(
         for preview: TrackPreview,
         in size: CGSize,
         inset: CGFloat,
-        topInset: CGFloat = 0
+        topInset: CGFloat = 0,
+        bottomInset: CGFloat = 0
     ) -> (TrackPreview.Point) -> CGPoint {
         let available = CGSize(
             width: max(size.width - 2 * inset, 1),
-            height: max(size.height - 2 * inset - topInset, 1)
+            height: max(size.height - 2 * inset - topInset - bottomInset, 1)
         )
         let aspect = preview.aspectRatio > 0 ? preview.aspectRatio : 1
         // Fit a rect of the track's aspect into the available box.
@@ -155,7 +229,7 @@ public struct TrackPreviewView: View {
         }
         let origin = CGPoint(
             x: (size.width - fitted.width) / 2,
-            y: topInset + (size.height - topInset - fitted.height) / 2
+            y: topInset + (size.height - topInset - bottomInset - fitted.height) / 2
         )
         return { point in
             CGPoint(
@@ -165,30 +239,23 @@ public struct TrackPreviewView: View {
         }
     }
 
-    private func drawGrid(in context: inout GraphicsContext, size: CGSize) {
-        let step: CGFloat = 22
-        var path = Path()
-        var x = (size.width / 2).truncatingRemainder(dividingBy: step)
-        while x < size.width {
-            path.move(to: CGPoint(x: x, y: 0))
-            path.addLine(to: CGPoint(x: x, y: size.height))
-            x += step
-        }
-        var y = (size.height / 2).truncatingRemainder(dividingBy: step)
-        while y < size.height {
-            path.move(to: CGPoint(x: 0, y: y))
-            path.addLine(to: CGPoint(x: size.width, y: y))
-            y += step
-        }
-        context.stroke(path, with: .color(OBCTheme.sketchLine), lineWidth: 1)
+    /// The start: an ink dot, ringed in the ground colour so it reads over the line.
+    private func drawStart(in context: inout GraphicsContext, at point: CGPoint) {
+        let r = style.dotRadius
+        let dot = Path(ellipseIn: CGRect(x: point.x - r, y: point.y - r, width: 2 * r, height: 2 * r))
+        context.stroke(dot, with: .color(OBCTheme.sketchGround), lineWidth: 3)
+        context.fill(dot, with: .color(OBCTheme.ink))
     }
 
-    private func drawNode(in context: inout GraphicsContext, at point: CGPoint, fill: Color) {
+    /// The end: a small rust square, as the device marks the finish.
+    private func drawEnd(in context: inout GraphicsContext, at point: CGPoint) {
         let r = style.dotRadius
-        let ring = CGRect(x: point.x - r - 1.25, y: point.y - r - 1.25, width: 2 * (r + 1.25), height: 2 * (r + 1.25))
-        context.fill(Path(ellipseIn: ring), with: .color(OBCTheme.surface))
-        let dot = CGRect(x: point.x - r, y: point.y - r, width: 2 * r, height: 2 * r)
-        context.fill(Path(ellipseIn: dot), with: .color(fill))
+        let square = Path(
+            roundedRect: CGRect(x: point.x - r, y: point.y - r, width: 2 * r, height: 2 * r),
+            cornerRadius: 1
+        )
+        context.stroke(square, with: .color(OBCTheme.sketchGround), lineWidth: 3)
+        context.fill(square, with: .color(OBCTheme.rust))
     }
 
     private func drawMarker(in context: inout GraphicsContext, at point: CGPoint, label: String) {
@@ -203,7 +270,7 @@ public struct TrackPreviewView: View {
         )
     }
 
-    /// The zigzag route glyph for no geometry, the same mark the empty state uses.
+    /// The zigzag route mark for no geometry, drawn like a route. The empty state uses it too.
     private func drawPlaceholderGlyph(in context: inout GraphicsContext, size: CGSize) {
         let side = min(size.width, size.height) * 0.4
         let origin = CGPoint(x: (size.width - side) / 2, y: (size.height - side) / 2)
@@ -215,11 +282,10 @@ public struct TrackPreviewView: View {
         path.addLine(to: CGPoint(x: origin.x + 12 * s, y: origin.y + 15 * s))
         path.addLine(to: CGPoint(x: origin.x + 16 * s, y: origin.y + 4 * s))
         path.addLine(to: CGPoint(x: origin.x + 20 * s, y: origin.y + 19 * s))
-        context.stroke(
-            path,
-            with: .color(OBCTheme.route),
-            style: StrokeStyle(lineWidth: 1.8 * s, lineCap: .round, lineJoin: .round)
-        )
+        context.stroke(path, with: .color(OBCTheme.routeCasing), style: stroke(style.casingWidth))
+        context.stroke(path, with: .color(OBCTheme.route), style: stroke(style.lineWidth))
+        drawStart(in: &context, at: CGPoint(x: origin.x + 4 * s, y: origin.y + 19 * s))
+        drawEnd(in: &context, at: CGPoint(x: origin.x + 20 * s, y: origin.y + 19 * s))
     }
 }
 
@@ -239,7 +305,7 @@ public struct TrackPreviewView: View {
 }
 
 extension TrackPreview {
-    /// Preview and gallery sample: a real Kettle Moraine loop, so the grid fallback
+    /// Preview and gallery sample: a real Kettle Moraine loop, so the sketch
     /// and the basemap both render a plausible track. Built through `normalizing` so
     /// `points` and `coordinates` stay aligned.
     public static let obcSample = TrackPreview.normalizing([

@@ -59,6 +59,14 @@ public enum OBCFormat {
         return m == 0 ? "\(h)h" : "\(h)h \(m)m"
     }
 
+    /// Planned estimate as the device writes it: "3:20 h"; multi-day routes read "2 days".
+    /// Minutes floor, as on the device.
+    public static func estimatedClock(_ interval: TimeInterval) -> String {
+        let minutes = Int(interval / 60)
+        if minutes >= 24 * 60 { return estimatedDuration(interval) }
+        return String(format: "%d:%02d h", minutes / 60, minutes % 60)
+    }
+
     /// Tracked moving time as "2:51" (h:mm).
     public static func movingTime(_ interval: TimeInterval) -> String {
         let minutes = Int((interval / 60).rounded())

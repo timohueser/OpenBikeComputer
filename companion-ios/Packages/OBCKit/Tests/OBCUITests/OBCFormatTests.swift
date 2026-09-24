@@ -33,6 +33,12 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(OBCFormat.estimatedDuration(48 * 3600), "2 days")
     }
 
+    func testEstimatedClockFloorsLikeTheDevice() {
+        XCTAssertEqual(OBCFormat.estimatedClock(1 * 3600 + 19 * 60 + 59), "1:19 h")
+        XCTAssertEqual(OBCFormat.estimatedClock(55 * 60), "0:55 h")
+        XCTAssertEqual(OBCFormat.estimatedClock(48 * 3600), "2 days")
+    }
+
     func testMovingTimeIsHColonMM() {
         XCTAssertEqual(OBCFormat.movingTime(2 * 3600 + 51 * 60), "2:51")
         XCTAssertEqual(OBCFormat.movingTime(65 * 60), "1:05")
