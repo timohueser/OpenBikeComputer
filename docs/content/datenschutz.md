@@ -1,4 +1,5 @@
 ---
+lang: de
 title: Datenschutzerklärung
 description: Informationen zur Datenverarbeitung auf openbikecomputer.com.
 copy: ai
@@ -123,7 +124,7 @@ Einbindung in die Website zu großen Kartendaten bereitzustellen.
 
 ## 7. Speicherung auf dem Endgerät
 
-Der Hell-Dunkel-Schalter auf der Startseite und im Kartenbaukasten speichert die
+Der Hell-Dunkel-Schalter der Website und des Kartenbaukastens speichert die
 gewählte Darstellung lokal unter `obc-theme` in `localStorage`. Ohne Auswahl gilt die Browsereinstellung. Der
 Wert wird nicht an einen Server gesendet. Er bleibt gespeichert, bis die Websitedaten
 im Browser gelöscht werden.

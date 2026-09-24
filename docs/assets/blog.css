@@ -8,10 +8,6 @@
   max-width: 780px; margin: 0 auto; padding: 0 24px;
 }
 .log-head { padding: 54px 0 10px; }
-.log-head .eyebrow {
-  font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--coral); margin: 0 0 10px;
-}
 .log-head h1 {
   font-family: var(--serif); font-size: clamp(34px, 5vw, 46px); line-height: 1.08;
   letter-spacing: -0.01em; margin: 0 0 12px; color: var(--ink);
@@ -25,7 +21,7 @@
   transition: color .12s ease, border-color .12s ease, background .12s ease;
 }
 .feed-link svg { width: 13px; height: 13px; color: var(--amber); }
-.feed-link:hover { color: var(--ink); border-color: var(--forest); background: rgba(95, 125, 61, 0.08); }
+.feed-link:hover { color: var(--ink); border-color: var(--forest); background: var(--parchment-2); }
 
 /* ---------------------------------------------------------------- index: timeline */
 .timeline { padding: 26px 0 30px; }
@@ -55,7 +51,7 @@
   padding: 12px 16px 13px; margin-left: -6px; border-radius: 12px;
   transition: background .14s ease;
 }
-.tl-link:hover { background: rgba(95, 125, 61, 0.09); color: var(--ink); }
+.tl-link:hover { background: var(--parchment-2); color: var(--ink); }
 .tl-meta { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
 .tl-link h2 {
   font-family: var(--serif); font-size: 22px; line-height: 1.2; letter-spacing: -0.005em;
@@ -120,11 +116,12 @@
 /* --------------------------------------------------------------------- lightbox */
 .lb {
   position: fixed; inset: 0; z-index: 60;
+  width: 100vw; height: 100dvh; max-width: none; max-height: none; border: 0; margin: 0; padding: 0;
   background: rgba(26, 34, 20, 0.93);
   display: flex; align-items: center; justify-content: center;
-  opacity: 0; pointer-events: none; transition: opacity .18s ease;
+
 }
-.lb.open { opacity: 1; pointer-events: auto; }
+.lb:not([open]) { display: none; }
 .lb img {
   max-width: 94vw; max-height: 90vh; border-radius: 8px;
   cursor: grab; user-select: none; -webkit-user-drag: none;
@@ -133,12 +130,12 @@
 .lb img.panning { cursor: grabbing; }
 .lb .lb-cap {
   position: absolute; left: 0; right: 0; bottom: 18px; text-align: center;
-  font-family: var(--serif); font-style: italic; font-size: 15px; color: var(--parchment-2);
+  font-family: var(--serif); font-style: italic; font-size: 15px; color: var(--cream);
   padding: 0 40px; pointer-events: none;
 }
 .lb .lb-close {
   position: absolute; top: 14px; right: 16px;
-  background: none; border: 0; color: var(--parchment-2); cursor: pointer;
+  background: none; border: 0; color: var(--cream); cursor: pointer;
   font-family: var(--mono); font-size: 26px; line-height: 1; padding: 8px;
 }
 .lb .lb-close:hover { color: #fff; }
@@ -182,7 +179,7 @@
 .cmp .cmp-tag {
   position: absolute; top: 10px;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--parchment); background: rgba(36, 51, 28, 0.72);
+  color: #fff2d1; background: rgba(28, 27, 20, 0.8);
   padding: 3px 9px; border-radius: 999px; pointer-events: none;
 }
 .cmp .cmp-tag.before { left: 10px; }
@@ -191,9 +188,7 @@
 /* --------------------------------------------------------------- 3D model viewer */
 .model .model-stage {
   position: relative; aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden;
-  background:
-    radial-gradient(120% 90% at 50% 8%, rgba(95, 125, 61, 0.10), transparent 60%),
-    linear-gradient(180deg, #f7f4e6 0%, #e9e3c8 100%);
+  background: var(--parchment-2);
   border: 1px solid var(--line);
   cursor: grab; touch-action: none; outline: none;
 }
@@ -214,12 +209,12 @@
   flex-shrink: 0;
   display: inline-block; text-decoration: none;
   font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: 0.03em;
-  color: var(--parchment); background: var(--forest);
+  color: var(--on-amber); background: var(--amber);
   padding: 6px 13px; border-radius: 8px;
   transition: background .12s ease;
 }
 .model .model-dl::before { content: "\2193 "; }
-.model .model-dl:hover { background: var(--forest-deep); color: var(--parchment); }
+.model .model-dl:hover { background: var(--amber); color: var(--on-amber); text-decoration: underline; }
 
 /* ------------------------------------------------------------------- responsive */
 @media (max-width: 700px) {
@@ -234,3 +229,5 @@
   .post-pn .newer { grid-column: auto; text-align: left; }
   .model .model-bar { flex-direction: column; align-items: flex-start; gap: 8px; }
 }
+
+.post img[tabindex]:focus-visible { outline: 2px solid var(--forest); outline-offset: 4px; }
