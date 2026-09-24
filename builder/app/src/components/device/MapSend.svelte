@@ -94,7 +94,7 @@
 
     {#if !job.running}
         <p class="small faint hint">
-            This replaces the active map. A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
+            This replaces the active map. The replaced map cannot be recovered. A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
         </p>
     {/if}
 

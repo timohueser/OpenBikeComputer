@@ -191,15 +191,17 @@ describe("map upload from a file", () => {
         // instead, and its context is what this upload actually needed — which is what lets the page
         // say how much has to go rather than "not enough room".
         await withDevice({ extents: 1 }, async ({ client, device }) => {
-            // One extent, taken by the object below: allocation is extent-granular, so this is a real
-            // card with no room rather than a byte ceiling invented for the test.
-            const held = device.seed({ kind: ObjectKind.Route, displayName: "the only extent", bytes: syntheticBytes(64) });
+            // One extent, held by the installed map. A replacement needs room for its staging
+            // bytes before the old map can be retired.
+            const oldBytes = syntheticBytes(64);
+            const held = device.seed({ kind: ObjectKind.MapShard, displayName: "installed", bytes: oldBytes });
             const file = new File([syntheticBytes(256 * 1024)], "too-big.obcm");
             const failure = await sendMapFile(client, file, context()).catch((cause: unknown) => cause);
             expect(failure).toBeInstanceOf(DeviceError);
             expect((failure as DeviceError).code).toBe("no-space");
             expect((failure as DeviceError).refusal?.context).toBe(BigInt(256 * 1024));
             expect(device.entries, "a map that did not fit was committed anyway").toEqual([held]);
+            expect(device.payloadOf(held.objectId)).toEqual(oldBytes);
         });
     });
 
@@ -237,6 +239,8 @@ describe("map upload from a file", () => {
         await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client, device }) => {
             const bytes = syntheticBytes(1024 * 1024);
             const file = new File([bytes], "cancelled.obcm");
+            const oldBytes = syntheticBytes(4096);
+            const installed = device.seed({ kind: ObjectKind.MapShard, displayName: "installed", bytes: oldBytes });
             const controller = new AbortController();
             const ctx = context({
                 signal: controller.signal,
@@ -248,9 +252,12 @@ describe("map upload from a file", () => {
                 },
             });
             await expect(sendMapFile(client, file, ctx)).rejects.toMatchObject({ code: "aborted" });
-            expect(device.entries).toEqual([]);
+            expect(device.entries).toEqual([installed]);
+            expect(device.payloadOf(installed.objectId)).toEqual(oldBytes);
 
             const result = await sendMapFile(client, file, context());
+            expect(result.objectId).toBe(installed.objectId);
+            expect(result.revision).toBe(installed.revision + 1n);
             expect(device.payloadOf(result.objectId)).toEqual(bytes);
         });
     }, 30_000);
