@@ -36,11 +36,10 @@ public final class RouteDetailModel {
     public private(set) var maxGradePercent: Double?
     /// The type the estimate uses and an upload writes. Changed through `setBikeType(_:)`.
     public private(set) var bikeType: BikeType
-    /// The live link state. Upload is link-bound, so the button dims with it. Starts optimistic;
-    /// the stream's replayed value corrects it before the first frame on every transport.
+    /// The live link state. Sending is link-bound, so the action shows only while connected.
+    /// Starts optimistic; the stream's replayed value corrects it before the first frame on every
+    /// transport.
     public private(set) var connection: ConnectionState = .connected
-
-    public var canUpload: Bool { connection == .connected }
 
     // MARK: Fixed per-dressing facts
 
@@ -53,11 +52,10 @@ public final class RouteDetailModel {
     @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
     @ObservationIgnored private let ridePoints: [RidePoint]
     @ObservationIgnored private let rides: [RideSummary]
-    /// The soft line under the title: a ride's date, or an imported file's name.
+    /// The olive line under the title: a ride's date, or where a route came from.
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
     private var climbMeters: Double = 0
-    private var descentMeters: Double = 0
     private var pointCount = 0
     /// The `OBCR_Spec.md` §1.2 estimate. Distance and climb hold the upload's header figures, so it
     /// is the estimate the device shows for this route and type.
@@ -132,6 +130,8 @@ public final class RouteDetailModel {
         bikeType: BikeType = .road,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
+        // A saved route's source file, for the line under its title.
+        sourceFileName: String? = nil,
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
@@ -164,7 +164,7 @@ public final class RouteDetailModel {
         switch dressing {
         case .planned(let route), .tripDay(let route):
             name = route.name
-            subtitle = nil
+            subtitle = sourceFileName.map { Self.sourceLine(creator: plannedGeometry?.creator, fileName: $0) }
             preview = route.trackPreview
             distanceMeters = route.distanceMeters
             climbMeters = route.elevationGainMeters
@@ -185,18 +185,18 @@ public final class RouteDetailModel {
         case .imported(let route, let fileName, let source):
             let stats = RouteStats.compute(from: route.points)
             name = route.name ?? fileName
-            // A ride's file name is ours, not a file the rider picked.
-            subtitle = source == .file ? fileName : nil
+            switch source {
+            case .file: subtitle = Self.sourceLine(creator: route.creator, fileName: fileName)
+            case .ride(let date): subtitle = "From your ride · \(OBCFormat.rideDay(date))"
+            }
             preview = TrackPreview.normalizing(route.points.map(\.coordinate))
             // The header figures, which are what the device shows for this route.
             if let totals = RouteObjectCodec.totals(points: route.points) {
                 distanceMeters = Double(totals.distanceMeters)
                 climbMeters = Double(totals.ascentMeters)
-                descentMeters = Double(totals.descentMeters)
             } else {
                 distanceMeters = stats.distanceMeters
                 climbMeters = stats.elevationGainMeters
-                descentMeters = stats.elevationLossMeters
             }
             pointCount = route.points.count
             waypoints = route.waypoints
@@ -229,13 +229,11 @@ public final class RouteDetailModel {
 
     // MARK: Header dressing
 
-    /// The hero's corner tag, and whether it reads in the tracked accent colour.
-    public var tag: (text: String, isAccent: Bool) {
-        switch dressing {
-        case .planned, .tripDay: ("Planned", false)
-        case .tracked(let ride): ("Tracked · \(OBCFormat.rideDay(ride.date))", true)
-        case .imported: ("New · unsaved", false)
-        }
+    /// The hero's corner tag, and whether it reads in the tracked accent colour. A route page
+    /// has none: its title and source line say what it is.
+    public var tag: (text: String, isAccent: Bool)? {
+        guard case .tracked(let ride) = dressing else { return nil }
+        return ("Tracked · \(OBCFormat.rideDay(ride.date))", true)
     }
 
     /// The landing's navigation title.
@@ -244,41 +242,37 @@ public final class RouteDetailModel {
         return "New route"
     }
 
-    /// The import banner line; nil on the other dressings.
-    public var importedFromLine: String? {
-        guard case .imported(let route, let fileName, let source) = dressing else { return nil }
-        if case .ride(let date) = source { return "From ride · \(OBCFormat.rideDay(date))" }
-        let creator = route.creator?.lowercased() ?? ""
-        if creator.contains("komoot") { return "Imported from Komoot" }
-        if creator.contains("strava") { return "Imported from Strava" }
-        if creator.contains("garmin") { return "Imported from Garmin" }
-        let ext = (fileName as NSString).pathExtension.uppercased()
-        return ext.isEmpty ? "Imported route file" : "Imported from \(ext) file"
+    /// "Imported from Komoot" when the file names a known planner, else the file's name.
+    static func sourceLine(creator: String?, fileName: String) -> String {
+        let creator = creator?.lowercased() ?? ""
+        for planner in ["Komoot", "Strava", "Garmin"] where creator.contains(planner.lowercased()) {
+            return "Imported from \(planner)"
+        }
+        return "Imported from \(fileName)"
     }
 
-    // MARK: Stat strip
+    // MARK: Ledger
 
+    /// The route ledger, in the device route overview's order; empty for a ride, which has the
+    /// one stats line instead.
     public var stats: [OBCStat] {
-        switch dressing {
-        case .planned, .tripDay:
-            [
-                OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
-                OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
-                estimateStat,
-                maxGradePercent.map {
-                    OBCStat(value: "\(Int($0.rounded()))", unit: "%", key: "Max")
-                } ?? OBCStat(value: "—", key: "Max"),
-            ]
-        case .tracked:
-            []  // a ride has the one stats line instead
-        case .imported:
-            [
-                OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
-                OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
-                OBCStat(value: OBCFormat.climbValue(meters: descentMeters), unit: "m", key: "Descent"),
-                estimateStat,
-            ]
+        if case .tracked = dressing { return [] }
+        return [
+            OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
+            OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
+            estimateStat,
+            maxGradeStat,
+        ]
+    }
+
+    /// A route that climbs has a positive steepest grade. A grade that rounds to zero or below on
+    /// such a route comes from sparse or missing elevation, so it reads as unknown, not "0 %".
+    private var maxGradeStat: OBCStat {
+        let grade = maxGradePercent.map { Int($0.rounded()) }
+        if let grade, grade > 0 || climbMeters < 1 {
+            return OBCStat(value: "\(max(grade, 0))", unit: "%", key: "Max grade")
         }
+        return OBCStat(value: "—", key: "Max grade")
     }
 
     /// A tracked ride's one stats line under its title; nil on the other dressings.
@@ -289,7 +283,8 @@ public final class RouteDetailModel {
 
     /// Whole minutes, floored, as the device route overview shows the same estimate.
     private var estimateStat: OBCStat {
-        OBCStat(value: estimatedDuration.map { OBCFormat.movingTime(($0 / 60).rounded(.down) * 60) } ?? "—", key: "Est. time")
+        guard let estimatedDuration else { return OBCStat(value: "—", key: "Est. time") }
+        return OBCStat(value: OBCFormat.movingTime((estimatedDuration / 60).rounded(.down) * 60), unit: "h", key: "Est. time")
     }
 
     // MARK: Ride sensor summary (tracked only)

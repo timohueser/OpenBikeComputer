@@ -37,7 +37,7 @@ final class ImportTests: XCTestCase {
         let app = launch(importSample: "tcx")
 
         XCTAssertTrue(app.staticTexts["Alpe d'Huez Climb"].waitForExistence(timeout: 10), "TCX course name missing")
-        XCTAssertTrue(app.staticTexts["IMPORTED FROM GARMIN"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["Imported from Garmin"].waitForExistence(timeout: 5),
                       "TCX author banner missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]

@@ -90,7 +90,7 @@ final class UploadSheetModelTests: XCTestCase {
             model.sizeLine,
             OBCFormat.transferSizeLine(bytesDone: 0, totalBytes: 2_300_000, hasWaypoints: true)
         )
-        XCTAssertEqual(model.routeName, "Kettle Moraine Loop")
+        XCTAssertEqual(model.overview.name, "Kettle Moraine Loop")
         XCTAssertEqual(model.deviceName, "Trailhead")
     }
 
@@ -210,6 +210,19 @@ final class UploadSheetModelTests: XCTestCase {
         XCTAssertTrue(model.shouldDismiss)
     }
 
+    /// Send again after a failure starts a new transfer, which completes once the link is back.
+    func testRetryAfterFailureSends() async throws {
+        let (model, control) = makeModel(.happyPath)
+        control.connection = .disconnected
+        model.start()
+        try await waitFor("failed") { model.phase == .failed }
+
+        control.connection = .connected
+        model.retry()
+        XCTAssertNil(model.failure)
+        try await waitFor("done after retry") { model.phase == .done }
+    }
+
     // MARK: Storage-full reject copy
 
     /// A model over a transport driven straight to a chosen failure, so the copy mapping can be
@@ -236,10 +249,10 @@ final class UploadSheetModelTests: XCTestCase {
     func testStorageFullFailureGetsDedicatedCopy() async throws {
         let model = try await failedModel(.storageFull)
         XCTAssertEqual(model.failure, .storageFull)
-        XCTAssertEqual(model.failedTitle, "Device storage full")
+        XCTAssertEqual(model.failedTitle, "Trailhead is full")
         XCTAssertEqual(
             model.failedMessage,
-            "Trailhead's route storage is full. Delete routes on the device to make room, then try again."
+            "There is no room for more routes. Delete routes on Trailhead, then send again."
         )
         // The copy must not imply that updating an existing route hits the cap.
         XCTAssertFalse(model.failedMessage.lowercased().contains("update"))
@@ -251,10 +264,10 @@ final class UploadSheetModelTests: XCTestCase {
         let model = try await failedModel(.transferRejected)
         XCTAssertEqual(model.failure, .transferRejected)
         XCTAssertNotEqual(model.failure, .storageFull)
-        XCTAssertEqual(model.failedTitle, "Couldn't upload")
+        XCTAssertEqual(model.failedTitle, "Not sent")
         XCTAssertEqual(
             model.failedMessage,
-            "Trailhead didn't answer. Check that it's awake and nearby, then try again."
+            "Trailhead did not answer. Make sure it is on and near your phone, then send again."
         )
     }
 }

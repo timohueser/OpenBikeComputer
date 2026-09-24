@@ -40,8 +40,9 @@ public final class UploadSheetModel {
 
     // MARK: Fixed facts
 
-    public let routeName: String
     public let deviceName: String
+    /// What the device's route overview shows once the route is on it.
+    public let overview: DeviceRouteOverview
     /// Whether the size readout says "route + waypoints" or just "route".
     private let hasWaypoints: Bool
     // MARK: Wiring
@@ -74,7 +75,7 @@ public final class UploadSheetModel {
     ) {
         self.transport = transport
         self.blob = blob
-        self.routeName = blob.summary.name
+        self.overview = DeviceRouteOverview(blob.summary)
         self.deviceName = deviceName
         self.hasWaypoints = !blob.waypoints.isEmpty
         self.timing = timing
@@ -106,16 +107,15 @@ public final class UploadSheetModel {
     /// The failure card's heading, cause-specific so a storage-full reject reads as a device
     /// storage problem and not a lost link.
     public var failedTitle: String {
-        failure == .storageFull ? "Device storage full" : "Couldn't upload"
+        failure == .storageFull ? "\(deviceName) is full" : "Not sent"
     }
 
-    /// The failure card's body. Storage-full gets actionable copy; everything else keeps the
-    /// "device didn't answer" framing. The storage-full line deliberately says nothing about
-    /// updating an existing route, because the device exempts replace-by-id uploads from the cap.
+    /// The failure card's body. The storage-full line says nothing about updating an existing
+    /// route, because the device exempts replace-by-id uploads from the cap.
     public var failedMessage: String {
         failure == .storageFull
-            ? "\(deviceName)'s route storage is full. Delete routes on the device to make room, then try again."
-            : "\(deviceName) didn't answer. Check that it's awake and nearby, then try again."
+            ? "There is no room for more routes. Delete routes on \(deviceName), then send again."
+            : "\(deviceName) did not answer. Make sure it is on and near your phone, then send again."
     }
 
     // MARK: Lifecycle
@@ -211,6 +211,18 @@ public final class UploadSheetModel {
         // Optimistic: the next tick confirms, and a second drop re-interrupts.
         phase = .uploading
         setTransferActive(true)
+    }
+
+    /// Start a failed transfer again with a new handle.
+    public func retry() {
+        guard phase == .failed else { return }
+        watchers.forEach { $0.cancel() }
+        watchers.removeAll()
+        handle = nil
+        failure = nil
+        progress = TransferProgress(bytesDone: 0, total: blob.payload.count)
+        phase = .uploading
+        beginUpload()
     }
 
     public func dismiss() {

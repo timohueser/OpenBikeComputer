@@ -45,16 +45,17 @@ final class UploadSheetTests: XCTestCase {
         let app = launch()
         startUpload(app)
 
-        XCTAssertTrue(app.staticTexts["Uploading to Trailhead"].waitForExistence(timeout: 5), "F title missing")
+        XCTAssertTrue(app.staticTexts["Sending to Trailhead"].waitForExistence(timeout: 5), "F title missing")
         XCTAssertTrue(app.buttons["upload.cancel"].exists, "Cancel must always be reachable")
         XCTAssertTrue(app.staticTexts["upload.percent"].exists, "percentage missing")
         snap(app, "F-uploading")
 
-        XCTAssertTrue(app.staticTexts["On the device"].waitForExistence(timeout: 15), "F₂ missing")
+        XCTAssertTrue(app.staticTexts["Blue Mounds Backroads is on Trailhead"].waitForExistence(timeout: 15), "F₂ missing")
+        XCTAssertTrue(app.images["upload.deviceScreen"].exists, "the device drawing is missing")
         snap(app, "F2-uploaded-done")
 
         app.buttons["upload.done"].tap()
-        XCTAssertFalse(app.staticTexts["On the device"].waitForExistence(timeout: 2), "sheet must dismiss")
+        XCTAssertFalse(app.buttons["upload.done"].waitForExistence(timeout: 2), "sheet must dismiss")
         XCTAssertTrue(
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "must land back on the route detail"
@@ -68,13 +69,13 @@ final class UploadSheetTests: XCTestCase {
         let app = launch(scenario: "uploadDrop")
         startUpload(app)
 
-        XCTAssertTrue(app.staticTexts["Upload interrupted"].waitForExistence(timeout: 15), "interrupted framing missing")
+        XCTAssertTrue(app.staticTexts["Connection lost"].waitForExistence(timeout: 15), "interrupted framing missing")
         XCTAssertTrue(app.buttons["upload.cancel"].exists, "Cancel must stay reachable when interrupted")
         snap(app, "F-interrupted")
 
         app.buttons["upload.resume"].tap()
-        XCTAssertTrue(app.staticTexts["Uploading to Trailhead"].waitForExistence(timeout: 5), "resume must re-enter F")
-        XCTAssertTrue(app.staticTexts["On the device"].waitForExistence(timeout: 15), "resumed upload must finish")
+        XCTAssertTrue(app.staticTexts["Sending to Trailhead"].waitForExistence(timeout: 5), "resume must re-enter F")
+        XCTAssertTrue(app.buttons["upload.done"].waitForExistence(timeout: 15), "resumed upload must finish")
     }
 
     /// Cancel aborts and returns to the route detail: no confirm, no detour.
@@ -91,7 +92,7 @@ final class UploadSheetTests: XCTestCase {
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "cancel must land back on the detail"
         )
-        XCTAssertFalse(app.staticTexts["On the device"].exists, "a canceled upload must never read as done")
+        XCTAssertFalse(app.buttons["upload.done"].exists, "a canceled upload must never read as done")
         XCTAssertFalse(app.buttons["upload.cancel"].exists, "sheet must be gone")
     }
 }
