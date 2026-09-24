@@ -451,6 +451,9 @@ pub struct App {
     /// composition. `false` removes the quick drawer's brightness control, and it is the default,
     /// so a platform that says nothing offers no control it has no port for.
     backlight_available: bool,
+    /// Whether this platform can make a sound, declared once by the host at composition. `false`
+    /// by default, for the same reason as `backlight_available`.
+    sound_available: bool,
 }
 
 /// Cap on the computed route's shape-preview polyline. The host decimates the planned polyline to
@@ -504,6 +507,7 @@ impl App {
             map_name: heapless::String::new(),
             map_obcm_version: 0,
             backlight_available: false,
+            sound_available: false,
         }
     );
 
@@ -547,6 +551,7 @@ impl App {
             map_name,
             map_obcm_version,
             backlight_available,
+            sound_available,
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
         assert_eq!(activity.mode, Mode::Idle, "boots Idle, not Riding");
@@ -570,6 +575,7 @@ impl App {
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*backlight_available, "no host has claimed a panel light yet");
+        assert!(!*sound_available, "no host has claimed a sounder yet");
     }
 
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
@@ -922,6 +928,16 @@ impl App {
 
     pub fn backlight_available(&self) -> bool {
         self.backlight_available
+    }
+
+    /// Declare whether this platform has a [`Sounder`](obc_ports::Sounder) that can play. The
+    /// host asks the port once at composition and states the answer here.
+    pub fn set_sound_available(&mut self, available: bool) {
+        self.sound_available = available;
+    }
+
+    pub fn sound_available(&self) -> bool {
+        self.sound_available
     }
 
     /// Replace the resident route catalog from the host's store, carrying each route's durable

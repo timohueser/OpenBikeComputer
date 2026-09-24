@@ -25,6 +25,7 @@
 //!   RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`.
 //! - [`FlatRouteStore`] — routes on the shared host card, including a card that also owns maps.
 //! - [`MemRideStore`] and [`MemTrackStore`] — memory stores for browser hosts and tests.
+//! - [`tone`] — a sound pattern as PCM samples for the hosts with a sound card.
 //!
 //! Deliberately GUI-free: no egui, eframe or winit here, because the web host's dependency tree
 //! must stay framework-free. Simulator maps use native temporary files; browser maps use memory.
@@ -59,6 +60,7 @@ pub mod terrain;
 /// Test-only oracles, for this crate's suites and for dependents that enable `test-support`.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod tone;
 pub mod trace;
 mod track_store;
 

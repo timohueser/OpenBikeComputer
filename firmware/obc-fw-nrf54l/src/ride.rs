@@ -2512,8 +2512,15 @@ pub(crate) async fn run_app(
             }
             // The `PassPlan` never crosses an `.await`: the three fields the tail needs are copied
             // out here and the plan is dropped inside the store phase.
-            let obc_app::device_core::PassPlan { render, next_wake_ms: _, derived_needs, sources, effects, immediate } =
-                plan;
+            let obc_app::device_core::PassPlan {
+                render,
+                next_wake_ms: _,
+                derived_needs,
+                sources,
+                effects,
+                immediate,
+                sound: _,
+            } = plan;
             peak_view.reconcile(app);
 
             // Reconcile after input and fix delivery, so opening, fulfillment and leaving take effect
