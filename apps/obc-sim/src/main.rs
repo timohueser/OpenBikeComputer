@@ -27,6 +27,7 @@ mod routes;
 mod sim_compass;
 mod sim_location;
 mod sim_sensors;
+mod sounder;
 mod trips;
 
 use framebuffer::Framebuffer;
@@ -120,6 +121,9 @@ struct Args {
     /// Model a platform whose panel has no controllable light. The quick drawer then draws three
     /// controls instead of four; nothing else changes.
     no_backlight: bool,
+    /// The window opens no sound output, so the platform has no sounder. The headless path never
+    /// opens one.
+    no_sound: bool,
     /// Headless `--png` only: refuse to render unless the script landed on that screen, named by
     /// the `screens!` table's own variant string. A recipe that walks a menu depends on that menu's
     /// station order, so one inserted row would otherwise snapshot a different screen under the old
@@ -199,6 +203,7 @@ impl Default for Args {
             script: None,
             script_after: None,
             no_backlight: false,
+            no_sound: false,
             expect_screen: None,
             boot: false,
             routes_dir: None,
@@ -536,6 +541,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--no-backlight" => a.no_backlight = true,
+            "--no-sound" => a.no_sound = true,
             "--diagnostics" => a.diagnostics = Some(it.next().ok_or("--diagnostics needs a new JSONL path")?),
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--script-after" => a.script_after = Some(it.next().ok_or("--script-after needs a token string")?),
@@ -1034,6 +1040,7 @@ Scripted snapshots:
   --trip-progress D:M:L   The first trip's progress: day D (from 0), M metres into it, and the
                           last finished day L (or -)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
+  --no-sound              Open no sound output in the window (a platform with no sounder)
   --diagnostics PATH      Write a new JSONL journey trace (requires --png)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour

@@ -200,6 +200,9 @@ impl SimGui {
 
                         separator_above(ui);
 
+                        let cue = self.last_cue.map_or("none yet".into(), |c| format!("{c:?} ({:?})", c.family()));
+                        ui.label(format!("Sound · last cue: {cue}"));
+
                         separator_above(ui);
 
                         self.show_display_controls(ui);

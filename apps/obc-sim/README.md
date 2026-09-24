@@ -6,13 +6,15 @@ control panel for location, sensors, BLE, housing colorway and display calibrati
 controls are deliberately not duplicated as startup flags.
 
 ```sh
+sudo apt-get install libasound2-dev   # Linux only: ALSA headers for cue playback
 cargo build -p obc-sim --release
 target/release/obc-sim freiburg.obcm
 target/release/obc-sim freiburg.obcm --png frame.png
 ```
 
-`target/release/obc-sim --help` lists every flag. This file covers what the help cannot: the input
-model, the card, and the diagnostics trace.
+The window plays cues on the default sound output.
+
+`target/release/obc-sim --help` lists every flag; this file covers what it cannot.
 
 ## Device controls in the window
 
