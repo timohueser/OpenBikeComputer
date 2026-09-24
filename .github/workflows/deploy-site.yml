@@ -169,6 +169,9 @@ jobs:
           cp -R builder/app/dist/web/. docs/dist/builder/
           du -sh docs/dist/* | sort -h
 
+      - name: Generate sitemap
+        run: python3 docs/generate_sitemap.py docs/dist
+
       # Two ways a deploy ships something broken without anyone noticing. Both checks
       # are cheap; both catch a class of failure that is invisible until a user hits it.
       # Path-absolute references only: `href="/OpenBikeComputer/…"`, not
