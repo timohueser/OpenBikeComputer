@@ -169,6 +169,23 @@ pub unsafe extern "C" fn obc_ios_frame(host: *const Host) -> *const u8 {
     read(host, ptr::null(), |host| host.frame().as_ptr())
 }
 
+/// The newest cue as `*len` mono float samples at `sample_rate`, once. NULL and `*len == 0` until a
+/// pass raises the next cue. Valid until the next call on this host.
+///
+/// # Safety
+/// `host` is NULL or an open handle from [`obc_ios_open`]; `len` is NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn obc_ios_take_sound(host: *mut Host, sample_rate: u32, len: *mut u32) -> *const f32 {
+    let (samples, count) = with(host, None, |host| {
+        host.take_sound(sample_rate).filter(|samples| !samples.is_empty()).map(|s| (s.as_ptr(), s.len() as u32))
+    })
+    .unwrap_or((ptr::null(), 0));
+    if let Some(len) = len.as_mut() {
+        *len = count;
+    }
+    samples
+}
+
 /// The panel width in pixels.
 #[no_mangle]
 pub extern "C" fn obc_ios_frame_width() -> u32 {

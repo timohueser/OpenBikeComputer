@@ -4,7 +4,7 @@ description: >
   obc-pack links the system libGEOS via the `geos` crate's `v3_14_0` feature, and ubuntu-latest's
   apt GEOS is older than 3.14, so GEOS is built from source (cached). obc-usb-host pulls serialport
   (libudev) and obc-sim/obc-usb-host build eframe natively (X11/xkbcommon); rfd uses the XDG portal,
-  so no GTK is needed.
+  so no GTK is needed. obc-sim plays cues through cpal, which links ALSA (libasound2).
 
 # Keep GEOS_VERSION in step with the `v3_*` feature on the `geos` dep in host/obc-pack/Cargo.toml.
 inputs:
@@ -22,7 +22,7 @@ runs:
         sudo apt-get install -y \
           libudev-dev \
           libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-          libxkbcommon-dev libssl-dev
+          libxkbcommon-dev libssl-dev libasound2-dev
 
     - name: Cache GEOS ${{ inputs.geos-version }}
       id: geos-cache

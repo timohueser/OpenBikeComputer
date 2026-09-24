@@ -638,6 +638,7 @@ pub(crate) async fn run_app(
     // The panel's brightness port, armed in `main` where the peripherals live. By value: this loop
     // is its only user, and it never returns.
     mut backlight: crate::panel_power::PanelBacklight,
+    mut buzzer: crate::buzzer::Buzzer,
     // The watchdog feed handle, `None` only if the dog was already running with a foreign config.
     mut wdt: Option<wdt::WatchdogHandle>,
     // The sensor hub's consumer handle: the source drains, the presence flag and the event wake.
@@ -728,6 +729,7 @@ pub(crate) async fn run_app(
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
     let mut backlight_level = u8::MAX;
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
+    app.set_sound_available(obc_ports::Sounder::available(&buzzer));
     // The map plane is one resident framebuffer that the present scans out of, so every repaint is a
     // repaint over the last frame. That is what lets the app leave a frozen base's rows alone while
     // a drawer's sheet grows over them.
@@ -2519,8 +2521,11 @@ pub(crate) async fn run_app(
                 sources,
                 effects,
                 immediate,
-                sound: _,
+                sound,
             } = plan;
+            if let Some(obc_app::device_core::Sound { cue, volume }) = sound {
+                obc_ports::Sounder::play(&mut buzzer, obc_platform::sound::pattern(cue), volume);
+            }
             peak_view.reconcile(app);
 
             // Reconcile after input and fix delivery, so opening, fulfillment and leaving take effect

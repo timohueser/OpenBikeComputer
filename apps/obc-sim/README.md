@@ -6,13 +6,15 @@ control panel for location, sensors, BLE, housing colorway and display calibrati
 controls are deliberately not duplicated as startup flags.
 
 ```sh
+sudo apt-get install libasound2-dev   # Linux only: ALSA headers for cue playback
 cargo build -p obc-sim --release
 target/release/obc-sim freiburg.obcm
 target/release/obc-sim freiburg.obcm --png frame.png
 ```
 
-`target/release/obc-sim --help` lists every flag. This file covers what the help cannot: the input
-model, the card, and the diagnostics trace.
+The window plays cues on the default audio device.
+
+`--help` lists every flag. This file covers the input model, the card and the diagnostics trace.
 
 ## Device controls in the window
 
@@ -31,7 +33,7 @@ Press Up + Select (Left and Enter) **within 100 ms of each other**: release befo
 quick drawer, hold both for 500 ms for Ride Assistant. A larger gap is two ordinary gestures.
 Down + Back (Right and Backspace) opens the contextual drawer, same 100 ms window.
 
-The mouse wheel over the screen injects selection steps directly. It models no button and makes no
+The mouse wheel over the screen injects selection steps. It models no button and makes no
 chord.
 
 ## The card
@@ -40,7 +42,7 @@ Startup copies the map through a 16 KiB buffer into a temporary sparse card, the
 route, trip and saved-ride fixtures. Every runtime reader uses that card, and the input files stay
 unchanged.
 
-On Unix a card can be kept. Persistent cards are not supported on Windows.
+Unix can keep a card; Windows cannot.
 
 ```sh
 target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/
