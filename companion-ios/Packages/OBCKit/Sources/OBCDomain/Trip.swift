@@ -68,8 +68,9 @@ public struct TripDayCopy: Equatable, Sendable {
 /// geometry; a route file added to a trip becomes part of the line and keeps no link to its old
 /// library record. The upload cuts the line into one route per day.
 ///
-/// The line is made of pieces, as ``MeasuredLine`` reads it. A gap between two pieces sits only
-/// at a day end: the next day starts where the next piece starts.
+/// The line is made of pieces, as ``MeasuredLine`` reads it. At a gap between two pieces the
+/// next day usually starts where the next piece starts; a gap inside a day is ridden straight
+/// (see ``TripGap``).
 public struct Trip: Identifiable, Equatable, Sendable {
     public var id: TripID
     /// The key the device stores progress and rides under. A trip keeps it for life, and a
