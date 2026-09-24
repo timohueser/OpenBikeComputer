@@ -3,10 +3,10 @@ import UniformTypeIdentifiers
 import OBCDomain
 import OBCTransport
 
-/// The hub: device top bar, the "Routes" title with a trailing import button, the Planned and
-/// Tracked segments, search, and the compact track-left list. Connection status lives only in the
-/// top bar and the disconnected banner. A swipe-left deletes the row directly, because the reveal
-/// is the confirm.
+/// The hub: the rust device band, the "Routes" title with Select and the amber import button, the
+/// Planned and Tracked segments, search, and one grouped list of track rows. Connection status
+/// lives only in the band and the disconnected banner. A swipe-left deletes the row directly,
+/// because the reveal is the confirm.
 ///
 /// The flows this screen opens stay seams the composition root wires: a card tap, an import pick
 /// and settings.
@@ -79,8 +79,8 @@ public struct MainScreenView: View {
                         : "Update the OBC to match this app."
                 )
                 .accessibilityIdentifier("protocolMismatchBanner")
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
             } else if let interruption = sync.syncInterruption {
                 OBCInlineBanner(
                     tone: .warning,
@@ -91,8 +91,8 @@ public struct MainScreenView: View {
                     action: { sync.resumeSync() }
                 )
                 .accessibilityIdentifier("syncInterruptedBanner")
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
             } else if model.showsDisconnectedBanner {
                 OBCInlineBanner(
                     systemImage: "wifi.slash",
@@ -100,8 +100,8 @@ public struct MainScreenView: View {
                     message: "Showing your last sync."
                 )
                 .accessibilityIdentifier("disconnectedBanner")
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
             } else if sync.hiddenRideCount > 0 {
                 // The bounded ride catalog can report that some rides are outside the returned
                 // window, so "up to date" would be a lie. Say so plainly.
@@ -113,8 +113,8 @@ public struct MainScreenView: View {
                     message: "Free up space on the device to sync them."
                 )
                 .accessibilityIdentifier("ridesTruncatedBanner")
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
             }
 
             OBCLargeTitleBar("Routes") {
@@ -142,8 +142,10 @@ public struct MainScreenView: View {
         .sheet(isPresented: $libraryMapShown) { libraryMap }
         #endif
         #if os(iOS)
-        // The screen draws its own chrome: top bar and large-title row.
+        // The screen draws its own chrome: the device band and the large-title row. The dark
+        // bar scheme gives light status-bar content over the rust band, in Day and in Tent.
         .toolbar(.hidden, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         #endif
         .obcToast(
             isPresented: $sync.upToDateToastVisible,
@@ -166,22 +168,29 @@ public struct MainScreenView: View {
     @ViewBuilder
     private var titleActions: some View {
         if isSelecting {
-            Button("Cancel") { exitSelection() }
-                .font(.system(.callout, weight: .medium))
-                .foregroundStyle(OBCTheme.tint)
+            titleTextButton("Cancel") { exitSelection() }
                 .accessibilityIdentifier("main.selectCancel")
         } else {
             if model.tab == .planned && looseRouteCount > 0 {
-                Button("Select") {
+                titleTextButton("Select") {
                     isSelecting = true
                     selectedRouteIDs = []
                 }
-                .font(.system(.callout, weight: .medium))
-                .foregroundStyle(OBCTheme.tint)
                 .accessibilityIdentifier("main.select")
             }
             OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
         }
+    }
+
+    private func titleTextButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(.body))
+                .foregroundStyle(OBCTheme.tint)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// The bottom Group bar, present only while selecting.
@@ -197,7 +206,7 @@ public struct MainScreenView: View {
             .buttonStyle(.obcPrimary)
             .disabled(count < 2)
             .accessibilityIdentifier("main.groupIntoTrip")
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 16)
             .padding(.top, 10)
             .padding(.bottom, 8)
             .background(.ultraThinMaterial)
@@ -223,16 +232,6 @@ public struct MainScreenView: View {
     private func exitSelection() {
         isSelecting = false
         selectedRouteIDs = []
-    }
-
-    /// The selection tick over a route card while grouping.
-    private func selectionCheck(on id: RouteID) -> some View {
-        let selected = selectedRouteIDs.contains(id)
-        return Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-            .font(.system(.title3, weight: .semibold))
-            .foregroundStyle(selected ? OBCTheme.ink : OBCTheme.secondary)
-            .padding(8)
-            .background(selected ? OBCTheme.surface.opacity(0.9) : .clear, in: Circle())
     }
 
     // MARK: List
@@ -269,53 +268,55 @@ public struct MainScreenView: View {
                     }
                 )
 
-            Group {
-                OBCSegmentedControl(selection: tabSelection, labels: ["Planned", "Tracked"])
-                    .padding(.top, 4)
-                    .padding(.bottom, 2)
-
-                if searchVisible {
-                    OBCSearchField(
-                        text: $model.searchText,
-                        prompt: model.tab == .planned ? "Search routes" : "Search rides"
-                    )
-                    .accessibilityIdentifier("main.search")
-                    // Transient, Mail-style: once the cleared bar scrolls off the top it
-                    // un-reveals. The List culls the row exactly when it leaves the viewport, so
-                    // `onDisappear` is the "scrolled away" signal, and the row is off-screen, so
-                    // removing it cannot visibly jump. A frame observer cannot do this: it is torn
-                    // down in the same cull that would cross the threshold.
-                    .onDisappear {
-                        if model.searchText.isEmpty { searchRevealed = false }
-                    }
-                }
-
-                if model.tab == .tracked {
-                    syncLine
-                }
-
-                switch model.tab {
-                case .planned: plannedContent
-                case .tracked: trackedContent
-                }
-
-                // The entry into the trash sits under the Tracked rows, and under the empty state,
-                // because deleting the last ride must not strand the trash. It is hidden while a
-                // search filters the list, because the row is not a search result.
-                if model.tab == .tracked, !model.trashedRides.isEmpty, model.searchText.isEmpty {
-                    OBCDisclosureRow(
-                        systemImage: "trash",
-                        label: "Recently Deleted",
-                        value: "\(model.trashedRides.count)",
-                        accessibilityID: "main.recentlyDeleted",
-                        action: onOpenTrash
-                    )
-                    .padding(.top, 8)
-                }
+            Picker("Library", selection: $model.tab) {
+                Text("Planned").tag(MainScreenModel.Tab.planned)
+                Text("Tracked").tag(MainScreenModel.Tab.tracked)
             }
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 12, trailing: 20))
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.top, 4)
+            .plainRow(bottom: 12)
+
+            if searchVisible {
+                OBCSearchField(
+                    text: $model.searchText,
+                    prompt: model.tab == .planned ? "Search routes" : "Search rides"
+                )
+                .accessibilityIdentifier("main.search")
+                // Transient, Mail-style: once the cleared bar scrolls off the top it
+                // un-reveals. The List culls the row exactly when it leaves the viewport, so
+                // `onDisappear` is the "scrolled away" signal, and the row is off-screen, so
+                // removing it cannot visibly jump. A frame observer cannot do this: it is torn
+                // down in the same cull that would cross the threshold.
+                .onDisappear {
+                    if model.searchText.isEmpty { searchRevealed = false }
+                }
+                .plainRow(bottom: 12)
+            }
+
+            if model.tab == .tracked {
+                syncLine
+            }
+
+            switch model.tab {
+            case .planned: plannedContent
+            case .tracked: trackedContent
+            }
+
+            // The entry into the trash sits under the Tracked rows, and under the empty state,
+            // because deleting the last ride must not strand the trash. It is hidden while a
+            // search filters the list, because the row is not a search result.
+            if model.tab == .tracked, !model.trashedRides.isEmpty, model.searchText.isEmpty {
+                OBCDisclosureRow(
+                    systemImage: "trash",
+                    label: "Recently Deleted",
+                    value: "\(model.trashedRides.count)",
+                    accessibilityID: "main.recentlyDeleted",
+                    action: onOpenTrash
+                )
+                .padding(.top, 20)
+                .plainRow(bottom: 12)
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -340,13 +341,6 @@ public struct MainScreenView: View {
         // off the top.
     }
 
-    private var tabSelection: Binding<Int> {
-        Binding(
-            get: { model.tab.rawValue },
-            set: { model.tab = MainScreenModel.Tab(rawValue: $0) ?? .planned }
-        )
-    }
-
     /// The small stat line under the segments on Tracked: a ride count while syncing, then
     /// the ink confirm.
     @ViewBuilder
@@ -369,12 +363,12 @@ public struct MainScreenView: View {
                     .font(.system(.caption2, weight: .bold))
             }
             Text(text)
-                .font(.system(.caption).monospacedDigit())
+                .font(.system(.footnote).monospacedDigit())
         }
         .foregroundStyle(color)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("main.syncLine")
-        .padding(.bottom, 2)
+        .plainRow(bottom: 10)
     }
 
     // MARK: Planned tab
@@ -409,59 +403,60 @@ public struct MainScreenView: View {
             ) { result in
                 if case .success(let urls) = result, !urls.isEmpty { onImportFile(urls) }
             }
+            .plainRow()
         } else {
-            // Trip cards and route cards, interleaved by `addedAt`. While selecting, route cards
+            // Trip rows and route rows, interleaved by `addedAt`. While selecting, route rows
             // toggle instead of navigating and trips dim out: only routes join into a trip.
-            ForEach(model.filteredPlannedItems) { item in
-                switch item {
-                case .trip(let trip):
-                    Button {
-                        onSelectTrip(trip)
-                    } label: {
-                        TripCard(
-                            name: trip.name,
-                            stats: model.tripStats(trip.id),
-                            daySummaries: model.tripDays(trip.id).map { $0.summary(tripID: trip.id) },
-                            dateLine: model.tripDateLine(trip.id),
-                            onDevice: model.tripOnDeviceState(trip.id)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isSelecting)
-                    .opacity(isSelecting ? 0.4 : 1)
-                    .accessibilityIdentifier("main.trip.\(trip.id.rawValue)")
-                case .route(let route, _):
-                    if isSelecting {
-                        Button {
-                            toggleSelection(route.id)
-                        } label: {
-                            RouteCard(
-                                route: route,
-                                onDevice: model.onDeviceState(route.id),
-                            )
-                                .overlay(alignment: .topTrailing) {
-                                    selectionCheck(on: route.id)
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                        .accessibilityAddTraits(
-                            selectedRouteIDs.contains(route.id) ? .isSelected : [])
-                    } else {
-                        Button {
-                            onSelectRoute(route)
-                        } label: {
-                            RouteCard(
-                                route: route,
-                                onDevice: model.onDeviceState(route.id),
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                        .obcSwipeToDelete {
-                            model.deleteRoute(route.id)
-                        }
-                    }
+            let items = model.filteredPlannedItems
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                plannedRow(item)
+                    .obcGroupedRow(first: index == 0, last: index == items.count - 1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func plannedRow(_ item: PlannedItem) -> some View {
+        switch item {
+        case .trip(let trip):
+            Button {
+                onSelectTrip(trip)
+            } label: {
+                TrackRow(
+                    tripName: trip.name,
+                    stats: model.tripStats(trip.id),
+                    daySummaries: model.tripDays(trip.id).map { $0.summary(tripID: trip.id) },
+                    dateLine: model.tripDateLine(trip.id),
+                    onDevice: model.tripOnDeviceState(trip.id)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isSelecting)
+            .opacity(isSelecting ? 0.4 : 1)
+            .accessibilityIdentifier("main.trip.\(trip.id.rawValue)")
+        case .route(let route, _):
+            if isSelecting {
+                Button {
+                    toggleSelection(route.id)
+                } label: {
+                    TrackRow(
+                        route: route,
+                        onDevice: model.onDeviceState(route.id),
+                        isSelected: selectedRouteIDs.contains(route.id)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+            } else {
+                Button {
+                    onSelectRoute(route)
+                } label: {
+                    TrackRow(route: route, onDevice: model.onDeviceState(route.id))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+                .obcSwipeToDelete {
+                    model.deleteRoute(route.id)
                 }
             }
         }
@@ -484,23 +479,27 @@ public struct MainScreenView: View {
                 message: "Rides you record on \(model.deviceName) land here after a sync."
             )
             .padding(.top, 40)
+            .plainRow()
         } else {
             if model.searchText.isEmpty {
                 RideLibraryHeader(model: model.rideLibrary) { libraryMapShown = true }
                     // Keyed on the summaries, not the ids: a trim keeps the id and changes the line.
                     .task(id: model.rides) { await model.rideLibrary.loadMapLines() }
+                    .plainRow(bottom: 16)
             }
-            ForEach(model.filteredRides) { ride in
+            let rides = model.filteredRides
+            ForEach(Array(rides.enumerated()), id: \.element.id) { index, ride in
                 Button {
                     onSelectRide(ride)
                 } label: {
-                    RouteCard(ride: ride)
+                    TrackRow(ride: ride)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("main.card.\(ride.id.rawValue)")
                 .obcSwipeToDelete {
                     model.deleteRide(ride.id)
                 }
+                .obcGroupedRow(first: index == 0, last: index == rides.count - 1)
             }
         }
     }
@@ -520,8 +519,9 @@ public struct MainScreenView: View {
 
     /// Skeletons, not spinners; only an empty first read shimmers.
     private var skeletons: some View {
-        ForEach(0..<4, id: \.self) { _ in
-            RouteCardSkeleton()
+        ForEach(0..<4, id: \.self) { index in
+            TrackRowSkeleton()
+                .obcGroupedRow(first: index == 0, last: index == 3)
         }
     }
 
@@ -537,6 +537,7 @@ public struct MainScreenView: View {
         }
         .padding(.top, 40)
         .accessibilityIdentifier("main.readError")
+        .plainRow()
     }
 
     /// Empty results are not an empty library; the query stays editable above.
@@ -560,26 +561,15 @@ public struct MainScreenView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 40)
+        .plainRow()
     }
 }
 
-#if DEBUG
-#Preview("Main · C1") {
-    // Preview-only: a model against a plain placeholder transport is not available here, because
-    // OBCUI cannot import OBCMock. The app target's previews drive the full mock-backed screen.
-    VStack(spacing: 0) {
-        DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82)
-        OBCLargeTitleBar("Routes") {
-            OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
-        }
-        ScrollView {
-            VStack(spacing: 12) {
-                RouteCard(title: "Kettle Moraine Loop", subtitle: "62.4 km · 840 m ↑ · 3h 20m", preview: .obcSample)
-                RouteCard(title: "Sugar River Trail", subtitle: "38.1 km · 210 m ↑ · 1h 55m", preview: .obcSample)
-            }
-            .padding(.horizontal, 20)
-        }
+private extension View {
+    /// A list row that is not a track row: no fill and no separators.
+    func plainRow(bottom: CGFloat = 0) -> some View {
+        listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: bottom, trailing: 16))
     }
-    .background(OBCTheme.page)
 }
-#endif

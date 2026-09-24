@@ -72,21 +72,14 @@ final class WebsiteScreenshotTests: XCTestCase {
     /// battery arrives on its own stream. Settling cannot catch this, because work that has not
     /// started yet holds perfectly still, so wait for the real values.
     @MainActor
-    private func waitForDeviceIdentity(
-        _ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line
-    ) {
-        // The battery cluster ignores its children, so the percent is only readable through the
-        // element's own label.
-        let battery = app.descendants(matching: .any)["topbar.battery"].firstMatch
-        let charged = expectation(
-            for: NSPredicate(format: "label == %@", "Battery 82 percent"), evaluatedWith: battery
+    private func waitForDeviceIdentity(_ app: XCUIApplication) {
+        // The band reads the whole device state as one element: name, link and battery.
+        let device = app.descendants(matching: .any)["topbar.device"].firstMatch
+        let identified = expectation(
+            for: NSPredicate(format: "label == %@", "Trailhead, connected, battery 82 percent"),
+            evaluatedWith: device
         )
-        wait(for: [charged], timeout: 15)
-        XCTAssertTrue(
-            app.staticTexts["Trailhead"].waitForExistence(timeout: 15),
-            "the device name never replaced the \"Your OBC\" placeholder",
-            file: file, line: line
-        )
+        wait(for: [identified], timeout: 15)
     }
 
     /// Screenshot the app once it has stopped changing: keep capturing until two consecutive

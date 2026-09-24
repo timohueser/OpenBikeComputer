@@ -10,13 +10,15 @@ public enum OBCSyncButtonState: Equatable, Sendable {
     case done
 }
 
-/// Name, battery, sync and settings gear. The only place connection shows: when the
-/// link is down the dot loses its glow, the name and battery dim, and sync disables.
-/// The gear is the single route into Settings.
+/// The device band: the device's own rust title bar, from the top edge down under the device
+/// row. The name is in the device's font; the link state, the battery, sync and the settings
+/// gear sit on the right. The band is the only place connection shows: when the link is down,
+/// the battery gives way to the state in words and sync disables. The gear is the single route
+/// into Settings. Put it at the top of a screen; it draws under the status bar.
 public struct DeviceTopBar: View {
     let deviceName: String
     let connection: ConnectionState
-    /// Battery percent 0–100, `nil` when unknown (shows "—").
+    /// Battery percent 0–100, `nil` when unknown (shows "--").
     let batteryPercent: Int?
     let syncState: OBCSyncButtonState
     let onSync: () -> Void
@@ -41,152 +43,150 @@ public struct DeviceTopBar: View {
     private var isLinked: Bool { connection == .connected }
 
     public var body: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 9) {
-                Circle()
-                    .fill(isLinked ? OBCTheme.rust : OBCTheme.secondary)
-                    .frame(width: 9, height: 9)
-                    .background(
-                        Circle()
-                            .fill(OBCTheme.rust.opacity(isLinked ? 0.18 : 0))
-                            .frame(width: 15, height: 15)
-                    )
-                Text(deviceName)
-                    .font(.system(.callout, weight: .semibold))
-                    .foregroundStyle(isLinked ? OBCTheme.ink : OBCTheme.secondary)
-                    .lineLimit(1)
-            }
-            // No explicit identifier here: an id would shadow the label-keyed lookup
-            // the tests use (`staticTexts["Trailhead"]`).
-            .accessibilityElement(children: .combine)
-
+        HStack(spacing: 0) {
+            name
+                .padding(.trailing, 8)
+                // One VoiceOver stop for the whole device state; the battery and link text
+                // beside the buttons are hidden, because this label says them.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityDescription)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("topbar.device")
             Spacer(minLength: 0)
-
-            HStack(spacing: 8) {
-                OBCBatteryIndicator(percent: isLinked ? batteryPercent : nil)
-                    .opacity(isLinked ? 1 : 0.5)
-                    .accessibilityIdentifier("topbar.battery")
-
-                OBCIconButton(disabled: !isLinked) {
-                    onSync()
-                } label: {
-                    syncIcon
-                }
+            status
+                .padding(.trailing, 4)
+                .accessibilityHidden(true)
+            bandButton(disabled: !isLinked, action: onSync) { syncIcon }
                 .accessibilityLabel(syncAccessibilityLabel)
                 .accessibilityIdentifier("topbar.sync")
-
-                OBCIconButton {
-                    onSettings()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(.body, weight: .medium))
-                }
-                .accessibilityLabel("Settings")
-                .accessibilityIdentifier("topbar.settings")
+            bandButton(action: onSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(.body, weight: .medium))
             }
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("topbar.settings")
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
+        .padding(.leading, 20)
+        .padding(.trailing, 6)
+        .padding(.vertical, 3)
+        .foregroundStyle(OBCTheme.onRust)
+        .background(OBCTheme.rust.ignoresSafeArea(edges: .top))
+    }
+
+    /// The name as the device's title bar writes it, a size smaller when it is long.
+    private var name: some View {
+        let text = deviceName.uppercased()
+        return ViewThatFits(in: .horizontal) {
+            PixelText(text, size: .label, color: OBCTheme.onRust)
+            PixelText(text, size: .caption, color: OBCTheme.onRust)
+            PixelText(text, size: .caption, color: OBCTheme.onRust)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .clipped()
+        }
+    }
+
+    /// The battery while linked; otherwise the link state in words.
+    @ViewBuilder
+    private var status: some View {
+        if isLinked {
+            OBCBatteryIndicator(percent: batteryPercent)
+        } else {
+            Text(connectionWords)
+                .font(.system(.footnote, weight: .semibold))
+                .lineLimit(1)
+                .obcFixedGeometryType()
+        }
+    }
+
+    private var connectionWords: String {
+        switch connection {
+        case .connected: "Connected"
+        case .connecting: "Connecting…"
+        case .outOfRange: "Out of range"
+        case .disconnected: "Not connected"
+        }
+    }
+
+    private var accessibilityDescription: String {
+        let battery = isLinked
+            ? batteryPercent.map { ", battery \($0) percent" } ?? ", battery unknown"
+            : ""
+        return "\(deviceName), \(connectionWords.lowercased())\(battery)"
+    }
+
+    /// A 44pt glyph button on the band.
+    private func bandButton<Label: View>(
+        disabled: Bool = false,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .obcFixedGeometryType()
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
     }
 
     @ViewBuilder
     private var syncIcon: some View {
         switch syncState {
         case .idle:
-            Image(systemName: "arrow.down.to.line")
-                .font(.system(.callout, weight: .medium))
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(.body, weight: .medium))
         case .syncing:
-            OBCSpinner(color: OBCTheme.secondary)
+            OBCSpinner(color: OBCTheme.onRust)
         case .done:
             Image(systemName: "checkmark")
-                .font(.system(.callout, weight: .bold))
-                .foregroundStyle(OBCTheme.secondary)
+                .font(.system(.body, weight: .bold))
         }
     }
 
     private var syncAccessibilityLabel: String {
         switch syncState {
-        case .idle: "Sync tracked rides"
+        case .idle: "Sync rides"
         case .syncing: "Syncing"
         case .done: "Synced"
         }
     }
 }
 
+/// The battery on the band: a drawn cell and the percent in the device's font. At 20 % or less
+/// the charge turns amber.
 public struct OBCBatteryIndicator: View {
     let percent: Int?
 
     public init(percent: Int?) { self.percent = percent }
 
     public var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(OBCTheme.secondary, lineWidth: 1.5)
+                    .strokeBorder(OBCTheme.onRust, lineWidth: 1.5)
                 if let percent {
                     RoundedRectangle(cornerRadius: 1)
-                        .fill(fillColor(for: percent))
+                        .fill(percent <= 20 ? OBCTheme.amber : OBCTheme.onRust)
                         .padding(3)
-                        .frame(width: 3 + 18 * CGFloat(max(0, min(percent, 100))) / 100)
+                        .frame(width: 6 + 16 * CGFloat(max(0, min(percent, 100))) / 100)
                 }
             }
-            .frame(width: 24, height: 12)
+            .frame(width: 22, height: 12)
             .overlay(alignment: .trailing) {
                 // The battery nub.
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(OBCTheme.secondary)
+                    .fill(OBCTheme.onRust)
                     .frame(width: 2.5, height: 5)
-                    .offset(x: 4)
+                    .offset(x: 3.5)
             }
+            .padding(.trailing, 3)
 
-            Text(percent.map { "\($0)%" } ?? "—")
-                .font(.system(.caption, weight: .semibold).monospacedDigit())
-                .foregroundStyle(OBCTheme.secondary)
-                .fixedSize()
+            PixelText(percent.map { "\($0)%" } ?? "--", color: OBCTheme.onRust)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(percent.map { "Battery \($0) percent" } ?? "Battery unknown")
-    }
-
-    private func fillColor(for percent: Int) -> Color {
-        percent <= 20 ? OBCTheme.danger : OBCTheme.ink
-    }
-}
-
-/// The 38pt circular icon button in the device cluster. `compact` is the 34pt
-/// variant for large-title trailing actions.
-public struct OBCIconButton<Label: View>: View {
-    var compact = false
-    var disabled = false
-    let action: () -> Void
-    @ViewBuilder let label: Label
-
-    public init(
-        compact: Bool = false,
-        disabled: Bool = false,
-        action: @escaping () -> Void,
-        @ViewBuilder label: () -> Label
-    ) {
-        self.compact = compact
-        self.disabled = disabled
-        self.action = action
-        self.label = label()
-    }
-
-    public var body: some View {
-        Button(action: action) {
-            label
-                .foregroundStyle(OBCTheme.tint)
-                .frame(width: compact ? 34 : 38, height: compact ? 34 : 38)
-                .background(OBCTheme.surface)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(OBCTheme.hairline))
-                .obcFixedGeometryType()
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
     }
 }
 

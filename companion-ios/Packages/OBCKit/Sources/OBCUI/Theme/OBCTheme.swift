@@ -54,6 +54,10 @@ public enum OBCTheme {
     public static let ride = Color(day: 0x2D3E96, tent: 0x8C9BF0)
     /// The second trip day, next to `route` for the first.
     public static let day2 = Color(day: 0x2F6FB5, tent: 0x6FA8E8)
+    /// The third trip day: the device's forest green, tuned.
+    public static let day3 = Color(day: 0x3B8A3F, tent: 0x6CC47A)
+    /// The fourth trip day: the device's violet, tuned.
+    public static let day4 = Color(day: 0x5B2FB0, tent: 0xA070F0)
     /// Failures and destructive actions.
     public static let danger = Color(day: 0xB0301C, tent: 0xF28B6E)
 

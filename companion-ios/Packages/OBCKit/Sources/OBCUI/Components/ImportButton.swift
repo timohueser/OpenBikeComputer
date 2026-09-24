@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The large-title `+` button: it opens the system document picker directly, filtered
+/// The large-title `+` button, the screen's one amber action: it opens the system document picker directly, filtered
 /// to the supported route extensions. Pass `RouteImporter.supportedFileExtensions`
 /// from the composition root so the filter always matches the registered decoders.
 ///
@@ -28,12 +28,10 @@ public struct OBCImportButton: View {
             pickerShown = true
         } label: {
             Image(systemName: "plus")
-                .font(.system(.body, weight: .medium))
-                .foregroundStyle(OBCTheme.tint)
-                .frame(width: 34, height: 34)
-                .background(OBCTheme.surface)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(OBCTheme.hairline))
+                .font(.system(.title3, weight: .semibold))
+                .foregroundStyle(OBCTheme.onAmber)
+                .frame(width: 44, height: 44)
+                .background(OBCTheme.amber, in: Circle())
                 .obcFixedGeometryType()
         }
         .buttonStyle(.plain)
