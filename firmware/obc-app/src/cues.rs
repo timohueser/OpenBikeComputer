@@ -1,6 +1,6 @@
 //! Which cue the rider hears. Events that are edges already raise their cue directly. The levels
 //! the app already has become edges here, after a settle time and with a cooldown, so a level that
-//! flaps plays at most one loss cue and one recovery cue a minute.
+//! flaps plays at most one loss cue a minute, and one recovery cue for each loss.
 
 use obc_ports::{Cue, Volume};
 
