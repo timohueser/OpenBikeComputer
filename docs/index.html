@@ -557,16 +557,15 @@
       display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
     }
     .features .card { padding: 22px 22px 24px; }
-    .card .ico {
-      width: 38px; height: 38px; border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      background: var(--sage); margin-bottom: 14px;
+    /* Each card opens with the device's own title bar, labelled in Terminus. */
+    .features .card { overflow: hidden; }
+    .card-bar {
+      display: flex; align-items: center; margin: -22px -22px 18px; padding: 9px 22px;
+      background: var(--rust); color: var(--cream); font-size: 13px;
     }
-    .card .ico svg { width: 21px; height: 21px; stroke: var(--ink2); fill: none; stroke-width: 1.7; }
     .card h3 { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 7px; }
     .card p { margin: 0; font-size: 14.5px; color: var(--ink2); }
     .card .tag { color: var(--emph); }
-    .card .tag svg { stroke: var(--emph); }
 
     /* ---------- specs strip ---------- */
     .specs { display: flex; flex-wrap: wrap; gap: 12px 30px; margin-top: 30px; }
@@ -855,32 +854,32 @@
         </div>
         <div class="features">
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">DISPLAY</span></div>
             <h3>Sunlight-readable display</h3>
             <p>Crisp, always on, and it loves direct sun — the reflective screen reads by daylight, and only spends power on pixels that change.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M22 11v2M6 11v2M9 11v2M12 11v2"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">BATTERY</span></div>
             <h3>Lasts for days</h3>
             <p>No nightly charging ritual. One charge covers days of riding — so the computer isn't the thing that dies on day three of the trip.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">REPAIR</span></div>
             <h3>Own it, fix it</h3>
             <p>Every part is replaceable — the battery, the quarter-turn mount, the USB socket, even the buttons. Nothing proprietary between you and a repair.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M15 7l5 5-5 5"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">OPEN SOURCE</span></div>
             <h3>Open-source software</h3>
             <p>Firmware, simulator, map toolchain — every line is open. Read it, build it, and change what you don't like.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">ROUTING</span></div>
             <h3>Routes to anywhere</h3>
             <p>A campsite, a water source, the last bakery before the pass — pick a point and the device plans the route right there, in the field. No phone, no signal.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/><path d="M9.2 12l1.9 1.9 3.7-4"/></svg></div>
+            <div class="card-bar"><span class="px" data-px="20">CLOUD-FREE</span></div>
             <h3 class="tag">Completely cloud-free</h3>
             <p>No account, no subscription, no server anywhere. Maps and rides live on the device and your computer — and it all works without a phone.</p>
           </div>
