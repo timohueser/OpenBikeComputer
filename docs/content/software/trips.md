@@ -99,7 +99,8 @@ The phone shows what each way adds before the rider picks. When no road is found
 the line point nearest the stop.
 
 A gap inside a day (200 m or less, after a Join) is ridden straight. "Bridge the gap" in the day's
-menu routes it. The day after a transfer offers it too: a bridged gap is line, not a transfer.
+menu routes it. The day after a transfer offers "Bridge the transfer": that day then rides the
+bridge, and the transfer is gone.
 
 ### The router on the phone
 
