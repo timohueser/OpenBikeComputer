@@ -80,6 +80,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const corridorPart = page.locator('.parts li').filter({ hasText: 'Corridor — Fixture Route' });
     await expect(corridorPart).toBeVisible();
     await expect(corridorPart.locator('.price')).not.toHaveText('pricing…');
+    await expect(corridorPart.locator('.price')).not.toHaveText('0 B');
     await corridorPart.getByRole('button', { name: 'Remove Fixture Route' }).click();
     await expect(corridorPart).toHaveCount(0);
     await expect(page.locator('.parts li')).toHaveCount(0);
@@ -107,6 +108,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const boxPart = page.locator('.parts li').filter({ hasText: 'Box' });
     await expect(boxPart).toBeVisible();
     await expect(boxPart.locator('.price')).not.toHaveText('pricing…');
+    await expect(boxPart.locator('.price')).not.toHaveText('0 B');
     await boxPart.getByRole('button', { name: /^Remove Box/ }).click();
     await expect(boxPart).toHaveCount(0);
     await expect(page.locator('.ledger .total')).toHaveText(originalTotal);
@@ -121,6 +123,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const lassoPart = page.locator('.parts li').filter({ hasText: 'Lasso' });
     await expect(lassoPart).toBeVisible();
     await expect(lassoPart.locator('.price')).not.toHaveText('pricing…');
+    await expect(lassoPart.locator('.price')).not.toHaveText('0 B');
     await lassoPart.getByRole('button', { name: /^Remove Lasso/ }).click();
     await expect(lassoPart).toHaveCount(0);
 
@@ -150,6 +153,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const requested = new Set(records.slice(1).filter((r) => r.kind === 'object').map((r) => r.path));
     expect([...records[0].served].filter((path) => !requested.has(path))).toEqual([]);
     expect(records.slice(1).filter((r) => r.kind === 'missing' && r.path.startsWith('/catalog/'))).toEqual([]);
+    await page.waitForTimeout(500);
     expect(downloads).toEqual([saved]);
   } catch (error) {
     failure = error;
