@@ -60,10 +60,10 @@ pub(crate) static CHORDS: Channel<CriticalSectionRawMutex, Chord, 2> = Channel::
 /// A `Signal` is a coalescing level wake, which is what a repeated 8 ms nudge wants.
 pub(crate) static INPUT_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The single high-priority executor. It free-runs both the COM driver, which must keep alternating
-/// so the panel never takes a DC bias whatever the map plane is doing, and the gesture-input plane,
-/// so button latency stays exact during a deep map render. It is pended from the SWI01 vector at
-/// P3; SWI00 is MPSL's low-priority lane.
+/// The single high-priority executor. It free-runs the COM driver, which must keep alternating so
+/// the panel never takes a DC bias whatever the map plane is doing, the gesture-input plane, so
+/// button latency stays exact during a deep map render, and the buzzer, so note timing stays exact.
+/// It is pended from the SWI01 vector at P3; SWI00 is MPSL's low-priority lane.
 pub(crate) static EXECUTOR_HP: InterruptExecutor = InterruptExecutor::new();
 
 /// SWI01 ISR: poll the high-priority executor. SWI01 has no peripheral; only its interrupt vector

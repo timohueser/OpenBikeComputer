@@ -37,6 +37,8 @@ const seams = vi.hoisted(() => ({
     holdEstimates: false,
     estimateReplies: [] as Array<(error?: boolean) => void>,
     workerTerminate: 0,
+    worker: null as null | { onmessage: ((event: MessageEvent) => void) | null },
+    holdAssembly: false,
     plan: { items: [], totalBytes: 0, knownEmpty: [] } as {
         items: Array<{ band: string | null; cell: { id: string; sha256: string; bytes: number; partial?: boolean } }>;
         totalBytes: number;
@@ -82,6 +84,10 @@ class AssembleWorker {
     onerror: ((event: ErrorEvent) => void) | null = null;
     onmessageerror: (() => void) | null = null;
 
+    constructor() {
+        seams.worker = this;
+    }
+
     postMessage(request: { type?: string; estimateId?: number; onDisk?: boolean; requireDisk?: boolean }) {
         if (request.type === "estimate") {
             const reply = (error = false) => this.onmessage?.(
@@ -94,10 +100,10 @@ class AssembleWorker {
                                 engineBytes: 1,
                                 inputBytes: 1,
                                 outputBytes: 1,
-                                peakBytes: 3,
+                                peakBytes: seams.memoryRequiresDisk && !request.onDisk ? 120 : 3,
                                 budgetBytes: 100,
                                 ceilingBytes: 100,
-                                headroomBytes: 97,
+                                headroomBytes: seams.memoryRequiresDisk && !request.onDisk ? 0 : 97,
                                 fits: !seams.memoryRequiresDisk || request.onDisk === true,
                             },
                         },
@@ -108,6 +114,7 @@ class AssembleWorker {
         } else if (request.type === "assemble") {
             seams.workerAssemble += 1;
             seams.requireDisk = request.requireDisk ?? false;
+            if (seams.holdAssembly) return;
             queueMicrotask(() => {
                 if (seams.workerError) {
                     this.onmessage?.(
@@ -189,6 +196,8 @@ describe("direct assembler delivery", () => {
         seams.holdEstimates = false;
         seams.estimateReplies = [];
         seams.workerTerminate = 0;
+        seams.worker = null;
+        seams.holdAssembly = false;
         seams.plan = { items: [], totalBytes: 0, knownEmpty: [] };
     });
 
@@ -197,6 +206,61 @@ describe("direct assembler delivery", () => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
         document.body.replaceChildren();
+    });
+
+    it("shows the projected memory refusal and closes Download map", async () => {
+        seams.memoryRequiresDisk = true;
+        const { component, target } = await mountReadyStep();
+        const refusal = target.querySelector(".warn")?.textContent ?? "";
+        expect(refusal).toContain("120 B of browser memory");
+        expect(refusal).toContain("100 B");
+        expect(refusal).toContain("Reduce the coverage area");
+        expect((target.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(true);
+        await unmount(component);
+    });
+
+    it("shows reported download and assembly progress in every worker phase", async () => {
+        seams.holdAssembly = true;
+        let report!: (progress: { completedCells: number; totalCells: number; receivedBytes: number; totalBytes: number }) => void;
+        let finishDownload!: () => void;
+        seams.downloadCells.mockImplementation((_plan, options) => new Promise<void>((resolve) => {
+            report = options.onProgress!;
+            finishDownload = resolve;
+        }));
+        const { component, target } = await mountReadyStep();
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 30 && !report; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(report).toBeDefined();
+        report({ completedCells: 1, totalCells: 2, receivedBytes: 500, totalBytes: 1_000 });
+        await tick();
+        expect(target.textContent).toContain("downloading cells — 1/2");
+        expect(target.textContent).toContain("500 B of 1000 B");
+        expect(target.querySelector(".bar span")?.getAttribute("style")).toContain("50%");
+
+        finishDownload();
+        for (let attempt = 0; attempt < 30 && seams.workerAssemble === 0; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(seams.workerAssemble).toBe(1);
+        for (const [phase, label, fraction] of [
+            ["open", "reading cells", 0.1],
+            ["poi", "merging places", 0.3],
+            ["nav", "stitching the road network", 0.5],
+            ["plan", "planning the file", 0.7],
+            ["write", "writing", 0.8],
+            ["verify", "checking the result", 0.9],
+        ] as const) {
+            seams.worker!.onmessage!(new MessageEvent("message", { data: { type: "progress", phase, fraction } }));
+            await tick();
+            expect(target.textContent).toContain(`assembling — ${label} · ${Math.round(fraction * 100)}%`);
+            expect(target.querySelector(".bar span")?.getAttribute("style")).toContain(`${Math.round(fraction * 100)}%`);
+        }
+        [...target.querySelectorAll("button")].find((button) => button.textContent === "Cancel")!.click();
+        await unmount(component);
     });
 
     it("refuses lost required cell storage before downloading", async () => {
