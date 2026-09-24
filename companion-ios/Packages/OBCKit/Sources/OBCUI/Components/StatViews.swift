@@ -78,6 +78,51 @@ public struct OBCStatGrid: View {
     }
 }
 
+/// The route ledger, in the device route overview's layout: one row per stat, the caption left
+/// and the value right, on a surface card with hairlines between rows. At accessibility text
+/// sizes the caption sits over its value.
+public struct OBCLedger: View {
+    let stats: [OBCStat]
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    public init(_ stats: [OBCStat]) { self.stats = stats }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            ForEach(stats) { stat in
+                row(stat)
+                    .overlay(alignment: .top) {
+                        if stat.id != stats.first?.id { OBCTheme.hairline.frame(height: 1) }
+                    }
+            }
+        }
+        .padding(.horizontal, 16)
+        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
+    }
+
+    @ViewBuilder
+    private func row(_ stat: OBCStat) -> some View {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+        layout {
+            OBCEyebrow(stat.key)
+            if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
+            (Text(stat.value).font(.obcStat(.title3)).foregroundColor(OBCTheme.ink)
+                + Text(stat.unit.map { "\u{2009}\($0)" } ?? "")
+                .font(.system(.subheadline, weight: .medium))
+                .foregroundColor(OBCTheme.secondary))
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(stat.key)
+        .accessibilityValue([stat.value, stat.unit].compactMap { $0 }.joined(separator: " "))
+        .accessibilityIdentifier("ledger.\(stat.key)")
+    }
+}
+
 /// Shared value and key text, used by both stat layouts.
 private func statValue(_ stat: OBCStat, style: Font.TextStyle) -> some View {
     (Text(stat.value)
@@ -96,6 +141,12 @@ private func statKey(_ stat: OBCStat) -> some View {
 
 #Preview("Stats") {
     VStack(spacing: 20) {
+        OBCLedger([
+            OBCStat(value: "18.7", unit: "km", key: "Distance"),
+            OBCStat(value: "1,087", unit: "m", key: "Climb"),
+            OBCStat(value: "1:19", unit: "h", key: "Est. time"),
+            OBCStat(value: "14", unit: "%", key: "Max grade"),
+        ])
         OBCStatStrip([
             OBCStat(value: "62.4", unit: "km", key: "Distance"),
             OBCStat(value: "840", unit: "m", key: "Climb"),

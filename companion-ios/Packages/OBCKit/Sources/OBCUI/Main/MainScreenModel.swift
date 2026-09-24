@@ -1439,6 +1439,11 @@ public final class MainScreenModel {
         plannedRecords[id]?.route
     }
 
+    /// The file a saved route was imported from, for the line under its title.
+    public func plannedSourceFileName(for id: RouteID) -> String? {
+        plannedRecords[id]?.sourceFileName
+    }
+
     public func plannedBikeType(for id: RouteID) -> BikeType {
         plannedRecords[id]?.bikeType ?? .road
     }
