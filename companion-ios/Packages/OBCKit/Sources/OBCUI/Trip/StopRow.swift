@@ -1,8 +1,9 @@
 import SwiftUI
 import OBCDomain
 
-/// The mark of a stop's kind: the kind's symbol in the surface colour on ink. The same mark is the row
-/// icon in the stops sheet, the pin on the map and the mark on the profile.
+/// The mark of a stop's kind: the kind's symbol in the surface colour on ink, never amber, which is
+/// the day-end handle's. The same mark is the row icon in the stops sheet, the pin on the map and
+/// the mark on the profile.
 public struct StopIcon: View {
     let kind: Stop.Kind
     var size: CGFloat = 28
@@ -66,14 +67,13 @@ public struct StopRow: View {
                 StopIcon(kind: stop.kind)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(stop.name)
-                        .font(.system(.callout))
+                        .font(.system(.body, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
-                        .lineLimit(1)
+                        .lineLimit(2)
                     Text(detail)
-                        .font(.system(.caption).monospacedDigit())
+                        .font(.system(.subheadline).monospacedDigit())
                         .foregroundStyle(OBCTheme.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
