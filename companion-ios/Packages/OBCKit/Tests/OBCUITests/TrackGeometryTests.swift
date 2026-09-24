@@ -53,6 +53,19 @@ final class TrackGeometryTests: XCTestCase {
         XCTAssertEqual(transform(.init(x: 0, y: 0)).x, 35, accuracy: 0.001)
     }
 
+    func testABottomInsetKeepsTheTrackAboveTheChipStrip() {
+        // A wide track into 96x72 with a 6pt inset and a 20pt strip: every point stays above 72 - 20 - 6.
+        let preview = TrackPreview(
+            points: [.init(x: 0, y: 0), .init(x: 1, y: 1)],
+            aspectRatio: 1
+        )
+        let transform = TrackPreviewView.fittingTransform(
+            for: preview, in: CGSize(width: 96, height: 72), inset: 6, bottomInset: 20
+        )
+        XCTAssertEqual(transform(.init(x: 0, y: 0)).y, 6, accuracy: 0.001)
+        XCTAssertEqual(transform(.init(x: 1, y: 1)).y, 46, accuracy: 0.001)
+    }
+
     func testCenterPointStaysCentered() {
         let preview = TrackPreview(points: [.init(x: 0.5, y: 0.5)], aspectRatio: 1.7)
         let transform = TrackPreviewView.fittingTransform(
