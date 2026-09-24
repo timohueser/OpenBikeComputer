@@ -36,6 +36,8 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
   const diagnostics = [`browser: ${page.context().browser().version()}`];
   const errors = [];
   const offOrigin = [];
+  const downloads = [];
+  page.on('download', (download) => downloads.push(download));
   page.on('console', (message) => {
     diagnostics.push(`${message.type()}: ${message.text()}`);
     if (message.type() === 'error') errors.push(message.text());
@@ -60,12 +62,66 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
   try {
     await page.goto('/');
 
+    await page.getByRole('button', { name: 'Add a corridor around a route' }).click();
+    const corridor = page.locator('.overlay.corridor');
+    await corridor.locator('input[type="file"]').setInputFiles({
+      name: 'fixture-route.gpx',
+      mimeType: 'application/gpx+xml',
+      buffer: Buffer.from('<gpx><trk><name>Fixture Route</name><trkseg><trkpt lat="47.30" lon="7.62"/><trkpt lat="47.34" lon="7.68"/></trkseg></trk></gpx>'),
+    });
+    await expect(corridor.locator('.routes li')).toContainText('Fixture Route');
+    await expect(corridor.locator('.adds')).toContainText('adds');
+    await corridor.locator('input[type="range"]').evaluate((slider) => {
+      slider.value = '50';
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(corridor.locator('.slider')).toContainText('± 50 km');
+    await corridor.getByRole('button', { name: 'Add to map' }).click();
+    const corridorPart = page.locator('.parts li').filter({ hasText: 'Corridor — Fixture Route' });
+    await expect(corridorPart).toBeVisible();
+    await expect(corridorPart.locator('.price')).not.toHaveText('pricing…');
+    await corridorPart.getByRole('button', { name: 'Remove Fixture Route' }).click();
+    await expect(corridorPart).toHaveCount(0);
+    await expect(page.locator('.parts li')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Add a region' }).click();
     const search = page.getByLabel('Search regions');
     await expect(search).toBeVisible();
     await search.fill('Bridge');
     // The price is in the label and the formatter owns its spelling, so match the prefix.
     await page.locator(`[aria-label^="Add ${REGION} ("]`).click();
     await expect(page.locator(`[aria-label="${REGION} is already in the map"]`)).toBeVisible();
+
+    const originalTotal = await page.locator('.ledger .total').innerText();
+    await page.getByRole('button', { name: 'Draw a box' }).click();
+    const map = page.locator('.leaflet-container');
+    const bounds = await map.boundingBox();
+    expect(bounds).not.toBeNull();
+    const x = bounds.x + bounds.width / 2;
+    const y = bounds.y + bounds.height / 2;
+    await page.mouse.move(x - 30, y - 30);
+    await page.mouse.down();
+    await page.mouse.move(x + 30, y + 30, { steps: 8 });
+    await page.mouse.up();
+    const boxPart = page.locator('.parts li').filter({ hasText: 'Box' });
+    await expect(boxPart).toBeVisible();
+    await expect(boxPart.locator('.price')).not.toHaveText('pricing…');
+    await boxPart.getByRole('button', { name: /^Remove Box/ }).click();
+    await expect(boxPart).toHaveCount(0);
+    await expect(page.locator('.ledger .total')).toHaveText(originalTotal);
+
+    await page.getByRole('button', { name: 'Lasso an area' }).click();
+    await page.mouse.move(x - 30, y - 30);
+    await page.mouse.down();
+    for (const [dx, dy] of [[30, -30], [30, 30], [-30, 30], [-30, -30]]) {
+      await page.mouse.move(x + dx, y + dy, { steps: 4 });
+    }
+    await page.mouse.up();
+    const lassoPart = page.locator('.parts li').filter({ hasText: 'Lasso' });
+    await expect(lassoPart).toBeVisible();
+    await expect(lassoPart.locator('.price')).not.toHaveText('pricing…');
+    await lassoPart.getByRole('button', { name: /^Remove Lasso/ }).click();
+    await expect(lassoPart).toHaveCount(0);
 
     const download = page.getByRole('button', { name: 'Download map' });
     // Enabled only once the ledger is final and the memory projection has been admitted.
@@ -93,6 +149,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const requested = new Set(records.slice(1).filter((r) => r.kind === 'object').map((r) => r.path));
     expect([...records[0].served].filter((path) => !requested.has(path))).toEqual([]);
     expect(records.slice(1).filter((r) => r.kind === 'missing' && r.path.startsWith('/catalog/'))).toEqual([]);
+    expect(downloads).toEqual([saved]);
   } catch (error) {
     failure = error;
   }
