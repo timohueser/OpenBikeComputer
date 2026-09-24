@@ -96,11 +96,12 @@ extension Trip {
         reproject()
     }
 
-    /// Remove `day`'s end, so the day joins the next one. False, and no change, when
-    /// ``removeDayEndBlocker(_:)`` says why.
+    /// Remove `day`'s end, so the day joins the next one and keeps its own name. False, and no
+    /// change, when ``removeDayEndBlocker(_:)`` says why.
     @discardableResult
     public mutating func removeDayEnd(_ day: Int) -> Bool {
         guard removeDayEndBlocker(day) == nil else { return false }
+        dayEnds[day + 1].title = dayEnds[day].title
         dayEnds.remove(at: day)
         return true
     }

@@ -1,11 +1,16 @@
 import Foundation
 
-/// A gap inside a day: two pieces of the line meet away from every day end. The cut rides it as
-/// a straight segment until the router bridges it.
+/// A gap in the line: two pieces meet without a road between them. Inside a day, the cut rides it
+/// as a straight segment. At a day end, the next day starts across it; more than
+/// ``Trip/transferMinMeters`` apart, that is a transfer. The router can bridge either kind, and a
+/// bridged gap is line: no gap, so no transfer.
 public struct TripGap: Equatable, Sendable {
     /// The line index the gap leads into.
     public let pieceStart: Int
+    /// The day that rides the bridge: the day the gap is in, or the day after a day end at it.
     public let day: Int
+    /// The gap is where a day ends.
+    public let isAtDayEnd: Bool
     public let from: Coordinate
     public let to: Coordinate
 
@@ -14,17 +19,17 @@ public struct TripGap: Equatable, Sendable {
 }
 
 extension Trip {
-    /// The gaps inside days, in line order. A gap at a day end, a transfer or not, is where the
-    /// next day starts: it stays, and the device's "Ride to start" covers it.
-    public func gapsInsideDays() -> [TripGap] {
+    /// Every gap of the line, in line order.
+    public func gaps() -> [TripGap] {
         guard !pieceStarts.isEmpty else { return [] }
         let vertices = measuredLine.vertices
         return pieceStarts.compactMap { start in
             let at = vertices[start].distance
-            guard let day = dayEnds.firstIndex(where: { $0.distance >= at - MeasuredLine.tieMeters }),
-                abs(dayEnds[day].distance - at) >= MeasuredLine.tieMeters
-            else { return nil }
-            return TripGap(pieceStart: start, day: day, from: line[start - 1].coordinate, to: line[start].coordinate)
+            guard let end = dayEnds.firstIndex(where: { $0.distance >= at - MeasuredLine.tieMeters }) else { return nil }
+            let isAtDayEnd = abs(dayEnds[end].distance - at) < MeasuredLine.tieMeters && end < dayCount - 1
+            return TripGap(
+                pieceStart: start, day: isAtDayEnd ? end + 1 : end, isAtDayEnd: isAtDayEnd,
+                from: line[start - 1].coordinate, to: line[start].coordinate)
         }
     }
 
@@ -37,11 +42,16 @@ extension Trip {
         return leg
     }
 
-    /// Join the two pieces of `gap` with `leg`, so the gap becomes line. False, and no change,
-    /// when the gap is no longer inside a day of this line.
+    /// Join the two pieces of `gap` with `leg`, so the gap becomes line. A day end at the gap
+    /// stays where it is, so the next day rides the bridge; it is no longer a transfer and loses
+    /// its transfer label. False, and no change, when the gap is no longer in this line.
     @discardableResult
     public mutating func bridge(_ gap: TripGap, with leg: [RoutePoint]) -> Bool {
-        guard gapsInsideDays().contains(gap), let index = pieceStarts.firstIndex(of: gap.pieceStart) else { return false }
+        guard gaps().contains(gap), let index = pieceStarts.firstIndex(of: gap.pieceStart) else { return false }
+        if gap.isAtDayEnd {
+            dayEnds[gap.day - 1].transfer = nil
+            dayEnds[gap.day - 1].resumeName = nil
+        }
         var inner = leg
         if inner.first?.coordinate == gap.from { inner.removeFirst() }
         if inner.last?.coordinate == gap.to { inner.removeLast() }

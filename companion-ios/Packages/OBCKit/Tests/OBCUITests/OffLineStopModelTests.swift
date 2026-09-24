@@ -116,4 +116,21 @@ struct OffLineStopModelTests {
         #expect(model.notes[0] == nil)
         #expect(model.trip.pieceStarts.isEmpty)
     }
+
+    @Test
+    func theDayAfterATransferBridgesItAndUndoBringsItBack() async {
+        let model = editor([file(0, 10_000), file(13_000, 20_000)], router: FakeLegRouter())
+        #expect(model.removeBlocker(0) != nil, "a transfer")
+        #expect(!model.canBridge(0) && model.canBridge(1), "the day after the transfer offers the bridge")
+        #expect(model.notes[1] == nil, "a transfer is no straight line")
+        model.bridgeGap(in: 1)
+        while model.bridging != nil { await Task.yield() }
+        #expect(model.gaps.isEmpty)
+        #expect(model.removeBlocker(0) == nil, "no transfer after the bridge")
+        #expect(abs(model.stats[1].distanceMeters - 10_000) < 1, "the next day rides the bridge")
+
+        model.undo()
+        #expect(model.gaps.count == 1 && model.removeBlocker(0) != nil)
+        #expect(model.handles.line.length < 17_100, "the line without the bridge")
+    }
 }

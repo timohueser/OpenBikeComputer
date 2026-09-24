@@ -210,7 +210,8 @@ struct DayEditorSheet: View {
         ) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("The day rides it as a straight line.")
+            Text(model.unbridgedGap?.isAtDayEnd == true
+                ? "The next day starts across the gap." : "The day rides it as a straight line.")
         }
     }
 

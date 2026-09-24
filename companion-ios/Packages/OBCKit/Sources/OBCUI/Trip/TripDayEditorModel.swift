@@ -36,12 +36,15 @@ public final class TripDayEditorModel {
     public let isSplitMode: Bool
     /// The choice for a day just ended at a stop off the line.
     public var offLineStop: OffLineStopModel?
-    /// The gaps inside days, which the router can bridge.
+    /// The gaps of the line, which the router can bridge: inside a day, and at a day end, where
+    /// the next day's menu offers the bridge.
     public private(set) var gaps: [TripGap] = []
     /// The day whose gap the router is bridging.
     public private(set) var bridging: Int?
-    /// Why the last bridge failed; the gap stays a straight line.
+    /// Why the last bridge failed; the gap stays as it was.
     public var bridgeFailure: LegRouteFailure?
+    /// The gap the last failed bridge was for.
+    public private(set) var unbridgedGap: TripGap?
     /// Per day, how it reaches its stop or rides a gap: "out and back +0.8 km".
     public private(set) var notes: [String?] = []
     /// The trips before each committed change, newest last.
@@ -229,8 +232,8 @@ public final class TripDayEditorModel {
         router != nil && bridging == nil && gaps.contains { $0.day == day }
     }
 
-    /// Route across the first gap of `day`. When the router cannot, the gap stays a straight
-    /// line and ``bridgeFailure`` says why.
+    /// Route across the first gap of `day`. When the router cannot, the gap stays as it is and
+    /// ``bridgeFailure`` says why.
     public func bridgeGap(in day: Int) {
         settle()
         guard canBridge(day), let router, let gap = gaps.first(where: { $0.day == day }) else { return }
@@ -248,7 +251,9 @@ public final class TripDayEditorModel {
             self.bridging = nil
             switch leg {
             case .success(let points): self.commit { $0.bridge(gap, with: points) }
-            case .failure(let failure): self.bridgeFailure = failure
+            case .failure(let failure):
+                self.unbridgedGap = gap
+                self.bridgeFailure = failure
             }
             self.syncHandles()
         }
@@ -372,7 +377,7 @@ public final class TripDayEditorModel {
         }
         stats = trip.dayStats(on: line, ends: markers.map(\.distance))
         stopDays = [:]
-        gaps = trip.gapsInsideDays()
+        gaps = trip.gaps()
         syncBranches(colors: colors)
         syncNotes()
     }
@@ -394,7 +399,9 @@ public final class TripDayEditorModel {
                 break
             }
         }
-        branches += gaps.map { LineBranch(coordinates: [$0.from, $0.to], color: colors[$0.day], isDashed: true) }
+        branches += gaps.filter { !$0.isAtDayEnd }.map {
+            LineBranch(coordinates: [$0.from, $0.to], color: colors[$0.day], isDashed: true)
+        }
         handles.setBranches(branches, oldSections: oldSections)
     }
 
@@ -407,7 +414,7 @@ public final class TripDayEditorModel {
             }
             if bridging == day {
                 parts.append("bridging the gap…")
-            } else if let gap = gaps.first(where: { $0.day == day }) {
+            } else if let gap = gaps.first(where: { $0.day == day && !$0.isAtDayEnd }) {
                 parts.append("straight line \(OBCFormat.shortDistance(meters: gap.meters))")
             }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
