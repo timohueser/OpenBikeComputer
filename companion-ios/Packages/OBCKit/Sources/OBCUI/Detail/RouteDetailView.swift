@@ -2,8 +2,9 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The detail screen for a route or ride. One view, three dressings:
-/// planned, tracked, and imported.
+/// The detail screen for a route or ride. One view, four dressings: planned, trip day, tracked,
+/// and imported. A route page leads with what the device holds and the one action, then the
+/// ledger in the device route overview's layout.
 public struct RouteDetailView: View {
     @Bindable private var model: RouteDetailModel
     private let deviceName: String
@@ -13,11 +14,10 @@ public struct RouteDetailView: View {
     /// Set by a host that rebuilds this view while it is on screen: the host presents the rename
     /// sheet above the rebuild, because a rebuild closes a sheet presented from inside it.
     private let onRenameTap: (() -> Void)?
-    private let onReverse: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
-    /// The imported dressing's choice rows, under the stats.
+    /// The imported dressing's save choices, directly under the title.
     private let importAccessory: AnyView?
     /// A tracked ride's photos.
     private let photos: RidePhotosModel?
@@ -40,7 +40,6 @@ public struct RouteDetailView: View {
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
         onRenameTap: (() -> Void)? = nil,
-        onReverse: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
@@ -55,7 +54,6 @@ public struct RouteDetailView: View {
         self.onDelete = onDelete
         self.onRename = onRename
         self.onRenameTap = onRenameTap
-        self.onReverse = onReverse
         self.onBikeTypeChange = onBikeTypeChange
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
@@ -68,13 +66,25 @@ public struct RouteDetailView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if let line = model.importedFromLine {
-                    importedBanner(line)
-                }
-
                 hero
 
                 titleBlock
+
+                switch model.dressing {
+                case .planned:
+                    DeviceCopyStatus(
+                        state: model.deviceCopyState,
+                        connection: model.connection,
+                        deviceName: deviceName,
+                        onSend: onUpload
+                    )
+                    .padding(.top, 14)
+                case .imported:
+                    importAccessory
+                        .padding(.top, 14)
+                case .tripDay, .tracked:
+                    EmptyView()
+                }
 
                 if let photos {
                     RidePhotoOfferRow(model: photos)
@@ -85,36 +95,14 @@ public struct RouteDetailView: View {
                 quietRows
 
                 if !model.stats.isEmpty {
-                    OBCStatStrip(model.stats)
-                }
-
-                if case .planned = model.dressing {
-                    bikeTypeRow
-                }
-
-                if case .imported = model.dressing, let importAccessory {
-                    importAccessory
-                        .padding(.top, 14)
-                }
-
-                if !model.waypoints.isEmpty {
-                    OBCDisclosureRow(
-                        systemImage: "mappin.and.ellipse",
-                        label: waypointsLabel,
-                        value: "\(model.waypoints.count)",
-                        isExpanded: $waypointsExpanded,
-                        headerAccessibilityID: "detail.waypoints"
-                    ) {
-                        WaypointsDropdownContent(waypoints: model.waypoints)
-                            .accessibilityIdentifier("detail.waypointsList")
-                    }
-                    .padding(.top, 12)
+                    OBCLedger(model.stats)
+                        .padding(.top, 20)
                 }
 
                 if !model.elevationProfile.isEmpty {
-                    OBCEyebrow("Elevation profile")
-                        .padding(.top, 18)
-                        .padding(.bottom, 4)
+                    OBCEyebrow("Elevation")
+                        .padding(.top, 20)
+                        .padding(.bottom, 6)
                     ElevationProfileView(samples: model.elevationProfile, ticks: photos?.tickFractions ?? [])
                 }
 
@@ -143,6 +131,24 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.sensorSummary")
                 }
 
+                if case .planned = model.dressing {
+                    bikeTypeRow
+                }
+
+                if !model.waypoints.isEmpty {
+                    OBCDisclosureRow(
+                        systemImage: "mappin.and.ellipse",
+                        label: waypointsLabel,
+                        value: "\(model.waypoints.count)",
+                        isExpanded: $waypointsExpanded,
+                        headerAccessibilityID: "detail.waypoints"
+                    ) {
+                        WaypointsDropdownContent(waypoints: model.waypoints)
+                            .accessibilityIdentifier("detail.waypointsList")
+                    }
+                    .padding(.top, 12)
+                }
+
                 if case .tracked = model.dressing {
                     // Ride detail B: the ride's facts first, then sensors, bike type and services.
                     bikeTypeRow
@@ -150,7 +156,7 @@ public struct RouteDetailView: View {
                 }
                 actions
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 16)
             .padding(.bottom, 24)
         }
         .background(OBCTheme.page.ignoresSafeArea())
@@ -174,7 +180,7 @@ public struct RouteDetailView: View {
         .task { await dayNote?.start() }
     }
 
-    /// Offline keeps the grid and no tap: a map with no network path is blank.
+    /// Offline keeps the sketch and no tap: a map with no network path is blank.
     private var canExpandMap: Bool {
         isOnline && !model.mapCoordinates.isEmpty
     }
@@ -184,13 +190,14 @@ public struct RouteDetailView: View {
         let preview = MapTrackPreviewView(
             model.preview,
             style: .hero,
-            tag: model.tag.text,
-            tagColor: model.tag.isAccent ? OBCTheme.ink : OBCTheme.secondary,
+            tag: model.tag?.text,
+            tagColor: model.tag?.isAccent == true ? OBCTheme.ink : OBCTheme.secondary,
             waypoints: model.waypoints,
             totalDistanceMeters: model.distanceMeters,
             photoPins: photos?.pinCoordinates ?? []
         )
-        .frame(height: 214)
+        .frame(height: 200)
+        .padding(.top, 8)
 
         if canExpandMap {
             Button { mapShown = true } label: {
@@ -215,42 +222,29 @@ public struct RouteDetailView: View {
         )
     }
 
-    private func importedBanner(_ line: String) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "square.and.arrow.up")
-                .font(.system(.caption, weight: .bold))
-            Text(line.uppercased())
-                .font(.system(.caption2, weight: .semibold).monospacedDigit())
-                .kerning(1)
-        }
-        .foregroundStyle(OBCTheme.secondary)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
-        .padding(.horizontal, 2)
-        .accessibilityIdentifier("detail.importedFrom")
-    }
-
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(model.name)
                     .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
                     .accessibilityIdentifier("detail.title")
                 if model.isRenamable {
                     Button {
                         if let onRenameTap { onRenameTap() } else { renameShown = true }
                     } label: {
                         Image(systemName: "pencil")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.system(.body, weight: .medium))
                             .foregroundStyle(OBCTheme.secondary)
-                            .frame(width: 32, height: 32)
-                            .background(OBCTheme.surface)
-                            .clipShape(Circle())
-                            .overlay(Circle().strokeBorder(OBCTheme.hairline))
+                            .obcFixedGeometryType()
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    // The glyph's optical edge lines up with the page margin.
+                    .padding(.trailing, -12)
                     .accessibilityLabel(renameTitle)
                     .accessibilityIdentifier("detail.rename")
                 }
@@ -259,6 +253,7 @@ public struct RouteDetailView: View {
                 Text(subtitle)
                     .font(.system(.subheadline))
                     .foregroundStyle(OBCTheme.secondary)
+                    .accessibilityIdentifier("detail.source")
             }
             if let statsLine = model.statsLine {
                 Text(statsLine)
@@ -268,8 +263,7 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.statsLine")
             }
         }
-        .padding(.top, 16)
-        .padding(.bottom, 12)
+        .padding(.top, 14)
     }
 
     private var highlightsLine: some View {
@@ -315,13 +309,6 @@ public struct RouteDetailView: View {
         VStack(spacing: 10) {
             switch model.dressing {
             case .planned:
-                uploadButton
-                if let onReverse {
-                    // Reverse lands a copy; the original direction stays.
-                    Button("Reverse", action: onReverse)
-                        .buttonStyle(.obcGhost)
-                        .accessibilityIdentifier("detail.reverse")
-                }
                 Button("Delete route") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
@@ -339,7 +326,7 @@ public struct RouteDetailView: View {
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     title: "No device paired yet.",
-                    message: "Save it now — upload once you pair."
+                    message: "Save it now and send it after you pair."
                 )
                 .padding(.bottom, 4)
                 Button("Pair a device") { onPair?() }
@@ -366,25 +353,6 @@ public struct RouteDetailView: View {
             }
         }
         .padding(.top, 20)
-    }
-
-    private var uploadButton: some View {
-        let state = model.deviceCopyState
-        return Button {
-            onUpload()
-        } label: {
-            switch state {
-            case .notOnDevice:
-                Label("Upload to \(deviceName)", systemImage: "square.and.arrow.up")
-            case .outdated:
-                Label("Update on \(deviceName)", systemImage: "arrow.triangle.2.circlepath")
-            case .upToDate:
-                Label("Up to date on \(deviceName)", systemImage: "checkmark.circle")
-            }
-        }
-        .buttonStyle(.obcPrimary)
-        .disabled(!model.canUpload || state == .upToDate)
-        .accessibilityIdentifier("detail.upload")
     }
 
     private var waypointsLabel: String {

@@ -33,8 +33,7 @@ public struct ElevationProfileView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
                 .background(OBCTheme.surface)
-                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-                .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
+                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
                 .accessibilityLabel("Elevation profile")
                 // The card only exists once its samples do; on a tracked ride that is an async
                 // read away. Automation waits on this to know the layout is final.

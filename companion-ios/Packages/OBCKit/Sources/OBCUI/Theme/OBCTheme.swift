@@ -82,10 +82,16 @@ public enum OBCTheme {
     public static let deviceBezel = Color(hex: 0x101317)
     /// The device UI's rust title bar.
     public static let deviceHeader = Color(hex: 0xAA5500)
-    /// Cream text on the title bar.
-    public static let deviceHeaderText = Color(hex: 0xFFFFAA)
-    /// The device screen's track amber, from the on-glass palette.
+    /// Text on the title bar: the firmware's `BAR_TEXT`, white on glass.
+    public static let deviceHeaderText = Color(hex: 0xFFFFFF)
+    /// The device screen's track amber, from the on-glass palette. Also its selected-row fill.
     public static let deviceTrack = Color(hex: 0xFFAA00)
+    /// Device text and lines.
+    public static let deviceInk = Color(hex: 0x000000)
+    /// Device captions and units.
+    public static let deviceCaption = Color(hex: 0x555500)
+    /// The device's screen outline and ledger rules.
+    public static let deviceRule = Color(hex: 0xAAAA55)
 
     // MARK: Radii
     /// Buttons and inputs.

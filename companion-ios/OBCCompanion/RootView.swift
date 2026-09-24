@@ -383,6 +383,7 @@ struct RootView: View {
                     preloadedDetail: mainModel.importedDetail(for: id),
                     // And their geometry, which an upload re-encodes.
                     plannedGeometry: mainModel.plannedGeometry(for: id),
+                    sourceFileName: mainModel.plannedSourceFileName(for: id),
                     bikeType: mainModel.plannedBikeType(for: id),
                     // And the device link, so a re-upload replaces in place and the button knows
                     // whether the copy is current.

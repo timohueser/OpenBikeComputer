@@ -55,7 +55,7 @@ public struct TrackPreviewView: View {
     }
 
     /// An extra dot pinned on the polyline: a unit point plus a label drawn in an
-    /// amber marker.
+    /// olive marker.
     public struct Marker: Identifiable {
         public let id: Int
         public let point: TrackPreview.Point
@@ -263,9 +263,9 @@ public struct TrackPreviewView: View {
         let ring = CGRect(x: point.x - r - 1.25, y: point.y - r - 1.25, width: 2 * (r + 1.25), height: 2 * (r + 1.25))
         context.fill(Path(ellipseIn: ring), with: .color(OBCTheme.surface))
         let dot = CGRect(x: point.x - r, y: point.y - r, width: 2 * r, height: 2 * r)
-        context.fill(Path(ellipseIn: dot), with: .color(OBCTheme.amber))
+        context.fill(Path(ellipseIn: dot), with: .color(OBCTheme.secondary))
         context.draw(
-            Text(label).font(.system(.caption2, weight: .semibold).monospacedDigit()).foregroundColor(OBCTheme.ink),
+            Text(label).font(.system(.caption2, weight: .semibold).monospacedDigit()).foregroundColor(OBCTheme.surface),
             at: point
         )
     }

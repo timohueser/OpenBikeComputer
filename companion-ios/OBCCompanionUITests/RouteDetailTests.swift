@@ -41,26 +41,29 @@ final class RouteDetailTests: XCTestCase {
 
     // MARK: Planned dressing
 
-    /// Hero, stat strip, waypoints row, profile and inline actions.
+    /// Hero, device state, ledger, waypoints row, profile and delete. The fixture route is on the
+    /// device and up to date, so the state says so and there is no send button.
     @MainActor
     func testPlannedDetailShowsTheProfileLayout() {
         let app = launch()
         openPlannedDetail(app)
 
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
-        // A stat renders its value and unit as one text element.
-        XCTAssertTrue(app.staticTexts["62.4 km"].exists, "distance stat missing")
-        XCTAssertTrue(app.staticTexts["3:12"].exists, "est. time stat missing")
+        let state = app.otherElements["detail.deviceState"]
+        XCTAssertTrue(state.waitForExistence(timeout: 5), "device state missing")
+        XCTAssertEqual(state.label, "Up to date on Trailhead")
+        XCTAssertFalse(app.buttons["detail.upload"].exists, "an up-to-date copy has no send button")
+
+        // A ledger row speaks its caption as the label and value plus unit as the value.
+        XCTAssertEqual(app.otherElements["ledger.Distance"].value as? String, "62.4 km")
+        XCTAssertEqual(app.otherElements["ledger.Est. time"].value as? String, "3:12 h")
         // The max grade derives from the saved record's geometry, so pin the shape and not a
         // fixture constant.
-        let maxGrade = app.staticTexts.matching(
-            NSPredicate(format: "label MATCHES %@", "\\d+ %")
-        ).firstMatch
-        XCTAssertTrue(maxGrade.waitForExistence(timeout: 5), "max grade stat missing")
+        let maxGrade = app.otherElements["ledger.Max grade"].value as? String ?? ""
+        XCTAssertNotNil(maxGrade.range(of: "^\\d+ %$", options: .regularExpression), "max grade: \(maxGrade)")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5), "waypoints disclosure missing")
-        XCTAssertTrue(app.buttons["detail.upload"].exists, "upload action missing")
         XCTAssertTrue(app.buttons["detail.delete"].exists, "delete action missing")
         snap(app, "E2-route-detail")
     }
@@ -202,12 +205,10 @@ final class RouteDetailTests: XCTestCase {
     func testImportSampleLandsOnE1AndSavesToPlanned() {
         let app = launch(importSample: true)
 
-        XCTAssertTrue(app.otherElements["detail.importedFrom"].firstMatch.waitForExistence(timeout: 10)
-                      || app.staticTexts["IMPORTED FROM KOMOOT"].waitForExistence(timeout: 5),
-                      "E1 source banner missing")
+        XCTAssertTrue(app.staticTexts["Imported from Komoot"].waitForExistence(timeout: 10), "E1 source line missing")
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["CLIMB"].waitForExistence(timeout: 5), "climb stat missing")
-        XCTAssertTrue(app.staticTexts["DESCENT"].waitForExistence(timeout: 5), "descent stat missing")
+        XCTAssertTrue(app.otherElements["ledger.Climb"].waitForExistence(timeout: 5), "climb row missing")
+        XCTAssertTrue(app.otherElements["ledger.Max grade"].exists, "max grade row missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
@@ -227,7 +228,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["detail.waypoints"].waitForExistence(timeout: 5),
                       "saved import lost its waypoints")
-        XCTAssertTrue(app.staticTexts["ELEVATION PROFILE"].exists, "saved import lost its profile")
+        XCTAssertTrue(app.staticTexts["ELEVATION"].exists, "saved import lost its profile")
         snap(app, "E2-saved-import")
     }
 
