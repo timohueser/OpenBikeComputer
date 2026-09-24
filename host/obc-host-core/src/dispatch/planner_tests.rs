@@ -126,6 +126,7 @@ fn real_planner_waits_for_steps_and_explicit_commit_then_releases() {
             sources: obc_app::device_core::pass::SourceNeeds { map: false, route: false },
             effects: obc_app::device_core::EffectSlots::new(),
             immediate: false,
+            sound: None,
         };
         p.host.execute(
             &mut p.app,
