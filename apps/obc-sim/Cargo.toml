@@ -51,6 +51,9 @@ eframe = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Native "open file" dialog for selecting a GPX track to replay.
 rfd = "0.14"
+# Cue playback on the GUI path. Default features only: ALSA on Linux (libasound2-dev), CoreAudio
+# and WASAPI need no system package.
+cpal = "0.18"
 
 [dev-dependencies]
 heapless = "0.8"
