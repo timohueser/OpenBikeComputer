@@ -2356,6 +2356,11 @@ impl App {
         self.settings.adopt_ble_fields(other);
     }
 
+    /// Apply a host's theme without resetting the clock or the settings save handshake.
+    pub fn set_theme(&mut self, theme: crate::settings::Theme) {
+        self.settings.theme = theme;
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }

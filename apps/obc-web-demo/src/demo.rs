@@ -292,6 +292,16 @@ impl Demo {
         }
     }
 
+    pub fn set_dark(&mut self, dark: bool) {
+        use obc_app::settings::Theme;
+        let theme = if dark { Theme::Dark } else { Theme::Light };
+        if self.app.settings().theme != theme {
+            self.app.set_theme(theme);
+            // A drawer can retain the old palette in its cached background.
+            self.app.set_resident_frame(false);
+        }
+    }
+
     /// The current input-receiving screen's variant name. The page polls this to advance a demo
     /// step only once the app reached the target screen, so there are no fixed sleeps and it waits
     /// out the real planner.
@@ -421,6 +431,7 @@ impl Demo {
                 &obc_render::NoopClock,
                 Some(self.photo.interactive(plan.render.map || !self.ready)),
             );
+            self.app.set_resident_frame(true);
             self.ready = true;
             return true;
         }
@@ -585,6 +596,7 @@ impl Demo {
         // step that dwells on a menu while the visitor reads it would otherwise be swept back to the
         // Map thirty seconds in.
         app.set_settings(Settings {
+            theme: self.app.settings().theme,
             climb_mode: ClimbMode::Manual,
             idle_return: obc_app::settings::IdleReturn::Never,
             ..Settings::default()
@@ -655,6 +667,32 @@ mod tests {
         *now_ms += 16.0;
         demo.tick(*now_ms);
         assert_eq!(demo.state(), expected, "`{command}` should reach {expected}");
+    }
+
+    #[test]
+    fn page_theme_redraws_and_survives_demo_resets() {
+        use obc_app::settings::Theme;
+
+        let mut demo = Demo::new();
+        demo.cmd("pause");
+        demo.tick(0.0);
+        demo.tick(60_000.0);
+        let light = demo.frame().to_vec();
+        let clock = demo.app.wall_clock_now();
+        demo.set_dark(true);
+        assert_eq!(demo.app.wall_clock_now(), clock);
+        assert!(demo.tick(60_016.0));
+        assert_ne!(demo.frame(), light);
+        assert_eq!(demo.state(), "Map");
+
+        for (index, command) in ["enter", "upload", "ambient"].into_iter().enumerate() {
+            demo.cmd(command);
+            demo.tick(60_032.0 + index as f64 * 16.0);
+            assert_eq!(demo.reset_status(), ResetStatus::Ready);
+            assert_eq!(demo.app.settings().theme, Theme::Dark);
+        }
+        demo.set_dark(false);
+        assert_eq!(demo.app.settings().theme, Theme::Light);
     }
 
     #[test]
