@@ -22,7 +22,7 @@ struct TripStopsGallerySection: View {
             finder: StopFinder(search: GalleryStopSearch(stops: stops)), isOnline: isOnline, onPick: { _ in }
         ))
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.hairline))
     }
 }
 

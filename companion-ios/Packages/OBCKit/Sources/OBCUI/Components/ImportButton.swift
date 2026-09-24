@@ -28,12 +28,13 @@ public struct OBCImportButton: View {
             pickerShown = true
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(.body, weight: .medium))
                 .foregroundStyle(OBCTheme.tint)
                 .frame(width: 34, height: 34)
-                .background(OBCTheme.panel)
+                .background(OBCTheme.surface)
                 .clipShape(Circle())
-                .overlay(Circle().strokeBorder(OBCTheme.line))
+                .overlay(Circle().strokeBorder(OBCTheme.hairline))
+                .obcFixedGeometryType()
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Import a route")
@@ -49,10 +50,10 @@ public struct OBCImportButton: View {
 
 #Preview("Import button") {
     HStack {
-        Text("Routes").font(.obcSerif(size: 32)).foregroundStyle(OBCTheme.ink)
+        Text("Routes").font(.system(.largeTitle, weight: .bold)).foregroundStyle(OBCTheme.ink)
         Spacer()
         OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
     }
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

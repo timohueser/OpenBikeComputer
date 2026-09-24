@@ -17,7 +17,7 @@ struct LaunchConnectingView: View {
                 HStack(spacing: 10) {
                     OBCSpinner()
                     Text("Connecting to \(deviceName)")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(.subheadline, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
                         .accessibilityIdentifier("launch.connectingTitle")
                     TrailingDots()
@@ -25,8 +25,8 @@ struct LaunchConnectingView: View {
                 .padding(.bottom, 10)
 
                 Text("This can take a moment when the device wakes from sleep.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.footnote))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .frame(maxWidth: 230)
@@ -39,15 +39,15 @@ struct LaunchConnectingView: View {
     private var brandChip: some View {
         HStack(spacing: 8) {
             Text("OBC")
-                .font(.obcMono(size: 11, weight: .bold))
+                .font(.system(.caption2, weight: .semibold).monospacedDigit())
             Text("OpenBikeComputer")
-                .font(.system(size: 11))
+                .font(.system(.caption2))
                 .opacity(0.85)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(OBCTheme.onRust)
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
-        .background(OBCTheme.forest, in: RoundedRectangle(cornerRadius: 8))
+        .background(OBCTheme.rust, in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// The animated trailing "···".
@@ -58,7 +58,7 @@ struct LaunchConnectingView: View {
                 HStack(spacing: 2) {
                     ForEach(0..<3, id: \.self) { index in
                         Text("·")
-                            .font(.system(size: 15, weight: .bold))
+                            .font(.system(.subheadline, weight: .bold))
                             .foregroundStyle(OBCTheme.ink)
                             .opacity(index <= step ? 1 : 0.25)
                     }
@@ -80,25 +80,25 @@ struct LaunchConnectFailedView: View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(OBCTheme.warning.opacity(0.1))
+                    .fill(OBCTheme.danger.opacity(0.1))
                     .frame(width: 88, height: 88)
                     .overlay {
                         BluetoothRune(slashed: true)
-                            .stroke(OBCTheme.warning, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            .stroke(OBCTheme.danger, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             .frame(width: 40, height: 40)
                     }
                     .padding(.bottom, 24)
 
                 Text("Can't reach \(deviceName)")
-                    .font(.obcSerif(size: 25))
+                    .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("launch.connectFailedTitle")
                     .padding(.bottom, 8)
 
                 Text("It's probably asleep or out of range. Your routes are still here — the app connects on its own once \(deviceName) is nearby.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .frame(maxWidth: 260)
@@ -126,23 +126,23 @@ struct RadioBlockedView: View {
         LaunchScreenScaffold {
             VStack(spacing: 6) {
                 Circle()
-                    .fill(OBCTheme.parchment3)
+                    .fill(OBCTheme.fill)
                     .frame(width: 78, height: 78)
                     .overlay {
                         BluetoothRune(slashed: true)
-                            .stroke(OBCTheme.inkSoft, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                            .stroke(OBCTheme.secondary, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
                             .frame(width: 36, height: 36)
                     }
                     .padding(.bottom, 12)
 
                 Text(title)
-                    .font(.obcSerif(size: 20))
+                    .font(.system(.title3, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .accessibilityIdentifier("radio.title")
 
                 Text(message)
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .frame(maxWidth: 230)

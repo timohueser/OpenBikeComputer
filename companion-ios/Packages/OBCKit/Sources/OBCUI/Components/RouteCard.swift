@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// Track preview, title and a mono stat line. `RouteCard` is the compact row the main
+/// Track preview, title and a stat line. `RouteCard` is the compact row the main
 /// screen uses; `RouteCardFullBleed` puts the track on top with a stat grid below.
 /// The convenience inits take a `RouteSummary` or a `RideSummary` and format the stat
 /// line through `OBCFormat`.
@@ -54,7 +54,7 @@ public struct RouteCard: View {
             MapTrackPreviewView(preview, showsChrome: false)
                 .frame(width: 128)
                 .overlay(alignment: .trailing) {
-                    if stageAccent == nil { OBCTheme.line.frame(width: 1) }
+                    if stageAccent == nil { OBCTheme.hairline.frame(width: 1) }
                 }
 
             if let stageAccent {
@@ -66,30 +66,30 @@ public struct RouteCard: View {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 6) {
                     Text(title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
-                        .lineLimit(1)
+                        .lineLimit(2)
                     if onDevice != .notOnDevice { OBCOnDeviceBadge(upToDate: onDevice == .upToDate) }
                 }
                 Text(subtitle)
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
-                    .lineLimit(1)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.85)
             }
             .padding(.vertical, 13)
             .padding(.horizontal, 15)
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         }
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.hairline))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
     }
 }
 
-/// The small "on device" badge next to a route's title. A forest check means the
-/// device's copy is up to date; an amber refresh ring means the device holds the route
+/// The small "on device" badge next to a route's title. A rust check means the
+/// device's copy is up to date; a rust refresh ring means the device holds the route
 /// but the phone's version has moved on, and uploading again updates it in place.
 public struct OBCOnDeviceBadge: View {
     let upToDate: Bool
@@ -100,8 +100,8 @@ public struct OBCOnDeviceBadge: View {
 
     public var body: some View {
         Image(systemName: upToDate ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath.circle.fill")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(upToDate ? OBCTheme.forest : OBCTheme.amber)
+            .font(.system(.footnote, weight: .semibold))
+            .foregroundStyle(OBCTheme.rust)
             .accessibilityLabel(upToDate ? "On device" : "On device, out of date")
             .accessibilityIdentifier(upToDate ? "route.onDeviceBadge" : "route.onDeviceBadge.outdated")
     }
@@ -133,18 +133,18 @@ public struct RouteCardFullBleed: View {
         VStack(alignment: .leading, spacing: 0) {
             MapTrackPreviewView(preview, style: .hero, tag: tag, showsChrome: false)
                 .frame(height: 160)
-                .overlay(alignment: .bottom) { OBCTheme.line.frame(height: 1) }
+                .overlay(alignment: .bottom) { OBCTheme.hairline.frame(height: 1) }
 
             VStack(alignment: .leading, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.obcSerif(size: 20))
+                        .font(.system(.title3, weight: .bold))
                         .foregroundStyle(OBCTheme.ink)
                         .lineLimit(1)
                     if let subtitle {
                         Text(subtitle)
-                            .font(.obcMono(size: 12))
-                            .foregroundStyle(OBCTheme.inkFaint)
+                            .font(.system(.caption).monospacedDigit())
+                            .foregroundStyle(OBCTheme.secondary)
                             .lineLimit(1)
                     }
                 }
@@ -153,16 +153,16 @@ public struct RouteCardFullBleed: View {
                         ForEach(stats) { stat in
                             VStack(alignment: .leading, spacing: 3) {
                                 (Text(stat.value)
-                                    .font(.obcMono(size: 17, weight: .medium))
+                                    .font(.system(.body, weight: .medium).monospacedDigit())
                                     .foregroundColor(OBCTheme.ink)
                                     + Text(stat.unit.map { " \($0)" } ?? "")
-                                    .font(.obcMono(size: 11, weight: .medium))
-                                    .foregroundColor(OBCTheme.inkFaint))
+                                    .font(.system(.caption2, weight: .medium).monospacedDigit())
+                                    .foregroundColor(OBCTheme.secondary))
                                     .lineLimit(1)
                                 Text(stat.key.uppercased())
-                                    .font(.obcMono(size: 9, weight: .bold))
+                                    .font(.system(.caption2, weight: .semibold).monospacedDigit())
                                     .kerning(0.8)
-                                    .foregroundStyle(OBCTheme.inkFaint)
+                                    .foregroundStyle(OBCTheme.secondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -171,9 +171,9 @@ public struct RouteCardFullBleed: View {
             }
             .padding(15)
         }
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.hairline))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
     }
 }
@@ -205,5 +205,5 @@ public struct RouteCardFullBleed: View {
         }
         .padding(20)
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

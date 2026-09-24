@@ -32,24 +32,24 @@ public struct TripDayRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("Day \(number)")
-                            .font(.obcMono(size: title == nil ? 16 : 12))
-                            .foregroundStyle(title == nil ? OBCTheme.ink : OBCTheme.inkFaint)
+                            .font(title == nil ? .system(.callout) : .system(.caption, weight: .semibold))
+                            .foregroundStyle(title == nil ? OBCTheme.ink : OBCTheme.secondary)
                         if let title {
                             Text(title)
-                                .font(.system(size: 16))
+                                .font(.system(.callout))
                                 .foregroundStyle(OBCTheme.ink)
                                 .lineLimit(1)
                         }
                     }
                     Text(detail)
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                     if let note {
                         Text(note)
-                            .font(.obcMono(size: 12))
-                            .foregroundStyle(OBCTheme.forest)
+                            .font(.system(.caption).monospacedDigit())
+                            .foregroundStyle(OBCTheme.secondary)
                             .lineLimit(1)
                     }
                 }
@@ -59,7 +59,7 @@ public struct TripDayRow: View {
             .padding(.horizontal, 16)
             .frame(minHeight: 52)
             .overlay(alignment: .bottom) {
-                if showsDivider { OBCTheme.screenLine.frame(height: 1).padding(.leading, 38) }
+                if showsDivider { OBCTheme.hairline.frame(height: 1).padding(.leading, 38) }
             }
             .contentShape(Rectangle())
         }

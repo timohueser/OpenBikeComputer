@@ -37,7 +37,7 @@ public struct FirmwareUpdateView: View {
             .padding(.top, 18)
             .padding(.bottom, 30)
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .navigationTitle("Firmware update")
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -74,7 +74,7 @@ public struct FirmwareUpdateView: View {
         OBCGroupedSection("On the device", footer: statusFooter) {
             OBCListRow(
                 icon: "cpu",
-                iconColor: OBCTheme.forest,
+                iconColor: OBCTheme.tint,
                 label: "Firmware version",
                 value: model.connection == .connected ? model.runningVersionLine : "—",
                 showsDivider: model.supportsUpdateCheck
@@ -82,7 +82,7 @@ public struct FirmwareUpdateView: View {
             if model.supportsUpdateCheck {
                 OBCListRow(
                     icon: "arrow.clockwise",
-                    iconColor: OBCTheme.water,
+                    iconColor: OBCTheme.tint,
                     label: "Check for updates",
                     value: model.checkState == .checking ? nil : model.lastCheckedLine,
                     showsDivider: false,
@@ -120,7 +120,7 @@ public struct FirmwareUpdateView: View {
     @ViewBuilder
     private var availableGroup: some View {
         if case .failed(let message) = model.checkState {
-            noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.warning, text: message)
+            noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.danger, text: message)
         }
         if model.updateStatus == .available {
             VStack(spacing: 16) {
@@ -133,7 +133,7 @@ public struct FirmwareUpdateView: View {
                     if let notes = model.releaseNotesURL {
                         OBCListRow(
                             icon: "doc.text",
-                            iconColor: OBCTheme.wood,
+                            iconColor: OBCTheme.tint,
                             label: "Release notes",
                             showsChevron: true,
                             showsDivider: false,
@@ -144,15 +144,15 @@ public struct FirmwareUpdateView: View {
                 }
 
                 if case .failed(let message) = model.downloadState {
-                    noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.warning, text: message)
+                    noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.danger, text: message)
                 }
 
                 if model.downloadState == .downloading {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small)
                         Text("Downloading update…")
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(OBCTheme.inkSoft)
+                            .font(.system(.footnote))
+                            .foregroundStyle(OBCTheme.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
                 } else {
@@ -167,14 +167,14 @@ public struct FirmwareUpdateView: View {
 
     private var releaseRow: some View {
         HStack(spacing: 12) {
-            OBCIconTile(systemImage: "sparkles", color: OBCTheme.amber)
+            OBCIconTile(systemImage: "sparkles", color: OBCTheme.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.latestVersionLine)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(OBCTheme.ink)
                 Text(model.latestSizeLine)
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -183,7 +183,7 @@ public struct FirmwareUpdateView: View {
         .frame(minHeight: 52)
         .overlay(alignment: .bottom) {
             if model.releaseNotesURL != nil {
-                OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
+                OBCTheme.hairline.frame(height: 1).padding(.leading, 56)
             }
         }
         .accessibilityIdentifier("firmware.availableUpdate")
@@ -214,7 +214,7 @@ public struct FirmwareUpdateView: View {
         ) {
             OBCListRow(
                 icon: "square.and.arrow.down",
-                iconColor: OBCTheme.water,
+                iconColor: OBCTheme.tint,
                 label: "Choose update file",
                 showsChevron: true,
                 showsDivider: false,
@@ -231,7 +231,7 @@ public struct FirmwareUpdateView: View {
                 stagedFileRow
                 OBCListRow(
                     icon: "arrow.triangle.2.circlepath",
-                    iconColor: OBCTheme.wood,
+                    iconColor: OBCTheme.tint,
                     label: "Choose a different file",
                     showsChevron: true,
                     showsDivider: false,
@@ -240,11 +240,11 @@ public struct FirmwareUpdateView: View {
             }
 
             if let failure = model.failureMessage {
-                noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.warning, text: failure)
+                noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.danger, text: failure)
             } else if model.stagedMatchesRunning {
                 noticeCard(
                     icon: "checkmark.seal",
-                    tint: OBCTheme.forest,
+                    tint: OBCTheme.secondary,
                     text: "\(model.deviceName) is already running this version."
                 )
             }
@@ -255,8 +255,8 @@ public struct FirmwareUpdateView: View {
 
             if model.connection != .connected {
                 Text("Connect to \(model.deviceName) to send the update.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption))
+                    .foregroundStyle(OBCTheme.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
@@ -264,14 +264,14 @@ public struct FirmwareUpdateView: View {
 
     private var stagedFileRow: some View {
         HStack(spacing: 12) {
-            OBCIconTile(systemImage: "shippingbox", color: OBCTheme.amber)
+            OBCIconTile(systemImage: "shippingbox", color: OBCTheme.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.stagedVersionLine)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(OBCTheme.ink)
                 Text(model.stagedSizeLine)
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -279,7 +279,7 @@ public struct FirmwareUpdateView: View {
         .padding(.horizontal, 16)
         .frame(minHeight: 52)
         .overlay(alignment: .bottom) {
-            OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
+            OBCTheme.hairline.frame(height: 1).padding(.leading, 56)
         }
     }
 
@@ -290,18 +290,18 @@ public struct FirmwareUpdateView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text(model.stagedVersionLine)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(.subheadline, weight: .semibold))
                             .foregroundStyle(OBCTheme.ink)
                         Spacer()
                         Text(model.percentLine)
-                            .font(.obcMono(size: 13))
-                            .foregroundStyle(OBCTheme.forest)
+                            .font(.system(.footnote).monospacedDigit())
+                            .foregroundStyle(OBCTheme.ink)
                     }
                     OBCProgressBar(value: model.fraction)
                     if model.phase == .interrupted {
                         Text("The link dropped. Resume sends it again from the start.")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(OBCTheme.inkFaint)
+                            .font(.system(.caption))
+                            .foregroundStyle(OBCTheme.secondary)
                     }
                 }
                 .padding(16)
@@ -321,14 +321,14 @@ public struct FirmwareUpdateView: View {
         OBCGroupedSection {
             VStack(spacing: 12) {
                 Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 26, weight: .regular))
-                    .foregroundStyle(OBCTheme.forest)
+                    .font(.system(.title))
+                    .foregroundStyle(OBCTheme.secondary)
                 Text(model.awaitingTitle)
-                    .font(.obcSerif(size: 20))
+                    .font(.system(.title3, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                 Text(model.awaitingMessage)
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
@@ -342,14 +342,14 @@ public struct FirmwareUpdateView: View {
         OBCGroupedSection {
             VStack(spacing: 12) {
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 30, weight: .regular))
-                    .foregroundStyle(OBCTheme.forest)
+                    .font(.system(.title))
+                    .foregroundStyle(OBCTheme.rust)
                 Text("Update complete")
-                    .font(.obcSerif(size: 20))
+                    .font(.system(.title3, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                 Text(model.doneMessage)
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
@@ -371,7 +371,7 @@ public struct FirmwareUpdateView: View {
             ) {
                 OBCListRow(
                     icon: "hammer",
-                    iconColor: OBCTheme.parchment3,
+                    iconColor: OBCTheme.tint,
                     label: "Include pre-releases",
                     showsDivider: false
                 ) {
@@ -383,7 +383,7 @@ public struct FirmwareUpdateView: View {
                         )
                     )
                     .labelsHidden()
-                    .tint(OBCTheme.forest)
+                    .tint(OBCTheme.tint)
                 }
                 .accessibilityIdentifier("firmware.includePrereleases")
             }
@@ -394,18 +394,18 @@ public struct FirmwareUpdateView: View {
     private func noticeCard(icon: String, tint: Color, text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(.subheadline, weight: .semibold))
                 .foregroundStyle(tint)
             Text(text)
-                .font(.system(size: 13.5))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.footnote))
+                .foregroundStyle(OBCTheme.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(14)
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
         .overlay(
-            RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+            RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
         )
     }
 }

@@ -39,7 +39,7 @@ public struct TripStopsSheet: View {
             .padding(.top, 20)
             .padding(.bottom, 24)
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .task { await model.load() }
         .accessibilityIdentifier("stops.sheet")
     }
@@ -49,12 +49,12 @@ public struct TripStopsSheet: View {
         let name = end.title ?? end.name.map { "to \($0)" }
         return VStack(alignment: .leading, spacing: 3) {
             Text(["Day \(model.day + 1)", name].compactMap { $0 }.joined(separator: " · "))
-                .font(.obcSerif(size: 22))
+                .font(.system(.title2, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .lineLimit(1)
             Text("End of day · km \(OBCFormat.distanceValue(meters: end.distance)) of \(OBCFormat.distanceValue(meters: model.lineLength))")
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
         }
     }
 
@@ -62,7 +62,7 @@ public struct TripStopsSheet: View {
     private var nearby: some View {
         switch model.nearby {
         case .loading:
-            ProgressView().tint(OBCTheme.inkFaint).frame(maxWidth: .infinity)
+            ProgressView().tint(OBCTheme.secondary).frame(maxWidth: .infinity)
         case .offline:
             message("Stops need a connection.")
         case .loaded where model.stops.isEmpty:
@@ -103,15 +103,15 @@ public struct TripStopsSheet: View {
     private var dayEndRule: some View {
         HStack(spacing: 8) {
             Text("DAY END NOW · KM \(OBCFormat.distanceValue(meters: model.dayEnd.distance))")
-                .font(.obcMono(size: 10, weight: .bold))
+                .font(.system(.caption2, weight: .semibold).monospacedDigit())
                 .kerning(1)
-                .foregroundStyle(OBCTheme.forest)
+                .foregroundStyle(OBCTheme.ink)
                 .fixedSize()
-            OBCTheme.forest.opacity(0.5).frame(height: 1.5)
+            OBCTheme.hairlineStrong.frame(height: 1.5)
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 14)
-        .background(OBCTheme.parchment2)
+        .background(OBCTheme.surface2)
         .accessibilityIdentifier("stops.dayEnd")
     }
 
@@ -131,15 +131,15 @@ public struct TripStopsSheet: View {
 
     private func message(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 14))
-            .foregroundStyle(OBCTheme.inkSoft)
+            .font(.system(.subheadline))
+            .foregroundStyle(OBCTheme.secondary)
             .padding(.horizontal, 2)
     }
 
     private func panel(@ViewBuilder _ content: () -> some View) -> some View {
         VStack(spacing: 0, content: content)
-            .background(OBCTheme.panel)
+            .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
     }
 }

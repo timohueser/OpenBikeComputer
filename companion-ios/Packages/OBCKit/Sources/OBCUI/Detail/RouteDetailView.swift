@@ -153,7 +153,7 @@ public struct RouteDetailView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.screen")
         #if os(iOS)
@@ -185,7 +185,7 @@ public struct RouteDetailView: View {
             model.preview,
             style: .hero,
             tag: model.tag.text,
-            tagColor: model.tag.isAccent ? OBCTheme.forest : OBCTheme.inkSoft,
+            tagColor: model.tag.isAccent ? OBCTheme.ink : OBCTheme.secondary,
             waypoints: model.waypoints,
             totalDistanceMeters: model.distanceMeters,
             photoPins: photos?.pinCoordinates ?? []
@@ -218,12 +218,12 @@ public struct RouteDetailView: View {
     private func importedBanner(_ line: String) -> some View {
         HStack(spacing: 7) {
             Image(systemName: "square.and.arrow.up")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(.caption, weight: .bold))
             Text(line.uppercased())
-                .font(.obcMono(size: 11, weight: .semibold))
+                .font(.system(.caption2, weight: .semibold).monospacedDigit())
                 .kerning(1)
         }
-        .foregroundStyle(OBCTheme.coral)
+        .foregroundStyle(OBCTheme.secondary)
         .padding(.top, 14)
         .padding(.bottom, 10)
         .padding(.horizontal, 2)
@@ -234,7 +234,7 @@ public struct RouteDetailView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 10) {
                 Text(model.name)
-                    .font(.obcSerif(size: 26))
+                    .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("detail.title")
@@ -243,12 +243,12 @@ public struct RouteDetailView: View {
                         if let onRenameTap { onRenameTap() } else { renameShown = true }
                     } label: {
                         Image(systemName: "pencil")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(OBCTheme.inkSoft)
+                            .font(.system(.subheadline, weight: .medium))
+                            .foregroundStyle(OBCTheme.secondary)
                             .frame(width: 32, height: 32)
-                            .background(OBCTheme.panel)
+                            .background(OBCTheme.surface)
                             .clipShape(Circle())
-                            .overlay(Circle().strokeBorder(OBCTheme.line))
+                            .overlay(Circle().strokeBorder(OBCTheme.hairline))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(renameTitle)
@@ -257,12 +257,12 @@ public struct RouteDetailView: View {
             }
             if let subtitle = model.subtitle {
                 Text(subtitle)
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
             }
             if let statsLine = model.statsLine {
                 Text(statsLine)
-                    .font(.obcMono(size: 15, weight: .medium))
+                    .font(.system(.subheadline, weight: .medium).monospacedDigit())
                     .foregroundStyle(OBCTheme.ink)
                     .padding(.top, 6)
                     .accessibilityIdentifier("detail.statsLine")
@@ -276,8 +276,8 @@ public struct RouteDetailView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             OBCEyebrow("Highlights")
             Text(model.highlights.joined(separator: " · "))
-                .font(.obcMono(size: 13, weight: .medium))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.footnote, weight: .medium).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
         }
         .padding(.top, 14)
         .accessibilityElement(children: .combine)
@@ -299,11 +299,11 @@ public struct RouteDetailView: View {
     private var servicesBlock: some View {
         OBCConnectedServicesBlock(services: [
             OBCServiceStatus(
-                name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.coral,
+                name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.tint,
                 state: .uploaded("Uploaded on import")
             ),
             OBCServiceStatus(
-                name: "Komoot", systemImage: "location.circle", tileColor: OBCTheme.wood,
+                name: "Komoot", systemImage: "location.circle", tileColor: OBCTheme.tint,
                 state: .notUploaded("Not uploaded")
             ),
         ])

@@ -46,9 +46,9 @@ struct LineMarkerProfileView: View {
                 }
             }
             .frame(height: height)
-            .background(OBCTheme.panel)
+            .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
             if showsAxis {
                 ProfileAxis(window: model.window, leading: inset.leading, trailing: inset.trailing)
             }
@@ -67,7 +67,7 @@ struct LineMarkerProfileView: View {
                 path.move(to: CGPoint(x: x, y: y))
                 path.addLine(to: CGPoint(x: x, y: plot.maxY))
             }
-            .stroke(isActive ? OBCTheme.forest : OBCTheme.ink, lineWidth: isActive ? 1.5 : 1)
+            .stroke(isActive ? OBCTheme.route : OBCTheme.ink, lineWidth: isActive ? 1.5 : 1)
             .allowsHitTesting(false)
             MarkerHandleView(color: model.color(endingAt: marker.id), isActive: isActive, isFixed: marker.isFixed)
                 .position(x: x, y: y - MarkerHandleView.size.height / 2)
@@ -96,7 +96,7 @@ struct LineMarkerProfileView: View {
                     for point in points { area.addLine(to: point) }
                     area.addLine(to: CGPoint(x: points[points.count - 1].x, y: plot.maxY))
                     area.closeSubpath()
-                    context.fill(area, with: .color(OBCTheme.panel))
+                    context.fill(area, with: .color(OBCTheme.surface))
                     context.fill(area, with: .color(color.opacity(0.22)))
                     var line = Path()
                     line.addLines(points)
@@ -162,7 +162,7 @@ private struct ProfileStaticLayer: View, Equatable {
                 grid.addLine(to: CGPoint(x: plot.maxX + trailing, y: gridY))
                 gridY -= 24
             }
-            context.stroke(grid, with: .color(OBCTheme.gridLine), lineWidth: 1)
+            context.stroke(grid, with: .color(OBCTheme.sketchLine), lineWidth: 1)
 
             // The samples cover the window alone; a segment past its end is cut at it.
             let bounds = [0] + splits + [window.upperBound]
@@ -231,13 +231,14 @@ private struct ProfileAxis: View {
             let ticks = Array(stride(from: (window.lowerBound / step).rounded(.up) * step, through: window.upperBound, by: step))
             ForEach(ticks, id: \.self) { tick in
                 Text(OBCFormat.distanceValue(meters: tick))
-                    .font(.obcMono(size: 10))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption2).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
                     .fixedSize()
                     .position(x: leading + width * CGFloat((tick - window.lowerBound) / span), y: geometry.size.height / 2)
             }
         }
         .frame(height: 14)
+        .obcFixedGeometryType()
         .accessibilityHidden(true)
     }
 }

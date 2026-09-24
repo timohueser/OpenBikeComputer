@@ -36,8 +36,6 @@ struct LineMarkerMapView: UIViewRepresentable {
         mapView.isPitchEnabled = false
         mapView.showsCompass = false
         mapView.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
-        // Light tiles always: the palette is light throughout.
-        mapView.overrideUserInterfaceStyle = .light
         context.coordinator.mapView = mapView
         context.coordinator.install(line: model.line, version: lineVersion, in: mapView, fit: true)
         updateUIView(mapView, context: context)
@@ -561,15 +559,15 @@ final class StopAnnotationView: MKAnnotationView {
         self.action = action
         host.rootView = AnyView(
             StopIcon(kind: kind, size: Self.size - 2, isRound: true)
-                .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 1.5))
+                .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 1.5))
                 .frame(width: Self.size, height: Self.size)
         )
         canShowCallout = true
         rightCalloutAccessoryView = action.map { title in
             var configuration = UIButton.Configuration.filled()
             configuration.title = title
-            configuration.baseBackgroundColor = UIColor(OBCTheme.forest)
-            configuration.baseForegroundColor = .white
+            configuration.baseBackgroundColor = UIColor(OBCTheme.tint)
+            configuration.baseForegroundColor = UIColor(OBCTheme.surface)
             configuration.cornerStyle = .medium
             configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
             let button = UIButton(configuration: configuration)
@@ -711,7 +709,7 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
     private var splits: [Double] = []
     private var colors: [CGColor] = []
     private var dashed: Set<Int> = []
-    private let halo = UIColor(OBCTheme.trackHalo).cgColor
+    private let halo = UIColor(OBCTheme.routeCasing).cgColor
 
     /// Main thread in, `draw` on MapKit's threads out: the lock is the hand-over. A moved
     /// split redraws only the tiles between its old and new place.

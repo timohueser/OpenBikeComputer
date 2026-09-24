@@ -120,7 +120,7 @@ public final class LineMarkerEditorModel {
         for run in 0..<(bounds.count - 1) {
             let middle = (bounds[run] + bounds[run + 1]) / 2
             if oldSections.contains(where: { $0.contains(middle) }) {
-                colors.append(OBCTheme.inkFaint)
+                colors.append(OBCTheme.secondary)
                 dashed.insert(run)
             } else {
                 let segment = min(splits.filter { $0 <= middle }.count, segmentColors.count - 1)

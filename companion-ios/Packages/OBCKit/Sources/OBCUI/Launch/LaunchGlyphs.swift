@@ -101,7 +101,7 @@ struct DeviceGlyphView: View {
                 .padding(.top, m.screenTop - m.bezelGap)
 
             Text("OBC")
-                .font(.obcMono(size: m.width * 0.13, weight: .bold))
+                .font(.system(size: m.width * 0.13, weight: .bold, design: .monospaced))
                 .kerning(m.width * 0.05)
                 .foregroundStyle(OBCTheme.deviceAccent.opacity(0.28))
                 .frame(maxHeight: .infinity, alignment: .bottom)
@@ -119,7 +119,7 @@ struct DeviceGlyphView: View {
         case .home(let name):
             VStack(spacing: 0) {
                 Text(name.uppercased())
-                    .font(.obcMono(size: m.screenWidth * 0.113, weight: .bold))
+                    .font(.system(size: m.screenWidth * 0.113, weight: .bold, design: .monospaced))
                     .kerning(0.5)
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
@@ -138,7 +138,7 @@ struct DeviceGlyphView: View {
                 OBCTheme.deviceHeader
                     .frame(height: m.screenHeight * 0.2)
                 Text("PAIR")
-                    .font(.obcMono(size: m.screenWidth * 0.16, weight: .bold))
+                    .font(.system(size: m.screenWidth * 0.16, weight: .bold, design: .monospaced))
                     .foregroundStyle(OBCTheme.deviceHeader)
                     .frame(maxHeight: .infinity)
             }
@@ -175,7 +175,7 @@ struct DeviceGlyphView: View {
     }
 }
 
-/// The pulsing forest rings around the Bluetooth tile.
+/// The pulsing rust rings around the Bluetooth tile.
 struct PulsingRings: View {
     @State private var animating = false
 
@@ -189,7 +189,7 @@ struct PulsingRings: View {
 
     private func ring(delay: Double) -> some View {
         Circle()
-            .fill(OBCTheme.forest.opacity(0.22))
+            .fill(OBCTheme.rust.opacity(0.22))
             .frame(width: 96, height: 96)
             .scaleEffect(animating ? 2.0 : 0.9)
             .opacity(animating ? 0 : 0.9)
@@ -203,11 +203,11 @@ struct PulsingRings: View {
 struct BluetoothTile: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 20)
-            .fill(OBCTheme.forest)
+            .fill(OBCTheme.rust)
             .frame(width: 72, height: 72)
             .overlay {
                 BluetoothRune()
-                    .stroke(.white, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .stroke(OBCTheme.onRust, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     .frame(width: 30, height: 30)
             }
     }
@@ -223,10 +223,10 @@ struct BluetoothTile: View {
         }
         .frame(width: 200, height: 200)
         BluetoothRune(slashed: true)
-            .stroke(OBCTheme.inkSoft, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+            .stroke(OBCTheme.secondary, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
             .frame(width: 36, height: 36)
     }
     .padding(30)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }
