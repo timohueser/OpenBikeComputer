@@ -6,35 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#A4501E" />
-  <script>
-    (function () {
-      var system = matchMedia('(prefers-color-scheme: dark)');
-      var preference;
-      try { preference = localStorage.getItem('obc-theme'); } catch (_) {}
-      function apply() {
-        var dark = preference === 'dark' || (preference !== 'light' && system.matches);
-        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-        document.querySelector('meta[name="theme-color"]').content = dark ? '#93461A' : '#A4501E';
-        var button = document.getElementById('theme_toggle');
-        if (button) {
-          button.hidden = false;
-          button.setAttribute('aria-pressed', String(dark));
-          button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
-        }
-        dispatchEvent(new Event('obc-theme-change'));
-      }
-      apply(); // Resolve before first paint, including a saved override.
-      system.addEventListener('change', apply);
-      document.addEventListener('DOMContentLoaded', function () {
-        apply();
-        document.getElementById('theme_toggle').addEventListener('click', function () {
-          preference = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-          try { localStorage.setItem('obc-theme', preference); } catch (_) {}
-          apply();
-        });
-      });
-    })();
-  </script>
+  <link data-trunk rel="copy-file" href="assets/theme.js" />
+  <script src="theme.js"></script>
   <title>OpenBikeComputer — a from-scratch bikepacking GPS computer</title>
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking GPS computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
