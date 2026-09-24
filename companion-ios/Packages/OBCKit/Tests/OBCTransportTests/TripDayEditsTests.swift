@@ -75,7 +75,7 @@ struct TripDayEditsTests {
         trip.moveDayEnd(2, to: 26_000)
         #expect(trip.dayEnds[1].transfer == .train)
         var stored = withTransfer()
-        stored.replaceDayEnds(from: trip)
+        stored.replaceDays(from: trip)
         #expect(stored.dayEnds.map(\.transfer) == [nil, .train, nil, nil], "Done carries it into the stored trip")
         var split = trip
         split.split(into: 2, candidates: [])
@@ -162,14 +162,14 @@ struct TripDayEditsTests {
     }
 
     @Test
-    func replaceDayEndsTakesOnlyTheDayEnds() {
+    func replaceDaysTakesOnlyTheDays() {
         var edited = threeDays()
         edited.name = "Edited copy"
         edited.moveDayEnd(0, to: 12_000)
         var current = threeDays()
         current.name = "Current"
         current.startDay = CivilDay(daysSince1970: 20_000)
-        current.replaceDayEnds(from: edited)
+        current.replaceDays(from: edited)
         #expect(current.name == "Current")
         #expect(current.startDay == CivilDay(daysSince1970: 20_000))
         #expect(abs(current.dayEnds[0].distance - 12_000) < 1)

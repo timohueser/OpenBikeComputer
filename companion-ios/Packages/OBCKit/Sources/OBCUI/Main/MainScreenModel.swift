@@ -122,6 +122,8 @@ public final class MainScreenModel {
     private let placeNameCache: PlaceNameCache?
     /// Finds stops near trip lines for the session. Nil in tests and previews.
     public let stopFinder: StopFinder?
+    /// Routes to stops off a trip line and across gaps. Nil in tests and previews.
+    private let legRouter: (any LegRouter)?
     /// The in-flight transfer ledger. Nil in tests and previews.
     @ObservationIgnored private let transferActivity: TransferActivity?
     /// The in-flight identity read for the current connection. A reconnect replaces it and
@@ -141,9 +143,11 @@ public final class MainScreenModel {
         transferActivity: TransferActivity? = nil,
         placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         stopSearch: (any StopSearch)? = nil,
+        legRouter: (any LegRouter)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.placeName = placeName
+        self.legRouter = legRouter
         placeNameCache = placeName.map(PlaceNameCache.init(lookup:))
         self.stopFinder = stopSearch.map(StopFinder.init)
         self.transport = transport
@@ -575,7 +579,7 @@ public final class MainScreenModel {
     private func currentTripObject(for trip: Trip) -> TripObjectCodec.Trip? {
         let ids = (0..<trip.dayCount).compactMap { scopedDayCopy(trip, day: $0)?.link.objectID }
         guard !ids.isEmpty, ids.count == trip.dayCount else { return nil }
-        return trip.tripObject(dayObjectIDs: ids)
+        return trip.tripObject(days: dayRoutes(of: trip), dayObjectIDs: ids)
     }
 
     /// The CRC of the trip object an upload would send now. A trip without a complete set of
@@ -973,15 +977,15 @@ public final class MainScreenModel {
         nameDayEnds(id)
     }
 
-    /// The day editor of a trip. Done writes the draft's day ends into the trip as it is then,
-    /// so an upload or a reconcile that ran meanwhile keeps its links.
+    /// The day editor of a trip. Done writes the draft's days into the trip as it is then, so an
+    /// upload or a reconcile that ran meanwhile keeps its links.
     public func dayEditor(_ id: TripID, isSplitMode: Bool) -> TripDayEditorModel? {
         guard let trip = trip(id) else { return nil }
         return TripDayEditorModel(
-            trip: trip, isSplitMode: isSplitMode, finder: stopFinder, placeName: placeName
+            trip: trip, isSplitMode: isSplitMode, finder: stopFinder, router: legRouter, placeName: placeName
         ) { [weak self] edited in
             guard let self, var current = self.trip(id) else { return }
-            current.replaceDayEnds(from: edited)
+            current.replaceDays(from: edited)
             self.saveEditedTrip(current)
             self.nameDayEnds(id)
         }

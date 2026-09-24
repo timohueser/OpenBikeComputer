@@ -4,6 +4,7 @@ import UserNotifications
 import OBCDomain
 import OBCTransport
 import OBCUI
+import OBCRouting
 
 #if DEBUG
 import OBCMock
@@ -65,7 +66,8 @@ struct OBCCompanionApp: App {
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
                 syncTiming: Self.launchSyncTiming(),
                 placeName: Self.makePlaceName(),
-                stopSearch: Self.makeStopSearch())
+                stopSearch: Self.makeStopSearch(),
+                legRouter: Self.makeLegRouter())
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -119,6 +121,15 @@ struct OBCCompanionApp: App {
         if mockControl != nil, launchOptions.fixtures != nil { return MockStopSearch() }
         #endif
         return AppleMapsStopSearch()
+    }
+
+    /// The device's router over map cells fetched on demand. Fixture runs route offline with the
+    /// mock, which `-OBCRouter` can make fail.
+    static func makeLegRouter() -> any LegRouter {
+        #if DEBUG
+        if mockControl != nil, launchOptions.fixtures != nil { return MockLegRouter(failure: launchOptions.routerFailure) }
+        #endif
+        return CellRouter()
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {

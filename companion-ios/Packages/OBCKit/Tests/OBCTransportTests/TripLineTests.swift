@@ -50,7 +50,7 @@ struct TripLineTests {
         #expect(trip.pieceStarts.isEmpty, "files that meet continue one piece")
         #expect(trip.dayEnds.map(\.coordinate) == files.map { $0[$0.count - 1].coordinate })
         #expect(distances(trip) == [1000, 3000, 3500])
-        #expect(trip.dayLines() == files, "the cut gives back each file")
+        #expect(trip.dayLines().map(\.points) == files, "the cut gives back each file")
     }
 
     @Test
@@ -61,15 +61,15 @@ struct TripLineTests {
 
         #expect(trip.pieceStarts == [first.count])
         #expect(distances(trip) == [1000, 3000], "the 3.4 km gap counts nothing")
-        #expect(trip.dayLines() == [first, second], "no straight segment across the gap")
+        #expect(trip.dayLines().map(\.points) == [first, second], "no straight segment across the gap")
     }
 
     @Test
     func appendKeepsTheDaysBeforeIt() {
         var trip = join([file([(0, 0), (1000, 0)]), file([(1000, 0), (2000, 0)])])
-        let before = trip.dayLines()
+        let before = trip.dayLines().map(\.points)
         trip.append(file([(2000, 0), (2500, 0)]))
-        #expect(Array(trip.dayLines().prefix(2)) == before)
+        #expect(Array(trip.dayLines().map(\.points).prefix(2)) == before)
         #expect(trip.dayCount == 3)
     }
 
@@ -85,7 +85,7 @@ struct TripLineTests {
             addedAt: Date())
         trip.reproject()
 
-        let days = trip.dayLines()
+        let days = trip.dayLines().map(\.points)
         #expect(days.count == 2)
         #expect(days[0].count == 2 && days[1].count == 2)
         #expect(days[0][1] == days[1][0], "one day ends where the next starts")
@@ -123,7 +123,7 @@ struct TripLineTests {
         trip = Trip(
             id: trip.id, name: trip.name, bikeType: trip.bikeType, line: trip.line,
             pieceStarts: trip.pieceStarts, dayEnds: [trip.dayEnds[1]], addedAt: trip.addedAt)
-        #expect(trip.dayLines() == [first + second])
+        #expect(trip.dayLines().map(\.points) == [first + second])
     }
 
     // MARK: Reverse
@@ -161,8 +161,8 @@ struct TripLineTests {
         #expect(reversed.dayEnds[2].coordinate == trip.line[0].coordinate)
         #expect(reversed.key != trip.key)
         // Each reversed day is an old day ridden backwards, in reverse day order.
-        let old = trip.dayLines().map { $0.map(\.coordinate) }
-        let new = reversed.dayLines().map { $0.map(\.coordinate) }
+        let old = trip.dayLines().map(\.points).map { $0.map(\.coordinate) }
+        let new = reversed.dayLines().map(\.points).map { $0.map(\.coordinate) }
         #expect(new == old.reversed().map { Array($0.reversed()) })
     }
 
@@ -210,7 +210,7 @@ struct TripLineTests {
 
         trip.reverse()
         #expect(distances(trip) == [1000, 3000, 4000])
-        #expect(trip.dayLines().map { $0.count } == [11, 21, 11])
+        #expect(trip.dayLines().map(\.points).map { $0.count } == [11, 21, 11])
     }
 
     @Test

@@ -16,9 +16,9 @@ extension Trip {
         max(1, min(maxSplitDays, Int(length / (2 * minimumDayMeters))))
     }
 
-    /// The figures of every day, in ride order.
+    /// The figures of every day, in ride order, stop routes included.
     public func dayStats() -> [DayStats] {
-        measuredLine.dayStats(ends: dayEnds.dropLast().map(\.distance), bikeType: bikeType)
+        dayStats(on: measuredLine, ends: dayEnds.dropLast().map(\.distance))
     }
 
     /// Cut the line into `days` days of equal riding time, each end snapped to a candidate
@@ -63,8 +63,8 @@ extension Trip {
     @discardableResult
     public mutating func addDayEnd(at distance: Double) -> Int? {
         guard let day = dayEnds.firstIndex(where: { $0.distance > distance }) else { return nil }
-        let from = day > 0 ? dayEnds[day - 1].distance : 0
-        let to = dayEnds[day].distance
+        let from = lineStart(of: day)
+        let to = lineEnd(of: day)
         guard to - from >= 2 * Self.minimumDayMeters else { return nil }
         let held = min(max(distance, from + Self.minimumDayMeters), to - Self.minimumDayMeters)
         dayEnds.insert(DayEnd(coordinate: measuredLine.coordinate(at: held), distance: held), at: day)
@@ -86,9 +86,12 @@ extension Trip {
         return endsAtTransfer(day, on: measured) ? "This day ends at a transfer." : nil
     }
 
-    /// Take the day ends of an edited copy of this trip: the day editor's Done. Everything
-    /// else, the device links above all, stays as it is now.
-    public mutating func replaceDayEnds(from edited: Trip) {
+    /// Take the days of an edited copy of this trip: the day editor's Done. The line comes too,
+    /// for the gaps the editor bridged. Everything else, the device links above all, stays as
+    /// it is now.
+    public mutating func replaceDays(from edited: Trip) {
+        line = edited.line
+        pieceStarts = edited.pieceStarts
         dayEnds = edited.dayEnds
         reproject()
     }
