@@ -51,7 +51,7 @@ public struct OBCDisclosureRow<Content: View>: View {
             .accessibilityIdentifier(headerAccessibilityID ?? "")
 
             if expandedNow {
-                OBCTheme.screenLine
+                OBCTheme.hairline
                     .frame(height: 1)
                     .padding(.horizontal, 16)
                 content
@@ -59,36 +59,36 @@ public struct OBCDisclosureRow<Content: View>: View {
                     .padding(.bottom, 8)
             }
         }
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
         .overlay(
-            RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+            RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
         )
     }
 
     private var header: some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(OBCTheme.amber)
+                .font(.system(.subheadline, weight: .medium))
+                .foregroundStyle(OBCTheme.secondary)
                 .frame(width: 30, height: 30)
-                .background(OBCTheme.amber.opacity(0.16))
+                .background(OBCTheme.fill)
                 .clipShape(RoundedRectangle(cornerRadius: 9))
 
             Text(label)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(.callout, weight: .medium))
                 .foregroundStyle(OBCTheme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let value {
                 Text(value)
-                    .font(.obcMono(size: 14))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.subheadline).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
             }
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.footnote, weight: .semibold))
+                .foregroundStyle(OBCTheme.secondary)
                 .rotationEffect(.degrees(expandedNow ? 90 : 0))
                 .padding(.leading, 10)
         }
@@ -132,13 +132,13 @@ private struct DisclosureRowPreviewHost: View {
                 isExpanded: $expanded
             ) {
                 Text("Dropdown content")
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .padding(.vertical, 12)
             }
         }
         .padding(20)
-        .background(OBCTheme.parchment)
+        .background(OBCTheme.page)
     }
 }
 

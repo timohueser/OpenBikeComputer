@@ -37,13 +37,13 @@ public struct RideEditView: View {
                         .padding(.top, 8)
                     Spacer(minLength: 0)
                     Text(model.summaryLine)
-                        .font(.obcMono(size: 14, weight: .medium))
+                        .font(.system(.subheadline, weight: .medium).monospacedDigit())
                         .foregroundStyle(OBCTheme.ink)
                         .padding(.bottom, 10)
                         .accessibilityIdentifier("rideEdit.summary")
                 }
             }
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { actions }
             .navigationTitle(name)
             #if os(iOS)
@@ -71,11 +71,11 @@ public struct RideEditView: View {
             if mergeShown, let nextRide {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Merge with \(nextRide.name)?")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
                     Text(nextRide.mergeLine)
-                        .font(.obcMono(size: 13))
-                        .foregroundStyle(OBCTheme.inkSoft)
+                        .font(.system(.footnote).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                     HStack(spacing: 10) {
                         Button("Merge") { onClose(.mergeWithNext) }
                             .buttonStyle(.obcPrimary)
@@ -97,20 +97,20 @@ public struct RideEditView: View {
                 }
             }
         }
-        .background(OBCTheme.panel.ignoresSafeArea(edges: .bottom))
-        .overlay(alignment: .top) { Rectangle().fill(OBCTheme.line).frame(height: 1) }
+        .background(OBCTheme.surface.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) { Rectangle().fill(OBCTheme.hairline).frame(height: 1) }
         .animation(.default, value: mergeShown)
     }
 
     private func action(_ title: String, selected: Bool, id: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             Text(title)
-                .font(.system(size: 16, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? OBCTheme.forest : OBCTheme.inkSoft)
+                .font(.system(.callout, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? OBCTheme.ink : OBCTheme.secondary)
                 .frame(maxWidth: .infinity, minHeight: 50)
                 .overlay(alignment: .bottom) {
                     if selected {
-                        Capsule().fill(OBCTheme.forest).frame(width: 36, height: 3).padding(.bottom, 6)
+                        Capsule().fill(OBCTheme.ink).frame(width: 36, height: 3).padding(.bottom, 6)
                     }
                 }
                 .contentShape(Rectangle())

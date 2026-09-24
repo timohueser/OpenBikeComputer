@@ -123,7 +123,7 @@ public struct MainScreenView: View {
 
             list
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         // The multi-select action bar, shown only while selecting. Two or more routes make a group.
         .safeAreaInset(edge: .bottom) { selectionBar }
         .obcRenameSheet(
@@ -167,7 +167,7 @@ public struct MainScreenView: View {
     private var titleActions: some View {
         if isSelecting {
             Button("Cancel") { exitSelection() }
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(.callout, weight: .medium))
                 .foregroundStyle(OBCTheme.tint)
                 .accessibilityIdentifier("main.selectCancel")
         } else {
@@ -176,7 +176,7 @@ public struct MainScreenView: View {
                     isSelecting = true
                     selectedRouteIDs = []
                 }
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(.callout, weight: .medium))
                 .foregroundStyle(OBCTheme.tint)
                 .accessibilityIdentifier("main.select")
             }
@@ -229,10 +229,10 @@ public struct MainScreenView: View {
     private func selectionCheck(on id: RouteID) -> some View {
         let selected = selectedRouteIDs.contains(id)
         return Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(selected ? OBCTheme.forest : OBCTheme.inkFaint)
+            .font(.system(.title3, weight: .semibold))
+            .foregroundStyle(selected ? OBCTheme.ink : OBCTheme.secondary)
             .padding(8)
-            .background(selected ? OBCTheme.panel.opacity(0.9) : .clear, in: Circle())
+            .background(selected ? OBCTheme.surface.opacity(0.9) : .clear, in: Circle())
     }
 
     // MARK: List
@@ -347,16 +347,16 @@ public struct MainScreenView: View {
         )
     }
 
-    /// The small mono line under the segments on Tracked: an amber ride count while syncing, then
-    /// the forest confirm.
+    /// The small stat line under the segments on Tracked: a ride count while syncing, then
+    /// the ink confirm.
     @ViewBuilder
     private var syncLine: some View {
         if let progress = model.sync.syncProgress {
-            syncLineLabel("\(progress.done) of \(progress.total) rides", color: OBCTheme.amber, icon: nil)
+            syncLineLabel("\(progress.done) of \(progress.total) rides", color: OBCTheme.secondary, icon: nil)
         } else if let count = model.sync.lastSyncCount {
             syncLineLabel(
                 "Synced \(count) new \(count == 1 ? "ride" : "rides") just now",
-                color: OBCTheme.forest,
+                color: OBCTheme.ink,
                 icon: "checkmark"
             )
         }
@@ -366,10 +366,10 @@ public struct MainScreenView: View {
         HStack(spacing: 6) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
             }
             Text(text)
-                .font(.obcMono(size: 12))
+                .font(.system(.caption).monospacedDigit())
         }
         .foregroundStyle(color)
         .accessibilityElement(children: .combine)
@@ -543,17 +543,17 @@ public struct MainScreenView: View {
     private func noMatches(noun: String, scope: String) -> some View {
         VStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.largeTitle, weight: .light))
+                .foregroundStyle(OBCTheme.secondary)
             Text("No \(noun) match \"\(model.searchText)\"")
-                .font(.obcSerif(size: 18))
+                .font(.system(.body, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .multilineTextAlignment(.center)
                 .padding(.top, 10)
                 .accessibilityIdentifier("main.noMatches")
             Text("Check the spelling, or clear the search to see \(scope).")
-                .font(.system(size: 14))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.subheadline))
+                .foregroundStyle(OBCTheme.secondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
                 .frame(maxWidth: 240)
@@ -580,6 +580,6 @@ public struct MainScreenView: View {
             .padding(.horizontal, 20)
         }
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }
 #endif

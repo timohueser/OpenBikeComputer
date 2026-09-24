@@ -40,17 +40,17 @@ public struct TripTransferRow: View {
         } label: {
             HStack(spacing: 6) {
                 Text("\(kind?.title ?? "Transfer") · \(OBCFormat.distance(meters: meters))")
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+                Image(systemName: "chevron.up.chevron.down").font(.system(.caption2, weight: .semibold))
             }
-            .font(.obcMono(size: 12))
-            .foregroundStyle(OBCTheme.inkFaint)
+            .font(.system(.caption).monospacedDigit())
+            .foregroundStyle(OBCTheme.secondary)
             .padding(.vertical, 8)
             .padding(.leading, 38)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .overlay(alignment: .bottom) { OBCTheme.screenLine.frame(height: 1).padding(.leading, 38) }
+        .overlay(alignment: .bottom) { OBCTheme.hairline.frame(height: 1).padding(.leading, 38) }
     }
 }
 
@@ -105,16 +105,16 @@ public struct TripJournalTransfer: View {
                 path.move(to: CGPoint(x: 0, y: 0.5))
                 path.addLine(to: CGPoint(x: 28, y: 0.5))
             }
-            .stroke(OBCTheme.lineStrong, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [1.5, 4]))
+            .stroke(OBCTheme.hairlineStrong, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [1.5, 4]))
             .frame(width: 28, height: 1)
-            Image(systemName: kind?.systemImage ?? "arrow.right").font(.system(size: 11))
+            Image(systemName: kind?.systemImage ?? "arrow.right").font(.system(.caption2))
             Text(Self.text(kind: kind, from: from, to: to))
-                .font(.obcMono(size: 12))
+                .font(.system(.caption).monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
             Spacer(minLength: 0)
         }
-        .foregroundStyle(OBCTheme.inkFaint)
+        .foregroundStyle(OBCTheme.secondary)
     }
 }
 
@@ -139,13 +139,13 @@ public struct TripReviewTotals: View {
             : "\(OBCFormat.distanceValue(meters: ridden.distanceMeters)) of \(OBCFormat.distance(meters: plannedMeters))"
         VStack(alignment: .leading, spacing: 8) {
             Text("\(distance) · \(OBCFormat.climb(meters: ridden.climbMeters)) · \(OBCFormat.movingTime(ridden.movingTime)) h")
-                .font(.obcMono(size: 14, weight: .medium))
+                .font(.system(.subheadline, weight: .medium).monospacedDigit())
                 .foregroundStyle(OBCTheme.ink)
             if !isDone {
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(OBCTheme.parchment3)
-                        Capsule().fill(OBCTheme.trackStroke)
+                        Capsule().fill(OBCTheme.fill)
+                        Capsule().fill(OBCTheme.ride)
                             .frame(width: geometry.size.width * min(1, ridden.distanceMeters / max(plannedMeters, 1)))
                     }
                 }
@@ -154,8 +154,8 @@ public struct TripReviewTotals: View {
             }
             if let highlights {
                 Text(highlights)
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
             }
         }
     }
@@ -214,16 +214,16 @@ public struct TripJournalDayEntry: View {
     private var day: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Day \(number)").font(.obcSerif(size: 22)).foregroundStyle(OBCTheme.ink)
+                Text("Day \(number)").font(.system(.title2, weight: .bold)).foregroundStyle(OBCTheme.ink)
                 if let title {
-                    Text(title).font(.obcSerif(size: 22, weight: .regular)).foregroundStyle(OBCTheme.inkSoft)
+                    Text(title).font(.system(.title2)).foregroundStyle(OBCTheme.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 if rides.count == 1 {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.footnote, weight: .semibold))
+                        .foregroundStyle(OBCTheme.secondary)
                 }
             }
             if note.isEmpty {
@@ -243,7 +243,7 @@ public struct TripJournalDayEntry: View {
                         let more = photos.count - Self.tileCount
                         if index == Self.tileCount - 1, more > 0 {
                             OBCTheme.ink.opacity(0.45)
-                            Text("+\(more + 1)").font(.obcMono(size: 13, weight: .semibold)).foregroundStyle(.white)
+                            Text("+\(more + 1)").font(.system(.footnote, weight: .semibold).monospacedDigit()).foregroundStyle(.white)
                         }
                     }
                     .frame(width: 76, height: 76)
@@ -256,13 +256,13 @@ public struct TripJournalDayEntry: View {
 }
 
 extension MultiTrackPreviewView.Stage {
-    /// A run of the trip review's line: ridden solid in the trail colour, planned dashed, a
+    /// A run of the trip review's line: ridden solid in the ride colour, planned dashed, a
     /// transfer dotted.
     init(_ run: LineRun) {
         switch run.kind {
-        case .ridden: self.init(coordinates: run.coordinates, color: OBCTheme.trackStroke)
-        case .planned: self.init(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [5, 4])
-        case .transfer: self.init(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [1.5, 4])
+        case .ridden: self.init(coordinates: run.coordinates, color: OBCTheme.ride)
+        case .planned: self.init(coordinates: run.coordinates, color: OBCTheme.secondary, dash: [5, 4])
+        case .transfer: self.init(coordinates: run.coordinates, color: OBCTheme.secondary, dash: [1.5, 4])
         }
     }
 }

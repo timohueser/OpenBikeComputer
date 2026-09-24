@@ -3,8 +3,8 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Native chrome in the field-guide voice. `OBCNavigationChrome.apply()` restyles
-/// `UINavigationBar` globally; `OBCLargeTitleBar` is the custom large-title row for
+/// Native chrome. `OBCNavigationChrome.apply()` recolours `UINavigationBar` globally and keeps
+/// its system fonts, which follow Dynamic Type; `OBCLargeTitleBar` is the custom large-title row for
 /// screens that pair the title with trailing circular actions, where the system bar
 /// cannot host the device top bar above it.
 public enum OBCNavigationChrome {
@@ -14,21 +14,10 @@ public enum OBCNavigationChrome {
         #if canImport(UIKit)
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = UIColor(OBCTheme.parchment)
+        appearance.backgroundColor = UIColor(OBCTheme.page)
         appearance.shadowColor = nil
-
-        var largeTitleFont = UIFont.systemFont(ofSize: 32, weight: .bold)
-        if let iowan = UIFont(name: "IowanOldStyle-Bold", size: 32) {
-            largeTitleFont = iowan
-        }
-        appearance.largeTitleTextAttributes = [
-            .font: largeTitleFont,
-            .foregroundColor: UIColor(OBCTheme.ink),
-        ]
-        appearance.titleTextAttributes = [
-            .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
-            .foregroundColor: UIColor(OBCTheme.ink),
-        ]
+        appearance.largeTitleTextAttributes = [.foregroundColor: UIColor(OBCTheme.ink)]
+        appearance.titleTextAttributes = [.foregroundColor: UIColor(OBCTheme.ink)]
 
         UINavigationBar.appearance().standardAppearance = appearance
         UINavigationBar.appearance().scrollEdgeAppearance = appearance
@@ -38,7 +27,7 @@ public enum OBCNavigationChrome {
     }
 }
 
-/// The large-title row: serif title with trailing circular actions, bottom-aligned.
+/// The large-title row: the title with trailing circular actions, bottom-aligned.
 public struct OBCLargeTitleBar<Actions: View>: View {
     let title: String
     @ViewBuilder let actions: Actions
@@ -51,7 +40,7 @@ public struct OBCLargeTitleBar<Actions: View>: View {
     public var body: some View {
         HStack(alignment: .bottom, spacing: 12) {
             Text(title)
-                .font(.obcSerif(size: 32))
+                .font(.system(.largeTitle, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
             Spacer(minLength: 0)
             HStack(spacing: 8) { actions }
@@ -70,5 +59,5 @@ public struct OBCLargeTitleBar<Actions: View>: View {
         }
         Spacer()
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

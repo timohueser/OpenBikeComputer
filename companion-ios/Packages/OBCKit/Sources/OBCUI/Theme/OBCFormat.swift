@@ -1,7 +1,7 @@
 import Foundation
 import OBCDomain
 
-/// Stat-line formatting for the mono lines on cards and stat strips: one place so
+/// Stat-line formatting for the stat lines on cards and stat strips: one place so
 /// every screen renders "62.4 km · 840 m ↑ · 3h 20m" identically. Metric only.
 /// The `locale` and `calendar` parameters exist so tests can pin them.
 public enum OBCFormat {

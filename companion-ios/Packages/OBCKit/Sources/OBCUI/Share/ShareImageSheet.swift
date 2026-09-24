@@ -60,7 +60,7 @@ public struct ShareImageSheet: View {
                 }
             }
             .padding(20)
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .navigationTitle("Share image")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -83,7 +83,7 @@ public struct ShareImageSheet: View {
         }
         .aspectRatio(ShareCard.size.width / ShareCard.size.height, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
         .frame(maxWidth: .infinity)
         .accessibilityIdentifier("shareImage.preview")
     }
@@ -95,10 +95,10 @@ public struct ShareImageSheet: View {
                 HStack(spacing: 8) {
                     choiceTile(selected: photoIndex == nil) {
                         Text("None")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(OBCTheme.inkSoft)
+                            .font(.system(.footnote, weight: .medium))
+                            .foregroundStyle(OBCTheme.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(OBCTheme.panel)
+                            .background(OBCTheme.surface)
                     } action: { photoIndex = nil }
                     ForEach(photos.indices, id: \.self) { index in
                         choiceTile(selected: photoIndex == index) {
@@ -116,7 +116,7 @@ public struct ShareImageSheet: View {
             OBCEyebrow("Profile")
             Toggle("Profile", isOn: $showsProfile)
                 .labelsHidden()
-                .tint(OBCTheme.forest)
+                .tint(OBCTheme.tint)
                 .accessibilityIdentifier("shareImage.profile")
         }
     }
@@ -130,7 +130,7 @@ public struct ShareImageSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
                 .overlay(
                     RoundedRectangle(cornerRadius: OBCTheme.radiusSmall)
-                        .strokeBorder(selected ? OBCTheme.forest : OBCTheme.line, lineWidth: selected ? 2.5 : 1)
+                        .strokeBorder(selected ? OBCTheme.ink : OBCTheme.hairline, lineWidth: selected ? 2.5 : 1)
                 )
         }
         .buttonStyle(.plain)

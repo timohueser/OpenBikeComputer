@@ -32,9 +32,9 @@ public struct ElevationProfileView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
-                .background(OBCTheme.panel)
+                .background(OBCTheme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-                .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+                .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
                 .accessibilityLabel("Elevation profile")
                 // The card only exists once its samples do; on a tracked ride that is an async
                 // read away. Automation waits on this to know the layout is final.
@@ -53,7 +53,7 @@ public struct ElevationProfileView: View {
                 grid.addLine(to: CGPoint(x: size.width, y: y))
                 y += 24
             }
-            context.stroke(grid, with: .color(OBCTheme.gridLine), lineWidth: 1)
+            context.stroke(grid, with: .color(OBCTheme.sketchLine), lineWidth: 1)
 
             guard samples.count > 1 else { return }
             let lo = samples.min()!
@@ -79,13 +79,13 @@ public struct ElevationProfileView: View {
             for point in points { area.addLine(to: point) }
             area.addLine(to: CGPoint(x: points[points.count - 1].x, y: size.height))
             area.closeSubpath()
-            context.fill(area, with: .color(OBCTheme.trackStroke.opacity(0.18)))
+            context.fill(area, with: .color(OBCTheme.profileFill))
 
             var line = Path()
             line.addLines(points)
             context.stroke(
                 line,
-                with: .color(OBCTheme.trackStroke),
+                with: .color(OBCTheme.amber),
                 style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
             )
 
@@ -95,14 +95,14 @@ public struct ElevationProfileView: View {
                 let x = inset + (size.width - 2 * inset) * CGFloat(min(max(tick, 0), 1))
                 context.fill(
                     Path(roundedRect: CGRect(x: x - 1, y: size.height - 8, width: 2, height: 8), cornerRadius: 1),
-                    with: .color(OBCTheme.water)
+                    with: .color(OBCTheme.secondary)
                 )
             }
         }
         .frame(height: height)
     }
 
-    /// Dots and mono labels on the highest and lowest samples. The high label tucks
+    /// Dots and labels on the highest and lowest samples. The high label tucks
     /// below its dot and the low label above, so both always have room.
     private func drawExtremeMarkers(in context: inout GraphicsContext, points: [CGPoint], size: CGSize) {
         guard
@@ -120,13 +120,13 @@ public struct ElevationProfileView: View {
         meters: Double, labelOffset: CGFloat, size: CGSize
     ) {
         let dot = CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6)
-        context.fill(Path(ellipseIn: dot.insetBy(dx: -1.5, dy: -1.5)), with: .color(OBCTheme.panel))
-        context.fill(Path(ellipseIn: dot), with: .color(OBCTheme.trackStroke))
+        context.fill(Path(ellipseIn: dot.insetBy(dx: -1.5, dy: -1.5)), with: .color(OBCTheme.surface))
+        context.fill(Path(ellipseIn: dot), with: .color(OBCTheme.amber))
 
         let label = context.resolve(
             Text("\(Int(meters.rounded())) m")
-                .font(.obcMono(size: 9, weight: .bold))
-                .foregroundColor(OBCTheme.inkSoft)
+                .font(.system(.caption2, weight: .semibold).monospacedDigit())
+                .foregroundColor(OBCTheme.secondary)
         )
         let halfWidth = label.measure(in: size).width / 2
         let x = min(max(point.x, halfWidth), size.width - halfWidth)
@@ -144,5 +144,5 @@ public struct ElevationProfileView: View {
         ElevationProfileView(samples: [220, 260, 240, 380, 330, 470, 360, 450, 390, 410])
     }
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

@@ -36,15 +36,15 @@ struct RideFilterBar: View {
                     HStack(spacing: 4) {
                         Text(model.year.map(String.init) ?? "All years")
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(.caption2, weight: .bold))
                     }
-                    .font(.obcMono(size: 13, weight: .bold))
+                    .font(.system(.footnote, weight: .semibold).monospacedDigit())
                     .foregroundStyle(OBCTheme.ink)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .overlay(
                         RoundedRectangle(cornerRadius: OBCTheme.radiusSmall)
-                            .strokeBorder(OBCTheme.lineStrong)
+                            .strokeBorder(OBCTheme.hairlineStrong)
                     )
                 }
                 .accessibilityIdentifier("library.year")
@@ -61,11 +61,11 @@ struct RideFilterBar: View {
     private func chip(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isOn ? OBCTheme.panel : OBCTheme.inkSoft)
+                .font(.system(.footnote, weight: .semibold))
+                .foregroundStyle(isOn ? OBCTheme.surface : OBCTheme.secondary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Capsule().fill(isOn ? OBCTheme.forest : OBCTheme.parchment3))
+                .background(Capsule().fill(isOn ? OBCTheme.ink : OBCTheme.fill))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("library.chip.\(label)")
@@ -91,16 +91,16 @@ struct RideTotalsCard: View {
                         .environment(\.obcIsOnline, false)
                         .frame(width: 120, height: 96)
                         .overlay(alignment: .trailing) {
-                            Rectangle().fill(OBCTheme.line).frame(width: 1)
+                            Rectangle().fill(OBCTheme.hairline).frame(width: 1)
                         }
                     VStack(alignment: .leading, spacing: 4) {
                         OBCEyebrow(scope)
                         Text(OBCFormat.distance(meters: totals.distanceMeters))
-                            .font(.obcSerif(size: 24))
+                            .font(.system(.title2, weight: .bold))
                             .foregroundStyle(OBCTheme.ink)
                         Text(statLine)
-                            .font(.obcMono(size: 11))
-                            .foregroundStyle(OBCTheme.inkFaint)
+                            .font(.system(.caption2).monospacedDigit())
+                            .foregroundStyle(OBCTheme.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
@@ -110,21 +110,21 @@ struct RideTotalsCard: View {
                 HStack(spacing: 4) {
                     Text("All rides on the map")
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(.caption2, weight: .bold))
                     Spacer()
                 }
-                .font(.obcMono(size: 12, weight: .bold))
-                .foregroundStyle(OBCTheme.forest)
+                .font(.system(.caption, weight: .semibold).monospacedDigit())
+                .foregroundStyle(OBCTheme.tint)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .overlay(alignment: .top) {
-                    Rectangle().fill(OBCTheme.screenLine).frame(height: 1)
+                    Rectangle().fill(OBCTheme.hairline).frame(height: 1)
                 }
             }
-            .background(OBCTheme.panel)
+            .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
             .overlay(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
             )
         }
         .buttonStyle(.plain)
@@ -144,7 +144,7 @@ struct RideTotalsCard: View {
         guard let lines else { return [] }
         let extent = RideMapLines.extentMeters(of: lines.lines(metersPerPoint: .infinity))
         return lines.lines(metersPerPoint: extent / 120).flatMap { line in
-            line.pieces.map { MultiTrackPreviewView.Stage(coordinates: $0, color: OBCTheme.trackStroke) }
+            line.pieces.map { MultiTrackPreviewView.Stage(coordinates: $0, color: OBCTheme.ride) }
         }
     }
 }

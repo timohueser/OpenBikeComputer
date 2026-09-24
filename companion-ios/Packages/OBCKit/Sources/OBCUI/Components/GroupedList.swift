@@ -15,24 +15,24 @@ public struct OBCGroupedSection<Rows: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let header {
                 Text(header.uppercased())
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(.caption, weight: .semibold))
                     .kerning(0.25)
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .foregroundStyle(OBCTheme.secondary)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
             }
 
             VStack(spacing: 0) { rows }
-                .background(OBCTheme.panel)
+                .background(OBCTheme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
                 .overlay(
-                    RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+                    RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
                 )
 
             if let footer {
                 Text(footer)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption))
+                    .foregroundStyle(OBCTheme.secondary)
                     .padding(.horizontal, 10)
                     .padding(.top, 8)
             }
@@ -46,9 +46,9 @@ public struct OBCListRow<Trailing: View>: View {
     let icon: String?
     let iconColor: Color
     let label: String
-    /// A second line under the label, in the mono stat face.
+    /// A second line under the label, in the stat face.
     let detail: String?
-    /// Overrides the label's ink, for the warning-red "Forget device" row.
+    /// Overrides the label's ink, for the danger-red "Forget device" row.
     let labelColor: Color?
     let value: String?
     var showsChevron: Bool
@@ -60,7 +60,7 @@ public struct OBCListRow<Trailing: View>: View {
 
     public init(
         icon: String? = nil,
-        iconColor: Color = OBCTheme.forest,
+        iconColor: Color = OBCTheme.tint,
         label: String,
         detail: String? = nil,
         labelColor: Color? = nil,
@@ -93,13 +93,13 @@ public struct OBCListRow<Trailing: View>: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(label)
-                    .font(.system(size: 16))
+                    .font(.system(.callout))
                     .foregroundStyle(
-                        disabled || comingSoon ? OBCTheme.inkFaint : labelColor ?? OBCTheme.ink)
+                        disabled || comingSoon ? OBCTheme.secondary : labelColor ?? OBCTheme.ink)
                 if let detail {
                     Text(detail)
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -108,14 +108,14 @@ public struct OBCListRow<Trailing: View>: View {
             }
             if let value {
                 Text(value)
-                    .font(.system(size: 15))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
             }
             trailing
             if showsChevron {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.footnote, weight: .semibold))
+                    .foregroundStyle(OBCTheme.secondary)
             }
         }
         .padding(.vertical, 14)
@@ -123,7 +123,7 @@ public struct OBCListRow<Trailing: View>: View {
         .frame(minHeight: 52)
         .overlay(alignment: .bottom) {
             if showsDivider {
-                OBCTheme.screenLine.frame(height: 1).padding(.leading, icon == nil ? 16 : 56)
+                OBCTheme.hairline.frame(height: 1).padding(.leading, icon == nil ? 16 : 56)
             }
         }
         .contentShape(Rectangle())
@@ -141,7 +141,7 @@ public extension OBCListRow where Trailing == EmptyView {
     /// call sites without closure-matching ambiguity.
     init(
         icon: String? = nil,
-        iconColor: Color = OBCTheme.forest,
+        iconColor: Color = OBCTheme.tint,
         label: String,
         detail: String? = nil,
         labelColor: Color? = nil,
@@ -169,30 +169,28 @@ public extension OBCListRow where Trailing == EmptyView {
     }
 }
 
-/// The tinted icon tile leading a settings row. `glyphColor` covers the neutral tiles,
-/// where a white glyph would vanish.
+/// The tinted icon tile leading a settings row: a surface-coloured glyph on `color`.
 public struct OBCIconTile: View {
     let systemImage: String
     let color: Color
-    let glyphColor: Color
 
-    public init(systemImage: String, color: Color, glyphColor: Color = .white) {
+    public init(systemImage: String, color: Color) {
         self.systemImage = systemImage
         self.color = color
-        self.glyphColor = glyphColor
     }
 
     public var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(glyphColor)
+            .font(.system(.subheadline, weight: .medium))
+            .foregroundStyle(OBCTheme.surface)
             .frame(width: 28, height: 28)
             .background(color)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+            .obcFixedGeometryType()
     }
 }
 
-/// The amber-outline "COMING SOON" badge.
+/// The "COMING SOON" badge: a secondary caption in a hairline outline.
 public struct OBCSoonBadge: View {
     let text: String
 
@@ -200,12 +198,12 @@ public struct OBCSoonBadge: View {
 
     public var body: some View {
         Text(text.uppercased())
-            .font(.obcMono(size: 9.5, weight: .bold))
+            .font(.system(.caption2, weight: .semibold).monospacedDigit())
             .kerning(0.75)
-            .foregroundStyle(OBCTheme.amber)
+            .foregroundStyle(OBCTheme.secondary)
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(OBCTheme.amber))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(OBCTheme.hairlineStrong))
     }
 }
 
@@ -213,16 +211,16 @@ public struct OBCSoonBadge: View {
     ScrollView {
         VStack(spacing: 26) {
             OBCGroupedSection("Device", footer: "Renaming updates the name shown on the device at the next sync.") {
-                OBCListRow(icon: "pencil", iconColor: OBCTheme.forest, label: "Name", value: "Trailhead", showsChevron: true) {}
-                OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.wood, label: "Firmware update", comingSoon: true)
-                OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.warning, label: "Forget this device", showsDivider: false) {}
+                OBCListRow(icon: "pencil", iconColor: OBCTheme.tint, label: "Name", value: "Trailhead", showsChevron: true) {}
+                OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.tint, label: "Firmware update", comingSoon: true)
+                OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.danger, label: "Forget this device", showsDivider: false) {}
             }
             OBCGroupedSection("Connected services") {
-                OBCListRow(icon: "bolt", iconColor: OBCTheme.coral, label: "Strava", comingSoon: true)
-                OBCListRow(icon: "dot.radiowaves.left.and.right", iconColor: OBCTheme.wood, label: "Komoot", comingSoon: true, showsDivider: false)
+                OBCListRow(icon: "bolt", iconColor: OBCTheme.tint, label: "Strava", comingSoon: true)
+                OBCListRow(icon: "dot.radiowaves.left.and.right", iconColor: OBCTheme.tint, label: "Komoot", comingSoon: true, showsDivider: false)
             }
         }
         .padding(20)
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

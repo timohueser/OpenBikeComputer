@@ -15,7 +15,7 @@ struct MarkerHandleView: View {
     var body: some View {
         PinShape()
             .fill(color)
-            .overlay(PinShape().stroke(OBCTheme.panel, lineWidth: 2))
+            .overlay(PinShape().stroke(OBCTheme.surface, lineWidth: 2))
             .frame(width: isActive ? 20 : 16, height: isActive ? 27 : 22)
             .shadow(color: OBCTheme.ink.opacity(0.22), radius: isActive ? 4 : 1.5, y: 1)
             .opacity(isFixed ? 0.45 : 1)
@@ -44,13 +44,13 @@ struct MarkerLabel: View {
 
     var body: some View {
         Text(text)
-            .font(.obcMono(size: 11, weight: .bold))
+            .font(.system(.caption2, weight: .semibold).monospacedDigit())
             .foregroundStyle(OBCTheme.ink)
-            // A parchment halo instead of a box: four hard shadows keep it legible over tiles.
-            .shadow(color: OBCTheme.panel, radius: 0, x: 1, y: 0)
-            .shadow(color: OBCTheme.panel, radius: 0, x: -1, y: 0)
-            .shadow(color: OBCTheme.panel, radius: 0, x: 0, y: 1)
-            .shadow(color: OBCTheme.panel, radius: 0, x: 0, y: -1)
-            .shadow(color: OBCTheme.panel, radius: 2)
+            // A page-coloured halo instead of a box: four hard shadows keep it legible over tiles.
+            .shadow(color: OBCTheme.surface, radius: 0, x: 1, y: 0)
+            .shadow(color: OBCTheme.surface, radius: 0, x: -1, y: 0)
+            .shadow(color: OBCTheme.surface, radius: 0, x: 0, y: 1)
+            .shadow(color: OBCTheme.surface, radius: 0, x: 0, y: -1)
+            .shadow(color: OBCTheme.surface, radius: 2)
     }
 }

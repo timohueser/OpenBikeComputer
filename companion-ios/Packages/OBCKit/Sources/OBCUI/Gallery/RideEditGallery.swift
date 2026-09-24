@@ -14,8 +14,8 @@ struct RideEditGallerySection: View {
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("gallery.rideEdit")
             Text(lastEdit)
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $editShown) { editor }

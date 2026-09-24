@@ -73,7 +73,7 @@ private struct OBCRenameSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 OBCGroupedSection {
                     TextField(placeholder, text: $draft)
-                        .font(.system(size: 16))
+                        .font(.system(.callout))
                         .focused($focused)
                         .submitLabel(.done)
                         .onSubmit(save)
@@ -82,14 +82,14 @@ private struct OBCRenameSheet: View {
                 }
                 if let message {
                     Text(message)
-                        .font(.system(size: 13))
-                        .foregroundStyle(OBCTheme.inkSoft)
+                        .font(.system(.footnote))
+                        .foregroundStyle(OBCTheme.secondary)
                         .padding(.horizontal, 4)
                 }
             }
             .padding(20)
             .frame(maxHeight: .infinity, alignment: .top)
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

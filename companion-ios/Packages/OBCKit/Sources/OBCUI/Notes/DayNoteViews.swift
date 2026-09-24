@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// A day note as page text: the header in mono caps, the note in the serif. The ride detail and
+/// A day note as page text: the header in caps, the note in body text. The ride detail and
 /// the trip review both read a day with it.
 public struct DayNoteText: View {
     let header: String
@@ -16,7 +16,7 @@ public struct DayNoteText: View {
         VStack(alignment: .leading, spacing: 10) {
             OBCEyebrow(header)
             Text(note)
-                .font(.obcSerif(size: 17, weight: .regular))
+                .font(.system(.body))
                 .lineSpacing(6)
                 .foregroundStyle(OBCTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
@@ -70,8 +70,8 @@ struct DayNoteEntry: View {
                     DayNoteText(header: model.header, note: model.note)
                         .overlay(alignment: .topTrailing) {
                             Image(systemName: "pencil")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(OBCTheme.inkFaint)
+                                .font(.system(.caption, weight: .medium))
+                                .foregroundStyle(OBCTheme.secondary)
                         }
                         .contentShape(Rectangle())
                 }
@@ -84,8 +84,8 @@ struct DayNoteEntry: View {
                     writerShown = true
                 } label: {
                     Label("Add a note", systemImage: "pencil.line")
-                        .font(.system(size: 14))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.subheadline))
+                        .foregroundStyle(OBCTheme.secondary)
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 18)
@@ -128,7 +128,7 @@ public struct DayNoteWriter: View {
             VStack(alignment: .leading, spacing: 0) {
                 OBCEyebrow(model.header)
                 Text(model.title)
-                    .font(.obcSerif(size: 30))
+                    .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .padding(.top, 6)
                 if let photos, !photos.photos.isEmpty {
@@ -136,7 +136,7 @@ public struct DayNoteWriter: View {
                         .padding(.top, 14)
                 }
                 TextEditor(text: $model.draft)
-                    .font(.obcSerif(size: 19, weight: .regular))
+                    .font(.system(.title3))
                     .lineSpacing(8)
                     .foregroundStyle(OBCTheme.ink)
                     .scrollContentBackground(.hidden)
@@ -146,8 +146,8 @@ public struct DayNoteWriter: View {
                     .overlay(alignment: .topLeading) {
                         if model.draft.isEmpty {
                             Text(model.prompt)
-                                .font(.obcSerif(size: 19, weight: .regular))
-                                .foregroundStyle(OBCTheme.inkFaint)
+                                .font(.system(.title3))
+                                .foregroundStyle(OBCTheme.secondary)
                                 .padding(.top, 22)
                                 .allowsHitTesting(false)
                         }
@@ -155,7 +155,7 @@ public struct DayNoteWriter: View {
                     .accessibilityIdentifier("dayNote.editor")
             }
             .padding(.horizontal, 24)
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -184,10 +184,10 @@ public struct DayNoteWriter: View {
             }
             if photos.photos.count > shown.count {
                 Text("+\(photos.photos.count - shown.count)")
-                    .font(.obcMono(size: 13, weight: .semibold))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.footnote, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
                     .frame(width: 84, height: 84)
-                    .background(OBCTheme.parchment2)
+                    .background(OBCTheme.surface2)
                     .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
             }
         }

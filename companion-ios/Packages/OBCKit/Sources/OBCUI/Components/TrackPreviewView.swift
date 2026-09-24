@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// The basemap-free polyline on gridded parchment that identifies every route and
+/// The basemap-free polyline on the gridded sketch ground that identifies every route and
 /// ride in the app. Renders the normalized `TrackPreview` (unit-square points,
 /// y-down), letterboxed to the source aspect ratio. Never a basemap.
 ///
@@ -37,7 +37,7 @@ public struct TrackPreviewView: View {
     let preview: TrackPreview?
     var style: Style = .thumbnail
     var tag: String? = nil
-    var tagColor: Color = OBCTheme.inkSoft
+    var tagColor: Color = OBCTheme.secondary
     var showsChrome: Bool = true
     var markers: [Marker] = []
 
@@ -45,7 +45,7 @@ public struct TrackPreviewView: View {
         _ preview: TrackPreview?,
         style: Style = .thumbnail,
         tag: String? = nil,
-        tagColor: Color = OBCTheme.inkSoft,
+        tagColor: Color = OBCTheme.secondary,
         showsChrome: Bool = true,
         markers: [Marker] = []
     ) {
@@ -59,19 +59,19 @@ public struct TrackPreviewView: View {
 
     public var body: some View {
         canvas
-            .background(OBCTheme.panel)
+            .background(OBCTheme.sketchGround)
             .overlay(alignment: .topLeading) {
                 if let tag {
                     Text(tag.uppercased())
-                        .font(.obcMono(size: 10, weight: .bold))
+                        .font(.system(.caption2, weight: .semibold).monospacedDigit())
                         .kerning(1)
                         .foregroundStyle(tagColor)
                         .padding(.vertical, 5)
                         .padding(.horizontal, 7)
-                        .background(OBCTheme.panel.opacity(0.9))
+                        .background(OBCTheme.surface.opacity(0.9))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 6).strokeBorder(OBCTheme.line)
+                            RoundedRectangle(cornerRadius: 6).strokeBorder(OBCTheme.hairline)
                         )
                         .padding(10)
                 }
@@ -80,7 +80,7 @@ public struct TrackPreviewView: View {
             .overlay {
                 if showsChrome {
                     RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
-                        .strokeBorder(OBCTheme.line)
+                        .strokeBorder(OBCTheme.hairline)
                 }
             }
     }
@@ -107,21 +107,21 @@ public struct TrackPreviewView: View {
                 path.addLines(points)
                 context.stroke(
                     path,
-                    with: .color(OBCTheme.trackHalo),
+                    with: .color(OBCTheme.routeCasing),
                     style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
                 )
                 context.stroke(
                     path,
-                    with: .color(OBCTheme.trackStroke),
+                    with: .color(OBCTheme.route),
                     style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round)
                 )
             }
 
             if let first = points.first {
-                drawNode(in: &context, at: first, fill: OBCTheme.trackStart)
+                drawNode(in: &context, at: first, fill: OBCTheme.ink)
             }
             if points.count > 1, let last = points.last {
-                drawNode(in: &context, at: last, fill: OBCTheme.trackEnd)
+                drawNode(in: &context, at: last, fill: OBCTheme.rust)
             }
 
             for marker in markers {
@@ -180,13 +180,13 @@ public struct TrackPreviewView: View {
             path.addLine(to: CGPoint(x: size.width, y: y))
             y += step
         }
-        context.stroke(path, with: .color(OBCTheme.gridLine), lineWidth: 1)
+        context.stroke(path, with: .color(OBCTheme.sketchLine), lineWidth: 1)
     }
 
     private func drawNode(in context: inout GraphicsContext, at point: CGPoint, fill: Color) {
         let r = style.dotRadius
         let ring = CGRect(x: point.x - r - 1.25, y: point.y - r - 1.25, width: 2 * (r + 1.25), height: 2 * (r + 1.25))
-        context.fill(Path(ellipseIn: ring), with: .color(OBCTheme.panel))
+        context.fill(Path(ellipseIn: ring), with: .color(OBCTheme.surface))
         let dot = CGRect(x: point.x - r, y: point.y - r, width: 2 * r, height: 2 * r)
         context.fill(Path(ellipseIn: dot), with: .color(fill))
     }
@@ -194,11 +194,11 @@ public struct TrackPreviewView: View {
     private func drawMarker(in context: inout GraphicsContext, at point: CGPoint, label: String) {
         let r: CGFloat = 9
         let ring = CGRect(x: point.x - r - 1.25, y: point.y - r - 1.25, width: 2 * (r + 1.25), height: 2 * (r + 1.25))
-        context.fill(Path(ellipseIn: ring), with: .color(OBCTheme.panel))
+        context.fill(Path(ellipseIn: ring), with: .color(OBCTheme.surface))
         let dot = CGRect(x: point.x - r, y: point.y - r, width: 2 * r, height: 2 * r)
         context.fill(Path(ellipseIn: dot), with: .color(OBCTheme.amber))
         context.draw(
-            Text(label).font(.obcMono(size: 10, weight: .bold)).foregroundColor(OBCTheme.ink),
+            Text(label).font(.system(.caption2, weight: .semibold).monospacedDigit()).foregroundColor(OBCTheme.ink),
             at: point
         )
     }
@@ -217,7 +217,7 @@ public struct TrackPreviewView: View {
         path.addLine(to: CGPoint(x: origin.x + 20 * s, y: origin.y + 19 * s))
         context.stroke(
             path,
-            with: .color(OBCTheme.trackStroke),
+            with: .color(OBCTheme.route),
             style: StrokeStyle(lineWidth: 1.8 * s, lineCap: .round, lineJoin: .round)
         )
     }
@@ -235,7 +235,7 @@ public struct TrackPreviewView: View {
         }
     }
     .padding()
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }
 
 extension TrackPreview {

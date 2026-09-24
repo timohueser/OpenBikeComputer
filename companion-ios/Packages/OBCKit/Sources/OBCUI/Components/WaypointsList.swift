@@ -2,7 +2,7 @@ import SwiftUI
 import OBCDomain
 
 /// One waypoints-list row: a numbered marker, name and note, and the distance along.
-/// The marker is forest for the first point, coral for the last, amber between.
+/// The marker is ink for the first point, rust for the last, olive between.
 public struct WaypointRow: View {
     let waypoint: Waypoint
     let isFirst: Bool
@@ -16,43 +16,44 @@ public struct WaypointRow: View {
         self.showsDivider = showsDivider
     }
 
-    private var markerColor: Color {
-        if isFirst { return OBCTheme.trackStart }
-        if isLast { return OBCTheme.trackEnd }
-        return OBCTheme.amber
+    private var markerColors: (fill: Color, text: Color) {
+        if isFirst { return (OBCTheme.ink, OBCTheme.surface) }
+        if isLast { return (OBCTheme.rust, OBCTheme.onRust) }
+        return (OBCTheme.secondary, OBCTheme.surface)
     }
 
     public var body: some View {
         HStack(spacing: 13) {
             Text("\(waypoint.index + 1)")
-                .font(.obcMono(size: 12, weight: .bold))
-                .foregroundStyle(.white)
+                .font(.system(.caption, weight: .semibold).monospacedDigit())
+                .foregroundStyle(markerColors.text)
                 .frame(width: 30, height: 30)
-                .background(markerColor)
+                .background(markerColors.fill)
                 .clipShape(RoundedRectangle(cornerRadius: 9))
+                .obcFixedGeometryType()
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(waypoint.name)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(.subheadline, weight: .medium))
                     .foregroundStyle(OBCTheme.ink)
                     .lineLimit(1)
                 if let note = waypoint.note {
                     Text(note)
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(OBCFormat.distance(meters: waypoint.distanceAlongMeters))
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
         }
         .padding(.vertical, 13)
         .padding(.horizontal, 2)
         .overlay(alignment: .bottom) {
-            if showsDivider { OBCTheme.screenLine.frame(height: 1) }
+            if showsDivider { OBCTheme.hairline.frame(height: 1) }
         }
     }
 }
@@ -77,8 +78,8 @@ public struct WaypointsDropdownContent: View {
                 )
             }
             Text("Waypoints come from the route file and are uploaded to the device with it.")
-                .font(.system(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption))
+                .foregroundStyle(OBCTheme.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 10)
@@ -128,5 +129,5 @@ extension TrackPreviewView.Marker {
         )
         .padding(20)
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

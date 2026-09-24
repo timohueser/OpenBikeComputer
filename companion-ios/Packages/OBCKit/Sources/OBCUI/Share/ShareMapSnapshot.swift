@@ -38,7 +38,7 @@ enum ShareMapSnapshot {
                 path.lineJoinStyle = .round
                 if stage.dash.isEmpty {
                     path.lineWidth = 7
-                    UIColor(OBCTheme.trackHalo).setStroke()
+                    UIColor(OBCTheme.routeCasing).setStroke()
                     path.stroke()
                     path.lineWidth = 3.4
                 } else {
@@ -49,14 +49,14 @@ enum ShareMapSnapshot {
                 path.stroke()
             }
             let ends = stages.flatMap(\.coordinates).map { snapshot.point(for: MapGeometry.clLocation($0)) }
-            dot(at: ends[0], fill: UIColor(OBCTheme.trackStart), in: context.cgContext)
-            dot(at: ends[ends.count - 1], fill: UIColor(OBCTheme.trackEnd), in: context.cgContext)
+            dot(at: ends[0], fill: UIColor(OBCTheme.ink), in: context.cgContext)
+            dot(at: ends[ends.count - 1], fill: UIColor(OBCTheme.rust), in: context.cgContext)
         }
     }
 
     private static func dot(at center: CGPoint, fill: UIColor, in context: CGContext) {
         let rect = CGRect(x: center.x - 6, y: center.y - 6, width: 12, height: 12)
-        UIColor(OBCTheme.panel).setFill()
+        UIColor(OBCTheme.surface).setFill()
         context.fillEllipse(in: rect)
         fill.setFill()
         context.fillEllipse(in: rect.insetBy(dx: 2.5, dy: 2.5))

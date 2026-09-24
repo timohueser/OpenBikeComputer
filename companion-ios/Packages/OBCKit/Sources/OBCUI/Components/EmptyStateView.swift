@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// Centered glyph, serif line, and one action: the single recipe behind every empty
+/// Centered glyph, title line, and one action: the single recipe behind every empty
 /// and error state. Empty is not broken, so it always points at the one action that
 /// fixes it. It never dead-ends and never blames the rider.
 public struct OBCEmptyStateView: View {
@@ -11,7 +11,7 @@ public struct OBCEmptyStateView: View {
         case trackTile
         /// A warning-tinted circle around a system image.
         case warning(systemImage: String)
-        /// A sunken parchment circle around a system image.
+        /// A sunken circle around a system image.
         case muted(systemImage: String)
     }
 
@@ -43,14 +43,14 @@ public struct OBCEmptyStateView: View {
             glyphView
 
             Text(title)
-                .font(.obcSerif(size: 19))
+                .font(.system(.title3, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .padding(.top, 14)
                 .multilineTextAlignment(.center)
 
             Text(message)
-                .font(.system(size: 14))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.subheadline))
+                .foregroundStyle(OBCTheme.secondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
                 .frame(maxWidth: 240)
@@ -81,21 +81,21 @@ public struct OBCEmptyStateView: View {
                 .frame(width: 96, height: 96)
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge))
                 .overlay(
-                    RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.line)
+                    RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.hairline)
                 )
         case .warning(let systemImage):
             Image(systemName: systemImage)
-                .font(.system(size: 30, weight: .medium))
-                .foregroundStyle(OBCTheme.warning)
+                .font(.system(.title, weight: .medium))
+                .foregroundStyle(OBCTheme.danger)
                 .frame(width: 72, height: 72)
-                .background(OBCTheme.warning.opacity(0.1))
+                .background(OBCTheme.danger.opacity(0.1))
                 .clipShape(Circle())
         case .muted(let systemImage):
             Image(systemName: systemImage)
-                .font(.system(size: 32, weight: .medium))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.largeTitle, weight: .medium))
+                .foregroundStyle(OBCTheme.secondary)
                 .frame(width: 78, height: 78)
-                .background(OBCTheme.parchment3)
+                .background(OBCTheme.fill)
                 .clipShape(Circle())
         }
     }
@@ -126,5 +126,5 @@ public struct OBCEmptyStateView: View {
         }
         .padding(.vertical, 30)
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

@@ -55,7 +55,7 @@ public struct TripDayEditorView: View {
                 .presentationBackgroundInteraction(.enabled(upThrough: Self.topDetent))
                 // A swipe on the day list scrolls it; the grab handle and the header resize.
                 .presentationContentInteraction(.scrolls)
-                .presentationBackground(OBCTheme.parchment)
+                .presentationBackground(OBCTheme.page)
                 .presentationDragIndicator(.visible)
                 .interactiveDismissDisabled()
             }
@@ -163,8 +163,8 @@ struct DayEditorSheet: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { peekHeight = $0 }
             if model.isSplitMode, model.balancesByDistance {
                 Text("This file has no elevation. Days are balanced by distance.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.footnote))
+                    .foregroundStyle(OBCTheme.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 10)
@@ -177,7 +177,7 @@ struct DayEditorSheet: View {
         // grows to the content and the sheet centres it.
         .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
         .clipped()
-        .background(OBCTheme.parchment)
+        .background(OBCTheme.page)
         .onGeometryChange(for: CGFloat.self) { $0.size.height + $0.safeAreaInsets.bottom } action: { sheetHeight = $0 }
         .alert("Discard changes?", isPresented: $discardShown) {
             Button("Discard", role: .destructive, action: onClose)
@@ -226,7 +226,7 @@ struct DayEditorSheet: View {
                 "\(trip.dayCount) \(trip.dayCount == 1 ? "day" : "days") · "
                     + "\(OBCFormat.distance(meters: model.handles.line.length)) · "
                     + (hours < 1 ? "under 1 h a day" : "~\(hours) h a day"))
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(.subheadline, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(OBCTheme.ink)
                 .lineLimit(1)
@@ -252,7 +252,7 @@ struct DayEditorSheet: View {
         List {
             ForEach(0..<trip.dayCount, id: \.self) { day in
                 dayRow(day)
-                    .listRowBackground(model.selectedDay == day ? OBCTheme.parchment2 : OBCTheme.panel)
+                    .listRowBackground(model.selectedDay == day ? OBCTheme.surface2 : OBCTheme.surface)
             }
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets())
@@ -283,8 +283,8 @@ struct DayEditorSheet: View {
             .accessibilityIdentifier("dayEditor.day.\(day)")
             Menu { dayActions(day) } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(OBCTheme.secondary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }

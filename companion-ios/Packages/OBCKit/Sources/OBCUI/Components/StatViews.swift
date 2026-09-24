@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// One formatted statistic for the strips and grids: a mono value, an optional small
+/// One formatted statistic for the strips and grids: a tabular value, an optional small
 /// unit, and an uppercase key ("62.4 km / DISTANCE").
 public struct OBCStat: Identifiable {
     public let value: String
@@ -28,17 +28,17 @@ public struct OBCStatStrip: View {
         HStack(spacing: 10) {
             ForEach(stats) { stat in
                 VStack(alignment: .leading, spacing: 3) {
-                    statValue(stat, size: 20, unitSize: 12)
-                    statKey(stat, size: 9.5)
+                    statValue(stat, style: .title3)
+                    statKey(stat)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.vertical, 15)
         .padding(.horizontal, 12)
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
     }
 }
 
@@ -57,44 +57,41 @@ public struct OBCStatGrid: View {
                         cell(stat)
                     }
                     if rows[r].count == 1 {
-                        OBCTheme.panel.frame(maxWidth: .infinity)
+                        OBCTheme.surface.frame(maxWidth: .infinity)
                     }
                 }
             }
         }
-        .background(OBCTheme.line)
+        .background(OBCTheme.hairline)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
     }
 
     private func cell(_ stat: OBCStat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            statValue(stat, size: 24, unitSize: 13)
-            statKey(stat, size: 10)
+            statValue(stat, style: .title2)
+            statKey(stat)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
     }
 }
 
 /// Shared value and key text, used by both stat layouts.
-private func statValue(_ stat: OBCStat, size: CGFloat, unitSize: CGFloat) -> some View {
+private func statValue(_ stat: OBCStat, style: Font.TextStyle) -> some View {
     (Text(stat.value)
-        .font(.obcMono(size: size, weight: .medium))
+        .font(.obcStat(style))
         .foregroundColor(OBCTheme.ink)
         + Text(stat.unit.map { " \($0)" } ?? "")
-        .font(.obcMono(size: unitSize, weight: .medium))
-        .foregroundColor(OBCTheme.inkFaint))
+        .font(.system(.subheadline, weight: .medium))
+        .foregroundColor(OBCTheme.secondary))
         .lineLimit(1)
         .minimumScaleFactor(0.7)
 }
 
-private func statKey(_ stat: OBCStat, size: CGFloat) -> some View {
-    Text(stat.key.uppercased())
-        .font(.obcMono(size: size, weight: .bold))
-        .kerning(1)
-        .foregroundStyle(OBCTheme.inkFaint)
+private func statKey(_ stat: OBCStat) -> some View {
+    OBCEyebrow(stat.key)
 }
 
 #Preview("Stats") {
@@ -113,5 +110,5 @@ private func statKey(_ stat: OBCStat, size: CGFloat) -> some View {
         ])
     }
     .padding()
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

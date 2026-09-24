@@ -1,41 +1,17 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#elseif canImport(AppKit)
-import AppKit
-#endif
 
-/// Brand type helpers for three faces: the Iowan Old Style serif for large titles and
-/// headings, the system font for body and chrome, and the system monospace for stat
-/// lines, eyebrow labels and values.
+/// The companion type is SF Pro at system text styles, so every size follows Dynamic Type:
+/// titles and body take a text style directly, as in `.system(.title2, weight: .bold)`. The
+/// device's own pixel font appears only where the device speaks, through `PixelText`.
 public extension Font {
-    /// The field-guide serif. Falls back to the system serif design if Iowan Old
-    /// Style is ever unavailable.
-    static func obcSerif(size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        if hasIowan {
-            return .custom("Iowan Old Style", size: size).weight(weight)
-        }
-        return .system(size: size, weight: weight, design: .serif)
+    /// A stat value: SF Pro semibold with tabular figures.
+    static func obcStat(_ style: Font.TextStyle) -> Font {
+        .system(style, weight: .semibold).monospacedDigit()
     }
-
-    /// Monospace for stat lines, labels and values.
-    static func obcMono(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
-    }
-
-    private static let hasIowan: Bool = {
-        #if canImport(UIKit)
-        UIFont(name: "IowanOldStyle-Roman", size: 12) != nil
-        #elseif canImport(AppKit)
-        NSFont(name: "IowanOldStyle-Roman", size: 12) != nil
-        #else
-        false
-        #endif
-    }()
 }
 
-/// The monospace eyebrow label: bold, uppercase and letter-spaced, as in
-/// "ELEVATION PROFILE".
+/// A caption label: SF Pro semibold, uppercase and tracked, in the secondary colour, as in
+/// "ELEVATION".
 public struct OBCEyebrow: View {
     let text: String
 
@@ -43,8 +19,16 @@ public struct OBCEyebrow: View {
 
     public var body: some View {
         Text(text.uppercased())
-            .font(.obcMono(size: 10, weight: .bold))
+            .font(.system(.caption, weight: .semibold))
             .kerning(1)
-            .foregroundStyle(OBCTheme.inkFaint)
+            .foregroundStyle(OBCTheme.secondary)
+    }
+}
+
+public extension View {
+    /// Caps Dynamic Type for a glyph or label inside fixed geometry, such as an icon button, a
+    /// badge or a map pin, where a larger size cannot fit. Text in the flow never takes this.
+    func obcFixedGeometryType() -> some View {
+        dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 }
