@@ -1,6 +1,6 @@
 //! The board's [`Sounder`]: a piezo between the two PWM21 channels, played by [`buzzer_task`].
 
-use embassy_executor::Spawner;
+use embassy_executor::SendSpawner;
 use embassy_futures::select::{select, Either};
 use embassy_nrf::peripherals::{P1_06, P1_07, PWM21};
 use embassy_nrf::pwm::{DutyCycle, SimpleConfig, SimplePwm};
@@ -20,13 +20,14 @@ const LOW: DutyCycle = DutyCycle::inverted(0);
 pub(crate) struct Buzzer(());
 
 impl Buzzer {
-    /// Arm PWM21 on the provisional piezo pins and spawn the task that owns it.
+    /// Arm PWM21 on the provisional piezo pins and spawn the task that owns it on `spawner`, the
+    /// high-priority executor, so a long render cannot stretch a note or a rest.
     ///
     /// The PWM stays disabled between notes. A disabled PWM hands the pads back to their GPIO
     /// level, which `SimpleConfig`'s idle level sets low, so a rest and the idle state are both
     /// pins low with no DC across the piezo.
     pub(crate) fn new(
-        spawner: Spawner,
+        spawner: SendSpawner,
         pwm: Peri<'static, PWM21>,
         a: Peri<'static, P1_06>,
         b: Peri<'static, P1_07>,
@@ -52,8 +53,8 @@ impl Sounder for Buzzer {
 
 /// Play each signalled pattern to its end, or until a newer one replaces it.
 ///
-/// It runs on the thread-mode executor, because starting a note ends in `SimplePwm`'s busy-wait on
-/// `SEQEND`: one period of the note, so under 1 ms for any note above 1 kHz.
+/// Starting a note ends in `SimplePwm`'s busy-wait on `SEQEND`: one period of the note, so under
+/// 1 ms for any note above 1 kHz. The other high-priority tasks wait that long at most.
 #[embassy_executor::task]
 async fn buzzer_task(mut pwm: SimplePwm<'static>) -> ! {
     loop {
@@ -88,6 +89,8 @@ fn tone(pwm: &mut SimplePwm<'static>, hz: u16, volume: Volume) {
         Volume::Loud => DutyCycle::normal(half),
         Volume::Quiet => LOW,
     };
+    // The duties load only on the SEQSTART that `set_all_duties` sends. Nothing documents that a
+    // disabled PWM keeps a SEQSTART until `enable`, so the enable comes first.
     pwm.enable();
     pwm.set_all_duties([DutyCycle::inverted(half), b, LOW, LOW]);
 }
