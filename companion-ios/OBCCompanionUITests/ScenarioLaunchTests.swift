@@ -54,7 +54,9 @@ final class ScenarioLaunchTests: XCTestCase {
     @MainActor
     func testHappyPathServesTheFixtureDevice() {
         let app = launch(arguments: ["-OBCScenario", "happyPath"])
-        XCTAssertTrue(app.staticTexts["Trailhead"].waitForExistence(timeout: 10))
+        let device = app.descendants(matching: .any)["topbar.device"].firstMatch
+        let named = NSPredicate(format: "label BEGINSWITH 'Trailhead,'")
+        wait(for: [expectation(for: named, evaluatedWith: device)], timeout: 10)
     }
 
     /// The dev panel presents at launch through its argument, and dismisses.
