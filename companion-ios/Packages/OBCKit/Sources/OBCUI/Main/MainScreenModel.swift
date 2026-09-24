@@ -815,7 +815,8 @@ public final class MainScreenModel {
             ))
         }
         return TripUploadModel(
-            transport: transport, tripName: trip.name, deviceName: deviceName,
+            transport: transport, card: DeviceTripCard(name: trip.name, days: days.map { $0.summary(tripID: id) }),
+            deviceName: deviceName,
             precheck: plan.precheck, steps: steps,
             timing: timing, activity: transferActivity
         )

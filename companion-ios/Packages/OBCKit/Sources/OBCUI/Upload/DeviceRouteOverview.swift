@@ -49,17 +49,7 @@ struct DeviceRouteOverviewScreen: View {
 
     var body: some View {
         Canvas { context, size in
-            context.scaleBy(x: size.width / 240, y: size.height / 320)
-            context.fill(Path(CGRect(x: 0, y: 0, width: 240, height: 320)), with: .color(.white))
-            context.stroke(
-                Path(roundedRect: CGRect(x: 4.5, y: 4.5, width: 231, height: 311), cornerRadius: 8),
-                with: .color(OBCTheme.deviceRule), lineWidth: 1
-            )
-            context.fill(
-                Path(roundedRect: CGRect(x: 4, y: 4, width: 232, height: 34), cornerRadius: 6),
-                with: .color(OBCTheme.deviceHeader)
-            )
-            text(overview.title, .body, x: 14, capTop: 12, color: OBCTheme.deviceHeaderText, in: &context)
+            context.deviceFrame(size: size, title: overview.title)
 
             drawTrack(in: &context)
 
@@ -72,17 +62,17 @@ struct DeviceRouteOverviewScreen: View {
                 Path(roundedRect: CGRect(x: 14, y: 226, width: 212, height: 38), cornerRadius: 5),
                 with: .color(OBCTheme.deviceTrack)
             )
-            text("START RIDE", .body, x: 26, capTop: 235, color: OBCTheme.deviceInk, in: &context)
-            text("Delete route", .body, x: 26, capTop: 281, color: OBCTheme.deviceInk, in: &context)
+            context.pixelText("START RIDE", .body, x: 26, capTop: 235, color: OBCTheme.deviceInk)
+            context.pixelText("Delete route", .body, x: 26, capTop: 281, color: OBCTheme.deviceInk)
         }
     }
 
     /// Caption left, unit right, value right-aligned before the unit, one baseline.
     private func ledgerRow(_ caption: String, value: String, unit: String, capTop: CGFloat, in context: inout GraphicsContext) {
-        text(caption, .label, x: 16, capTop: capTop, color: OBCTheme.deviceCaption, in: &context)
-        text(unit, .label, x: 224, capTop: capTop, color: OBCTheme.deviceCaption, alignRight: true, in: &context)
+        context.pixelText(caption, .label, x: 16, capTop: capTop, color: OBCTheme.deviceCaption)
+        context.pixelText(unit, .label, x: 224, capTop: capTop, color: OBCTheme.deviceCaption, alignRight: true)
         let valueRight = 224 - CGFloat(unit.count * PixelFont.label.cellWidth) - 6
-        text(value, .display, x: valueRight, capTop: capTop - 6, color: OBCTheme.deviceInk, alignRight: true, in: &context)
+        context.pixelText(value, .display, x: valueRight, capTop: capTop - 6, color: OBCTheme.deviceInk, alignRight: true)
     }
 
     /// The track in a 212 x 90 box between the title bar and the first rule: a two-pixel ink
@@ -108,22 +98,40 @@ struct DeviceRouteOverviewScreen: View {
         context.fill(diamond, with: .color(.white))
         context.stroke(diamond, with: .color(OBCTheme.deviceInk), lineWidth: 1)
     }
+}
 
-    /// Terminus text placed by its cap top, so strings with and without ascenders share a baseline.
-    private func text(
+extension GraphicsContext {
+    /// Scale to the 240 x 320 panel, then draw the white screen, its outline and the rust title
+    /// bar with its title.
+    mutating func deviceFrame(size: CGSize, title: String) {
+        scaleBy(x: size.width / 240, y: size.height / 320)
+        fill(Path(CGRect(x: 0, y: 0, width: 240, height: 320)), with: .color(.white))
+        stroke(
+            Path(roundedRect: CGRect(x: 4.5, y: 4.5, width: 231, height: 311), cornerRadius: 8),
+            with: .color(OBCTheme.deviceRule), lineWidth: 1
+        )
+        fill(
+            Path(roundedRect: CGRect(x: 4, y: 4, width: 232, height: 34), cornerRadius: 6),
+            with: .color(OBCTheme.deviceHeader)
+        )
+        pixelText(title, .body, x: 14, capTop: 12, color: OBCTheme.deviceHeaderText)
+    }
+
+    /// Terminus text placed by its cap top, so strings with and without ascenders share a
+    /// baseline. `x` is the left edge, the right edge with `alignRight`, or the centre with
+    /// `centered`.
+    mutating func pixelText(
         _ string: String, _ font: PixelFont, x: CGFloat, capTop: CGFloat, color: Color,
-        alignRight: Bool = false, in context: inout GraphicsContext
+        alignRight: Bool = false, centered: Bool = false
     ) {
         let bitmap = PixelBitmap(string, font: font)
         let cellTop = capTop - CGFloat(PixelBitmap("H", font: font).inkTop)
-        let origin = CGPoint(
-            x: alignRight ? x - CGFloat(bitmap.width) : x,
-            y: cellTop + CGFloat(bitmap.inkTop)
-        )
+        let left = alignRight ? x - CGFloat(bitmap.width) : centered ? x - CGFloat(bitmap.width / 2) : x
+        let origin = CGPoint(x: left, y: cellTop + CGFloat(bitmap.inkTop))
         var path = Path()
         for run in bitmap.runs {
             path.addRect(CGRect(x: origin.x + CGFloat(run.x), y: origin.y + CGFloat(run.y), width: CGFloat(run.length), height: 1))
         }
-        context.fill(path, with: .color(color))
+        fill(path, with: .color(color))
     }
 }

@@ -13,6 +13,8 @@ struct DeviceGlyphView: View {
         /// The device's route overview for a route it now holds. Drawn large, at two thirds of a
         /// point per panel pixel, so each panel pixel is whole screen pixels at 3x.
         case routeOverview(DeviceRouteOverview)
+        /// The card the device shows when a trip lands, drawn as large as the route overview.
+        case tripCard(DeviceTripCard)
     }
 
     let variant: Variant
@@ -27,7 +29,7 @@ struct DeviceGlyphView: View {
         switch variant {
         case .home: 148
         case .pairing: 126
-        case .routeOverview: 470 * 2 / 3
+        case .routeOverview, .tripCard: 470 * 2 / 3
         }
     }
 
@@ -124,6 +126,8 @@ struct DeviceGlyphView: View {
             }
         case .routeOverview(let overview):
             DeviceRouteOverviewScreen(overview: overview)
+        case .tripCard(let card):
+            DeviceTripCardScreen(card: card)
         }
     }
 

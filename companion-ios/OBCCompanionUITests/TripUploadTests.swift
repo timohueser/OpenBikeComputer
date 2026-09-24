@@ -1,8 +1,8 @@
 import XCTest
 
 /// Whole-trip upload driven through the real UI against the trips fixture. The queue planner and
-/// reconcile logic are host-tested; this proves the wiring: Upload trip, the queued sheet, the done
-/// confirm, the interrupt and resume framing, the capacity boundary, and delete trip.
+/// reconcile logic are host-tested; this proves the wiring: Send, the queued sheet, the device
+/// screen confirm, the interrupt and resume framing, the capacity boundary, and delete trip.
 final class TripUploadTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -51,7 +51,7 @@ final class TripUploadTests: XCTestCase {
         XCTAssertTrue(upload.isEnabled, "Upload trip disabled")
         upload.tap()
 
-        let sheet = app.otherElements["tripUpload.sheet"]
+        let sheet = app.descendants(matching: .any)["tripUpload.sheet"].firstMatch
         XCTAssertTrue(sheet.waitForExistence(timeout: 10), "trip upload sheet missing")
         // The queued-mode header appears while day routes move.
         XCTAssertTrue(
@@ -61,11 +61,11 @@ final class TripUploadTests: XCTestCase {
 
         // It reaches the done confirm.
         XCTAssertTrue(
-            app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
+            app.staticTexts["upload.doneTitle"].waitForExistence(timeout: 20),
             "trip upload never completed")
-        XCTAssertTrue(app.staticTexts["tripUpload.doneTally"].exists, "done tally missing")
+        XCTAssertTrue(app.images["upload.deviceScreen"].exists, "the device drawing is missing")
         snap(app, "TR8-trip-upload-done")
-        app.buttons["tripUpload.done"].tap()
+        app.buttons["upload.done"].tap()
 
         // Back on the trip page.
         XCTAssertTrue(app.descendants(matching: .any)[dayAID].waitForExistence(timeout: 10), "did not return to trip page")
@@ -88,9 +88,9 @@ final class TripUploadTests: XCTestCase {
         resume.tap()
 
         XCTAssertTrue(
-            app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 25),
+            app.staticTexts["upload.doneTitle"].waitForExistence(timeout: 25),
             "trip upload did not finish after resume")
-        app.buttons["tripUpload.done"].tap()
+        app.buttons["upload.done"].tap()
     }
 
     // MARK: Menu capacity is not storage capacity
@@ -104,10 +104,10 @@ final class TripUploadTests: XCTestCase {
         app.buttons["trip.upload"].tap()
 
         XCTAssertTrue(
-            app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
+            app.staticTexts["upload.doneTitle"].waitForExistence(timeout: 20),
             "trip upload was incorrectly rejected at the menu boundary")
         snap(app, "TR8-trip-upload-menu-boundary")
-        app.buttons["tripUpload.done"].tap()
+        app.buttons["upload.done"].tap()
     }
 
     // MARK: Delete trip while connected
@@ -121,9 +121,9 @@ final class TripUploadTests: XCTestCase {
         // Land it on the device first.
         app.buttons["trip.upload"].tap()
         XCTAssertTrue(
-            app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
+            app.staticTexts["upload.doneTitle"].waitForExistence(timeout: 20),
             "trip upload never completed")
-        app.buttons["tripUpload.done"].tap()
+        app.buttons["upload.done"].tap()
         XCTAssertTrue(app.descendants(matching: .any)[dayAID].waitForExistence(timeout: 10), "did not return to trip page")
 
         // Delete the trip.
