@@ -64,6 +64,8 @@ its own resistors on the rest. **The production board should fit external 10–1
 | P1.03 | I²C SCL      | shared GPS + altimeter + compass bus (TWIM22)             |
 | P1.04 | I²C SDA      | same bus                                                   |
 | P1.05 | GPS TX-Ready | optional DDC data-ready IRQ (active-high)                  |
+| P1.06 | piezo A      | **PROVISIONAL** — PWM21 ch0, the note's frequency          |
+| P1.07 | piezo B      | **PROVISIONAL** — PWM21 ch1; opposite phase on Loud, low on Quiet |
 | P1.08 | BTN2         | BACK                                                       |
 | P1.09 | BTN1         | DOWN                                                       |
 | P1.10 | GSP          | gate start pulse                                           |
