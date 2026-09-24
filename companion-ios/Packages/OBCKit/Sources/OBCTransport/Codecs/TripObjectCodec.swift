@@ -78,7 +78,7 @@ public enum TripObjectCodec {
         data[data.startIndex] = version
         // Byte 1 is reserved and stays zero.
         data.writeUInt16LE(UInt16(days.count), at: 2)
-        let nameBytes = truncatedUTF8(trip.name, maxBytes: nameCap)
+        let nameBytes = Data(trip.name.truncatedToUTF8Bytes(nameCap).utf8)
         data[data.startIndex + nameLengthOffset] = UInt8(nameBytes.count)
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + nameOffset + i] = byte }
         // The name padding and the reserved byte 53 are already zero.
@@ -124,17 +124,5 @@ public enum TripObjectCodec {
         return Trip(
             key: key, name: name,
             startDate: data.readUInt16LE(at: b + startDateOffset), days: days)
-    }
-
-    /// UTF-8 bytes of `string`, truncated to at most `maxBytes` on a character boundary: the same
-    /// rule the route and config name fields use.
-    private static func truncatedUTF8(_ string: String, maxBytes: Int) -> Data {
-        var bytes = Data()
-        for character in string {
-            let encoded = Array(String(character).utf8)
-            if bytes.count + encoded.count > maxBytes { break }
-            bytes.append(contentsOf: encoded)
-        }
-        return bytes
     }
 }

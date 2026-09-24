@@ -36,6 +36,18 @@ struct FlatStoreVectorTests {
         }
     }
 
+    @Test("A PUT shortens a long multi-byte display name to 48 bytes on a character boundary")
+    func longDisplayNameIsShortened() throws {
+        let full = "Grimselpass → Furkapass → Oberalppass über Andermatt und Disentis"
+        let request = PutRequest(payloadLength: 1, payloadCRC32: 0, kind: .route, displayName: full)
+        let name = request.displayName
+        #expect(name.utf8.count <= FlatStoreV4.maximumDisplayNameLength)
+        #expect(Array(full).starts(with: Array(name)))
+        let next = full[full.index(full.startIndex, offsetBy: name.count)]
+        #expect(name.utf8.count + String(next).utf8.count > FlatStoreV4.maximumDisplayNameLength)
+        _ = try ControlRequest.put(request).frame(requestID: RequestID(rawValue: 1)!).encode()
+    }
+
     @Test("Accepted Assistant routes remain readable and undefined catalog flags fail")
     func assistantCatalogFlags() throws {
         var bytes = try Vectors.frame(named: "list-response-two-entries")
