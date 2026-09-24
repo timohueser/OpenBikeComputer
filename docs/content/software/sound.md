@@ -22,7 +22,7 @@ give each cue its own sound:
 | Heads-up | Look at the screen soon | climb starts |
 | Good | Resolved | back on route, GPS back, arrived, the volume preview |
 | Problem | Something went wrong | off route, GPS lost, sensor dropped, battery low |
-| Urgent | Act now | recording error, battery critical |
+| Urgent | Act now | recording error, storage lost, battery critical |
 
 Rhythm is the primary signal: the number of notes and their length. Rhythm stays audible in wind,
 where a change of pitch is easy to miss. Pitch direction is the secondary signal: rising notes are
@@ -37,7 +37,10 @@ when the new level holds for a few seconds, and after a loss cue the same level 
 minute. A loss that still holds when that minute ends plays its cue then. A recovery cue plays
 only when its loss cue played. So a rider on the edge of the route hears one cue, not a stream of
 cues. The GPS and sensor cues play only while the ride runs, and GPS lost plays only when the GPS
-had a fix after the ride started. The battery cues play once at each threshold.
+had a fix after the ride started. The battery cues play once at each threshold. A recording error
+and storage lost play each time the fault occurs, but at most once a minute. An incomplete ride log
+that the device finds at start-up shows the warning card and plays no cue, because the rider cannot
+act on it.
 [`cues.rs`](src:firmware/obc-app/src/cues.rs) holds these rules.
 
 ## Settings
