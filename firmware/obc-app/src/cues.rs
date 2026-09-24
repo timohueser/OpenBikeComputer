@@ -9,10 +9,11 @@ use crate::device_core::Sound;
 use crate::device_status::LOW_BATTERY_PCT;
 use crate::sensors::{SensorPhase, SensorStatus};
 use crate::settings::SENSOR_SLOTS;
-use crate::App;
+use crate::{Alert, Alerts, App};
 
 /// After a loss cue, the same source raises no loss cue for this long. A loss that holds past the
-/// cooldown plays when it ends.
+/// cooldown plays when it ends. A failure cue plays again only after no failure alert is raised
+/// for this long.
 const LOSS_COOLDOWN_MS: u32 = 60_000;
 const BATTERY_CRITICAL_PCT: u8 = 5;
 /// A battery threshold re-arms when the charge rises this many points above it.
@@ -119,6 +120,8 @@ pub(crate) struct Cues {
     /// Whether `BatteryLow` and `BatteryCritical` may play.
     battery_armed: [bool; 2],
     arrived: bool,
+    /// When `RecordingFailed` or `StorageLost` was last raised.
+    failure_at: Option<u32>,
 }
 
 impl Cues {
@@ -131,6 +134,7 @@ impl Cues {
             sensors_seen: 0,
             battery_armed: [true; 2],
             arrived: false,
+            failure_at: None,
         }
     }
 
@@ -191,6 +195,25 @@ impl Cues {
             self.raise(Cue::Arrived);
         }
         self.arrived = arrived;
+    }
+
+    /// Report the alerts of a pass. `RecordingFailed` and `StorageLost` share one failure
+    /// episode, so a fault raised on every pass, or a failed write followed by the storage latch,
+    /// plays one cue. The first raise after a quiet minute plays; with both raised, storage lost.
+    /// The other alerts play no cue.
+    pub(crate) fn alerts(&mut self, alerts: Alerts, now_ms: u32) {
+        let cue = if alerts.contains(Alert::StorageLost) {
+            Cue::StorageLost
+        } else if alerts.contains(Alert::RecordingFailed) {
+            Cue::RecordingError
+        } else {
+            return;
+        };
+        let quiet = self.failure_at.is_none_or(|at| now_ms.wrapping_sub(at) >= LOSS_COOLDOWN_MS);
+        self.failure_at = Some(now_ms);
+        if quiet {
+            self.raise(cue);
+        }
     }
 
     /// Millis until the soonest pending level settles, or `None` when nothing is pending.
@@ -383,5 +406,35 @@ mod tests {
         cues.raise(Cue::RecordingError);
         assert_eq!(cues.take(None), None);
         assert_eq!(played(&mut cues), None);
+    }
+
+    #[test]
+    fn a_failure_episode_plays_one_cue() {
+        let mut cues = Cues::new();
+        let mut heard = heapless::Vec::<u32, 4>::new();
+        for s in (0..600).chain([661, 691]) {
+            cues.alerts(Alert::RecordingFailed.into(), s * 1_000);
+            if played(&mut cues) == Some(Cue::RecordingError) {
+                heard.push(s).unwrap();
+            }
+        }
+        // Raised every pass for 10 min: one cue. Quiet for more than 60 s, then raised: a second cue.
+        // A separate failure 30 s after that: silent.
+        assert_eq!(heard.as_slice(), &[0, 661]);
+
+        // A dying card: a failed write, then the storage latch one pass later. One cue.
+        cues.alerts(Alert::RecordingFailed.into(), 800_000);
+        assert_eq!(played(&mut cues), Some(Cue::RecordingError));
+        cues.alerts(Alert::StorageLost.into(), 802_000);
+        assert_eq!(played(&mut cues), None, "the storage latch is the same episode");
+
+        // Both in one pass: storage lost plays, and as an Urgent cue it outranks a Problem cue.
+        let mut both = Alerts::NONE;
+        both.raise(Alert::RecordingFailed);
+        both.raise(Alert::StorageLost);
+        cues.raise(Cue::BatteryLow);
+        cues.alerts(both, 900_000);
+        assert_eq!(played(&mut cues), Some(Cue::StorageLost));
+        assert_eq!(Cue::StorageLost.family(), obc_ports::Family::Urgent);
     }
 }

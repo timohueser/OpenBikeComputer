@@ -125,7 +125,7 @@ pub use poi_display::OFF_ROUTE_HINT_M;
 /// (`ScreenTick::region`), so it is re-exported for the integration tests that pin it. In-crate
 /// callers still import `vocab::spinner`.
 pub use vocab::spinner::needle_region;
-pub use warning::{WarningFlags, WarningScreen};
+pub use warning::WarningScreen;
 pub use whats_next::WhatsNextScreen;
 
 /// Maximum overlay depth. The deepest normal path is seven screens

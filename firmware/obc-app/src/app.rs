@@ -20,12 +20,12 @@ use crate::placement::define_placement_constructors;
 use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::screen::{
-    self, ContextDrawerScreen, Ctx, MapScreen, MenuScreen, QuickDrawerScreen, Render, RenderFrame, Screen, WarningFlags,
+    self, ContextDrawerScreen, Ctx, MapScreen, MenuScreen, QuickDrawerScreen, Render, RenderFrame, Screen,
 };
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
-use crate::{DeviceStatus, Msg};
+use crate::{Alert, Alerts, DeviceStatus, Msg};
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -699,7 +699,7 @@ impl App {
             // nothing on the fix path touches a medium. `true` means the staging buffer was full
             // and the log lost a point.
             if self.recorder.record_fix(fix, now_ms, riding) {
-                self.on_warning(WarningFlags::REC_ERROR);
+                self.on_alerts(Alert::RecordingFailed);
             }
         }
         // Electronic compass. Polled after the fix so it sees this tick's movement state, and
@@ -1994,15 +1994,14 @@ impl App {
         self.sweep_cards();
     }
 
-    /// A raised warning: accumulate the flags and deliver (or defer) the advisory card.
-    pub(crate) fn on_warning(&mut self, flags: WarningFlags) {
-        if flags.is_empty() {
+    /// Raised alerts: the cues hear them now, and the warning card shows each one once per boot.
+    pub(crate) fn on_alerts(&mut self, alerts: impl Into<Alerts>) {
+        let alerts = alerts.into();
+        if alerts.is_empty() {
             return;
         }
-        if flags.contains(WarningFlags::REC_ERROR) && !self.ui.cards.warning_raised(WarningFlags::REC_ERROR) {
-            self.cues.raise(obc_ports::Cue::RecordingError);
-        }
-        self.ui.cards.post_warning(flags);
+        self.cues.alerts(alerts, self.ui.now_ms);
+        self.ui.cards.post_warning(alerts);
         self.sweep_cards();
     }
 
@@ -3554,7 +3553,7 @@ mod tests {
                 error: obc_ports::SettingsSaveError::Backend,
             };
             if app.settings_ops.apply_outcome(outcome, now_ms) {
-                app.on_warning(WarningFlags::SETTINGS_ERROR);
+                app.on_alerts(Alert::SettingsNotSaved);
             }
         }
     }
@@ -3955,7 +3954,7 @@ mod tests {
             app.tick(RideClock(step * 1_000), Sensors::new(&mut loc), None);
             if lost.is_none() {
                 if let Some(card) = app.ui.stack.iter().find_map(|s| match s {
-                    Screen::Warning(w) => Some(w.flags()),
+                    Screen::Warning(w) => Some(w.alerts()),
                     _ => None,
                 }) {
                     lost = Some((step, card));
@@ -3963,7 +3962,7 @@ mod tests {
             }
         }
         let (step, card) = lost.expect("a buffer nothing drains eventually loses a sample, and says so");
-        assert!(card.contains(WarningFlags::REC_ERROR), "the card carries the recording-error flag");
+        assert!(card.contains(Alert::RecordingFailed), "the card carries the recording-error flag");
         assert!(step > 1, "and it is raised only once the bounded buffer is genuinely full");
 
         app.apply_gesture(Gesture::Back);
@@ -4552,10 +4551,10 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
         assert_eq!(app.ui.stack.len(), 7, "the full mid-ride settings path occupies seven slots");
 
-        app.on_warning(WarningFlags::REC_ERROR);
+        app.on_alerts(Alert::RecordingFailed);
         assert_eq!(app.ui.stack.len(), 8, "the host warning pushes over the deepest normal path");
         match app.top_screen() {
-            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::REC_ERROR)),
+            Screen::Warning(w) => assert!(w.alerts().contains(Alert::RecordingFailed)),
             _ => panic!("the recording-error warning must not be dropped at maximum normal depth"),
         }
     }
@@ -5615,7 +5614,7 @@ mod tests {
 
     use crate::screen::{
         MenuScreen, NavPlanningScreen, PasskeyScreen, RouteReceivedScreen, SettingsPage, StatisticsScreen,
-        WarningFlags, WarningScreen,
+        WarningScreen,
     };
     use crate::settings::IdleReturn;
 
@@ -5690,7 +5689,7 @@ mod tests {
             Screen::Passkey(PasskeyScreen::new(123_456)),
             Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
             Screen::NavPlanning(NavPlanningScreen::new("Route")),
-            Screen::Warning(WarningScreen::new(WarningFlags::NO_GPS)),
+            Screen::Warning(WarningScreen::new(Alert::NoGps.into())),
         ] {
             let mut app = App::new_idle(AppState::new(0, 0, 1.0));
             app.settings.idle_return = IdleReturn::S15;
@@ -5979,7 +5978,6 @@ mod tests {
 
     #[test]
     fn transient_failure_then_retry_keeps_the_revision() {
-        use crate::screen::WarningFlags;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let mut host = SettingsHost::default();
         app.ui.now_ms = 10_000;
@@ -5991,7 +5989,7 @@ mod tests {
             app.ui
                 .stack
                 .iter()
-                .any(|s| matches!(s, Screen::Warning(w) if w.flags().contains(WarningFlags::SETTINGS_ERROR))),
+                .any(|s| matches!(s, Screen::Warning(w) if w.alerts().contains(Alert::SettingsNotSaved))),
             "a failed persist raises the settings advisory",
         );
         assert_eq!(host.drain(&mut app), None, "inside the backoff window — no retry yet");

@@ -119,7 +119,7 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     let RecorderEffect::Discard { token } = effect else { panic!("the repair is the exact removal: {effect:?}") };
 
     // The store refuses it. The card comes back in its failed mode, and no warning card lands on
-    // top of it: the typed card is the one explanation, and `REC_ERROR` means a ride log went
+    // top of it: the typed card is the one explanation, and `RecordingFailed` means a ride log went
     // incomplete, which is not what happened here.
     let mut outcomes = OutcomeSlots::new();
     outcomes.recorder.try_put(RecorderOutcome::Failed { token, error: RecorderError::Write }).unwrap();

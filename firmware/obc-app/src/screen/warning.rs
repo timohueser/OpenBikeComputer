@@ -2,8 +2,8 @@
 //! sensor that did not answer the I²C probe, a failed ride-log write, or a failed settings write.
 //! The device stays usable, so this card is advisory and any press dismisses it.
 //!
-//! Warnings coalesce onto one card, and each flag shows once per boot: a dismissed notice does
-//! not nag, but a new flag re-opens the card.
+//! Alerts coalesce onto one card, and each alert shows once per boot: a dismissed notice does
+//! not nag, but a new alert re-opens the card.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -11,93 +11,30 @@ use obc_render::{
     Surface,
 };
 
+use crate::alert::{Alert, Alerts};
 use crate::input::Gesture;
 
 use super::vocab::chrome::{card_triangle, title_frame, TITLE_BAR_H};
 use super::{palette, Ctx, Render, Transition};
 
-/// The active device warnings. Each condition is its own bit, so several coalesce onto one card.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WarningFlags(u8);
-
-impl WarningFlags {
-    pub const NONE: WarningFlags = WarningFlags(0);
-    /// The GPS module didn't answer the boot I²C probe.
-    pub const NO_GPS: WarningFlags = WarningFlags(1 << 0);
-    /// The barometric altimeter didn't answer the boot I²C probe.
-    pub const NO_ALTIMETER: WarningFlags = WarningFlags(1 << 1);
-    /// The compass / IMU didn't answer the boot I²C probe.
-    pub const NO_COMPASS: WarningFlags = WarningFlags(1 << 2);
-    /// A ride-log write did not happen mid-ride, so the log is incomplete or at risk of it.
-    pub const REC_ERROR: WarningFlags = WarningFlags(1 << 4);
-    /// A settings write did not reach the persistent store. The value stays live in RAM and the
-    /// app retries, so this only tells the rider the edit is not durable yet.
-    pub const SETTINGS_ERROR: WarningFlags = WarningFlags(1 << 5);
-    /// The card transport latched off mid-ride: enough operations failed in a row that the device
-    /// stopped attempting the card. It probes the card again on a cool-down, so this clears by
-    /// itself if the card comes back.
-    pub const STORAGE_ERROR: WarningFlags = WarningFlags(1 << 6);
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// True when every bit of `other` is set here, and `other` is not empty.
-    pub const fn contains(self, other: WarningFlags) -> bool {
-        other.0 != 0 && self.0 & other.0 == other.0
-    }
-
-    /// True when a sensor-absence bit is set, not only an advisory bit.
-    const fn any_sensor(self) -> bool {
-        self.0 & (Self::NO_GPS.0 | Self::NO_ALTIMETER.0 | Self::NO_COMPASS.0) != 0
-    }
-}
-
-impl core::ops::BitOr for WarningFlags {
-    type Output = WarningFlags;
-    fn bitor(self, rhs: WarningFlags) -> WarningFlags {
-        WarningFlags(self.0 | rhs.0)
-    }
-}
-
-impl core::ops::BitOrAssign for WarningFlags {
-    fn bitor_assign(&mut self, rhs: WarningFlags) {
-        self.0 |= rhs.0;
-    }
-}
-
-impl core::ops::BitAnd for WarningFlags {
-    type Output = WarningFlags;
-    fn bitand(self, rhs: WarningFlags) -> WarningFlags {
-        WarningFlags(self.0 & rhs.0)
-    }
-}
-
-impl core::ops::Not for WarningFlags {
-    type Output = WarningFlags;
-    fn not(self) -> WarningFlags {
-        WarningFlags(!self.0)
-    }
-}
-
 #[derive(Debug)]
 pub struct WarningScreen {
-    flags: WarningFlags,
+    alerts: Alerts,
 }
 
 impl WarningScreen {
-    pub fn new(flags: WarningFlags) -> Self {
-        WarningScreen { flags }
+    pub fn new(alerts: Alerts) -> Self {
+        WarningScreen { alerts }
     }
 
-    /// The flags shown now, so the host can add a new fault to the live card instead of pushing
+    /// The alerts shown now, so the host can add a new alert to the live card instead of pushing
     /// a second one.
-    pub fn flags(&self) -> WarningFlags {
-        self.flags
+    pub fn alerts(&self) -> Alerts {
+        self.alerts
     }
 
-    pub fn add(&mut self, flags: WarningFlags) {
-        self.flags |= flags;
+    pub fn add(&mut self, alerts: Alerts) {
+        self.alerts.raise(alerts);
     }
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
@@ -119,18 +56,12 @@ impl WarningScreen {
         let line = Font::Body.line_height() as i32;
         let mut y = h * 36 / 100;
 
-        if self.flags.any_sensor() {
+        let sensors = [(Alert::NoGps, "GPS"), (Alert::NoAltimeter, "Altimeter"), (Alert::NoCompass, "Compass")];
+        if sensors.iter().any(|&(alert, _)| self.alerts.contains(alert)) {
             cv.text("Not detected:", Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
             y += line + 4;
-            for (i, (bit, name)) in [
-                (WarningFlags::NO_GPS, "GPS"),
-                (WarningFlags::NO_ALTIMETER, "Altimeter"),
-                (WarningFlags::NO_COMPASS, "Compass"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                if self.flags.contains(bit) {
+            for (i, (alert, name)) in sensors.into_iter().enumerate() {
+                if self.alerts.contains(alert) {
                     cv.text(name, Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
                     let gc = glyph_anchor(w, y, name, Font::Body);
                     match i {
@@ -147,22 +78,23 @@ impl WarningScreen {
         // Keep these lines short: the copy-fit gate holds a centred Body line to 16 characters.
         // The most severe line first: with storage latched off, every other advisory is downstream
         // of it.
-        if self.flags.contains(WarningFlags::STORAGE_ERROR) {
+        if self.alerts.contains(Alert::StorageLost) {
             cv.text("Storage stopped", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
             y += line + 2;
             cv.text("Check the card", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
             y += line + line / 2;
         }
 
-        // The headline is in the warning colour: this is data loss, not only a slowdown.
-        if self.flags.contains(WarningFlags::REC_ERROR) {
+        // The headline is in the warning colour: this is data loss, not only a slowdown. A failed
+        // write now and an incomplete log found at boot read the same to the rider.
+        if self.alerts.contains(Alert::RecordingFailed) || self.alerts.contains(Alert::RideRecoveredIncomplete) {
             cv.text("Recording error", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
             y += line + 2;
             cv.text("Log incomplete", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
             y += line + line / 2;
         }
 
-        if self.flags.contains(WarningFlags::SETTINGS_ERROR) {
+        if self.alerts.contains(Alert::SettingsNotSaved) {
             cv.text("Settings unsaved", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
             y += line + 2;
             cv.text("Retrying write", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
@@ -197,51 +129,4 @@ fn glyph_gps_fan(cv: &mut impl Surface, c: Point, color: u16) {
 /// The altimeter's filled climb triangle, shrunk to the glyph cell.
 fn glyph_altimeter(cv: &mut impl Surface, c: Point, color: u16) {
     cv.triangle(Point::new(c.x - 5, c.y + 5), Point::new(c.x + 5, c.y + 5), Point::new(c.x, c.y - 5), color);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flag_set_ops() {
-        let mut f = WarningFlags::NONE;
-        assert!(f.is_empty());
-        f |= WarningFlags::NO_GPS;
-        f |= WarningFlags::STORAGE_ERROR;
-        assert!(!f.is_empty());
-        assert!(f.contains(WarningFlags::NO_GPS));
-        assert!(f.contains(WarningFlags::STORAGE_ERROR));
-        assert!(!f.contains(WarningFlags::NO_COMPASS));
-        assert!(f.any_sensor());
-        // An empty flag never reports as present.
-        assert!(!f.contains(WarningFlags::NONE));
-    }
-
-    #[test]
-    fn storage_error_alone_is_not_a_sensor_warning() {
-        let f = WarningFlags::STORAGE_ERROR;
-        assert!(!f.any_sensor());
-        assert!(f.contains(WarningFlags::STORAGE_ERROR));
-    }
-
-    #[test]
-    fn rec_error_is_its_own_non_sensor_advisory() {
-        let f = WarningFlags::REC_ERROR;
-        assert!(!f.any_sensor());
-        assert!(f.contains(WarningFlags::REC_ERROR));
-        assert!(!f.contains(WarningFlags::STORAGE_ERROR));
-        let both = WarningFlags::REC_ERROR | WarningFlags::STORAGE_ERROR;
-        assert!(both.contains(WarningFlags::REC_ERROR));
-        assert!(both.contains(WarningFlags::STORAGE_ERROR));
-    }
-
-    #[test]
-    fn and_not_masks_seen_flags() {
-        let raised = WarningFlags::NO_GPS | WarningFlags::NO_COMPASS;
-        let seen = WarningFlags::NO_GPS;
-        let fresh = raised & !seen;
-        assert!(fresh.contains(WarningFlags::NO_COMPASS));
-        assert!(!fresh.contains(WarningFlags::NO_GPS));
-    }
 }
