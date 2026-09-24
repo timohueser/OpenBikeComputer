@@ -17,9 +17,9 @@
 
 mod flat_harness;
 
-use flat_harness::{boot, catalog_image, client, formatted_card, payload, Answer, Plain};
+use flat_harness::{boot, boot_on, catalog_image, client, formatted_card, payload, Answer, Plain};
 use obc_link::flat::store::Policy;
-use obc_link::flat::{ObjectId, ObjectKind, Revision};
+use obc_link::flat::{Ceilings, Link, ObjectId, ObjectKind, Revision};
 use obc_storage::flat::sim::SparseDisk;
 
 const ROUTE: u16 = 1;
@@ -384,4 +384,54 @@ fn a_remount_after_a_break_finds_the_card_the_break_left() {
     assert_eq!(remounted.free_extents(), free, "and the mount computes the same free map");
     let answer = Answer::of(remounted.control(&client::status(1, 1, 1)).answer());
     assert_eq!(answer.body[0], 0, "STATUS says absent, which is the truth the client restarts from");
+}
+
+#[test]
+fn usb_map_replacement_preserves_the_old_map_and_other_objects_until_commit() {
+    let usb = Ceilings::for_usb(4_112).expect("USB stream ceiling");
+    let old_map = payload(1_700);
+    let new_map = payload(12_000);
+    let streams = client::stream_all(42, &new_map, 4_096);
+
+    for cut in 0..=streams.len() + 1 {
+        let disk = formatted_card(70 + cut as u64);
+        let mut device = boot_on(&disk, usb);
+        device.link_up(Link::Usb, usb);
+        let (map_id, map_rev) = device.seed(ObjectKind::MapShard, &old_map, "installed");
+        let route_a = device.seed(ObjectKind::Route, &payload(620), "route A").0;
+        let route_b = device.seed(ObjectKind::Route, &payload(1_040), "route B").0;
+        let ride = device.seed(ObjectKind::Ride, &payload(920), "finished ride").0;
+        let recording = device.seed_recording(4_096).0;
+        let preserved: Vec<_> = [route_a, route_b, ride, recording]
+            .into_iter()
+            .map(|id| (id, device.entry(id).unwrap(), device.read_object(id, 0)))
+            .collect();
+
+        if cut > 0 {
+            let answer = device.control_on(
+                Link::Usb,
+                &client::put(42, map_id, map_rev, &new_map, ObjectKind::MapShard.value(), "replacement"),
+            );
+            assert!(answer.control.is_empty());
+            for record in streams.iter().take(cut - 1) {
+                device.stream_on(Link::Usb, record);
+            }
+        }
+        device.link_lost_on(Link::Usb);
+        drop(device);
+
+        let remounted = boot(&disk);
+        let committed = cut == streams.len() + 1;
+        let expected = if committed { &new_map } else { &old_map };
+        assert_eq!(remounted.read_object(map_id, 0).as_ref(), Some(expected), "cut {cut}: map bytes");
+        assert_eq!(
+            remounted.entry(map_id).unwrap().revision.0,
+            map_rev + u64::from(committed),
+            "cut {cut}: map revision"
+        );
+        for (id, metadata, bytes) in &preserved {
+            assert_eq!(remounted.entry(*id), Some(*metadata), "cut {cut}: object {id} metadata");
+            assert_eq!(remounted.read_object(*id, 0).as_ref(), bytes.as_ref(), "cut {cut}: object {id} bytes");
+        }
+    }
 }
