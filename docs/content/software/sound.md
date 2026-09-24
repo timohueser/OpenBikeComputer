@@ -38,9 +38,9 @@ minute. A loss that still holds when that minute ends plays its cue then. A reco
 only when its loss cue played. So a rider on the edge of the route hears one cue, not a stream of
 cues. The GPS and sensor cues play only while the ride runs, and GPS lost plays only when the GPS
 had a fix after the ride started. The battery cues play once at each threshold. A recording error
-and storage lost play each time the fault occurs, but at most once a minute. An incomplete ride log
-that the device finds at start-up shows the warning card and plays no cue, because the rider cannot
-act on it.
+and storage lost share one cue for each failure: it plays once when the failure starts. It plays
+again only when a failure occurs after one quiet minute. An incomplete ride log that the device
+finds at start-up shows the warning card and plays no cue, because the rider cannot act on it.
 [`cues.rs`](src:firmware/obc-app/src/cues.rs) holds these rules.
 
 ## Settings
