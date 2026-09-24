@@ -179,11 +179,11 @@ impl App {
         let now = self.ui.now_ms;
         let riding = self.activity.mode == Mode::Riding;
         let route = self.navigator.route_state();
-        let following = route.active_route.is_some().then_some(route.off_route);
+        let off_route = route.active_route.is_some().then_some(route.off_route);
         let arrived = route.arrival.arrived() || self.visit_arrival_pending();
         let live_fix = self.has_live_fix(now);
         let cues = &mut self.cues;
-        cues.level(Source::OffRoute, following, now);
+        cues.level(Source::OffRoute, off_route, now);
         cues.level(Source::Gps, riding.then_some(!live_fix), now);
         cues.sensors(&self.ui.sensor_status, riding, now);
         cues.battery(self.state.device.battery_pct);
