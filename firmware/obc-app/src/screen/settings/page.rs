@@ -1,4 +1,4 @@
-//! The settings pages: one screen type over eight row tables. A page is a list of rows in the
+//! The settings pages: one screen type over nine row tables. A page is a list of rows in the
 //! shared row grammar. A door opens a page, a value opens the drawer editor as a sheet over the
 //! page, a switch flips in place, an act does something (a destructive one on a hold), and an info
 //! row is read-only.
@@ -25,6 +25,7 @@ use crate::{t, AppState, Msg};
 pub(crate) enum Door {
     Ride,
     Display,
+    Sound,
     Connections,
     Power,
     System,
@@ -98,6 +99,7 @@ pub(crate) static HUB: Menu = Menu {
     rows: &[
         door(Msg::SettingsRide, Door::Ride),
         door(Msg::SettingsDisplay, Door::Display),
+        door(Msg::SettingsSound, Door::Sound),
         door(Msg::SettingsConnections, Door::Connections),
         door(Msg::SettingsPower, Door::Power),
         door(Msg::SettingsSystem, Door::System),
@@ -124,6 +126,11 @@ pub(crate) static DISPLAY: Menu = Menu {
         value(Msg::DisplayTheme, ContextValue::Theme),
         value(Msg::DisplayIdle, ContextValue::IdleReturn),
     ],
+};
+
+pub(crate) static SOUND: Menu = Menu {
+    title: Msg::SoundTitle,
+    rows: &[value(Msg::SoundLevel, ContextValue::Sound), toggle(Msg::SoundKeyTones, ContextToggle::KeyTones)],
 };
 
 pub(crate) static CONNECTIONS: Menu = Menu {
@@ -174,11 +181,12 @@ pub(crate) static FIRMWARE: Menu = Menu {
 };
 
 impl Item {
-    /// Whether the row is on the page at all. Only the phone's Forget row comes and goes: it is
-    /// drawn only while there is a bond to drop.
+    /// Whether the row is on the page at all. The phone's Forget row is drawn only while there is a
+    /// bond to drop, and the Sound door only on a platform that can make a sound.
     fn shown(self, state: &AppState) -> bool {
         match self {
             Item::Act(Act::ForgetPhone) => state.bond_status.can_forget(state.device.ble_paired),
+            Item::Door(Door::Sound) => state.sound_available,
             _ => true,
         }
     }
@@ -348,6 +356,7 @@ impl Door {
         match self {
             Door::Ride => Screen::Ride(SettingsPage::new(&RIDE)),
             Door::Display => Screen::Display(SettingsPage::new(&DISPLAY)),
+            Door::Sound => Screen::Sound(SettingsPage::new(&SOUND)),
             Door::Connections => Screen::Connections(SettingsPage::new(&CONNECTIONS)),
             Door::Power => Screen::Power(SettingsPage::new(&POWER)),
             Door::System => Screen::System(SettingsPage::new(&SYSTEM)),
@@ -499,7 +508,11 @@ mod tests {
         assert_eq!(hub.selected, 0, "the cursor wraps");
         assert!(matches!(run(&mut hub, &mut st, &mut s, Gesture::Back), Transition::Pop));
 
-        for menu in [&HUB, &RIDE, &DISPLAY, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
+        st.sound_available = true;
+        run(&mut hub, &mut st, &mut s, Gesture::Step(2));
+        assert!(matches!(run(&mut hub, &mut st, &mut s, Gesture::Press), Transition::Push(Screen::Sound(_))));
+
+        for menu in [&HUB, &RIDE, &DISPLAY, &SOUND, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
             assert!(menu.rows.len() <= 8, "a page's rows fit the draw's window vectors");
             assert!(menu.rows.iter().any(|r| r.item.selectable()), "a page has a row to land on");
         }
@@ -568,7 +581,7 @@ mod tests {
         use obc_render::text::{text_width, Font};
         let area_w = 240 - 2 * rows::ROW_X;
         for lang in Language::ALL {
-            for menu in [&HUB, &RIDE, &DISPLAY, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
+            for menu in [&HUB, &RIDE, &DISPLAY, &SOUND, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     assert!(

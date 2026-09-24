@@ -896,15 +896,11 @@ fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
     halo_text(cv, &s, Point::new(w / 2, CLOCK_TOP), Font::Body, TextAlign::Center, INK, PARCHMENT);
 }
 
-/// Battery percentage below which the top-left warning glyph appears. At or above it the map shows
-/// no battery indicator at all.
-const LOW_BATTERY_PCT: u8 = 10;
-
 /// Whether the map's low-battery cue is up at `battery_pct`. The only thing a map base draws off
 /// the gauge, and therefore the only battery fact [`RenderKeyKind::Map`](super::RenderKeyKind)
 /// names. A boolean rather than the level, so a gauge tick that crosses nothing costs no render.
 pub(crate) const fn low_battery_cue(battery_pct: u8) -> bool {
-    battery_pct < LOW_BATTERY_PCT
+    battery_pct < crate::device_status::LOW_BATTERY_PCT
 }
 
 /// Top-left origin of the low-battery glyph, its shell size and its nub width. One set of values

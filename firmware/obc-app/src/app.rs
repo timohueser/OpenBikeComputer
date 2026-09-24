@@ -121,6 +121,9 @@ pub struct AppState {
     pub bond_status: crate::ble::BondStatus,
     /// Whether the open map carries a non-empty nav graph. The Detour station dims without one.
     pub has_nav_graph: bool,
+    /// Whether this platform can make a sound, declared once by the host at composition through
+    /// [`App::set_sound_available`]. `false` hides the Sound settings page and plays no cue.
+    pub sound_available: bool,
 
     /// The Up-ahead timeline's category filter. It resets to Everything on each entry to the
     /// list. It lives here, not on the list screen, because the sheet that edits it sits above
@@ -151,6 +154,7 @@ impl AppState {
             ble_forget_requested: false,
             bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
+            sound_available: false,
 
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
@@ -451,9 +455,7 @@ pub struct App {
     /// composition. `false` removes the quick drawer's brightness control, and it is the default,
     /// so a platform that says nothing offers no control it has no port for.
     backlight_available: bool,
-    /// Whether this platform can make a sound, declared once by the host at composition. `false`
-    /// by default, for the same reason as `backlight_available`.
-    sound_available: bool,
+    pub(crate) cues: crate::cues::Cues,
 }
 
 /// Cap on the computed route's shape-preview polyline. The host decimates the planned polyline to
@@ -507,7 +509,7 @@ impl App {
             map_name: heapless::String::new(),
             map_obcm_version: 0,
             backlight_available: false,
-            sound_available: false,
+            cues: crate::cues::Cues::new(),
         }
     );
 
@@ -551,7 +553,7 @@ impl App {
             map_name,
             map_obcm_version,
             backlight_available,
-            sound_available,
+            cues,
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
         assert_eq!(activity.mode, Mode::Idle, "boots Idle, not Riding");
@@ -575,7 +577,7 @@ impl App {
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*backlight_available, "no host has claimed a panel light yet");
-        assert!(!*sound_available, "no host has claimed a sounder yet");
+        assert_eq!(*cues, crate::cues::Cues::new(), "no cue raised, no level pending");
     }
 
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
@@ -740,6 +742,9 @@ impl App {
     /// App-plane consequence of a transition: the host auto-switch off the same edge.
     fn update_active_climb(&mut self, route: &RouteReader) {
         if let Some((prev, next)) = self.navigator.update_active_climb(route) {
+            if prev.is_none() && next.is_some() && self.settings.climb_mode.is_on() {
+                self.cues.raise(obc_ports::Cue::ClimbStarts);
+            }
             // No repaint request: the active climb is in the Statistics and Climb render keys.
             self.apply_climb_auto_switch(prev, next);
         }
@@ -933,11 +938,11 @@ impl App {
     /// Declare whether this platform has a [`Sounder`](obc_ports::Sounder) that can play. The
     /// host asks the port once at composition and states the answer here.
     pub fn set_sound_available(&mut self, available: bool) {
-        self.sound_available = available;
+        self.state.sound_available = available;
     }
 
     pub fn sound_available(&self) -> bool {
-        self.sound_available
+        self.state.sound_available
     }
 
     /// Replace the resident route catalog from the host's store, carrying each route's durable
@@ -1987,6 +1992,9 @@ impl App {
         if flags.is_empty() {
             return;
         }
+        if flags.contains(WarningFlags::REC_ERROR) && !self.ui.cards.warning_raised(WarningFlags::REC_ERROR) {
+            self.cues.raise(obc_ports::Cue::RecordingError);
+        }
         self.ui.cards.post_warning(flags);
         self.sweep_cards();
     }
@@ -2609,6 +2617,9 @@ impl App {
     /// stack. [`apply_gesture_batch`](App::apply_gesture_batch) needs that without consuming the
     /// hold-cancel latch a second input plane still owns.
     fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
+        if self.settings.key_tones {
+            self.cues.raise(obc_ports::Cue::KeyClick);
+        }
         if g == Gesture::Press && self.activate_place_detail() {
             return true;
         }
@@ -2656,7 +2667,8 @@ impl App {
         // The detour level before the screen speaks, so a cancellation takes the preview with it.
         let detour_planned_before = self.navigator.detour_planned();
         let backlight_available = self.backlight_available;
-        let App { state, activity, settings, catalogs, recorder, ui, navigator, dfu, storage, metadata, .. } = self;
+        let App { state, activity, settings, catalogs, recorder, ui, navigator, dfu, storage, metadata, cues, .. } =
+            self;
         let mut cx = Ctx {
             find: &mut ui.find,
             landmarks: &mut ui.landmarks,
@@ -2669,6 +2681,7 @@ impl App {
             recorder,
             dfu,
             storage,
+            cues,
 
             routes: catalogs.routes(),
             rides: catalogs.rides(),
@@ -2728,6 +2741,9 @@ impl App {
         if self.settings != settings_before {
             // A rider edit: bump the revision and re-arm the save, superseding an older one.
             self.settings_ops.note_edited();
+            if self.settings.sound != settings_before.sound && self.settings.sound.volume().is_some() {
+                self.cues.raise(obc_ports::Cue::SoundPreview);
+            }
             // A change to the local set-point re-stamps the wall clock. It does not touch
             // `clock_trust`: nudging the offset is not a real time source.
             let local_now = self.settings.local_clock();
@@ -2848,10 +2864,7 @@ impl App {
         } else {
             let icons =
                 matches!(self.top_screen(), Screen::Map(_)).then(|| self.ui.map_icons.wake_in(now_ms)).flatten();
-            match (self.ui.next_wake_ms, icons) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            }
+            [self.ui.next_wake_ms, icons, self.cues.wake_in(now_ms)].into_iter().flatten().min()
         }
     }
 
