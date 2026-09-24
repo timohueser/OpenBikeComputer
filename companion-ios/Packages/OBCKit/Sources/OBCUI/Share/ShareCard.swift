@@ -3,12 +3,13 @@ import OBCDomain
 import SwiftUI
 import UIKit
 
-/// What a share image shows: a name, a date line, four stats, the track and its elevation.
+/// What a share image shows: a name, a date line, four stats, the line and its elevation.
 public struct ShareCardContent {
     let title: String
     let dateLine: String
     let stats: [OBCStat]
-    let coordinates: [Coordinate]
+    /// The line as the map draws it: a ride is one solid stage.
+    let stages: [MultiTrackPreviewView.Stage]
     let elevations: [Double]
 
     public init(ride: Ride) {
@@ -21,11 +22,32 @@ public struct ShareCardContent {
             OBCStat(value: OBCFormat.speedValue(mps: summary.averageSpeedMps), unit: "kph", key: "Avg"),
             OBCStat(value: OBCFormat.climbValue(meters: summary.climbMeters), unit: "m", key: "Climb"),
         ]
-        coordinates = ride.points.map(\.coordinate)
+        stages = [MultiTrackPreviewView.Stage(coordinates: ride.points.map(\.coordinate), color: OBCTheme.trackStroke)]
         // The detail screen's profile, on the same distance axis.
         elevations = MeasuredLine.elevationProfile(ridePoints: ride.points)
     }
 
+    /// The trip review's line and totals. During the trip the distance reads "156 of 217 km".
+    init(trip: Trip, review: TripReview, runs: [LineRun], dateLine: String) {
+        let totals = review.totals
+        title = trip.name
+        self.dateLine = dateLine
+        stats = [
+            OBCStat(
+                value: OBCFormat.distanceValue(meters: totals.distanceMeters),
+                unit: review.currentDay == nil ? "km" : "of \(OBCFormat.distance(meters: review.plannedMeters))",
+                key: "Distance"),
+            OBCStat(value: OBCFormat.movingTime(totals.movingTime), unit: "h", key: "Moving"),
+            OBCStat(
+                value: OBCFormat.speedValue(mps: totals.movingTime > 0 ? totals.distanceMeters / totals.movingTime : 0),
+                unit: "kph", key: "Avg"),
+            OBCStat(value: OBCFormat.climbValue(meters: totals.climbMeters), unit: "m", key: "Climb"),
+        ]
+        stages = runs.map(MultiTrackPreviewView.Stage.init)
+        elevations = trip.measuredLine.elevationProfile(count: RouteStats.profileSampleCount)
+    }
+
+    var coordinates: [Coordinate] { stages.flatMap(\.coordinates) }
     var hasProfile: Bool { elevations.count > 1 }
 }
 
@@ -133,6 +155,10 @@ struct ShareCard: View {
         return Group {
             if let map {
                 Image(uiImage: map).resizable()
+            } else if content.stages.count > 1 {
+                // `ImageRenderer` cannot draw a live map, so the trip always takes the grid.
+                MultiTrackPreviewView(stages: content.stages, showsChrome: false)
+                    .environment(\.obcIsOnline, false)
             } else {
                 TrackPreviewView(
                     TrackPreview.normalizing(content.coordinates), style: .hero, showsChrome: false

@@ -9,7 +9,8 @@ import OBCTransport
 /// Rename, Reverse and Delete trip.
 ///
 /// Once the trip has a ride, the page is the trip review: the line with the ridden part, the
-/// totals so far, one journal entry per ridden day, and the days still to ride as rows.
+/// totals so far, one journal entry per ridden day, and the days still to ride as rows. Its share
+/// button gives the planned line as GPX and the share image.
 ///
 /// Driven straight off `MainScreenModel`: the model owns the trip edits and the library, and this
 /// view binds them. It pops itself the moment the trip is deleted.
@@ -22,6 +23,8 @@ public struct TripDetailView: View {
     private let onEvenOut: ((RebalanceOffer) -> Void)?
     private let onEditDays: () -> Void
     private let onOpenDay: (Int) -> Void
+    /// The planned line as GPX. The review's share button shows only with it.
+    private let encodeGPX: (@Sendable (Trip) -> Data)?
 
     @State private var renameShown = false
     @State private var deleteDialogShown = false
@@ -52,7 +55,8 @@ public struct TripDetailView: View {
         onOpenRide: @escaping (RideID) -> Void = { _ in },
         onEvenOut: ((RebalanceOffer) -> Void)? = nil,
         onEditDays: @escaping () -> Void = {},
-        onOpenDay: @escaping (Int) -> Void = { _ in }
+        onOpenDay: @escaping (Int) -> Void = { _ in },
+        encodeGPX: (@Sendable (Trip) -> Data)? = nil
     ) {
         self.model = model
         self.tripID = tripID
@@ -61,6 +65,7 @@ public struct TripDetailView: View {
         self.onEvenOut = onEvenOut
         self.onEditDays = onEditDays
         self.onOpenDay = onOpenDay
+        self.encodeGPX = encodeGPX
     }
 
     private var editDaysButton: some View {
@@ -129,7 +134,14 @@ public struct TripDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .toolbar { overflowMenu }
+        .toolbar {
+            #if os(iOS)
+            if let shareMenu {
+                ToolbarItem(placement: .primaryAction) { shareMenu }
+            }
+            #endif
+            overflowMenu
+        }
         .accessibilityIdentifier("trip.screen")
         .onAppear { appearances += 1 }
         // Once per open: the first pass runs before `onAppear` counts it.
@@ -295,13 +307,7 @@ public struct TripDetailView: View {
     /// `shown` is the trip the journal read; the transfer labels come from the trip as it is now.
     private func journalMap(_ journal: TripJournalModel, _ shown: Trip) -> some View {
         let trip = shown
-        let stages = journal.runs.map { run in
-            switch run.kind {
-            case .ridden: MultiTrackPreviewView.Stage(coordinates: run.coordinates, color: OBCTheme.trackStroke)
-            case .planned: MultiTrackPreviewView.Stage(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [5, 4])
-            case .transfer: MultiTrackPreviewView.Stage(coordinates: run.coordinates, color: OBCTheme.inkSoft, dash: [1.5, 4])
-            }
-        }
+        let stages = journal.runs.map(MultiTrackPreviewView.Stage.init)
         let transfers = journal.transfers.keys.sorted().compactMap { day -> MultiTrackPreviewView.Pin? in
             guard let start = trip.dayStart(day + 1)?.coordinate else { return nil }
             let end = trip.dayEnds[day].coordinate
@@ -325,16 +331,21 @@ public struct TripDetailView: View {
         trip?.dayEnds[safe: day]?.transfer
     }
 
-    private func journalHeader(_ journal: TripJournalModel, _ review: TripReview, _ shown: Trip) -> some View {
+    /// "Tue 29 Sep – Fri 2 Oct · day 3 of 4", or "Day 3 of 4" when the days have no dates.
+    private func journalDateLine(_ review: TripReview, _ shown: Trip) -> String {
         let progress = review.currentDay.map { "day \($0 + 1) of \(shown.dayCount)" }
         let dateLine = [model.tripDateLine(tripID), progress].compactMap { $0 }.joined(separator: " · ")
-        return VStack(alignment: .leading, spacing: 0) {
+        return model.tripDateLine(tripID) == nil ? dateLine.prefix(1).uppercased() + dateLine.dropFirst() : dateLine
+    }
+
+    private func journalHeader(_ journal: TripJournalModel, _ review: TripReview, _ shown: Trip) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             journalMap(journal, shown)
             Text(trip?.name ?? shown.name)
                 .font(.obcSerif(size: 28))
                 .foregroundStyle(OBCTheme.ink)
                 .padding(.top, 16)
-            Text(model.tripDateLine(tripID) == nil ? dateLine.prefix(1).uppercased() + dateLine.dropFirst() : dateLine)
+            Text(journalDateLine(review, shown))
                 .font(.obcMono(size: 12))
                 .foregroundStyle(OBCTheme.inkFaint)
                 .padding(.top, 4)
@@ -420,6 +431,16 @@ public struct TripDetailView: View {
     private var canUploadTrip: Bool {
         model.connection == .connected && model.tripOnDeviceState(tripID) != .upToDate
     }
+
+    #if os(iOS)
+    private var shareMenu: ShareMenu? {
+        guard let encodeGPX, let journal, let review = journal.review, let shown = journal.trip else { return nil }
+        return ShareMenu(
+            gpx: GPXFile(name: shown.name) { encodeGPX(shown) },
+            image: ShareCardContent(
+                trip: shown, review: review, runs: journal.runs, dateLine: journalDateLine(review, shown)))
+    }
+    #endif
 
     // MARK: Overflow
 
