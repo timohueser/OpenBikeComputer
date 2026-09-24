@@ -55,7 +55,6 @@ pub mod synth;
 // Gated behind `sensor-link`, which pulls embassy-sync.
 #[cfg(feature = "sensor-link")]
 pub mod sensor_hub;
-// The cue-to-pattern table every real `Sounder` plays.
 pub mod sound;
 
 pub use button_input::ButtonInput;
