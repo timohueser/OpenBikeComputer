@@ -3,7 +3,8 @@
 //!
 //! Swift owns the loop. Each [`tick`](Host::tick) sends the queued button edges to the app's own
 //! gesture recognizer, runs one bounded Peak View step, runs one `App::run_pass`, lets the shared
-//! executor serve it, and renders the frame only when the app says something changed.
+//! executor serve it, keeps the newest cue for the shell to take, and renders the frame only when
+//! the app says something changed.
 //!
 //! The card is persistent and this host never creates it: [`import_map`] does, with no host open.
 //! Everything here is target-independent and tested natively; [`ffi`] is the C ABI over it.
@@ -15,7 +16,7 @@ mod tests;
 
 pub use sensors::PhoneSensors;
 
-use obc_app::device_core::{PassClock, PlatformSupport};
+use obc_app::device_core::{PassClock, PlatformSupport, Sound};
 use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, CatalogObjectId, Screen};
 use obc_host_core::flat_map::{FlatMap, MapError};
@@ -134,6 +135,10 @@ pub struct Host {
     /// The cooperative panorama build, when the card map carries surface terrain.
     peaks: Option<obc_host_core::peak_view::Runtime>,
     elevation: Box<dyn ElevationSource>,
+    /// The newest cue a pass raised that the shell has not taken yet.
+    sound: Option<Sound>,
+    /// The last taken cue's samples, alive until the next take.
+    samples: Vec<f32>,
     /// First frame rendered: the shell's readiness signal.
     ready: bool,
 }
@@ -175,6 +180,7 @@ impl Host {
         app.set_rides(rides.catalog(), rides.trip_names());
         // The phone runs the settings a rider runs: whatever was saved, or the defaults.
         app.set_settings(boot_settings);
+        app.set_sound_available(true);
         tracks.offer_recovery(&mut app);
 
         Ok(Box::new(Host {
@@ -193,6 +199,8 @@ impl Host {
             photo: obc_host_core::photo::Preparer::default(),
             peaks,
             elevation,
+            sound: None,
+            samples: Vec::new(),
             ready: false,
         }))
     }
@@ -238,6 +246,7 @@ impl Host {
                 SUPPORT,
             )
         };
+        self.sound = plan.sound.or(self.sound);
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
         // latch the pass may have armed rather than leaving it set for a plane that does not exist.
         let _ = self.app.take_hold_cancel();
@@ -297,6 +306,13 @@ impl Host {
         let id = self.routes.import(&bytes).map_err(|error| format!("import {}: {error}", path.display()))?;
         self.host.note_store_commit();
         Ok(id)
+    }
+
+    /// The newest cue as mono samples at `sample_rate`, once: `None` until a pass raises the next.
+    pub fn take_sound(&mut self, sample_rate: u32) -> Option<&[f32]> {
+        let sound = self.sound.take()?;
+        self.samples = obc_host_core::tone::render(obc_platform::sound::pattern(sound.cue), sound.volume, sample_rate);
+        Some(&self.samples)
     }
 
     /// The rendered RGBA frame, for the shell's `CGImage`.

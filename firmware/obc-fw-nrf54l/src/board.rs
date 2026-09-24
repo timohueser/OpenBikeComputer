@@ -18,6 +18,7 @@
 //! | sensor SCL | SERIAL22 / P1_03 | TWIM22, 400 kHz, pull-up enabled |
 //! | sensor TX-ready | P1_05 | active high, internal pull-down |
 //! | panel backlight | PWM20 ch0 / P1_27 | provisional — 1 kHz push-pull, idles low once armed |
+//! | piezo | PWM21 ch0 / P1_06, ch1 / P1_07 | provisional — the note's frequency, both pins low when silent |
 //!
 //! The DK's VCOM hardware flow control must remain disabled. RTT carries defmt independently.
 //!

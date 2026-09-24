@@ -247,6 +247,10 @@ struct SimGui {
     backlight: crate::panel_power::SimBacklight,
     /// The simulator's [`PowerOff`](obc_ports::PowerOff) port.
     power: crate::panel_power::SimPowerOff,
+    /// Plays each pass's cue through the sound card.
+    sounder: crate::sounder::SimSounder,
+    /// The cue the last pass raised, for the Controls window's Sound line.
+    last_cue: Option<obc_ports::Cue>,
     /// Milliseconds at which the rider completed the power-off hold, so the powering-off frame is
     /// looked at before the process ends. `None` until then.
     powering_off_at: Option<std::time::Instant>,
@@ -379,6 +383,8 @@ impl SimGui {
         // window shows the three-control sheet and never scales the blit.
         let backlight = crate::panel_power::SimBacklight::new(!args.no_backlight);
         app.set_backlight_available(obc_ports::Backlight::available(&backlight));
+        let sounder = crate::sounder::SimSounder::open(!args.no_sound);
+        app.set_sound_available(obc_ports::Sounder::available(&sounder));
         // The window draws into one resident device-64 plane and presents it by self-diff, as the
         // board does, so the frozen base's rows survive between frames.
         app.set_resident_frame(true);
@@ -424,6 +430,8 @@ impl SimGui {
             quit: false,
             backlight,
             power: crate::panel_power::SimPowerOff,
+            sounder,
+            last_cue: None,
             powering_off_at: None,
             texture: None,
             elevation: map.elevation(),
@@ -608,6 +616,10 @@ impl SimGui {
                 &mut *self.elevation,
                 &mut platform,
             );
+        }
+        if let Some(sound) = plan.sound {
+            obc_ports::Sounder::play(&mut self.sounder, obc_platform::sound::pattern(sound.cue), sound.volume);
+            self.last_cue = Some(sound.cue);
         }
         // The map-referenced altimeter's terrain read, drained once per frame behind the pass, as
         // the board's ride loop does. A fresh fix arms it, so it reads at most one tile per fix.
