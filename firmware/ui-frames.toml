@@ -54,7 +54,7 @@ peak_article = "{peak} p f p f"
 place_detail = "A p d d d p u p f p f"
 landmarks = "A d d d p f"
 detour_pre = "p p p p T"
-dfu_pre = "B u p d d d d p d d d p p"
+dfu_pre = "B u p d*5 p d d d p p"
 up_base = "p p p p T A d p f p f*8"
 # Open the timeline's context sheet, press its Filter row into the nested editor, stage the Water
 # choice and commit, then close the sheet — so the list comes back filtered. Every `p` that starts
@@ -693,34 +693,42 @@ map = "{grimsel}"
 script = "B u p d p d d p w"
 expect = "ContextDrawer"
 
-# Connections (group 2): the Bluetooth switch, the Sensors door, the phone's status line (read-only,
+# Sound (group 2): the Sound level and the Key tones switch. The hub shows the door only on a
+# platform with a sounder.
+[[frame]]
+name = "sound"
+map = "{grimsel}"
+script = "B u p d d p"
+expect = "Sound"
+
+# Connections (group 3): the Bluetooth switch, the Sensors door, the phone's status line (read-only,
 # the cursor skips it) and the guarded Forget row — drawn only while there is a bond to drop.
 # Unpaired: no Forget row, one step lands on Sensors and the next wraps. Paired: two steps select
 # the Forget row (the shaded guarded base), and a partial hold fills it warning-red.
 [[frame]]
 name = "connections"
 map = "{grimsel}"
-script = "B u p d d p"
+script = "B u p d d d p"
 expect = "Connections"
 
 [[frame]]
 name = "connections-paired"
 map = "{grimsel}"
-script = "B u p d d p"
+script = "B u p d d d p"
 expect = "Connections"
 args = ["--ble", "paired"]
 
 [[frame]]
 name = "connections-forget-selected"
 map = "{grimsel}"
-script = "B u p d d p d d"
+script = "B u p d d d p d d"
 expect = "Connections"
 args = ["--ble", "paired"]
 
 [[frame]]
 name = "connections-forget-hold"
 map = "{grimsel}"
-script = "B u p d d p d d H"
+script = "B u p d d d p d d H"
 expect = "Connections"
 args = ["--ble", "paired"]
 
@@ -733,57 +741,57 @@ args = ["--ble", "paired"]
 [[frame]]
 name = "sensors"
 map = "{grimsel}"
-script = "B u p d d p d p"
+script = "B u p d d d p d p"
 expect = "Sensors"
 args = ["--sensors", "screen"]
 
 [[frame]]
 name = "sensors-scan"
 map = "{grimsel}"
-script = "B u p d d p d p p"
+script = "B u p d d d p d p p"
 expect = "SensorScan"
 args = ["--sensors", "screen"]
 
 [[frame]]
 name = "sensors-scanning"
 map = "{grimsel}"
-script = "B u p d d p d p p"
+script = "B u p d d d p d p p"
 expect = "SensorScan"
 
-# Power (group 3): the GPS fix-interval value row + the power-saver switch, then the interval's
+# Power (group 4): the GPS fix-interval value row + the power-saver switch, then the interval's
 # editor: the 17-rung ladder, a rung per second up to ten and the long rests beyond.
 [[frame]]
 name = "power"
 map = "{grimsel}"
-script = "B u p d d d p"
+script = "B u p d*4 p"
 expect = "Power"
 
 [[frame]]
 name = "power-gps-editor"
 map = "{grimsel}"
-script = "B u p d d d p p w"
+script = "B u p d*4 p p w"
 expect = "ContextDrawer"
 
-# System (group 4) — the device page: the Units value row, then the Date & Time, Language,
+# System (group 5) — the device page: the Units value row, then the Date & Time, Language,
 # Firmware, About and Factory reset doors. Six rows, five on the panel, so the page scrolls. The
 # page itself first, then the Units editor (a two-choice ring), then each door's page.
 [[frame]]
 name = "system"
 map = "{grimsel}"
-script = "B u p d*4 p"
+script = "B u p d*5 p"
 expect = "System"
 
 [[frame]]
 name = "system-units-editor"
 map = "{grimsel}"
-script = "B u p d*4 p p w"
+script = "B u p d*5 p p w"
 expect = "ContextDrawer"
 
 # The page scrolled to its last row: the Factory reset door, a door in warning red, on the cursor.
 [[frame]]
 name = "system-reset-row"
 map = "{grimsel}"
-script = "B u p d*4 p d*5"
+script = "B u p d*5 p d*5"
 expect = "System"
 
 # Date & Time: two read-only rows and the UTC offset value row, then the offset's editor — the one
@@ -791,13 +799,13 @@ expect = "System"
 [[frame]]
 name = "datetime"
 map = "{grimsel}"
-script = "B u p d*4 p d p"
+script = "B u p d*5 p d p"
 expect = "DateTime"
 
 [[frame]]
 name = "datetime-offset-editor"
 map = "{grimsel}"
-script = "B u p d*4 p d p p w"
+script = "B u p d*5 p d p p w"
 expect = "ContextDrawer"
 
 # The Language pick list (epic #602): the four languages by flag and endonym, the tick on the
@@ -806,20 +814,20 @@ expect = "ContextDrawer"
 [[frame]]
 name = "language"
 map = "{grimsel}"
-script = "B u p d*4 p d d p"
+script = "B u p d*5 p d d p"
 expect = "Language"
 
 [[frame]]
 name = "language-french"
 map = "{grimsel}"
-script = "B u p d*4 p d d p d d"
+script = "B u p d*5 p d d p d d"
 expect = "Language"
 
 # The About page (#1149) — System row 4, above Reset: the read-only credits page.
 [[frame]]
 name = "about"
 map = "{grimsel}"
-script = "B u p d*4 p d*4 p"
+script = "B u p d*5 p d*4 p"
 expect = "About"
 
 # Factory Reset is the group's last row: five steps in, press to open, arm (press), then a
@@ -827,7 +835,7 @@ expect = "About"
 [[frame]]
 name = "reset-hold"
 map = "{grimsel}"
-script = "B u p d*4 p d*5 p p H"
+script = "B u p d*5 p d*5 p p H"
 expect = "Reset"
 
 # The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload action ("Install update")
@@ -835,7 +843,7 @@ expect = "Reset"
 [[frame]]
 name = "firmware"
 map = "{grimsel}"
-script = "B u p d*4 p d d d p"
+script = "B u p d*5 p d d d p"
 expect = "Firmware"
 
 # The row inert while a ride records: ride route 0 (`p p p p`, GPX-driven so the session is live),
@@ -845,7 +853,7 @@ expect = "Firmware"
 name = "firmware-recording"
 map = "{grimsel}"
 env = ["routes", "tracks"]
-script = "{start_unguided} B u p d*4 p d d d p"
+script = "{start_unguided} B u p d*5 p d d d p"
 expect = "Firmware"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
@@ -1493,7 +1501,7 @@ args = ["--at", "0", "--clock", "2025-01-06T12:00"]
 name = "up-ahead-water-imperial"
 map = "{monaco}"
 env = "monaco-route"
-script = "B u p d*4 p p w d p w b b b w {up_base} {up_filter_water} d*9 f*8"
+script = "B u p d*5 p p w d p w b b b w {up_base} {up_filter_water} d*9 f*8"
 expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
@@ -1959,7 +1967,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "system-units-editor"
 map = "{grimsel}"
-script = "B u p d*4 p p w"
+script = "B u p d*5 p p w"
 expect = "ContextDrawer"
 langs = ["de", "fr", "es"]
 
@@ -1994,7 +2002,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "datetime"
 map = "{grimsel}"
-script = "B u p d*4 p d p"
+script = "B u p d*5 p d p"
 expect = "DateTime"
 langs = ["de", "fr", "es"]
 
@@ -2090,7 +2098,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "sensors"
 map = "{grimsel}"
-script = "B u p d d p d p"
+script = "B u p d d d p d p"
 expect = "Sensors"
 args = ["--sensors", "screen"]
 langs = ["de", "fr", "es"]
@@ -2123,14 +2131,14 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "system"
 map = "{grimsel}"
-script = "B u p d*4 p"
+script = "B u p d*5 p"
 expect = "System"
 langs = ["de", "fr", "es"]
 
 [[frame]]
 name = "firmware"
 map = "{grimsel}"
-script = "B u p d*4 p d d d p"
+script = "B u p d*5 p d d d p"
 expect = "Firmware"
 langs = ["de", "fr", "es"]
 
@@ -2139,7 +2147,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "reset-confirm"
 map = "{grimsel}"
-script = "B u p d*4 p d*5 p"
+script = "B u p d*5 p d*5 p"
 expect = "Reset"
 langs = ["de", "fr", "es"]
 
@@ -2148,7 +2156,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "reset"
 map = "{grimsel}"
-script = "B u p d*4 p d*5 p p"
+script = "B u p d*5 p d*5 p p"
 expect = "Reset"
 langs = ["de", "fr", "es"]
 
@@ -2399,7 +2407,7 @@ expect = "StatFields"
 [[frame]]
 name = "dark-language"
 map = "{grimsel}"
-script = "{theme_dark} B u p d*4 p d d p"
+script = "{theme_dark} B u p d*5 p d d p"
 expect = "Language"
 
 [[frame]]

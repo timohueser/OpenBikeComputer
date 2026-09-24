@@ -35,8 +35,8 @@ use crate::input::Gesture;
 use crate::navigator::RouteState;
 use crate::screen::quick_drawer::{brightness_percent, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 use crate::settings::{
-    ClimbMode, IdleReturn, Language, Theme, Units, UpAheadSource, WaypointMode, STAT_CYCLE_MAX, STAT_CYCLE_MIN,
-    UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP,
+    ClimbMode, IdleReturn, Language, SoundLevel, Theme, Units, UpAheadSource, WaypointMode, STAT_CYCLE_MAX,
+    STAT_CYCLE_MIN, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP,
 };
 use crate::{AppState, Msg, Settings};
 
@@ -133,6 +133,7 @@ pub enum ContextValue {
     /// The effort limits: `Not set` first, then one step per bpm or per [`FTP_STEP`] watts.
     MaxHr,
     Ftp,
+    Sound,
 }
 
 impl ContextValue {
@@ -157,6 +158,7 @@ impl ContextValue {
             ContextValue::UtcOffset => ((UTC_OFFSET_MAX - UTC_OFFSET_MIN) / UTC_OFFSET_STEP + 1) as u8,
             ContextValue::MaxHr => 2 + MAX_HR_MAX - MAX_HR_MIN,
             ContextValue::Ftp => (2 + (FTP_MAX - FTP_MIN) / FTP_STEP) as u8,
+            ContextValue::Sound => SoundLevel::COUNT as u8,
         }
     }
 
@@ -206,6 +208,7 @@ impl ContextValue {
                 0 => 0,
                 v => (1 + (v.clamp(FTP_MIN, FTP_MAX) - FTP_MIN) / FTP_STEP) as u8,
             },
+            ContextValue::Sound => s.sound as u8,
         }
     }
 
@@ -245,6 +248,7 @@ impl ContextValue {
             }
             ContextValue::MaxHr => s.max_hr = max_hr_of(ordinal),
             ContextValue::Ftp => s.ftp_w = ftp_of(ordinal),
+            ContextValue::Sound => s.sound = SoundLevel::from_byte(ordinal),
         }
     }
 
@@ -268,6 +272,7 @@ impl ContextValue {
 
             ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
             ContextValue::Theme => Theme::from_byte(ordinal).name(lang),
+            ContextValue::Sound => SoundLevel::from_byte(ordinal).name(lang),
             ContextValue::ClimbMode => ClimbMode::from_byte(ordinal).name(lang),
             ContextValue::WaypointMode => WaypointMode::from_byte(ordinal).name(lang),
             ContextValue::Units => Units::from_byte(ordinal).name(lang),
@@ -347,6 +352,7 @@ pub enum ContextToggle {
     /// The settings pages' switches.
     PowerSaver,
     BleEnabled,
+    KeyTones,
 }
 
 impl ContextToggle {
@@ -364,6 +370,7 @@ impl ContextToggle {
             ContextToggle::FindHideClosed => f.settings.find_hide_closed,
             ContextToggle::PowerSaver => f.settings.power_saver,
             ContextToggle::BleEnabled => f.settings.ble_enabled,
+            ContextToggle::KeyTones => f.settings.key_tones,
         }
     }
 
@@ -383,6 +390,7 @@ impl ContextToggle {
             ContextToggle::FindHideClosed => s.find_hide_closed = !s.find_hide_closed,
             ContextToggle::PowerSaver => s.power_saver = !s.power_saver,
             ContextToggle::BleEnabled => s.ble_enabled = !s.ble_enabled,
+            ContextToggle::KeyTones => s.key_tones = !s.key_tones,
         }
     }
 }
@@ -1474,6 +1482,7 @@ mod tests {
                 ContextValue::UtcOffset,
                 ContextValue::MaxHr,
                 ContextValue::Ftp,
+                ContextValue::Sound,
             ] {
                 for ordinal in 0..v.count() {
                     buf.clear();
@@ -1497,6 +1506,7 @@ mod tests {
             ContextValue::FindResults => crate::settings::FindResults::from_byte(ordinal).name(),
             ContextValue::IdleReturn => IdleReturn::from_byte(ordinal).name(lang),
             ContextValue::Theme => Theme::from_byte(ordinal).name(lang),
+            ContextValue::Sound => SoundLevel::from_byte(ordinal).name(lang),
             ContextValue::ClimbMode => ClimbMode::from_byte(ordinal).name(lang),
             ContextValue::WaypointMode => WaypointMode::from_byte(ordinal).name(lang),
             ContextValue::Units => Units::from_byte(ordinal).name(lang),

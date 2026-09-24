@@ -1791,8 +1791,9 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 
 /// The wake counts for the complete scenario table. Cancelling a detour uncovers the Map while
 /// planner cleanup is pending, so its visible planning banner keeps a one-second animation
-/// deadline.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 126, 64);
+/// deadline. A ride with a live fix keeps a deadline at the fix's expiry, where the GPS-lost cue
+/// starts its settle time.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 138, 52);
 
 /// The pass protocol's size budget, re-asserted from outside `obc-app`.
 ///

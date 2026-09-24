@@ -278,6 +278,8 @@ pub struct Ctx<'a> {
     pub dfu: &'a mut crate::dfu::DfuState,
     /// The StorageInfo domain: the System screen asks for a free-space refresh on entry.
     pub storage: &'a mut crate::device_core::storage_info::StorageInfo,
+    /// The cue a screen raises for the rider to hear.
+    pub(crate) cues: &'a mut crate::cues::Cues,
 
     pub now_ms: u32,
 }
@@ -321,6 +323,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         recorder: Box::leak(Box::new(crate::recorder::RecorderMachine::new())),
         dfu: Box::leak(Box::new(crate::dfu::DfuState::new())),
         storage: Box::leak(Box::new(crate::device_core::storage_info::StorageInfo::new())),
+        cues: Box::leak(Box::new(crate::cues::Cues::new())),
 
         now_ms: 0,
     }
@@ -973,6 +976,7 @@ screens! {
     Settings(SettingsPage) => Caps::settings(),
     Ride(SettingsPage) => Caps::settings(),
     Display(SettingsPage) => Caps::settings(),
+    Sound(SettingsPage) => Caps::settings(),
     /// The Connections page: the Bluetooth switch, the phone's status and Forget, and the door to
     /// the sensors. Its status lines follow the sensor slots, so it keys on them.
     Connections(SettingsPage) => Caps::settings().key(RenderKeyKind::SensorSettings),

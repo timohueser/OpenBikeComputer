@@ -114,10 +114,12 @@ impl RideControl {
 }
 
 /// Close the ride: name the disposition to Recorder, go idle, clear the route, and return home. The
-/// Paused page's Finish and Discard and the arrival view's Finish ride all end here. The session
-/// does not end here. Recorder closes it when the store confirms the close, so a finalize that fails
-/// leaves a ride the rider can still finish.
+/// Paused page's Finish and Discard and the arrival view's Finish ride all end here, each on a
+/// completed hold, so the hold-done cue is raised here. The session does not end here. Recorder
+/// closes it when the store confirms the close, so a finalize that fails leaves a ride the rider
+/// can still finish.
 pub(crate) fn end_ride(cx: &mut Ctx, intent: RecorderIntent) -> Transition {
+    cx.cues.raise(obc_ports::Cue::HoldDone);
     cx.recorder.request(intent);
     cx.activity.mode = Mode::Idle;
     cx.navigator.note_ride_end();
