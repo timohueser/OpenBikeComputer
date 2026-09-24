@@ -216,11 +216,12 @@ impl AppState {
     /// Enter pan mode: detach the camera, freeze the orientation, and start in Move. A loaded
     /// route makes route-relative movement the default.
     pub fn enter_pan(&mut self, has_route: bool, route_progress_m: u32) {
+        let frozen_course_rad = self.course_rad();
         self.mode = CameraMode::Free;
         self.pan = Some(Pan {
             basis: if has_route { PanBasis::Route } else { PanBasis::Vertical },
             tool: PanTool::Move,
-            frozen_course_rad: self.live_course_rad(),
+            frozen_course_rad,
             route_progress_m,
             last_free_basis: PanBasis::Vertical,
             route_camera_dirty: has_route,

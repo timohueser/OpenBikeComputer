@@ -116,8 +116,7 @@
         {/if}
 
         <p class="small faint fit">
-            Whether it fits your SD card is checked against the connected card in step 4 — maps of any
-            size arrive as a set of files.
+            The device checks SD card space when you send the map. Each build makes one map file.
         </p>
     {/if}
 </div>
