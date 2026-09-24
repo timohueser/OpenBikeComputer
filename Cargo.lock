@@ -2848,6 +2848,7 @@ dependencies = [
  "obc-display",
  "obc-formats",
  "obc-host-core",
+ "obc-platform",
  "obc-ports",
  "obc-reader",
  "obc-render",
