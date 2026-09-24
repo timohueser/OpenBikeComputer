@@ -19,6 +19,7 @@
 extern crate self as obc_app;
 
 pub mod activity;
+mod alert;
 pub mod altitude;
 pub mod app;
 pub mod arena_gate;
@@ -71,6 +72,7 @@ pub mod wall_clock;
 pub mod whats_next;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest};
+pub use alert::{Alert, Alerts};
 pub use altitude::AltitudeFusion;
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanBasis, PanTool, GESTURE_BUF, NAV_PREVIEW_MAX};
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
@@ -92,7 +94,7 @@ pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
 pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage, RideOrigin};
 pub use ride::{RideCatalog, RideEntry, RideSummary, RideTrip, RideTrips, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
-pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
+pub use screen::{Screen, ScreenKind, Transition, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use settings::{
     ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Theme, Units, WaypointMode, DATETIME_MAX_YEAR,

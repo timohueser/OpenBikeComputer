@@ -1737,7 +1737,7 @@ mod tests {
     fn a_failed_discard_of_a_whole_recovered_ride_costs_one_attempt_too() {
         let (mut rec, effect) = confirmed_removal(RideRecoveryState::Resumable);
         let verdict = rec.apply_outcome(RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write });
-        assert_eq!(verdict, RecorderVerdict::RecoveryLatched, "no REC_ERROR, and no re-offer");
+        assert_eq!(verdict, RecorderVerdict::RecoveryLatched, "no RecordingFailed, and no re-offer");
         assert_eq!(rec.recovery(), RideRecoveryState::Latched(None), "latched with no damage to name");
 
         for pass in 0..5 {

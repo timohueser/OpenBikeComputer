@@ -8,11 +8,14 @@ use crate::activity::Mode;
 use crate::device_core::Sound;
 use crate::device_status::LOW_BATTERY_PCT;
 use crate::sensors::{SensorPhase, SensorStatus};
-use crate::App;
+use crate::{Alert, Alerts, App};
 
 /// After a loss cue, the same source raises no loss cue for this long. A loss that holds past the
-/// cooldown plays when it ends.
+/// cooldown plays when it ends. A failure cue is silent for this long after it plays.
 const LOSS_COOLDOWN_MS: u32 = 60_000;
+/// The alerts that play a cue. The others are shown on the warning card only.
+const FAILURES: [(Alert, Cue); 2] =
+    [(Alert::RecordingFailed, Cue::RecordingError), (Alert::StorageLost, Cue::StorageLost)];
 const BATTERY_CRITICAL_PCT: u8 = 5;
 /// A battery threshold re-arms when the charge rises this many points above it.
 const BATTERY_REARM_PCT: u8 = 5;
@@ -94,6 +97,8 @@ pub(crate) struct Cues {
     /// Whether `BatteryLow` and `BatteryCritical` may play.
     battery_armed: [bool; 2],
     arrived: bool,
+    /// When each of the [`FAILURES`] last played its cue.
+    failure_at: [Option<u32>; 2],
 }
 
 impl Cues {
@@ -105,6 +110,7 @@ impl Cues {
             sensors_seen: 0,
             battery_armed: [true; 2],
             arrived: false,
+            failure_at: [None; 2],
         }
     }
 
@@ -179,6 +185,17 @@ impl Cues {
             self.raise(Cue::Arrived);
         }
         self.arrived = arrived;
+    }
+
+    /// Report the alerts of a pass. A failure plays its cue on every raise outside its cooldown.
+    pub(crate) fn alerts(&mut self, alerts: Alerts, now_ms: u32) {
+        for (i, (alert, cue)) in FAILURES.into_iter().enumerate() {
+            let cooled = self.failure_at[i].is_none_or(|at| now_ms.wrapping_sub(at) >= LOSS_COOLDOWN_MS);
+            if alerts.contains(alert) && cooled {
+                self.failure_at[i] = Some(now_ms);
+                self.raise(cue);
+            }
+        }
     }
 
     /// Millis until the soonest pending level settles, or `None` when nothing is pending.
@@ -341,5 +358,24 @@ mod tests {
         cues.raise(Cue::RecordingError);
         assert_eq!(cues.take(None), None);
         assert_eq!(played(&mut cues), None);
+    }
+
+    /// A persistent failure is raised on every pass. Its cue plays at most once a minute.
+    #[test]
+    fn a_failure_raised_every_pass_plays_once_a_minute() {
+        let mut cues = Cues::new();
+        let mut heard = heapless::Vec::<u32, 4>::new();
+        for s in 0..180 {
+            cues.alerts(Alert::RecordingFailed.into(), s * 1_000);
+            if played(&mut cues) == Some(Cue::RecordingError) {
+                heard.push(s).unwrap();
+            }
+        }
+        assert_eq!(heard.as_slice(), &[0, 60, 120]);
+
+        cues.raise(Cue::BatteryLow);
+        cues.alerts(Alert::StorageLost.into(), 180_000);
+        assert_eq!(played(&mut cues), Some(Cue::StorageLost), "storage lost outranks a Problem cue");
+        assert_eq!(Cue::StorageLost.family(), obc_ports::Family::Urgent);
     }
 }

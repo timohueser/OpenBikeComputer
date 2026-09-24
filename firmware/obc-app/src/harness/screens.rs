@@ -8,7 +8,7 @@ use crate::screen::{
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RecorderIntent, RouteSummary, Settings, WarningFlags,
+    Alert, App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RecorderIntent, RouteSummary, Settings,
     MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
@@ -1233,7 +1233,7 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
     }
     assert!(deepest < crate::screen::MAX_DEPTH, "the reachable depth is {deepest}, at the ceiling of MAX_DEPTH");
 
-    app.on_warning(WarningFlags::REC_ERROR);
+    app.on_alerts(Alert::RecordingFailed);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
 }
 
@@ -1275,7 +1275,7 @@ fn laps_of_the_drawer_settings_row_stay_on_the_root() {
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "Back out of settings leaves for the riding view");
 
-    app.on_warning(WarningFlags::REC_ERROR);
+    app.on_alerts(Alert::RecordingFailed);
     assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host card still has room after the laps");
 
     // On the idle screensaver there is no view under the root, so settings is itself what the
@@ -1541,7 +1541,7 @@ fn nothing_cancels_a_shutdown_already_in_progress() {
     // The card sweep runs in the same `handle_input` that applied the completed hold, so a card
     // landing there would take the frame away. It is refused instead.
     let mut app = powering_off();
-    app.on_warning(WarningFlags::REC_ERROR);
+    app.on_alerts(Alert::RecordingFailed);
     assert!(app.power_off_requested(), "a host card must not cancel a shutdown in progress");
     assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
     // The remote DFU card arrives from neither the card scheduler nor a screen transition, so it
@@ -1572,7 +1572,7 @@ fn a_card_landing_over_a_sheet_takes_the_sheet_with_it() {
         assert!(app.apply_chord(chord));
         assert!(app.ui.stack.iter().any(|s| s.is_overlay()), "{chord:?} opened a sheet");
 
-        app.on_warning(WarningFlags::REC_ERROR);
+        app.on_alerts(Alert::RecordingFailed);
         assert!(matches!(app.top_screen(), Screen::Warning(_)), "the card landed");
         assert!(!app.ui.stack.iter().any(|s| s.is_overlay()), "{chord:?}: the sheet went with it");
 

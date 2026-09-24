@@ -1,6 +1,7 @@
 use crate::catalog_state::CatalogState;
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
-use crate::screen::{self, MapTransfer, Screen, Stack, WarningFlags};
+use crate::screen::{self, MapTransfer, Screen, Stack};
+use crate::Alerts;
 
 /// One committed route upload, as the pass's fact stage posts it.
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +97,7 @@ struct Policy {
 /// The card policy, one row per family, read instead of seven reconcilers.
 ///
 /// `priority` and `defer_on_hold` are what the sweep reads. The conflict rule and the revalidation
-/// are what each family's arm below does: they need the stack, the catalogs or the flag set, so
+/// are what each family's arm below does: they need the stack, the catalogs or the alert set, so
 /// they are code rather than data, and each arm names its row. The timeout is deliberately not a
 /// column: the 30 s deadline lives on the popup screens, which is also what arms the timed wake
 /// that gets a parked device back here, and a second copy would only ever disagree.
@@ -258,11 +259,11 @@ pub(crate) struct CardScheduler {
     /// object id, never a catalog index, so a rescan between arrival and a deferred delivery cannot
     /// retarget it.
     upload: Option<PendingUpload>,
-    /// Warning flags discovered but not yet shown.
-    warnings: WarningFlags,
-    /// Warnings already shown on a card this boot, so each flag surfaces once and a dismissed
-    /// notice does not nag, while a genuinely new flag still re-opens the card. Never cleared.
-    warned: WarningFlags,
+    /// Alerts raised but not yet shown.
+    warnings: Alerts,
+    /// Alerts already shown on a card this boot, so each alert surfaces once and a dismissed
+    /// notice does not nag, while a genuinely new alert still re-opens the card. Never cleared.
+    warned: Alerts,
     /// The one boot-result slot. A second unconsumed result is rejected at post.
     update: Option<BootUpdate>,
     /// The one terminal answer for the DFU wait currently on the stack.
@@ -280,8 +281,8 @@ impl CardScheduler {
             map_transfer: None,
             map_transfer_delivered: false,
             upload: None,
-            warnings: WarningFlags::NONE,
-            warned: WarningFlags::NONE,
+            warnings: Alerts::NONE,
+            warned: Alerts::NONE,
             update: None,
             dfu: None,
             arrival_delivered: false,
@@ -311,14 +312,9 @@ impl CardScheduler {
         self.upload = Some(upload);
     }
 
-    /// Accumulate freshly-raised warning flags. An empty raise is a no-op.
-    pub(crate) fn post_warning(&mut self, flags: WarningFlags) {
-        self.warnings |= flags;
-    }
-
-    /// Whether `flag` was raised this boot, shown or not.
-    pub(crate) fn warning_raised(&self, flag: WarningFlags) -> bool {
-        (self.warnings | self.warned).contains(flag)
+    /// Accumulate freshly raised alerts. An empty raise is a no-op.
+    pub(crate) fn post_warning(&mut self, alerts: Alerts) {
+        self.warnings.raise(alerts);
     }
 
     /// Post this boot's one-time update verdict. A second result arriving before the first is shown
@@ -527,13 +523,13 @@ impl CardScheduler {
         land(stack, at, card)
     }
 
-    /// Warning. Conflict: fresh flags merge into the open card rather than stacking a second one.
-    /// Revalidation: only the not-yet-shown subset is surfaced, so an already-acknowledged flag
+    /// Warning. Conflict: fresh alerts merge into the open card rather than stacking a second one.
+    /// Revalidation: only the not-yet-shown subset is surfaced, so an already-acknowledged alert
     /// re-raised each pass stays quiet.
     fn deliver_warning(&mut self, stack: &mut Stack, outranked: bool) -> bool {
-        let fresh = self.warnings & !self.warned;
+        let fresh = self.warnings.without(self.warned);
         if fresh.is_empty() {
-            self.warnings = WarningFlags::NONE; // nothing new: drop any stale re-raise
+            self.warnings = Alerts::NONE; // nothing new: drop any stale re-raise
             return false;
         }
         if outranked {
@@ -545,13 +541,13 @@ impl CardScheduler {
                     s.add(fresh);
                 }
             }
-            // A full stack leaves the flags pending rather than marking them shown for a card that
+            // A full stack leaves the alerts pending rather than marking them shown for a card that
             // never opened — they would otherwise never surface again this boot.
             None if !land(stack, None, Screen::Warning(screen::WarningScreen::new(fresh))) => return false,
             None => {}
         }
-        self.warned |= fresh;
-        self.warnings = WarningFlags::NONE;
+        self.warned.raise(fresh);
+        self.warnings = Alerts::NONE;
         true
     }
 
@@ -670,8 +666,8 @@ impl CardScheduler {
             // level goes `None` is the whole reason a dismissal is legible.
             && !*map_transfer_delivered
             && upload.is_none()
-            && *warnings == WarningFlags::NONE
-            && *warned == WarningFlags::NONE
+            && *warnings == Alerts::NONE
+            && *warned == Alerts::NONE
             && update.is_none()
             && dfu.is_none()
             && !*arrival_delivered
@@ -681,7 +677,8 @@ impl CardScheduler {
 #[cfg(test)]
 mod tests {
     use super::{BootUpdate, DfuLanding};
-    use crate::screen::{MapTransfer, WarningFlags, MAX_DEPTH};
+    use crate::screen::{MapTransfer, MAX_DEPTH};
+    use crate::{Alert, Alerts};
     use crate::{App, AppState, BleLink, BleStatus, Gesture, Screen};
     use obc_ports::InputClock;
 
@@ -690,29 +687,29 @@ mod tests {
         app.set_ble_status(BleStatus { link: BleLink::Connected, passkey, paired: false });
     }
 
-    /// The warning-fact contract: a raised flag opens the card, further flags coalesce onto the
-    /// open one, any press dismisses it, and each flag is shown once. An already-shown flag stays
+    /// The warning-fact contract: a raised alert opens the card, further alerts coalesce onto the
+    /// open one, any press dismisses it, and each alert is shown once. An already-shown alert stays
     /// quiet, but a genuinely new one re-opens the card with only itself.
     #[test]
     fn warning_card_opens_coalesces_and_shows_each_flag_once() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         assert!(matches!(app.top_screen(), Screen::Home(_)));
 
-        app.on_warning(WarningFlags::NONE);
+        app.on_alerts(Alerts::NONE);
         assert!(matches!(app.top_screen(), Screen::Home(_)), "an empty warning is a no-op");
 
-        app.on_warning(WarningFlags::NO_GPS);
+        app.on_alerts(Alert::NoGps);
         match app.top_screen() {
-            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS)),
+            Screen::Warning(w) => assert!(w.alerts().contains(Alert::NoGps)),
             _ => panic!("a raised warning opens the card"),
         }
 
-        app.on_warning(WarningFlags::STORAGE_ERROR);
-        assert_eq!(app.ui.stack.len(), 2, "the new flag joins the open card, not a second one");
+        app.on_alerts(Alert::StorageLost);
+        assert_eq!(app.ui.stack.len(), 2, "the new alert joins the open card, not a second one");
         match app.top_screen() {
             Screen::Warning(w) => {
-                assert!(w.flags().contains(WarningFlags::NO_GPS));
-                assert!(w.flags().contains(WarningFlags::STORAGE_ERROR));
+                assert!(w.alerts().contains(Alert::NoGps));
+                assert!(w.alerts().contains(Alert::StorageLost));
             }
             _ => panic!("still the one card"),
         }
@@ -720,16 +717,16 @@ mod tests {
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Home(_)), "dismiss pops the card");
 
-        app.on_warning(WarningFlags::NO_GPS);
-        assert!(matches!(app.top_screen(), Screen::Home(_)), "an already-shown flag stays quiet");
+        app.on_alerts(Alert::NoGps);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "an already-shown alert stays quiet");
 
-        app.on_warning(WarningFlags::NO_COMPASS);
+        app.on_alerts(Alert::NoCompass);
         match app.top_screen() {
             Screen::Warning(w) => {
-                assert!(w.flags().contains(WarningFlags::NO_COMPASS));
-                assert!(!w.flags().contains(WarningFlags::NO_GPS), "the re-opened card carries only the new flag");
+                assert!(w.alerts().contains(Alert::NoCompass));
+                assert!(!w.alerts().contains(Alert::NoGps), "the re-opened card carries only the new alert");
             }
-            _ => panic!("a new flag re-opens the card"),
+            _ => panic!("a new alert re-opens the card"),
         }
     }
 
@@ -944,7 +941,7 @@ mod tests {
 
         pair(&mut app, Some(4242));
         app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 1, total_kib: 10 }));
-        app.on_warning(WarningFlags::NO_GPS);
+        app.on_alerts(Alert::NoGps);
         app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
         assert!(matches!(app.top_screen(), Screen::Home(_)), "nothing lands mid-hold");
         assert_eq!(app.debug_stack_len(), 1);
@@ -1041,7 +1038,7 @@ mod tests {
         pair(&mut app, Some(123_456));
         assert!(matches!(app.top_screen(), Screen::Passkey(_)));
 
-        app.on_warning(WarningFlags::NO_GPS);
+        app.on_alerts(Alert::NoGps);
         app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
         assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the card is never covered");
         assert_eq!(app.debug_stack_len(), 2);
@@ -1053,7 +1050,7 @@ mod tests {
 
     /// A full stack, both halves of the contract: the overflow stays loud in debug through the one
     /// `land` assert, and, because a one-shot fact is consumed only once its card is on the stack,
-    /// the flags survive to open the card when there is room again.
+    /// the alerts survive to open the card when there is room again.
     #[test]
     #[cfg(debug_assertions)]
     fn a_full_stack_fails_loudly_and_keeps_the_fact_pending() {
@@ -1063,16 +1060,16 @@ mod tests {
         }
 
         let overflow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app.on_warning(WarningFlags::NO_GPS);
+            app.on_alerts(Alert::NoGps);
         }));
         assert!(overflow.is_err(), "a full stack fails loudly in debug builds");
         assert_eq!(app.debug_stack_len(), MAX_DEPTH, "and nothing landed");
 
-        // Room appears: the flags were never consumed, so the card opens carrying them.
+        // Room appears: the alerts were never consumed, so the card opens carrying them.
         app.ui.stack.pop();
         app.advance_animations(InputClock(100));
         match app.top_screen() {
-            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS), "the fact outlived the overflow"),
+            Screen::Warning(w) => assert!(w.alerts().contains(Alert::NoGps), "the fact outlived the overflow"),
             _ => panic!("the warning lands once there is room"),
         }
     }

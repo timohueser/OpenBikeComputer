@@ -71,7 +71,7 @@ enum Injection {
     Upload { id: obc_app::CatalogObjectId, replaced: bool },
     TripUpload { id: obc_app::CatalogObjectId },
     MapTransfer(obc_app::screen::MapTransfer),
-    Warning(obc_app::WarningFlags),
+    Warning(obc_app::Alerts),
 }
 
 #[derive(Clone)]
@@ -380,19 +380,19 @@ fn parse_dfu_error(s: &str) -> Result<obc_app::DfuScanError, String> {
     }
 }
 
-fn parse_warning(s: &str) -> Result<obc_app::WarningFlags, String> {
-    let mut warnings = obc_app::WarningFlags::NONE;
+fn parse_warning(s: &str) -> Result<obc_app::Alerts, String> {
+    let mut alerts = obc_app::Alerts::NONE;
     for token in s.split(',') {
-        warnings |= match token.trim() {
-            "gps" => obc_app::WarningFlags::NO_GPS,
-            "altimeter" | "baro" => obc_app::WarningFlags::NO_ALTIMETER,
-            "compass" | "imu" => obc_app::WarningFlags::NO_COMPASS,
-            "storage" => obc_app::WarningFlags::STORAGE_ERROR,
-            "rec" | "record" => obc_app::WarningFlags::REC_ERROR,
+        alerts.raise(match token.trim() {
+            "gps" => obc_app::Alert::NoGps,
+            "altimeter" | "baro" => obc_app::Alert::NoAltimeter,
+            "compass" | "imu" => obc_app::Alert::NoCompass,
+            "storage" => obc_app::Alert::StorageLost,
+            "rec" | "record" => obc_app::Alert::RecordingFailed,
             _ => return Err("--inject warning tokens: gps|altimeter|compass|storage|rec".into()),
-        };
+        });
     }
-    Ok(warnings)
+    Ok(alerts)
 }
 
 fn parse_ble(s: &str) -> Result<BleSeed, String> {
@@ -1519,7 +1519,7 @@ fn main() {
         // Device warnings: the sim has no probe or fragmented card to trip them for real, so they
         // arrive as the fact the board raises.
         if let Some(Injection::Warning(w)) = args.inject {
-            host.facts().raise_warnings(w);
+            host.facts().raise_alerts(w);
             settle(
                 &mut host,
                 &mut session,
