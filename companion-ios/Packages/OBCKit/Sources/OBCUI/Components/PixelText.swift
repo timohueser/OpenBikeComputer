@@ -80,6 +80,8 @@ struct PixelBitmap {
 
     let width: Int
     let height: Int
+    /// The first inked row of the font cell, so a caller can place the trimmed bitmap by its cell.
+    let inkTop: Int
     let runs: [Run]
 
     init(_ text: String, font: PixelFont) {
@@ -111,6 +113,7 @@ struct PixelBitmap {
         let bottom = runs.map(\.y).max() ?? font.cellHeight - 1
         self.width = glyphs.count * cellWidth
         self.height = bottom - top + 1
+        self.inkTop = top
         self.runs = runs.map { Run(x: $0.x, y: $0.y - top, length: $0.length) }
     }
 }
