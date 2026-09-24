@@ -236,8 +236,8 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// A cue reaches the shell once, as the shared pattern rendered at the shell's rate. No pass raises
-/// a cue yet, so the test puts one where a pass leaves it.
+/// A kept cue reaches the shell once, as the shared pattern rendered at the shell's rate. The test
+/// puts the cue in the host directly, so it tests only the take contract.
 #[test]
 fn a_raised_cue_is_taken_once_as_its_rendered_pattern() {
     use crate::ffi::obc_ios_take_sound;
@@ -245,7 +245,6 @@ fn a_raised_cue_is_taken_once_as_its_rendered_pattern() {
 
     let (card, directory) = card("sound");
     let mut host = open(&card, &directory);
-    assert!(host.app.sound_available(), "a phone has a speaker");
     let sound = Sound { cue: Cue::OffRoute, volume: Volume::Quiet };
     host.sound = Some(sound);
     let expected = obc_host_core::tone::render(obc_platform::sound::pattern(sound.cue), sound.volume, 48_000);

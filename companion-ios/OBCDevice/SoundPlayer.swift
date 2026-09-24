@@ -49,7 +49,7 @@ final class SoundPlayer {
         engine.pause()
     }
 
-    /// Play `count` samples at `sampleRate`, over whatever cue still plays.
+    /// Play `count` samples at `sampleRate`. The new cue stops the cue that plays.
     func play(_ samples: UnsafePointer<Float>, count: Int) {
         // An interruption or a route change stops the engine by itself.
         if !engine.isRunning { start() }
