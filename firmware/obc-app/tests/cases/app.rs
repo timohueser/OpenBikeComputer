@@ -15,14 +15,21 @@ fn berlin_fix() -> Fix {
 
 #[test]
 fn follow_mode_recenters_camera_on_each_fix() {
-    let mut app = AppState::new(0, 0, 1.0); // defaults to Follow
-    assert_eq!(app.mode, CameraMode::Follow);
+    for heading_up in [false, true] {
+        let mut app = AppState::new(0, 0, 1.0);
+        app.heading_up = heading_up;
+        assert_eq!(app.mode, CameraMode::Follow);
 
-    let mut loc = ReplayFix(Some(berlin_fix()));
-    app.update(&mut loc);
-
-    assert_eq!(app.cam_lat, BERLIN.0);
-    assert_eq!(app.cam_lon, BERLIN.1);
+        for fix in
+            [berlin_fix(), Fix { lat: BERLIN.0 + 500, lon: BERLIN.1 + 700, course: Some(180.0), speed_mps: Some(4.0) }]
+        {
+            app.update(&mut ReplayFix(Some(fix)));
+            let viewport = app.viewport(240.0, 320.0);
+            assert_eq!((viewport.cam_lat, viewport.cam_lon), (fix.lat, fix.lon));
+            let expected = if heading_up { fix.course.unwrap().to_radians() } else { 0.0 };
+            assert!((viewport.course_rad - expected).abs() < 1e-6);
+        }
+    }
 }
 
 #[test]

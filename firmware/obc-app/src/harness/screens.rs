@@ -16,6 +16,7 @@ use obc_map_scene::BBox;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
 
 use super::support::{build_min_obcm, keys, quiet_pass, render_120, ride_summary, ReplayFix};
+use crate::settings::Units;
 
 fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
     (0..n as crate::CatalogObjectId).collect()
@@ -863,6 +864,28 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
 }
 
+#[test]
+fn riding_map_scale_bar_follows_units_and_visibility() {
+    let bytes = build_min_obcm(0xF800);
+    let draw = |settings| {
+        let mut app = App::new(AppState::new(0, 0, 0.05));
+        app.test_mount_store();
+        app.test_start_ride();
+        app.set_settings(settings);
+        render_120(&mut app, &bytes)
+    };
+    let hidden = draw(Settings { map_scale_bar: false, ..Settings::default() });
+    let metric = draw(Settings { map_scale_bar: true, units: Units::Metric, ..Settings::default() });
+    let imperial = draw(Settings { map_scale_bar: true, units: Units::Imperial, ..Settings::default() });
+
+    let changed_in_bar = |a: &super::support::Buf, b: &super::support::Buf| {
+        (25..80).any(|y| (0..80).any(|x| a.get(x, y) != b.get(x, y)))
+    };
+    assert_ne!(hidden.get(12, 62), metric.get(12, 62), "the bar's left tick appears only when enabled");
+    assert!(changed_in_bar(&hidden, &metric), "enabling the scale bar changes its frame region");
+    assert!(changed_in_bar(&metric, &imperial), "changing units changes the drawn bar and label");
+}
+
 // Inspect/Pan mode: a Map sub-mode driven by the shared `AppState::pan`.
 
 #[test]
@@ -889,17 +912,17 @@ fn pan_freezes_camera_against_fixes() {
 /// Inspect snapshots the live heading once, so later GPS courses cannot rotate a detached map.
 #[test]
 fn pan_freezes_orientation_at_entry() {
-    let mut st = AppState::new(0, 0, 1.0);
-    st.heading_up = true;
-    st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(5.0) });
-    st.enter_pan(false, 0);
-    assert!((st.viewport(240.0, 320.0).course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-3);
+    for heading_up in [false, true] {
+        let mut st = AppState::new(0, 0, 1.0);
+        st.heading_up = heading_up;
+        st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(5.0) });
+        st.enter_pan(false, 0);
+        let expected = if heading_up { std::f32::consts::FRAC_PI_2 } else { 0.0 };
+        assert!((st.viewport(240.0, 320.0).course_rad - expected).abs() < 1e-3);
 
-    st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(180.0), speed_mps: Some(5.0) });
-    assert!(
-        (st.viewport(240.0, 320.0).course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
-        "the frozen 90° orientation ignores later heading changes"
-    );
+        st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(180.0), speed_mps: Some(5.0) });
+        assert!((st.viewport(240.0, 320.0).course_rad - expected).abs() < 1e-3);
+    }
 }
 
 #[test]
