@@ -3,9 +3,9 @@ import XCTest
 /// The five real app screens embedded in the landing page's bookend chapters.
 ///
 /// Keep this suite deliberately small and deterministic: the capture script exports only
-/// attachments whose names start with `website-`, fixes the simulator status bar, pins the locale,
-/// and forces the offline map fallback. That makes the committed web assets reviewable and lets CI
-/// catch a companion UI change that was not recaptured.
+/// attachments whose names start with `website-`, fixes the simulator status bar, pins the locale
+/// and the time zone, and forces the offline map fallback. That makes the committed web assets
+/// reviewable and lets CI catch a companion UI change that was not recaptured.
 ///
 /// Determinism is the whole job. The drift gate compares pixels, so a capture must happen only
 /// once the screen has finished becoming itself, and must never aim at a state that expires on a
@@ -47,6 +47,8 @@ final class WebsiteScreenshotTests: XCTestCase {
             "-AppleLocale", "en_US",
         ]
         app.launchArguments += extraArguments
+        // Ride dates and times format in the process time zone; a runner's zone must not move them.
+        app.launchEnvironment["TZ"] = "UTC"
         app.launch()
         return app
     }
