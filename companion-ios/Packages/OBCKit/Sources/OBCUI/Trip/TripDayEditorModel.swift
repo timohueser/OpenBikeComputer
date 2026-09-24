@@ -30,6 +30,8 @@ public final class TripDayEditorModel {
     /// Per day, why its end cannot be removed; nil when it can. Worked out once per change, so
     /// a drag frame costs no line walk.
     public private(set) var removeBlockers: [String?] = []
+    /// Per day, the straight metres to where the next day starts when its end is a transfer.
+    public private(set) var transfers: [Double?] = []
     /// The day whose row is highlighted: the last one tapped or dragged.
     public private(set) var selectedDay: Int?
     /// One long file became this trip: a stepper sets the day count.
@@ -364,6 +366,7 @@ public final class TripDayEditorModel {
         if lineChanged { line = trip.measuredLine }
         if handleIDs.count != trip.dayCount - 1 { handleIDs = (1..<max(trip.dayCount, 1)).map { _ in takeHandleID() } }
         removeBlockers = (0..<trip.dayCount).map { trip.removeDayEndBlocker($0, on: line) }
+        transfers = (0..<trip.dayCount).map { trip.transferMeters(after: $0, on: line) }
         let markers = trip.dayEnds.dropLast().enumerated().map { day, end in
             LineMarker(
                 id: handleIDs[day], distance: end.distance, name: "Day \(day + 1) end",

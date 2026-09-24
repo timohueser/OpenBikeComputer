@@ -44,11 +44,13 @@ struct TripReviewGallerySection: View {
                 systemImage: "arrow.left.and.right", title: "Days 3–5 are longer now. Even them out?", onOpen: {},
                 onDismiss: {})
             OBCGroupedSection {
-                TripDayRow(color: OBCTheme.stageColor(index: 2), number: 3, title: "to Brig", detail: "Wed 1 Oct · 61.0 km")
+                TripDayRow(
+                    color: OBCTheme.stageColor(index: 2), number: 3, title: "to Brig", detail: "Wed 1 Oct · 61.0 km",
+                    fraction: 1, showsDivider: false)
                 TripTransferRow(kind: transfer, meters: 34_000) { transfer = $0 }
                 TripDayRow(
                     color: OBCTheme.stageColor(index: 3), number: 4, title: "to Spiez", detail: "Thu 2 Oct · 38.0 km",
-                    showsDivider: false)
+                    fraction: 38 / 61, showsDivider: false)
             }
         }
     }

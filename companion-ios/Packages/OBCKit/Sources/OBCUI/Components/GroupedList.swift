@@ -23,11 +23,8 @@ public struct OBCGroupedSection<Rows: View>: View {
             }
 
             VStack(spacing: 0) { rows }
-                .background(OBCTheme.surface)
-                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-                .overlay(
-                    RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
-                )
+                .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
+                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
 
             if let footer {
                 Text(footer)
