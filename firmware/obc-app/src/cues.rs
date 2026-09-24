@@ -18,46 +18,40 @@ const BATTERY_CRITICAL_PCT: u8 = 5;
 /// A battery threshold re-arms when the charge rises this many points above it.
 const BATTERY_REARM_PCT: u8 = 5;
 
-/// A level that is lost and comes back.
+/// A level that is lost and comes back, with one level in [`Cues`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Source {
     OffRoute,
     Gps,
-    /// One sensor slot that connected during the ride and is not connected now. Each slot has its
-    /// own level; one cooldown covers them all.
-    Sensor,
 }
 
 impl Source {
-    /// The sources with one level each, in the order of `Cues::levels`.
-    const SINGLE: [Source; 2] = [Source::OffRoute, Source::Gps];
+    const ALL: [Source; 2] = [Source::OffRoute, Source::Gps];
 
-    fn loss(self) -> Cue {
+    const fn rule(self) -> Rule {
         match self {
-            Source::OffRoute => Cue::OffRoute,
-            Source::Gps => Cue::GpsLost,
-            Source::Sensor => Cue::SensorDropped,
-        }
-    }
-
-    fn recovery(self) -> Option<Cue> {
-        match self {
-            Source::OffRoute => Some(Cue::BackOnRoute),
-            Source::Gps => Some(Cue::GpsBack),
-            Source::Sensor => None,
-        }
-    }
-
-    /// How long a new level must hold before it counts. The live-fix window already waits at least
-    /// 5 s, so `GpsLost` plays at least 15 s after the last fix.
-    fn settle_ms(self, lost: bool) -> u32 {
-        match (self, lost) {
-            (Source::Gps | Source::Sensor, true) => 10_000,
-            (Source::Sensor, false) => 0,
-            _ => 5_000,
+            Source::OffRoute => {
+                Rule { loss: Cue::OffRoute, recovery: Some(Cue::BackOnRoute), lost_ms: 5_000, back_ms: 5_000 }
+            }
+            // The live-fix window already waits at least 5 s, so `GpsLost` plays at least 15 s after
+            // the last fix.
+            Source::Gps => Rule { loss: Cue::GpsLost, recovery: Some(Cue::GpsBack), lost_ms: 10_000, back_ms: 5_000 },
         }
     }
 }
+
+/// The cues of a level, and how long a new level must hold before it counts.
+#[derive(Debug, Clone, Copy)]
+struct Rule {
+    loss: Cue,
+    recovery: Option<Cue>,
+    lost_ms: u32,
+    back_ms: u32,
+}
+
+/// One sensor slot that connected during the ride and is not connected now. Each slot has its own
+/// level, and one cooldown covers them all. A slot that connects again is forgotten at once.
+const SENSOR: Rule = Rule { loss: Cue::SensorDropped, recovery: None, lost_ms: 10_000, back_ms: 0 };
 
 /// A settled loss always played its cue, so a settled recovery may play its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,8 +69,9 @@ impl Level {
 
     /// Millis until the reported level settles, or `None` when it is the settled one. A loss
     /// waits for its settle time and for the cooldown of the loss before it.
-    fn due_in(&self, source: Source, now_ms: u32) -> Option<u32> {
-        let settle = source.settle_ms(!self.lost).saturating_sub(now_ms.wrapping_sub(self.since?));
+    fn due_in(&self, rule: Rule, now_ms: u32) -> Option<u32> {
+        let settle = if self.lost { rule.back_ms } else { rule.lost_ms };
+        let settle = settle.saturating_sub(now_ms.wrapping_sub(self.since?));
         let cooldown = match (self.lost, self.loss_at) {
             (false, Some(at)) => LOSS_COOLDOWN_MS.saturating_sub(now_ms.wrapping_sub(at)),
             _ => 0,
@@ -86,7 +81,7 @@ impl Level {
 
     /// Report the level: `Some(lost)` while its gate is open. `None` closes the gate and forgets
     /// the current loss, so no cue plays for it. Returns the cue to raise when the level settles.
-    fn report(&mut self, source: Source, lost: Option<bool>, now_ms: u32) -> Option<Cue> {
+    fn report(&mut self, rule: Rule, lost: Option<bool>, now_ms: u32) -> Option<Cue> {
         let Some(lost) = lost else {
             *self = Level { loss_at: self.loss_at, ..Level::IDLE };
             return None;
@@ -96,16 +91,16 @@ impl Level {
             return None;
         }
         self.since.get_or_insert(now_ms);
-        if self.due_in(source, now_ms) != Some(0) {
+        if self.due_in(rule, now_ms) != Some(0) {
             return None;
         }
         self.lost = lost;
         self.since = None;
         if lost {
             self.loss_at = Some(now_ms);
-            Some(source.loss())
+            Some(rule.loss)
         } else {
-            source.recovery()
+            rule.recovery
         }
     }
 }
@@ -115,7 +110,7 @@ impl Level {
 pub(crate) struct Cues {
     /// The cue to play at the next plan.
     raised: Option<Cue>,
-    levels: [Level; 2],
+    levels: [Level; Source::ALL.len()],
     sensors: [Level; SENSOR_SLOTS],
     /// Whether the GPS had a fix since riding last started, so it has something to lose.
     gps_seen: bool,
@@ -130,7 +125,7 @@ impl Cues {
     pub(crate) const fn new() -> Self {
         Cues {
             raised: None,
-            levels: [Level::IDLE; 2],
+            levels: [Level::IDLE; Source::ALL.len()],
             sensors: [Level::IDLE; SENSOR_SLOTS],
             gps_seen: false,
             sensors_seen: 0,
@@ -146,9 +141,9 @@ impl Cues {
         }
     }
 
-    /// Report the level of a source in [`Source::SINGLE`], as [`Level::report`] takes it.
+    /// Report the level of `source`, as [`Level::report`] takes it.
     pub(crate) fn level(&mut self, source: Source, lost: Option<bool>, now_ms: u32) {
-        if let Some(cue) = self.levels[source as usize].report(source, lost, now_ms) {
+        if let Some(cue) = self.levels[source as usize].report(source.rule(), lost, now_ms) {
             self.raise(cue);
         }
     }
@@ -159,8 +154,7 @@ impl Cues {
         self.level(Source::Gps, self.gps_seen.then_some(!live_fix), now_ms);
     }
 
-    /// Report the sensor slots. Only a sensor that connected while riding can drop. A slot that
-    /// connects again is forgotten at once, so its next drop can play.
+    /// Report the sensor slots. Only a sensor that connected while riding can drop.
     pub(crate) fn sensors(&mut self, slots: &[SensorStatus], riding: bool, now_ms: u32) {
         let mask = |keep: fn(&SensorStatus) -> bool| {
             slots.iter().enumerate().filter(|(_, s)| keep(s)).fold(0u8, |m, (i, _)| m | 1 << i)
@@ -170,7 +164,7 @@ impl Cues {
         let mut dropped = false;
         for (i, level) in self.sensors.iter_mut().enumerate() {
             let lost = (self.sensors_seen & 1 << i != 0).then_some(connected & 1 << i == 0);
-            dropped |= level.report(Source::Sensor, lost, now_ms).is_some();
+            dropped |= level.report(SENSOR, lost, now_ms).is_some();
         }
         if dropped {
             self.sensors.iter_mut().for_each(|l| l.loss_at = Some(now_ms));
@@ -201,8 +195,9 @@ impl Cues {
 
     /// Millis until the soonest pending level settles, or `None` when nothing is pending.
     pub(crate) fn wake_in(&self, now_ms: u32) -> Option<u32> {
-        let sensors = self.sensors.iter().map(|l| (l, Source::Sensor));
-        (self.levels.iter().zip(Source::SINGLE)).chain(sensors).filter_map(|(l, s)| l.due_in(s, now_ms)).min()
+        let sensors = self.sensors.iter().map(|l| (l, SENSOR));
+        let levels = self.levels.iter().zip(Source::ALL.map(Source::rule));
+        levels.chain(sensors).filter_map(|(l, rule)| l.due_in(rule, now_ms)).min()
     }
 
     /// The cue to start now, at `volume`. The raised cue is consumed even when `volume` is `None`,

@@ -62,8 +62,8 @@ pub(crate) static INPUT_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new(
 
 /// The single high-priority executor. It free-runs the COM driver, which must keep alternating so
 /// the panel never takes a DC bias whatever the map plane is doing, the gesture-input plane, so
-/// button latency stays exact during a deep map render, and the buzzer, so note timing stays exact. It is pended from the SWI01 vector at
-/// P3; SWI00 is MPSL's low-priority lane.
+/// button latency stays exact during a deep map render, and the buzzer, so note timing stays exact.
+/// It is pended from the SWI01 vector at P3; SWI00 is MPSL's low-priority lane.
 pub(crate) static EXECUTOR_HP: InterruptExecutor = InterruptExecutor::new();
 
 /// SWI01 ISR: poll the high-priority executor. SWI01 has no peripheral; only its interrupt vector
