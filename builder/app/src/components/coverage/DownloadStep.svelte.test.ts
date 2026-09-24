@@ -100,10 +100,10 @@ class AssembleWorker {
                                 engineBytes: 1,
                                 inputBytes: 1,
                                 outputBytes: 1,
-                                peakBytes: 3,
+                                peakBytes: seams.memoryRequiresDisk && !request.onDisk ? 120 : 3,
                                 budgetBytes: 100,
                                 ceilingBytes: 100,
-                                headroomBytes: 97,
+                                headroomBytes: seams.memoryRequiresDisk && !request.onDisk ? 0 : 97,
                                 fits: !seams.memoryRequiresDisk || request.onDisk === true,
                             },
                         },
@@ -212,7 +212,7 @@ describe("direct assembler delivery", () => {
         seams.memoryRequiresDisk = true;
         const { component, target } = await mountReadyStep();
         const refusal = target.querySelector(".warn")?.textContent ?? "";
-        expect(refusal).toContain("3 B of browser memory");
+        expect(refusal).toContain("120 B of browser memory");
         expect(refusal).toContain("100 B");
         expect(refusal).toContain("Reduce the coverage area");
         expect((target.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(true);
