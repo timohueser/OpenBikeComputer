@@ -178,35 +178,49 @@ struct TripStopRoutesTests {
     }
 
     @Test
-    func aGapInsideADayBridgesByRouteAndAGapAtADayEndStays() async throws {
+    func aGapInsideADayBridgesByRoute() async throws {
         // Files meet 150 m apart: a gap, not a transfer. Joining the days puts it inside a day.
         var trip = Trip.joining(
             [file(0, 10_000), file(10_150, 20_000), file(23_000, 30_000)],
             id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
-        #expect(trip.gapsInsideDays().isEmpty, "every gap sits at a day end")
-        #expect(trip.endsAtTransfer(1), "3 km apart: a transfer")
-        let removedTransfer = trip.removeDayEnd(1)
-        #expect(!removedTransfer, "a transfer never moves inside a day")
+        #expect(trip.gaps().map(\.isAtDayEnd) == [true, true], "every gap sits at a day end")
         let removed = trip.removeDayEnd(0)
         #expect(removed)
 
-        let gaps = trip.gapsInsideDays()
-        #expect(gaps.count == 1)
-        let gap = try #require(gaps.first)
-        #expect(gap.day == 0 && abs(gap.meters - 150) < 1)
-
+        let gap = try #require(trip.gaps().first)
+        #expect(!gap.isAtDayEnd && gap.day == 0 && abs(gap.meters - 150) < 1)
         await #expect(throws: LegRouteFailure.noRoad) { try await trip.routeBridge(gap, with: FakeRouter(failure: .noRoad)) }
         let straight = trip.dayRoutes()[0].distanceMeters
         #expect(abs(straight - 19_800 - 150) < 20, "unbridged, the day rides the gap as a straight line")
 
-        let leg = try await trip.routeBridge(gap, with: FakeRouter())
-        let bridged = trip.bridge(gap, with: leg)
+        let bridged = trip.bridge(gap, with: try await trip.routeBridge(gap, with: FakeRouter()))
         #expect(bridged)
-        #expect(trip.gapsInsideDays().isEmpty)
-        #expect(trip.pieceStarts.count == 1, "the gap at the transfer stays")
+        #expect(trip.gaps().map(\.isAtDayEnd) == [true], "the transfer stays until it is bridged")
         #expect(trip.endsAtTransfer(0))
-        let again = trip.bridge(gap, with: leg)
+        let again = trip.bridge(gap, with: [])
         #expect(!again, "a bridged gap is gone")
+        expectFiguresMatchTheUpload(trip)
+    }
+
+    /// A bridged transfer is line: the day end stays where it was, and the next day rides the
+    /// bridge to where its file starts.
+    @Test
+    func aTransferBridgesIntoTheNextDay() async throws {
+        var trip = Trip.joining(
+            [file(0, 10_000), file(13_000, 20_000)], id: TripID("t"), name: "T", bikeType: .road,
+            now: Date(timeIntervalSince1970: 0))
+        trip.setTransfer(0, to: .train)
+        let gap = try #require(trip.gaps().first)
+        #expect(gap.isAtDayEnd && gap.day == 1 && abs(gap.meters - 3_000) < 10)
+
+        let bridged = trip.bridge(gap, with: try await trip.routeBridge(gap, with: FakeRouter()))
+        #expect(bridged)
+        #expect(trip.pieceStarts.isEmpty && !trip.endsAtTransfer(0), "no gap, so no transfer")
+        #expect(trip.dayEnds[0].transfer == nil, "the train label goes with the transfer")
+        #expect(abs(trip.dayEnds[0].distance - 10_000) < 1, "the day end stays at its place")
+        let days = trip.dayRoutes()
+        #expect(abs(days[0].distanceMeters - 10_000) < 20)
+        #expect(abs(days[1].distanceMeters - 10_000) < 20, "3 km of bridge and the 7 km file")
         expectFiguresMatchTheUpload(trip)
     }
 }
