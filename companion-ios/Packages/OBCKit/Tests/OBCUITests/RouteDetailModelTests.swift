@@ -29,10 +29,9 @@ final class RouteDetailModelTests: XCTestCase {
         )
 
         XCTAssertEqual(model.name, "Kettle Moraine Loop")
-        XCTAssertEqual(model.tag.text, "Planned")
-        XCTAssertFalse(model.tag.isAccent)
+        XCTAssertNil(model.tag, "a route page has no hero tag")
         XCTAssertTrue(model.isRenamable)
-        XCTAssertNil(model.importedFromLine)
+        XCTAssertNil(model.subtitle, "no source file was threaded in")
         XCTAssertEqual(model.waypoints.count, 4)
         XCTAssertEqual(model.waypoints.first?.name, "Ottawa Lake trailhead")
         XCTAssertEqual(model.elevationProfile.count, 10)
@@ -42,32 +41,50 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.waypoints.count, 4, "start() must not clobber the record's detail")
     }
 
-    func testPlannedStatStripMatchesTheDesignColumns() {
+    func testPlannedLedgerMatchesTheDeviceOverviewRows() {
         let control = makeControl()
         let route = control.fixtures.routes[0].summary
         let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
 
-        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Climb", "Est. time", "Max"])
+        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Climb", "Est. time", "Max grade"])
         // Assert against the formatter, not an en-US literal: the numbers are locale-aware.
         XCTAssertEqual(model.stats[0].value, OBCFormat.distanceValue(meters: 62_400))
         XCTAssertEqual(model.stats[0].unit, "km")
         XCTAssertEqual(model.stats[2].value, "3:12")  // Road, 62.4 km and 840 m, floored to the minute
-        // Max shows an em dash until the detail read lands the grade.
+        XCTAssertEqual(model.stats[2].unit, "h")
+        // Max grade shows an em dash with no grade known.
         XCTAssertEqual(model.stats[3].value, "—")
+        XCTAssertNil(model.stats[3].unit)
     }
 
-    func testCanUploadFollowsTheLiveConnection() async throws {
+    /// A route that climbs cannot have a steepest grade of zero or less: that grade comes from
+    /// missing elevation, so it reads as unknown. A flat route really is 0 %.
+    func testMaxGradeReadsUnknownWhenItContradictsTheClimb() {
+        func grade(_ percent: Double, climb: Double) -> String {
+            let route = RouteSummary(id: RouteID("g"), name: "G", distanceMeters: 10_000, elevationGainMeters: climb)
+            let detail = RouteDetail(summary: route, waypoints: [], elevationProfile: [], maxGradePercent: percent)
+            let model = RouteDetailModel(
+                transport: MockTransport(control: makeControl()), dressing: .planned(route), preloadedDetail: detail
+            )
+            return model.stats[3].value
+        }
+        XCTAssertEqual(grade(8.6, climb: 210), "9")
+        XCTAssertEqual(grade(0.2, climb: 210), "—")
+        XCTAssertEqual(grade(-1, climb: 0), "0")
+    }
+
+    func testConnectionFollowsTheLiveLink() async throws {
         let control = makeControl()
         let route = control.fixtures.routes[0].summary
         let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
 
         model.start()
-        try await waitFor("connected replay", timeout: .seconds(5)) { model.canUpload }
+        try await waitFor("connected replay", timeout: .seconds(5)) { model.connection == .connected }
 
         control.connection = .outOfRange
-        try await waitFor("link-down gate", timeout: .seconds(5)) { !model.canUpload }
+        try await waitFor("link down", timeout: .seconds(5)) { model.connection == .outOfRange }
         control.connection = .connected
-        try await waitFor("link-up gate", timeout: .seconds(5)) { model.canUpload }
+        try await waitFor("link up", timeout: .seconds(5)) { model.connection == .connected }
     }
 
     /// An upload commit pins the assigned id, so a second Upload replaces that object instead of
@@ -108,8 +125,8 @@ final class RouteDetailModelTests: XCTestCase {
 
         XCTAssertTrue(model.stats.isEmpty, "the stats line replaces the strip")
         XCTAssertEqual(model.statsLine, OBCFormat.rideStatsLine(ride))
-        XCTAssertTrue(model.tag.text.hasPrefix("Tracked · "))
-        XCTAssertTrue(model.tag.isAccent)
+        XCTAssertTrue(model.tag?.text.hasPrefix("Tracked · ") == true)
+        XCTAssertTrue(model.tag?.isAccent == true)
         XCTAssertNotNil(model.subtitle)
         XCTAssertTrue(model.isRenamable)
         XCTAssertTrue(model.elevationProfile.isEmpty && model.highlights.isEmpty, "whole-track work waits for start()")
@@ -185,27 +202,25 @@ final class RouteDetailModelTests: XCTestCase {
         )
 
         XCTAssertEqual(model.name, "Schwarzwald Tour · Tag 2")
-        XCTAssertEqual(model.subtitle, "schwarzwald.gpx")
-        XCTAssertEqual(model.tag.text, "New · unsaved")
-        XCTAssertEqual(model.importedFromLine, "Imported from Komoot")
+        XCTAssertEqual(model.subtitle, "Imported from Komoot")
+        XCTAssertNil(model.tag)
         XCTAssertTrue(model.isRenamable, "E1 renames before save")
         XCTAssertEqual(model.waypoints.count, 2)
         XCTAssertEqual(model.elevationProfile.count, 10)
-        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Climb", "Descent", "Est. time"])
+        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Climb", "Est. time", "Max grade"])
         XCTAssertEqual(model.stats[1].value, OBCFormat.climbValue(meters: 50))
-        XCTAssertEqual(model.stats[2].value, OBCFormat.climbValue(meters: 40))
         XCTAssertEqual(model.distanceMeters, 9 * 1112.0, accuracy: 20)
     }
 
-    /// A file import names its file; a ride saved as a route is a new route from that ride, with no
-    /// file the rider ever picked.
+    /// A file import names its source; a ride saved as a route is a new route from that ride, with
+    /// no file the rider ever picked.
     func testTheLandingCopyFollowsTheSource() {
         let file = RouteDetailModel(
             transport: MockTransport(control: makeControl()),
             dressing: .imported(importedRoute, fileName: "schwarzwald.gpx")
         )
         XCTAssertEqual(file.landingTitle, "Imported route")
-        XCTAssertEqual(file.subtitle, "schwarzwald.gpx")
+        XCTAssertEqual(file.subtitle, "Imported from Komoot")
 
         let rideDate = Date(timeIntervalSince1970: 1_757_577_600)
         let ride = RouteDetailModel(
@@ -213,8 +228,7 @@ final class RouteDetailModelTests: XCTestCase {
             dressing: .imported(importedRoute, fileName: "Schwarzwald.gpx", source: .ride(rideDate))
         )
         XCTAssertEqual(ride.landingTitle, "New route")
-        XCTAssertEqual(ride.importedFromLine, "From ride · \(OBCFormat.rideDay(rideDate))")
-        XCTAssertNil(ride.subtitle)
+        XCTAssertEqual(ride.subtitle, "From your ride · \(OBCFormat.rideDay(rideDate))")
     }
 
     func testImportedMapCoordinatesAreFullResolutionNotThePreviewCap() {
@@ -234,24 +248,24 @@ final class RouteDetailModelTests: XCTestCase {
         )
     }
 
-    func testImportedFromLineFallsBackToTheFileType() {
+    func testSourceLineFallsBackToTheFileName() {
         var route = importedRoute
         route.creator = "RideWithGPS"
         let model = RouteDetailModel(
             transport: MockTransport(control: makeControl()),
             dressing: .imported(route, fileName: "tour.gpx")
         )
-        XCTAssertEqual(model.importedFromLine, "Imported from GPX file")
+        XCTAssertEqual(model.subtitle, "Imported from tour.gpx")
     }
 
-    func testImportedFromLineRecognizesGarmin() {
+    func testSourceLineRecognizesGarmin() {
         var route = importedRoute
         route.creator = "Garmin Connect"
         let model = RouteDetailModel(
             transport: MockTransport(control: makeControl()),
             dressing: .imported(route, fileName: "course.tcx")
         )
-        XCTAssertEqual(model.importedFromLine, "Imported from Garmin")
+        XCTAssertEqual(model.subtitle, "Imported from Garmin")
     }
 
     func testMakeSummaryCarriesTheParsedStats() {
