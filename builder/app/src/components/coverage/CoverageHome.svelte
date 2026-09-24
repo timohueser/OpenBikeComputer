@@ -52,13 +52,15 @@
                 {#if partCount > 0}
                     <span class="small faint">
                         {partCount}
-                        {partCount === 1 ? "part" : "parts"} — add more with the map tools
+                        {partCount === 1 ? "part" : "parts"}
                     </span>
                 {/if}
             </div>
             <div class="stack">
                 <PartsList {store} />
-                <MapSummary {store} />
+                {#if partCount > 0 || store.indexError || store.resolutionError}
+                    <MapSummary {store} />
+                {/if}
             </div>
         </section>
 
@@ -125,7 +127,11 @@
         display: flex;
         align-items: center;
         gap: 9px;
-        margin-bottom: 10px;
+        margin: -16px -16px 14px;
+        padding: 11px 16px;
+        background: var(--parchment-2);
+        border-bottom: 1px solid var(--line);
+        border-radius: 9px 9px 0 0;
     }
 
     .step-head h3 {
@@ -141,8 +147,7 @@
         width: 21px;
         height: 21px;
         flex: none;
-        border-radius: 50%;
-        border: 1.6px solid var(--wood);
+        font-family: var(--mono);
         color: var(--ink);
         font-size: 12px;
         font-weight: 600;

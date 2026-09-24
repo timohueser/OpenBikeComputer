@@ -435,7 +435,6 @@
                 onclick={() => setTool("corridor")}><ToolIcon kind="corridor" /></button
             >
         </div>
-        <span class="rail-hint small faint">region · box · lasso · corridor</span>
     </div>
 
     {#if tool === "region"}
@@ -448,7 +447,7 @@
             />
             {#if searchRows}
                 {#if searchRows.length === 0}
-                    <p class="small faint head">Nothing named like that is baked yet.</p>
+                    <p class="small faint head">No regions found.</p>
                 {/if}
                 {#each searchRows as region (region.id)}
                     {@const added = store.hasRegion(region.id)}
@@ -473,7 +472,7 @@
                     </div>
                 {/each}
             {:else}
-                <p class="small faint head">Click a region on the map, or here:</p>
+                <p class="small faint head">Choose a region</p>
                 {#each treeRows as row (row.region.id)}
                     {@const added = store.hasRegion(row.region.id)}
                     {@const kids = byParent.get(row.region.id)?.length ?? 0}
@@ -560,14 +559,14 @@
     {#if store.drawError}
         <div class="overlay bottom-left chip error">{store.drawError}</div>
     {:else if tool === "box"}
-        <div class="overlay bottom-left chip">Drag to draw a box — Esc cancels.</div>
+        <div class="overlay bottom-left chip">Drag a box. Esc to cancel.</div>
     {:else if tool === "lasso"}
-        <div class="overlay bottom-left chip">Drag to draw around an area — Esc cancels.</div>
+        <div class="overlay bottom-left chip">Draw an area. Esc to cancel.</div>
     {:else if tool === "region"}
-        <div class="overlay bottom-left chip">Every region you click joins the map — Esc when done.</div>
+        <div class="overlay bottom-left chip">Click a region to add it.</div>
     {:else if partCount === 0 && tool === "none"}
         <div class="overlay bottom-left chip">
-            Pick a region or draw an area — each part you add joins one map.
+            Choose a region or draw an area.
         </div>
     {/if}
 </div>
@@ -597,11 +596,7 @@
         z-index: 1000;
     }
 
-    /* The wrap's flex row spans the rail PLUS the hint pill, and that mostly
-       transparent bounding box was swallowing every mousedown over it — a
-       ~230×160 px dead zone in the map's top-left where no tool could click
-       or start a drag (2026-08-09 on-glass catch). The wrapper lets events
-       through; only the rail itself takes them back. */
+    /* Only the rail takes pointer events; the map stays interactive around it. */
     .rail-wrap {
         top: 12px;
         left: 12px;
@@ -624,8 +619,8 @@
     }
 
     .rail button {
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
         border: none;
         border-radius: 7px;
         background: var(--parchment);
@@ -644,8 +639,8 @@
     }
 
     .rail button.active {
-        background: var(--forest);
-        color: var(--panel);
+        background: var(--amber);
+        color: var(--on-amber);
     }
 
     .rail button:focus-visible {
@@ -653,18 +648,11 @@
         outline-offset: 1px;
     }
 
-    .rail-hint {
-        margin-top: 4px;
-        background: var(--panel);
-        border-radius: 8px;
-        padding: 2px 8px;
-        box-shadow: 0 2px 8px rgba(36, 51, 28, 0.1);
-    }
 
     .region-list {
         top: 12px;
-        left: 64px;
-        width: min(300px, 60vw);
+        left: 72px;
+        width: min(300px, calc(100% - 84px));
         max-height: min(440px, calc(100% - 24px));
         overflow: auto;
         background: var(--panel);
@@ -717,7 +705,7 @@
     }
 
     .region-list .chev:hover {
-        background: rgba(95, 125, 61, 0.12);
+        background: var(--parchment-2);
         color: var(--ink);
     }
 
@@ -747,8 +735,10 @@
         white-space: nowrap;
     }
 
+    .region-list button.name > span:last-child { white-space: nowrap; }
+
     .region-list button.name:hover {
-        background: rgba(95, 125, 61, 0.12);
+        background: var(--parchment-2);
     }
 
     .region-list button.name.added {
@@ -788,7 +778,7 @@
 
     .ladder button:hover,
     .ladder button:focus-visible {
-        background: rgba(95, 125, 61, 0.14);
+        background: var(--parchment-2);
         outline: none;
     }
 
@@ -832,10 +822,10 @@
 
     /* app.css drops Leaflet's zoom control 58px for the old panel's search bar;
        this pane has the tool rail there instead. The offset tucks the control
-       directly under the rail (4 × 32px buttons + gaps + padding + 12px top
+       directly under the rail (4 × 40px buttons + gaps + padding + 12px top
        ≈ 160px) rather than parking it mid-pane — which is where a fixed
        200px put it on a short phone pane. */
     .map-wrap :global(.leaflet-top.leaflet-left) {
-        top: 172px;
+        top: 204px;
     }
 </style>
