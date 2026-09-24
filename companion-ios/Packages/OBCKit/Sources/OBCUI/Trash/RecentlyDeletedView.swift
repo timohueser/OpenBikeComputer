@@ -29,40 +29,39 @@ public struct RecentlyDeletedView: View {
                 .padding(.top, 60)
             } else {
                 List {
-                    Group {
-                        Text(
-                            "Rides stay here for \(MainScreenModel.trashRetentionDays) days, "
-                                + "then they're removed for good. The copies on your OBC aren't touched."
-                        )
-                        .font(.system(.footnote))
-                        .foregroundStyle(OBCTheme.secondary)
-                        .lineSpacing(3)
-                        .padding(.bottom, 4)
-
-                        ForEach(model.trashedRides) { ride in
-                            Button {
-                                selected = ride
-                            } label: {
-                                RouteCard(ride: ride)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("trash.card.\(ride.id.rawValue)")
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    model.recoverRide(ride.id)
-                                } label: {
-                                    Label("Recover", systemImage: "arrow.uturn.backward")
-                                }
-                                .tint(OBCTheme.tint)
-                            }
-                            .obcSwipeToDelete {
-                                model.deleteRideForever(ride.id)
-                            }
-                        }
-                    }
+                    Text(
+                        "Rides stay here for \(MainScreenModel.trashRetentionDays) days, "
+                            + "then they're removed for good. The copies on your OBC aren't touched."
+                    )
+                    .font(.system(.footnote))
+                    .foregroundStyle(OBCTheme.secondary)
+                    .lineSpacing(3)
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 12, trailing: 20))
+
+                    let rides = model.trashedRides
+                    ForEach(Array(rides.enumerated()), id: \.element.id) { index, ride in
+                        Button {
+                            selected = ride
+                        } label: {
+                            TrackRow(ride: ride)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("trash.card.\(ride.id.rawValue)")
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                model.recoverRide(ride.id)
+                            } label: {
+                                Label("Recover", systemImage: "arrow.uturn.backward")
+                            }
+                            .tint(OBCTheme.tint)
+                        }
+                        .obcSwipeToDelete {
+                            model.deleteRideForever(ride.id)
+                        }
+                        .obcGroupedRow(first: index == 0, last: index == rides.count - 1)
+                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)

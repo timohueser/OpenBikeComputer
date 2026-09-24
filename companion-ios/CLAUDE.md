@@ -60,8 +60,8 @@ asynchronously rendered element instead of assuming a delay.**
 
 The tracked SwiftUI implementation is authoritative. Reuse `OBCTheme` and the `OBCUI` component
 kit, and read the component gallery and the screenshot tests for the current states. Do not
-introduce one-off colours or chrome metrics. Track previews use MapKit with a grid fallback on
-purpose. Copy stays English-only until localization is a complete feature.
+introduce one-off colours or chrome metrics. List rows draw the track sketch, never a map;
+detail pages use MapKit and fall back to the sketch. Copy stays English-only until localization is a complete feature.
 
 ## Conventions
 

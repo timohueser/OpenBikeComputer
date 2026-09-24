@@ -40,12 +40,11 @@ struct RideFilterBar: View {
                     }
                     .font(.system(.footnote, weight: .semibold).monospacedDigit())
                     .foregroundStyle(OBCTheme.ink)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: OBCTheme.radiusSmall)
-                            .strokeBorder(OBCTheme.hairlineStrong)
-                    )
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(OBCTheme.surface, in: Capsule())
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("library.year")
 
@@ -62,10 +61,12 @@ struct RideFilterBar: View {
         Button(action: action) {
             Text(label)
                 .font(.system(.footnote, weight: .semibold))
-                .foregroundStyle(isOn ? OBCTheme.surface : OBCTheme.secondary)
+                .foregroundStyle(isOn ? OBCTheme.page : OBCTheme.secondary)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.vertical, 7)
                 .background(Capsule().fill(isOn ? OBCTheme.ink : OBCTheme.fill))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("library.chip.\(label)")
@@ -73,59 +74,48 @@ struct RideFilterBar: View {
     }
 }
 
-/// The totals of the filtered rides, beside a thumbnail of their lines.
+/// The totals of the filtered rides, beside a sketch of their lines.
 struct RideTotalsCard: View {
     let scope: String
     let totals: RideTotals
-    /// Nil while the lines load; the thumbnail shows the bare grid.
+    /// Nil while the lines load; the sketch shows the bare ground.
     let lines: RideMapLines?
     let onOpenMap: () -> Void
 
     var body: some View {
         Button(action: onOpenMap) {
             VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    MultiTrackPreviewView(stages: thumbnailStages, showsChrome: false)
-                        // Always the grid, like the list cards: a basemap with hundreds of
-                        // polylines costs too much for a thumbnail.
-                        .environment(\.obcIsOnline, false)
-                        .frame(width: 120, height: 96)
-                        .overlay(alignment: .trailing) {
-                            Rectangle().fill(OBCTheme.hairline).frame(width: 1)
-                        }
-                    VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 14) {
+                    TrackPreviewView(tracks: sketchTracks, showsEnds: false, showsChrome: false)
+                        .frame(width: 96, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 3) {
                         OBCEyebrow(scope)
                         Text(OBCFormat.distance(meters: totals.distanceMeters))
-                            .font(.system(.title2, weight: .bold))
+                            .font(.obcStat(.title2))
                             .foregroundStyle(OBCTheme.ink)
                         Text(statLine)
-                            .font(.system(.caption2).monospacedDigit())
+                            .font(.system(.subheadline).monospacedDigit())
                             .foregroundStyle(OBCTheme.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
                     }
-                    .padding(.horizontal, 12)
                     Spacer(minLength: 0)
                 }
+                .padding(12)
                 HStack(spacing: 4) {
                     Text("All rides on the map")
                     Image(systemName: "chevron.right")
                         .font(.system(.caption2, weight: .bold))
                     Spacer()
                 }
-                .font(.system(.caption, weight: .semibold).monospacedDigit())
+                .font(.system(.subheadline, weight: .semibold))
                 .foregroundStyle(OBCTheme.tint)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+                .frame(minHeight: 44)
                 .overlay(alignment: .top) {
-                    Rectangle().fill(OBCTheme.hairline).frame(height: 1)
+                    OBCTheme.hairline.frame(height: 1).padding(.leading, 12)
                 }
             }
-            .background(OBCTheme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
-            )
+            .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("library.totals")
@@ -139,12 +129,12 @@ struct RideTotalsCard: View {
         ].joined(separator: " · ")
     }
 
-    /// The coarsest lines that still read at thumbnail size.
-    private var thumbnailStages: [MultiTrackPreviewView.Stage] {
+    /// The coarsest lines that still read at sketch size.
+    private var sketchTracks: [(coordinates: [Coordinate], ink: TrackPreviewView.Ink)] {
         guard let lines else { return [] }
         let extent = RideMapLines.extentMeters(of: lines.lines(metersPerPoint: .infinity))
-        return lines.lines(metersPerPoint: extent / 120).flatMap { line in
-            line.pieces.map { MultiTrackPreviewView.Stage(coordinates: $0, color: OBCTheme.ride) }
+        return lines.lines(metersPerPoint: extent / 96).flatMap { line in
+            line.pieces.map { (coordinates: $0, ink: TrackPreviewView.Ink.ride) }
         }
     }
 }

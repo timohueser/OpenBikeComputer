@@ -27,7 +27,7 @@ public enum OBCNavigationChrome {
     }
 }
 
-/// The large-title row: the title with trailing circular actions, bottom-aligned.
+/// The large-title row: the title with trailing actions, centred on the title.
 public struct OBCLargeTitleBar<Actions: View>: View {
     let title: String
     @ViewBuilder let actions: Actions
@@ -38,17 +38,20 @@ public struct OBCLargeTitleBar<Actions: View>: View {
     }
 
     public var body: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        HStack(spacing: 12) {
             Text(title)
                 .font(.system(.largeTitle, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
-            HStack(spacing: 8) { actions }
-                .padding(.bottom, 3)
+            HStack(spacing: 14) { actions }
         }
-        .padding(.top, 6)
-        .padding(.horizontal, 20)
-        .padding(.bottom, 12)
+        .padding(.top, 12)
+        .padding(.leading, 16)
+        .padding(.trailing, 12)
+        .padding(.bottom, 8)
     }
 }
 
