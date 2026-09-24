@@ -125,6 +125,7 @@ struct RouteDetailScreen: View {
         dressing: RouteDetailModel.Dressing,
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
+        sourceFileName: String? = nil,
         bikeType: BikeType = .road,
         ridePoints: [RidePoint] = [],
         rides: [RideSummary] = [],
@@ -148,7 +149,7 @@ struct RouteDetailScreen: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing, bikeType: bikeType,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
-            deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
+            sourceFileName: sourceFileName, deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
             ridePoints: ridePoints, rides: rides
         ))
         self.transport = transport
@@ -204,7 +205,6 @@ struct RouteDetailScreen: View {
             onDelete: onDelete,
             onRename: onRename,
             onRenameTap: onRenameTap,
-            onReverse: onReverse,
             onBikeTypeChange: onBikeTypeChange,
             photos: photos,
             dayNote: dayNote,
@@ -213,10 +213,8 @@ struct RouteDetailScreen: View {
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let onAddToTrip {
-                ToolbarItem(placement: .primaryAction) {
-                    tripMenu(onAddToTrip: onAddToTrip)
-                }
+            if onAddToTrip != nil || onReverse != nil {
+                ToolbarItem(placement: .primaryAction) { routeMenu }
             }
             if let rideShareMenu {
                 ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
@@ -237,18 +235,28 @@ struct RouteDetailScreen: View {
         }
     }
 
-    /// The detail overflow's trip menu.
-    private func tripMenu(onAddToTrip: @escaping (TripSelection) -> Void) -> some View {
+    /// The route page's overflow: Add to trip and Reverse.
+    private var routeMenu: some View {
         Menu {
-            Button {
-                tripPickerShown = true
-            } label: {
-                Label("Add to trip…", systemImage: "folder.badge.plus")
+            if onAddToTrip != nil {
+                Button {
+                    tripPickerShown = true
+                } label: {
+                    Label("Add to trip…", systemImage: "folder.badge.plus")
+                }
+                .accessibilityIdentifier("detail.addToTrip")
             }
-            .accessibilityIdentifier("detail.addToTrip")
+            if let onReverse {
+                // Reverse lands a copy; the original direction stays.
+                Button(action: onReverse) {
+                    Label("Reverse direction", systemImage: "arrow.uturn.backward")
+                }
+                .accessibilityIdentifier("detail.reverse")
+            }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
         }
+        .accessibilityLabel("More")
         .accessibilityIdentifier("detail.overflow")
     }
 }
@@ -310,25 +318,34 @@ struct ImportLandingHost: View {
         }
     }
 
-    /// New route, Add to ‹trip› (or Add to trip with a picker when there are several), Start a
-    /// trip.
+    /// The one save, then the two ways into a trip. Each choice says where the route lands.
     private var rows: some View {
-        OBCGroupedSection {
-            OBCListRow(label: "New route", showsChevron: true) { save(.none) }
+        VStack(alignment: .leading, spacing: 20) {
+            Button("Save to Routes") { save(.none) }
+                .buttonStyle(.obcPrimary)
                 .accessibilityIdentifier("import.newRoute")
-            if trips.count == 1, let trip = trips.first {
-                OBCListRow(label: "Add to \(trip.name)", detail: "Becomes Day \(trip.dayCount + 1)", showsChevron: true) {
-                    save(.existing(trip.id))
-                }
-                .accessibilityIdentifier("import.addToTrip")
-            } else if trips.count > 1 {
-                OBCListRow(label: "Add to trip", showsChevron: true) { tripPickerShown = true }
+            OBCGroupedSection("Or put it in a trip") {
+                if trips.count == 1, let trip = trips.first {
+                    OBCListRow(label: "Add to \(trip.name)", detail: "It becomes day \(trip.dayCount + 1).", showsChevron: true) {
+                        save(.existing(trip.id))
+                    }
                     .accessibilityIdentifier("import.addToTrip")
+                } else if trips.count > 1 {
+                    OBCListRow(label: "Add to a trip", detail: "It becomes the last day.", showsChevron: true) {
+                        tripPickerShown = true
+                    }
+                    .accessibilityIdentifier("import.addToTrip")
+                }
+                OBCListRow(
+                    label: "Start a new trip",
+                    detail: "Then split the route into days.",
+                    showsChevron: true,
+                    showsDivider: false
+                ) {
+                    save(.new(model.name))
+                }
+                .accessibilityIdentifier("import.startTrip")
             }
-            OBCListRow(label: "Start a trip", showsChevron: true, showsDivider: false) {
-                save(.new(model.name))
-            }
-            .accessibilityIdentifier("import.startTrip")
         }
     }
 
