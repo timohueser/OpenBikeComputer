@@ -2,11 +2,11 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The trip page, behind a trip card in the routes list: the map in day colours, the totals, the
-/// Upload trip action, one row per day with its number and its name, then the start date and the
-/// bike type. A tap on a day opens its route detail; a long press offers Rename day and End day at
-/// a stop. A tap on a transfer line labels it. The overflow menu carries
-/// Rename, Reverse and Delete trip.
+/// The trip page, behind a trip card in the routes list, in the route page's order: the map in
+/// day colours, the name, what the device holds with the one action, the ledger, one row per day
+/// with a bar as long as the day, then the start date and the bike type. A tap on a day opens its
+/// route detail; a long press offers Rename day and End day at a stop. A tap on a transfer line
+/// picks how the rider travels it. The overflow menu carries Reverse and Delete trip.
 ///
 /// Once the trip has a ride, the page is the trip review: the line with the ridden part, the
 /// totals so far, one journal entry per ridden day, and the days still to ride as rows. Its share
@@ -25,6 +25,7 @@ public struct TripDetailView: View {
     private let onOpenDay: (Int) -> Void
     /// The planned line as GPX. The review's share button shows only with it.
     private let encodeGPX: (@Sendable (Trip) -> Data)?
+    private let uploadTiming: TripUploadModel.Timing
 
     @State private var renameShown = false
     @State private var deleteDialogShown = false
@@ -56,7 +57,8 @@ public struct TripDetailView: View {
         onEvenOut: ((RebalanceOffer) -> Void)? = nil,
         onEditDays: @escaping () -> Void = {},
         onOpenDay: @escaping (Int) -> Void = { _ in },
-        encodeGPX: (@Sendable (Trip) -> Data)? = nil
+        encodeGPX: (@Sendable (Trip) -> Data)? = nil,
+        uploadTiming: TripUploadModel.Timing = TripUploadModel.Timing()
     ) {
         self.model = model
         self.tripID = tripID
@@ -66,12 +68,13 @@ public struct TripDetailView: View {
         self.onEditDays = onEditDays
         self.onOpenDay = onOpenDay
         self.encodeGPX = encodeGPX
+        self.uploadTiming = uploadTiming
     }
 
     private var editDaysButton: some View {
         Button("Edit days", action: onEditDays)
             .buttonStyle(.obcGhost)
-            .padding(.top, 12)
+            .padding(.top, 10)
             .accessibilityIdentifier("trip.editDays")
     }
 
@@ -101,36 +104,36 @@ public struct TripDetailView: View {
                     if !unridden.isEmpty {
                         OBCEyebrow("Still to ride")
                             .padding(.top, 30)
-                            .padding(.bottom, 8)
-                            .padding(.leading, 4)
+                            .padding(.bottom, 6)
                         dayRows(unridden)
                         editDaysButton
                     }
-                    uploadButton.padding(.top, 14)
                 } else {
                     header
+                    OBCEyebrow("Days")
+                        .padding(.top, 24)
+                        .padding(.bottom, 6)
                     dayRows(Array(days.indices))
-                        .padding(.top, 14)
                     editDaysButton
                 }
                 OBCGroupedSection {
                     OBCListRow(
                         label: "Start date",
-                        value: trip?.startDay.map { OBCFormat.tripDay($0) } ?? "None",
+                        detail: trip?.startDay == nil ? "Set it to see the date of each day." : nil,
+                        value: trip?.startDay.map { OBCFormat.tripDay($0) } ?? "Not set",
                         showsChevron: true
                     ) { startDateShown = true }
                     .accessibilityIdentifier("trip.startDate")
                     OBCBikeTypeRow(type: trip?.bikeType ?? .road) { model.setTripBikeType(tripID, to: $0) }
                         .accessibilityIdentifier("trip.bikeType")
                 }
-                .padding(.top, 14)
+                .padding(.top, 20)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 4)
+            .padding(.horizontal, 16)
             .padding(.bottom, 24)
         }
         .background(OBCTheme.page.ignoresSafeArea())
-        .navigationTitle(journal?.review == nil ? trip?.name ?? "Trip" : "Trip")
+        .navigationTitle("Trip")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -220,11 +223,12 @@ public struct TripDetailView: View {
         isOnline && previewStages.contains { !$0.coordinates.isEmpty }
     }
 
-    /// The whole-trip hero map: every day in its palette colour, above the stat strip. Tapping
-    /// it, online and with geometry, opens the full-screen interactive map, the same affordance as
-    /// the route detail's hero.
+    /// The whole-trip hero map: every day in its palette colour, with the trip's start and end.
+    /// Tapping it, online and with geometry, opens the full-screen interactive map, the same
+    /// affordance as the route detail's hero.
     private var heroMap: some View {
-        expandable(MultiTrackPreviewView(stages: previewStages).frame(height: 190))
+        expandable(MultiTrackPreviewView(stages: previewStages, showsEnds: true).frame(height: 200))
+            .padding(.top, 8)
     }
 
     @ViewBuilder
@@ -259,18 +263,26 @@ public struct TripDetailView: View {
     /// trip has one, and the day's stats. A transfer line sits after a day with a transfer.
     private func dayRows(_ indices: [Int]) -> some View {
         let dates = model.tripDayDates(tripID)
+        let longest = days.map(\.distanceMeters).max() ?? 0
+        let copies = dayCopyNotes
         return OBCGroupedSection {
             ForEach(indices, id: \.self) { index in
                 let day = days[index]
                 let end = trip?.dayEnds[safe: index]
+                let transfer = trip?.transferMeters(after: index)
                 TripDayRow(
                     color: OBCTheme.stageColor(index: index),
                     number: index + 1,
                     title: end?.title ?? end?.name.map { "to \($0)" },
-                    detail: ([dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) }]
-                        + [OBCFormat.plannedSubtitle(day), offLineNote(end)]).compactMap { $0 }
-                        .joined(separator: " · "),
-                    showsDivider: index != indices.last
+                    detail: [
+                        dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) },
+                        OBCFormat.distance(meters: day.distanceMeters), OBCFormat.climb(meters: day.elevationGainMeters),
+                        day.estimatedDuration.map { OBCFormat.movingTime($0) + " h" }, offLineNote(end),
+                    ].compactMap { $0 }.joined(separator: " · "),
+                    note: copies[safe: index]?.shown,
+                    fraction: longest > 0 ? day.distanceMeters / longest : 0,
+                    spokenNote: copies[safe: index]?.spoken,
+                    showsDivider: index != indices.last && transfer == nil
                 ) {
                     onOpenDay(index)
                 }
@@ -284,13 +296,28 @@ public struct TripDetailView: View {
                     }
                 }
                 .accessibilityIdentifier("trip.day.\(index)")
-                if let meters = trip?.transferMeters(after: index) {
+                if let meters = transfer {
                     TripTransferRow(kind: end?.transfer, meters: meters) {
                         model.setTripTransfer(tripID, day: index, to: $0)
                     }
                     .accessibilityIdentifier("trip.transfer.\(index)")
                 }
             }
+        }
+    }
+
+    /// What the device holds of each day. The row shows it only while the trip on the device is
+    /// out of date, where it says which days changed; VoiceOver always reads it.
+    private var dayCopyNotes: [(shown: String?, spoken: String)] {
+        let name = model.deviceName
+        let showsDays = model.tripOnDeviceState(tripID) == .outdated
+        return model.tripDayOnDeviceStates(tripID).map { state in
+            let line = switch state {
+            case .upToDate: "On \(name)"
+            case .outdated: "Changed since it was sent"
+            case .notOnDevice: "Not on \(name) yet"
+            }
+            return (showsDays && state != .upToDate ? line : nil, line)
         }
     }
 
@@ -323,6 +350,7 @@ public struct TripDetailView: View {
             + journal.photoPins.map { MultiTrackPreviewView.Pin(coordinate: $0, color: OBCTheme.ride) }
             + transfers + [stopped].compactMap { $0 }
         return expandable(MultiTrackPreviewView(stages: stages, pins: pins).frame(height: 230))
+            .padding(.top, 8)
             .accessibilityIdentifier("trip.journal.map")
     }
 
@@ -341,19 +369,18 @@ public struct TripDetailView: View {
     private func journalHeader(_ journal: TripJournalModel, _ review: TripReview, _ shown: Trip) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             journalMap(journal, shown)
-            Text(trip?.name ?? shown.name)
-                .font(.system(.title, weight: .bold))
-                .foregroundStyle(OBCTheme.ink)
-                .padding(.top, 16)
+            titleRow(trip?.name ?? shown.name)
             Text(journalDateLine(review, shown))
-                .font(.system(.caption).monospacedDigit())
+                .font(.system(.subheadline).monospacedDigit())
                 .foregroundStyle(OBCTheme.secondary)
-                .padding(.top, 4)
+                .padding(.top, 3)
+            deviceStatus
+                .padding(.top, 14)
             TripReviewTotals(
                 ridden: review.totals, plannedMeters: review.plannedMeters, isDone: review.currentDay == nil,
                 highlights: journal.highlights
             )
-            .padding(.top, 12)
+            .padding(.top, 18)
             .accessibilityIdentifier("trip.journal.totals")
         }
     }
@@ -388,48 +415,77 @@ public struct TripDetailView: View {
     }
 
     private var header: some View {
-        let stats = model.tripStats(tripID)
-        return VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             heroMap
-
-            OBCStatStrip([
-                OBCStat(
-                    value: OBCFormat.distanceValue(meters: stats.distanceMeters), unit: "km",
-                    key: "Distance"),
-                OBCStat(
-                    value: OBCFormat.climbValue(meters: stats.elevationGainMeters), unit: "m",
-                    key: "Climb"),
-                OBCStat(value: "\(stats.dayCount)", key: stats.dayCount == 1 ? "Day" : "Days"),
-            ])
-            .accessibilityIdentifier("trip.stats")
-
-            uploadButton
+            titleRow(trip?.name ?? "Trip")
+            if let dates = model.tripDateLine(tripID) {
+                Text(dates)
+                    .font(.system(.subheadline).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
+                    .padding(.top, 3)
+                    .accessibilityIdentifier("trip.dates")
+            }
+            deviceStatus
+                .padding(.top, 14)
+            OBCLedger(ledger)
+                .padding(.top, 20)
+                .accessibilityIdentifier("trip.stats")
         }
     }
 
-    /// The primary action: one tap pushes the whole trip. Link-bound, so it dims when
-    /// disconnected, and disabled when the trip is already fully up to date. The tap re-reads the
-    /// device catalogs first, so a retry after a failed upload plans against what actually landed
-    /// and never mints a duplicate from a pre-failure cache.
-    private var uploadButton: some View {
-        Button {
+    /// The name with its rename button, as on the route page.
+    private func titleRow(_ name: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(name)
+                .font(.system(.title, weight: .bold))
+                .foregroundStyle(OBCTheme.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("trip.title")
+            Button { renameShown = true } label: {
+                Image(systemName: "pencil")
+                    .font(.system(.body, weight: .medium))
+                    .foregroundStyle(OBCTheme.secondary)
+                    .obcFixedGeometryType()
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // The glyph's optical edge lines up with the page margin.
+            .padding(.trailing, -12)
+            .accessibilityLabel("Rename trip")
+            .accessibilityIdentifier("trip.rename")
+        }
+        .padding(.top, 14)
+    }
+
+    /// DISTANCE, CLIMB, DAYS, and RIDING TIME when every day has an estimate.
+    private var ledger: [OBCStat] {
+        let stats = model.tripStats(tripID)
+        let estimates = days.compactMap(\.estimatedDuration)
+        return [
+            OBCStat(value: OBCFormat.distanceValue(meters: stats.distanceMeters), unit: "km", key: "Distance"),
+            OBCStat(value: OBCFormat.climbValue(meters: stats.elevationGainMeters), unit: "m", key: "Climb"),
+            OBCStat(value: "\(stats.dayCount)", key: "Days"),
+        ] + (estimates.count == days.count && !days.isEmpty
+            ? [OBCStat(value: OBCFormat.movingTime(estimates.reduce(0, +)), unit: "h", key: "Riding time")] : [])
+    }
+
+    /// What the device holds of the trip, and the one action. The tap re-reads the device catalogs
+    /// first, so a retry after a failed upload plans against what actually landed and never mints a
+    /// duplicate from a pre-failure cache.
+    private var deviceStatus: some View {
+        DeviceCopyStatus(
+            state: model.tripOnDeviceState(tripID), connection: model.connection, deviceName: model.deviceName,
+            idPrefix: "trip"
+        ) {
             guard !isPreparingUpload else { return }
             isPreparingUpload = true
             Task {
-                tripUploadModel = await model.prepareTripUpload(tripID)
+                tripUploadModel = await model.prepareTripUpload(tripID, timing: uploadTiming)
                 isPreparingUpload = false
             }
-        } label: {
-            Label("Upload trip", systemImage: "square.and.arrow.up")
         }
-        .buttonStyle(.obcPrimary)
-        .disabled(!canUploadTrip || isPreparingUpload)
-        .accessibilityIdentifier("trip.upload")
-    }
-
-    /// Upload is offered while connected and the trip is not already fully current on the device.
-    private var canUploadTrip: Bool {
-        model.connection == .connected && model.tripOnDeviceState(tripID) != .upToDate
     }
 
     #if os(iOS)
@@ -447,11 +503,6 @@ public struct TripDetailView: View {
     private var overflowMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Menu {
-                Button {
-                    renameShown = true
-                } label: { Label("Rename", systemImage: "pencil") }
-                .accessibilityIdentifier("trip.rename")
-
                 Button { model.reverseTrip(tripID) } label: {
                     Label("Reverse", systemImage: "arrow.left.arrow.right")
                 }
@@ -466,6 +517,7 @@ public struct TripDetailView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
+            .accessibilityLabel("More")
             .accessibilityIdentifier("trip.overflow")
         }
     }

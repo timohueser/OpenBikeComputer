@@ -27,9 +27,9 @@ extension Trip {
     public static let transferMinMeters = TripJoin.joinMeters
 
     /// The straight metres from where `day` ends to where the next day starts, when that is more
-    /// than ``transferMinMeters``; else nil.
-    public func transferMeters(after day: Int) -> Double? {
-        transferStart(after: day).map { line[$0 - 1].coordinate.distance(to: line[$0].coordinate) }
+    /// than ``transferMinMeters``; else nil. A caller that holds the measured line passes it.
+    public func transferMeters(after day: Int, on measured: MeasuredLine? = nil) -> Double? {
+        transferStart(after: day, on: measured).map { line[$0 - 1].coordinate.distance(to: line[$0].coordinate) }
     }
 
     /// Whether the next day starts more than ``transferMinMeters`` from where `day` ends.

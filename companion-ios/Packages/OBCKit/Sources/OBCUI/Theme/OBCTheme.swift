@@ -10,8 +10,8 @@ import AppKit
 /// screenshot tests are the visual reference for how the tokens compose.
 ///
 /// Every colour carries a Day and a Tent (dark) value and follows the system appearance. The
-/// colours take the roles of the device's 64-colour palette, tuned for a phone. Amber and
-/// magenta are never text colours.
+/// colours take the roles of the device's 64-colour palette, tuned for a phone. Amber is never a
+/// text colour, and magenta only in a trip day's DAY caption, which names the day's colour.
 public enum OBCTheme {
     // MARK: Surfaces
     /// The page behind everything.

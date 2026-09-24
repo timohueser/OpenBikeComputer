@@ -48,7 +48,6 @@ struct LineMarkerProfileView: View {
             .frame(height: height)
             .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
             if showsAxis {
                 ProfileAxis(window: model.window, leading: inset.leading, trailing: inset.trailing)
             }
@@ -67,7 +66,7 @@ struct LineMarkerProfileView: View {
                 path.move(to: CGPoint(x: x, y: y))
                 path.addLine(to: CGPoint(x: x, y: plot.maxY))
             }
-            .stroke(isActive ? OBCTheme.route : OBCTheme.ink, lineWidth: isActive ? 1.5 : 1)
+            .stroke(isActive ? OBCTheme.amber : OBCTheme.ink, lineWidth: isActive ? 2 : 1)
             .allowsHitTesting(false)
             MarkerHandleView(color: model.color(endingAt: marker.id), isActive: isActive, isFixed: marker.isFixed)
                 .position(x: x, y: y - MarkerHandleView.size.height / 2)

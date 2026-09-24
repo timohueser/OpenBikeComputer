@@ -22,7 +22,7 @@ public struct MultiTrackPreviewView: View {
             self.dash = dash
         }
 
-        var lineWidth: CGFloat { dash.isEmpty ? 3 : 2 }
+        var lineWidth: CGFloat { dash.isEmpty ? 3.4 : 2 }
     }
 
     /// A round mark on the preview, with an optional symbol in it.
@@ -41,13 +41,24 @@ public struct MultiTrackPreviewView: View {
     let stages: [Stage]
     let pins: [Pin]
     var showsChrome: Bool
+    /// The route law's ends: an ink dot where the first stage starts, a rust square where the
+    /// last one ends.
+    var showsEnds: Bool
 
     @Environment(\.obcIsOnline) private var isOnline
 
-    public init(stages: [Stage], pins: [Pin] = [], showsChrome: Bool = true) {
+    public init(stages: [Stage], pins: [Pin] = [], showsChrome: Bool = true, showsEnds: Bool = false) {
         self.stages = stages
         self.pins = pins
         self.showsChrome = showsChrome
+        self.showsEnds = showsEnds
+    }
+
+    private var ends: (start: Coordinate, end: Coordinate)? {
+        guard showsEnds, let start = stages.first(where: { !$0.coordinates.isEmpty })?.coordinates.first,
+            let end = stages.last(where: { !$0.coordinates.isEmpty })?.coordinates.last
+        else { return nil }
+        return (start, end)
     }
 
     private var mode: MapPreviewMode {
@@ -82,11 +93,20 @@ public struct MultiTrackPreviewView: View {
                 if stage.dash.isEmpty {
                     context.stroke(
                         path, with: .color(OBCTheme.routeCasing),
-                        style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                        style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                 }
                 context.stroke(
                     path, with: .color(stage.color),
                     style: StrokeStyle(lineWidth: stage.lineWidth, lineCap: .round, lineJoin: .round, dash: stage.dash))
+            }
+            if ends != nil, let start = shared.first(where: { !$0.points.isEmpty })?.points.first.map(transform),
+                let end = shared.prefix(stages.count).last(where: { !$0.points.isEmpty })?.points.last.map(transform) {
+                let dot = Path(ellipseIn: CGRect(x: start.x - 4.5, y: start.y - 4.5, width: 9, height: 9))
+                context.fill(dot, with: .color(OBCTheme.ink))
+                context.stroke(dot, with: .color(OBCTheme.surface), lineWidth: 1.5)
+                let square = Path(roundedRect: CGRect(x: end.x - 4.5, y: end.y - 4.5, width: 9, height: 9), cornerRadius: 2)
+                context.fill(square, with: .color(OBCTheme.rust))
+                context.stroke(square, with: .color(OBCTheme.surface), lineWidth: 1.5)
             }
             for (index, pin) in pins.enumerated() {
                 guard let point = shared[stages.count + index].points.first.map(transform) else { continue }
@@ -140,11 +160,19 @@ public struct MultiTrackPreviewView: View {
                 let coords = MapGeometry.clLocations(stage.coordinates)
                 if stage.dash.isEmpty {
                     MapPolyline(coordinates: coords)
-                        .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                        .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                 }
                 MapPolyline(coordinates: coords)
                     .stroke(stage.color, style: StrokeStyle(
                         lineWidth: stage.lineWidth, lineCap: .round, lineJoin: .round, dash: stage.dash))
+            }
+            if let ends {
+                Annotation("", coordinate: MapGeometry.clLocations([ends.start])[0]) {
+                    EndMark(shape: Circle(), fill: OBCTheme.ink)
+                }
+                Annotation("", coordinate: MapGeometry.clLocations([ends.end])[0]) {
+                    EndMark(shape: RoundedRectangle(cornerRadius: 2), fill: OBCTheme.rust)
+                }
             }
             ForEach(Array(pins.enumerated()), id: \.offset) { _, pin in
                 Annotation("", coordinate: MapGeometry.clLocations([pin.coordinate])[0], anchor: .center) {
@@ -161,6 +189,18 @@ public struct MultiTrackPreviewView: View {
         #else
         grid
         #endif
+    }
+}
+
+/// A route end on the map: the ink start dot or the rust end square.
+private struct EndMark<S: InsettableShape>: View {
+    let shape: S
+    let fill: Color
+
+    var body: some View {
+        shape.fill(fill)
+            .frame(width: 10, height: 10)
+            .overlay(shape.strokeBorder(OBCTheme.surface, lineWidth: 2))
     }
 }
 

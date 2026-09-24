@@ -65,7 +65,7 @@ final class TripTests: XCTestCase {
     }
 
     /// Tapping the trip card opens the trip page with both days, the transfer line between them, and
-    /// the Upload trip action, enabled because the connected device holds no copy of this trip yet.
+    /// the Send action, shown because the connected device holds no copy of this trip yet.
     @MainActor
     func testDrillIntoTripPage() {
         let app = launch()
@@ -75,8 +75,8 @@ final class TripTests: XCTestCase {
         XCTAssertTrue(
             app.descendants(matching: .any)["trip.transfer.0"].exists, "the two days have a transfer between them")
         let upload = app.buttons["trip.upload"]
-        XCTAssertTrue(upload.exists, "Upload trip action missing")
-        XCTAssertTrue(upload.isEnabled, "Upload trip must be enabled on a connected device (TR8)")
+        XCTAssertTrue(upload.exists, "Send action missing")
+        XCTAssertTrue(upload.isEnabled, "Send must be enabled on a connected device (TR8)")
         snap(app, "TR6-trip-page")
     }
 
@@ -102,16 +102,13 @@ final class TripTests: XCTestCase {
                 .waitForExistence(timeout: 5), "the label is off again")
     }
 
-    /// Rename the trip through the overflow menu.
+    /// Rename the trip with the pencil beside its name.
     @MainActor
     func testRenameTrip() {
         let app = launch()
         openTrip(app)
 
-        app.buttons["trip.overflow"].tap()
-        let rename = app.buttons["trip.rename"]
-        XCTAssertTrue(rename.waitForExistence(timeout: 5), "overflow menu did not open")
-        rename.tap()
+        app.buttons["trip.rename"].tap()
 
         let field = app.textFields["rename.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5), "rename field missing")
