@@ -123,6 +123,11 @@ Einbindung in die Website zu großen Kartendaten bereitzustellen.
 
 ## 7. Speicherung auf dem Endgerät
 
+Der Hell-Dunkel-Schalter der Startseite speichert die gewählte Darstellung lokal
+unter `obc-theme` in `localStorage`. Ohne Auswahl gilt die Browsereinstellung. Der
+Wert wird nicht an einen Server gesendet. Er bleibt gespeichert, bis die Websitedaten
+im Browser gelöscht werden.
+
 Webanwendung und installierte Desktop-App verwenden lokalen Gerätespeicher. Der
 Kartenbaukasten nutzt `localStorage` und das *Origin Private File System* (OPFS) des
 Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
