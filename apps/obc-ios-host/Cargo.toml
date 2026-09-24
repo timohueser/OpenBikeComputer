@@ -18,6 +18,8 @@ obc-render = { path = "../../firmware/obc-render" }
 obc-app = { path = "../../firmware/obc-app" }
 # The pass's clock newtypes and the sensor ports the phone's sensors implement.
 obc-ports = { path = "../../firmware/obc-ports" }
+# The cue-to-pattern table the board and the simulator play too.
+obc-platform = { path = "../../firmware/obc-platform" }
 # The shared host glue: the card stores, the typed executor, the frame, the peak-view runtime.
 obc-host-core = { path = "../../host/obc-host-core" }
 # The route source key a converted GPX is attributed with.

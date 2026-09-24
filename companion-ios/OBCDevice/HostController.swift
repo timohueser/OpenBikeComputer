@@ -49,6 +49,7 @@ final class HostController {
     private var isActive = true
     private var epoch = CACurrentMediaTime()
     private let sensors = PhoneSensors()
+    private let sound = SoundPlayer()
     private let support: URL
     private let documents: URL
     private static let deviceRGB = CGColorSpaceCreateDeviceRGB()
@@ -113,6 +114,7 @@ final class HostController {
     func close() {
         link?.invalidate()
         link = nil
+        sound.pause()
         sensors.detach()
         if let host { obc_ios_close(host) }
         host = nil
@@ -126,6 +128,12 @@ final class HostController {
     func setActive(_ active: Bool) {
         isActive = active
         link?.isPaused = !active
+        guard link != nil else { return }
+        if active {
+            sound.start()
+        } else {
+            sound.pause()
+        }
     }
 
     /// Delete the card. The next import creates a new one; nothing is imported automatically here,
@@ -164,6 +172,7 @@ final class HostController {
         link.isPaused = !isActive
         link.add(to: .main, forMode: .common)
         self.link = link
+        if isActive { sound.start() }
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
@@ -181,6 +190,10 @@ final class HostController {
         guard let host else { return }
         if obc_ios_tick(host, (CACurrentMediaTime() - epoch) * 1000) {
             canvas.image = frameImage(host)
+        }
+        var length: UInt32 = 0
+        if let samples = obc_ios_take_sound(host, sound.sampleRate, &length) {
+            sound.play(samples, count: Int(length))
         }
         // The host interns the screen names, so the pointer alone says whether it changed. Building
         // a String every frame would allocate 60 times a second to answer "still the Map".
