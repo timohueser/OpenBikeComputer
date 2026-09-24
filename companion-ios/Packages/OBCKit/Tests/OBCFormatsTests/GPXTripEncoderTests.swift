@@ -30,7 +30,7 @@ struct GPXTripEncoderTests {
         #expect(!xml.contains("<time>"), "a planned line has no time")
 
         let route = try GPXRouteDecoder().decode(data)
-        let days = trip.dayLines().flatMap { $0 }
+        let days = trip.dayLines().flatMap { $0.points }
         #expect(route.name == "Alps & Jura")
         #expect(route.points.count == days.count)
         for (read, planned) in zip(route.points, days) {
