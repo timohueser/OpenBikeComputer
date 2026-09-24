@@ -144,13 +144,13 @@ final class WebsiteScreenshotTests: XCTestCase {
         XCTAssertTrue(upload.waitForExistence(timeout: 10), "the route upload action is missing")
         // The call to action names the device, off the same unwaited name the top bar uses.
         let named = expectation(
-            for: NSPredicate(format: "label == %@", "Upload to Trailhead"), evaluatedWith: upload
+            for: NSPredicate(format: "label == %@", "Send to Trailhead"), evaluatedWith: upload
         )
         wait(for: [named], timeout: 15)
         upload.tap()
 
         XCTAssertTrue(
-            app.staticTexts["On the device"].waitForExistence(timeout: 20),
+            app.staticTexts["Grimsel Pass is on Trailhead"].waitForExistence(timeout: 20),
             "the route upload did not finish"
         )
         // The done state swaps the whole sheet body, and its button is the last thing laid out.

@@ -2,16 +2,17 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The upload sheet, presented over the route detail: the app never leaves the route.
-/// Uploading shows the live bar, the size readout, the device-correspondence note and
-/// an always-reachable Cancel; a drop swaps in the resume framing; completion holds
-/// the confirm briefly, then dismisses.
+/// The send sheet, presented over the route page: the app never leaves the route. Sending shows
+/// the live bar and an always-reachable Cancel; a drop offers Send again; completion shows the
+/// device with the route on its screen.
 ///
-/// Present it inside `.sheet`: the view brings its own `OBCSheetContainer` chrome and
-/// detent, and drives dismissal through `model.shouldDismiss`.
+/// Present it inside `.sheet`: the view brings its own `OBCSheetContainer` chrome, sizes its detent
+/// to its content, and drives dismissal through `model.shouldDismiss`.
 public struct UploadSheetView: View {
     private let model: UploadSheetModel
     @Environment(\.dismiss) private var dismiss
+    /// The measured content height, which the detent follows.
+    @State private var contentHeight: CGFloat = 260
 
     public init(model: UploadSheetModel) {
         self.model = model
@@ -19,18 +20,29 @@ public struct UploadSheetView: View {
 
     public var body: some View {
         OBCSheetContainer {
-            switch model.phase {
-            case .uploading:
-                progressContent(interrupted: false)
-            case .interrupted:
-                progressContent(interrupted: true)
-            case .done:
-                doneContent
-            case .failed:
-                failedContent
+            ScrollView {
+                Group {
+                    switch model.phase {
+                    case .uploading:
+                        progressContent(interrupted: false)
+                    case .interrupted:
+                        progressContent(interrupted: true)
+                    case .done:
+                        SentToDeviceView(overview: model.overview, deviceName: model.deviceName) {
+                            model.dismiss()
+                        }
+                    case .failed:
+                        failedContent
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .presentationDetents([.height(sheetHeight)])
+        // The container's bottom inset stands in for the home-indicator safe area, so the detent
+        // is the measured content plus the grabber band and that inset.
+        .ignoresSafeArea(.container, edges: .bottom)
+        .presentationDetents([.height(contentHeight + 74)])
         // Mid-transfer the sheet owns the upload: Cancel is the escape, not an
         // accidental swipe that would silently abort or orphan the transfer.
         .interactiveDismissDisabled(model.phase == .uploading || model.phase == .interrupted)
@@ -43,149 +55,76 @@ public struct UploadSheetView: View {
         .onDisappear { model.sheetDismissed() }
     }
 
-    private var sheetHeight: CGFloat {
-        switch model.phase {
-        case .uploading: 280
-        case .interrupted: 340
-        case .done: 320
-        case .failed: 310
-        }
-    }
-    // MARK: Uploading, and its interrupted framing
+    // MARK: Sending, and its interrupted framing
 
     @ViewBuilder
     private func progressContent(interrupted: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .center, spacing: 13) {
-                iconTile(
-                    systemImage: interrupted ? "exclamationmark.triangle" : "square.and.arrow.up",
-                    color: interrupted ? OBCTheme.danger : OBCTheme.secondary
-                )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(interrupted ? "Upload interrupted" : "Uploading to \(model.deviceName)")
-                        .font(.system(.callout, weight: .semibold))
-                        .foregroundStyle(OBCTheme.ink)
-                        .accessibilityIdentifier("upload.title")
-                    Text(model.sizeLine)
-                        .font(.system(.caption).monospacedDigit())
-                        .foregroundStyle(OBCTheme.secondary)
-                        .accessibilityIdentifier("upload.sizeLine")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(interrupted ? "Connection lost" : "Sending to \(model.deviceName)")
+                    .font(.system(.title3, weight: .bold))
+                    .foregroundStyle(OBCTheme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("upload.title")
                 Text(model.percentLine)
-                    .font(.system(.body, weight: .medium).monospacedDigit())
+                    .font(.obcStat(.title3))
                     .foregroundStyle(interrupted ? OBCTheme.secondary : OBCTheme.ink)
                     .accessibilityIdentifier("upload.percent")
             }
-            .padding(.bottom, 16)
+            Text(model.sizeLine)
+                .font(.system(.subheadline).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
+                .padding(.top, 2)
+                .padding(.bottom, 14)
+                .accessibilityIdentifier("upload.sizeLine")
 
             OBCProgressBar(value: model.fraction)
 
-            HStack(alignment: .top, spacing: 8) {
-                Text("◆")
-                    .font(.system(.caption))
-                    .foregroundStyle(interrupted ? OBCTheme.danger : OBCTheme.secondary)
-                Text(interrupted
-                    ? "The link to \(model.deviceName) dropped. What's sent is kept — resume picks up right where it left off."
-                    : "Your OBC shows a matching bar. Keep it awake and nearby.")
-                    .font(.system(.caption))
-                    .lineSpacing(2)
-                    .foregroundStyle(OBCTheme.secondary)
-            }
-            .padding(.top, 13)
+            Text(interrupted
+                ? "\(model.deviceName) went out of range. Sending again starts from the beginning."
+                : "\(model.deviceName) shows the same progress. Keep it on and near your phone.")
+                .font(.system(.subheadline))
+                .foregroundStyle(OBCTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 14)
 
             if interrupted {
-                Button("Resume upload") { model.resume() }
+                Button("Send again") { model.resume() }
                     .buttonStyle(.obcPrimary)
                     .accessibilityIdentifier("upload.resume")
-                    .padding(.top, 18)
-                Button("Cancel upload") { model.cancel() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("upload.cancel")
-                    .padding(.top, 10)
-            } else {
-                Button("Cancel upload") { model.cancel() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("upload.cancel")
-                    .padding(.top, 18)
+                    .padding(.top, 20)
             }
+            Button("Cancel") { model.cancel() }
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("upload.cancel")
+                .padding(.top, interrupted ? 10 : 20)
         }
     }
 
-    // MARK: Done
-
-    private var doneContent: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Circle()
-                    .fill(OBCTheme.rust)
-                    .frame(width: 64, height: 64)
-                    .background(Circle().fill(OBCTheme.rust.opacity(0.12)).frame(width: 80, height: 80))
-                Image(systemName: "checkmark")
-                    .font(.system(.title, weight: .bold))
-                    .foregroundStyle(OBCTheme.onRust)
-            }
-            .padding(.top, 6)
-            .padding(.bottom, 14)
-
-            Text("On the device")
-                .font(.system(.title3, weight: .bold))
-                .foregroundStyle(OBCTheme.ink)
-                .accessibilityIdentifier("upload.doneTitle")
-            Text("\(model.routeName) is ready to ride. It'll show under Routes on \(model.deviceName).")
-                .font(.system(.footnote))
-                .lineSpacing(3)
-                .foregroundStyle(OBCTheme.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 260)
-                .padding(.top, 6)
-                .padding(.bottom, 18)
-
-            Button("Done") { model.dismiss() }
-                .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("upload.done")
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    // MARK: Failed for good, with no resume offset to continue from
+    // MARK: Failed for good, with no transfer to continue
 
     private var failedContent: some View {
-        VStack(spacing: 0) {
-            iconTile(
-                systemImage: model.failure == .storageFull ? "externaldrive.badge.exclamationmark" : "exclamationmark.triangle",
-                color: OBCTheme.danger
-            )
-            .padding(.top, 6)
-            .padding(.bottom, 14)
-
+        VStack(alignment: .leading, spacing: 0) {
             Text(model.failedTitle)
                 .font(.system(.title3, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .accessibilityIdentifier("upload.failedTitle")
             Text(model.failedMessage)
-                .font(.system(.footnote))
-                .lineSpacing(3)
+                .font(.system(.subheadline))
                 .foregroundStyle(OBCTheme.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 260)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
-                .padding(.bottom, 18)
+                .padding(.bottom, 20)
                 .accessibilityIdentifier("upload.failedMessage")
 
+            Button("Send again") { model.retry() }
+                .buttonStyle(.obcPrimary)
+                .accessibilityIdentifier("upload.retry")
+                .padding(.bottom, 10)
             Button("Close") { model.dismiss() }
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("upload.close")
         }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func iconTile(systemImage: String, color: Color) -> some View {
-        Image(systemName: systemImage)
-            .font(.system(.title3, weight: .medium))
-            .foregroundStyle(color)
-            .frame(width: 44, height: 44)
-            .background(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).fill(color.opacity(0.12)))
     }
 }
 
