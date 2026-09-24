@@ -387,9 +387,11 @@ impl TickState {
         due
     }
 
-    fn has_live_fix(&self, now_ms: u32, settings: &Settings) -> bool {
+    /// Millis until the live fix goes stale, or `None` when there is no live fix.
+    fn live_fix_left_ms(&self, now_ms: u32, settings: &Settings) -> Option<u32> {
         let window = (settings.fix_interval_s as u32 * 1_000 * NO_FIX_INTERVALS).max(NO_FIX_FLOOR_MS);
-        self.last_fix_ms.is_some_and(|last| now_ms.wrapping_sub(last) <= window)
+        let age = now_ms.wrapping_sub(self.last_fix_ms?);
+        (age <= window).then(|| window + 1 - age)
     }
 
     #[cfg(test)]
@@ -892,7 +894,11 @@ impl App {
     /// Whether there is a current GPS fix at `now_ms`: one has been accepted and is no older
     /// than the staleness window. `false` before the first fix and once the signal drops.
     pub fn has_live_fix(&self, now_ms: u32) -> bool {
-        self.tick_state.has_live_fix(now_ms, &self.settings)
+        self.live_fix_left_ms(now_ms).is_some()
+    }
+
+    pub(crate) fn live_fix_left_ms(&self, now_ms: u32) -> Option<u32> {
+        self.tick_state.live_fix_left_ms(now_ms, &self.settings)
     }
 
     /// Feed the running firmware version string. The host calls this once at boot with its
@@ -2141,7 +2147,7 @@ impl App {
         if self.power_off_requested() {
             return false;
         }
-        match chord {
+        let acted = match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
             // The Assistant is a place of its own, not a page over the descent the squeeze came
             // from: it lands on the root pair, like the drawer's settings row, so the depth it
@@ -2169,7 +2175,11 @@ impl App {
                 }
                 None => false,
             },
+        };
+        if acted {
+            self.key_click();
         }
+        acted
     }
 
     /// What the Up-ahead timeline is scoped to right now: the live category filter and the
@@ -2617,9 +2627,13 @@ impl App {
     /// stack. [`apply_gesture_batch`](App::apply_gesture_batch) needs that without consuming the
     /// hold-cancel latch a second input plane still owns.
     fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
-        if self.settings.key_tones {
-            self.cues.raise(obc_ports::Cue::KeyClick);
-        }
+        // The click is raised after the gesture acts, so a cue it raises wins its family.
+        let changed = self.apply_gesture_to_stack(g);
+        self.key_click();
+        changed
+    }
+
+    fn apply_gesture_to_stack(&mut self, g: Gesture) -> bool {
         if g == Gesture::Press && self.activate_place_detail() {
             return true;
         }
@@ -2864,7 +2878,7 @@ impl App {
         } else {
             let icons =
                 matches!(self.top_screen(), Screen::Map(_)).then(|| self.ui.map_icons.wake_in(now_ms)).flatten();
-            [self.ui.next_wake_ms, icons, self.cues.wake_in(now_ms)].into_iter().flatten().min()
+            [self.ui.next_wake_ms, icons, self.cue_wake_in(now_ms)].into_iter().flatten().min()
         }
     }
 
@@ -3870,6 +3884,7 @@ mod tests {
         tick_fix(&mut app, Fix::at(0, 0), 1_000);
         assert!(app.has_live_fix(1_000), "just got a fix → live");
         assert!(app.has_live_fix(1_000 + 5_000), "still live at the window edge");
+        assert_eq!(app.live_fix_left_ms(1_000 + 5_000), Some(1), "and stale one milli later");
         assert!(!app.has_live_fix(1_000 + 5_001), "past the window → lost");
     }
 
