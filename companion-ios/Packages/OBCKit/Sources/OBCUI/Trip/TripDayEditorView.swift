@@ -77,6 +77,7 @@ public struct TripDayEditorView: View {
                 model: handles, lineVersion: handles.lineVersion, markers: handles.markers,
                 activeID: handles.activeID, segmentColors: handles.segmentColors,
                 dashedSegments: handles.dashedSegments, stops: handles.stops,
+                branches: handles.branches, oldSections: handles.oldSections,
                 bottomInset: sheetHeight, linksProfile: true
             )
         } else {
@@ -126,6 +127,7 @@ public struct TripDayEditorView: View {
                     close()
                 }
                 .fontWeight(.semibold)
+                .disabled(model.bridging != nil)
                 .accessibilityIdentifier("dayEditor.done")
             }
         }
@@ -144,6 +146,8 @@ struct DayEditorSheet: View {
     let onClose: () -> Void
 
     @State private var stopsModel: TripStopsModel?
+    /// The choice for a stop off the line, shown once no other sheet is up.
+    @State private var offLine: OffLineStopModel?
     @State private var dayRename: Int?
 
     @Environment(\.obcIsOnline) private var isOnline
@@ -187,10 +191,26 @@ struct DayEditorSheet: View {
             name: dayRename.flatMap { trip.dayEnds.indices.contains($0) ? trip.dayEnds[$0].title : nil } ?? "",
             onSave: { if let day = dayRename { model.renameDay(day, to: $0) } }
         )
-        .sheet(item: $stopsModel) { stops in
+        .sheet(item: $stopsModel, onDismiss: { offLine = model.offLineStop }) { stops in
             TripStopsSheet(model: stops)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+        }
+        .onChange(of: model.offLineStop?.id) {
+            if stopsModel == nil { offLine = model.offLineStop }
+        }
+        .sheet(item: $offLine, onDismiss: { model.offLineStop = nil }) { choice in
+            OffLineStopSheet(model: choice, color: OBCTheme.stageColor(index: choice.day))
+                .presentationDetents([.height(290)])
+                .presentationDragIndicator(.visible)
+        }
+        .alert(
+            model.bridgeFailure.map { $0 == .noRoad ? "No road across the gap found." : OffLineStopSheet.message($0) } ?? "",
+            isPresented: Binding(get: { model.bridgeFailure != nil }, set: { if !$0 { model.bridgeFailure = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The day rides it as a straight line.")
         }
     }
 
@@ -254,6 +274,7 @@ struct DayEditorSheet: View {
                 title: end.title ?? end.name.map { "to \($0)" },
                 date: trip.dayDates()[day].map { OBCFormat.tripDay($0) },
                 note: !isLast && model.removeBlocker(day) != nil ? "transfer" : nil,
+                route: model.notes.indices.contains(day) ? model.notes[day] : nil,
                 showsDivider: !isLast
             ) {
                 model.select(day)
@@ -291,6 +312,10 @@ struct DayEditorSheet: View {
             Button { model.splitDay(day) } label: { Label("Split this day", systemImage: "scissors") }
                 .accessibilityIdentifier("dayEditor.day.split")
         }
+        if model.canBridge(day) {
+            Button { model.bridgeGap(in: day) } label: { Label("Bridge the gap", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }
+                .accessibilityIdentifier("dayEditor.day.bridge")
+        }
         if movable {
             Button { model.joinDay(day) } label: {
                 Label("Join with Day \(day + 2)", systemImage: "arrow.merge")
@@ -307,6 +332,8 @@ private struct DayFigureRow: View {
     let title: String?
     let date: String?
     let note: String?
+    /// How the day reaches its stop or rides a gap.
+    let route: String?
     let showsDivider: Bool
     let action: () -> Void
 
@@ -321,6 +348,7 @@ private struct DayFigureRow: View {
             number: day + 1,
             title: title,
             detail: [date, figures, note].compactMap { $0 }.joined(separator: " · "),
+            note: route,
             showsDivider: showsDivider,
             action: action
         )

@@ -17,6 +17,9 @@ struct LineMarkerMapView: UIViewRepresentable {
     let segmentColors: [Color]
     let dashedSegments: Set<Int>
     let stops: [PlacedStop]
+    var branches: [LineBranch] = []
+    /// Passed so a change of the old sections updates the view; the colour runs read them.
+    var oldSections: [ClosedRange<Double>] = []
     /// The line fits above this much of the bottom, and the profile shows the line above it:
     /// the part a sheet covers.
     var bottomInset: CGFloat = 0
@@ -50,11 +53,13 @@ struct LineMarkerMapView: UIViewRepresentable {
         // The colour runs follow the markers at rest: a drag moves the handle alone, and the
         // line recolours when the finger lets go, so no tile re-rasterises mid-drag.
         if activeID == nil {
+            let runs = model.runs(splits: markers.map(\.distance))
             coordinator.renderer?.set(
-                splits: markers.map(\.distance),
-                colors: segmentColors.map { UIColor($0).cgColor },
-                dashed: dashedSegments
-            )
+                splits: runs.splits, colors: runs.colors.map { UIColor($0).cgColor }, dashed: runs.dashed)
+        }
+        if coordinator.branches != branches {
+            coordinator.branches = branches
+            coordinator.showBranches(in: mapView)
         }
         if coordinator.stops != stops {
             coordinator.stops = stops
@@ -112,6 +117,8 @@ struct LineMarkerMapView: UIViewRepresentable {
         weak var mapView: MKMapView?
         var renderer: SegmentedLineRenderer?
         private(set) var lineVersion = -1
+        /// The branches drawn now, over the line.
+        var branches: [LineBranch] = []
         /// The known stops; pins for them show while the map is zoomed in enough.
         var stops: [PlacedStop] = []
         private var stopsShown = false
@@ -142,6 +149,7 @@ struct LineMarkerMapView: UIViewRepresentable {
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations)
             stops = []
+            branches = []
             renderer = nil
             let overlay = SegmentedLineOverlay(line: line)
             mapView.addOverlay(overlay, level: .aboveRoads)
@@ -159,7 +167,7 @@ struct LineMarkerMapView: UIViewRepresentable {
 
         /// The whole line above the sheet, once the view has its size.
         func fit() {
-            guard let mapView, let overlay = mapView.overlays.first as? SegmentedLineOverlay else { return }
+            guard let mapView, let overlay = lineOverlay else { return }
             mapView.setVisibleMapRect(
                 overlay.boundingMapRect,
                 edgePadding: UIEdgeInsets(top: 72, left: 36, bottom: parent.bottomInset + 36, right: 36),
@@ -170,10 +178,19 @@ struct LineMarkerMapView: UIViewRepresentable {
         /// A pin's place: the point the renderer draws at that distance, so the tip is on the
         /// drawn line at every zoom.
         func coordinate(at distance: Double) -> CLLocationCoordinate2D {
-            guard let overlay = mapView?.overlays.first as? SegmentedLineOverlay else {
+            guard let overlay = lineOverlay else {
                 return clLocation(parent.model.line.coordinate(at: distance))
             }
             return overlay.mapPoint(at: distance).coordinate
+        }
+
+        private var lineOverlay: SegmentedLineOverlay? {
+            mapView?.overlays.lazy.compactMap { $0 as? SegmentedLineOverlay }.first
+        }
+
+        func showBranches(in mapView: MKMapView) {
+            mapView.removeOverlays(mapView.overlays.filter { $0 is BranchOverlay })
+            mapView.addOverlays(branches.map(BranchOverlay.init), level: .aboveRoads)
         }
 
         /// Stop pins come and go with the zoom. Only the stops that changed are added or
@@ -203,7 +220,7 @@ struct LineMarkerMapView: UIViewRepresentable {
         /// Hand the profile the parts of the line in view above the sheet; close up, ask for
         /// the stops along them.
         @objc func reportVisible() {
-            guard parent.linksProfile, let mapView, let overlay = mapView.overlays.first as? SegmentedLineOverlay,
+            guard parent.linksProfile, let mapView, let overlay = lineOverlay,
                 mapView.bounds.height > parent.bottomInset
             else { return }
             let visible = mapView.visibleMapRect
@@ -232,13 +249,19 @@ struct LineMarkerMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: any MKOverlay) -> MKOverlayRenderer {
+            if let branch = overlay as? BranchOverlay {
+                let renderer = MKPolylineRenderer(polyline: branch)
+                renderer.strokeColor = UIColor(branch.branch.color)
+                renderer.lineWidth = 3.4
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                if branch.branch.isDashed { renderer.lineDashPattern = [6, 8] }
+                return renderer
+            }
             guard let overlay = overlay as? SegmentedLineOverlay else { return MKOverlayRenderer(overlay: overlay) }
             let renderer = SegmentedLineRenderer(overlay: overlay)
-            renderer.set(
-                splits: parent.markers.map(\.distance),
-                colors: parent.segmentColors.map { UIColor($0).cgColor },
-                dashed: parent.dashedSegments
-            )
+            let runs = parent.model.runs(splits: parent.markers.map(\.distance))
+            renderer.set(splits: runs.splits, colors: runs.colors.map { UIColor($0).cgColor }, dashed: runs.dashed)
             self.renderer = renderer
             return renderer
         }
@@ -667,6 +690,17 @@ final class SegmentedLineOverlay: NSObject, MKOverlay {
             x: mapPoints[i].x + (mapPoints[i + 1].x - mapPoints[i].x) * t,
             y: mapPoints[i].y + (mapPoints[i + 1].y - mapPoints[i].y) * t
         )
+    }
+}
+
+/// A branch as MapKit draws it.
+final class BranchOverlay: MKPolyline {
+    private(set) var branch = LineBranch(coordinates: [], color: .clear)
+
+    convenience init(_ branch: LineBranch) {
+        let points = branch.coordinates.map(clLocation)
+        self.init(coordinates: points, count: points.count)
+        self.branch = branch
     }
 }
 

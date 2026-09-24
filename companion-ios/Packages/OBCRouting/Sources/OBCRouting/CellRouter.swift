@@ -69,8 +69,11 @@ public actor CellRouter {
     }
 
     /// Plan from `from` to `to` under the map's nav profile `profile`, the device's bike-type
-    /// index. Throws a `RouteFailure`, or `CancellationError` when the task is cancelled.
-    public func route(from: Coordinate, to: Coordinate, profile: UInt8) async throws -> RoutedLeg {
+    /// index. `onDownload` is called before a map object the cache lacks is fetched. Throws a
+    /// `RouteFailure`, or `CancellationError` when the task is cancelled.
+    public func route(
+        from: Coordinate, to: Coordinate, profile: UInt8, onDownload: @escaping @Sendable () -> Void = {}
+    ) async throws -> RoutedLeg {
         var mine: [String] = []
         defer { release(mine) }
         let (text, root) = try await loadCatalog()
@@ -78,11 +81,11 @@ public actor CellRouter {
         var job = Job()
 
         let cells = CellID.covering(from, to, marginMeters: Self.marginMeters, log2: core.band.cellLog2)
-        let index = try await pinnedIndex(core.index, holding: &mine)
+        let index = try await pinnedIndex(core.index, holding: &mine, onDownload: onDownload)
         for cell in cells {
             switch index.lookup(cell) {
             case .artifact(let entry):
-                let path = try await object(entry.pin, holding: &mine).path
+                let path = try await object(entry.pin, holding: &mine, onDownload: onDownload).path
                 job.cells.append(.init(id: entry.id, band: core.band.id, partial: entry.partial ?? false, path: path))
             case .knownEmpty:
                 job.knownEmpty.append(.init(id: cell.id, band: core.band.id))
@@ -95,11 +98,11 @@ public actor CellRouter {
 
         if let terrain = root.terrain {
             let squares = CellID.covering(from, to, marginMeters: Self.marginMeters, log2: terrain.cellLog2)
-            let index = try await pinnedIndex(terrain.cellIndex, holding: &mine)
+            let index = try await pinnedIndex(terrain.cellIndex, holding: &mine, onDownload: onDownload)
             for square in squares {
                 // A void square has no object and reads as no elevation, so it needs no entry.
                 guard case .artifact(let entry) = index.lookup(square) else { continue }
-                let path = try await object(entry.pin, holding: &mine).path
+                let path = try await object(entry.pin, holding: &mine, onDownload: onDownload).path
                 job.terrain.append(.init(id: entry.id, sha256: entry.sha256, path: path))
             }
         }
@@ -155,9 +158,11 @@ public actor CellRouter {
         return (text, root)
     }
 
-    private func pinnedIndex(_ pin: Pin, holding mine: inout [String]) async throws -> CellIndex {
+    private func pinnedIndex(
+        _ pin: Pin, holding mine: inout [String], onDownload: @Sendable () -> Void
+    ) async throws -> CellIndex {
         if let index = indexes[pin.sha256] { return index }
-        let file = try await object(pin, holding: &mine)
+        let file = try await object(pin, holding: &mine, onDownload: onDownload)
         do {
             let index = try decodeCatalog(CellIndex.self, from: Data(contentsOf: file))
             indexes[pin.sha256] = index
@@ -169,10 +174,13 @@ public actor CellRouter {
 
     /// The pinned object's verified file, held for the running request, downloaded only when the
     /// cache lacks it and at most once at a time.
-    private func object(_ pin: Pin, holding mine: inout [String]) async throws -> URL {
+    private func object(
+        _ pin: Pin, holding mine: inout [String], onDownload: @Sendable () -> Void
+    ) async throws -> URL {
         held[pin.sha256, default: 0] += 1
         mine.append(pin.sha256)
         if let file = cache.cached(pin.sha256) { return file }
+        onDownload()
         let task = downloads[pin.sha256] ?? Task { try await fetchObject(pin) }
         downloads[pin.sha256] = task
         defer { downloads[pin.sha256] = nil }
@@ -291,4 +299,21 @@ struct Job: Encodable {
     var cells: [Cell] = []
     var knownEmpty: [KnownEmpty] = []
     var terrain: [TerrainCell] = []
+}
+
+extension CellRouter: LegRouter {
+    public func route(
+        from: Coordinate, to: Coordinate, bikeType: BikeType, onDownload: @escaping @Sendable () -> Void
+    ) async throws -> [RoutePoint] {
+        do {
+            return try await route(from: from, to: to, profile: bikeType.rawValue, onDownload: onDownload).points
+        } catch let failure as RouteFailure {
+            switch failure {
+            case .noConnection: throw LegRouteFailure.noConnection
+            case .cellDownloadFailed, .mapUnreadable: throw LegRouteFailure.mapData
+            case .noMap: throw LegRouteFailure.noMap
+            case .noRoad, .noPath, .exhausted: throw LegRouteFailure.noRoad
+            }
+        }
+    }
 }

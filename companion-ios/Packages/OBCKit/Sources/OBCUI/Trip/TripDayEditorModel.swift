@@ -34,12 +34,25 @@ public final class TripDayEditorModel {
     public private(set) var selectedDay: Int?
     /// One long file became this trip: a stepper sets the day count.
     public let isSplitMode: Bool
+    /// The choice for a day just ended at a stop off the line.
+    public var offLineStop: OffLineStopModel?
+    /// The gaps inside days, which the router can bridge.
+    public private(set) var gaps: [TripGap] = []
+    /// The day whose gap the router is bridging.
+    public private(set) var bridging: Int?
+    /// Why the last bridge failed; the gap stays a straight line.
+    public var bridgeFailure: LegRouteFailure?
+    /// Per day, how it reaches its stop or rides a gap: "out and back +0.8 km".
+    public private(set) var notes: [String?] = []
     /// The trips before each committed change, newest last.
     private var undone: [Trip] = []
 
     private let original: Trip
-    private let line: MeasuredLine
+    private var line: MeasuredLine
     private let finder: StopFinder?
+    /// The phone's router, for stops off the line and gaps. Nil routes nothing: a stop off the
+    /// line ends the day on the line.
+    private let router: (any LegRouter)?
     private let placeName: (@Sendable (Coordinate) async -> String?)?
     private let onSave: (Trip) -> Void
     /// The second, snapping pass of the last balance. A new balance cancels it.
@@ -54,7 +67,7 @@ public final class TripDayEditorModel {
 
     /// `nil` for a trip whose line has no positions to edit.
     public init?(
-        trip: Trip, isSplitMode: Bool, finder: StopFinder?,
+        trip: Trip, isSplitMode: Bool, finder: StopFinder?, router: (any LegRouter)? = nil,
         placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         onSave: @escaping (Trip) -> Void
     ) {
@@ -66,6 +79,7 @@ public final class TripDayEditorModel {
         self.handles = handles
         self.isSplitMode = isSplitMode
         self.finder = finder
+        self.router = router
         self.placeName = placeName
         self.onSave = onSave
         handles.onEvent = { [weak self] event in self?.handle(event) }
@@ -97,11 +111,10 @@ public final class TripDayEditorModel {
     public var maxDays: Int { Trip.maxSplitDays(forLength: line.length) }
     /// The day the handle belongs to.
     public func day(of handle: LineMarker.ID) -> Int? { handleIDs.firstIndex(of: handle) }
-    /// The day is long enough to hold a second day end.
+    /// The day's stretch of the line, clear of the vias at its ends, holds two days.
     public func canSplit(_ day: Int) -> Bool {
         guard trip.dayEnds.indices.contains(day) else { return false }
-        let from = day > 0 ? trip.dayEnds[day - 1].distance : 0
-        return trip.dayEnds[day].distance - from >= 2 * Trip.minimumDayMeters
+        return trip.lineEnd(of: day) - trip.lineStart(of: day) >= 2 * Trip.minimumDayMeters
     }
 
     // MARK: Selection
@@ -146,8 +159,8 @@ public final class TripDayEditorModel {
     public func splitDay(_ day: Int) {
         settle()
         guard canSplit(day) else { return }
-        let from = day > 0 ? trip.dayEnds[day - 1].distance : 0
-        let middle = (line.cost(to: from, bikeType: trip.bikeType) + line.cost(to: trip.dayEnds[day].distance, bikeType: trip.bikeType)) / 2
+        let middle = (line.cost(to: trip.lineStart(of: day), bikeType: trip.bikeType)
+            + line.cost(to: trip.lineEnd(of: day), bikeType: trip.bikeType)) / 2
         let cut = line.distance(atCost: middle, bikeType: trip.bikeType)
         var added: Int?
         commit { trip in
@@ -180,16 +193,64 @@ public final class TripDayEditorModel {
     public func endDay(at stop: PlacedStop) {
         settle()
         guard let day = day(thatCanEndAt: stop) else { return }
-        commit { $0.endDay(day, at: stop) }
-        syncHandles()
+        end(day, at: stop)
     }
 
     /// The stops near `day`'s end, for the stops sheet. A pick ends the day at the stop.
     public func stops(for day: Int, isOnline: Bool) -> TripStopsModel? {
         guard day >= 0, day < trip.dayCount - 1 else { return nil }
         return TripStopsModel(trip: trip, day: day, finder: finder, isOnline: isOnline) { [weak self] stop in
-            self?.commit { $0.endDay(day, at: stop) }
-            self?.syncHandles()
+            self?.end(day, at: stop)
+        }
+    }
+
+    /// End `day` at `stop`, on the line point nearest it. A stop off the line then offers how
+    /// the day reaches it; picking the day's own stop again offers it again and keeps its mode
+    /// until the rider picks another.
+    private func end(_ day: Int, at stop: PlacedStop) {
+        let end = trip.dayEnds[day]
+        if end.stop != stop.stop || abs(end.distance - stop.distance) > MeasuredLine.tieMeters {
+            commit { $0.endDay(day, at: stop) }
+            syncHandles()
+        }
+        guard !stop.isOnLine, let router, trip.dayEnds[day].stop == stop.stop else { return }
+        let junction = trip.dayEnds[day].distance
+        offLineStop = OffLineStopModel(trip: trip, day: day, router: router) { [weak self] route in
+            guard let self, self.trip.dayEnds.indices.contains(day), self.trip.dayEnds[day].stop == stop.stop,
+                self.trip.dayEnds[day].distance == junction
+            else { return }
+            self.commit { $0.setStopRoute(day, route) }
+            self.syncHandles()
+        }
+    }
+
+    /// Whether `day` has a gap the router can bridge.
+    public func canBridge(_ day: Int) -> Bool {
+        router != nil && bridging == nil && gaps.contains { $0.day == day }
+    }
+
+    /// Route across the first gap of `day`. When the router cannot, the gap stays a straight
+    /// line and ``bridgeFailure`` says why.
+    public func bridgeGap(in day: Int) {
+        settle()
+        guard canBridge(day), let router, let gap = gaps.first(where: { $0.day == day }) else { return }
+        bridging = day
+        syncNotes()
+        let trip = trip
+        Task { [weak self] in
+            let leg: Result<[RoutePoint], LegRouteFailure>
+            do {
+                leg = .success(try await trip.routeBridge(gap, with: router))
+            } catch {
+                leg = .failure(error as? LegRouteFailure ?? .noRoad)
+            }
+            guard let self else { return }
+            self.bridging = nil
+            switch leg {
+            case .success(let points): self.commit { $0.bridge(gap, with: points) }
+            case .failure(let failure): self.bridgeFailure = failure
+            }
+            self.syncHandles()
         }
     }
 
@@ -202,7 +263,9 @@ public final class TripDayEditorModel {
         syncHandles()
     }
 
+    /// Refused while a bridge is in flight: it would land after the save.
     public func save() {
+        guard bridging == nil else { return }
         settle()
         snapTask?.cancel()
         onSave(trip)
@@ -223,7 +286,7 @@ public final class TripDayEditorModel {
         case .moved(let id, _):
             // Only the day that ends here and the day after it change.
             guard let day = day(of: id) else { return }
-            let all = line.dayStats(ends: handles.markers.map(\.distance), bikeType: trip.bikeType)
+            let all = trip.dayStats(on: line, ends: handles.markers.map(\.distance))
             live.days = [day: all[day], day + 1: all[day + 1]]
         case .ended(let id, let distance):
             guard let day = day(of: id) else { return }
@@ -290,6 +353,8 @@ public final class TripDayEditorModel {
     /// its move is in the trip the handles are read from.
     private func syncHandles(animated: Bool = true) {
         handles.end()
+        let lineChanged = trip.line.count != line.vertices.count || Set(trip.pieceStarts) != line.pieceStarts
+        if lineChanged { line = trip.measuredLine }
         if handleIDs.count != trip.dayCount - 1 { handleIDs = (1..<max(trip.dayCount, 1)).map { _ in takeHandleID() } }
         removeBlockers = (0..<trip.dayCount).map { trip.removeDayEndBlocker($0, on: line) }
         let markers = trip.dayEnds.dropLast().enumerated().map { day, end in
@@ -298,11 +363,55 @@ public final class TripDayEditorModel {
                 isFixed: removeBlockers[day] != nil)
         }
         let colors = (0..<trip.dayCount).map { OBCTheme.stageColor(index: $0) }
-        withAnimation(animated ? .snappy(duration: 0.28) : nil) {
-            handles.setMarkers(markers, segmentColors: colors)
+        if lineChanged {
+            handles.setLine(line, markers: markers, segmentColors: colors)
+        } else {
+            withAnimation(animated ? .snappy(duration: 0.28) : nil) {
+                handles.setMarkers(markers, segmentColors: colors)
+            }
         }
-        stats = line.dayStats(ends: markers.map(\.distance), bikeType: trip.bikeType)
+        stats = trip.dayStats(on: line, ends: markers.map(\.distance))
         stopDays = [:]
+        gaps = trip.gapsInsideDays()
+        syncBranches(colors: colors)
+        syncNotes()
+    }
+
+    /// The spurs and via legs in their days' colours, the old sections of the vias, and each
+    /// gap as a dashed straight line.
+    private func syncBranches(colors: [Color]) {
+        var branches: [LineBranch] = []
+        var oldSections: [ClosedRange<Double>] = []
+        for (day, end) in trip.dayEnds.enumerated() {
+            switch end.stopRoute {
+            case .outAndBack(let spur)?:
+                branches.append(LineBranch(coordinates: spur.map(\.coordinate), color: colors[day]))
+            case .via(let toStop, let fromStop, let leave, let rejoin)?:
+                branches.append(LineBranch(coordinates: toStop.map(\.coordinate), color: colors[day]))
+                branches.append(LineBranch(coordinates: fromStop.map(\.coordinate), color: colors[day + 1]))
+                oldSections.append(leave...rejoin)
+            case nil:
+                break
+            }
+        }
+        branches += gaps.map { LineBranch(coordinates: [$0.from, $0.to], color: colors[$0.day], isDashed: true) }
+        handles.setBranches(branches, oldSections: oldSections)
+    }
+
+    private func syncNotes() {
+        notes = trip.dayEnds.indices.map { day in
+            var parts: [String] = []
+            if let route = trip.dayEnds[day].stopRoute {
+                let mode = if case .outAndBack = route { "out and back" } else { "via the stop" }
+                parts.append("\(mode) \(OBCFormat.extraDistance(meters: trip.extraMeters(route, at: day)))")
+            }
+            if bridging == day {
+                parts.append("bridging the gap…")
+            } else if let gap = gaps.first(where: { $0.day == day }) {
+                parts.append("straight line \(OBCFormat.shortDistance(meters: gap.meters))")
+            }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
     }
 
     private func takeHandleID() -> Int {

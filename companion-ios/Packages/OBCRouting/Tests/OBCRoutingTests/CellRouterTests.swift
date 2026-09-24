@@ -153,19 +153,30 @@ private func makeRouter(_ server: Server, _ cache: CellCache) -> CellRouter {
         }
     }
 
+    /// Through the app's seam: the first request says it downloads, the second needs no network.
     @Test func aSecondRequestInTheSameAreaIsOffline() async throws {
         let vector = try Vector.load()
         let server = try Server()
         let cache = scratch()
-        let first = try await makeRouter(server, cache).route(from: vector.start, to: vector.end, profile: 0)
+        let downloads = Counter()
+        let first = try await makeRouter(server, cache).route(
+            from: vector.start, to: vector.end, bikeType: .road, onDownload: downloads.add)
         #expect(await server.requests.count == 6, "the root, two indexes, two network cells, one terrain cell")
+        #expect(downloads.value == 5, "every object but the root")
 
         await server.set(offline: true)
-        let again = try await makeRouter(server, cache).route(from: vector.start, to: vector.end, profile: 0)
+        let again = try await makeRouter(server, cache).route(
+            from: vector.start, to: vector.end, bikeType: .road, onDownload: downloads.add)
         #expect(again == first)
+        #expect(downloads.value == 5)
 
-        await #expect(throws: RouteFailure.noConnection) {
-            try await makeRouter(server, scratch()).route(from: vector.start, to: vector.end, profile: 0)
+        await #expect(throws: LegRouteFailure.noMap, "no cells published here") {
+            try await makeRouter(server, cache).route(
+                from: Coordinate(latitude: 10, longitude: 10), to: Coordinate(latitude: 10.01, longitude: 10), bikeType: .road) {}
+        }
+
+        await #expect(throws: LegRouteFailure.noConnection) {
+            try await makeRouter(server, scratch()).route(from: vector.start, to: vector.end, bikeType: .road) {}
         }
     }
 
@@ -214,4 +225,13 @@ private func makeRouter(_ server: Server, _ cache: CellCache) -> CellRouter {
         #expect(cache.cached("a") != nil)
         #expect(cache.cached("b") != nil)
     }
+}
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int { lock.withLock { count } }
+
+    func add() { lock.withLock { count += 1 } }
 }

@@ -14,6 +14,12 @@ public struct TripDayRoute: Equatable, Sendable {
     public let distanceMeters: Double
     public let elevationGainMeters: Double
     public let estimatedDuration: TimeInterval
+    /// Metres along the route where it joins the trip's main line: past the spur back from a
+    /// stop, else 0.
+    public let joinMeters: UInt32
+    /// Metres along the route where it leaves the main line for a spur to a stop; `UInt32.max`
+    /// for a day that ends on the line.
+    public let leaveMeters: UInt32
 }
 
 extension TripDayRoute {
@@ -42,16 +48,21 @@ extension Trip {
     /// The day routes an upload of this trip sends, in ride order. A re-cut that leaves a day's
     /// bytes unchanged leaves its CRC unchanged, so the upload skips that day.
     public func dayRoutes() -> [TripDayRoute] {
-        dayLines().enumerated().map { day, points in
+        dayLines().enumerated().map { day, cut in
+            let points = cut.points
             let name = Self.routeName(day: day, title: dayEnds[day].title, place: dayEnds[day].name)
             let payload = RouteObjectCodec.encode(points: points, waypoints: [], name: name, bikeType: bikeType)
             let totals = RouteObjectCodec.totals(of: payload)
             let distance = Double(totals?.distanceMeters ?? 0)
             let ascent = Double(totals?.ascentMeters ?? 0)
+            // The route's own metres, as the device measures them along the decoded points.
+            let along = MeasuredLine(coordinates: points.map(\.coordinate)).vertices
             return TripDayRoute(
                 day: day, name: name, points: points, payload: payload, crc32: CRC32.checksum(payload),
                 distanceMeters: distance, elevationGainMeters: ascent,
-                estimatedDuration: bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: ascent))
+                estimatedDuration: bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: ascent),
+                joinMeters: UInt32(along[cut.joinIndex].distance.rounded()),
+                leaveMeters: cut.leaveIndex.map { UInt32(along[$0].distance.rounded()) } ?? .max)
         }
     }
 
@@ -73,13 +84,14 @@ extension Trip {
         return name.trimmingCharacters(in: .whitespaces)
     }
 
-    /// The trip object an upload writes after the day routes, naming each day by its device
-    /// object id. Every day starts and ends on the main line.
-    public func tripObject(dayObjectIDs: [DeviceObjectID]) -> TripObjectCodec.Trip {
+    /// The trip object an upload writes after `days`, naming each day by its device object id.
+    public func tripObject(days: [TripDayRoute], dayObjectIDs: [DeviceObjectID]) -> TripObjectCodec.Trip {
         TripObjectCodec.Trip(
             key: key, name: name,
             startDate: UInt16(clamping: max(startDay?.daysSince1970 ?? 0, 0)),
-            days: dayObjectIDs.map(TripObjectCodec.Day.whole))
+            days: zip(days, dayObjectIDs).map { day, id in
+                TripObjectCodec.Day(routeID: id, joinMeters: day.joinMeters, leaveMeters: day.leaveMeters)
+            })
     }
 }
 
