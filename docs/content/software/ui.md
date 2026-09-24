@@ -675,7 +675,7 @@ Unknown.
 
 ## Settings
 
-Five pages under one hub, every page a list of rows in the drawers' grammar:
+Pages sit under one hub, every page a list of rows in the drawers' grammar:
 
 | Row | Looks like | Press |
 | --- | --- | --- |
