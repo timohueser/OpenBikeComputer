@@ -13,8 +13,8 @@ simulator and the iPhone host share.
 
 ## Five families
 
-A rider learns about five sounds reliably, so the cues are grouped by meaning and not given one
-sound each:
+A rider can learn about five sounds reliably. So the app groups the cues by meaning, and does not
+give each cue its own sound:
 
 | Family | Meaning | Cues |
 | --- | --- | --- |
@@ -43,5 +43,5 @@ rules.
 
 The Sound page has two rows. **Sound** is Off, Quiet or Loud. Loud drives the piezo from two pins in
 opposite phase, which is louder in wind. A change to Quiet or Loud plays a preview at the new level.
-**Key tones** clicks on every button press, and it is off by default. The page is hidden on a
-platform that has no buzzer.
+**Key tones** clicks on every button press, and it is off by default. A platform that has no buzzer
+does not show the page.
