@@ -1006,6 +1006,8 @@
       // Scenario order is the whole loop: load route → ride → climb → peaks → next stop → plan B → ride log.
       // Each scenario's `id` is its shareable #demo/<id> deep link.
       // ------------------------------------------------------------------------------------------
+      // After a reset the device offers to resume a saved journey; Back declines it, and on Home
+      // Back does nothing.
       var SCENARIOS = [
         {
           id: 'load-route', title: 'Put today’s route on the device',
@@ -1017,7 +1019,8 @@
           ],
           companion: 'upload', staged: true,
           steps: [
-            { cmds: ['upload'], until: ["Home"], label: 'The device is ready for today’s route', companionFrame: 0, dwell: 1500 },
+            { cmds: ['upload'], until: ["Home", "Journey"], label: 'The device starts up', dwell: 600 },
+            { cmds: ['back'], until: ["Home"], label: 'The device is ready for today’s route', companionFrame: 0, dwell: 1500 },
             { cmds: ['receive'], until: ["RouteReceived"], label: 'Route received on the device', companionFrame: 1, dwell: 2200 },
             { cmds: ['press'], until: ["RouteOverview"], label: 'View the route on the device', dwell: 2800 },
             { cmds: ['press'], until: ["StartAway"], label: 'Start the ride — you are away from the start', dwell: 2800 },
@@ -1061,7 +1064,7 @@
           steps: [
             { cmds: ['enter', 'seek:3000', 'pause'], until: ["Map"], label: 'Stop for a look around' },
             { cmds: ['heading:250', 'backhold'], until: ["Menu"], label: 'Open the main menu' },
-            { cmds: ['step:4', 'press'], until: ["PeakView"], label: 'The skyline around the Grimsel', dwell: 6000 }
+            { cmds: ['step:3', 'press'], until: ["PeakView"], label: 'The skyline around the Grimsel', dwell: 6000 }
           ]
         },
         {
@@ -1099,8 +1102,7 @@
             { cmds: ['press'], until: ["Assistant"], label: 'Ride Assistant' },
             { cmds: ['press'], until: ["FindPlace"], label: 'Find a place near the ride' },
             { cmds: ['step:6', 'press'], until: ["FindPlace"], waitFor: 'places', label: 'Compare the mapped station' },
-            { cmds: ['press'], until: ["PoiDetail"], label: 'Gletsch — check the selected place' },
-            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Review the complete Visit route' },
+            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Gletsch — review the complete Visit route' },
             { cmds: ['press'], until: ["Map"], waitFor: 'Accepted', label: 'Visit accepted — recording continues' }
           ]
         },
