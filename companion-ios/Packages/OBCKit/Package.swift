@@ -29,11 +29,13 @@ let package = Package(
             name: "OBCDomain",
             swiftSettings: languageMode
         ),
-        // FLAT store protocol v4, kept standalone and judged by the pinned records under
-        // `specs/vectors/flat-store-v4/`. The transfer client depends only on its physical-link
-        // seam, so its announce → stream → result and STATUS reconcile paths are host-testable.
+        // FLAT store protocol v4, kept apart from the transports and judged by the pinned records
+        // under `specs/vectors/flat-store-v4/`. The transfer client depends only on its
+        // physical-link seam, so its announce → stream → result and STATUS reconcile paths are
+        // host-testable.
         .target(
             name: "OBCProtocolV4",
+            dependencies: ["OBCDomain"],
             swiftSettings: languageMode
         ),
         .target(

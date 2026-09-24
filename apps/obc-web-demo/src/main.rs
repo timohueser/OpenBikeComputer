@@ -76,6 +76,12 @@ mod web {
         with_demo(|d| d.cmd(cmd));
     }
 
+    /// Match the page theme before the first frame or after a visitor changes it.
+    #[wasm_bindgen]
+    pub fn obc_demo_set_dark(dark: bool) {
+        with_demo(|d| d.set_dark(dark));
+    }
+
     /// The current screen's variant name: the closed-loop signal the page advances a guided demo
     /// on.
     #[wasm_bindgen]
