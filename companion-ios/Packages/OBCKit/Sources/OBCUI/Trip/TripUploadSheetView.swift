@@ -54,30 +54,30 @@ public struct TripUploadSheetView: View {
             HStack(alignment: .center, spacing: 13) {
                 iconTile(
                     systemImage: interrupted ? "exclamationmark.triangle" : "square.and.arrow.up",
-                    color: interrupted ? OBCTheme.warning : OBCTheme.forest
+                    color: interrupted ? OBCTheme.danger : OBCTheme.secondary
                 )
                 VStack(alignment: .leading, spacing: 2) {
                     Text(interrupted ? "Upload interrupted" : "Uploading \(model.tripName)")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
                         .accessibilityIdentifier("tripUpload.title")
                     Text(model.sizeLine)
-                        .font(.obcMono(size: 12.5))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .accessibilityIdentifier("tripUpload.sizeLine")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Text(model.percentLine)
-                    .font(.obcMono(size: 18, weight: .medium))
-                    .foregroundStyle(interrupted ? OBCTheme.inkFaint : OBCTheme.forest)
+                    .font(.system(.body, weight: .medium).monospacedDigit())
+                    .foregroundStyle(interrupted ? OBCTheme.secondary : OBCTheme.ink)
                     .accessibilityIdentifier("tripUpload.percent")
             }
             .padding(.bottom, 10)
 
             // The queued-mode header: which step of how many is moving now.
             Text(model.stepProgressLabel)
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.forest)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
                 .accessibilityIdentifier("tripUpload.stepLabel")
                 .padding(.bottom, 12)
 
@@ -85,14 +85,14 @@ public struct TripUploadSheetView: View {
 
             HStack(alignment: .top, spacing: 8) {
                 Text("◆")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(interrupted ? OBCTheme.warning : OBCTheme.amber)
+                    .font(.system(.caption))
+                    .foregroundStyle(interrupted ? OBCTheme.danger : OBCTheme.secondary)
                 Text(interrupted
                     ? "The link to \(model.deviceName) dropped. Finished days are kept — resume restarts this one."
                     : "Sending each day in order, then the trip. Keep \(model.deviceName) awake and nearby.")
-                    .font(.system(size: 12.5))
+                    .font(.system(.caption))
                     .lineSpacing(2)
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .foregroundStyle(OBCTheme.secondary)
             }
             .padding(.top, 13)
 
@@ -120,31 +120,31 @@ public struct TripUploadSheetView: View {
         VStack(spacing: 0) {
             ZStack {
                 Circle()
-                    .fill(OBCTheme.forest)
+                    .fill(OBCTheme.rust)
                     .frame(width: 64, height: 64)
-                    .background(Circle().fill(OBCTheme.forest.opacity(0.12)).frame(width: 80, height: 80))
+                    .background(Circle().fill(OBCTheme.rust.opacity(0.12)).frame(width: 80, height: 80))
                 Image(systemName: "checkmark")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
+                    .font(.system(.title, weight: .bold))
+                    .foregroundStyle(OBCTheme.onRust)
             }
             .padding(.top, 6)
             .padding(.bottom, 14)
 
             Text("Trip on the device")
-                .font(.obcSerif(size: 20))
+                .font(.system(.title3, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .accessibilityIdentifier("tripUpload.doneTitle")
             Text("\(model.tripName) is ready to ride. It'll show as a folder under Routes on \(model.deviceName).")
-                .font(.system(size: 13.5))
+                .font(.system(.footnote))
                 .lineSpacing(3)
-                .foregroundStyle(OBCTheme.inkSoft)
+                .foregroundStyle(OBCTheme.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 260)
                 .padding(.top, 6)
                 .padding(.bottom, 4)
             Text(model.doneTally)
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
                 .accessibilityIdentifier("tripUpload.doneTally")
                 .padding(.bottom, 18)
 
@@ -161,19 +161,19 @@ public struct TripUploadSheetView: View {
         VStack(spacing: 0) {
             iconTile(
                 systemImage: "externaldrive.badge.exclamationmark",
-                color: OBCTheme.warning
+                color: OBCTheme.danger
             )
             .padding(.top, 6)
             .padding(.bottom, 14)
 
             Text(model.failedTitle)
-                .font(.obcSerif(size: 20))
+                .font(.system(.title3, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .accessibilityIdentifier("tripUpload.failedTitle")
             Text(model.failedMessage)
-                .font(.system(size: 13.5))
+                .font(.system(.footnote))
                 .lineSpacing(3)
-                .foregroundStyle(OBCTheme.inkSoft)
+                .foregroundStyle(OBCTheme.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 270)
                 .padding(.top, 6)
@@ -189,7 +189,7 @@ public struct TripUploadSheetView: View {
 
     private func iconTile(systemImage: String, color: Color) -> some View {
         Image(systemName: systemImage)
-            .font(.system(size: 20, weight: .medium))
+            .font(.system(.title3, weight: .medium))
             .foregroundStyle(color)
             .frame(width: 44, height: 44)
             .background(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).fill(color.opacity(0.12)))

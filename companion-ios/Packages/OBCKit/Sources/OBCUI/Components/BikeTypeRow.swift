@@ -22,8 +22,8 @@ public struct OBCBikeTypeRow: View {
         } label: {
             OBCListRow(label: "Bike type", value: type.name, showsDivider: showsDivider) {
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.footnote, weight: .semibold))
+                    .foregroundStyle(OBCTheme.secondary)
             }
         }
         .buttonStyle(.plain)

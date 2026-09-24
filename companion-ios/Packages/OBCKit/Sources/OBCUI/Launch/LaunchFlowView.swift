@@ -31,7 +31,7 @@ public struct LaunchFlowView<Main: View>: View {
     private var screen: some View {
         switch model.phase {
         case .idle:
-            OBCTheme.parchment.ignoresSafeArea()
+            OBCTheme.page.ignoresSafeArea()
         case .connecting(let deviceName):
             LaunchConnectingView(deviceName: deviceName)
         case .connectFailed(let deviceName):

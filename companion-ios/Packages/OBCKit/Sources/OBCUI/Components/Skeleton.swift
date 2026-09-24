@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shimmering parchment placeholder blocks: skeletons, not spinners. `OBCSkeleton` is
+/// Shimmering placeholder blocks: skeletons, not spinners. `OBCSkeleton` is
 /// the raw shimmer block and `RouteCardSkeleton` is shaped like a compact route card.
 /// Cached content appears instantly; only a fresh read shimmers.
 public struct OBCSkeleton: View {
@@ -15,10 +15,10 @@ public struct OBCSkeleton: View {
             let phase = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: 1.4) / 1.4
             GeometryReader { geo in
-                OBCTheme.parchment3
+                OBCTheme.fill
                     .overlay {
                         LinearGradient(
-                            colors: [.clear, .white.opacity(0.55), .clear],
+                            colors: [.clear, OBCTheme.surface.opacity(0.55), .clear],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
@@ -52,9 +52,9 @@ public struct RouteCardSkeleton: View {
             .padding(.horizontal, 15)
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         }
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.hairline))
         .accessibilityLabel("Loading")
     }
 }
@@ -66,5 +66,5 @@ public struct RouteCardSkeleton: View {
         RouteCardSkeleton()
     }
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

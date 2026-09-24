@@ -44,16 +44,16 @@ public struct DeviceTopBar: View {
         HStack(spacing: 12) {
             HStack(spacing: 9) {
                 Circle()
-                    .fill(isLinked ? OBCTheme.forest : OBCTheme.inkFaint)
+                    .fill(isLinked ? OBCTheme.rust : OBCTheme.secondary)
                     .frame(width: 9, height: 9)
                     .background(
                         Circle()
-                            .fill(OBCTheme.forest.opacity(isLinked ? 0.18 : 0))
+                            .fill(OBCTheme.rust.opacity(isLinked ? 0.18 : 0))
                             .frame(width: 15, height: 15)
                     )
                 Text(deviceName)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(isLinked ? OBCTheme.ink : OBCTheme.inkFaint)
+                    .font(.system(.callout, weight: .semibold))
+                    .foregroundStyle(isLinked ? OBCTheme.ink : OBCTheme.secondary)
                     .lineLimit(1)
             }
             // No explicit identifier here: an id would shadow the label-keyed lookup
@@ -79,7 +79,7 @@ public struct DeviceTopBar: View {
                     onSettings()
                 } label: {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 17, weight: .medium))
+                        .font(.system(.body, weight: .medium))
                 }
                 .accessibilityLabel("Settings")
                 .accessibilityIdentifier("topbar.settings")
@@ -95,13 +95,13 @@ public struct DeviceTopBar: View {
         switch syncState {
         case .idle:
             Image(systemName: "arrow.down.to.line")
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(.callout, weight: .medium))
         case .syncing:
-            OBCSpinner(color: OBCTheme.amber)
+            OBCSpinner(color: OBCTheme.secondary)
         case .done:
             Image(systemName: "checkmark")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(OBCTheme.forest)
+                .font(.system(.callout, weight: .bold))
+                .foregroundStyle(OBCTheme.secondary)
         }
     }
 
@@ -123,7 +123,7 @@ public struct OBCBatteryIndicator: View {
         HStack(spacing: 5) {
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(OBCTheme.inkSoft, lineWidth: 1.5)
+                    .strokeBorder(OBCTheme.secondary, lineWidth: 1.5)
                 if let percent {
                     RoundedRectangle(cornerRadius: 1)
                         .fill(fillColor(for: percent))
@@ -135,21 +135,22 @@ public struct OBCBatteryIndicator: View {
             .overlay(alignment: .trailing) {
                 // The battery nub.
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(OBCTheme.inkSoft)
+                    .fill(OBCTheme.secondary)
                     .frame(width: 2.5, height: 5)
                     .offset(x: 4)
             }
 
             Text(percent.map { "\($0)%" } ?? "—")
-                .font(.obcMono(size: 12, weight: .semibold))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.caption, weight: .semibold).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
+                .fixedSize()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(percent.map { "Battery \($0) percent" } ?? "Battery unknown")
     }
 
     private func fillColor(for percent: Int) -> Color {
-        percent <= 20 ? OBCTheme.warning : OBCTheme.forest
+        percent <= 20 ? OBCTheme.danger : OBCTheme.ink
     }
 }
 
@@ -178,9 +179,10 @@ public struct OBCIconButton<Label: View>: View {
             label
                 .foregroundStyle(OBCTheme.tint)
                 .frame(width: compact ? 34 : 38, height: compact ? 34 : 38)
-                .background(OBCTheme.panel)
+                .background(OBCTheme.surface)
                 .clipShape(Circle())
-                .overlay(Circle().strokeBorder(OBCTheme.line))
+                .overlay(Circle().strokeBorder(OBCTheme.hairline))
+                .obcFixedGeometryType()
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -217,5 +219,5 @@ public struct OBCSpinner: View {
         DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 12, syncState: .done)
         DeviceTopBar(deviceName: "Trailhead", connection: .outOfRange, batteryPercent: 82)
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

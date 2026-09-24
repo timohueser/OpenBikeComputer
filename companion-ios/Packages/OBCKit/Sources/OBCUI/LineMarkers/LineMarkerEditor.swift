@@ -21,7 +21,7 @@ public struct LineMarkerEditor: View {
             map
                 .frame(height: mapHeight)
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-                .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+                .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
             LineMarkerProfileView(model: model)
         }
         // One tick on grab and one on release, from either view.

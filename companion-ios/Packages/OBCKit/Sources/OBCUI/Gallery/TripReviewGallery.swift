@@ -14,14 +14,14 @@ struct TripReviewGallerySection: View {
         VStack(alignment: .leading, spacing: 18) {
             MultiTrackPreviewView(
                 stages: [
-                    .init(coordinates: planned, color: OBCTheme.inkSoft, dash: [5, 4]),
-                    .init(coordinates: ridden, color: OBCTheme.trackStroke),
+                    .init(coordinates: planned, color: OBCTheme.secondary, dash: [5, 4]),
+                    .init(coordinates: ridden, color: OBCTheme.ride),
                 ],
                 pins: [
                     .init(coordinate: points[20], color: OBCTheme.ink),
-                    .init(coordinate: points[6], color: OBCTheme.water),
-                    .init(coordinate: points[12], color: OBCTheme.water),
-                    .init(coordinate: points[14], color: OBCTheme.forest),
+                    .init(coordinate: points[6], color: OBCTheme.ride),
+                    .init(coordinate: points[12], color: OBCTheme.ride),
+                    .init(coordinate: points[14], color: OBCTheme.ink),
                 ]
             )
             .frame(height: 200)

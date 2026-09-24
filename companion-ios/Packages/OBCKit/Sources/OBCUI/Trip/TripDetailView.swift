@@ -129,7 +129,7 @@ public struct TripDetailView: View {
             .padding(.top, 4)
             .padding(.bottom, 24)
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .navigationTitle(journal?.review == nil ? trip?.name ?? "Trip" : "Trip")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -314,13 +314,13 @@ public struct TripDetailView: View {
             return MultiTrackPreviewView.Pin(
                 coordinate: Coordinate(
                     latitude: (end.latitude + start.latitude) / 2, longitude: (end.longitude + start.longitude) / 2),
-                color: OBCTheme.inkSoft, systemImage: transferKind(day)?.systemImage ?? "arrow.right")
+                color: OBCTheme.secondary, systemImage: transferKind(day)?.systemImage ?? "arrow.right")
         }
         let stopped = journal.review?.days.last { $0.endedAt != nil }?.endedAt.map {
-            MultiTrackPreviewView.Pin(coordinate: trip.measuredLine.coordinate(at: $0), color: OBCTheme.forest)
+            MultiTrackPreviewView.Pin(coordinate: trip.measuredLine.coordinate(at: $0), color: OBCTheme.ink)
         }
         let pins = trip.dayEnds.dropLast().map { MultiTrackPreviewView.Pin(coordinate: $0.coordinate, color: OBCTheme.ink) }
-            + journal.photoPins.map { MultiTrackPreviewView.Pin(coordinate: $0, color: OBCTheme.water) }
+            + journal.photoPins.map { MultiTrackPreviewView.Pin(coordinate: $0, color: OBCTheme.ride) }
             + transfers + [stopped].compactMap { $0 }
         return expandable(MultiTrackPreviewView(stages: stages, pins: pins).frame(height: 230))
             .accessibilityIdentifier("trip.journal.map")
@@ -342,12 +342,12 @@ public struct TripDetailView: View {
         VStack(alignment: .leading, spacing: 0) {
             journalMap(journal, shown)
             Text(trip?.name ?? shown.name)
-                .font(.obcSerif(size: 28))
+                .font(.system(.title, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .padding(.top, 16)
             Text(journalDateLine(review, shown))
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
                 .padding(.top, 4)
             TripReviewTotals(
                 ridden: review.totals, plannedMeters: review.plannedMeters, isDone: review.currentDay == nil,

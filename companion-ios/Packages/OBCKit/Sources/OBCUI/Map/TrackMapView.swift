@@ -87,7 +87,7 @@ public struct TrackMapView: View {
                         let coords = MapGeometry.clLocations(stage.coordinates)
                         MapPolyline(coordinates: coords)
                             .stroke(
-                                OBCTheme.trackHalo,
+                                OBCTheme.routeCasing,
                                 style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                         MapPolyline(coordinates: coords)
                             .stroke(
@@ -102,9 +102,6 @@ public struct TrackMapView: View {
                 MapCompass()
                 MapScaleView()
             }
-            // Always the light tile set: OBCTheme is a fixed light palette, and this
-            // keeps the one system-styled surface consistent with it.
-            .preferredColorScheme(.light)
             .onTapGesture { point in
                 guard !stages.isEmpty, !stageSummaries.isEmpty else { return }
                 withAnimation(.snappy(duration: 0.22)) {
@@ -120,7 +117,7 @@ public struct TrackMapView: View {
         }
         #else
         // No MapKit on the host build, so there is nothing interactive to show.
-        Color(OBCTheme.parchment)
+        Color(OBCTheme.page)
         #endif
     }
 
@@ -136,16 +133,16 @@ public struct TrackMapView: View {
                         .fill(stages[index].color)
                         .frame(width: 9, height: 9)
                     Text("DAY \(index + 1)")
-                        .font(.obcMono(size: 11))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption2).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                 }
                 Text(summary.name)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(OBCTheme.ink)
                     .lineLimit(1)
                 Text(OBCFormat.plannedSubtitle(summary))
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -157,14 +154,14 @@ public struct TrackMapView: View {
                     HStack(spacing: 4) {
                         Text("Open route")
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(.caption2, weight: .semibold))
                     }
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(OBCTheme.surface)
                     .padding(.horizontal, 13)
                     .padding(.vertical, 9)
                     .background(
-                        Capsule().fill(OBCTheme.forest)
+                        Capsule().fill(OBCTheme.ink)
                     )
                 }
                 .buttonStyle(.plain)
@@ -174,12 +171,12 @@ public struct TrackMapView: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
-                .fill(OBCTheme.panel)
+                .fill(OBCTheme.surface)
                 .shadow(color: .black.opacity(0.18), radius: 14, y: 4)
         )
         .overlay(
             RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
-                .stroke(OBCTheme.line, lineWidth: 1)
+                .stroke(OBCTheme.hairline, lineWidth: 1)
         )
         .padding(.horizontal, 16)
         .padding(.bottom, 18)

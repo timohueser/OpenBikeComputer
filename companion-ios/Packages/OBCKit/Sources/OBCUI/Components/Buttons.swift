@@ -2,13 +2,11 @@ import SwiftUI
 
 public struct OBCButtonStyle: ButtonStyle {
     public enum Kind {
-        /// Forest fill, white label.
+        /// The one action: amber fill, ink label.
         case primary
-        /// Transparent, forest label, 1.5pt forest-tinted border.
+        /// Transparent, tint label, hairline border.
         case ghost
-        /// Coral fill, white label, for the pairing call to action.
-        case warm
-        /// Transparent with a warning-red label. Always confirmed through a sheet.
+        /// Transparent with a danger-red label. Always confirmed through a sheet.
         case destructive
     }
 
@@ -26,35 +24,37 @@ public struct OBCButtonStyle: ButtonStyle {
 
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 17, weight: .semibold))
+            .font(.system(.body, weight: .semibold))
             .foregroundStyle(foreground)
-            .padding(.vertical, 15)
+            .padding(.vertical, 8)
             .padding(.horizontal, 20)
-            .frame(maxWidth: fullWidth ? .infinity : nil)
+            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 52)
             .background(background(pressed: configuration.isPressed))
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.controlRadius))
             .overlay {
                 if kind == .ghost {
                     RoundedRectangle(cornerRadius: OBCTheme.controlRadius)
-                        .strokeBorder(OBCTheme.forest.opacity(0.4), lineWidth: 1.5)
+                        .strokeBorder(OBCTheme.hairlineStrong, lineWidth: 1.5)
                 }
             }
-            .opacity(isEnabled ? 1 : 0.42)
     }
 
+    // A disabled button keeps a readable secondary label on a sunken fill; faintness alone
+    // never carries the state.
     private var foreground: Color {
-        switch kind {
-        case .primary, .warm: .white
+        guard isEnabled else { return OBCTheme.secondary }
+        return switch kind {
+        case .primary: OBCTheme.onAmber
         case .ghost: OBCTheme.tint
-        case .destructive: OBCTheme.warning
+        case .destructive: OBCTheme.danger
         }
     }
 
     private func background(pressed: Bool) -> Color {
-        switch kind {
-        case .primary: pressed ? OBCTheme.forestDeep : OBCTheme.tint
-        case .warm: OBCTheme.coral.opacity(pressed ? 0.85 : 1)
-        case .ghost, .destructive: OBCTheme.forest.opacity(pressed ? 0.08 : 0)
+        guard isEnabled else { return OBCTheme.fill }
+        return switch kind {
+        case .primary: OBCTheme.amber.opacity(pressed ? 0.8 : 1)
+        case .ghost, .destructive: OBCTheme.fill.opacity(pressed ? 1 : 0)
         }
     }
 }
@@ -62,7 +62,6 @@ public struct OBCButtonStyle: ButtonStyle {
 public extension ButtonStyle where Self == OBCButtonStyle {
     static var obcPrimary: OBCButtonStyle { OBCButtonStyle(kind: .primary) }
     static var obcGhost: OBCButtonStyle { OBCButtonStyle(kind: .ghost) }
-    static var obcWarm: OBCButtonStyle { OBCButtonStyle(kind: .warm) }
     static var obcDestructive: OBCButtonStyle { OBCButtonStyle(kind: .destructive) }
 
     static func obcPrimary(fullWidth: Bool) -> OBCButtonStyle {
@@ -77,10 +76,9 @@ public extension ButtonStyle where Self == OBCButtonStyle {
         }
         .buttonStyle(.obcPrimary)
         Button("Save to Planned") {}.buttonStyle(.obcGhost)
-        Button("Pair now") {}.buttonStyle(.obcWarm)
         Button("Delete route") {}.buttonStyle(.obcDestructive)
         Button("Disabled") {}.buttonStyle(.obcPrimary).disabled(true)
     }
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

@@ -67,7 +67,7 @@ public struct TripPickerSheet: View {
                             ForEach(trips) { item in
                                 OBCListRow(
                                     icon: "folder",
-                                    iconColor: OBCTheme.wood,
+                                    iconColor: OBCTheme.tint,
                                     label: item.name,
                                     value: "\(item.dayCount) \(item.dayCount == 1 ? "day" : "days")",
                                     showsDivider: item.id != trips.last?.id || allowsNone,
@@ -75,8 +75,8 @@ public struct TripPickerSheet: View {
                                     trailing: {
                                         if item.id == currentTripID {
                                             Image(systemName: "checkmark")
-                                                .font(.system(size: 14, weight: .semibold))
-                                                .foregroundStyle(OBCTheme.forest)
+                                                .font(.system(.subheadline, weight: .semibold))
+                                                .foregroundStyle(OBCTheme.tint)
                                         }
                                     }
                                 )
@@ -85,7 +85,7 @@ public struct TripPickerSheet: View {
                             if allowsNone {
                                 OBCListRow(
                                     icon: "minus.circle",
-                                    iconColor: OBCTheme.inkSoft,
+                                    iconColor: OBCTheme.secondary,
                                     label: "Don't add to a trip",
                                     showsDivider: false,
                                     action: { pick(.none) }
@@ -97,7 +97,7 @@ public struct TripPickerSheet: View {
                 }
                 .padding(20)
             }
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -118,9 +118,9 @@ public struct TripPickerSheet: View {
         if creatingNew {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
-                    OBCIconTile(systemImage: "folder.badge.plus", color: OBCTheme.forest)
+                    OBCIconTile(systemImage: "folder.badge.plus", color: OBCTheme.tint)
                     TextField("Trip name", text: $newName)
-                        .font(.system(size: 16))
+                        .font(.system(.callout))
                         .focused($nameFocused)
                         .submitLabel(.done)
                         .onSubmit { create() }
@@ -135,7 +135,7 @@ public struct TripPickerSheet: View {
         } else {
             OBCListRow(
                 icon: "folder.badge.plus",
-                iconColor: OBCTheme.forest,
+                iconColor: OBCTheme.tint,
                 label: "New trip…",
                 showsChevron: true,
                 showsDivider: false,

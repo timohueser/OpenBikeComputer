@@ -29,32 +29,32 @@ public struct UpdateAvailableSheet: View {
         OBCSheetContainer {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Firmware update available")
-                    .font(.obcSerif(size: 22))
+                    .font(.system(.title2, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
 
                 HStack(spacing: 12) {
-                    OBCIconTile(systemImage: "sparkles", color: OBCTheme.amber)
+                    OBCIconTile(systemImage: "sparkles", color: OBCTheme.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(versionLine)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(.callout, weight: .semibold))
                             .foregroundStyle(OBCTheme.ink)
                         Text(sizeLine)
-                            .font(.obcMono(size: 12))
-                            .foregroundStyle(OBCTheme.inkFaint)
+                            .font(.system(.caption).monospacedDigit())
+                            .foregroundStyle(OBCTheme.secondary)
                     }
                 }
                 .accessibilityIdentifier("firmware.updateSheet.release")
 
                 Text("Published for \(update.deviceName). You send it from the firmware screen, "
                     + "and it installs only after you confirm it on the device.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let notes = update.release.notesURL {
                     Button("Release notes") { openURL(notes) }
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(OBCTheme.water)
+                        .font(.system(.subheadline, weight: .medium))
+                        .foregroundStyle(OBCTheme.tint)
                         .accessibilityIdentifier("firmware.updateSheet.releaseNotes")
                 }
 
@@ -88,7 +88,7 @@ public struct UpdateAvailableSheet: View {
     struct Demo: View {
         @State private var shown = true
         var body: some View {
-            OBCTheme.parchment
+            OBCTheme.page
                 .ignoresSafeArea()
                 .sheet(isPresented: $shown) {
                     UpdateAvailableSheet(

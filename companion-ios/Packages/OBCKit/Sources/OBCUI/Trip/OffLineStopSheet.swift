@@ -21,7 +21,7 @@ public struct OffLineStopSheet: View {
             header
             if let failure = model.failure {
                 Text(Self.message(failure))
-                    .font(.system(size: 15))
+                    .font(.system(.subheadline))
                     .foregroundStyle(OBCTheme.ink)
                     .accessibilityIdentifier("offLine.failure")
                 Button("End the day on the line") {
@@ -37,8 +37,8 @@ public struct OffLineStopSheet: View {
                 }
                 if model.isDownloading, model.outAndBack == .routing || model.via == .routing {
                     Text("Getting map data…")
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .accessibilityIdentifier("offLine.downloading")
                 }
             }
@@ -47,7 +47,7 @@ public struct OffLineStopSheet: View {
         .padding(.horizontal, 20)
         .padding(.top, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .task { await model.load() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("offLine.sheet")
@@ -58,12 +58,12 @@ public struct OffLineStopSheet: View {
             StopIcon(kind: model.stop.kind)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.stop.name)
-                    .font(.obcSerif(size: 22))
+                    .font(.system(.title2, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .lineLimit(1)
                 Text("\(OBCFormat.stopOffset(meters: model.offset)) · end of Day \(model.day + 1)")
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
             }
         }
     }
@@ -79,12 +79,12 @@ public struct OffLineStopSheet: View {
                 StopRouteSketch(mode: mode, color: color)
                     .frame(height: 44)
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(OBCTheme.ink)
                 Group {
                     switch option {
                     case .routing:
-                        ProgressView().controlSize(.small).tint(OBCTheme.inkFaint)
+                        ProgressView().controlSize(.small).tint(OBCTheme.secondary)
                     case .ready(_, let extra):
                         Text("\(OBCFormat.extraDistance(meters: extra)) · \(note)")
                     case .failed:
@@ -93,18 +93,18 @@ public struct OffLineStopSheet: View {
                         Text("No room for a via here")
                     }
                 }
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
                 .frame(minHeight: 32, alignment: .topLeading)
                 .fixedSize(horizontal: false, vertical: true)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(OBCTheme.panel)
+            .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
             .overlay(
                 RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
-                    .strokeBorder(isCurrent ? OBCTheme.forest : OBCTheme.line, lineWidth: isCurrent ? 1.5 : 1))
+                    .strokeBorder(isCurrent ? OBCTheme.ink : OBCTheme.hairline, lineWidth: isCurrent ? 1.5 : 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -144,7 +144,7 @@ struct StopRouteSketch: View {
                 var old = Path()
                 old.move(to: CGPoint(x: w * 0.3, y: base))
                 old.addLine(to: CGPoint(x: w * 0.7, y: base))
-                context.stroke(old, with: .color(OBCTheme.inkFaint), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                context.stroke(old, with: .color(OBCTheme.secondary), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
                 line.move(to: CGPoint(x: 4, y: base))
                 line.addLine(to: CGPoint(x: w * 0.3, y: base))
                 line.addLine(to: CGPoint(x: w / 2, y: top + 5))
@@ -153,7 +153,7 @@ struct StopRouteSketch: View {
             }
             context.stroke(line, with: .color(color), style: stroke)
             let ring = Path(ellipseIn: CGRect(x: w / 2 - 5, y: top - 5, width: 10, height: 10))
-            context.fill(ring, with: .color(OBCTheme.panel))
+            context.fill(ring, with: .color(OBCTheme.surface))
             context.stroke(ring, with: .color(OBCTheme.ink), lineWidth: 1.5)
         }
         .accessibilityHidden(true)

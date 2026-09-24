@@ -19,14 +19,14 @@ public struct OBCSegmentedControl: View {
                     withAnimation(.easeOut(duration: 0.15)) { selection = index }
                 } label: {
                     Text(labels[index])
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(selection == index ? OBCTheme.ink : OBCTheme.inkSoft)
+                        .font(.system(.subheadline, weight: .semibold))
+                        .foregroundStyle(selection == index ? OBCTheme.ink : OBCTheme.secondary)
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity)
                         .background {
                             if selection == index {
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(OBCTheme.panel)
+                                    .fill(OBCTheme.surface)
                                     .shadow(color: OBCTheme.ink.opacity(0.16), radius: 1.5, y: 1)
                                     .matchedGeometryEffect(id: "thumb", in: thumb)
                             }
@@ -40,7 +40,7 @@ public struct OBCSegmentedControl: View {
             }
         }
         .padding(3)
-        .background(OBCTheme.parchment3)
+        .background(OBCTheme.fill)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
     }
 }
@@ -51,7 +51,7 @@ public struct OBCSegmentedControl: View {
         var body: some View {
             OBCSegmentedControl(selection: $tab, labels: ["Planned", "Tracked"])
                 .padding(20)
-                .background(OBCTheme.parchment)
+                .background(OBCTheme.page)
         }
     }
     return Demo()

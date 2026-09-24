@@ -32,7 +32,7 @@ struct TripDayEditorGallerySection: View {
             model: model, discardShown: $discardShown, sheetHeight: .constant(0), peekHeight: .constant(0), onClose: {})
             .frame(height: 560)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.line))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.hairline))
             .onAppear { model.loadStops() }
     }
 }

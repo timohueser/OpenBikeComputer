@@ -33,7 +33,7 @@ public struct OBCComponentGallery: View {
                     .padding(.horizontal, -20)
                 }
 
-                section("Nav Bar (serif large title)") {
+                section("Nav Bar") {
                     OBCLargeTitleBar("Routes") {
                         OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
                     }
@@ -148,7 +148,6 @@ public struct OBCComponentGallery: View {
                     Button {} label: { Label("Upload to Trailhead", systemImage: "square.and.arrow.up") }
                         .buttonStyle(.obcPrimary)
                     Button("Save to Planned") {}.buttonStyle(.obcGhost)
-                    Button("Pair now") {}.buttonStyle(.obcWarm)
                     Button("Delete route") {}.buttonStyle(.obcDestructive)
                     Button("Disabled") {}.buttonStyle(.obcPrimary).disabled(true)
                 }
@@ -177,9 +176,9 @@ public struct OBCComponentGallery: View {
 
                 section("Grouped List") {
                     OBCGroupedSection("Device", footer: "Renaming updates the device at the next sync.") {
-                        OBCListRow(icon: "pencil", iconColor: OBCTheme.forest, label: "Name", value: name, showsChevron: true) { renameShown = true }
-                        OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.wood, label: "Firmware update", comingSoon: true)
-                        OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.warning, label: "Forget this device", showsDivider: false) { confirmShown = true }
+                        OBCListRow(icon: "pencil", iconColor: OBCTheme.tint, label: "Name", value: name, showsChevron: true) { renameShown = true }
+                        OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.tint, label: "Firmware update", comingSoon: true)
+                        OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.danger, label: "Forget this device", showsDivider: false) { confirmShown = true }
                     }
                     OBCGroupedSection {
                         OBCListRow(label: "Add to Alps traverse", detail: "Becomes Day 4", showsChevron: true) {}
@@ -204,8 +203,8 @@ public struct OBCComponentGallery: View {
 
                 section("Connected Services") {
                     OBCConnectedServicesBlock(services: [
-                        OBCServiceStatus(name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.coral, state: .uploaded("Uploaded on import")),
-                        OBCServiceStatus(name: "Komoot", systemImage: "location.circle", tileColor: OBCTheme.wood, state: .notUploaded("Not uploaded")),
+                        OBCServiceStatus(name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.tint, state: .uploaded("Uploaded on import")),
+                        OBCServiceStatus(name: "Komoot", systemImage: "location.circle", tileColor: OBCTheme.tint, state: .notUploaded("Not uploaded")),
                     ])
                 }
 
@@ -228,7 +227,7 @@ public struct OBCComponentGallery: View {
                 section("Share image (offline map fallback)") {
                     ForEach([false, true], id: \.self) { showsProfile in
                         ShareCard(content: Self.sampleShareContent, map: nil, photo: nil, showsProfile: showsProfile)
-                            .overlay(Rectangle().strokeBorder(OBCTheme.line))
+                            .overlay(Rectangle().strokeBorder(OBCTheme.hairline))
                     }
                 }
                 #endif
@@ -284,7 +283,7 @@ public struct OBCComponentGallery: View {
             }
             .padding(20)
         }
-        .background(OBCTheme.parchment)
+        .background(OBCTheme.page)
         .obcToast(isPresented: $toastShown, message: "You're up to date — no new rides on Trailhead.")
         .obcRenameSheet("Rename device", isPresented: $renameShown, name: name) { name = $0 }
         .obcDestructiveConfirm(
@@ -301,7 +300,7 @@ public struct OBCComponentGallery: View {
         content()
             .frame(height: 620)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.line))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.hairline))
     }
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
@@ -369,7 +368,7 @@ public struct OBCComponentGallery: View {
     static let sampleThumbnails: [String: Data] = Dictionary(uniqueKeysWithValues: samplePhotos.enumerated().compactMap { index, photo in
         let t = Double(index) / 5
         let sky = LinearGradient(
-            colors: [Color(red: 0.95 - 0.2 * t, green: 0.75, blue: 0.55 + 0.3 * t), OBCTheme.water],
+            colors: [Color(red: 0.95 - 0.2 * t, green: 0.75, blue: 0.55 + 0.3 * t), OBCTheme.ride],
             startPoint: .top, endPoint: .bottom
         )
         .frame(width: 160, height: 120)
