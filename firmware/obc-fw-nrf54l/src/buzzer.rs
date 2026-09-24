@@ -10,8 +10,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use obc_ports::{Note, Sounder, Volume};
 
-/// The newest pattern. A `Signal` keeps only the last value, which is what makes a new cue replace
-/// the one that plays.
+/// The next pattern. When two arrive before the task runs, the `Signal` keeps only the newer one.
 static PATTERN: Signal<CriticalSectionRawMutex, (&'static [Note], Volume)> = Signal::new();
 
 /// A duty value that holds the line low for the whole period.
