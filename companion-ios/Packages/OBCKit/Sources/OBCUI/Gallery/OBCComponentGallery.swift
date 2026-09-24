@@ -7,7 +7,6 @@ import OBCTransport
 /// screenshot review and quick visual checks. Debug-only; reach it with
 /// `-OBCShowUIGallery`.
 public struct OBCComponentGallery: View {
-    @State private var tab = 0
     @State private var toastShown = false
     @State private var renameShown = false
     @State private var confirmShown = false
@@ -54,10 +53,6 @@ public struct OBCComponentGallery: View {
                     .padding(.horizontal, -20)
                 }
 
-                section("Segmented Control") {
-                    OBCSegmentedControl(selection: $tab, labels: ["Planned", "Tracked"])
-                }
-
                 section("GPS Track Preview") {
                     TrackPreviewView(.obcSample, style: .hero, tag: "Planned")
                         .frame(height: 214)
@@ -69,34 +64,18 @@ public struct OBCComponentGallery: View {
                     }
                 }
 
-                section("Route Card") {
-                    RouteCard(
-                        title: "Kettle Moraine Loop",
-                        subtitle: "62.4 km · 840 m ↑ · 3h 20m",
-                        preview: .obcSample
+                section("Track Row") {
+                    let route = RouteSummary(
+                        id: RouteID("kettle"), name: "Kettle Moraine Loop", distanceMeters: 62_400,
+                        elevationGainMeters: 840, estimatedDuration: 3 * 3600 + 20 * 60,
+                        trackPreview: .obcSample
                     )
-                    RouteCard(
-                        title: "Blue Mounds Backroads",
-                        subtitle: "Fri · 79.0 km · 4:12 · 18.8 kph",
-                        preview: .obcSample
-                    )
-                    RouteCard(
-                        title: "Sugar River Trail",
-                        subtitle: "38.1 km · 210 m ↑ · 1h 55m",
-                        preview: .obcSample,
-                        onDevice: .upToDate,
-                    )
-                    RouteCardFullBleed(
-                        title: "Kettle Moraine Loop",
-                        subtitle: "Southern Unit · gravel & forest doubletrack",
-                        preview: .obcSample,
-                        stats: [
-                            OBCStat(value: "62.4", unit: "km", key: "Distance"),
-                            OBCStat(value: "840", unit: "m", key: "Climb"),
-                            OBCStat(value: "3:20", key: "Est."),
-                        ],
-                        tag: "Planned"
-                    )
+                    VStack(spacing: 0) {
+                        TrackRow(route: route)
+                        TrackRow(route: route, onDevice: .upToDate)
+                        TrackRow(route: route, onDevice: .outdated)
+                    }
+                    .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
                 }
                 section("Ride Library Header") {
                     RideLibraryHeader(model: rideLibrary) {}
@@ -104,7 +83,7 @@ public struct OBCComponentGallery: View {
                 }
 
                 section("Skeleton Loader") {
-                    RouteCardSkeleton()
+                    TrackRowSkeleton()
                 }
 
                 section("Stats") {

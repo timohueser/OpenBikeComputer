@@ -49,7 +49,10 @@ final class MainScreenTests: XCTestCase {
         waitForMain(app)
 
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["62.4 km · 840 m ↑ · 3h 12m"].exists, "C1 stat line wrong")
+        let plannedStats = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH '62.4 km, 840 m climb, 3:12 h'")
+        ).firstMatch
+        XCTAssertTrue(plannedStats.exists, "C1 stat line wrong")
         snap(app, "C1-main-planned")
 
         app.buttons["Tracked"].tap()

@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The slim tinted strip below the top bar. Olive for out of range, danger red for
-/// an interrupted sync, with an optional inline action. Reconnection is silent: the
-/// banner just disappears.
+/// The slim strip below the top bar: a surface panel with the icon in the tone's colour,
+/// olive for out of range, danger red for an interrupted sync, and an optional inline
+/// action. Reconnection is silent: the banner just disappears.
 public struct OBCInlineBanner: View {
     public enum Tone {
         /// Out of range, or informational.
@@ -49,28 +49,28 @@ public struct OBCInlineBanner: View {
                 .font(.system(.subheadline, weight: .semibold))
                 .foregroundStyle(tone.accent)
 
-            (Text(title).fontWeight(.semibold) + Text(" ") + Text(message))
-                .font(.system(.caption))
+            Text("\(Text(title).fontWeight(.semibold)) \(message)")
+                .font(.system(.footnote))
                 .foregroundStyle(OBCTheme.ink)
+                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let actionTitle {
                 Button(action: action) {
                     Text(actionTitle)
-                        .font(.system(.caption, weight: .semibold))
+                        .font(.system(.footnote, weight: .semibold))
                         .foregroundStyle(OBCTheme.tint)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 13)
-        .background(tone.accent.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: OBCTheme.radiusMedium)
-                .strokeBorder(tone.accent.opacity(0.5))
-        )
+        .padding(.vertical, 4)
+        .padding(.leading, 14)
+        .padding(.trailing, actionTitle == nil ? 14 : 8)
+        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
     }
 }
 

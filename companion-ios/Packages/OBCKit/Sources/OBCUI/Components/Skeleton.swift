@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Shimmering placeholder blocks: skeletons, not spinners. `OBCSkeleton` is
-/// the raw shimmer block and `RouteCardSkeleton` is shaped like a compact route card.
+/// the raw shimmer block; `TrackRowSkeleton` is shaped like a list row.
 /// Cached content appears instantly; only a fresh read shimmers.
 public struct OBCSkeleton: View {
     var cornerRadius: CGFloat = 8
@@ -32,38 +32,11 @@ public struct OBCSkeleton: View {
     }
 }
 
-/// A compact route card's shape while it loads: the track block plus a title and
-/// stat-line bar.
-public struct RouteCardSkeleton: View {
-    public init() {}
-
-    public var body: some View {
-        HStack(spacing: 0) {
-            OBCSkeleton(cornerRadius: 0)
-                .frame(width: 128)
-
-            VStack(alignment: .leading, spacing: 9) {
-                OBCSkeleton().frame(height: 15).frame(maxWidth: .infinity, alignment: .leading)
-                    .containerRelativeFrame(.horizontal) { length, _ in length * 0.45 }
-                OBCSkeleton().frame(height: 11)
-                    .containerRelativeFrame(.horizontal) { length, _ in length * 0.32 }
-            }
-            .padding(.vertical, 13)
-            .padding(.horizontal, 15)
-            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-        }
-        .background(OBCTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.hairline))
-        .accessibilityLabel("Loading")
-    }
-}
-
 #Preview("Skeletons") {
     VStack(spacing: 12) {
-        RouteCardSkeleton()
-        RouteCardSkeleton()
-        RouteCardSkeleton()
+        TrackRowSkeleton()
+        TrackRowSkeleton()
+        TrackRowSkeleton()
     }
     .padding(20)
     .background(OBCTheme.page)
