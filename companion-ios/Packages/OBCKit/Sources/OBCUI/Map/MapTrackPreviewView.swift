@@ -5,7 +5,7 @@ import MapKit
 #endif
 
 /// A drop-in for `TrackPreviewView` that draws the track over Apple Maps when there
-/// is a network path and real geometry, and falls back to the grid placeholder
+/// is a network path and real geometry, and falls back to the track sketch
 /// otherwise. The fallback is intentional, not a failure state.
 ///
 /// Non-interactive at every size: the map ignores hits, so a tap reaches the
@@ -124,7 +124,7 @@ struct TrackMapContent: MapContent {
 
     var body: some MapContent {
         let coords = MapGeometry.clLocations(coordinates)
-        // Halo casing under the stroke, matching the grid preview's 7 / 3.4 pt.
+        // Halo casing under the stroke.
         MapPolyline(coordinates: coords)
             .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
         MapPolyline(coordinates: coords)
