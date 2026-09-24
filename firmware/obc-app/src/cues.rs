@@ -8,6 +8,7 @@ use crate::activity::Mode;
 use crate::device_core::Sound;
 use crate::device_status::LOW_BATTERY_PCT;
 use crate::sensors::{SensorPhase, SensorStatus};
+use crate::settings::SENSOR_SLOTS;
 use crate::App;
 
 /// After a loss cue, the same source raises no loss cue for this long. A loss that holds past the
@@ -22,12 +23,14 @@ const BATTERY_REARM_PCT: u8 = 5;
 pub(crate) enum Source {
     OffRoute,
     Gps,
-    /// Any sensor that connected during the ride and is not connected now.
+    /// One sensor slot that connected during the ride and is not connected now. Each slot has its
+    /// own level; one cooldown covers them all.
     Sensor,
 }
 
 impl Source {
-    const ALL: [Source; 3] = [Source::OffRoute, Source::Gps, Source::Sensor];
+    /// The sources with one level each, in the order of `Cues::levels`.
+    const SINGLE: [Source; 2] = [Source::OffRoute, Source::Gps];
 
     fn loss(self) -> Cue {
         match self {
@@ -50,6 +53,7 @@ impl Source {
     fn settle_ms(self, lost: bool) -> u32 {
         match (self, lost) {
             (Source::Gps | Source::Sensor, true) => 10_000,
+            (Source::Sensor, false) => 0,
             _ => 5_000,
         }
     }
@@ -79,6 +83,31 @@ impl Level {
         };
         Some(settle.max(cooldown))
     }
+
+    /// Report the level: `Some(lost)` while its gate is open. `None` closes the gate and forgets
+    /// the current loss, so no cue plays for it. Returns the cue to raise when the level settles.
+    fn report(&mut self, source: Source, lost: Option<bool>, now_ms: u32) -> Option<Cue> {
+        let Some(lost) = lost else {
+            *self = Level { loss_at: self.loss_at, ..Level::IDLE };
+            return None;
+        };
+        if lost == self.lost {
+            self.since = None;
+            return None;
+        }
+        self.since.get_or_insert(now_ms);
+        if self.due_in(source, now_ms) != Some(0) {
+            return None;
+        }
+        self.lost = lost;
+        self.since = None;
+        if lost {
+            self.loss_at = Some(now_ms);
+            Some(source.loss())
+        } else {
+            source.recovery()
+        }
+    }
 }
 
 /// The cue state. It lives in [`App`](crate::App), not in the pass state.
@@ -86,7 +115,8 @@ impl Level {
 pub(crate) struct Cues {
     /// The cue to play at the next plan.
     raised: Option<Cue>,
-    levels: [Level; 3],
+    levels: [Level; 2],
+    sensors: [Level; SENSOR_SLOTS],
     /// Whether the GPS had a fix since riding last started, so it has something to lose.
     gps_seen: bool,
     /// Slots whose sensor connected since riding last started.
@@ -100,7 +130,8 @@ impl Cues {
     pub(crate) const fn new() -> Self {
         Cues {
             raised: None,
-            levels: [Level::IDLE; 3],
+            levels: [Level::IDLE; 2],
+            sensors: [Level::IDLE; SENSOR_SLOTS],
             gps_seen: false,
             sensors_seen: 0,
             battery_armed: [true; 2],
@@ -115,31 +146,9 @@ impl Cues {
         }
     }
 
-    /// Report a source's level: `Some(lost)` while its gate is open. `None` closes the gate and
-    /// forgets the current loss, so no cue plays for it.
+    /// Report the level of a source in [`Source::SINGLE`], as [`Level::report`] takes it.
     pub(crate) fn level(&mut self, source: Source, lost: Option<bool>, now_ms: u32) {
-        let l = &mut self.levels[source as usize];
-        let Some(lost) = lost else {
-            *l = Level { loss_at: l.loss_at, ..Level::IDLE };
-            return;
-        };
-        if lost == l.lost {
-            l.since = None;
-            return;
-        }
-        l.since.get_or_insert(now_ms);
-        if l.due_in(source, now_ms) != Some(0) {
-            return;
-        }
-        l.lost = lost;
-        l.since = None;
-        let cue = if lost {
-            l.loss_at = Some(now_ms);
-            Some(source.loss())
-        } else {
-            source.recovery()
-        };
-        if let Some(cue) = cue {
+        if let Some(cue) = self.levels[source as usize].report(source, lost, now_ms) {
             self.raise(cue);
         }
     }
@@ -150,14 +159,23 @@ impl Cues {
         self.level(Source::Gps, self.gps_seen.then_some(!live_fix), now_ms);
     }
 
-    /// Report the sensor slots. Only a sensor that connected while riding can drop.
+    /// Report the sensor slots. Only a sensor that connected while riding can drop. A slot that
+    /// connects again is forgotten at once, so its next drop can play.
     pub(crate) fn sensors(&mut self, slots: &[SensorStatus], riding: bool, now_ms: u32) {
         let mask = |keep: fn(&SensorStatus) -> bool| {
             slots.iter().enumerate().filter(|(_, s)| keep(s)).fold(0u8, |m, (i, _)| m | 1 << i)
         };
         let connected = mask(|s| s.phase == SensorPhase::Connected);
         self.sensors_seen = if riding { (self.sensors_seen | connected) & mask(SensorStatus::saved) } else { 0 };
-        self.level(Source::Sensor, riding.then_some(self.sensors_seen & !connected != 0), now_ms);
+        let mut dropped = false;
+        for (i, level) in self.sensors.iter_mut().enumerate() {
+            let lost = (self.sensors_seen & 1 << i != 0).then_some(connected & 1 << i == 0);
+            dropped |= level.report(Source::Sensor, lost, now_ms).is_some();
+        }
+        if dropped {
+            self.sensors.iter_mut().for_each(|l| l.loss_at = Some(now_ms));
+            self.raise(Cue::SensorDropped);
+        }
     }
 
     /// Report the battery charge. Each threshold plays once on the way down.
@@ -183,7 +201,8 @@ impl Cues {
 
     /// Millis until the soonest pending level settles, or `None` when nothing is pending.
     pub(crate) fn wake_in(&self, now_ms: u32) -> Option<u32> {
-        (self.levels.iter().zip(Source::ALL)).filter_map(|(l, source)| l.due_in(source, now_ms)).min()
+        let sensors = self.sensors.iter().map(|l| (l, Source::Sensor));
+        (self.levels.iter().zip(Source::SINGLE)).chain(sensors).filter_map(|(l, s)| l.due_in(s, now_ms)).min()
     }
 
     /// The cue to start now, at `volume`. The raised cue is consumed even when `volume` is `None`,
@@ -281,14 +300,42 @@ mod tests {
         assert_eq!(played(&mut cues), None);
         cues.level(Source::Gps, Some(true), 70_000);
         assert_eq!(played(&mut cues), Some(Cue::GpsLost));
+    }
 
-        // A sensor drop has no recovery cue.
-        cues.level(Source::Sensor, Some(true), 80_000);
-        cues.level(Source::Sensor, Some(true), 90_000);
-        assert_eq!(played(&mut cues), Some(Cue::SensorDropped));
-        cues.level(Source::Sensor, Some(false), 91_000);
-        cues.level(Source::Sensor, Some(false), 96_000);
-        assert_eq!(played(&mut cues), None);
+    /// Ride for `secs` with the slots that `connected(s)` gives at second `s`, and list the seconds
+    /// at which `SensorDropped` plays.
+    fn sensor_drops(secs: u32, connected: impl Fn(u32) -> [bool; SENSOR_SLOTS]) -> heapless::Vec<u32, 8> {
+        let mut cues = Cues::new();
+        let mut heard = heapless::Vec::new();
+        for s in 0..secs {
+            let slots = connected(s).map(|c| SensorStatus {
+                phase: if c { SensorPhase::Connected } else { SensorPhase::Searching },
+                ..SensorStatus::default()
+            });
+            cues.sensors(&slots, true, s * 1_000);
+            if let Some(cue) = played(&mut cues) {
+                assert_eq!(cue, Cue::SensorDropped);
+                heard.push(s).unwrap();
+            }
+        }
+        heard
+    }
+
+    #[test]
+    fn each_sensor_that_drops_plays_its_own_cue() {
+        let apart = sensor_drops(150, |s| [s < 10, s < 100, true]);
+        assert_eq!(apart.as_slice(), &[20, 110], "two drops at different times");
+
+        // B is due at 40 s, inside the cooldown of A's cue, and plays when the cooldown ends.
+        let overlap = sensor_drops(150, |s| [!(10..35).contains(&s), s < 30, true]);
+        assert_eq!(overlap.as_slice(), &[20, 80], "A drops, B drops, A comes back");
+    }
+
+    #[test]
+    fn a_flapping_sensor_plays_at_most_one_cue_a_minute() {
+        // Up for 3 s, down for 12 s, for three minutes.
+        let heard = sensor_drops(180, |s| [s % 15 < 3, true, true]);
+        assert_eq!(heard.as_slice(), &[13, 73, 133]);
     }
 
     #[test]
