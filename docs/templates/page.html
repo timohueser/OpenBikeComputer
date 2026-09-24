@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{lang}}">
 
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{title}} — OpenBikeComputer docs</title>
   <meta name="description" content="{{description}}" />
+  <meta name="theme-color" content="#A4501E" />
+  <script src="{{theme_js}}"></script>
   <link rel="stylesheet" href="{{css}}" />
 </head>
 
@@ -13,11 +15,12 @@
   {{site_head}}
 
   <div class="layout">
-    <aside class="sidebar">
+    <aside class="sidebar" id="docs-navigation">
       {{nav}}
     </aside>
 
-    <main class="content">
+    <main class="content" id="main" tabindex="-1">
+      {{mobile_toc}}
       <article class="prose">
         {{copy_notice}}
         {{content}}
@@ -30,7 +33,7 @@
           <a href="{{base}}impressum/">Impressum</a>
           <a href="{{base}}datenschutz/">Datenschutz</a>
         </nav>
-        <span class="foot-trail">Headed for the trail.</span>
+
         <!-- ODbL § 4.3 (#1149): every map on this site is drawn from OpenStreetMap, so the
              credit and the licence pointer belong on every page. Same line in blog_post.html,
              blog_index.html, index.html and the builder's own footer. -->
@@ -42,14 +45,39 @@
   </div>
 
   <script>
-    // Mobile nav toggle.
     (function () {
-      var btn = document.querySelector('.nav-toggle');
-      var sb = document.querySelector('.sidebar');
-      if (!btn || !sb) return;
-      btn.addEventListener('click', function () {
-        var open = sb.classList.toggle('open');
-        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      var button = document.querySelector('.nav-toggle');
+      var sidebar = document.querySelector('.sidebar');
+      var mobile = matchMedia('(max-width: 820px)');
+      function close(focus) {
+        sidebar.classList.remove('open');
+        button.setAttribute('aria-expanded', 'false');
+        sidebar.inert = mobile.matches;
+        if (focus) button.focus();
+      }
+      close(false);
+      mobile.addEventListener('change', function () { close(false); });
+      button.addEventListener('click', function () {
+        if (sidebar.classList.contains('open')) return close(true);
+        sidebar.inert = false;
+        sidebar.classList.add('open');
+        button.setAttribute('aria-expanded', 'true');
+        sidebar.querySelector('[aria-current="page"]').focus();
+      });
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && sidebar.classList.contains('open')) close(true);
+      });
+      document.addEventListener('click', function (event) {
+        if (!sidebar.contains(event.target) && !button.contains(event.target)) close(false);
+      });
+      document.addEventListener('focusin', function (event) {
+        if (!sidebar.contains(event.target) && !button.contains(event.target)) close(false);
+      });
+      sidebar.addEventListener('click', function (event) {
+        if (event.target.closest('a') && mobile.matches) close(false);
+      });
+      document.querySelector('.toc-mobile')?.addEventListener('click', function (event) {
+        if (event.target.closest('a')) this.open = false;
       });
     })();
     // Highlight the current TOC entry while scrolling.
