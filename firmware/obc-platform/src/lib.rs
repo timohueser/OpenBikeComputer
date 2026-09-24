@@ -12,9 +12,10 @@
 //! contracts live in `obc-display`, the chip decoders in `obc-sensors`, and the SD adapters in
 //! `obc-storage`.
 //!
-//! [`backlight`] owns the level-to-duty ladder, [`button_input`] the debouncer and its edge-wake,
-//! [`debug_link`] the fake-sensor protocol, [`sensor_hub`] the instance-owned cross-task sensor
-//! streams, [`synth`] the synthetic moving location, and [`fuel`] a fixed-level fuel gauge.
+//! [`backlight`] owns the level-to-duty ladder, [`sound`] the cue-to-pattern table,
+//! [`button_input`] the debouncer and its edge-wake, [`debug_link`] the fake-sensor protocol,
+//! [`sensor_hub`] the instance-owned cross-task sensor streams, [`synth`] the synthetic moving
+//! location, and [`fuel`] a fixed-level fuel gauge.
 //!
 //! Two-plane architecture: each board's main loop runs the device on two planes across two
 //! executors, so input and the overlay stay responsive while a map frame renders. `render_map` is
@@ -54,6 +55,7 @@ pub mod synth;
 // Gated behind `sensor-link`, which pulls embassy-sync.
 #[cfg(feature = "sensor-link")]
 pub mod sensor_hub;
+pub mod sound;
 
 pub use button_input::ButtonInput;
 pub use fuel::StubFuelGauge;

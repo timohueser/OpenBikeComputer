@@ -1,4 +1,4 @@
-use obc_ports::{InputClock, RideClock, Sensors};
+use obc_ports::{Cue, InputClock, RideClock, Sensors, Volume};
 use obc_route::RouteReader;
 
 use crate::catalog_state::CatalogIntent;
@@ -97,6 +97,13 @@ pub struct SourceNeeds {
     pub route: bool,
 }
 
+/// The cue a pass raised and the level to play it at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sound {
+    pub cue: Cue,
+    pub volume: Volume,
+}
+
 /// What one pass decided: the render work, when to come back, what to read, and the bounded
 /// physical work per domain.
 #[derive(Debug, PartialEq, Eq)]
@@ -113,6 +120,8 @@ pub struct PassPlan {
     pub effects: EffectSlots,
     /// A later-to-earlier value is waiting: run another pass before sleeping.
     pub immediate: bool,
+    /// The one cue to start now, or `None` to leave the sounder as it is.
+    pub sound: Option<Sound>,
 }
 
 /// The overlay plane's live content and animation phase: the hold bulge and the planning banner.
@@ -701,6 +710,7 @@ impl App {
             },
             effects,
             immediate,
+            sound: None,
         }
     }
 
