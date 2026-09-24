@@ -35,6 +35,9 @@ void obc_ios_close(ObcHost *host); /* exactly once per handle; the handle is dea
 
 bool obc_ios_tick(ObcHost *host, double now_ms);                /* true when the frame changed */
 const uint8_t *obc_ios_frame(const ObcHost *host);             /* width*height*4 RGBA, opaque alpha; valid until the next call on this host */
+/* The newest cue once, as *len mono float samples at sample_rate; NULL and *len 0 until a pass raises
+   the next cue. Valid until the next call on this host. */
+const float *obc_ios_take_sound(ObcHost *host, uint32_t sample_rate, uint32_t *len);
 uint32_t obc_ios_frame_width(void);
 uint32_t obc_ios_frame_height(void);
 

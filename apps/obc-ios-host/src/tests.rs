@@ -236,6 +236,33 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A cue reaches the shell once, as the shared pattern rendered at the shell's rate. No pass raises
+/// a cue yet, so the test puts one where a pass leaves it.
+#[test]
+fn a_raised_cue_is_taken_once_as_its_rendered_pattern() {
+    use crate::ffi::obc_ios_take_sound;
+    use obc_ports::{Cue, Volume};
+
+    let (card, directory) = card("sound");
+    let mut host = open(&card, &directory);
+    assert!(host.app.sound_available(), "a phone has a speaker");
+    let sound = Sound { cue: Cue::OffRoute, volume: Volume::Quiet };
+    host.sound = Some(sound);
+    let expected = obc_host_core::tone::render(obc_platform::sound::pattern(sound.cue), sound.volume, 48_000);
+
+    let mut len = 0;
+    // SAFETY: the host is this test's own and open, and `len` is a local.
+    unsafe {
+        let samples = obc_ios_take_sound(&mut *host, 48_000, &mut len);
+        assert!(!samples.is_null());
+        assert_eq!(std::slice::from_raw_parts(samples, len as usize), expected);
+        assert!(obc_ios_take_sound(&mut *host, 48_000, &mut len).is_null(), "a cue plays once");
+        assert_eq!(len, 0);
+    }
+    drop(host);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// The hand-written header and the ABI cannot drift apart: each declares what the other defines.
 #[test]
 fn the_header_declares_exactly_the_functions_the_abi_defines() {
