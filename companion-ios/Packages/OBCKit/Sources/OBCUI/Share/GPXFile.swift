@@ -1,24 +1,24 @@
 import CoreTransferable
 import Foundation
-import OBCDomain
 import UniformTypeIdentifiers
 
-/// A ride as a GPX file for the system share sheet. The encoder comes from the composition root,
-/// because OBCUI does not import OBCFormats. It runs only when the rider picks a destination.
-public struct RideGPXFile: Transferable, Sendable {
-    let ride: Ride
-    let encode: @Sendable (Ride) throws -> Data
+/// A ride or a trip as a GPX file for the system share sheet. The encoder comes from the
+/// composition root, because OBCUI does not import OBCFormats. It runs only when the rider picks
+/// a destination.
+public struct GPXFile: Transferable, Sendable {
+    let name: String
+    let encode: @Sendable () throws -> Data
 
-    public init(ride: Ride, encode: @escaping @Sendable (Ride) throws -> Data) {
-        self.ride = ride
+    public init(name: String, encode: @escaping @Sendable () throws -> Data) {
+        self.name = name
         self.encode = encode
     }
 
-    public var fileName: String { Self.fileName(for: ride.summary.name) }
+    public var fileName: String { Self.fileName(for: name) }
 
-    /// The ride name as a file name that every file system accepts: path separators, reserved
+    /// The name as a file name that every file system accepts: path separators, reserved
     /// characters and control characters become "-", and leading dots go, so the file is never
-    /// hidden. File systems cap a name at 255 bytes and a ride name has no length limit, so the
+    /// hidden. File systems cap a name at 255 bytes and a name has no length limit, so the
     /// base is cut to `maxBaseBytes` UTF-8 bytes on a character boundary.
     public static func fileName(for name: String) -> String {
         let reserved = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.controlCharacters)
@@ -37,12 +37,12 @@ public struct RideGPXFile: Transferable, Sendable {
 
     public static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .gpx) { file in
-            // A fresh folder per share, so two rides with one name never overwrite each other.
+            // A fresh folder per share, so two files with one name never overwrite each other.
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let url = folder.appendingPathComponent(file.fileName)
-            try file.encode(file.ride).write(to: url, options: .atomic)
+            try file.encode().write(to: url, options: .atomic)
             return SentTransferredFile(url)
         }
     }

@@ -475,7 +475,8 @@ struct RootView: View {
                 onOpenRide: { path.append(.ride(id: $0)) },
                 onEvenOut: { offer in Task { await mainModel.evenOutDays(id, from: offer.fixedBefore) } },
                 onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) },
-                onOpenDay: { path.append(.tripDay(id: id, day: $0)) }
+                onOpenDay: { path.append(.tripDay(id: id, day: $0)) },
+                encodeGPX: { GPXTripEncoder.encode($0) }
             )
         case .dayEditor(let id, let isSplitMode):
             DayEditorHost(make: { mainModel.dayEditor(id, isSplitMode: isSplitMode) }) {
@@ -528,15 +529,16 @@ struct RootView: View {
 
     /// Share the ride as GPX or an image, or save it as a route through the import landing, with
     /// the import's name-collision rule.
-    private func rideShareMenu(for ride: Ride) -> RideShareMenu {
+    private func rideShareMenu(for ride: Ride) -> ShareMenu {
         let exporter = rideExporter
-        let fileName = RideGPXFile.fileName(for: ride.summary.name)
-        return RideShareMenu(
-            gpx: RideGPXFile(ride: ride, encode: { try exporter.export($0).data }),
-            onSaveAsRoute: ride.plannedRoute().map { route in
-                { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
-            }
+        let fileName = GPXFile.fileName(for: ride.summary.name)
+        return ShareMenu(
+            gpx: GPXFile(name: ride.summary.name) { try exporter.export(ride).data },
+            image: ShareCardContent(ride: ride)
         )
+        .saveAsRoute(ride.plannedRoute().map { route in
+            { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
+        })
     }
 
     /// Edit ride and Revert to original. A revert that removes this ride's id pops the detail.
