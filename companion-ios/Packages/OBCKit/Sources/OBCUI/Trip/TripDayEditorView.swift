@@ -313,9 +313,13 @@ struct DayEditorSheet: View {
             Button { model.splitDay(day) } label: { Label("Split this day", systemImage: "scissors") }
                 .accessibilityIdentifier("dayEditor.day.split")
         }
-        if model.canBridge(day) {
-            Button { model.bridgeGap(in: day) } label: { Label("Bridge the gap", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }
-                .accessibilityIdentifier("dayEditor.day.bridge")
+        ForEach(model.bridgeableGaps(day), id: \.pieceStart) { gap in
+            Button { model.bridge(gap) } label: {
+                Label(
+                    gap.isTransfer ? "Bridge the transfer" : "Bridge the gap",
+                    systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+            }
+            .accessibilityIdentifier(gap.isTransfer ? "dayEditor.day.bridgeTransfer" : "dayEditor.day.bridge")
         }
         if movable {
             Button { model.joinDay(day) } label: {

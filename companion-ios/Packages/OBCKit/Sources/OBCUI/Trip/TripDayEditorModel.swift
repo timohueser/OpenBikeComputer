@@ -227,16 +227,18 @@ public final class TripDayEditorModel {
         }
     }
 
-    /// Whether `day` has a gap the router can bridge.
-    public func canBridge(_ day: Int) -> Bool {
-        router != nil && bridging == nil && gaps.contains { $0.day == day }
+    /// The gaps `day` can bridge, in line order: a transfer at its start, straight lines inside it.
+    public func bridgeableGaps(_ day: Int) -> [TripGap] {
+        guard router != nil, bridging == nil else { return [] }
+        return gaps.filter { $0.day == day }
     }
 
-    /// Route across the first gap of `day`. When the router cannot, the gap stays as it is and
-    /// ``bridgeFailure`` says why.
-    public func bridgeGap(in day: Int) {
+    /// Route across `gap`. When the router cannot, the gap stays as it is and ``bridgeFailure``
+    /// says why.
+    public func bridge(_ gap: TripGap) {
         settle()
-        guard canBridge(day), let router, let gap = gaps.first(where: { $0.day == day }) else { return }
+        guard let router, bridgeableGaps(gap.day).contains(gap) else { return }
+        let day = gap.day
         bridging = day
         syncNotes()
         let trip = trip

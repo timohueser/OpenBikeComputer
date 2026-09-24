@@ -16,6 +16,9 @@ public struct TripGap: Equatable, Sendable {
 
     /// Straight metres across the gap.
     public var meters: Double { from.distance(to: to) }
+
+    /// The next day starts across the gap, farther than ``Trip/transferMinMeters`` away.
+    public var isTransfer: Bool { isAtDayEnd && meters > Trip.transferMinMeters }
 }
 
 extension Trip {
