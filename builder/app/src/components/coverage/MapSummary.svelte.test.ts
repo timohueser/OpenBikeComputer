@@ -49,6 +49,7 @@ describe("MapSummary", () => {
             "Terrain source credit",
             expect.stringContaining("Map source credit"),
         ]);
+        expect(content(target.querySelector(".fit")!)).toContain("one map file");
         await unmount(component);
     });
 });

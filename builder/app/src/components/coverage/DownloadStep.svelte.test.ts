@@ -238,6 +238,7 @@ describe("direct assembler delivery", () => {
         await tick();
         expect(target.textContent).toContain("downloading cells — 1/2");
         expect(target.textContent).toContain("500 B of 1000 B");
+        expect(target.querySelector(".bar span")?.getAttribute("style")).toContain("50%");
 
         finishDownload();
         for (let attempt = 0; attempt < 30 && seams.workerAssemble === 0; attempt++) {
@@ -256,6 +257,7 @@ describe("direct assembler delivery", () => {
             seams.worker!.onmessage!(new MessageEvent("message", { data: { type: "progress", phase, fraction } }));
             await tick();
             expect(target.textContent).toContain(`assembling — ${label} · ${Math.round(fraction * 100)}%`);
+            expect(target.querySelector(".bar span")?.getAttribute("style")).toContain(`${Math.round(fraction * 100)}%`);
         }
         [...target.querySelectorAll("button")].find((button) => button.textContent === "Cancel")!.click();
         await unmount(component);
