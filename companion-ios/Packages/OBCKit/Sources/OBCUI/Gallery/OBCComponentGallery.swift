@@ -23,6 +23,20 @@ public struct OBCComponentGallery: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
+                section("Pixel Text") {
+                    PixelText("TRAILHEAD", size: .label, color: OBCTheme.onRust)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(OBCTheme.rust, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+                    PixelText("ON DEVICE", color: OBCTheme.onRust)
+                        .padding(4)
+                        .background(OBCTheme.rust, in: RoundedRectangle(cornerRadius: 4))
+                    ForEach(PixelFont.allCases, id: \.self) { font in
+                        PixelText("Grimsel Pass · Zürich", size: font)
+                    }
+                    PixelText("82%", scale: 2, color: OBCTheme.secondary)
+                }
+
                 section("Device Top Bar") {
                     VStack(spacing: 0) {
                         DeviceTopBar(deviceName: "Trailhead", connection: .connected, batteryPercent: 82)
