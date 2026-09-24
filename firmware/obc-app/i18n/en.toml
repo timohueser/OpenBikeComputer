@@ -82,6 +82,12 @@ imperial = "Imperial"
 light = "Light"
 dark = "Dark"
 
+# --- SoundLevel enum labels (Sound settings row) ---
+[sound_level]
+off = "Off"
+quiet = "Quiet"
+loud = "Loud"
+
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
 off = "Off"
@@ -240,6 +246,7 @@ grade = "grade "
 title = "SETTINGS"
 ride = "Ride"
 display = "Display"
+sound = "Sound"
 connections = "Connections"
 power = "Power"
 system = "System"
@@ -271,6 +278,12 @@ title = "DISPLAY"
 idle = "Idle timeout"
 brightness = "Brightness"
 theme = "Theme"
+
+# --- Sound settings screen ---
+[sound]
+title = "SOUND"
+level = "Sound"
+key_tones = "Key tones"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]

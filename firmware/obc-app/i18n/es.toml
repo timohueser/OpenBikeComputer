@@ -61,6 +61,12 @@ imperial = "Imperial"
 light = "Claro"
 dark = "Oscuro"
 
+# --- SoundLevel enum labels (Sound settings row) ---
+[sound_level]
+off = "Desact."
+quiet = "Bajo"
+loud = "Alto"
+
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
 off = "Desact."
@@ -212,6 +218,7 @@ grade = "pend. "
 title = "AJUSTES"
 ride = "Salida"
 display = "Pantalla"
+sound = "Sonido"
 connections = "Conexiones"
 power = "Energía"
 system = "Sistema"
@@ -243,6 +250,12 @@ title = "PANTALLA"
 idle = "Espera"
 brightness = "Brillo"
 theme = "Tema"
+
+# --- Sound settings screen ---
+[sound]
+title = "SONIDO"
+level = "Sonido"
+key_tones = "Tonos teclas"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]

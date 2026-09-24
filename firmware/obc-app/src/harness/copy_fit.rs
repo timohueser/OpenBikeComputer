@@ -121,6 +121,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Settings(SettingsPage::hub()),
         Screen::Ride(SettingsPage::new(&page::RIDE)),
         Screen::Display(SettingsPage::new(&page::DISPLAY)),
+        Screen::Sound(SettingsPage::new(&page::SOUND)),
         Screen::Connections(SettingsPage::new(&page::CONNECTIONS)),
         Screen::Power(SettingsPage::new(&page::POWER)),
         Screen::System(SettingsPage::new(&page::SYSTEM)),
