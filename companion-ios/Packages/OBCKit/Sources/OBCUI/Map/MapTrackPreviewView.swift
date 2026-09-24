@@ -112,7 +112,7 @@ public struct MapTrackPreviewView: View {
 }
 
 #if canImport(MapKit)
-/// The track polyline and start/end dots, shared by the preview and the full-screen
+/// The track polyline, its ink start dot and rust end square, shared by the preview and the full-screen
 /// `TrackMapView` so both look identical. `waypoints` pins the middle waypoints; the
 /// start and end already have dots.
 struct TrackMapContent: MapContent {
@@ -130,10 +130,10 @@ struct TrackMapContent: MapContent {
         MapPolyline(coordinates: coords)
             .stroke(OBCTheme.route, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
         if let first = coords.first {
-            Annotation("", coordinate: first) { nodeDot(OBCTheme.ink) }
+            Annotation("", coordinate: first) { endMark(Circle(), fill: OBCTheme.ink) }
         }
         if coords.count > 1, let last = coords.last {
-            Annotation("", coordinate: last) { nodeDot(OBCTheme.rust) }
+            Annotation("", coordinate: last) { endMark(RoundedRectangle(cornerRadius: 2), fill: OBCTheme.rust) }
         }
         ForEach(Array(waypoints.dropFirst().dropLast())) { waypoint in
             Annotation(
@@ -160,25 +160,25 @@ struct TrackMapContent: MapContent {
         return others + [highlightedPhoto]
     }
 
-    private func nodeDot(_ fill: Color) -> some View {
-        Circle()
+    private func endMark(_ shape: some InsettableShape, fill: Color) -> some View {
+        shape
             .fill(fill)
             .frame(width: dotRadius * 2, height: dotRadius * 2)
-            .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 2.5))
+            .overlay(shape.strokeBorder(OBCTheme.surface, lineWidth: 2))
     }
 }
 
-/// The numbered waypoint pin as a live view. The grid preview draws the same mark
-/// in its `Canvas`.
+/// The numbered waypoint pin as a live view, olive as in the waypoints list. The sketch draws
+/// the same mark in its `Canvas`.
 struct WaypointPinBadge: View {
     let label: String
 
     var body: some View {
         Text(label)
             .font(.system(.caption2, weight: .semibold).monospacedDigit())
-            .foregroundStyle(OBCTheme.ink)
+            .foregroundStyle(OBCTheme.surface)
             .frame(width: 18, height: 18)
-            .background(Circle().fill(OBCTheme.amber))
+            .background(Circle().fill(OBCTheme.secondary))
             .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 2.5))
             .obcFixedGeometryType()
     }
