@@ -104,5 +104,5 @@ public final class RideEditModel {
         [LineMarker(id: 0, distance: 0, name: "Trim start"), LineMarker(id: 1, distance: line.length, name: "Trim end")]
     }
 
-    private static let trimColors = [OBCTheme.inkFaint.opacity(0.55), OBCTheme.trackStroke, OBCTheme.inkFaint.opacity(0.55)]
+    private static let trimColors = [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)]
 }

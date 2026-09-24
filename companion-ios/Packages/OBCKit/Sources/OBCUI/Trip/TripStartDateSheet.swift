@@ -21,7 +21,7 @@ public struct TripStartDateSheet: View {
                     .datePickerStyle(.graphical)
                     .tint(OBCTheme.tint)
                     .padding(.horizontal, 12)
-                    .background(OBCTheme.panel)
+                    .background(OBCTheme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
                 if hasDate {
                     Button("No start date") {
@@ -34,7 +34,7 @@ public struct TripStartDateSheet: View {
                 Spacer()
             }
             .padding(20)
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .navigationTitle("Start date")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

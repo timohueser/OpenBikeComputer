@@ -2,7 +2,7 @@ import SwiftUI
 import OBCDomain
 
 /// The routes-list panel for a trip: every day drawn on one preview in its palette color, a
-/// serif name, and the day-count stat line. The full-width hero preview tells it apart from a
+/// name, and the day-count stat line. The full-width hero preview tells it apart from a
 /// ``RouteCard``, which uses the compact side-cell layout.
 ///
 /// The on-device badge is the trip-level ``OnDeviceState`` the caller resolves: a check only
@@ -66,35 +66,35 @@ public struct TripCard: View {
         VStack(alignment: .leading, spacing: 0) {
             MultiTrackPreviewView(stages: stages, showsChrome: false)
                 .frame(height: 150)
-                .overlay(alignment: .bottom) { OBCTheme.line.frame(height: 1) }
+                .overlay(alignment: .bottom) { OBCTheme.hairline.frame(height: 1) }
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text(name)
-                        .font(.obcSerif(size: 19))
+                        .font(.system(.title3, weight: .bold))
                         .foregroundStyle(OBCTheme.ink)
                         .lineLimit(1)
                     if onDevice != .notOnDevice { OBCOnDeviceBadge(upToDate: onDevice == .upToDate) }
                 }
                 Text(subtitle)
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .accessibilityIdentifier("tripCard.stats")
                 if let dateLine {
                     Text(dateLine)
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(1)
                         .accessibilityIdentifier("tripCard.dates")
                 }
             }
             .padding(15)
         }
-        .background(OBCTheme.panel)
+        .background(OBCTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.hairline))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
     }
 }
@@ -124,7 +124,7 @@ public struct TripCard: View {
         }
         .padding(20)
     }
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
     .environment(\.obcIsOnline, false)
 }
 #endif

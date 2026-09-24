@@ -3,7 +3,7 @@ import SwiftUI
 /// One connected service's row state in the sync block.
 public struct OBCServiceStatus: Identifiable {
     public enum SyncState {
-        /// A forest check and an "Uploaded" line.
+        /// A check and an "Uploaded" line.
         case uploaded(String)
         /// A faint line and a per-ride ghost Upload button.
         case notUploaded(String)
@@ -54,15 +54,15 @@ public struct OBCConnectedServicesBlock: View {
                     row(service, isLast: service.id == services.last?.id)
                 }
             }
-            .background(OBCTheme.panel)
+            .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
             .overlay(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
             )
 
             Text("Turn on auto-sync on import in Settings → Connected services to push new rides for you. If it's off or a push fails, upload a ride here.")
-                .font(.system(size: 12.5))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption))
+                .foregroundStyle(OBCTheme.secondary)
                 .padding(.horizontal, 10)
         }
         .opacity(comingSoon ? 0.75 : 1)
@@ -75,31 +75,31 @@ public struct OBCConnectedServicesBlock: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(service.name)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(.callout, weight: .medium))
                     .foregroundStyle(OBCTheme.ink)
                 switch service.state {
                 case .uploaded(let line):
                     Label(line, systemImage: "checkmark")
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.forest)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .labelStyle(.titleAndIcon)
                 case .notUploaded(let line):
                     Text(line)
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if case .notUploaded = service.state {
                 Button("Upload") { onUpload(service.name) }
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(.footnote, weight: .semibold))
                     .foregroundStyle(OBCTheme.tint)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 14)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(OBCTheme.forest.opacity(0.4), lineWidth: 1.5)
+                            .strokeBorder(OBCTheme.hairlineStrong, lineWidth: 1.5)
                     )
                     .buttonStyle(.plain)
             }
@@ -108,7 +108,7 @@ public struct OBCConnectedServicesBlock: View {
         .padding(.horizontal, 16)
         .frame(minHeight: 52)
         .overlay(alignment: .bottom) {
-            if !isLast { OBCTheme.screenLine.frame(height: 1).padding(.leading, 56) }
+            if !isLast { OBCTheme.hairline.frame(height: 1).padding(.leading, 56) }
         }
     }
 }
@@ -118,16 +118,16 @@ public struct OBCConnectedServicesBlock: View {
         OBCServiceStatus(
             name: "Strava",
             systemImage: "bolt.fill",
-            tileColor: OBCTheme.coral,
+            tileColor: OBCTheme.tint,
             state: .uploaded("Uploaded on import")
         ),
         OBCServiceStatus(
             name: "Komoot",
             systemImage: "location.circle",
-            tileColor: OBCTheme.wood,
+            tileColor: OBCTheme.tint,
             state: .notUploaded("Not uploaded")
         ),
     ])
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

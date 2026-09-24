@@ -34,9 +34,9 @@ public struct RideLibraryMapView: View {
                     RideFilterBar(model: model)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(OBCTheme.parchment.opacity(0.96))
+                        .background(OBCTheme.page.opacity(0.96))
                         .overlay(alignment: .bottom) {
-                            Rectangle().fill(OBCTheme.line).frame(height: 1)
+                            Rectangle().fill(OBCTheme.hairline).frame(height: 1)
                         }
                 }
                 .overlay(alignment: .bottom) {
@@ -80,7 +80,7 @@ public struct RideLibraryMapView: View {
             }
         }
         #else
-        OBCTheme.parchment
+        OBCTheme.page
         #endif
     }
 
@@ -104,11 +104,11 @@ public struct RideLibraryMapView: View {
         } label: {
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(OBCTheme.coral)
+                    .fill(OBCTheme.ride)
                     .frame(width: 6, height: 40)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(ride.name)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
                         .lineLimit(1)
                     Text([
@@ -116,23 +116,23 @@ public struct RideLibraryMapView: View {
                         OBCFormat.distance(meters: ride.distanceMeters),
                         ride.bikeType.name,
                     ].joined(separator: " · "))
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(OBCTheme.forest)
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(OBCTheme.secondary)
             }
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
-                    .fill(OBCTheme.panel)
+                    .fill(OBCTheme.surface)
                     .shadow(color: .black.opacity(0.18), radius: 14, y: 4)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).stroke(OBCTheme.line, lineWidth: 1)
+                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).stroke(OBCTheme.hairline, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -160,7 +160,6 @@ struct RideLinesMap: UIViewRepresentable {
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
         map.delegate = context.coordinator
-        map.overrideUserInterfaceStyle = .light
         map.showsCompass = true
         map.showsScale = true
         map.pointOfInterestFilter = .excludingAll
@@ -233,10 +232,10 @@ struct RideLinesMap: UIViewRepresentable {
             let others = visible.filter { $0.id != selected }
             let chosen = visible.filter { $0.id == selected }
             map.addOverlays([
-                StyledMultiPolyline(others, color: OBCTheme.trackHalo, width: 6),
-                StyledMultiPolyline(others, color: OBCTheme.trackStroke, width: 2.6),
-                StyledMultiPolyline(chosen, color: OBCTheme.trackHalo, width: 8),
-                StyledMultiPolyline(chosen, color: OBCTheme.coral, width: 4),
+                StyledMultiPolyline(others, color: OBCTheme.surface, width: 6),
+                StyledMultiPolyline(others, color: OBCTheme.secondary, width: 2.6),
+                StyledMultiPolyline(chosen, color: OBCTheme.surface, width: 8),
+                StyledMultiPolyline(chosen, color: OBCTheme.ride, width: 4),
             ].compactMap { $0 }, level: .aboveLabels)
         }
 
@@ -277,7 +276,7 @@ private final class StyledMultiPolyline: MKMultiPolyline {
     }
 }
 
-/// The offline fallback: gridded parchment over the whole world, under the lines.
+/// The offline fallback: a gridded sketch ground over the whole world, under the lines.
 private final class GridOverlay: NSObject, MKOverlay {
     let coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     let boundingMapRect = MKMapRect.world
@@ -286,10 +285,10 @@ private final class GridOverlay: NSObject, MKOverlay {
 private final class GridRenderer: MKOverlayRenderer {
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
         let rect = self.rect(for: mapRect)
-        context.setFillColor(UIColor(OBCTheme.parchment2).cgColor)
+        context.setFillColor(UIColor(OBCTheme.sketchGround).cgColor)
         context.fill(rect)
         let step = 22 / zoomScale
-        context.setStrokeColor(UIColor(OBCTheme.gridLine).cgColor)
+        context.setStrokeColor(UIColor(OBCTheme.sketchLine).cgColor)
         context.setLineWidth(1 / zoomScale)
         var x = (rect.minX / step).rounded(.down) * step
         while x <= rect.maxX {

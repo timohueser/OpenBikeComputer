@@ -50,7 +50,7 @@ public struct TripJoinSheet: View {
                     .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 14, trailing: 20))
                 ForEach(Array(order.enumerated()), id: \.element.id) { index, file in
                     row(index: index, file: file)
-                        .listRowBackground(OBCTheme.panel)
+                        .listRowBackground(OBCTheme.surface)
                         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                         .accessibilityIdentifier("join.day.\(index)")
                 }
@@ -59,15 +59,15 @@ public struct TripJoinSheet: View {
                     dayCount: order.count,
                     distanceMeters: order.reduce(0) { $0 + $1.distanceMeters },
                     elevationGainMeters: order.reduce(0) { $0 + $1.climbMeters }))
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .accessibilityIdentifier("join.totals")
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             #if os(iOS)
             .environment(\.editMode, .constant(.active))
             .navigationBarTitleDisplayMode(.inline)
@@ -90,7 +90,7 @@ public struct TripJoinSheet: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Make a trip from these \(order.count) routes?")
-                .font(.obcSerif(size: 26))
+                .font(.system(.title, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .accessibilityIdentifier("join.title")
             MultiTrackPreviewView(stages: order.enumerated().map { index, file in
@@ -108,11 +108,11 @@ public struct TripJoinSheet: View {
                 Circle().fill(OBCTheme.stageColor(index: index)).frame(width: 10, height: 10)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Day \(index + 1)")
-                        .font(.system(size: 16))
+                        .font(.system(.callout))
                         .foregroundStyle(OBCTheme.ink)
                     Text("\(file.fileName) · \(OBCFormat.distance(meters: file.distanceMeters)) · \(OBCFormat.climb(meters: file.climbMeters))")
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(2)
                 }
             }
@@ -125,8 +125,8 @@ public struct TripJoinSheet: View {
         let gap = TripJoin.gaps([previous.joinFile, file.joinFile])[0]
         let joins = gap <= TripJoin.joinMeters
         return Text(joins ? "joins" : "gap \(OBCFormat.distance(meters: gap))")
-            .font(.obcMono(size: 12))
-            .foregroundStyle(joins ? OBCTheme.forest : OBCTheme.coral)
+            .font(.system(.caption).monospacedDigit())
+            .foregroundStyle(joins ? OBCTheme.secondary : OBCTheme.danger)
             .padding(.top, 8)
             .padding(.leading, 22)
     }

@@ -62,7 +62,7 @@ public struct RidePhotoGrid: View {
                         .aspectRatio(1, contentMode: .fit)
                         .overlay { PhotoThumbnail(data: pick.thumbnail) }
                         .clipped()
-                        .overlay { if !isSelected { OBCTheme.panel.opacity(0.45) } }
+                        .overlay { if !isSelected { OBCTheme.surface.opacity(0.45) } }
                         .overlay(alignment: .bottomLeading) { caption(pick) }
                         .overlay(alignment: .topTrailing) { checkmark(isSelected) }
                 }
@@ -77,10 +77,10 @@ public struct RidePhotoGrid: View {
         VStack(alignment: .leading, spacing: 1) {
             if pick.placed.locationOffTrack {
                 Text("Location off the track")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(.caption2, weight: .semibold))
             }
             Text(pick.placed.photo.takenAt.formatted(date: .omitted, time: .shortened))
-                .font(.obcMono(size: 10, weight: .semibold))
+                .font(.system(.caption2, weight: .semibold).monospacedDigit())
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 6)
@@ -91,9 +91,9 @@ public struct RidePhotoGrid: View {
 
     private func checkmark(_ isSelected: Bool) -> some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-            .font(.system(size: 20, weight: .semibold))
+            .font(.system(.title3, weight: .semibold))
             .symbolRenderingMode(.palette)
-            .foregroundStyle(.white, isSelected ? OBCTheme.forest : .black.opacity(0.2))
+            .foregroundStyle(isSelected ? OBCTheme.surface : .white, isSelected ? OBCTheme.ink : .black.opacity(0.2))
             .padding(6)
     }
 }
@@ -103,13 +103,13 @@ struct PhotoThumbnail: View {
     let data: Data?
 
     var body: some View {
-        OBCTheme.parchment2.overlay {
+        OBCTheme.surface2.overlay {
             if let data, let image = Image(photoData: data) {
                 image.resizable().scaledToFill()
             } else {
                 Image(systemName: "photo")
-                    .font(.system(size: 18))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.body))
+                    .foregroundStyle(OBCTheme.secondary)
             }
         }
         .clipped()

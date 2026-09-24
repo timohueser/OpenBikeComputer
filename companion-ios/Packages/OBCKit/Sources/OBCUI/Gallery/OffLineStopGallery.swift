@@ -48,7 +48,7 @@ struct OffLineStopGallerySection: View {
             color: OBCTheme.stageColor(index: 0)
         )
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSheet).strokeBorder(OBCTheme.hairline))
     }
 }
 

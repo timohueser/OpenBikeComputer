@@ -40,7 +40,7 @@ public final class RideSyncCoordinator {
 
     /// Pacing, injectable so the coordinator tests run in milliseconds.
     public struct Timing: Sendable {
-    /// How long the forest check holds before the button returns to idle.
+    /// How long the check holds before the button returns to idle.
         public var syncDoneHold: Duration
     /// How long the "synced N new rides just now" line stays up.
         public var syncedLineHold: Duration
@@ -73,7 +73,7 @@ public final class RideSyncCoordinator {
             }
         }
     }
-    /// Non-nil while syncing, which feeds the amber progress caption.
+    /// Non-nil while syncing, which feeds the progress caption.
     public private(set) var syncProgress: SyncProgress?
     /// Non-nil after a successful sync, which feeds the confirm line.
     public private(set) var lastSyncCount: Int?

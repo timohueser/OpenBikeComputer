@@ -1,26 +1,19 @@
 import SwiftUI
 
-/// The slim tinted strip below the top bar. Amber for out of range, warning red for
+/// The slim tinted strip below the top bar. Olive for out of range, danger red for
 /// an interrupted sync, with an optional inline action. Reconnection is silent: the
 /// banner just disappears.
 public struct OBCInlineBanner: View {
     public enum Tone {
         /// Out of range, or informational.
-        case amber
+        case notice
         /// Interrupted or failed.
         case warning
 
         var accent: Color {
             switch self {
-            case .amber: OBCTheme.amber
-            case .warning: OBCTheme.warning
-            }
-        }
-
-        var iconColor: Color {
-            switch self {
-            case .amber: OBCTheme.coral
-            case .warning: OBCTheme.warning
+            case .notice: OBCTheme.secondary
+            case .warning: OBCTheme.danger
             }
         }
     }
@@ -35,7 +28,7 @@ public struct OBCInlineBanner: View {
     var action: () -> Void
 
     public init(
-        tone: Tone = .amber,
+        tone: Tone = .notice,
         systemImage: String,
         title: String,
         message: String,
@@ -53,26 +46,26 @@ public struct OBCInlineBanner: View {
     public var body: some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(tone.iconColor)
+                .font(.system(.subheadline, weight: .semibold))
+                .foregroundStyle(tone.accent)
 
             (Text(title).fontWeight(.semibold) + Text(" ") + Text(message))
-                .font(.system(size: 12.5))
+                .font(.system(.caption))
                 .foregroundStyle(OBCTheme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let actionTitle {
                 Button(action: action) {
                     Text(actionTitle)
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(OBCTheme.forest)
+                        .font(.system(.caption, weight: .semibold))
+                        .foregroundStyle(OBCTheme.tint)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 13)
-        .background(tone.accent.opacity(tone == .amber ? 0.16 : 0.1))
+        .background(tone.accent.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
         .overlay(
             RoundedRectangle(cornerRadius: OBCTheme.radiusMedium)
@@ -81,7 +74,7 @@ public struct OBCInlineBanner: View {
     }
 }
 
-/// A transient ink capsule with parchment text, presented through `.obcToast`.
+/// A transient ink capsule with page-coloured text, presented through `.obcToast`.
 public struct OBCToast: View {
     let systemImage: String
     let message: String
@@ -94,11 +87,10 @@ public struct OBCToast: View {
     public var body: some View {
         HStack(spacing: 9) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(OBCTheme.amber)
+                .font(.system(.footnote, weight: .bold))
             Text(message)
-                .font(.system(size: 13.5, weight: .medium))
-                .foregroundStyle(OBCTheme.parchment)
+                .font(.system(.footnote, weight: .medium))
+                .foregroundStyle(OBCTheme.page)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 12)
@@ -150,5 +142,5 @@ public extension View {
         )
     }
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }

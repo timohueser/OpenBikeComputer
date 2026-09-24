@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// The mark of a stop's kind: a white symbol on the kind's colour. The same mark is the row
+/// The mark of a stop's kind: the kind's symbol in the surface colour on ink. The same mark is the row
 /// icon in the stops sheet, the pin on the map and the mark on the profile.
 public struct StopIcon: View {
     let kind: Stop.Kind
@@ -18,9 +18,9 @@ public struct StopIcon: View {
     public var body: some View {
         Image(systemName: Self.symbol(kind))
             .font(.system(size: size * 0.48, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(OBCTheme.surface)
             .frame(width: size, height: size)
-            .background(Self.color(kind))
+            .background(OBCTheme.ink)
             .clipShape(RoundedRectangle(cornerRadius: isRound ? size / 2 : OBCTheme.radiusSmall))
     }
 
@@ -42,18 +42,9 @@ public struct StopIcon: View {
         case .place: "Place"
         }
     }
-
-    static func color(_ kind: Stop.Kind) -> Color {
-        switch kind {
-        case .campsite: OBCTheme.forest
-        case .hotel: OBCTheme.water
-        case .waypoint: OBCTheme.amber
-        case .place: OBCTheme.inkSoft
-        }
-    }
 }
 
-/// One stop in the stops sheet: the kind's mark, the name, and a mono line under it.
+/// One stop in the stops sheet: the kind's mark, the name, and a stat line under it.
 public struct StopRow: View {
     let stop: Stop
     let detail: String
@@ -75,12 +66,12 @@ public struct StopRow: View {
                 StopIcon(kind: stop.kind)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(stop.name)
-                        .font(.system(size: 16))
+                        .font(.system(.callout))
                         .foregroundStyle(OBCTheme.ink)
                         .lineLimit(1)
                     Text(detail)
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                 }
@@ -91,7 +82,7 @@ public struct StopRow: View {
             .frame(minHeight: 52)
             .contentShape(Rectangle())
             .overlay(alignment: .bottom) {
-                if showsDivider { OBCTheme.screenLine.frame(height: 1).padding(.leading, 54) }
+                if showsDivider { OBCTheme.hairline.frame(height: 1).padding(.leading, 54) }
             }
         }
         .buttonStyle(.plain)

@@ -67,7 +67,7 @@ public struct MultiTrackPreviewView: View {
     // MARK: Grid fallback
 
     /// The basemap-free fallback: every stage normalized into one shared unit square,
-    /// so they stay in register, then stroked in its color over gridded parchment.
+    /// so they stay in register, then stroked in its color over the gridded sketch ground.
     private var grid: some View {
         let shared = TrackPreview.normalizingShared(stages.map(\.coordinates) + pins.map { [$0.coordinate] })
         return Canvas { context, size in
@@ -81,7 +81,7 @@ public struct MultiTrackPreviewView: View {
                 path.addLines(shared[index].points.map { transform($0) })
                 if stage.dash.isEmpty {
                     context.stroke(
-                        path, with: .color(OBCTheme.trackHalo),
+                        path, with: .color(OBCTheme.routeCasing),
                         style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
                 }
                 context.stroke(
@@ -92,8 +92,8 @@ public struct MultiTrackPreviewView: View {
                 guard let point = shared[stages.count + index].points.first.map(transform) else { continue }
                 if let systemImage = pin.systemImage {
                     let disc = Path(ellipseIn: CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20))
-                    context.fill(disc, with: .color(OBCTheme.panel))
-                    context.stroke(disc, with: .color(OBCTheme.lineStrong))
+                    context.fill(disc, with: .color(OBCTheme.surface))
+                    context.stroke(disc, with: .color(OBCTheme.hairlineStrong))
                     var image = context.resolve(Image(systemName: systemImage))
                     image.shading = .color(pin.color)
                     context.draw(image, in: CGRect(x: point.x - 6, y: point.y - 6, width: 12, height: 12))
@@ -104,7 +104,7 @@ public struct MultiTrackPreviewView: View {
                 }
             }
         }
-        .background(OBCTheme.panel)
+        .background(OBCTheme.sketchGround)
         .modifier(PreviewChrome(showsChrome: showsChrome))
     }
 
@@ -123,7 +123,7 @@ public struct MultiTrackPreviewView: View {
             path.addLine(to: CGPoint(x: size.width, y: y))
             y += step
         }
-        context.stroke(path, with: .color(OBCTheme.gridLine), lineWidth: 1)
+        context.stroke(path, with: .color(OBCTheme.sketchLine), lineWidth: 1)
     }
 
     // MARK: MapKit basemap
@@ -140,7 +140,7 @@ public struct MultiTrackPreviewView: View {
                 let coords = MapGeometry.clLocations(stage.coordinates)
                 if stage.dash.isEmpty {
                     MapPolyline(coordinates: coords)
-                        .stroke(OBCTheme.trackHalo, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                        .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
                 }
                 MapPolyline(coordinates: coords)
                     .stroke(stage.color, style: StrokeStyle(
@@ -156,8 +156,6 @@ public struct MultiTrackPreviewView: View {
         // stage geometry. Without this, a route added to the trip lay outside the
         // frozen camera until the next app launch.
         .id(stages.map(\.coordinates))
-        // Light tiles always; the palette is light throughout.
-        .preferredColorScheme(.light)
         .allowsHitTesting(false)
         .modifier(PreviewChrome(showsChrome: showsChrome))
         #else
@@ -166,18 +164,18 @@ public struct MultiTrackPreviewView: View {
     }
 }
 
-/// A pin: a filled circle with a white rim, or a panel disc with the symbol.
+/// A pin: a filled circle with a white rim, or a surface disc with the symbol.
 private struct PinMark: View {
     let pin: MultiTrackPreviewView.Pin
 
     var body: some View {
         if let systemImage = pin.systemImage {
             Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(.caption2, weight: .semibold))
                 .foregroundStyle(pin.color)
                 .frame(width: 20, height: 20)
-                .background(Circle().fill(OBCTheme.panel))
-                .overlay(Circle().strokeBorder(OBCTheme.lineStrong))
+                .background(Circle().fill(OBCTheme.surface))
+                .overlay(Circle().strokeBorder(OBCTheme.hairlineStrong))
         } else {
             Circle().fill(pin.color)
                 .frame(width: 8, height: 8)
@@ -195,7 +193,7 @@ private struct PreviewChrome: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: showsChrome ? OBCTheme.radiusPanel : 0))
             .overlay {
                 if showsChrome {
-                    RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+                    RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
                 }
             }
     }

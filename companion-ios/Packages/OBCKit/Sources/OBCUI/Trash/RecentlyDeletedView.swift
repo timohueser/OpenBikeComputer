@@ -34,8 +34,8 @@ public struct RecentlyDeletedView: View {
                             "Rides stay here for \(MainScreenModel.trashRetentionDays) days, "
                                 + "then they're removed for good. The copies on your OBC aren't touched."
                         )
-                        .font(.system(size: 13))
-                        .foregroundStyle(OBCTheme.inkSoft)
+                        .font(.system(.footnote))
+                        .foregroundStyle(OBCTheme.secondary)
                         .lineSpacing(3)
                         .padding(.bottom, 4)
 
@@ -53,7 +53,7 @@ public struct RecentlyDeletedView: View {
                                 } label: {
                                     Label("Recover", systemImage: "arrow.uturn.backward")
                                 }
-                                .tint(OBCTheme.forest)
+                                .tint(OBCTheme.tint)
                             }
                             .obcSwipeToDelete {
                                 model.deleteRideForever(ride.id)
@@ -68,7 +68,7 @@ public struct RecentlyDeletedView: View {
                 .scrollContentBackground(.hidden)
             }
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .navigationTitle("Recently Deleted")
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

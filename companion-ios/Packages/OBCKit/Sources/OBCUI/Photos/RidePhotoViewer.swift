@@ -29,7 +29,7 @@ struct RidePhotoViewer: View {
             if model.placed.indices.contains(index) {
                 let placed = model.placed[index]
                 Text("\(OBCFormat.distance(meters: placed.distanceMeters)) · \(placed.photo.takenAt.formatted(date: .omitted, time: .shortened))")
-                    .font(.obcMono(size: 13, weight: .medium))
+                    .font(.system(.footnote, weight: .medium).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
                     .padding(.vertical, 10)
                     .accessibilityIdentifier("photos.viewer.caption")
@@ -47,14 +47,14 @@ struct RidePhotoViewer: View {
         HStack {
             Button { dismiss() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .frame(width: 44, height: 44)
             }
             .accessibilityLabel("Close")
             .accessibilityIdentifier("photos.viewer.close")
             Spacer()
             Text("\(index + 1) of \(model.photos.count)")
-                .font(.obcMono(size: 13, weight: .medium))
+                .font(.system(.footnote, weight: .medium).monospacedDigit())
             Spacer()
             Color.clear.frame(width: 44, height: 44)
         }
@@ -93,7 +93,7 @@ struct RidePhotoViewer: View {
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
                 .opacity(0.6)
             Text(message)
-                .font(.system(size: 15))
+                .font(.system(.subheadline))
                 .foregroundStyle(.white)
             action().frame(width: 180)
         }

@@ -54,15 +54,15 @@ public struct RideMergeSuggestion: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.triangle.merge")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(OBCTheme.water)
+                    .font(.system(.subheadline, weight: .medium))
+                    .foregroundStyle(OBCTheme.secondary)
                 Text("Merge with \(next.name)?")
-                    .font(.system(size: 15))
+                    .font(.system(.subheadline))
                     .foregroundStyle(OBCTheme.ink)
             }
             Text(next.mergeLine)
-                .font(.obcMono(size: 13))
-                .foregroundStyle(OBCTheme.inkSoft)
+                .font(.system(.footnote).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
             HStack(spacing: 10) {
                 Button("Merge", action: onMerge)
                     .buttonStyle(OBCButtonStyle(kind: .primary, fullWidth: false))
@@ -74,9 +74,9 @@ public struct RideMergeSuggestion: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(OBCTheme.panel.opacity(0.6))
+        .background(OBCTheme.surface.opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).strokeBorder(OBCTheme.line))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).strokeBorder(OBCTheme.hairline))
     }
 }
 

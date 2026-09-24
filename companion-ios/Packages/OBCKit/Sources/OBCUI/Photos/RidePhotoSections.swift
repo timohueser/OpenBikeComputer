@@ -54,8 +54,8 @@ struct RidePhotoGridSheet: View {
                             Text(model.access == .limited
                                 ? "OBC cannot see any photos from this ride."
                                 : "No photos from this ride.")
-                                .font(.system(size: 15))
-                                .foregroundStyle(OBCTheme.inkSoft)
+                                .font(.system(.subheadline))
+                                .foregroundStyle(OBCTheme.secondary)
                                 .padding(.top, 40)
                         } else {
                             RidePhotoGrid(picks: picks, selected: $model.selected)
@@ -72,7 +72,7 @@ struct RidePhotoGridSheet: View {
                 }
                 .padding(.bottom, 20)
             }
-            .background(OBCTheme.parchment.ignoresSafeArea())
+            .background(OBCTheme.page.ignoresSafeArea())
             .navigationTitle("Photos from this ride")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

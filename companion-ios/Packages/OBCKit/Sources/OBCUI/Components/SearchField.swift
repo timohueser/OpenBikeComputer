@@ -15,11 +15,11 @@ public struct OBCSearchField: View {
     public var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.subheadline, weight: .semibold))
+                .foregroundStyle(OBCTheme.secondary)
 
             TextField(prompt, text: $text)
-                .font(.system(size: 15))
+                .font(.system(.subheadline))
                 .foregroundStyle(OBCTheme.ink)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -32,8 +32,8 @@ public struct OBCSearchField: View {
                     text = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(OBCTheme.inkFaint)
+                        .font(.system(.subheadline))
+                        .foregroundStyle(OBCTheme.secondary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -41,7 +41,7 @@ public struct OBCSearchField: View {
         }
         .padding(.vertical, 9)
         .padding(.horizontal, 12)
-        .background(OBCTheme.parchment3)
+        .background(OBCTheme.fill)
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
     }
 }
@@ -56,7 +56,7 @@ public struct OBCSearchField: View {
                 OBCSearchField(text: $query)
             }
             .padding(20)
-            .background(OBCTheme.parchment)
+            .background(OBCTheme.page)
         }
     }
     return Demo()

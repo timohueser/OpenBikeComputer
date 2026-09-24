@@ -44,7 +44,7 @@ public struct SettingsView: View {
             .padding(.top, 18)
             .padding(.bottom, 30)
         }
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.screen")
         .navigationTitle("Settings")
@@ -80,7 +80,7 @@ public struct SettingsView: View {
             deviceRow
             OBCListRow(
                 icon: "pencil",
-                iconColor: OBCTheme.water,
+                iconColor: OBCTheme.tint,
                 label: "Rename device",
                 showsChevron: true,
                 disabled: !model.canRename,
@@ -90,9 +90,9 @@ public struct SettingsView: View {
             )
             OBCListRow(
                 icon: "power",
-                iconColor: OBCTheme.warning,
+                iconColor: OBCTheme.danger,
                 label: "Forget device",
-                labelColor: OBCTheme.warning,
+                labelColor: OBCTheme.danger,
                 showsDivider: false,
                 action: { forgetShown = true }
             )
@@ -110,27 +110,27 @@ public struct SettingsView: View {
 
     private var deviceRow: some View {
         HStack(spacing: 12) {
-            OBCIconTile(systemImage: "flipphone", color: OBCTheme.forest)
+            OBCIconTile(systemImage: "flipphone", color: OBCTheme.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.deviceName)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(OBCTheme.ink)
                 Text(model.statusLine)
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(model.isConnected ? OBCTheme.forest : OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(model.isConnected ? OBCTheme.ink : OBCTheme.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let firmware = model.firmwareDisplay {
                 Text(firmware)
-                    .font(.system(size: 15))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
             }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 16)
         .frame(minHeight: 52)
         .overlay(alignment: .bottom) {
-            OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
+            OBCTheme.hairline.frame(height: 1).padding(.leading, 56)
         }
     }
     // MARK: Firmware
@@ -140,7 +140,7 @@ public struct SettingsView: View {
             if let onOpenFirmwareUpdate {
                 OBCListRow(
                     icon: "arrow.down.to.line",
-                    iconColor: OBCTheme.amber,
+                    iconColor: OBCTheme.tint,
                     label: "Update firmware",
                     showsChevron: true,
                     action: onOpenFirmwareUpdate
@@ -148,7 +148,7 @@ public struct SettingsView: View {
             } else {
                 OBCListRow(
                     icon: "arrow.down.to.line",
-                    iconColor: OBCTheme.amber,
+                    iconColor: OBCTheme.tint,
                     label: "Update over the air",
                     comingSoon: true
                 )
@@ -156,7 +156,7 @@ public struct SettingsView: View {
             // The one switch behind the launch sheet and the background check.
             OBCListRow(
                 icon: "arrow.clockwise",
-                iconColor: OBCTheme.water,
+                iconColor: OBCTheme.tint,
                 label: "Check for updates automatically"
             ) {
                 Toggle(
@@ -167,12 +167,12 @@ public struct SettingsView: View {
                     )
                 )
                 .labelsHidden()
-                .tint(OBCTheme.forest)
+                .tint(OBCTheme.tint)
             }
             .accessibilityIdentifier("firmware.autoCheck")
             OBCListRow(
                 icon: "clock",
-                iconColor: OBCTheme.parchment3,
+                iconColor: OBCTheme.tint,
                 label: "Firmware version",
                 value: model.firmwareLine,
                 showsDivider: false
@@ -200,19 +200,19 @@ public struct SettingsView: View {
         ) {
             OBCListRow(
                 icon: "bolt.fill",
-                iconColor: OBCTheme.coral,
+                iconColor: OBCTheme.tint,
                 label: "Strava sync",
                 comingSoon: true
             )
             OBCListRow(
                 icon: "map",
-                iconColor: OBCTheme.wood,
+                iconColor: OBCTheme.tint,
                 label: "Komoot sync",
                 comingSoon: true
             )
             OBCListRow(
                 icon: "square.and.arrow.down",
-                iconColor: OBCTheme.amber,
+                iconColor: OBCTheme.tint,
                 label: "Auto-sync on import",
                 disabled: true,
                 showsDivider: false
@@ -220,7 +220,7 @@ public struct SettingsView: View {
                 Toggle("Auto-sync on import", isOn: .constant(false))
                     .labelsHidden()
                     .disabled(true)
-                    .tint(OBCTheme.forest)
+                    .tint(OBCTheme.tint)
                 OBCSoonBadge("Soon")
             }
         }
@@ -242,7 +242,7 @@ public struct SettingsView: View {
             )
             OBCListRow(
                 icon: "info.circle",
-                iconColor: OBCTheme.parchment3,
+                iconColor: OBCTheme.tint,
                 label: "App version",
                 value: Self.appVersion,
                 showsDivider: false,

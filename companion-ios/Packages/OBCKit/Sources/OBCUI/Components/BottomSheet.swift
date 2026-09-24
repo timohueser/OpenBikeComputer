@@ -27,7 +27,7 @@ public struct OBCSheetContainer<Content: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .presentationDragIndicator(.hidden)
         .presentationCornerRadius(OBCTheme.radiusSheet)
-        .presentationBackground(OBCTheme.panel)
+        .presentationBackground(OBCTheme.surface)
     }
 }
 
@@ -35,18 +35,18 @@ public struct OBCSheetContainer<Content: View>: View {
     struct Demo: View {
         @State private var shown = true
         var body: some View {
-            OBCTheme.parchment
+            OBCTheme.page
                 .ignoresSafeArea()
                 .sheet(isPresented: $shown) {
                     OBCSheetContainer {
                         VStack(alignment: .leading, spacing: 14) {
                             Text("Uploading to Trailhead")
-                                .font(.obcSerif(size: 22))
+                                .font(.system(.title2, weight: .bold))
                                 .foregroundStyle(OBCTheme.ink)
                             OBCProgressBar(value: 0.62)
                             Text("2.1 MB of 3.4 MB")
-                                .font(.obcMono(size: 12))
-                                .foregroundStyle(OBCTheme.inkFaint)
+                                .font(.system(.caption).monospacedDigit())
+                                .foregroundStyle(OBCTheme.secondary)
                             Button("Cancel") {}.buttonStyle(.obcGhost)
                         }
                     }

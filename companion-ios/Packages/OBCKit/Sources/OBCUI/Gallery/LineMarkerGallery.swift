@@ -10,9 +10,9 @@ struct LineMarkerGallerySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Toggle("50,000 points", isOn: $dense)
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkSoft)
-                .tint(OBCTheme.forest)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
+                .tint(OBCTheme.tint)
 
             TripEditorSample(dense: dense)
                 .id(dense)
@@ -50,7 +50,7 @@ private struct TripEditorSample: View {
                 HStack(spacing: 8) {
                     Circle().fill(model.segmentColors[day]).frame(width: 9, height: 9)
                     Text("Day \(day + 1)")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(.subheadline, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
                     Spacer()
                     Text(
@@ -58,8 +58,8 @@ private struct TripEditorSample: View {
                             + OBCFormat.climb(meters: model.line.climb(from: from, to: to)) + " · "
                             + OBCFormat.climbValue(meters: model.line.descent(from: from, to: to)) + " m ↓"
                     )
-                    .font(.obcMono(size: 12))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.caption).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
                 }
             }
         }
@@ -73,7 +73,7 @@ private struct TrimEditorSample: View {
             LineMarker(id: 1, distance: 2_500, name: "Trim start"),
             LineMarker(id: 2, distance: SampleLine.alps.length - 4_000, name: "Trim end"),
         ],
-        segmentColors: [OBCTheme.inkFaint.opacity(0.55), OBCTheme.trackStroke, OBCTheme.inkFaint.opacity(0.55)]
+        segmentColors: [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)]
     )!
 
     var body: some View {
@@ -81,8 +81,8 @@ private struct TrimEditorSample: View {
             LineMarkerEditor(model: model, mapHeight: 180)
             let kept = model.markers[1].distance - model.markers[0].distance
             Text("Keeps \(OBCFormat.distance(meters: kept)) of \(OBCFormat.distance(meters: model.line.length))")
-                .font(.obcMono(size: 12))
-                .foregroundStyle(OBCTheme.inkFaint)
+                .font(.system(.caption).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
         }
     }
 }

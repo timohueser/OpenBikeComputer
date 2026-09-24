@@ -22,7 +22,7 @@ public struct ShareCardContent {
             OBCStat(value: OBCFormat.speedValue(mps: summary.averageSpeedMps), unit: "kph", key: "Avg"),
             OBCStat(value: OBCFormat.climbValue(meters: summary.climbMeters), unit: "m", key: "Climb"),
         ]
-        stages = [MultiTrackPreviewView.Stage(coordinates: ride.points.map(\.coordinate), color: OBCTheme.trackStroke)]
+        stages = [MultiTrackPreviewView.Stage(coordinates: ride.points.map(\.coordinate), color: OBCTheme.ride)]
         // The detail screen's profile, on the same distance axis.
         elevations = MeasuredLine.elevationProfile(ridePoints: ride.points)
     }
@@ -107,22 +107,22 @@ struct ShareCard: View {
                 .padding(.top, photo == nil ? 18 : 14)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(OBCTheme.panel)
-            .overlay(alignment: .top) { OBCTheme.line.frame(height: 1) }
+            .background(OBCTheme.surface)
+            .overlay(alignment: .top) { OBCTheme.hairline.frame(height: 1) }
         }
         .frame(width: Self.size.width, height: Self.size.height, alignment: .top)
-        .background(OBCTheme.parchment)
+        .background(OBCTheme.page)
         .environment(\.colorScheme, .light)
     }
 
     private func heading(onPhoto: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(content.dateLine.uppercased())
-                .font(.obcMono(size: 10, weight: .bold))
+                .font(.system(.caption2, weight: .semibold).monospacedDigit())
                 .kerning(1)
-                .foregroundStyle(onPhoto ? .white.opacity(0.85) : OBCTheme.inkFaint)
+                .foregroundStyle(onPhoto ? .white.opacity(0.85) : OBCTheme.secondary)
             Text(content.title)
-                .font(.obcSerif(size: 28))
+                .font(.system(.title, weight: .bold))
                 .foregroundStyle(onPhoto ? .white : OBCTheme.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -137,11 +137,11 @@ struct ShareCard: View {
                 if index > 0 { Spacer(minLength: 8) }
                 VStack(alignment: .leading, spacing: 2) {
                     (Text(stat.value)
-                        .font(.obcMono(size: 18, weight: .medium))
+                        .font(.system(.body, weight: .medium).monospacedDigit())
                         .foregroundColor(OBCTheme.ink)
                         + Text(stat.unit.map { " \($0)" } ?? "")
-                        .font(.obcMono(size: 11, weight: .medium))
-                        .foregroundColor(OBCTheme.inkFaint))
+                        .font(.system(.caption2, weight: .medium).monospacedDigit())
+                        .foregroundColor(OBCTheme.secondary))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     OBCEyebrow(stat.key)

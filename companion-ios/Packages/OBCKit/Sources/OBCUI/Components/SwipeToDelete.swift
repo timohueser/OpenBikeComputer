@@ -14,7 +14,7 @@ public extension View {
             Button(role: .destructive, action: onDelete) {
                 Label(deleteTitle, systemImage: "trash")
             }
-            .tint(OBCTheme.warning)
+            .tint(OBCTheme.danger)
         }
     }
 }

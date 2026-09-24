@@ -18,7 +18,7 @@ public struct MapTrackPreviewView: View {
     let preview: TrackPreview?
     var style: TrackPreviewView.Style = .thumbnail
     var tag: String? = nil
-    var tagColor: Color = OBCTheme.inkSoft
+    var tagColor: Color = OBCTheme.secondary
     var showsChrome: Bool = true
     var waypoints: [Waypoint] = []
     /// Only needed to place `waypoints` on the grid.
@@ -34,7 +34,7 @@ public struct MapTrackPreviewView: View {
         _ preview: TrackPreview?,
         style: TrackPreviewView.Style = .thumbnail,
         tag: String? = nil,
-        tagColor: Color = OBCTheme.inkSoft,
+        tagColor: Color = OBCTheme.secondary,
         showsChrome: Bool = true,
         waypoints: [Waypoint] = [],
         totalDistanceMeters: Double = 0,
@@ -87,9 +87,6 @@ public struct MapTrackPreviewView: View {
                 photoPins: photoPins, highlightedPhoto: highlightedPhoto
             )
         }
-        // Always the light tile set: the design's palette is light throughout, and
-        // Maps' dark tiles clash with the parchment chrome around it.
-        .preferredColorScheme(.light)
         // The camera frames the track inside the safe area, so this keeps it clear of the tag.
         .safeAreaPadding(.top, tag == nil ? 0 : TrackPreviewView.tagBandHeight)
         .allowsHitTesting(false)
@@ -99,7 +96,7 @@ public struct MapTrackPreviewView: View {
         .clipShape(RoundedRectangle(cornerRadius: showsChrome ? OBCTheme.radiusPanel : 0))
         .overlay {
             if showsChrome {
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line)
+                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
             }
         }
         #else
@@ -129,14 +126,14 @@ struct TrackMapContent: MapContent {
         let coords = MapGeometry.clLocations(coordinates)
         // Halo casing under the stroke, matching the grid preview's 7 / 3.4 pt.
         MapPolyline(coordinates: coords)
-            .stroke(OBCTheme.trackHalo, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
+            .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
         MapPolyline(coordinates: coords)
-            .stroke(OBCTheme.trackStroke, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
+            .stroke(OBCTheme.route, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
         if let first = coords.first {
-            Annotation("", coordinate: first) { nodeDot(OBCTheme.trackStart) }
+            Annotation("", coordinate: first) { nodeDot(OBCTheme.ink) }
         }
         if coords.count > 1, let last = coords.last {
-            Annotation("", coordinate: last) { nodeDot(OBCTheme.trackEnd) }
+            Annotation("", coordinate: last) { nodeDot(OBCTheme.rust) }
         }
         ForEach(Array(waypoints.dropFirst().dropLast())) { waypoint in
             Annotation(
@@ -167,7 +164,7 @@ struct TrackMapContent: MapContent {
         Circle()
             .fill(fill)
             .frame(width: dotRadius * 2, height: dotRadius * 2)
-            .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 2.5))
+            .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 2.5))
     }
 }
 
@@ -178,11 +175,12 @@ struct WaypointPinBadge: View {
 
     var body: some View {
         Text(label)
-            .font(.obcMono(size: 10, weight: .bold))
+            .font(.system(.caption2, weight: .semibold).monospacedDigit())
             .foregroundStyle(OBCTheme.ink)
             .frame(width: 18, height: 18)
             .background(Circle().fill(OBCTheme.amber))
-            .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: 2.5))
+            .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 2.5))
+            .obcFixedGeometryType()
     }
 }
 
@@ -192,16 +190,16 @@ struct PhotoPin: View {
 
     var body: some View {
         Circle()
-            .fill(OBCTheme.water)
+            .fill(OBCTheme.ride)
             .frame(width: highlighted ? 22 : 9, height: highlighted ? 22 : 9)
             .overlay {
                 if highlighted {
                     Image(systemName: "camera.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(OBCTheme.panel)
+                        .font(.system(.caption2, weight: .semibold))
+                        .foregroundStyle(OBCTheme.surface)
                 }
             }
-            .overlay(Circle().strokeBorder(OBCTheme.panel, lineWidth: highlighted ? 2.5 : 2))
+            .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: highlighted ? 2.5 : 2))
     }
 }
 #endif
@@ -219,14 +217,14 @@ struct MapPreviewTag: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.obcMono(size: 10, weight: .bold))
+            .font(.system(.caption2, weight: .semibold).monospacedDigit())
             .kerning(1)
             .foregroundStyle(color)
             .padding(.vertical, 5)
             .padding(.horizontal, 7)
-            .background(OBCTheme.panel.opacity(0.9))
+            .background(OBCTheme.surface.opacity(0.9))
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(OBCTheme.line))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(OBCTheme.hairline))
             .padding(10)
     }
 }
@@ -245,6 +243,6 @@ struct MapPreviewTag: View {
         }
     }
     .padding()
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }
 #endif

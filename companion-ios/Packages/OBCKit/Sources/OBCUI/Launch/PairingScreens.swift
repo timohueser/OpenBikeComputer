@@ -3,7 +3,7 @@ import SwiftUI
 // The pairing screens. Dumb views: copy and callbacks, no transport;
 // `LaunchFlowView` binds them to `LaunchFlowModel`.
 
-/// Shared page shape: centered content, bottom-pinned actions, parchment base.
+/// Shared page shape: centered content, bottom-pinned actions, page base.
 struct LaunchScreenScaffold<Content: View, Actions: View>: View {
     @ViewBuilder let content: Content
     @ViewBuilder let actions: Actions
@@ -16,7 +16,7 @@ struct LaunchScreenScaffold<Content: View, Actions: View>: View {
                 .padding(.bottom, 14)
         }
         .padding(.horizontal, 24)
-        .background(OBCTheme.parchment.ignoresSafeArea())
+        .background(OBCTheme.page.ignoresSafeArea())
     }
 }
 
@@ -31,14 +31,14 @@ struct PairIntroView: View {
                     .padding(.bottom, 26)
 
                 Text("Let's pair your OBC")
-                    .font(.obcSerif(size: 27))
+                    .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .accessibilityIdentifier("pair.introTitle")
                     .padding(.bottom, 8)
 
                 Text("It only takes a few seconds, and only has to happen once.")
-                    .font(.system(size: 15))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 24)
 
@@ -57,12 +57,13 @@ struct PairIntroView: View {
     private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
         HStack(alignment: .top, spacing: 13) {
             Text("\(number)")
-                .font(.obcMono(size: 13, weight: .bold))
-                .foregroundStyle(.white)
+                .font(.system(.footnote, weight: .semibold).monospacedDigit())
+                .foregroundStyle(OBCTheme.surface)
                 .frame(width: 26, height: 26)
-                .background(OBCTheme.forest, in: Circle())
+                .background(OBCTheme.tint, in: Circle())
+                .obcFixedGeometryType()
             Text(text)
-                .font(.system(size: 15))
+                .font(.system(.subheadline))
                 .foregroundStyle(OBCTheme.ink)
                 .lineSpacing(3)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -87,14 +88,14 @@ struct PairScanningView: View {
                 .padding(.bottom, 8)
 
                 Text("Looking for your OBC…")
-                    .font(.obcSerif(size: 23))
+                    .font(.system(.title2, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .accessibilityIdentifier("pair.scanningTitle")
                     .padding(.bottom, 6)
 
                 Text("Make sure the device shows “pairing” on its screen.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkFaint)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 240)
                     .padding(.bottom, 22)
@@ -116,20 +117,20 @@ struct PairScanningView: View {
         Button(action: onTapDevice) {
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 9)
-                    .fill(OBCTheme.forest.opacity(0.12))
+                    .fill(OBCTheme.fill)
                     .frame(width: 36, height: 36)
                     .overlay {
                         BluetoothRune()
-                            .stroke(OBCTheme.forest, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            .stroke(OBCTheme.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             .frame(width: 18, height: 18)
                     }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.advertisedName)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(.subheadline, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
                     Text("Strong signal · tap to pair")
-                        .font(.obcMono(size: 12))
-                        .foregroundStyle(OBCTheme.forest)
+                        .font(.system(.caption).monospacedDigit())
+                        .foregroundStyle(OBCTheme.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 OBCSpinner()
@@ -137,9 +138,9 @@ struct PairScanningView: View {
             }
             .padding(.vertical, 14)
             .padding(.horizontal, 16)
-            .background(OBCTheme.panel)
+            .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
+            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
             .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
         }
         .buttonStyle(.plain)
@@ -155,7 +156,7 @@ struct PairingBackdropView: View {
             VStack(spacing: 18) {
                 BluetoothTile()
                 Text("Pairing…")
-                    .font(.obcSerif(size: 23))
+                    .font(.system(.title2, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .accessibilityIdentifier("pair.pairingTitle")
             }
@@ -174,26 +175,26 @@ struct PairedView: View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(OBCTheme.forest)
+                    .fill(OBCTheme.rust)
                     .frame(width: 96, height: 96)
-                    .background(Circle().fill(OBCTheme.forest.opacity(0.12)).padding(-10))
+                    .background(Circle().fill(OBCTheme.rust.opacity(0.12)).padding(-10))
                     .overlay {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 40, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .font(.system(.largeTitle, weight: .semibold))
+                            .foregroundStyle(OBCTheme.onRust)
                     }
                     .padding(.bottom, 26)
 
                 Text("Paired with \(deviceName)")
-                    .font(.obcSerif(size: 27))
+                    .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.pairedTitle")
                     .padding(.bottom, 8)
 
                 Text("Your routes and rides stay between this phone and the device. No account, no cloud.")
-                    .font(.system(size: 15))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .frame(maxWidth: 250)
@@ -216,25 +217,25 @@ struct PairFailedView: View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(OBCTheme.warning.opacity(0.1))
+                    .fill(OBCTheme.danger.opacity(0.1))
                     .frame(width: 88, height: 88)
                     .overlay {
                         BluetoothRune(slashed: true)
-                            .stroke(OBCTheme.warning, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            .stroke(OBCTheme.danger, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             .frame(width: 40, height: 40)
                     }
                     .padding(.bottom, 24)
 
                 Text(failure.title)
-                    .font(.obcSerif(size: 25))
+                    .font(.system(.title, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.failedTitle")
                     .padding(.bottom, 8)
 
                 Text(failure.reason)
-                    .font(.system(size: 14))
-                    .foregroundStyle(OBCTheme.inkSoft)
+                    .font(.system(.subheadline))
+                    .foregroundStyle(OBCTheme.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .frame(maxWidth: 250)
@@ -264,10 +265,10 @@ struct PairFailedView: View {
     private func checkItem(_ text: LocalizedStringKey) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text("▸")
-                .font(.system(size: 14))
-                .foregroundStyle(OBCTheme.amber)
+                .font(.system(.subheadline))
+                .foregroundStyle(OBCTheme.secondary)
             Text(text)
-                .font(.system(size: 14))
+                .font(.system(.subheadline))
                 .foregroundStyle(OBCTheme.ink)
                 .lineSpacing(3)
                 .frame(maxWidth: .infinity, alignment: .leading)

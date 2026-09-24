@@ -284,7 +284,7 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(sync.isEnabled)
         sync.tap()
 
-        // The confirm line lands when the batch completes, and the short forest check on the
+        // The confirm line lands when the batch completes, and the short check on the
         // button rides along.
         let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 5), "sync progress line missing")

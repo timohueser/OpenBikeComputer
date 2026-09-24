@@ -585,7 +585,7 @@ private struct DayEditorHost: View {
         if let model {
             TripDayEditorView(model: model, onClose: onClose)
         } else {
-            OBCTheme.parchment.ignoresSafeArea().onAppear { model = make() }
+            OBCTheme.page.ignoresSafeArea().onAppear { model = make() }
         }
     }
 }

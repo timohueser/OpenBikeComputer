@@ -11,7 +11,7 @@ public struct OBCProgressBar: View {
     public var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(OBCTheme.parchment3)
+                Capsule().fill(OBCTheme.fill)
                 Capsule()
                     .fill(OBCTheme.tint)
                     .frame(width: geo.size.width * max(0, min(value, 1)))
@@ -31,5 +31,5 @@ public struct OBCProgressBar: View {
         OBCProgressBar(value: 1)
     }
     .padding(20)
-    .background(OBCTheme.parchment)
+    .background(OBCTheme.page)
 }
