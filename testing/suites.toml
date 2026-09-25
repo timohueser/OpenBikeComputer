@@ -104,7 +104,7 @@ triggers = ["apps/obc-web-assemble/tests/fixture/**"]
 # The board runs the host crate's detour and ride logic; no Cargo edge carries that.
 [[package]]
 name = "obc-host-core"
-triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/flat_ride.rs"]
+triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/flat_ride.rs", "firmware/obc-fw-nrf54l/src/demo_rides.rs"]
 
 # The phone's router test reads the web builder's fixture; no Cargo edge carries that.
 [[package]]

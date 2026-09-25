@@ -80,4 +80,17 @@ struct GatedPhaseRetryTests {
         #expect(script.attempts == 1)
         #expect(!script.slept)
     }
+
+    @Test func cancelledRetryDoesNotStartAnotherPairingAttempt() async {
+        let script = ScriptedGatedPhase([.failure(GatedPairingWindowError())])
+        await #expect(throws: CancellationError.self) {
+            try await GatedPhaseRetry.runOnce(
+                beat: .milliseconds(500),
+                sleep: { _ in throw CancellationError() },
+                isRetryable: { $0 is GatedPairingWindowError },
+                attempt: script.attempt
+            )
+        }
+        #expect(script.attempts == 1)
+    }
 }
