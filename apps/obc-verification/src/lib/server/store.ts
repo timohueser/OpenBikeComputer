@@ -97,11 +97,11 @@ export class Store {
   }
   reserveRequirementId(): string { return this.reserveRequirementIds(1)[0]; }
   /**
-   * Saves the draft, and accepts the proposals the draft applied. An owner approves a proposal into
-   * the draft and saves once for the batch, so a review round is one revision rather than one per
-   * proposal.
+   * Saves the draft, and accepts the proposals the draft applied and the suggestions it wrote. An
+   * owner approves into the draft and saves once for the batch, so a review round is one revision,
+   * and a discarded draft leaves every item open.
    */
-  saveRevision(base: number, author: string, requirements: Requirement[], accept: string[] = []): Revision {
+  saveRevision(base: number, author: string, requirements: Requirement[], accept: string[] = [], acceptSuggestions: string[] = []): Revision {
     return this.atomic(() => {
       const decidedAt = new Date().toISOString();
       const accepted = accept.map(id => {
@@ -110,9 +110,16 @@ export class Store {
         assert(requirements.some(r => r.id === proposal.requirementId), `This draft has no requirement ${proposal.requirementId}.`);
         return proposal;
       });
+      const suggestions = acceptSuggestions.map(id => {
+        const suggestion = this.get<RequirementSuggestion>('requirement-suggestion', id);
+        assert(suggestion.status === 'open', 'A suggestion in this save is already decided. Reload before saving.', 409);
+        assert(!suggestion.requirementId || requirements.some(r => r.id === suggestion.requirementId), `This draft has no requirement ${suggestion.requirementId}.`);
+        return suggestion;
+      });
       const revision = this.writeRevision(base, author, requirements,
         accepted.map(p => ({ requirementId: p.requirementId, review: { author, createdAt: decidedAt, sourceSha: p.sourceSha, proposalId: p.id } })));
       for (const proposal of accepted) this.put('coverage-proposal', proposal.id, { ...proposal, status: 'accepted', decidedBy: author, decidedAt });
+      for (const suggestion of suggestions) this.put('requirement-suggestion', suggestion.id, { ...suggestion, status: 'accepted', decidedBy: author, decidedAt });
       return revision;
     });
   }
@@ -195,12 +202,12 @@ export class Store {
       return proposal;
     });
   }
-  /** The owner's answer to a suggestion. Acceptance is an acknowledgment: the owner writes the requirement by hand. */
-  decideRequirementSuggestion(id: string, author: string, accept: boolean, feedback?: string): RequirementSuggestion {
+  /** Acceptance belongs to `saveRevision`, which saves the requirement the owner wrote for it. */
+  dismissRequirementSuggestion(id: string, author: string, feedback?: string): RequirementSuggestion {
     return this.atomic(() => {
       const suggestion = this.get<RequirementSuggestion>('requirement-suggestion', id);
       assert(suggestion.status === 'open', 'Suggestion is already decided.', 409);
-      const decided: RequirementSuggestion = { ...suggestion, status: accept ? 'accepted' : 'dismissed',
+      const decided: RequirementSuggestion = { ...suggestion, status: 'dismissed',
         decidedBy: author, decidedAt: new Date().toISOString(), ...(feedback ? { feedback } : {}) };
       this.put('requirement-suggestion', id, decided);
       return decided;

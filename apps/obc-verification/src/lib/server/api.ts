@@ -99,7 +99,10 @@ async function route(event: RequestEvent): Promise<Response> {
     // The proposals this draft applied. Saving is the approval, so the batch is one revision.
     assert(data.accept === undefined || (Array.isArray(data.accept) && data.accept.length <= 1000), 'Accepted proposals must be a list.');
     const accept = ((data.accept ?? []) as unknown[]).map(id => identifier(id, 'Proposal ID'));
-    return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, list, accept));
+    // The suggestions this draft wrote. A discarded draft leaves them open.
+    assert(data.acceptSuggestions === undefined || (Array.isArray(data.acceptSuggestions) && data.acceptSuggestions.length <= 1000), 'Accepted suggestions must be a list.');
+    const acceptSuggestions = ((data.acceptSuggestions ?? []) as unknown[]).map(id => identifier(id, 'Suggestion ID'));
+    return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, list, accept, acceptSuggestions));
   }
   if (path === 'revisions' && method === 'GET') return json(store().revisions());
   if (parts[0] === 'revisions' && parts.length === 2 && method === 'GET') return json(store().revision(positive(Number(parts[1]), 'Revision')));
@@ -240,7 +243,7 @@ async function coverageProposals(event: RequestEvent, parts: string[]): Promise<
 }
 /**
  * An agent suggests a new requirement, or a change to one. The owner writes the requirement by
- * hand and then ticks the suggestion off, so a decision records an acknowledgment and nothing else.
+ * hand and ticks the suggestion in the draft; saving that draft accepts it.
  */
 async function requirementSuggestions(event: RequestEvent, parts: string[]): Promise<Response> {
   const actor = event.locals.actor!;
@@ -287,8 +290,9 @@ async function requirementSuggestions(event: RequestEvent, parts: string[]): Pro
   assert(parts.length === 2 && actor.role === 'owner', 'Only an owner may decide a suggestion.', 403);
   if (data.reopen === true) return json(store().reopenRequirementSuggestion(identifier(parts[1])));
   assert(typeof data.accept === 'boolean', 'Accept must be boolean.');
+  assert(data.accept === false, 'A suggestion is accepted by saving the revision that writes it, not through this endpoint.');
   const feedback = data.feedback === undefined || data.feedback === '' ? undefined : text(data.feedback, 'Feedback', 5000);
-  return json(store().decideRequirementSuggestion(identifier(parts[1]), actor.name, data.accept, feedback));
+  return json(store().dismissRequirementSuggestion(identifier(parts[1]), actor.name, feedback));
 }
 /** The title or the statement the agent read is not the one the owner has now. A change that was put back is not stale. */
 function suggestionStale(suggestion: RequirementSuggestion, base: Revision | undefined, current: Revision): string | undefined {
