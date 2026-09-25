@@ -6132,7 +6132,8 @@ mod tests {
 
     /// The units and theme steps commit on Select only. The theme step draws the frame in the
     /// theme under its cursor, and that preview is never saved: a step leaves the setting alone,
-    /// and Back returns to the units step in the committed theme. Select on a theme ends setup.
+    /// and Back returns to the units step in the committed theme. Select on a theme opens the
+    /// sensors step.
     #[test]
     fn the_units_and_theme_steps_commit_on_select_and_the_theme_preview_saves_nothing() {
         use crate::settings::{SetupStep, Theme, Units};
@@ -6158,10 +6159,50 @@ mod tests {
         app.apply_gesture(Gesture::Press);
         app.apply_gesture(Gesture::Step(1));
         app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
         let s = app.settings();
-        assert_eq!((s.setup, s.units, s.theme), (SetupStep::Done, Units::Imperial, Theme::Dark));
-        assert!(host.drain(&mut app).is_some(), "the finished setup is saved");
+        assert_eq!((s.setup, s.units, s.theme), (SetupStep::Sensors, Units::Imperial, Theme::Dark));
+        assert!(host.drain(&mut app).is_some(), "the step is saved");
+    }
+
+    /// The sensors step adds a sensor through the Settings scan list, which setup's escape refusal
+    /// covers too. A cursor move saves nothing, Back returns to the theme step, and the last row ends setup.
+    #[test]
+    fn the_sensors_step_adds_through_the_scan_list_and_its_last_row_ends_setup() {
+        use crate::settings::{SavedSensor, SetupStep};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Sensors, ..Settings::FACTORY });
+        app.set_sensor_scan_hits(&[crate::sensors::SensorScanHit::new(1, 0, [1, 2, 3, 4, 5, 6], "Stages", -60)]);
+        let mut host = SettingsHost::default();
+
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(host.drain(&mut app), None, "a cursor move saves nothing");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(
+            app.ui.stack.as_slice(),
+            [Screen::Home(_), Screen::SetupSensors(_), Screen::SetupSensorScan(_)]
+        ));
+        assert!(app.sensor_scan_active());
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.last(), Some(Screen::SetupSensorScan(_))), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert_eq!(
+            app.settings().saved_sensors[1],
+            SavedSensor::saved(0, [1, 2, 3, 4, 5, 6]),
+            "the pick is the power meter"
+        );
+        assert!(!app.sensor_scan_active());
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Theme);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(-1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]), "Up from the first slot reaches Continue");
+        assert_eq!(app.settings().setup, SetupStep::Done);
+        assert!(app.settings().saved_sensors[1].present, "the added sensor stays");
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

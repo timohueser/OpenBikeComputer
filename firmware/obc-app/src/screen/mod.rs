@@ -117,7 +117,9 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
-pub use setup::{HelloScreen, SetupButtonsScreen, SetupLanguageScreen, SetupThemeScreen, SetupUnitsScreen};
+pub use setup::{
+    HelloScreen, SetupButtonsScreen, SetupLanguageScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
+};
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -918,6 +920,11 @@ screens! {
     SetupUnits(SetupUnitsScreen) => Caps::modal().blocking(),
     /// Setup's theme step: Light or Dark. The frame draws in the theme under its cursor.
     SetupTheme(SetupThemeScreen) => Caps::modal().blocking(),
+    /// Setup's sensors step: the three sensor slots with their live status, then Skip or Continue.
+    SetupSensors(SetupSensorsScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
+    /// The Settings scan list for one slot, opened from the sensors step. It blocks the escape,
+    /// because the step it returns to does.
+    SetupSensorScan(SensorScanScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),

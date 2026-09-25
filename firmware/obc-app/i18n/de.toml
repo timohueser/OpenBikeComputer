@@ -311,6 +311,8 @@ connecting = "Verbinde"
 connected = "Verbunden"
 scanning = "Suche..."
 forget = "Entfernen"
+wake_strap = "Gurt anlegen"
+wake_cranks = "Kurbel drehen"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]
@@ -536,6 +538,7 @@ press_each = "Drücke jede Taste"
 hold_back = "BACK halten"
 menu_anywhere = "Menü, von überall"
 continue = "Weiter"
+skip = "Überspringen"
 units = "EINHEITEN"
 theme = "FARBSCHEMA"
 

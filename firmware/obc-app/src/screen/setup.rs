@@ -19,13 +19,14 @@ use obc_render::{
 
 use crate::i18n::t;
 use crate::input::Gesture;
-use crate::settings::{Language, Settings, SetupStep, Theme, Units};
+use crate::settings::{Language, Settings, SetupStep, Theme, Units, SENSOR_SLOTS};
 use crate::Msg;
 
 use super::home::contours;
-use super::settings::LanguageScreen;
+use super::settings::{kind_msg, status_line, wake_msg, LanguageScreen, SensorScanScreen};
 use super::vocab::chrome::{copy_w, title_frame, wrapped, LIST_TOP};
 use super::vocab::flags::{FLAG_H, FLAG_W};
+use super::vocab::list::on_step;
 use super::vocab::rows::{choice_row, nav_row, row_rect, row_tick, Line2, ROW_GAP, ROW_ONE, ROW_TWO, ROW_X};
 use super::vocab::tiles::tile;
 use super::{palette, Ctx, Render, Screen, Transition};
@@ -38,6 +39,7 @@ pub(crate) fn screen(s: &Settings) -> Option<Screen> {
         SetupStep::Buttons => Some(Screen::SetupButtons(SetupButtonsScreen::default())),
         SetupStep::Units => Some(Screen::SetupUnits(SetupUnitsScreen(s.units))),
         SetupStep::Theme => Some(Screen::SetupTheme(SetupThemeScreen(s.theme))),
+        SetupStep::Sensors => Some(Screen::SetupSensors(SetupSensorsScreen::default())),
         SetupStep::Done => None,
     }
 }
@@ -327,6 +329,56 @@ impl SetupThemeScreen {
     }
 }
 
+/// The sensors step: the three slots of Settings' Sensors page over Skip, which reads Continue
+/// once a sensor is saved. Select on a slot opens the Settings scan list for its kind, where a pick
+/// saves the sensor and returns here. An empty slot says how to wake its sensor, and a saved one
+/// shows its live status.
+#[derive(Debug, Default)]
+pub struct SetupSensorsScreen {
+    /// A slot, or [`SKIP`].
+    selected: usize,
+}
+
+/// The Skip row's index, after the slots.
+const SKIP: usize = SENSOR_SLOTS;
+
+impl SetupSensorsScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Step(n) => on_step(&mut self.selected, n, SKIP + 1),
+            Gesture::Press if self.selected == SKIP => finish(SetupStep::Sensors, cx),
+            // Scan mode makes the host run a discovery scan. The scan list lowers it on exit.
+            Gesture::Press => {
+                cx.activity.request_sensor_scan(true);
+                Transition::Push(Screen::SetupSensorScan(SensorScanScreen::new(self.selected as u8)))
+            }
+            Gesture::Back => back(SetupStep::Sensors, cx),
+            Gesture::Hold | Gesture::BackHold => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Sensors, rx.t(Msg::SensorsTitle));
+        let saved = rx.settings.saved_sensors;
+        for (slot, sensor) in saved.iter().enumerate() {
+            let area = row_rect(LIST_TOP + slot as i32 * (ROW_TWO + ROW_GAP), w, ROW_TWO);
+            let mut line = heapless::String::<24>::new();
+            if sensor.present {
+                let status = rx.sensor_status.get(slot).copied().unwrap_or_default();
+                status_line(&mut line, true, status, rx.settings.language);
+            } else {
+                let _ = line.push_str(rx.t(wake_msg(slot)));
+            }
+            nav_row(cv, area, rx.t(kind_msg(slot)), Some(Line2::text(&line)), slot == self.selected, true, false);
+        }
+        let label = if saved.iter().any(|s| s.present) { Msg::SetupContinue } else { Msg::SetupSkip };
+        let area = row_rect(h - 8 - HINT_H - 12 - ROW_ONE, w, ROW_ONE);
+        nav_row(cv, area, rx.t(label), None, self.selected == SKIP, true, true);
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+    }
+}
+
 /// A theme's page in the flag slot: its paper, its ink round the edge, and two lines of text. The
 /// colours are ones the theme mapping keeps, so each swatch shows its own theme on either page.
 fn swatch(cv: &mut impl Surface, x: i32, y: i32, theme: Theme) {
@@ -440,7 +492,7 @@ mod tests {
     /// The count starts at the first titled step and ends at the last step.
     #[test]
     fn the_title_bar_counts_the_titled_steps() {
-        let places = [SetupStep::Language, SetupStep::Buttons, SetupStep::Units, SetupStep::Theme].map(place);
-        assert_eq!(places, [(1, 4), (2, 4), (3, 4), (4, 4)]);
+        let places = [SetupStep::Language, SetupStep::Buttons, SetupStep::Units, SetupStep::Theme, SetupStep::Sensors];
+        assert_eq!(places.map(place), [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]);
     }
 }
