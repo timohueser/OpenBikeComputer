@@ -18,6 +18,7 @@ fn context() -> RideContinuation {
     RideContinuation {
         origin: obc_app::RideOrigin {
             bike: obc_formats::bike::BikeType::Mtb,
+            limits: obc_formats::ride::EffortLimits { max_hr: 185, ftp_w: 250 },
             trip: obc_formats::ride::TripRef::new(7, 0, 2),
         },
         ridden_m: 200.,
@@ -53,6 +54,7 @@ fn stats() -> RideStats {
         max_power: Some(250),
         energy_kj: Some(2),
         bike: obc_formats::bike::BikeType::Road,
+        limits: obc_formats::ride::EffortLimits::default(),
         trip: None,
         trip_name: obc_formats::ride::Name::EMPTY,
     }

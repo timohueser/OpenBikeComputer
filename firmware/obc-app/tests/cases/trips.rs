@@ -155,30 +155,39 @@ fn reresolves_across_a_route_rescan() {
     }
 }
 
-/// A ride records the bike type that is current at its start, and the trip day when the loaded
-/// route is a day route. A ride on a loose route records no trip.
+/// A ride records the bike type and the effort limits that are current at its start, and the trip
+/// day when the loaded route is a day route. A ride on a loose route records no trip. Limits that
+/// are not set record as 0, and a settings change after the start does not reach the ride.
 #[test]
-fn a_ride_records_its_trip_day_and_bike_type() {
+fn a_ride_records_its_trip_day_bike_type_and_limits() {
     use obc_app::{RecorderIntent, Settings};
-    use obc_formats::{bike::BikeType, ride::TripRef};
+    use obc_formats::{
+        bike::BikeType,
+        ride::{EffortLimits, TripRef},
+    };
 
-    let start_on = |route: usize| {
+    let start_on = |route: usize, max_hr: u8, ftp_w: u16| {
         let mut app = app_with_three_routes();
         app.set_trips(&[TripInput { id: 1, key: 42, name: "Alpen Traverse", start_date: 0, stage_ids: &[7, 8] }]);
-        app.set_settings(Settings { bike_type: BikeType::Gravel, ..Settings::default() });
+        let settings = Settings { bike_type: BikeType::Gravel, max_hr, ftp_w, ..Settings::default() };
+        app.set_settings(settings);
         crate::common::mount_store(&mut app);
         app.activate_route(route);
         app.recorder.request(RecorderIntent::Start);
         crate::common::quiet_pass(&mut app, 1);
         assert!(app.recording());
+        app.set_settings(Settings { max_hr: 150, ftp_w: 300, ..settings });
+        crate::common::quiet_pass(&mut app, 1);
         let stats = app.ride_stats();
-        (stats.bike, stats.trip, stats.trip_name)
+        (stats.bike, stats.trip, stats.trip_name, stats.limits)
     };
 
-    let (bike, trip, name) = start_on(1);
+    let (bike, trip, name, limits) = start_on(1, 185, 250);
     assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, TripRef::new(42, 1, 2), "Alpen Traverse"));
-    let (bike, trip, name) = start_on(2);
+    assert_eq!(limits, EffortLimits { max_hr: 185, ftp_w: 250 }, "the limits at the start, not the later ones");
+    let (bike, trip, name, limits) = start_on(2, 0, 0);
     assert_eq!((bike, trip, name.as_str()), (BikeType::Gravel, None, ""));
+    assert_eq!(limits, EffortLimits::default(), "limits not set at the start stay not set");
 }
 
 /// Ride the route at catalog index `route` over a store that takes every write, and save the ride

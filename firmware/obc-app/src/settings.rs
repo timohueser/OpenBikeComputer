@@ -523,8 +523,8 @@ impl Settings {
         }
     }
 
-    pub(crate) fn effort_limits(&self) -> crate::effort::Limits {
-        crate::effort::Limits { max_hr: self.max_hr, ftp_w: self.ftp_w }
+    pub(crate) fn effort_limits(&self) -> crate::effort::EffortLimits {
+        crate::effort::EffortLimits { max_hr: self.max_hr, ftp_w: self.ftp_w }
     }
 
     /// The local wall-clock set-point the device shows: the UTC [`clock`](Settings::clock) anchor

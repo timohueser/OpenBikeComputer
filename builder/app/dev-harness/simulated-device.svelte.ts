@@ -283,7 +283,8 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
         });
     }
     return {
-        version: 5,
+        version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
         distanceM: points * 7,

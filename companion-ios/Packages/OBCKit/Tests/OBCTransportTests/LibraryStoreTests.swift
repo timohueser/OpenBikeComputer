@@ -63,7 +63,8 @@ final class LibraryStoreTests: XCTestCase {
                     Coordinate(latitude: 47.1, longitude: 7.2),
                 ]),
                 bikeType: .touring,
-                trip: RideTrip(key: 42, dayIndex: 1, dayCount: 3, name: "Alpen Traverse")
+                trip: RideTrip(key: 42, dayIndex: 1, dayCount: 3, name: "Alpen Traverse"),
+                zoneLimits: RideZoneLimits(maxHeartRate: 185, ftpWatts: 250)
             ),
             points: [
                 RidePoint(timestamp: Date(timeIntervalSince1970: 2_000),
@@ -239,6 +240,19 @@ final class LibraryStoreTests: XCTestCase {
             newer.summary.trackPreview?.coordinates,
             "the basemap coordinates (#294) survive the round-trip"
         )
+    }
+
+    func testARideArchivedWithoutZoneLimitsReadsAsNotSet() throws {
+        let (store, dir) = makeFileStore()
+        try store.saveRide(makeRide())
+        let file = dir.appendingPathComponent("rides/ride-1/summary.json")
+        var manifest = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var summary = try XCTUnwrap(manifest["summary"] as? [String: Any])
+        XCTAssertNotNil(summary.removeValue(forKey: "zoneLimits"))
+        manifest["summary"] = summary
+        try JSONSerialization.data(withJSONObject: manifest).write(to: file)
+
+        XCTAssertEqual(FileLibraryStore(directory: dir).rideSummaries().first?.zoneLimits, .notSet)
     }
 
     func testRidePointsRoundTripAcrossInstances() throws {

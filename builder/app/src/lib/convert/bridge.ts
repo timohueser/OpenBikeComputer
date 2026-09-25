@@ -112,7 +112,7 @@ export async function gpxToObcr(gpx: Uint8Array, name: string, bike: number): Pr
 }
 
 /**
- * Convert a finished ride-v5 object's bytes into a GPX 1.1 document naming the track `name`.
+ * Convert a finished ride-v6 object's bytes into a GPX 1.1 document naming the track `name`.
  *
  * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
  */

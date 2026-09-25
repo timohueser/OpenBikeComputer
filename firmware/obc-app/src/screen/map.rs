@@ -938,7 +938,7 @@ pub(crate) const GAUGE_H: i32 = 14;
 /// the bottom edge. The one home of that rule, so the band drawn and the render key cannot disagree.
 pub(crate) fn gauge_cue(
     recorder: &crate::recorder::RecorderMachine,
-    limits: crate::effort::Limits,
+    limits: crate::effort::EffortLimits,
     panning: bool,
     w: i32,
 ) -> Option<Gauge> {

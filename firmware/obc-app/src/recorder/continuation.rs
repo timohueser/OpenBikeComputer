@@ -1,11 +1,11 @@
 //! The fixed continuation payload stored with a ride checkpoint.
 
 use obc_formats::bike::BikeType;
-use obc_formats::ride::TripRef;
+use obc_formats::ride::{EffortLimits, TripRef};
 
 pub const RIDE_RESUME_LEN: usize = 96;
 const RESUME_MAGIC: [u8; 4] = *b"OBRC";
-const RESUME_VERSION: u16 = 3;
+const RESUME_VERSION: u16 = 4;
 
 pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; RIDE_RESUME_LEN] {
     const _: () = assert!(RIDE_RESUME_LEN == 96);
@@ -28,6 +28,8 @@ pub fn encode(state: super::RideContinuation, start_time: Option<u32>) -> [u8; R
     out[64..72].copy_from_slice(&state.cadence_ms_sum.to_le_bytes());
     out[72..76].copy_from_slice(&state.cadence_ms.to_le_bytes());
     out[76] = u8::from(start_time.is_some());
+    out[77] = state.origin.limits.max_hr;
+    out[78..80].copy_from_slice(&state.origin.limits.ftp_w.to_le_bytes());
     if let Some(trip) = state.origin.trip {
         out[80..88].copy_from_slice(&trip.key().to_le_bytes());
         out[88] = trip.day_index();
@@ -48,7 +50,6 @@ pub fn decode(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(super::RideContinuation,
         || bytes[46..48].iter().any(|byte| *byte != 0)
         || bytes[62..64].iter().any(|byte| *byte != 0)
         || bytes[76] > 1
-        || bytes[77..80].iter().any(|byte| *byte != 0)
         || bytes[91] > 1
         || (bytes[91] == 0 && bytes[92..].iter().any(|byte| *byte != 0))
     {
@@ -59,7 +60,8 @@ pub fn decode(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(super::RideContinuation,
     if trip.is_none() && (key != 0 || bytes[88] != 0 || bytes[89] != 0) {
         return None;
     }
-    let origin = super::RideOrigin { bike: BikeType::from_u8(bytes[90])?, trip };
+    let limits = EffortLimits { max_hr: bytes[77], ftp_w: u16::from_le_bytes([bytes[78], bytes[79]]) };
+    let origin = super::RideOrigin { bike: BikeType::from_u8(bytes[90])?, trip, limits };
     let f32_at = |at: usize| {
         let mut raw = [0u8; 4];
         raw.copy_from_slice(&bytes[at..at + 4]);
@@ -100,6 +102,7 @@ mod tests {
             origin: super::super::RideOrigin {
                 bike: BikeType::Touring,
                 trip: TripRef::new(0x0102_0304_0506_0708, 2, 5),
+                limits: EffortLimits { max_hr: 185, ftp_w: 0x0102 },
             },
             ridden_m: 1.0,
             moving_m: 2.0,
@@ -117,17 +120,17 @@ mod tests {
             energy_j: Some(14),
         };
         let bytes = encode(state, Some(0x01020304));
-        assert_eq!(&bytes[..16], &[79, 66, 82, 67, 3, 0, 96, 0, 4, 3, 2, 1, 0, 0, 128, 63]);
+        assert_eq!(&bytes[..16], &[79, 66, 82, 67, 4, 0, 96, 0, 4, 3, 2, 1, 0, 0, 128, 63]);
         assert_eq!(&bytes[32..48], &[6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0]);
         assert_eq!(&bytes[48..64], &[9, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0]);
-        assert_eq!(&bytes[64..77], &[12, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 1]);
+        assert_eq!(&bytes[64..80], &[12, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 1, 185, 2, 1]);
         assert_eq!(&bytes[80..96], &[8, 7, 6, 5, 4, 3, 2, 1, 2, 5, 3, 1, 14, 0, 0, 0]);
         assert_eq!(decode(&bytes), Some((state, Some(0x01020304))));
         assert_eq!(decode(&encode(state, None)), Some((state, None)));
         let no_trip =
             super::super::RideContinuation { origin: super::super::RideOrigin::default(), energy_j: None, ..state };
         assert_eq!(decode(&encode(no_trip, None)), Some((no_trip, None)));
-        for at in [0, 4, 6, 46, 62, 77] {
+        for at in [0, 4, 6, 46, 62] {
             let mut invalid = bytes;
             invalid[at] ^= 1;
             assert!(decode(&invalid).is_none());

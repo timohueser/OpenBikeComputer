@@ -5,7 +5,7 @@ use std::{env, fs, path::Path};
 use obc_elevation::DeadBand;
 use obc_formats::{
     bike::BikeType,
-    ride::{encode_footer, Footer, FOOTER_LEN},
+    ride::{encode_footer, EffortLimits, Footer, FOOTER_LEN},
     track::{encode_record, RECORD_LEN},
 };
 use obc_ports::TrackPoint;
@@ -14,19 +14,28 @@ use obc_replay::Track;
 const MAX_POINTS: usize = 20_000;
 const MAX_GPX_BYTES: u64 = 8 * 1024 * 1024;
 const EARTH_M: f64 = 6_371_000.0;
+/// The limits the device's demo rides record, so the simulated sensors fall into zones.
+const DEFAULT_LIMITS: EffortLimits = EffortLimits { max_hr: 185, ftp_w: 250 };
 
 fn main() -> Result<(), String> {
     let args: Vec<_> = env::args().collect();
-    if args.len() != 5 {
-        return Err("usage: gpx_to_ride INPUT.gpx OUTPUT.obcr START_UNIX_S RIDE_NAME".into());
+    if args.len() != 5 && args.len() != 7 {
+        return Err("usage: gpx_to_ride INPUT.gpx OUTPUT.obcr START_UNIX_S RIDE_NAME [MAX_HR_BPM FTP_W]".into());
     }
     let start_time = args[3].parse::<u32>().map_err(|_| "START_UNIX_S must be a Unix timestamp in seconds")?;
+    let limits = match args.get(5..7) {
+        Some([max_hr, ftp_w]) => EffortLimits {
+            max_hr: max_hr.parse().map_err(|_| "MAX_HR_BPM must be 0..=255")?,
+            ftp_w: ftp_w.parse().map_err(|_| "FTP_W must be 0..=65535")?,
+        },
+        _ => DEFAULT_LIMITS,
+    };
     let input = Path::new(&args[1]);
     if fs::metadata(input).map_err(|e| e.to_string())?.len() > MAX_GPX_BYTES {
         return Err(format!("GPX exceeds {MAX_GPX_BYTES} bytes"));
     }
     let track = Track::load(input)?;
-    let bytes = build_ride(&track, start_time, &args[4])?;
+    let bytes = build_ride(&track, start_time, &args[4], limits)?;
     let output = Path::new(&args[2]);
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -36,7 +45,7 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn build_ride(track: &Track, start_time: u32, name: &str) -> Result<Vec<u8>, String> {
+fn build_ride(track: &Track, start_time: u32, name: &str, limits: EffortLimits) -> Result<Vec<u8>, String> {
     let points = &track.points;
     if !(2..=MAX_POINTS).contains(&points.len()) {
         return Err(format!("ride needs 2..={MAX_POINTS} track points"));
@@ -138,6 +147,7 @@ fn build_ride(track: &Track, start_time: u32, name: &str) -> Result<Vec<u8>, Str
     footer.descent_m = climb.descent().round() as u16;
     footer.energy_kj = Some((energy_j / 1000.0).round() as u32);
     footer.bike = BikeType::Road;
+    footer.limits = limits;
     bytes.extend_from_slice(&encode_footer(&footer));
     Ok(bytes)
 }
@@ -175,12 +185,13 @@ mod tests {
                 })
                 .collect(),
         };
-        let bytes = build_ride(&track, 1_790_236_800, "Kandel (simulated)").unwrap();
+        let bytes = build_ride(&track, 1_790_236_800, "Kandel (simulated)", DEFAULT_LIMITS).unwrap();
         let footer = decode_footer(bytes[bytes.len() - FOOTER_LEN..].try_into().unwrap()).unwrap();
         assert_eq!(bytes.len() as u64, checked_object_len(track.points.len() as u32).unwrap());
         assert_eq!(footer.point_count, track.points.len() as u32);
         assert_eq!(footer.name(), "Kandel (simulated)");
         assert_eq!(footer.start_time, 1_790_236_800);
+        assert_eq!(footer.limits, DEFAULT_LIMITS);
         assert!(footer.climb_m >= 20 && footer.descent_m >= 20);
         let records: Vec<_> =
             bytes[..bytes.len() - FOOTER_LEN].as_chunks::<RECORD_LEN>().0.iter().map(decode_record).collect();
@@ -192,7 +203,7 @@ mod tests {
         assert!(records[1].power.unwrap() > records[6].power.unwrap());
         assert_eq!((records[6].power, records[6].cadence), (Some(0), Some(0)));
         assert!(records[6].hr.unwrap() > 105, "heart rate should lag the descent");
-        assert_eq!(build_ride(&track, 1_790_236_800, "Kandel (simulated)").unwrap(), bytes);
+        assert_eq!(build_ride(&track, 1_790_236_800, "Kandel (simulated)", DEFAULT_LIMITS).unwrap(), bytes);
     }
 
     #[test]
@@ -203,9 +214,9 @@ mod tests {
                 GpxPoint { lat: 48_000_000, lon: 8_001_000, ele: None, t: 10.0 },
             ],
         };
-        assert!(build_ride(&track, 1, "test").is_err());
+        assert!(build_ride(&track, 1, "test", DEFAULT_LIMITS).is_err());
         track.points[1].ele = Some(200.0);
         track.points[1].t = 0.0;
-        assert!(build_ride(&track, 1, "test").is_err());
+        assert!(build_ride(&track, 1, "test", DEFAULT_LIMITS).is_err());
     }
 }

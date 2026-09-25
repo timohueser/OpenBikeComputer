@@ -5,12 +5,16 @@ use obc_app::device_core::{ExternalFacts, OutcomeSlots};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
 use obc_app::{App, AppState, Gesture, Mode, RideContinuation, RideDamage, RideOrigin, Screen, TripInput};
 use obc_formats::bike::BikeType;
-use obc_formats::ride::TripRef;
+use obc_formats::ride::{EffortLimits, TripRef};
 use obc_ports::{RideClock, Sensors};
 
 fn continuation() -> RideContinuation {
     RideContinuation {
-        origin: RideOrigin { bike: BikeType::Touring, trip: TripRef::new(1, 1, 2) },
+        origin: RideOrigin {
+            bike: BikeType::Touring,
+            trip: TripRef::new(1, 1, 2),
+            limits: EffortLimits { max_hr: 185, ftp_w: 250 },
+        },
         ridden_m: 12_345.0,
         moving_m: 12_000.0,
         moving_s: 2_700.0,
@@ -53,9 +57,9 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
     app.set_trips(&[TripInput { id: 5, key: 1, name: "Alps", start_date: 0, stage_ids: &[] }]);
     let stats = app.ride_stats();
     assert_eq!(
-        (stats.bike, stats.trip, stats.trip_name.as_str()),
-        (BikeType::Touring, TripRef::new(1, 1, 2), "Alps"),
-        "the continued ride keeps its trip day and names the trip at save"
+        (stats.bike, stats.trip, stats.trip_name.as_str(), stats.limits),
+        (BikeType::Touring, TripRef::new(1, 1, 2), "Alps", EffortLimits { max_hr: 185, ftp_w: 250 }),
+        "the continued ride keeps its trip day and its limits, and names the trip at save"
     );
 }
 

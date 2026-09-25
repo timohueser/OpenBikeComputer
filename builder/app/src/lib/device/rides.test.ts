@@ -4,7 +4,7 @@
  * Two things are being decided here, and only one of them is "does the flow work".
  *
  * The first is **byte identity**: the GPX a visitor saves has to be the file the device itself would
- * have written. The pinned pair is `specs/vectors/ride-v5.bin` → `track-export.gpx`, produced by the
+ * have written. The pinned pair is `specs/vectors/ride-v6.bin` → `track-export.gpx`, produced by the
  * real `obc_route::track_to_gpx`, and the export path has to land on those exact bytes after a full
  * round trip through the wire's ride object — with one documented exception the wire format makes
  * unavoidable, asserted as *the only* exception rather than waved at.
@@ -94,7 +94,8 @@ function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): Rid
         });
     }
     return {
-        version: 5,
+        version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
         distanceM: 4210,
@@ -130,7 +131,8 @@ function longRide(points: number): RideObject {
         });
     }
     return {
-        version: 5,
+        version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name: "Long Way Round",
         startTime: 1_783_598_400,
         distanceM: points * 8,
@@ -189,7 +191,7 @@ function deviceWith(rides: RideObject[], options: LoopbackOptions & FlatDeviceOp
 
 describe("the exported GPX", () => {
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
-        const ride = { ...decodeRideObject(vector("ride-v5.bin")), name: TRACK_NAME };
+        const ride = { ...decodeRideObject(vector("ride-v6.bin")), name: TRACK_NAME };
         const { entries, source, close } = deviceWith([ride]);
         try {
             // The catalog is what a rider picks from, so the export starts where they do.
@@ -225,10 +227,10 @@ describe("the exported GPX", () => {
 
 describe("the ride object", () => {
     it("decodes and re-encodes the cross-language vector byte-for-byte", () => {
-        const bytes = vector("ride-v5.bin");
+        const bytes = vector("ride-v6.bin");
         const ride = decodeRideObject(bytes);
         expect(ride).toMatchObject({
-            version: 5,
+            version: 6,
             name: "Sensor Ride",
             startTime: 1_751_460_000,
             distanceM: 12_345,
@@ -244,6 +246,7 @@ describe("the ride object", () => {
             energyKj: 756,
             bikeType: 1,
             trip: { key: 0x0123_4567_89ab_cdefn, dayIndex: 1, dayCount: 3, name: "Alpen Traverse" },
+            effortLimits: { maxHrBpm: 185, ftpW: 250 },
         });
         expect(ride.points).toHaveLength(3);
         expect(ride.points[0]).toMatchObject({
@@ -431,7 +434,7 @@ describe("when the export cannot finish", () => {
         const { device, source, close } = deviceWith([]);
         try {
             const future = encodeRideObject(ride);
-            future[future.length - 146] = 6;
+            future[future.length - 150] = 7;
             device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes: future });
             const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,

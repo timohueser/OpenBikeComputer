@@ -238,7 +238,7 @@ fn map_band(w: i32) -> Rectangle {
 fn sensor_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSummary) {
     use palette::*;
     let w = rx.w;
-    let limits = rx.settings.effort_limits();
+    let limits = ride.limits;
     let avg = rx.t(Msg::TileAvg);
     let facts = rx.ride_facts.unwrap_or(&RideTrackFacts::EMPTY);
     let mut y = GRAPH_TOP;
@@ -250,11 +250,11 @@ fn sensor_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSumma
     if let Some(hr) = ride.avg_hr {
         let series = facts.hr().iter().map(|&v| u16::from(v));
         let caption = caption(avg, rx.t(Msg::TileHr));
-        ride_graph(cv, area(), &caption, hr.into(), series, Metric::Hr, limits.of(Metric::Hr));
+        ride_graph(cv, area(), &caption, hr.into(), series, Metric::Hr, Metric::Hr.limit(limits));
     }
     if let Some(power) = ride.avg_power {
         let caption = caption(avg, rx.t(Msg::TilePwrShort));
-        ride_graph(cv, area(), &caption, power, facts.power(), Metric::Power, limits.of(Metric::Power));
+        ride_graph(cv, area(), &caption, power, facts.power(), Metric::Power, Metric::Power.limit(limits));
     }
     let mut row = y + 2;
     let mut ledger = |caption: &str, value: heapless::String<8>| {
@@ -425,5 +425,45 @@ mod tests {
         let t = run(&mut scr, &mut act, &mut rec, &[summary("A")], Gesture::Hold);
         assert!(matches!(t, Transition::None));
         assert_eq!(act.take_ride_delete(), None);
+    }
+
+    /// The sensor page colours its zones with the ride's own limits: a later settings change does
+    /// not recolour it, and a ride recorded without limits draws no zones.
+    #[test]
+    fn the_sensor_page_zones_come_from_the_ride_not_the_settings() {
+        use crate::harness::support::{build_min_obcm, Buf};
+        use crate::screen::{apply, Screen};
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_formats::ride::EffortLimits;
+        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+
+        let bytes = build_min_obcm(0);
+        let (cache, src) = (MapCache::new(), SliceSource(&bytes));
+        let tables = MapTables::parse(&src).unwrap();
+        let reader = Reader::new(&src, &tables, &cache);
+        let sensor_page = |ride: EffortLimits, settings: EffortLimits| {
+            let mut app = crate::App::new_idle(AppState::new(0, 0, 1.0));
+            app.set_settings(Settings { max_hr: settings.max_hr, ftp_w: settings.ftp_w, ..Settings::default() });
+            let mut entry = summary("Sensor Ride");
+            (entry.summary.avg_hr, entry.summary.avg_power, entry.summary.limits) = (Some(150), Some(200), ride);
+            app.set_rides(&[entry], &[]);
+            apply(&mut app.ui.stack, Transition::Push(Screen::RideDetail(RideDetailScreen::new(0))));
+            app.apply_gesture(Gesture::Step(2));
+            let mut buf = Buf::new(240, 320);
+            let mut scratch = Box::new(obc_render::RenderScratch::new());
+            app.render_frame(Some(&mut scratch), &mut buf, &reader, None, 240.0, 320.0, |c| {
+                let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                Rgb888::new(r, g, b)
+            });
+            buf.px
+        };
+
+        let recorded = EffortLimits { max_hr: 185, ftp_w: 250 };
+        let later = EffortLimits { max_hr: 150, ftp_w: 300 };
+        let none = EffortLimits::default();
+        let zoned = sensor_page(recorded, recorded);
+        assert!(sensor_page(recorded, later) == zoned, "a settings change does not recolour the ride");
+        assert!(sensor_page(none, recorded) != zoned, "the ride's own limits draw its zones");
+        assert!(sensor_page(none, recorded) == sensor_page(none, none), "a ride without limits has no zones");
     }
 }

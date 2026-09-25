@@ -282,8 +282,8 @@ env = "tracks"
 script = "B d w p p p d"
 expect = "RideDetail"
 
-# Page 3 of Day 2, which recorded HR only: the one HR graph, and no ledger rows. `--sensors demo`
-# sets a 185 bpm max HR and a 250 W FTP, so the fields show their zones.
+# Page 3 of Day 2, which recorded HR only: the one HR graph, and no ledger rows. The ride recorded
+# a 185 bpm max HR and a 250 W FTP, so the fields show their zones.
 [[frame]]
 name = "ride-detail-hr"
 map = "{grimsel}"

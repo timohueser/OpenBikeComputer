@@ -846,10 +846,10 @@ An unknown point pauses ascent integration instead of adding a false climb. See 
   <text class="d-sub" x="250" y="190" text-anchor="middle" style="font-size:12px">Finish</text>
   <text class="d-sub" x="250" y="216" text-anchor="middle" style="font-size:12px">append only</text>
 
-  <rect class="d-panel" x="308" y="164" width="384" height="34" rx="8" />
-  <text class="d-sub" x="320" y="185" style="font-size:12px"><tspan class="d-label">150-byte footer</tspan> — totals · sensors · name · bike · trip</text>
+  <rect class="d-panel" x="308" y="164" width="404" height="34" rx="8" />
+  <text class="d-sub" x="320" y="185" style="font-size:12px"><tspan class="d-label">154-byte footer</tspan> — totals · sensors · name · bike · trip · limits</text>
 
-  <rect class="d-hot" x="308" y="206" width="384" height="34" rx="8" style="fill:#f8efe4" />
+  <rect class="d-hot" x="308" y="206" width="404" height="34" rx="8" style="fill:#f8efe4" />
   <text class="d-sub" x="320" y="227" style="font-size:12px"><tspan class="d-label" style="fill:#a9501c">one commit</tspan> — final length + CRC, RECORDING cleared</text>
 </svg>
 </div>
@@ -860,8 +860,10 @@ An unknown point pauses ascent integration instead of adding a false climb. See 
 A ride is a run of fixed-size samples with a summary footer appended at the end. Finalization does
 not rewrite the samples, so a long ride closes in constant time and an interrupted recording keeps
 everything written before the interruption. The footer also records the bike type and the trip day
-that the ride started on, so the device and the phone group the rides of a trip without dates. The
-byte contract is in [the BLE interface specification](src:specs/obc-ble-interface-spec.md).
+that the ride started on, so the device and the phone group the rides of a trip without dates. It
+keeps the rider's maximum heart rate and FTP from the start too, so a ride keeps its effort zones
+when the rider changes those settings later. The byte contract is in
+[the BLE interface specification](src:specs/obc-ble-interface-spec.md).
 
 ## OBCT — the terrain raster
 
