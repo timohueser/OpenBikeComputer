@@ -50,8 +50,10 @@ fn finished_rides_survive_remount_with_distinct_sensor_data_and_no_duplicates() 
         assert_eq!(info.avg_power.is_some(), index == 2);
         assert_eq!(info.energy_kj.is_some(), index == 2);
         let points: Vec<_> = bytes[..info.point_count as usize * RECORD_LEN]
-            .chunks_exact(RECORD_LEN)
-            .map(|bytes| decode_record(bytes.try_into().unwrap()))
+            .as_chunks::<RECORD_LEN>()
+            .0
+            .iter()
+            .map(decode_record)
             .collect();
         assert_eq!(points.last().unwrap().t_ms, 1_800_000);
         for (i, point) in points.iter().enumerate() {
