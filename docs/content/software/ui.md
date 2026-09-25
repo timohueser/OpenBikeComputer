@@ -248,8 +248,9 @@ a hold. A hold fires at the threshold, not on release, so the rider feels the mo
 
 `BackHold` is the global escape. The application answers it above the screen stack, so it never
 reaches a screen: it closes any drawer and opens the main menu from anywhere, and returns to a menu
-already on the stack instead of adding a second one. Three states refuse it, because the rider must
-finish them first: a blocking card, the recovered-ride card, and a confirmed shutdown.
+already on the stack instead of adding a second one. Four states refuse it, because the rider must
+finish them first: first-use setup, a blocking card, the recovered-ride card, and a confirmed
+shutdown.
 
 ### Chords
 
