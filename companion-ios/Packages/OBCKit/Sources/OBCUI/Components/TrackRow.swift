@@ -4,8 +4,7 @@ import OBCDomain
 /// One row of a library list: the 96 x 72 track sketch, the name at full width and an olive stat
 /// line. Routes, trips and rides share it. The on-device chip ends the stat line, or takes its own
 /// line under it when the line has no room, so it never shortens the name or the stats. A trip's
-/// sketch is a stack of cards with the day count on its corner, as the device shows a trip as a
-/// folder with a count. At accessibility text sizes the sketch moves above the text.
+/// sketch carries its day count in the corner, as the device's route menu badges a trip. At accessibility text sizes the sketch moves above the text.
 public struct TrackRow: View {
     let name: String
     let stats: Text
@@ -15,7 +14,7 @@ public struct TrackRow: View {
     let detail: String?
     let sketch: TrackPreviewView
     let onDevice: OnDeviceState
-    /// A trip's day count, which stacks the sketch and badges it; `nil` for a route or a ride.
+    /// A trip's day count, badged on the sketch; `nil` for a route or a ride.
     let dayCount: Int?
     /// `nil` outside selection; otherwise whether this row is picked.
     let isSelected: Bool?
@@ -108,18 +107,14 @@ public struct TrackRow: View {
         .accessibilityAddTraits(isSelected == true ? .isSelected : [])
     }
 
-    @ViewBuilder
     private var sketchCell: some View {
-        if let dayCount {
-            TripStack(sketch: sketch, dayCount: dayCount).accessibilityHidden(true)
-        } else {
-            sketch
-                .clipShape(RoundedRectangle(cornerRadius: Self.sketchRadius))
-                .accessibilityHidden(true)
-        }
+        sketch
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(alignment: .topTrailing) {
+                if let dayCount { DayCountBadge(count: dayCount).padding(4) }
+            }
+            .accessibilityHidden(true)
     }
-
-    static let sketchRadius: CGFloat = 10
 
     private var text: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -258,36 +253,6 @@ public extension View {
     }
 }
 
-/// A trip's sketch as a folder: the sketch on a front card, one card behind it offset up and to
-/// the right, and the day count on the back card's corner, clear of the track. It fills the same
-/// frame as a route's sketch.
-private struct TripStack: View {
-    let sketch: TrackPreviewView
-    let dayCount: Int
-
-    /// How far the back card sits up and to the right of the front one.
-    private static let offset: CGFloat = 6
-    private static let shape = RoundedRectangle(cornerRadius: TrackRow.sketchRadius)
-
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            // A shade darker than the front card, so the stack reads as two sheets.
-            Self.shape
-                .fill(OBCTheme.sketchGround)
-                .overlay(Self.shape.fill(OBCTheme.hairline))
-                .overlay(Self.shape.strokeBorder(OBCTheme.hairlineStrong))
-                .padding(.leading, Self.offset)
-                .padding(.bottom, Self.offset)
-            sketch
-                .clipShape(Self.shape)
-                .overlay(Self.shape.strokeBorder(OBCTheme.surface, lineWidth: 1.5))
-                .padding(.trailing, Self.offset)
-                .padding(.top, Self.offset)
-        }
-        .overlay(alignment: .topTrailing) { DayCountBadge(count: dayCount).offset(x: 3, y: -3) }
-    }
-}
-
 /// The device's folder count: the number in its pixel font on a small ink box.
 struct DayCountBadge: View {
     let count: Int
@@ -297,7 +262,6 @@ struct DayCountBadge: View {
             .padding(.horizontal, 4)
             .frame(minWidth: 16, minHeight: 16)
             .background(OBCTheme.ink, in: RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(OBCTheme.surface, lineWidth: 1.5))
             .accessibilityIdentifier("trip.dayCountBadge")
     }
 }
