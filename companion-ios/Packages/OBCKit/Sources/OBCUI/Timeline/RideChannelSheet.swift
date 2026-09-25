@@ -118,9 +118,8 @@ struct RideChannelSheet: View {
 
     private var gradeLegend: some View {
         let bands = ["< 3 %", "3–6", "6–9", "9–12", "> 12 %"]
-        return ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { ForEach(bands.indices, id: \.self) { gradeItem($0, bands[$0]) } }
-            VStack(alignment: .leading, spacing: 4) { ForEach(bands.indices, id: \.self) { gradeItem($0, bands[$0]) } }
+        return LegendRows {
+            ForEach(bands.indices, id: \.self) { gradeItem($0, bands[$0]) }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Line colour by grade")

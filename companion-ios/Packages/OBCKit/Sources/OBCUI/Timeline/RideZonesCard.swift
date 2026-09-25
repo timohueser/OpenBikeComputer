@@ -78,16 +78,8 @@ struct RideZoneBar: View {
             .frame(height: 10)
             .background(OBCTheme.fill)
             .clipShape(Capsule())
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 0) {
-                    ForEach(legend, id: \.zone) { item in
-                        legendItem(item)
-                        if item.zone < seconds.count - 1 { Spacer(minLength: 6) }
-                    }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(legend, id: \.zone) { legendItem($0) }
-                }
+            LegendRows {
+                ForEach(legend, id: \.zone) { legendItem($0) }
             }
         }
         .accessibilityElement(children: .ignore)
@@ -112,5 +104,40 @@ struct RideZoneBar: View {
                 .foregroundStyle(OBCTheme.secondary)
                 .lineLimit(1)
         }
+    }
+}
+
+/// Legend items side by side, left to right, starting a new row only where the next item does
+/// not fit, so a larger text size wraps instead of stacking one item per line.
+struct LegendRows: Layout {
+    var spacing: CGFloat = 12
+    var rowSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(subviews, width: proposal.width ?? .infinity).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, origin) in zip(subviews, arrange(subviews, width: bounds.width).origins) {
+            subview.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (origins: [CGPoint], size: CGSize) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + rowSpacing
+                rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            widest = max(widest, x + size.width)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return (origins, CGSize(width: widest, height: y + rowHeight))
     }
 }
