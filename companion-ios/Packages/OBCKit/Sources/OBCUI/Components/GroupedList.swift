@@ -179,23 +179,6 @@ public struct OBCIconTile: View {
     }
 }
 
-/// The "COMING SOON" badge: a secondary caption in a hairline outline.
-public struct OBCSoonBadge: View {
-    let text: String
-
-    public init(_ text: String = "Coming soon") { self.text = text }
-
-    public var body: some View {
-        Text(text.uppercased())
-            .font(.system(.caption2, weight: .semibold).monospacedDigit())
-            .kerning(0.75)
-            .foregroundStyle(OBCTheme.secondary)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 6)
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(OBCTheme.hairlineStrong))
-    }
-}
-
 #Preview("Grouped list") {
     ScrollView {
         VStack(spacing: 26) {
