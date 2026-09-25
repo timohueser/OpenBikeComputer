@@ -1,8 +1,8 @@
 import SwiftUI
 import OBCDomain
 
-/// Edit mode: the ride on a tall map and its profile with the shared handles, the line that
-/// says what Save keeps, and the actions Trim and Merge with next.
+/// Edit mode: the ride on a tall map and its profile with the two trim handles, the line that
+/// says what Save keeps, and Merge with next.
 public struct RideEditView: View {
     /// What the rider chose. The host applies it after the screen closes.
     public enum Edit: Equatable, Sendable {
@@ -88,34 +88,19 @@ public struct RideEditView: View {
                 .padding(.vertical, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(spacing: 0) {
-                    action("Trim", selected: true, id: "trim") {}
-                    action("Merge with next", selected: false, id: "merge") { mergeShown = true }
-                        .disabled(nextRide == nil)
+                Button { mergeShown = true } label: {
+                    Label("Merge with next ride", systemImage: "arrow.triangle.merge")
                 }
+                .buttonStyle(.obcGhost)
+                .disabled(nextRide == nil)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .accessibilityIdentifier("rideEdit.merge")
             }
         }
         .background(OBCTheme.surface.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(OBCTheme.hairline).frame(height: 1) }
         .animation(.default, value: mergeShown)
-    }
-
-    private func action(_ title: String, selected: Bool, id: String, perform: @escaping () -> Void) -> some View {
-        Button(action: perform) {
-            Text(title)
-                .font(.system(.callout, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? OBCTheme.ink : OBCTheme.secondary)
-                .frame(maxWidth: .infinity, minHeight: 50)
-                .overlay(alignment: .bottom) {
-                    if selected {
-                        Capsule().fill(OBCTheme.ink).frame(width: 36, height: 3).padding(.bottom, 6)
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("rideEdit.\(id)")
     }
 
     private func save() {
