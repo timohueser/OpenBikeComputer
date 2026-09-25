@@ -157,6 +157,7 @@ targets:
         # The README documents the target; it is not part of the app bundle.
         excludes:
           - README.md
+      - path: OBCCompanion/Assets.xcassets
     dependencies:
       # A static-library XCFramework: linked, never embedded. Xcode resolves it while it plans
       # the build, before the pre-build script below can run, so `obc ios-host` has to have been
@@ -237,6 +238,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.device
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"      # iPhone only
         # tools/build-ios-host.sh packs aarch64-apple-ios-sim, so there is no Intel simulator

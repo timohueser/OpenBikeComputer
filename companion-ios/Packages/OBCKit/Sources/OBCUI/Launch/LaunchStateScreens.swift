@@ -27,9 +27,11 @@ struct LaunchConnectingView: View {
                 LaunchMessage("This can take a moment when the OBC wakes from sleep.")
             }
         } actions: {
-            // The wordmark: the product's name in the device's own type.
-            PixelText("OpenBikeComputer", size: .label, color: OBCTheme.secondary)
-                .accessibilityHidden(true)
+            HStack(spacing: 8) {
+                OBCLogo().frame(width: 24, height: 24)
+                PixelText("OpenBikeComputer", size: .label, color: OBCTheme.secondary)
+            }
+            .accessibilityHidden(true)
         }
     }
 }

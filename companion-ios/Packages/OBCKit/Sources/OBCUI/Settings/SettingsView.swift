@@ -181,6 +181,11 @@ public struct SettingsView: View {
             "About",
             footer: "No account. No subscription. No cloud."
         ) {
+            HStack(spacing: 10) {
+                OBCLogo().frame(width: 32, height: 32)
+                Text("OpenBikeComputer").font(.headline)
+            }
+            .padding(16)
             OBCListRow(
                 icon: "book",
                 iconColor: OBCTheme.tint,

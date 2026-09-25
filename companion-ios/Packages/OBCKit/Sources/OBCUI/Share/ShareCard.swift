@@ -120,7 +120,12 @@ struct ShareCard: View {
 
     /// The device's title bar, as the ride was recorded on it.
     private var titleBar: some View {
-        PixelText("OPENBIKECOMPUTER", scale: 2 / 3, color: OBCTheme.onRust)
+        HStack(spacing: 6) {
+            OBCLogo()
+                .frame(width: 18, height: 18)
+                .background(OBCTheme.page, in: RoundedRectangle(cornerRadius: 3))
+            PixelText("OPENBIKECOMPUTER", scale: 2 / 3, color: OBCTheme.onRust)
+        }
             .padding(.horizontal, 20)
             .frame(width: Self.size.width, height: Self.barHeight, alignment: .leading)
             .background(OBCTheme.rust)
