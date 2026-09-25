@@ -93,7 +93,7 @@ final class PairingFlowTests: XCTestCase {
         let title = app.staticTexts["radio.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10), "H8 missing")
         XCTAssertEqual(title.label, "Bluetooth is off")
-        XCTAssertTrue(app.buttons["radio.openSettings"].exists)
+        XCTAssertTrue(app.buttons["radio.tryAgain"].exists)
         snap(app, "H8-bluetooth-off")
 
         app.buttons["radio.browseLibrary"].tap()

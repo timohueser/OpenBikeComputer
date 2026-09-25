@@ -190,14 +190,17 @@ public struct OBCBatteryIndicator: View {
     }
 }
 
-/// A 20pt ring spinner: a stroked arc rotating once per 0.8 s.
+/// A 20pt ring spinner: a stroked arc rotating once per 0.8 s. With Reduce Motion the arc holds
+/// still.
 public struct OBCSpinner: View {
     var color: Color = OBCTheme.tint
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(color: Color = OBCTheme.tint) { self.color = color }
 
     public var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(paused: reduceMotion)) { context in
             let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.8) / 0.8
             ZStack {
                 Circle().strokeBorder(color.opacity(0.25), lineWidth: 2.5)

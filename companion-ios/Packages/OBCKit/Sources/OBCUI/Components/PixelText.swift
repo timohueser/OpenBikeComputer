@@ -33,7 +33,7 @@ public struct PixelText: View {
     }
 }
 
-/// The four Terminus bold cuts the firmware ships, by cell height in pixels.
+/// The five Terminus bold cuts the firmware ships, by cell height in pixels.
 public enum PixelFont: Int, CaseIterable, Sendable {
     /// 10 x 20.
     case caption = 20
@@ -43,6 +43,8 @@ public enum PixelFont: Int, CaseIterable, Sendable {
     case body = 28
     /// 16 x 32.
     case display = 32
+    /// 32 x 64. The strip stops after ASCII, so a later glyph draws blank.
+    case huge = 64
 
     var cellWidth: Int { rawValue / 2 }
     var cellHeight: Int { rawValue }

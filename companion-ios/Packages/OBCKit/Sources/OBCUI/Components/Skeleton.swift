@@ -2,15 +2,26 @@ import SwiftUI
 
 /// Shimmering placeholder blocks: skeletons, not spinners. `OBCSkeleton` is
 /// the raw shimmer block; `TrackRowSkeleton` is shaped like a list row.
-/// Cached content appears instantly; only a fresh read shimmers.
+/// Cached content appears instantly; only a fresh read shimmers. With Reduce Motion the block
+/// holds still.
 public struct OBCSkeleton: View {
     var cornerRadius: CGFloat = 8
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(cornerRadius: CGFloat = 8) {
         self.cornerRadius = cornerRadius
     }
 
     public var body: some View {
+        if reduceMotion {
+            OBCTheme.fill.clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        } else {
+            shimmer
+        }
+    }
+
+    private var shimmer: some View {
         TimelineView(.animation(minimumInterval: 1 / 30)) { context in
             let phase = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: 1.4) / 1.4

@@ -246,7 +246,6 @@ struct RootView: View {
                 },
                 onNotNow: { updateSurfaceModel.dismiss() }
             )
-            .presentationDetents([.height(400)])
         }
         // A tapped update notice lands on the update screen. A cold-launch tap is picked up by
         // the `.task` above, a foreground one here.

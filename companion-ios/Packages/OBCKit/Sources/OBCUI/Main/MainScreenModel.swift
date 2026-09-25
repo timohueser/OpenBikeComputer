@@ -25,7 +25,7 @@ public final class MainScreenModel {
 
     // MARK: Observable state
 
-    public private(set) var deviceName = "Your OBC"
+    public private(set) var deviceName = DeviceInfo.unnamed
     public private(set) var connection: ConnectionState = .connecting
     public private(set) var battery: Int?
     public private(set) var loadState: LoadState = .loading

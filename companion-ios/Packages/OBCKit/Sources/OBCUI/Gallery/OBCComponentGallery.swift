@@ -30,9 +30,10 @@ public struct OBCComponentGallery: View {
                     PixelText("ON DEVICE", color: OBCTheme.onRust)
                         .padding(4)
                         .background(OBCTheme.rust, in: RoundedRectangle(cornerRadius: 4))
-                    ForEach(PixelFont.allCases, id: \.self) { font in
+                    ForEach(PixelFont.allCases.filter { $0 != .huge }, id: \.self) { font in
                         PixelText("Grimsel Pass · Zürich", size: font)
                     }
+                    PixelText("042917", size: .huge)
                     PixelText("82%", scale: 2, color: OBCTheme.secondary)
                 }
 
@@ -74,6 +75,13 @@ public struct OBCComponentGallery: View {
                         TrackRow(route: route)
                         TrackRow(route: route, onDevice: .upToDate)
                         TrackRow(route: route, onDevice: .outdated)
+                        TrackRow(
+                            tripName: "Alps traverse",
+                            stats: TripStats(distanceMeters: 156_000, elevationGainMeters: 3_740, dayCount: 2),
+                            daySummaries: [route, route],
+                            dateLine: "Mon 29 Sep – Tue 30 Sep",
+                            onDevice: .upToDate
+                        )
                     }
                     .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
                 }
@@ -84,6 +92,32 @@ public struct OBCComponentGallery: View {
 
                 section("Skeleton Loader") {
                     TrackRowSkeleton()
+                }
+
+                section("Ledger") {
+                    OBCLedger([
+                        OBCStat(value: "62.4", unit: "km", key: "Distance"),
+                        OBCStat(value: "840", unit: "m", key: "Climb"),
+                        OBCStat(value: "3:20", unit: "h", key: "Est. time"),
+                    ])
+                }
+
+                section("Device Copy Status") {
+                    DeviceCopyStatus(state: .notOnDevice, connection: .connected, deviceName: "Trailhead", onSend: {})
+                    DeviceCopyStatus(state: .upToDate, connection: .connected, deviceName: "Trailhead", onSend: {})
+                    DeviceCopyStatus(state: .outdated, connection: .outOfRange, deviceName: "Trailhead", onSend: {})
+                }
+
+                section("Sent to Device") {
+                    SentToDeviceView(
+                        overview: DeviceRouteOverview(
+                            name: "Kettle Moraine Loop", distanceMeters: 62_400, estimatedDuration: 12_000, track: .obcSample
+                        ),
+                        deviceName: "Trailhead",
+                        onDone: {}
+                    )
+                    .padding(22)
+                    .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSheet))
                 }
 
                 section("Stats") {
@@ -170,7 +204,6 @@ public struct OBCComponentGallery: View {
                 section("Grouped List") {
                     OBCGroupedSection("Device", footer: "Renaming updates the device at the next sync.") {
                         OBCListRow(icon: "pencil", iconColor: OBCTheme.tint, label: "Name", value: name, showsChevron: true) { renameShown = true }
-                        OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.tint, label: "Firmware update", comingSoon: true)
                         OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.danger, label: "Forget this device", showsDivider: false) { confirmShown = true }
                     }
                     OBCGroupedSection {
@@ -195,8 +228,9 @@ public struct OBCComponentGallery: View {
                 }
                 #endif
 
-                section("Launch & Pairing (B2)") {
+                section("Launch & Pairing") {
                     launchScreen { LaunchConnectingView(deviceName: "Trailhead") }
+                    launchScreen { LaunchConnectFailedView(deviceName: "Trailhead", onRetry: {}, onGoToRoutes: {}) }
                     launchScreen { PairIntroView(onStart: {}) }
                     launchScreen {
                         PairScanningView(
@@ -205,9 +239,25 @@ public struct OBCComponentGallery: View {
                             onCancel: {}
                         )
                     }
+                    launchScreen { PairingBackdropView() }
                     launchScreen { PairedView(deviceName: "Trailhead", onContinue: {}) }
                     launchScreen { PairFailedView(failure: .timeout, onRetry: {}, onHelp: {}) }
-                    launchScreen { RadioBlockedView(block: .off, onBrowseLibrary: {}) }
+                    launchScreen { PairFailedView(failure: .rejected, onRetry: {}, onHelp: {}) }
+                    launchScreen { RadioBlockedView(block: .off, onRetry: {}, onBrowseLibrary: {}) }
+                    launchScreen { RadioBlockedView(block: .denied, onRetry: {}, onBrowseLibrary: {}) }
+                }
+
+                section("Firmware Update on the Device") {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 36) {
+                            DeviceGlyphView(variant: .firmware(.confirm(installed: "0.4.2", update: "0.5.0")))
+                            DeviceGlyphView(variant: .firmware(.installing))
+                            DeviceGlyphView(variant: .firmware(.updated(version: "0.5.0")))
+                        }
+                        .padding(.vertical, 24)
+                        .padding(.horizontal, 14)
+                    }
+                    .padding(.horizontal, -20)
                 }
 
                 #if os(iOS)
@@ -285,7 +335,7 @@ public struct OBCComponentGallery: View {
     /// A full launch or pairing screen shrunk into a browsable gallery cell.
     private func launchScreen(@ViewBuilder _ content: () -> some View) -> some View {
         content()
-            .frame(height: 620)
+            .frame(height: 760)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge))
             .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusLarge).strokeBorder(OBCTheme.hairline))
     }
