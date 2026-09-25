@@ -45,6 +45,10 @@ struct OBCCompanionApp: App {
         if Self.launchOptions.disableAnimations {
             UIView.setAnimationsEnabled(false)
         }
+        // Mock runs follow the simulator's appearance, so a capture never inherits a stored choice.
+        if Self.mockControl != nil {
+            UserDefaults.standard.removeObject(forKey: OBCAppearance.storageKey)
+        }
         // Log a DEBUG-only symbol at launch, so the mock-exclusion seam is exercised by a real
         // build and lands in the Debug binary, never the Release one.
         print("[OBC] debug build · mock seam: \(obcMockBuildMarker)")
@@ -68,6 +72,7 @@ struct OBCCompanionApp: App {
                 placeName: Self.makePlaceName(),
                 stopSearch: Self.makeStopSearch(),
                 legRouter: Self.makeLegRouter())
+                .obcAppearance()
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,

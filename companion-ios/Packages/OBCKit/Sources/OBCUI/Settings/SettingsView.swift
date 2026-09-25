@@ -3,7 +3,7 @@ import OBCDomain
 import OBCTransport
 
 /// The Settings screen: device management, a firmware section, the connected-services
-/// seam, and About. Nothing here implies a cloud or an account.
+/// seam, the app's appearance, and About. Nothing here implies a cloud or an account.
 public struct SettingsView: View {
     @Bindable private var model: SettingsModel
     /// Push the firmware-update screen. `nil` keeps the Firmware row a coming-soon
@@ -38,6 +38,7 @@ public struct SettingsView: View {
                 deviceGroup
                 firmwareGroup
                 servicesGroup
+                appGroup
                 aboutGroup
             }
             .padding(.horizontal, 20)
@@ -223,6 +224,14 @@ public struct SettingsView: View {
                     .tint(OBCTheme.tint)
                 OBCSoonBadge("Soon")
             }
+        }
+    }
+
+    // MARK: App
+
+    private var appGroup: some View {
+        OBCGroupedSection("App", footer: "Automatic follows the setting on your iPhone.") {
+            OBCAppearanceRow()
         }
     }
 
