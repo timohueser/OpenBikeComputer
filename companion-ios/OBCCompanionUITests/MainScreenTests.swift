@@ -61,10 +61,10 @@ final class MainScreenTests: XCTestCase {
         app.buttons["topbar.sync"].tap()
         XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 30))
         let statLine = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS '31.6 km' AND label CONTAINS 'kph'")
+            NSPredicate(format: "label CONTAINS '31.6 km, ' AND label CONTAINS ' m climb, ' AND label ENDSWITH ' h'")
         ).firstMatch
         XCTAssertTrue(statLine.waitForExistence(timeout: 5),
-                      "C2 tracked stat line (date · distance · time · avg) missing")
+                      "C2 tracked stat line (date, distance, climb, time) missing")
         snap(app, "C2-main-tracked")
 
         app.buttons["Planned"].tap()

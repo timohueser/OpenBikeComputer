@@ -258,6 +258,7 @@ struct LineMarkerMapView: UIViewRepresentable {
             }
             guard let overlay = overlay as? SegmentedLineOverlay else { return MKOverlayRenderer(overlay: overlay) }
             let renderer = SegmentedLineRenderer(overlay: overlay)
+            renderer.halo = parent.model.cased ? UIColor(OBCTheme.routeCasing).cgColor : nil
             let runs = parent.model.runs(splits: parent.markers.map(\.distance))
             renderer.set(splits: runs.splits, colors: runs.colors.map { UIColor($0).cgColor }, dashed: runs.dashed)
             self.renderer = renderer
@@ -709,7 +710,9 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
     private var splits: [Double] = []
     private var colors: [CGColor] = []
     private var dashed: Set<Int> = []
-    private let halo = UIColor(OBCTheme.routeCasing).cgColor
+    /// The casing under the solid runs, or nil for none. Set once, before the first draw.
+    var halo: CGColor?
+    private static let fallback = UIColor(OBCTheme.routeCasing).cgColor
 
     /// Main thread in, `draw` on MapKit's threads out: the lock is the hand-over. A moved
     /// split redraws only the tiles between its old and new place.
@@ -751,16 +754,18 @@ final class SegmentedLineRenderer: MKOverlayRenderer {
 
         context.setLineCap(.round)
         context.setLineJoin(.round)
-        context.setLineWidth(haloWidth)
-        context.setStrokeColor(halo)
-        for (run, path) in paths.enumerated() where !dashed.contains(run) {
-            context.addPath(path)
+        if let halo {
+            context.setLineWidth(haloWidth)
+            context.setStrokeColor(halo)
+            for (run, path) in paths.enumerated() where !dashed.contains(run) {
+                context.addPath(path)
+            }
+            context.strokePath()
         }
-        context.strokePath()
 
         context.setLineWidth(width)
         for (run, path) in paths.enumerated() {
-            context.setStrokeColor(run < colors.count ? colors[run] : halo)
+            context.setStrokeColor(run < colors.count ? colors[run] : Self.fallback)
             // The dash phase is in map points, so the dashes stay put while a split moves.
             context.setLineDash(phase: 0, lengths: dashed.contains(run) ? [6 / zoomScale, 8 / zoomScale] : [])
             context.addPath(path)

@@ -5,7 +5,8 @@ import OBCDomain
 import OBCTransport
 
 /// The full-screen photo viewer: swipe through the ride's photos, with the current photo's pin
-/// highlighted on the map below.
+/// highlighted on the map below. It is always in the Tent colours, because a photo reads best
+/// on a dark ground.
 struct RidePhotoViewer: View {
     let model: RidePhotosModel
     let preview: TrackPreview?
@@ -28,18 +29,21 @@ struct RidePhotoViewer: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             if model.placed.indices.contains(index) {
                 let placed = model.placed[index]
-                Text("\(OBCFormat.distance(meters: placed.distanceMeters)) · \(placed.photo.takenAt.formatted(date: .omitted, time: .shortened))")
+                Text("km \(OBCFormat.distanceValue(meters: placed.distanceMeters)) · \(placed.photo.takenAt.formatted(date: .omitted, time: .shortened))")
                     .font(.system(.footnote, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(OBCTheme.secondary)
                     .padding(.vertical, 10)
                     .accessibilityIdentifier("photos.viewer.caption")
             }
-            MapTrackPreviewView(preview, photoPins: model.pinCoordinates, highlightedPhoto: index)
+            MapTrackPreviewView(preview, ink: .ride, photoPins: model.pinCoordinates, highlightedPhoto: index)
                 .frame(height: 150)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
+                .accessibilityLabel("Map of the ride with this photo's place")
         }
-        .background(Color.black.ignoresSafeArea())
+        .foregroundStyle(OBCTheme.ink)
+        .background(OBCTheme.page.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
         .task(id: index) { await load() }
     }
 
@@ -55,10 +59,10 @@ struct RidePhotoViewer: View {
             Spacer()
             Text("\(index + 1) of \(model.photos.count)")
                 .font(.system(.footnote, weight: .medium).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
             Spacer()
             Color.clear.frame(width: 44, height: 44)
         }
-        .foregroundStyle(.white)
         .padding(.horizontal, 8)
     }
 
@@ -82,7 +86,7 @@ struct RidePhotoViewer: View {
                   let image = Image(photoData: data) {
             image.resizable().scaledToFit()
         } else {
-            ProgressView().tint(.white)
+            ProgressView()
         }
     }
 
@@ -94,7 +98,7 @@ struct RidePhotoViewer: View {
                 .opacity(0.6)
             Text(message)
                 .font(.system(.subheadline))
-                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
             action().frame(width: 180)
         }
         .padding(24)

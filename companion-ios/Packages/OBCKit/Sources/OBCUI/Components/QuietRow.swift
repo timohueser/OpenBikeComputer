@@ -49,9 +49,7 @@ public struct OBCQuietRow: View {
             .accessibilityLabel("Dismiss")
             .accessibilityIdentifier("quietRow.dismiss")
         }
-        .background(OBCTheme.surface.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).strokeBorder(OBCTheme.hairline))
+        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
         .offset(x: offset)
         .opacity(1 - Double(min(-offset, 160) / 200))
         .simultaneousGesture(

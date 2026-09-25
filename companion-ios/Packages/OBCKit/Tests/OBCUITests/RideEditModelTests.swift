@@ -48,12 +48,9 @@ struct RideEditModelTests {
         #expect(model.rideLibrary.totals.distanceMeters == merged.distanceMeters)
         #expect(model.rideLibrary.totals.movingTime == 1_000, "the lunch break is not moving time")
         #expect(model.ride(morning.id)?.points.count == 601 + 401, "the detail reads the edited points")
+        #expect(model.isEditedRide(morning.id))
 
-        let second = try #require(model.splitRide(morning.id, at: t0.addingTimeInterval(300)))
-        #expect(model.rideLibrary.totals.rideCount == 2)
-        #expect(model.isEditedRide(second))
-
-        model.revertRide(second)
+        model.revertRide(morning.id)
         #expect(model.rides == [lunch.summary, morning.summary], "revert restores both rides exactly")
         #expect(!model.isEditedRide(morning.id))
     }
@@ -70,55 +67,6 @@ struct RideEditModelTests {
         model.dismissMergeSuggestion(for: morning.id)
         #expect(await model.mergeSuggestion(for: morning.id) == nil)
         #expect(library.dismissedMerges() == [RidePair(first: morning.id, second: lunch.id)])
-    }
-
-    @Test
-    func thePartsOfASplitDoNotSuggestAMerge() async throws {
-        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
-        let (model, _) = model([original])
-        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
-        #expect(model.nextRide(after: original.id)?.id == second)
-        #expect(await model.mergeSuggestion(for: original.id) == nil, "the parts meet, but they are one synced ride")
-    }
-
-    @Test
-    func deletingOnePartOfASplitLeavesTheOtherRevertable() throws {
-        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
-        let (model, library) = model([original])
-        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
-        model.deleteRide(original.id)
-        model.deleteRideForever(original.id)
-        #expect(model.rides.map(\.id) == [second])
-
-        model.revertRide(second)
-        #expect(model.rides == [original.summary], "the synced ride shows again, whole")
-        #expect(library.deletedRideIDs().isEmpty)
-    }
-
-    @Test
-    func revertingAPartBringsTheOtherOutOfRecentlyDeleted() throws {
-        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
-        let (model, _) = model([original])
-        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
-        model.deleteRide(original.id)
-        model.revertRide(second)
-        #expect(model.rides == [original.summary])
-        #expect(model.trashedRides.isEmpty)
-    }
-
-    @Test
-    func deletingBothPartsDeletesTheSyncedRideForGood() throws {
-        let original = ride("a", start: t0, seconds: 600, latitude: 46.5)
-        let (model, library) = model([original])
-        let second = try #require(model.splitRide(original.id, at: t0.addingTimeInterval(300)))
-        for id in [original.id, second] {
-            model.deleteRide(id)
-            model.deleteRideForever(id)
-        }
-        #expect(model.rides.isEmpty)
-        #expect(model.trashedRides.isEmpty)
-        #expect(library.archivedRidePoints(original.id) == nil, "no file stays that nothing reaches")
-        #expect(library.deletedRideIDs() == [original.id], "a sync must not bring it back")
     }
 
     @Test
@@ -155,13 +103,10 @@ struct RideEditModelTests {
         #expect(edit.trimRange == t0.addingTimeInterval(103)...t0.addingTimeInterval(600),
                 "the cut part of a point interval does not stay")
 
-        edit.select(.split)
-        #expect(edit.trimRange == nil)
-        #expect(edit.splitTime == t0.addingTimeInterval(300))
-        edit.editor.begin(0)
-        edit.editor.move(0, to: 0)
+        edit.editor.begin(1)
+        edit.editor.move(1, to: 512)
         edit.editor.end()
-        #expect(edit.splitTime == nil, "a part needs two points")
+        #expect(edit.trimRange == nil, "a kept part needs two points")
         #expect(!edit.canSave)
     }
 }

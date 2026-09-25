@@ -3,7 +3,7 @@ import Foundation
 import OBCDomain
 @testable import OBCTransport
 
-/// Ride edits: trim, split, merge and revert as views over synced rides that never change.
+/// Ride edits: trim, merge and revert as views over synced rides that never change.
 struct RideEditTests {
     /// A ride north at 5 m/s, one point a second, climbing 1 m every 10 s.
     static func ride(
@@ -87,39 +87,16 @@ struct RideEditTests {
     }
 
     @Test
-    func aSplitPartTakesTheNextFreeNumberAndAMergeGivesTheRideBack() throws {
-        let original = Self.ride("Day 2 Ulrichen", start: t0, seconds: 600)
-        let lunch = Self.ride("day 2 ulrichen (2)", start: t0.addingTimeInterval(3_600), seconds: 60)
-        let store = store(original, lunch)
-        let second = try #require(store.splitRide(original.id, at: t0.addingTimeInterval(200),
-                                                  summary: original.summary))
-
-        let parts = store.rideSummaries().filter { $0.id != lunch.id }
-        #expect(parts.map(\.name) == ["Day 2 Ulrichen (3)", "Day 2 Ulrichen (1)"],
-                "\"(2)\" is taken, whatever its case")
-        #expect(parts.map(\.id) == [second, original.id])
-        #expect(parts.map(\.movingTime) == [400, 200], "the two parts meet at one point, without a gap")
-
-        #expect(store.mergeRides(parts[1], second))
-        let view = try #require(store.rideViews().first)
-        #expect(view.slices == [RideSlice(source: original.id, start: t0, end: t0.addingTimeInterval(600))])
-        #expect(store.rideSummaries().first { $0.id == original.id }?.movingTime == 600)
-    }
-
-    @Test
-    func revertRestoresEverySyncedRideTheEditsTouchedExactly() throws {
+    func revertRestoresTheSyncedRidesOfOneEditExactly() throws {
         let a = Self.ride("a", start: t0, seconds: 600)
         let b = Self.ride("b", start: t0.addingTimeInterval(1_000), seconds: 600)
         let c = Self.ride("c", start: t0.addingTimeInterval(5_000), seconds: 600)
         let store = store(a, b, c)
         let synced = store.rideSummaries()
-        let half = try #require(store.splitRide(a.id, at: t0.addingTimeInterval(300), summary: a.summary))
-        let secondHalf = try #require(store.rideSummaries().first { $0.id == half })
-        #expect(store.mergeRides(secondHalf, b.id))
+        #expect(store.mergeRides(a.summary, b.id))
         #expect(store.trimRide(c.id, to: t0.addingTimeInterval(5_100)...t0.addingTimeInterval(5_200),
                                summary: c.summary))
 
-        // Reverting the first half frees `a`, which frees the merge through it, which frees `b`.
         store.revertRide(a.id)
         #expect(store.rideViews().map(\.id) == [c.id], "an edit of an unrelated ride stays")
         #expect(store.rideSummaries().filter { $0.id != c.id } == synced.filter { $0.id != c.id })
@@ -127,20 +104,16 @@ struct RideEditTests {
     }
 
     @Test
-    func deletingAnEditedRideDeletesOnlyTheSyncedRidesNoOtherEditCovers() throws {
+    func deletingAMergedRideDeletesBothSyncedRidesForGood() throws {
         let a = Self.ride("a", start: t0, seconds: 600)
         let b = Self.ride("b", start: t0.addingTimeInterval(1_000), seconds: 600)
         let store = store(a, b)
-        let half = try #require(store.splitRide(a.id, at: t0.addingTimeInterval(300), summary: a.summary))
-        #expect(store.trimRide(b.id, to: t0.addingTimeInterval(1_000)...t0.addingTimeInterval(1_100),
-                               summary: b.summary))
+        #expect(store.mergeRides(a.summary, b.id))
 
-        store.deleteRide(half)
-        #expect(store.archivedRidePoints(a.id) != nil, "the first half still needs its synced ride")
-        store.deleteRide(b.id)
-        #expect(store.archivedRidePoints(b.id) == nil)
-        #expect(store.deletedRideIDs() == [b.id], "a sync must not bring the synced ride back")
-        #expect(store.rideSummaries().map(\.id) == [a.id])
+        store.deleteRide(a.id)
+        #expect(store.archivedRidePoints(a.id) == nil && store.archivedRidePoints(b.id) == nil)
+        #expect(store.deletedRideIDs() == [a.id, b.id], "a sync must not bring the synced rides back")
+        #expect(store.rideSummaries().isEmpty)
     }
 
     @Test
@@ -191,24 +164,6 @@ struct RideEditTests {
 
     private func photo(_ name: String, _ second: Double) -> RidePhoto {
         RidePhoto(assetID: name, takenAt: t0.addingTimeInterval(second))
-    }
-
-    @Test
-    func eachPartOfASplitShowsThePhotosOfItsTimeAndANewPhotoStays() throws {
-        let original = Self.ride("a", start: t0, seconds: 3_600)
-        let store = store(original)
-        store.saveRideJournal(RideJournal(photos: [photo("early", 100), photo("late", 3_000)]), thumbnails: [:], for: original.id)
-        let second = try #require(store.splitRide(original.id, at: t0.addingTimeInterval(1_800), summary: original.summary))
-
-        #expect(store.rideJournal(original.id).photos.map(\.assetID) == ["early"])
-        #expect(store.rideJournal(second).photos.map(\.assetID) == ["late"])
-
-        var journal = store.rideJournal(second)
-        journal.add([photo("new", 2_500)])
-        store.saveRideJournal(journal, thumbnails: ["new": Data([1])], for: second)
-        #expect(store.rideJournal(second).photos.map(\.assetID) == ["new", "late"])
-        #expect(store.ridePhotoThumbnails(second) == ["new": Data([1])])
-        #expect(store.rideJournal(original.id).photos.map(\.assetID) == ["early"], "part 1 does not change")
     }
 
     @Test

@@ -38,6 +38,8 @@ public final class LineMarkerEditorModel {
     public private(set) var segmentColors: [Color]
     /// Segments drawn dashed: the cut parts of a trim.
     public private(set) var dashedSegments: Set<Int>
+    /// Whether the solid segments sit on the amber casing: a planned line does, a ride does not.
+    public let cased: Bool
     /// The marker under a finger, or under VoiceOver's adjustment. One at a time.
     public private(set) var activeID: LineMarker.ID?
     /// The markers as they stood before the drag in flight: what the static profile layer and
@@ -76,6 +78,7 @@ public final class LineMarkerEditorModel {
         markers: [LineMarker],
         segmentColors: [Color],
         dashedSegments: Set<Int> = [],
+        cased: Bool = true,
         onEvent: @escaping (LineMarkerEvent) -> Void = { _ in }
     ) {
         guard line.vertices.count > 1 else { return nil }
@@ -87,6 +90,7 @@ public final class LineMarkerEditorModel {
         window = 0...max(line.length, 1)
         self.segmentColors = segmentColors
         self.dashedSegments = dashedSegments
+        self.cased = cased
         self.onEvent = onEvent
         resample()
     }
