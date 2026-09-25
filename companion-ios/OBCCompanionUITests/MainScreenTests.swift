@@ -55,7 +55,7 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(plannedStats.exists, "C1 stat line wrong")
         snap(app, "C1-main-planned")
 
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         // Tracked is library-first: rides show only after a sync pulls them in, and an un-synced
         // device ride is never a half-empty row.
         app.buttons["topbar.sync"].tap()
@@ -71,20 +71,17 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
     }
 
-    /// Search hides until a pull-down reveals it; then it filters, and no matches keeps the query
-    /// editable.
+    /// Search is visible on arrival, filters the library, and keeps an unmatched query editable.
     @MainActor
-    func testSearchRevealsOnPullThenFiltersAndShowsH6() {
+    func testVisibleSearchFiltersAndShowsH6() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
 
         let search = app.textFields.firstMatch
-        XCTAssertFalse(search.exists, "search must stay hidden until pulled")
-        snap(app, "C1-search-hidden")
-
-        app.swipeDown()   // over-scroll the list, and the bar slides in
-        XCTAssertTrue(search.waitForExistence(timeout: 5), "pull did not reveal search")
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "search must be visible on arrival")
+        XCTAssertTrue(app.staticTexts["Library"].exists)
+        snap(app, "C1-search-visible")
         search.tap()
         search.typeText("sugar")
         XCTAssertTrue(app.staticTexts["Sugar River Trail"].waitForExistence(timeout: 5))
@@ -99,38 +96,9 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 5))
     }
 
-    /// The bar is transient: once the cleared bar scrolls off the top it un-reveals, and back at
-    /// the top the list is search-free again.
+    /// Route deletion asks first. Cancel keeps the route, and confirmation removes it.
     @MainActor
-    func testSearchHidesAgainAfterScrollingAway() {
-        let app = launch(scenario: "happyPath", fixtures: "large")
-        waitForMain(app)
-        XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].waitForExistence(timeout: 10))
-
-        app.swipeDown()
-        let search = app.textFields.firstMatch
-        XCTAssertTrue(search.waitForExistence(timeout: 5), "pull did not reveal search")
-
-        app.swipeUp(velocity: .fast)   // scroll the empty bar off the top
-        // Return toward the top without momentum: a flick would over-scroll and legitimately
-        // re-reveal the bar. A held drag does not bounce.
-        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
-        for _ in 0..<8 where !app.buttons["Planned"].isHittable {
-            from.press(forDuration: 0.05, thenDragTo: to, withVelocity: 400, thenHoldForDuration: 0.3)
-        }
-        // The selector row is on screen, so a still-revealed bar, right below it, would be too.
-        // Its absence means it re-hid.
-        XCTAssertTrue(app.buttons["Planned"].isHittable, "did not make it back to the top")
-        let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: search)
-        wait(for: [hidden], timeout: 5)
-        snap(app, "C1-search-rehidden")
-    }
-
-    /// A swipe reveals Delete and the tap deletes directly: the swipe reveal is the deliberate
-    /// second action, so there is no extra confirm.
-    @MainActor
-    func testSwipeToDeleteRemovesTheRowDirectly() {
+    func testRouteSwipeDeleteRequiresConfirmation() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
 
@@ -142,6 +110,18 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(reveal.waitForExistence(timeout: 5), "H11 swipe action missing")
         snap(app, "H11-swipe-to-delete")
         reveal.tap()
+        let confirm = app.sheets.buttons["Delete route"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "route deletion must ask first")
+        if app.sheets.buttons["Cancel"].exists {
+            app.sheets.buttons["Cancel"].tap()
+        } else {
+            app.otherElements["PopoverDismissRegion"].tap()
+        }
+        XCTAssertTrue(card.exists, "cancel must keep the route")
+        card.swipeLeft()
+        reveal.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
 
         let gone = NSPredicate(format: "exists == false")
         let expectation = expectation(for: gone, evaluatedWith: card)
@@ -156,7 +136,7 @@ final class MainScreenTests: XCTestCase {
     func testDeletedRideDoesNotResurrectOnSync() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
 
         // Sync pulls the rides in.
         app.buttons["topbar.sync"].tap()
@@ -189,7 +169,7 @@ final class MainScreenTests: XCTestCase {
     func testTrashedRideCanBeRecovered() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         app.buttons["topbar.sync"].tap()
         waitForSyncedRides(app)
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
@@ -233,7 +213,7 @@ final class MainScreenTests: XCTestCase {
     func testPermanentDeleteEmptiesTheTrashForGood() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         app.buttons["topbar.sync"].tap()
         waitForSyncedRides(app)
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
@@ -280,7 +260,7 @@ final class MainScreenTests: XCTestCase {
     func testSyncCyclesAndConfirmsThenReportsUpToDate() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         // Library-first: no rows until the first sync, and that first sync is what this test
         // drives.
         let sync = app.buttons["topbar.sync"]

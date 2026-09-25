@@ -33,7 +33,7 @@ final class SyncTests: XCTestCase {
     func testSyncDropShowsH10ThenResumeFinishesTheBatch() {
         let app = launch(scenario: "syncDrop")
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         // Tracked is library-first, so there are no rows until a sync, and this sync drops
         // mid-batch. The banner, not the rows, is the subject.
         app.buttons["topbar.sync"].tap()
@@ -66,7 +66,7 @@ final class SyncTests: XCTestCase {
     func testSyncUpToDateScenarioToastsOnFirstSync() {
         let app = launch(scenario: "syncUpToDate")
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 10))
 
         app.buttons["topbar.sync"].tap()

@@ -6,7 +6,7 @@ import OBCTransport
 /// A ride's photos: the offer row, the pick grid, the strip, the pins and the ticks.
 ///
 /// The app never adds a photo without the grid step, and it asks for library access only when
-/// the rider taps the offer. Places come from the ride's points as they are now, so the model is
+/// the rider chooses to add photos. Places come from the ride's points as they are now, so the model is
 /// built again when the points change.
 @MainActor @Observable
 public final class RidePhotosModel {
@@ -44,6 +44,7 @@ public final class RidePhotosModel {
     /// The rider refused access; the view says where to allow it.
     public var accessDenied = false
     public private(set) var access: PhotoAccess
+    public private(set) var canAddPhotos = false
 
     public let rideID: RideID
     @ObservationIgnored private let points: [RidePoint]
@@ -73,6 +74,7 @@ public final class RidePhotosModel {
         let points = points
         line = await Task.detached { MeasuredLine(ridePoints: points) }.value
         placed = await place(journal.photos)
+        defer { canAddPhotos = true }
         guard !journal.closedRows.contains(.photos) else { return }
         switch access {
         case .notDetermined:
@@ -89,9 +91,11 @@ public final class RidePhotosModel {
 
     // MARK: Offer and grid
 
-    /// The rider tapped the offer. True when the grid should open. A refusal closes the row for
-    /// this ride.
+    /// Refresh access on every open, including a return from the iPhone's Settings.
     public func openOffer() async -> Bool {
+        guard canAddPhotos else { return false }
+        access = photoLibrary.access()
+        accessDenied = false
         if access == .notDetermined { access = await photoLibrary.requestAccess() }
         guard access.canRead else {
             accessDenied = true
@@ -105,7 +109,8 @@ public final class RidePhotosModel {
     /// and their thumbnail.
     public func loadPicks() async {
         let known = Set(picks?.map(\.id) ?? [])
-        let loaded = await placedCandidates().map { placed in
+        let added = Set(journal.photos.map(\.assetID))
+        let loaded = await placedCandidates().filter { !added.contains($0.id) }.map { placed in
             Pick(placed: placed, thumbnail: picks?.first { $0.id == placed.id }?.thumbnail)
         }
         selected.formUnion(loaded.map(\.id).filter { !known.contains($0) })

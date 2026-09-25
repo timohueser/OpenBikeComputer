@@ -64,7 +64,7 @@ struct LaunchConnectFailedView: View {
             Button("Try again", action: onRetry)
                 .buttonStyle(.obcPrimary)
                 .accessibilityIdentifier("launch.tryAgain")
-            Button("Go to routes", action: onGoToRoutes)
+            Button("Open Library", action: onGoToRoutes)
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("launch.goToRoutes")
         }

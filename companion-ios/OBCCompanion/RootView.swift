@@ -426,7 +426,6 @@ struct RootView: View {
                     bikeType: ride.bikeType,
                     // The full tracklog: the interactive map and the profile use it, never the preview.
                     ridePoints: tracked?.points ?? [],
-                    rides: mainModel.rides,
                     photos: (library, photoLibrary),
                     placeName: placeName,
                     deviceName: mainModel.deviceName,
@@ -531,23 +530,20 @@ struct RootView: View {
         }
     }
 
-    /// Share the ride as GPX or an image, or save it as a route through the import landing, with
-    /// the import's name-collision rule.
+    /// Export the ride as GPX or an image.
     private func rideShareMenu(for ride: Ride) -> ShareMenu {
         let exporter = rideExporter
-        let fileName = GPXFile.fileName(for: ride.summary.name)
         return ShareMenu(
             gpx: GPXFile(name: ride.summary.name) { try exporter.export(ride).data },
             image: ShareCardContent(ride: ride)
         )
-        .saveAsRoute(ride.plannedRoute().map { route in
-            { importModel.open(route: route, fileName: fileName, fileData: Data(), source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
-        })
+
     }
 
-    /// Edit ride and Revert to original.
+    /// Edit or save a ride. Saving uses the import landing and its name-collision rule.
     private func rideEditMenu(for ride: Ride) -> RideEditMenu {
         let id = ride.id
+        let fileName = GPXFile.fileName(for: ride.summary.name)
         return RideEditMenu(
             ride: ride,
             nextRide: mainModel.nextRide(after: id),
@@ -558,7 +554,11 @@ struct RootView: View {
                 case .mergeWithNext: mainModel.mergeRideWithNext(id)
                 }
             },
-            onRevert: { mainModel.revertRide(id) }
+            onRevert: { mainModel.revertRide(id) },
+            onSaveAsRoute: ride.plannedRoute().map { route in
+                { importModel.open(route: route, fileName: fileName, fileData: Data(),
+                                   source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
+            }
         )
     }
 

@@ -5,12 +5,11 @@ import OBCTransport
 /// The detail screen for a route or ride. One view, four dressings: planned, trip day, tracked,
 /// and imported. A route page leads with what the device holds and the one action, then its
 /// elevation profile and the ledger in the device route overview's layout. A ride page leads with
-/// its timeline and zones, then the ledger.
+/// its three totals and timeline, with secondary statistics in a disclosure.
 public struct RouteDetailView: View {
     @Bindable private var model: RouteDetailModel
     private let deviceName: String
     private let onUpload: () -> Void
-    private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
     /// Set by a host that rebuilds this view while it is on screen: the host presents the rename
     /// sheet above the rebuild, because a rebuild closes a sheet presented from inside it.
@@ -28,7 +27,7 @@ public struct RouteDetailView: View {
     private let quietRows: AnyView?
 
     @State private var renameShown = false
-    @State private var deleteConfirmShown = false
+    @State private var statisticsExpanded = false
     @State private var waypointsExpanded = false
     @State private var mapShown = false
     /// The timeline's cursor, in metres along the ride; nil before the first scrub.
@@ -44,7 +43,6 @@ public struct RouteDetailView: View {
         model: RouteDetailModel,
         deviceName: String,
         onUpload: @escaping () -> Void = {},
-        onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
         onRenameTap: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
@@ -58,7 +56,6 @@ public struct RouteDetailView: View {
         self.model = model
         self.deviceName = deviceName
         self.onUpload = onUpload
-        self.onDelete = onDelete
         self.onRename = onRename
         self.onRenameTap = onRenameTap
         self.onBikeTypeChange = onBikeTypeChange
@@ -76,6 +73,11 @@ public struct RouteDetailView: View {
                 hero
 
                 titleBlock
+
+                if !model.summaryStats.isEmpty {
+                    OBCStatSummary(stats: model.summaryStats)
+                        .padding(.top, 16)
+                }
 
                 switch model.dressing {
                 case .planned:
@@ -100,8 +102,6 @@ public struct RouteDetailView: View {
                         openChannel = $0
                     }
                     .padding(.top, 20)
-                    RideZonesCard(timeline: timeline)
-                        .padding(.top, 12)
                 } else if !model.elevationProfile.isEmpty {
                     OBCEyebrow("Elevation")
                         .padding(.top, 20)
@@ -109,29 +109,31 @@ public struct RouteDetailView: View {
                     ElevationProfileView(samples: model.elevationProfile)
                 }
 
-                if !model.stats.isEmpty {
+                if model.canReplay {
+                    replayButton
+                        .padding(.top, 16)
+                }
+
+                if case .tracked = model.dressing {
+                    OBCDisclosureRow(
+                        systemImage: "chart.bar",
+                        label: "More statistics",
+                        isExpanded: $statisticsExpanded,
+                        headerAccessibilityID: "detail.statistics"
+                    ) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            OBCLedger(model.stats)
+                            if let timeline = model.timeline {
+                                RideZonesCard(timeline: timeline)
+                            }
+                        }
+                        .padding(.horizontal, -16)
+                        .padding(.top, 8)
+                    }
+                    .padding(.top, 20)
+                } else if !model.stats.isEmpty {
                     OBCLedger(model.stats)
                         .padding(.top, 20)
-                }
-
-                if model.canReplay {
-                    Button("Replay ride", systemImage: "play.circle") {
-                        replayPreparing = true
-                        Task {
-                            replayContent = await model.replayContent(
-                                photos: photos?.photos ?? [], thumbnails: photos?.thumbnails ?? [:])
-                            replayPreparing = false
-                            replayShown = replayContent != nil
-                        }
-                    }
-                    .buttonStyle(.obcGhost)
-                    .disabled(replayPreparing)
-                    .padding(.top, 16)
-                    .accessibilityIdentifier("detail.replay")
-                }
-
-                if !model.highlights.isEmpty {
-                    highlights
                 }
 
                 if let photos {
@@ -217,6 +219,17 @@ public struct RouteDetailView: View {
             cursor: cursor.flatMap { model.timeline?.line.coordinate(at: $0) }
         )
         .frame(height: 200)
+        .overlay(alignment: .bottomTrailing) {
+            Label(
+                canExpandMap ? "Open map" : (isOnline ? "Map unavailable" : "Offline preview"),
+                systemImage: canExpandMap ? "arrow.up.left.and.arrow.down.right" : (isOnline ? "map" : "wifi.slash")
+            )
+            .font(.system(.subheadline, weight: .medium))
+            .foregroundStyle(OBCTheme.ink)
+            .padding(10)
+            .background(OBCTheme.surface, in: Capsule())
+            .padding(10)
+        }
         .padding(.top, 8)
 
         if canExpandMap {
@@ -227,12 +240,12 @@ public struct RouteDetailView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("detail.expandMap")
-            .accessibilityLabel(mapLabel)
+            .accessibilityLabel("Open map")
             .accessibilityHint("Opens the full map")
         } else {
             preview
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(mapLabel)
+                .accessibilityLabel("\(mapLabel). \(isOnline ? "Map unavailable" : "Offline preview")")
         }
     }
 
@@ -288,14 +301,28 @@ public struct RouteDetailView: View {
         .padding(.top, 14)
     }
 
-    private var highlights: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            OBCEyebrow("Highlights")
-            OBCLedger(model.highlights)
+    private var replayButton: some View {
+        Button {
+            replayPreparing = true
+            Task {
+                replayContent = await model.replayContent(
+                    photos: photos?.photos ?? [], thumbnails: photos?.thumbnails ?? [:])
+                replayPreparing = false
+                replayShown = replayContent != nil
+            }
+        } label: {
+            if replayPreparing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Preparing replay…")
+                }
+            } else {
+                Label("Replay ride", systemImage: "play.circle")
+            }
         }
-        .padding(.top, 20)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("detail.highlights")
+        .buttonStyle(.obcGhost)
+        .disabled(replayPreparing)
+        .accessibilityIdentifier("detail.replay")
     }
 
     private var bikeTypeRow: some View {
@@ -311,23 +338,8 @@ public struct RouteDetailView: View {
 
     @ViewBuilder
     private var actions: some View {
-        VStack(spacing: 10) {
-            switch model.dressing {
-            case .planned:
-                Button("Delete route") { deleteConfirmShown = true }
-                    .buttonStyle(.obcDestructive)
-                    .accessibilityIdentifier("detail.delete")
-                    // Anchored to the button: on the scroll root the dialog pops
-                    // up mid-screen.
-                    .obcDestructiveConfirm(
-                        "Delete \"\(model.name)\"?",
-                        isPresented: $deleteConfirmShown,
-                        message: "Removes it from your library. If it's already on the device, it stays there.",
-                        actionTitle: "Delete route",
-                        onConfirm: { onDelete?() }
-                    )
-            case .imported where noDevicePaired:
-                // A share can arrive before pairing: the route saves now and uploads later.
+        if case .imported = model.dressing, noDevicePaired {
+            VStack(spacing: 10) {
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     title: "No device paired yet.",
@@ -337,26 +349,9 @@ public struct RouteDetailView: View {
                 Button("Pair a device") { onPair?() }
                     .buttonStyle(.obcGhost)
                     .accessibilityIdentifier("detail.pairDevice")
-            case .imported:
-                // The rows under the stats land the route; upload is on the route or trip page.
-                EmptyView()
-            case .tripDay:
-                // The trip page uploads and deletes the whole trip.
-                EmptyView()
-            case .tracked:
-                Button("Delete ride") { deleteConfirmShown = true }
-                    .buttonStyle(.obcDestructive)
-                    .accessibilityIdentifier("detail.delete")
-                    .obcDestructiveConfirm(
-                        "Delete \"\(model.name)\"?",
-                        isPresented: $deleteConfirmShown,
-                        message: "Moves it to Recently Deleted. The ride stays on the device.",
-                        actionTitle: "Delete ride",
-                        onConfirm: { onDelete?() }
-                    )
             }
+            .padding(.top, 20)
         }
-        .padding(.top, 20)
     }
 
     private var waypointsLabel: String {

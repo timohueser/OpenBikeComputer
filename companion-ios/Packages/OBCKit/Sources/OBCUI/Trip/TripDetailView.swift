@@ -5,7 +5,7 @@ import OBCTransport
 /// The trip page, behind a trip card in the routes list, in the route page's order: the map in
 /// day colours, the name, what the device holds with the one action, the ledger, one row per day
 /// with a bar as long as the day, then the start date and the bike type. A tap on a day opens its
-/// route detail; a long press offers Rename day and End day at a stop. A tap on a transfer line
+/// route detail; its More menu offers Rename day and End day at a stop. A tap on a transfer line
 /// picks how the rider travels it. The overflow menu carries Reverse and Delete trip.
 ///
 /// Once the trip has a ride, the page is the trip review: the line with the ridden part, the
@@ -29,6 +29,7 @@ public struct TripDetailView: View {
 
     @State private var renameShown = false
     @State private var deleteDialogShown = false
+    @State private var reverseDialogShown = false
     /// The whole-trip upload sheet's driver, created once at the Upload tap. A model built inline
     /// in the `.sheet` closure would rebuild on every body pass and restart the queue.
     @State private var tripUploadModel: TripUploadModel?
@@ -166,17 +167,6 @@ public struct TripDetailView: View {
                 if !name.isEmpty { model.renameTrip(tripID, to: name) }
             }
         )
-        .confirmationDialog(
-            "Delete \(trip?.name.quoted ?? "trip")?",
-            isPresented: $deleteDialogShown,
-            titleVisibility: .visible
-        ) {
-            Button("Delete trip", role: .destructive) {
-                model.deleteTrip(tripID)
-                onClose()
-            }
-            Button("Cancel", role: .cancel) {}
-        }
         .obcRenameSheet(
             "Rename day",
             isPresented: Binding(get: { dayRename != nil }, set: { if !$0 { dayRename = nil } }),
@@ -246,14 +236,32 @@ public struct TripDetailView: View {
             Button { mapShown = true } label: {
                 // The preview ignores hits, because the tap is ours, so make the whole hero the
                 // tap target.
-                preview.contentShape(Rectangle())
+                preview
+                    .overlay(alignment: .bottomTrailing) { mapAffordance }
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("trip.expandMap")
-            .accessibilityLabel("Open full trip map")
+            .accessibilityLabel("Open map")
         } else {
             preview
+                .overlay(alignment: .bottomTrailing) { mapAffordance }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(isOnline ? "Trip map unavailable" : "Trip map unavailable offline")
         }
+    }
+
+    private var mapAffordance: some View {
+        Label(
+            canExpandMap ? "Open map" : (isOnline ? "Map unavailable" : "Offline preview"),
+            systemImage: canExpandMap ? "arrow.up.left.and.arrow.down.right" : (isOnline ? "map" : "wifi.slash")
+        )
+        .font(.system(.subheadline, weight: .medium))
+        .foregroundStyle(OBCTheme.ink)
+        .padding(10)
+        .background(OBCTheme.surface, in: Capsule())
+        .padding(10)
+        .accessibilityHidden(true)
     }
 
     private var tripMapCover: some View {
@@ -279,32 +287,41 @@ public struct TripDetailView: View {
                 let day = days[index]
                 let end = trip?.dayEnds[safe: index]
                 let transfer = trip?.transferMeters(after: index)
-                TripDayRow(
-                    color: OBCTheme.stageColor(index: index),
-                    number: index + 1,
-                    title: end?.title ?? end?.name.map { "to \($0)" },
-                    detail: [
-                        dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) },
-                        OBCFormat.distance(meters: day.distanceMeters), OBCFormat.climb(meters: day.elevationGainMeters),
-                        day.estimatedDuration.map { OBCFormat.movingTime($0) + " h" }, offLineNote(end),
-                    ].compactMap { $0 }.joined(separator: " · "),
-                    note: copies[safe: index]?.shown,
-                    fraction: longest > 0 ? day.distanceMeters / longest : 0,
-                    spokenNote: copies[safe: index]?.spoken,
-                    showsDivider: index != indices.last && transfer == nil
-                ) {
-                    onOpenDay(index)
+                HStack(spacing: 0) {
+                    TripDayRow(
+                        color: OBCTheme.stageColor(index: index),
+                        number: index + 1,
+                        title: end?.title ?? end?.name.map { "to \($0)" },
+                        detail: [
+                            dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) },
+                            OBCFormat.distance(meters: day.distanceMeters), OBCFormat.climb(meters: day.elevationGainMeters),
+                            day.estimatedDuration.map { OBCFormat.movingTime($0) + " h" }, offLineNote(end),
+                        ].compactMap { $0 }.joined(separator: " · "),
+                        note: copies[safe: index]?.shown,
+                        fraction: longest > 0 ? day.distanceMeters / longest : 0,
+                        spokenNote: copies[safe: index]?.spoken,
+                        showsDivider: false
+                    ) {
+                        onOpenDay(index)
+                    }
+                    .accessibilityIdentifier("trip.day.\(index)")
+                    Menu { dayActions(index) } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(.subheadline, weight: .semibold))
+                            .foregroundStyle(OBCTheme.secondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Day \(index + 1) actions")
+                    .accessibilityIdentifier("trip.day.\(index).menu")
+                    .padding(.trailing, 4)
                 }
-                .contextMenu {
-                    Button { dayRename = index } label: { Label("Rename day", systemImage: "pencil") }
-                    if index < days.count - 1 {
-                        Button {
-                            stopsModel = model.tripStops(tripID, day: index, isOnline: isOnline)
-                        } label: { Label("End day at a stop", systemImage: "tent") }
-                        .accessibilityIdentifier("trip.day.stops")
+                .contextMenu { dayActions(index) }
+                .overlay(alignment: .bottom) {
+                    if index != indices.last && transfer == nil {
+                        OBCTheme.hairline.frame(height: 1).padding(.leading, 16)
                     }
                 }
-                .accessibilityIdentifier("trip.day.\(index)")
                 if let meters = transfer {
                     TripTransferRow(kind: end?.transfer, meters: meters) {
                         model.setTripTransfer(tripID, day: index, to: $0)
@@ -312,6 +329,17 @@ public struct TripDetailView: View {
                     .accessibilityIdentifier("trip.transfer.\(index)")
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func dayActions(_ index: Int) -> some View {
+        Button { dayRename = index } label: { Label("Rename day", systemImage: "pencil") }
+        if index < days.count - 1 {
+            Button {
+                stopsModel = model.tripStops(tripID, day: index, isOnline: isOnline)
+            } label: { Label("End day at a stop", systemImage: "tent") }
+            .accessibilityIdentifier("trip.day.stops")
         }
     }
 
@@ -526,8 +554,8 @@ public struct TripDetailView: View {
     private var overflowMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Menu {
-                Button { model.reverseTrip(tripID) } label: {
-                    Label("Reverse", systemImage: "arrow.left.arrow.right")
+                Button { reverseDialogShown = true } label: {
+                    Label("Reverse trip…", systemImage: "arrow.left.arrow.right")
                 }
                 .accessibilityIdentifier("trip.reverse")
 
@@ -538,10 +566,30 @@ public struct TripDetailView: View {
                 }
                 .accessibilityIdentifier("trip.delete")
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
             }
             .accessibilityLabel("More")
             .accessibilityIdentifier("trip.overflow")
+            .confirmationDialog(
+                "Reverse this trip?", isPresented: $reverseDialogShown, titleVisibility: .visible
+            ) {
+                Button("Reverse trip") { model.reverseTrip(tripID) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Reverses the direction and day order of this trip. Its device progress starts over.")
+            }
+            .obcDestructiveConfirm(
+                "Delete \(trip?.name.quoted ?? "trip")?",
+                isPresented: $deleteDialogShown,
+                message: model.connectedScope != nil
+                    ? "Removes this trip from your library. Also tries to remove its trip and day routes from \(model.deviceName)."
+                    : "Removes this trip from your library. \(model.deviceName) is not connected, so its copies stay there.",
+                actionTitle: "Delete trip",
+                onConfirm: {
+                    model.deleteTrip(tripID)
+                    onClose()
+                }
+            )
         }
     }
 }

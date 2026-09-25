@@ -114,7 +114,7 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: Tracked
 
-    func testTrackedDressingShowsItsLedgerTimelineAndHighlights() {
+    func testTrackedDressingSeparatesEssentialTotalsFromSecondaryStatistics() {
         let control = makeControl()
         let entry = control.fixtures.rides[0]  // Kettle Moraine Loop (ride)
         let ride = entry.summary
@@ -122,17 +122,17 @@ final class RouteDetailModelTests: XCTestCase {
             transport: MockTransport(control: control), dressing: .tracked(ride), ridePoints: entry.points
         )
 
-        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Moving time", "Avg speed", "Climb", "Descent"])
-        XCTAssertEqual(model.stats[1].value, OBCFormat.movingTime(ride.movingTime))
+        XCTAssertEqual(model.summaryStats.map(\.key), ["Distance", "Moving time", "Climb"])
+        XCTAssertEqual(model.summaryStats[0].value, OBCFormat.distanceValue(meters: ride.distanceMeters))
+        XCTAssertEqual(model.summaryStats[1].value, OBCFormat.movingTime(ride.movingTime))
+        XCTAssertEqual(model.summaryStats[2].value, OBCFormat.climbValue(meters: ride.climbMeters))
+        XCTAssertEqual(model.stats.map(\.key), ["Avg speed", "Descent"])
         XCTAssertFalse(model.ink.cased, "a ride has no planned-route casing")
         XCTAssertNotNil(model.subtitle)
         XCTAssertTrue(model.isRenamable)
-        XCTAssertTrue(model.timeline == nil && model.highlights.isEmpty, "whole-track work waits for start()")
+        XCTAssertNil(model.timeline, "whole-track work waits for start()")
 
         model.start()
-        let highlights = RideHighlights.compute(entry.ride()).map { OBCFormat.highlight($0) }
-        XCTAssertFalse(highlights.isEmpty)
-        XCTAssertEqual(model.highlights, highlights)
         XCTAssertEqual(model.timeline?.channels, [.elevation, .speed], "a ride without sensors")
     }
 
@@ -146,6 +146,10 @@ final class RouteDetailModelTests: XCTestCase {
             )
             model.start()
             XCTAssertEqual(model.timeline?.channels, points.isEmpty ? nil : [.speed], "no elevation strip without elevation")
+            if !points.isEmpty {
+                XCTAssertEqual(model.summaryStats[2], OBCStat(value: "—", key: "Climb"))
+                XCTAssertEqual(model.stats[1], OBCStat(value: "—", key: "Descent"))
+            }
         }
     }
 

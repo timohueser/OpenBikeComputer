@@ -50,7 +50,7 @@ final class RideEditTests: XCTestCase {
         app.launch()
         // The fixture rides are already synced, so Tracked lists them at launch.
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         openDay2(app)
 
         let suggestion = app.otherElements["detail.mergeSuggestion"].buttons["quietRow.open"]
@@ -88,7 +88,7 @@ final class RideEditTests: XCTestCase {
         XCTAssertTrue(merge.waitForExistence(timeout: 5), "the row expands and asks first")
         snap(app, "detail-merge-expanded")
         merge.tap()
-        XCTAssertTrue(app.otherElements["ledger.Distance"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["summary.Distance"].waitForExistence(timeout: 5))
         XCTAssertFalse(suggestion.exists, "the merged ride has no next ride to merge")
         snap(app, "detail-merged")
         app.navigationBars.buttons.element(boundBy: 0).tap()

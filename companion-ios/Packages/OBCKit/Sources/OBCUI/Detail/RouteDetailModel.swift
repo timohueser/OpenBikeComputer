@@ -8,7 +8,7 @@ import OBCTransport
 ///
 /// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
 /// derived from the saved record's own geometry, so the screen never asks the device for a route
-/// the phone already holds. Tracked computes its timeline and highlights from the synced ride
+/// the phone already holds. Tracked computes its timeline from the synced ride
 /// points in `start()`, which runs once on the live model. Imported computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
@@ -35,8 +35,6 @@ public final class RouteDetailModel {
     /// A tracked ride's channels on one distance axis; nil until `start()`, and for a ride
     /// without a tracklog.
     public private(set) var timeline: RideTimeline?
-    /// A tracked ride's highlights as ledger rows, the most notable first; empty elsewhere.
-    public private(set) var highlights: [OBCStat] = []
     public private(set) var maxGradePercent: Double?
     /// The type the estimate uses and an upload writes. Changed through `setBikeType(_:)`.
     public private(set) var bikeType: BikeType
@@ -55,7 +53,6 @@ public final class RouteDetailModel {
     }
     @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
     @ObservationIgnored private let ridePoints: [RidePoint]
-    @ObservationIgnored private let rides: [RideSummary]
     public let canReplay: Bool
 
     /// The recorded line is assembled only after the rider opens Replay.
@@ -156,9 +153,7 @@ public final class RouteDetailModel {
         now: @escaping () -> Date = Date.init,
         // The tracked dressing's full tracklog, from the library's synced ride. A ride carries no
         // `ImportedRoute`, so it cannot ride along on `uploadGeometry`.
-        ridePoints: [RidePoint] = [],
-        // Every synced ride summary: the tracked dressing finds its trip's biggest day in it.
-        rides: [RideSummary] = []
+        ridePoints: [RidePoint] = []
     ) {
         self.transport = transport
         self.dressing = dressing
@@ -177,7 +172,6 @@ public final class RouteDetailModel {
         // a coarser map, not a missing one.
         fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? ridePoints.map(\.coordinate)
         self.ridePoints = ridePoints
-        self.rides = rides
         if case .tracked(let ride) = dressing {
             canReplay = ReplayContent.hasUsableGeometry(ridePoints)
             hasElevation = ridePoints.isEmpty
@@ -232,7 +226,7 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Watch the link, and fill a tracked ride's timeline and highlights. A host may build throwaway
+    /// Watch the link, and fill a tracked ride's timeline. A host may build throwaway
     /// models on every render, so this whole-track work waits for the live one.
     public func start() {
         guard !started else { return }
@@ -241,7 +235,6 @@ public final class RouteDetailModel {
             let ride = Ride(summary: summary, points: ridePoints)
             let timeline = RideTimeline(ride: ride)
             self.timeline = timeline.length > 0 ? timeline : nil
-            highlights = RideHighlights.compute(ride, library: rides).map { OBCFormat.highlight($0) }
         }
         connectionWatch = Task { [weak self, transport] in
             for await state in transport.state {
@@ -280,8 +273,17 @@ public final class RouteDetailModel {
 
     // MARK: Ledger
 
-    /// The ledger, in the device route overview's order. A ride lists what it recorded, then one
-    /// row per sensor value it carries; a value it never measured reads "—", never 0.
+    /// The three ride totals shown directly under the title, before the timeline.
+    public var summaryStats: [OBCStat] {
+        guard case .tracked(let ride) = dressing else { return [] }
+        return [
+            OBCStat(value: OBCFormat.distanceValue(meters: ride.distanceMeters), unit: "km", key: "Distance"),
+            Self.rideStat(ride.movingTime > 0 ? OBCFormat.movingTime(ride.movingTime) : nil, "h", "Moving time"),
+            Self.rideStat(hasElevation ? OBCFormat.climbValue(meters: ride.climbMeters) : nil, "m", "Climb"),
+        ]
+    }
+
+    /// A route's ledger or a ride's secondary statistics. Missing measurements read "—".
     public var stats: [OBCStat] {
         if case .tracked(let ride) = dressing { return Self.rideStats(ride, hasElevation: hasElevation) }
         return [
@@ -303,24 +305,22 @@ public final class RouteDetailModel {
     }
 
     private static func rideStats(_ ride: RideSummary, hasElevation: Bool) -> [OBCStat] {
-        func stat(_ value: String?, _ unit: String, _ key: String) -> OBCStat {
-            value.map { OBCStat(value: $0, unit: unit, key: key) } ?? OBCStat(value: "—", key: key)
-        }
         let moving = ride.movingTime > 0
         var stats = [
-            stat(OBCFormat.distanceValue(meters: ride.distanceMeters), "km", "Distance"),
-            stat(moving ? OBCFormat.movingTime(ride.movingTime) : nil, "h", "Moving time"),
-            stat(moving ? OBCFormat.speedValue(mps: ride.averageSpeedMps) : nil, "kph", "Avg speed"),
-            stat(hasElevation ? OBCFormat.climbValue(meters: ride.climbMeters) : nil, "m", "Climb"),
-            stat(hasElevation ? OBCFormat.climbValue(meters: ride.descentMeters) : nil, "m", "Descent"),
+            rideStat(moving ? OBCFormat.speedValue(mps: ride.averageSpeedMps) : nil, "kph", "Avg speed"),
+            rideStat(hasElevation ? OBCFormat.climbValue(meters: ride.descentMeters) : nil, "m", "Descent"),
         ]
         let sensors: [(Int?, String, String)] = [
             (ride.avgHeartRate, "bpm", "Avg heart rate"), (ride.maxHeartRate, "bpm", "Max heart rate"),
             (ride.avgPower, "W", "Avg power"), (ride.maxPower, "W", "Max power"),
             (ride.energyKJ, "kJ", "Energy"), (ride.avgCadence, "rpm", "Avg cadence"),
         ]
-        for case let (value?, unit, key) in sensors { stats.append(stat("\(value)", unit, key)) }
+        for case let (value?, unit, key) in sensors { stats.append(rideStat("\(value)", unit, key)) }
         return stats
+    }
+
+    private static func rideStat(_ value: String?, _ unit: String, _ key: String) -> OBCStat {
+        value.map { OBCStat(value: $0, unit: unit, key: key) } ?? OBCStat(value: "—", key: key)
     }
 
     /// Whole minutes, floored, as the device route overview shows the same estimate.

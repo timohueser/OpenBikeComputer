@@ -85,6 +85,8 @@ struct DayNoteEntry: View {
                     Label("Add a note", systemImage: "pencil.line")
                         .font(.system(.subheadline))
                         .foregroundStyle(OBCTheme.secondary)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 18)

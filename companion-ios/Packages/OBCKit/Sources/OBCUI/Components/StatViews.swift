@@ -16,6 +16,35 @@ public struct OBCStat: Identifiable, Equatable {
     }
 }
 
+/// Plain totals below a ride's title. Large text places each total on its own line.
+struct OBCStatSummary: View {
+    let stats: [OBCStat]
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        let layout = typeSize >= .xxxLarge
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
+            ForEach(stats) { stat in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(stat.key)
+                        .font(.system(.subheadline))
+                        .foregroundStyle(OBCTheme.secondary)
+                    statValue(stat, style: .title2)
+                        .minimumScaleFactor(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(stat.key)
+                .accessibilityValue([stat.value, stat.unit].compactMap { $0 }.joined(separator: " "))
+                .accessibilityIdentifier("summary.\(stat.key)")
+            }
+        }
+    }
+}
+
 /// The inline stat strip on route and ride detail: equal-width stats in a panel card.
 public struct OBCStatStrip: View {
     let stats: [OBCStat]

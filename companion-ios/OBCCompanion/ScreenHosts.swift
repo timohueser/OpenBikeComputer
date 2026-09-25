@@ -91,6 +91,7 @@ struct RouteDetailScreen: View {
     /// The route-menu picker, planned dressing only: the detail overflow's Add to trip presents
     /// the shared picker sheet.
     @State private var tripPickerShown = false
+    @State private var deleteShown = false
     private let transport: any DeviceTransport
     /// The in-flight ledger the upload sheet claims a token from. Nil in previews.
     private let activity: TransferActivity?
@@ -104,8 +105,7 @@ struct RouteDetailScreen: View {
     private let onReverse: (() -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
-    /// Add to trip, planned only: the route becomes a day of the picked trip. A nil `onAddToTrip`
-    /// suppresses the overflow entirely.
+    /// Add to trip, planned only: the route becomes a day of the picked trip.
     private let tripPickerItems: [TripPickerItem]
     private let onAddToTrip: ((TripSelection) -> Void)?
     /// The share button, rides with a tracklog only.
@@ -114,7 +114,7 @@ struct RouteDetailScreen: View {
     @State private var photos: RidePhotosModel?
     /// A tracked ride's day note.
     @State private var dayNote: DayNoteModel?
-    /// The ⋯ menu with Edit ride and Revert to original, rides with a tracklog only.
+    /// The More menu for rides with a tracklog.
     private let rideEditMenu: RideEditMenu?
     /// The quiet rows under a ride's stats line.
     private let quietRows: AnyView?
@@ -128,7 +128,6 @@ struct RouteDetailScreen: View {
         sourceFileName: String? = nil,
         bikeType: BikeType = .road,
         ridePoints: [RidePoint] = [],
-        rides: [RideSummary] = [],
         photos: (library: any LibraryStore, photoLibrary: any PhotoLibrary)? = nil,
         placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         deviceObjectID: DeviceObjectID? = nil,
@@ -150,7 +149,7 @@ struct RouteDetailScreen: View {
             transport: transport, dressing: dressing, bikeType: bikeType,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             sourceFileName: sourceFileName, deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
-            ridePoints: ridePoints, rides: rides
+            ridePoints: ridePoints
         ))
         self.transport = transport
         self.activity = activity
@@ -202,7 +201,6 @@ struct RouteDetailScreen: View {
                     }
                 ))
             },
-            onDelete: onDelete,
             onRename: onRename,
             onRenameTap: onRenameTap,
             onBikeTypeChange: onBikeTypeChange,
@@ -213,14 +211,13 @@ struct RouteDetailScreen: View {
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if onAddToTrip != nil || onReverse != nil {
-                ToolbarItem(placement: .primaryAction) { routeMenu }
-            }
             if let rideShareMenu {
                 ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
             }
             if let rideEditMenu {
-                ToolbarItem(placement: .primaryAction) { rideEditMenu }
+                ToolbarItem(placement: .primaryAction) { rideEditMenu.deleteAction(onDelete) }
+            } else if onAddToTrip != nil || onReverse != nil || onDelete != nil {
+                ToolbarItem(placement: .primaryAction) { routeMenu }
             }
         }
         .sheet(item: $uploadRequest) { request in
@@ -235,7 +232,7 @@ struct RouteDetailScreen: View {
         }
     }
 
-    /// The route page's overflow: Add to trip and Reverse.
+    /// Planned actions and deletion, also used for a ride without a tracklog.
     private var routeMenu: some View {
         Menu {
             if onAddToTrip != nil {
@@ -249,15 +246,31 @@ struct RouteDetailScreen: View {
             if let onReverse {
                 // Reverse lands a copy; the original direction stays.
                 Button(action: onReverse) {
-                    Label("Reverse direction", systemImage: "arrow.uturn.backward")
+                    Label("Create reversed copy", systemImage: "arrow.uturn.backward")
                 }
                 .accessibilityIdentifier("detail.reverse")
+            }
+            if onDelete != nil {
+                if onAddToTrip != nil || onReverse != nil { Divider() }
+                Button(role: .destructive) { deleteShown = true } label: {
+                    Label(isRide ? "Delete ride…" : "Delete route…", systemImage: "trash")
+                }
+                .accessibilityIdentifier("detail.delete")
             }
         } label: {
             Image(systemName: "ellipsis")
         }
         .accessibilityLabel("More")
         .accessibilityIdentifier("detail.overflow")
+        .obcDestructiveConfirm(
+            "Delete \"\(model.name)\"?",
+            isPresented: $deleteShown,
+            message: isRide
+                ? "Moves it to Recently Deleted. The ride stays on the device."
+                : "Removes it from your library. If it is already on the device, it stays there.",
+            actionTitle: isRide ? "Delete ride" : "Delete route",
+            onConfirm: { onDelete?() }
+        )
     }
 }
 
@@ -321,7 +334,7 @@ struct ImportLandingHost: View {
     /// The one save, then the two ways into a trip. Each choice says where the route lands.
     private var rows: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Button("Save to Routes") { save(.none) }
+            Button("Save to Library") { save(.none) }
                 .buttonStyle(.obcPrimary)
                 .accessibilityIdentifier("import.newRoute")
             OBCGroupedSection("Or put it in a trip") {

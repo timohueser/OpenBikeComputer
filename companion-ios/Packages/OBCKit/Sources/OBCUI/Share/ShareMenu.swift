@@ -2,15 +2,12 @@
 import SwiftUI
 import UIKit
 
-/// The share button of a ride or a trip: the GPX file, the share image, and for a ride, save as
-/// route.
+/// Export a ride or trip as a GPX file or an image.
 public struct ShareMenu: View {
     private let gpx: GPXFile
     /// Built when the sheet opens: it measures the whole line.
     private let image: () -> ShareCardContent
     private var photos: [SharePhoto] = []
-    private var offersSaveAsRoute = false
-    private var onSaveAsRoute: (() -> Void)?
     @State private var imageShown = false
 
     public init(gpx: GPXFile, image: @autoclosure @escaping () -> ShareCardContent) {
@@ -30,15 +27,6 @@ public struct ShareMenu: View {
         return menu
     }
 
-    /// Offers Save as route. A nil `action` shows it disabled, because the ride cannot become a
-    /// route; see `Ride.plannedRoute()`.
-    public func saveAsRoute(_ action: (() -> Void)?) -> ShareMenu {
-        var menu = self
-        menu.offersSaveAsRoute = true
-        menu.onSaveAsRoute = action
-        return menu
-    }
-
     public var body: some View {
         Menu {
             ShareLink(item: gpx, preview: SharePreview(gpx.fileName)) {
@@ -49,14 +37,6 @@ public struct ShareMenu: View {
                 Label("Image", systemImage: "photo")
             }
             .accessibilityIdentifier("share.image")
-            if offersSaveAsRoute {
-                Button { onSaveAsRoute?() } label: {
-                    Label("Save as route", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                    if onSaveAsRoute == nil { Text("A gap in the ride is too long to join") }
-                }
-                .disabled(onSaveAsRoute == nil)
-                .accessibilityIdentifier("share.saveAsRoute")
-            }
         } label: {
             Image(systemName: "square.and.arrow.up")
         }

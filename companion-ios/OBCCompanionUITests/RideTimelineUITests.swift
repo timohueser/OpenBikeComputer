@@ -25,7 +25,7 @@ final class RideTimelineUITests: XCTestCase {
         ]
         app.launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         return app
     }
 
@@ -38,14 +38,22 @@ final class RideTimelineUITests: XCTestCase {
     }
 
     @MainActor
+    private func expandStatistics(_ app: XCUIApplication) {
+        let statistics = app.buttons["detail.statistics"]
+        for _ in 0..<4 where !statistics.isHittable { app.swipeUp() }
+        XCTAssertTrue(statistics.isHittable, "statistics disclosure missing")
+        statistics.tap()
+    }
+
+    @MainActor
     func testADragMovesTheCursorAndALabelOpensTheChannel() {
         let app = launch()
         openRide(app, "ride-furka-pass")
         for channel in ["elevation", "speed", "heartRate", "power", "cadence"] {
             XCTAssertTrue(app.buttons["timeline.\(channel)"].exists, "\(channel) strip missing")
         }
-        XCTAssertTrue(element(app, "zones.heartRate").exists, "heart rate zones missing")
-        XCTAssertTrue(element(app, "zones.power").exists, "power zones missing")
+        XCTAssertFalse(element(app, "zones.heartRate").exists, "zones start collapsed")
+        XCTAssertFalse(element(app, "ledger.Avg speed").exists, "secondary statistics start collapsed")
 
         let position = element(app, "timeline.position")
         XCTAssertEqual(position.value as? String, "Averages")
@@ -57,6 +65,16 @@ final class RideTimelineUITests: XCTestCase {
         app.buttons["timeline.heartRate"].tap()
         XCTAssertTrue(element(app, "channel.sheet").waitForExistence(timeout: 5), "detail sheet missing")
         XCTAssertTrue(element(app, "channel.readout").label.hasPrefix("KM"), "the sheet lost the cursor")
+        let sheet = element(app, "channel.sheet")
+        sheet.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
+            .press(forDuration: 0.05, thenDragTo: sheet.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 5), "channel sheet did not close")
+        expandStatistics(app)
+        XCTAssertTrue(element(app, "zones.heartRate").exists, "heart rate zones missing")
+        XCTAssertTrue(element(app, "zones.power").exists, "power zones missing")
+        XCTAssertFalse(element(app, "ledger.Distance").exists, "summary totals must not repeat")
+        app.buttons["detail.statistics"].tap()
+        XCTAssertFalse(element(app, "zones.heartRate").exists, "zones collapse with secondary statistics")
     }
 
     @MainActor
@@ -64,6 +82,7 @@ final class RideTimelineUITests: XCTestCase {
         let app = launch()
         openRide(app, "ride-grimsel-strap")
         XCTAssertTrue(app.buttons["timeline.heartRate"].exists)
+        expandStatistics(app)
         XCTAssertEqual(
             element(app, "zones.none").label,
             "No zones for this ride: max heart rate was not set on the device."
@@ -75,6 +94,7 @@ final class RideTimelineUITests: XCTestCase {
         XCTAssertTrue(app.buttons["timeline.elevation"].exists)
         XCTAssertTrue(app.buttons["timeline.speed"].exists)
         XCTAssertFalse(app.buttons["timeline.heartRate"].exists, "no strip without samples")
+        expandStatistics(app)
         XCTAssertFalse(element(app, "zones.none").exists, "no zones line without heart rate or power")
     }
 }
