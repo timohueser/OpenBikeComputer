@@ -822,8 +822,7 @@ async fn main(_spawner: Spawner) {
             };
             (display, hp)
         };
-        // The piezo: PWM21 on P1.06 and P1.07, provisional DK pins until a board revision fits one.
-        let buzzer = buzzer::Buzzer::new(hp, p.PWM21, p.P1_06, p.P1_07);
+        let buzzer = buzzer::Buzzer::new(hp, p.PWM21, p.P1_06, p.P1_07, p.P3_00, p.P3_01);
 
         // The microSD runs in native 4-bit SD mode over Nordic's sEMMC soft peripheral — the same
         // FLPR the panel runs on, time-multiplexed by `flpr_mux`. There is no SPI instance and no

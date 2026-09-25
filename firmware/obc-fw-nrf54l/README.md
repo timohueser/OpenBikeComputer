@@ -63,8 +63,8 @@ its own resistors on the rest. **The production board should fit external 10–1
 | P1.03 | I²C SCL      | shared GPS + altimeter + compass bus (TWIM22)             |
 | P1.04 | I²C SDA      | same bus                                                   |
 | P1.05 | GPS TX-Ready | optional DDC data-ready IRQ (active-high)                  |
-| P1.06 | piezo A      | **PROVISIONAL** — PWM21 ch0, the note's frequency          |
-| P1.07 | piezo B      | **PROVISIONAL** — PWM21 ch1; opposite phase on Loud, low on Quiet |
+| P1.06 | unused PWM pad | held low; do not wire |
+| P1.07 | unused PWM pad | held low; do not wire |
 | P1.08 | BTN2         | BACK                                                       |
 | P1.09 | BTN1         | DOWN                                                       |
 | P1.10 | GSP          | gate start pulse                                           |
@@ -81,7 +81,13 @@ its own resistors on the rest. **The production board should fit external 10–1
 | P1.26 | BTN0         | UP                                                         |
 | P1.27 | backlight    | **PROVISIONAL** — PWM20 ch0, 1 kHz; also DK LED2           |
 
-**Port P0 — low-power domain:** `P0.05` is `BTN3` (SELECT).
+**Ports P0 and P3:**
+
+| Pin   | Signal  | Notes |
+|-------|---------|-------|
+| P0.05 | BTN3    | SELECT; low-power domain |
+| P3.00 | piezo A | **PROVISIONAL** — PWM21 ch0; header P5 |
+| P3.01 | piezo B | **PROVISIONAL** — PWM21 ch1; header P5; wire a passive piezo between A and B, not to ground |
 
 **Schematic-time: the backlight gate needs an external pull-down.** P1.27 idles low, but only
 after `PanelBacklight::new` has run (`src/panel_power.rs`). Before that, and through all of

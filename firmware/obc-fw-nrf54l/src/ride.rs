@@ -2523,6 +2523,10 @@ pub(crate) async fn run_app(
                 immediate,
                 sound,
             } = plan;
+            #[cfg(feature = "debug-uart")]
+            let sound = obc_platform::debug_link::take_sound()
+                .map(|(cue, volume)| obc_app::device_core::Sound { cue, volume })
+                .or(sound);
             if let Some(obc_app::device_core::Sound { cue, volume }) = sound {
                 obc_ports::Sounder::play(&mut buzzer, obc_platform::sound::pattern(cue), volume);
             }

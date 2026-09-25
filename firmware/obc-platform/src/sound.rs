@@ -1,13 +1,21 @@
 //! The cue-to-pattern table: the one table every [`Sounder`](obc_ports::Sounder) plays, on the
 //! board, in the simulator and on the phone.
 //!
-//! Cues in the same [`Family`] share one pattern, because a rider learns about five sounds
-//! reliably. Rhythm carries the meaning and stays audible in wind; pitch direction is the second
-//! signal. The two pitches sit about a fourth apart inside the piezo's 2.7 to 4 kHz band.
+//! Cues in the same [`Family`] share one pattern. Rhythm carries the meaning and stays audible in
+//! wind; pitch direction is the second signal. Alert notes sit near the piezo's 2.7 to 4 kHz band.
 //!
 //! These values are a start. The owner tunes them by ear on the real part.
 
 use obc_ports::{Cue, Family, Note};
+
+/// One representative cue for each distinct pattern in developer sound controls.
+pub const AUDITION_CUES: [(Cue, &str); 5] = [
+    (Cue::KeyClick, "Tick"),
+    (Cue::ClimbStarts, "Heads-up"),
+    (Cue::SoundPreview, "Good"),
+    (Cue::OffRoute, "Problem"),
+    (Cue::BatteryCritical, "Urgent"),
+];
 
 const LOW: u16 = 3_000;
 const HIGH: u16 = 4_000;
@@ -28,22 +36,9 @@ const HEADS_UP: &[Note] = &[tone(LOW, 100), rest(60), tone(HIGH, 100)];
 const GOOD: &[Note] = &[tone(LOW, 70), rest(40), tone(LOW, 70), rest(40), tone(HIGH, 140)];
 /// Two longer notes, falling: "something went wrong".
 const PROBLEM: &[Note] = &[tone(HIGH, 250), rest(80), tone(LOW, 400)];
-/// Three sharp beeps, played twice: "act now".
-const URGENT: &[Note] = &[
-    tone(HIGH, 80),
-    rest(60),
-    tone(HIGH, 80),
-    rest(60),
-    tone(HIGH, 80),
-    rest(60),
-    rest(400),
-    tone(HIGH, 80),
-    rest(60),
-    tone(HIGH, 80),
-    rest(60),
-    tone(HIGH, 80),
-    rest(60),
-];
+/// A short call and a lower, held answer: "act now".
+const URGENT: &[Note] =
+    &[tone(HIGH, 55), rest(25), tone(3_200, 170), rest(140), tone(HIGH, 55), rest(25), tone(LOW, 330)];
 
 /// The notes `cue` plays.
 pub fn pattern(cue: Cue) -> &'static [Note] {

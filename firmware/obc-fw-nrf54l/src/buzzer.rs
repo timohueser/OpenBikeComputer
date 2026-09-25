@@ -2,7 +2,10 @@
 
 use embassy_executor::SendSpawner;
 use embassy_futures::select::{select, Either};
-use embassy_nrf::peripherals::{P1_06, P1_07, PWM21};
+use embassy_nrf::pac;
+use embassy_nrf::pac::gpio::vals::{Dir, Input};
+use embassy_nrf::pac::shared::regs::Psel;
+use embassy_nrf::peripherals::{P1_06, P1_07, P3_00, P3_01, PWM21};
 use embassy_nrf::pwm::{DutyCycle, SimpleConfig, SimplePwm};
 use embassy_nrf::Peri;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -17,7 +20,9 @@ static PATTERN: Signal<CriticalSectionRawMutex, (&'static [Note], Volume)> = Sig
 const LOW: DutyCycle = DutyCycle::inverted(0);
 
 /// The ride loop's handle to the buzzer task. `play` only signals, so it never blocks the loop.
-pub(crate) struct Buzzer(());
+pub(crate) struct Buzzer {
+    _pins: (Peri<'static, P3_00>, Peri<'static, P3_01>),
+}
 
 impl Buzzer {
     /// Arm PWM21 on the provisional piezo pins and spawn the task that owns it on `spawner`, the
@@ -29,14 +34,32 @@ impl Buzzer {
     pub(crate) fn new(
         spawner: SendSpawner,
         pwm: Peri<'static, PWM21>,
-        a: Peri<'static, P1_06>,
-        b: Peri<'static, P1_07>,
+        parked_a: Peri<'static, P1_06>,
+        parked_b: Peri<'static, P1_07>,
+        a: Peri<'static, P3_00>,
+        b: Peri<'static, P3_01>,
     ) -> Self {
         // The default 1 MHz PWM clock resolves a 3 kHz note to 0.1 % and reaches down to 31 Hz.
-        let pwm = SimplePwm::new_2ch(pwm, a, b, &SimpleConfig::default());
+        // Embassy 0.11 enumerates P3 pins but its GPIO driver has no P3 register case. Let it
+        // initialize PWM on unused P1 pads, then configure and route the output to P3 directly.
+        let pwm = SimplePwm::new_2ch(pwm, parked_a, parked_b, &SimpleConfig::default());
         pwm.disable();
+        pac::P3_S.outclr().write(|w| {
+            w.set_pin(0, true);
+            w.set_pin(1, true);
+        });
+        for pin in 0..2 {
+            pac::P3_S.pin_cnf(pin).write(|w| {
+                w.set_dir(Dir::Output);
+                w.set_input(Input::Disconnect);
+            });
+            let mut psel = Psel::default();
+            psel.set_port(3);
+            psel.set_pin(pin as u8);
+            pac::PWM21.psel().out(pin).write_value(psel);
+        }
         spawner.spawn(defmt::unwrap!(buzzer_task(pwm)));
-        Buzzer(())
+        Buzzer { _pins: (a, b) }
     }
 }
 
