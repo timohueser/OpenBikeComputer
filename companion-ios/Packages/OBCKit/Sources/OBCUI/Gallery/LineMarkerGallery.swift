@@ -73,7 +73,9 @@ private struct TrimEditorSample: View {
             LineMarker(id: 1, distance: 2_500, name: "Trim start"),
             LineMarker(id: 2, distance: SampleLine.alps.length - 4_000, name: "Trim end"),
         ],
-        segmentColors: [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)]
+        segmentColors: [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)],
+        dashedSegments: [0, 2],
+        cased: false
     )!
 
     var body: some View {

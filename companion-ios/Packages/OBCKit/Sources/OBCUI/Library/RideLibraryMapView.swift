@@ -4,9 +4,9 @@ import OBCDomain
 import MapKit
 #endif
 
-/// Every filtered ride on one map, in one colour over a light halo, so overlapping rides build up.
-/// A tap on a line highlights that ride, and its card opens it. Where rides overlap, the rider
-/// picks one.
+/// Every filtered ride on one map in the ride colour over a light halo. A tap on a line
+/// emphasises that ride and quiets the others, and its card opens it. Where rides overlap, the
+/// rider picks one.
 public struct RideLibraryMapView: View {
     private let model: RideLibraryModel
     private let onOpenRide: (RideSummary) -> Void
@@ -79,6 +79,7 @@ public struct RideLibraryMapView: View {
             default: choices = hits
             }
         }
+        .accessibilityLabel(model.filteredRides.count == 1 ? "Map of 1 ride" : "Map of \(model.filteredRides.count) rides")
         #else
         OBCTheme.page
         #endif
@@ -110,7 +111,7 @@ public struct RideLibraryMapView: View {
                     Text(ride.name)
                         .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
-                        .lineLimit(1)
+                        .lineLimit(2)
                     Text([
                         ride.date.formatted(date: .abbreviated, time: .omitted),
                         OBCFormat.distance(meters: ride.distanceMeters),
@@ -118,7 +119,7 @@ public struct RideLibraryMapView: View {
                     ].joined(separator: " · "))
                         .font(.system(.caption).monospacedDigit())
                         .foregroundStyle(OBCTheme.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
@@ -127,12 +128,9 @@ public struct RideLibraryMapView: View {
             }
             .padding(14)
             .background(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
+                RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
                     .fill(OBCTheme.surface)
                     .shadow(color: .black.opacity(0.18), radius: 14, y: 4)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).stroke(OBCTheme.hairline, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -201,7 +199,7 @@ struct RideLinesMap: UIViewRepresentable {
             if overlay === grid { return GridRenderer(overlay: overlay) }
             guard let line = overlay as? StyledMultiPolyline else { return MKOverlayRenderer(overlay: overlay) }
             let renderer = MKMultiPolylineRenderer(multiPolyline: line)
-            renderer.strokeColor = UIColor(line.color)
+            renderer.strokeColor = UIColor(line.color).withAlphaComponent(line.alpha)
             renderer.lineWidth = line.width
             renderer.lineCap = .round
             renderer.lineJoin = .round
@@ -231,11 +229,12 @@ struct RideLinesMap: UIViewRepresentable {
             map.removeOverlays(map.overlays.filter { $0 is StyledMultiPolyline })
             let others = visible.filter { $0.id != selected }
             let chosen = visible.filter { $0.id == selected }
+            let quiet = selected != nil
             map.addOverlays([
-                StyledMultiPolyline(others, color: OBCTheme.surface, width: 6),
-                StyledMultiPolyline(others, color: OBCTheme.secondary, width: 2.6),
-                StyledMultiPolyline(chosen, color: OBCTheme.surface, width: 8),
-                StyledMultiPolyline(chosen, color: OBCTheme.ride, width: 4),
+                StyledMultiPolyline(others, color: OBCTheme.surface, alpha: quiet ? 0.5 : 1, width: 6),
+                StyledMultiPolyline(others, color: OBCTheme.ride, alpha: quiet ? 0.35 : 1, width: 2.6),
+                StyledMultiPolyline(chosen, color: OBCTheme.surface, width: 9),
+                StyledMultiPolyline(chosen, color: OBCTheme.ride, width: 4.5),
             ].compactMap { $0 }, level: .aboveLabels)
         }
 
@@ -259,9 +258,10 @@ struct RideLinesMap: UIViewRepresentable {
 /// One stroke of many rides: the renderer reads its colour and width.
 private final class StyledMultiPolyline: MKMultiPolyline {
     private(set) var color: Color = .clear
+    private(set) var alpha: CGFloat = 1
     private(set) var width: CGFloat = 0
 
-    convenience init?(_ lines: [RideMapLine], color: Color, width: CGFloat) {
+    convenience init?(_ lines: [RideMapLine], color: Color, alpha: CGFloat = 1, width: CGFloat) {
         let polylines = lines.flatMap { line in
             line.pieces.map { piece in
                 MKPolyline(coordinates: piece.map {
@@ -272,6 +272,7 @@ private final class StyledMultiPolyline: MKMultiPolyline {
         guard !polylines.isEmpty else { return nil }
         self.init(polylines)
         self.color = color
+        self.alpha = alpha
         self.width = width
     }
 }
