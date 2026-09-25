@@ -1,9 +1,14 @@
 <script lang="ts">
+    import { onMount } from "svelte";
+    import { appearance, startTheme, toggleTheme } from "../lib/theme.svelte";
+
     import DeviceChip from "./DeviceChip.svelte";
     import { platform } from "../lib/platform";
     import { available, DESKTOP_ADDS } from "../lib/platform/gating";
     import { router, type Route } from "../lib/router.svelte";
     import { ADVANCED_ROUTE, DESKTOP_ROUTE, DEVICE_ROUTE, RIDES_ROUTE } from "../lib/routes";
+
+    onMount(startTheme);
 
     // The header has two shapes, decided by capability rather than host name:
     // an app with more than one place to be gets tabs; a single-page site keeps
@@ -32,19 +37,8 @@
 <header>
     <div class="inner">
         <div class="brand">
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-                <circle cx="7" cy="16" r="4.4" fill="none" stroke="var(--forest)" stroke-width="1.8" />
-                <circle cx="17" cy="16" r="4.4" fill="none" stroke="var(--forest)" stroke-width="1.8" />
-                <path
-                    d="M7 16 L10.2 8.5 H15 M15 8.5 L17 16 M7 16 L12.4 16 L10.2 8.5"
-                    fill="none"
-                    stroke="var(--forest)"
-                    stroke-width="1.8"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                />
-            </svg>
             <span class="name">OpenBikeComputer</span>
+            <span class="short-name" aria-label="OpenBikeComputer">OBC</span>
             {#if !tabbed}
                 <span class="crumb mono">maps</span>
             {/if}
@@ -67,14 +61,26 @@
                      out than shown dead: there is no intent behind a link, so a
                      greyed one explains nothing anyone was asking. -->
                 {#if DESKTOP_ADDS.length}
-                    <a href={DESKTOP_ROUTE}>Desktop app</a>
+                    <a class="desktop-link" href={DESKTOP_ROUTE}>Desktop app</a>
                 {/if}
                 {#if siteNav}
                     <a href={siteNav.docs}>Docs</a>
-                    <a href={siteNav.simulator}>Simulator</a>
-                    <a href={siteNav.github}>GitHub</a>
+                    <a class="simulator-link" href={siteNav.simulator}>Simulator</a>
+                    <a class="github-link" href={siteNav.github}>GitHub</a>
                 {/if}
             </nav>
+            <button class="theme-toggle" type="button" aria-label="Dark mode"
+                aria-pressed={appearance.dark} title={appearance.dark ? "Switch to light mode" : "Switch to dark mode"}
+                onclick={toggleTheme}>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                    {#if appearance.dark}
+                        <circle cx="12" cy="12" r="4" />
+                        <path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" />
+                    {:else}
+                        <path d="M20.5 13.2A8.6 8.6 0 0 1 10.8 3.5 8.6 8.6 0 1 0 20.5 13.2Z" />
+                    {/if}
+                </svg>
+            </button>
             {#if available("deviceDashboard")}
                 <DeviceChip />
             {/if}
@@ -87,104 +93,65 @@
         position: sticky;
         top: 0;
         z-index: 1100;
-        height: var(--head-h);
-        background: rgba(236, 232, 207, 0.86);
-        backdrop-filter: blur(8px);
-        border-bottom: 1px solid var(--line);
+        flex: none;
+        min-height: var(--head-h);
+        background: var(--rust);
+        color: var(--cream);
     }
-
     .inner {
         width: min(1400px, 100% - 32px);
         margin: 0 auto;
-        height: 100%;
+        min-height: var(--head-h);
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 18px;
     }
-
-    .brand {
-        display: flex;
-        align-items: baseline;
-        gap: 9px;
-        flex: none;
-    }
-
-    .brand svg {
-        align-self: center;
-    }
-
-    .name {
-        font-family: var(--serif);
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--ink);
-    }
-
-    .crumb {
-        font-size: 12px;
-        color: var(--ink-faint);
-        border: 1px solid var(--parchment-3);
-        border-radius: 999px;
-        padding: 1px 8px;
-    }
-
-    .tabs {
-        display: flex;
-        align-self: stretch;
-        gap: 2px;
-        margin-right: auto;
-    }
-
+    .brand { display: flex; align-items: baseline; gap: 12px; flex: none; }
+    .name, .short-name { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+    .short-name { display: none; }
+    .crumb { font-size: 13px; }
+    .tabs { display: flex; align-self: stretch; margin-right: auto; }
     .tab {
         display: flex;
         align-items: center;
-        padding: 0 13px;
-        font-size: 13.5px;
-        color: var(--ink-faint);
-        border-bottom: 2px solid transparent;
-        /* keep the text centered despite the indicator border */
-        border-top: 2px solid transparent;
+        padding: 0 12px;
+        font-size: 14px;
+        border-block: 2px solid transparent;
+        white-space: nowrap;
     }
-
-    .tab:hover {
-        color: var(--ink);
+    a { color: var(--cream); }
+    a:hover { color: var(--cream); }
+    .tab.on { font-weight: 700; border-bottom-color: var(--amber); }
+    .right, .links { display: flex; align-items: center; gap: 18px; }
+    .links { font-size: 14px; }
+    .links:empty { display: none; }
+    .theme-toggle {
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        flex: none;
+        padding: 0;
+        border: 1px solid color-mix(in srgb, var(--cream) 40%, transparent);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--cream);
     }
-
-    .tab.on {
-        color: var(--ink);
-        font-weight: 600;
-        border-bottom-color: var(--forest);
+    .theme-toggle:hover { background: #ffffff12; }
+    :focus-visible { outline-color: var(--cream); }
+    @media (max-width: 1100px) {
+        .name { display: none; }
+        .short-name { display: inline; }
+        .right, .links { gap: 12px; }
+        .github-link { display: none; }
     }
-
-    .right {
-        display: flex;
-        align-items: center;
-        gap: 18px;
-        min-width: 0;
-    }
-
-    .links {
-        display: flex;
-        gap: 18px;
-        font-size: 13.5px;
-    }
-
-    .links:empty {
-        display: none;
-    }
-
     @media (max-width: 700px) {
-        .crumb {
-            display: none;
-        }
-
-        .links {
-            gap: 12px;
-        }
-
-        .tab {
-            padding: 0 9px;
-        }
+        .inner { flex-wrap: wrap; gap: 0 12px; }
+        .tabs { order: 3; width: 100%; overflow-x: auto; }
+        .tab { min-height: 44px; padding: 0 10px; }
+    }
+    @media (max-width: 480px) {
+        .simulator-link, .desktop-link { display: none; }
     }
 </style>

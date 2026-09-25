@@ -85,7 +85,7 @@
             <div>
                 <p class="eyebrow small faint">{theme} map style</p>
                 <h2 id="skin-editor-title">Customize {theme.toLocaleLowerCase()}</h2>
-                <p class="small faint intro">Colors, widths, dashes, drawing order and route marker only. The baked schema and LODs stay fixed.</p>
+                <p class="small faint intro">Adjust colours, line styles, and the rider marker.</p>
             </div>
             <button type="button" class="iconbtn" aria-label="Close the skin editor" onclick={onclose}>✕</button>
         </header>

@@ -39,7 +39,7 @@
 </script>
 
 {#if parts.length === 0}
-    <p class="summary muted small">No parts yet — pick a region or draw an area on the map.</p>
+    <p class="summary muted small">Choose a region or draw an area on the map.</p>
 {:else}
     <ul class="parts">
         {#each parts as p (p.part.id)}
@@ -63,7 +63,7 @@
                         failed — retry
                     </button>
                 {:else if p.pending}
-                    <span class="mono faint small price">pricing…</span>
+                    <span class="mono faint small price">Calculating…</span>
                 {:else if p.part.kind === "corridor"}
                     <!-- Keyed by the global width, so a slider move re-mounts
                          the span and its flash animation runs: the re-pricing

@@ -1186,7 +1186,7 @@
 </script>
 
 {#if !ledger || ledger.cellCount === 0}
-    <p class="line muted small">Nothing to download yet — add coverage in step 1.</p>
+    <p class="line muted small">Choose coverage in step 1.</p>
 {:else}
     <div class="split">
         {#if proof}
@@ -1231,24 +1231,18 @@
                     <span class="mono big">{formatBytes(ledger.totalBytes)}</span>
                     <span class="small faint">
                         {ledger.cellCount}
-                        {ledger.cellCount === 1 ? "cell" : "cells"} · assembled on this computer
+                        {ledger.cellCount === 1 ? "cell" : "cells"}
                     </span>
                 </p>
             {:else}
-                <p class="line statband"><span class="mono big faint">pricing…</span></p>
+                <p class="line statband"><span class="mono big faint">Calculating…</span></p>
             {/if}
-            <p class="line small faint">
-                <span class="serif">{store.catalog.schema.name}</span> schema ·
-                <span class="serif">{store.lightSkin.name}</span> Light ·
-                <span class="serif">{store.darkSkin.name}</span> Dark
-            </p>
 
             {#if refusal}
                 <p class="line warn small">{refusal}</p>
             {:else if estimateError}
                 <p class="line warn small">
-                    Couldn't project the memory this assembly needs — the check runs before any
-                    download: {estimateError}
+                    Could not check memory requirements: {estimateError}
                     <button type="button" class="retry" onclick={() => (estimateNonce += 1)}
                         >retry</button
                     >
@@ -1266,8 +1260,8 @@
                         onchange={(event) => void setKeepCells(event.currentTarget.checked)}
                     />
                     <span>
-                        Keep downloaded map cells for future builds
-                        <span class="faint">— otherwise they are temporary and deleted after this build.</span>
+                        Keep map data for next time
+                        <span class="faint">Otherwise deleted after this download.</span>
                     </span>
                 </label>
                 <button
@@ -1366,11 +1360,6 @@
                         Cancelled — nothing was saved.
                     {/if}
                 </p>
-            {:else if phase === "idle"}
-                <p class="line faint small">
-                    Cells are verified against the catalog (SHA-256), then assembled and read back in full
-                    before anything reaches the card.
-                </p>
             {/if}
         </div>
     </div>
@@ -1428,10 +1417,6 @@
         font-weight: 600;
     }
 
-    .serif {
-        font-family: var(--serif);
-        font-style: italic;
-    }
 
     .line.warn {
         color: var(--coral);

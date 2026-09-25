@@ -73,19 +73,17 @@ select {
 
 input:focus,
 select:focus {
-    outline: none;
-    border-color: var(--wood);
-    box-shadow: 0 0 0 3px rgba(95, 125, 61, 0.18);
+    outline: 2px solid var(--forest);
+    outline-offset: 2px;
 }
 
-/* --- shared components (field-guide look) --- */
+/* Shared surfaces and controls. */
 
 .card {
-    background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
+    background: var(--panel);
     border: 1px solid var(--parchment-3);
-    border-radius: 16px;
+    border-radius: 10px;
     padding: 16px;
-    box-shadow: 0 1px 2px rgba(36, 51, 28, 0.06);
 }
 
 .btn {
@@ -93,7 +91,7 @@ select:focus {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    border-radius: 11px;
+    border-radius: 6px;
     padding: 9px 16px;
     font-weight: 600;
     background: var(--panel);
@@ -113,14 +111,13 @@ select:focus {
 }
 
 .btn.primary {
-    background: var(--forest);
-    color: var(--parchment);
+    background: var(--amber);
+    color: var(--on-amber);
     border-color: transparent;
-    box-shadow: 0 4px 10px rgba(44, 82, 48, 0.25);
 }
 
 .btn.primary:hover:not(:disabled) {
-    background: var(--forest-deep);
+    background: color-mix(in srgb, var(--amber) 85%, white);
 }
 
 .btn.primary:disabled {
@@ -134,7 +131,7 @@ select:focus {
 }
 
 .btn.ghost:hover:not(:disabled) {
-    background: rgba(95, 125, 61, 0.1);
+    background: var(--parchment-2);
 }
 
 /* A small square control — the tiles' pull arrow and ⋯ trigger (device page, ride library). */
@@ -230,10 +227,22 @@ select:focus {
     color: var(--parchment);
 }
 
-/* Leaflet: blend the raster tiles into the parchment look, restyle chrome. */
-.leaflet-tile-pane {
-    filter: sepia(0.22) saturate(0.82) contrast(0.95) brightness(1.02);
+/* Filter only the raster tiles; selection overlays retain their semantic colours. */
+:root[data-theme="dark"] .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) saturate(0.55) brightness(0.85) contrast(0.85);
 }
+
+.leaflet-bar a,
+.leaflet-control-attribution {
+    background: var(--panel) !important;
+    color: var(--ink) !important;
+}
+.leaflet-bar a:hover { background: var(--parchment-2) !important; }
+.leaflet-control-attribution a { color: var(--forest); }
+
+:focus-visible { outline: 2px solid var(--forest); outline-offset: 3px; }
+input { accent-color: var(--forest); }
+::selection { background: var(--amber); color: var(--on-amber); }
 
 .leaflet-container {
     font-family: var(--sans);
@@ -272,7 +281,7 @@ select:focus {
 }
 
 .region-popup button:hover {
-    background: rgba(95, 125, 61, 0.12);
+    background: var(--parchment-2);
 }
 
 .region-popup button.selected {

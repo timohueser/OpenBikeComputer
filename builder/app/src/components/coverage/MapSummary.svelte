@@ -40,7 +40,7 @@
     {:else if !ledger}
         <p class="small muted">Loading the cell catalog…</p>
     {:else if !hasParts}
-        <p class="small muted">Nothing selected yet — the summary keeps score as you add parts.</p>
+        <p class="small muted">Choose coverage on the map.</p>
     {:else}
         {#if ledger.isFinal}
             <p class="mono total">
@@ -48,7 +48,7 @@
                 {ledger.cellCount === 1 ? "cell" : "cells"}
             </p>
         {:else}
-            <p class="mono total faint">pricing…</p>
+            <p class="mono total faint">Calculating…</p>
         {/if}
 
         {#if holeCount > 0}
@@ -116,17 +116,15 @@
         {/if}
 
         <p class="small faint fit">
-            The device checks SD card space when you send the map. Each build makes one map file.
+            Downloads as one map file. Card space is checked before sending.
         </p>
     {/if}
 </div>
 
 <style>
     .ledger {
-        background: var(--parchment);
-        border: 1px solid var(--parchment-3);
-        border-radius: 10px;
-        padding: 11px 13px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
         display: flex;
         flex-direction: column;
         gap: 7px;
@@ -182,7 +180,6 @@
        never hidden, never truncated, and never a tooltip. */
     .attribution {
         line-height: 1.35;
-        font-size: 10px;
-        opacity: 0.75;
+        font-size: 11px;
     }
 </style>
