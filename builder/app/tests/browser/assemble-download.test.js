@@ -79,7 +79,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await corridor.getByRole('button', { name: 'Add to map' }).click();
     const corridorPart = page.locator('.parts li').filter({ hasText: 'Corridor — Fixture Route' });
     await expect(corridorPart).toBeVisible();
-    await expect(corridorPart.locator('.price')).not.toHaveText('pricing…');
+    await expect(corridorPart.locator('.price')).not.toHaveText('Calculating…');
     await expect(corridorPart.locator('.price')).not.toHaveText('0 B');
     await corridorPart.getByRole('button', { name: 'Remove Fixture Route' }).click();
     await expect(corridorPart).toHaveCount(0);
@@ -107,7 +107,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await page.mouse.up();
     const boxPart = page.locator('.parts li').filter({ hasText: 'Box' });
     await expect(boxPart).toBeVisible();
-    await expect(boxPart.locator('.price')).not.toHaveText('pricing…');
+    await expect(boxPart.locator('.price')).not.toHaveText('Calculating…');
     await expect(boxPart.locator('.price')).not.toHaveText('0 B');
     await boxPart.getByRole('button', { name: /^Remove Box/ }).click();
     await expect(boxPart).toHaveCount(0);
@@ -122,7 +122,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await page.mouse.up();
     const lassoPart = page.locator('.parts li').filter({ hasText: 'Lasso' });
     await expect(lassoPart).toBeVisible();
-    await expect(lassoPart.locator('.price')).not.toHaveText('pricing…');
+    await expect(lassoPart.locator('.price')).not.toHaveText('Calculating…');
     await expect(lassoPart.locator('.price')).not.toHaveText('0 B');
     await lassoPart.getByRole('button', { name: /^Remove Lasso/ }).click();
     await expect(lassoPart).toHaveCount(0);
