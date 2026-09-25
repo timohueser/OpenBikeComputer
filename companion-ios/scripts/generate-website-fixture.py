@@ -148,6 +148,7 @@ def fixture(
             "averageSpeedMps": round(ride_distance / ride_moving, 4),
             "climbMeters": ride_climb,
             "payloadBytes": max(1, ride_distance * 20),
+            "zoneLimits": {"maxHeartRate": 185, "ftpWatts": 250},
             "track": ride_compact,
         }],
     }
