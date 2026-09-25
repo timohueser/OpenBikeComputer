@@ -1774,6 +1774,31 @@ map = "{grimsel}"
 expect = "Hello"
 args = ["--fresh"]
 
+# Setup's language step, reached from Hello: the Language pick list with the controls hint at its
+# foot. It shows in the language the device has, so the hint is swept in all four.
+[[frame]]
+name = "setup-language"
+map = "{grimsel}"
+script = "p"
+expect = "SetupLanguage"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-language"
+map = "{grimsel}"
+script = "p"
+expect = "SetupLanguage"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# The cursor moved to Deutsch: the tick stays on the committed language until Select.
+[[frame]]
+name = "setup-language-cursor"
+map = "{grimsel}"
+script = "p d"
+expect = "SetupLanguage"
+args = ["--fresh"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).

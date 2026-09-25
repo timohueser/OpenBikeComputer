@@ -1,11 +1,11 @@
 //! First-use setup. A new device, and one after a factory reset, boots into it instead of Home.
 //! The step is persisted in [`Settings::setup`](crate::Settings), so setup resumes at its step
-//! after a power loss. Each step is a screen: [`screen`] maps a step to it, and the screen calls
-//! [`finish`] when its step is done. A new step is a [`SetupStep`] variant, its place in
-//! [`SetupStep::next`], its screen, and its arm in [`screen`].
+//! after a power loss. Each step is a screen: [`screen`] maps a step to it. Select ends the step
+//! through [`finish`], and Back returns to the step before through [`back`]. A new step is a
+//! [`SetupStep`] variant, its place in `SetupStep::ORDER`, its screen, and its arm in [`screen`].
 //!
 //! The first step is Hello: a greeting in the four UI languages, because the language is not chosen
-//! yet.
+//! yet. Every step after it is a titled page with the [`hint`] at its foot.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -15,29 +15,39 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::settings::SetupStep;
+use crate::settings::{Language, Settings, SetupStep};
 use crate::Msg;
 
 use super::home::contours;
+use super::settings::LanguageScreen;
+use super::vocab::rows::ROW_X;
 use super::{palette, Ctx, Render, Screen, Transition};
 
-/// The screen of setup step `step`, or `None` once setup is done.
-pub(crate) fn screen(step: SetupStep) -> Option<Screen> {
-    match step {
+/// The screen of the current setup step, or `None` once setup is done.
+pub(crate) fn screen(s: &Settings) -> Option<Screen> {
+    match s.setup {
         SetupStep::Hello => Some(Screen::Hello(HelloScreen)),
+        SetupStep::Language => Some(Screen::SetupLanguage(SetupLanguageScreen::new(s.language))),
         SetupStep::Done => None,
     }
 }
 
-/// Go to setup step `step`: its screen over Home, or Home once setup is done.
-pub(crate) fn go_to(step: SetupStep) -> Transition {
-    screen(step).map_or(Transition::Home, Transition::Root)
+/// Go to the current setup step: its screen over Home, or Home once setup is done.
+pub(crate) fn go_to(s: &Settings) -> Transition {
+    screen(s).map_or(Transition::Home, Transition::Root)
 }
 
 /// End setup step `step`: persist the next step and go to it.
 fn finish(step: SetupStep, cx: &mut Ctx) -> Transition {
     cx.settings.setup = step.next();
-    go_to(cx.settings.setup)
+    go_to(cx.settings)
+}
+
+/// Leave setup step `step` for the one before it. The persisted step follows, so a power loss
+/// resumes on the step the rider sees.
+fn back(step: SetupStep, cx: &mut Ctx) -> Transition {
+    cx.settings.setup = step.prev();
+    go_to(cx.settings)
 }
 
 /// The greeting, two languages a line. The language is not chosen yet, so it is not a catalog
@@ -112,4 +122,62 @@ fn signpost(cv: &mut impl Surface, cx: i32, top: i32) {
         cv.triangle(a, b, c, AMBER);
         cv.triangle(a, c, d, AMBER);
     }
+}
+
+/// The language step: the Settings pick list, where Select also ends the step.
+#[derive(Debug)]
+pub struct SetupLanguageScreen(LanguageScreen);
+
+impl SetupLanguageScreen {
+    pub fn new(current: Language) -> Self {
+        SetupLanguageScreen(LanguageScreen::new(current))
+    }
+
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Press => {
+                cx.settings.language = self.0.cursor();
+                finish(SetupStep::Language, cx)
+            }
+            Gesture::Back => back(SetupStep::Language, cx),
+            _ => self.0.handle(g, cx),
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        self.0.draw(cv, rx);
+        hint(cv, rx.w, rx.h, rx.t(Msg::SetupChoose), rx.t(Msg::SetupOk));
+    }
+}
+
+/// The height of the [`hint`] band.
+const HINT_H: i32 = 40;
+
+/// The controls hint at the foot of a setup page: Up and Down choose, Select confirms. The amber OK
+/// is Hello's button in small, so it names the press the rider has already made.
+fn hint(cv: &mut impl Surface, w: i32, h: i32, choose: &str, ok: &str) {
+    use palette::*;
+    let font = Font::Label;
+    let top = h - 8 - HINT_H;
+    cv.hline(ROW_X, top, w - 2 * ROW_X, RULE);
+    let span = (top, HINT_H);
+    let cy = top + HINT_H / 2;
+
+    // Up and Down side by side, each `2k` wide.
+    let k = 5;
+    let arrows_w = 4 * k + 3;
+    let (choose_w, ok_w) = (text_width(choose, font) as i32, text_width(ok, font) as i32);
+    let pill_w = ok_w + 16;
+    let left = (w - (arrows_w + 8 + choose_w + 24 + pill_w)) / 2;
+
+    let x = left;
+    cv.triangle(Point::new(x + k, cy - k), Point::new(x, cy + k), Point::new(x + 2 * k, cy + k), INK);
+    let x = left + arrows_w - 2 * k;
+    cv.triangle(Point::new(x, cy - k), Point::new(x + 2 * k, cy - k), Point::new(x + k, cy + k), INK);
+    let x = left + arrows_w + 8;
+    cv.text_vcentered(choose, x, span, font, TextAlign::Left, SUBTEXT);
+
+    let px = x + choose_w + 24;
+    cv.round(rect(px, cy - 12, pill_w, 24), 6, AMBER);
+    cv.text_vcentered(ok, px + pill_w / 2, span, font, TextAlign::Center, ON_ACCENT);
 }

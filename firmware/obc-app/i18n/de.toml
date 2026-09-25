@@ -530,6 +530,7 @@ ok = "OK"
 # --- Ersteinrichtung ---
 [setup]
 ok = "OK"
+choose = "Wählen"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

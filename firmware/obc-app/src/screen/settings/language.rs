@@ -26,6 +26,11 @@ impl LanguageScreen {
         LanguageScreen { selected: current as usize }
     }
 
+    /// The language under the cursor.
+    pub(crate) fn cursor(&self) -> Language {
+        Language::ALL[self.selected]
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Step(n) => {
@@ -33,7 +38,7 @@ impl LanguageScreen {
                 Transition::None
             }
             Gesture::Press => {
-                cx.settings.language = Language::ALL[self.selected];
+                cx.settings.language = self.cursor();
                 Transition::Pop
             }
             Gesture::Back => Transition::Pop,

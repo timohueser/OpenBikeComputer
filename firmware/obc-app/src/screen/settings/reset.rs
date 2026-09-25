@@ -37,7 +37,7 @@ impl ResetScreen {
         if self.done {
             // Any key starts setup again. The device would reboot here.
             return match g {
-                Gesture::Press | Gesture::Back => crate::screen::setup::go_to(cx.settings.setup),
+                Gesture::Press | Gesture::Back => crate::screen::setup::go_to(cx.settings),
                 _ => Transition::None,
             };
         }

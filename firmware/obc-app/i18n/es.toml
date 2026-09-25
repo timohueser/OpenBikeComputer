@@ -529,6 +529,7 @@ ok = "OK"
 # --- Configuración inicial ---
 [setup]
 ok = "OK"
+choose = "Elegir"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

@@ -117,6 +117,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::TripReceived(TripReceivedScreen::new(7, 0)),
         Screen::Passkey(PasskeyScreen::new(123_456)),
         Screen::Hello(HelloScreen),
+        Screen::SetupLanguage(SetupLanguageScreen::new(language)),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
         Screen::Settings(SettingsPage::hub()),

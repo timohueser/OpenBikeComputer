@@ -564,6 +564,8 @@ ok = "OK"
 # --- First-use setup ---
 [setup]
 ok = "OK"
+# The controls hint beside the Up and Down glyphs.
+choose = "Choose"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

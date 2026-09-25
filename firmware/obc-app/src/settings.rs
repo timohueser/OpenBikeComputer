@@ -212,22 +212,31 @@ pub enum SetupStep {
     #[default]
     Done = 0,
     Hello = 1,
+    Language = 2,
 }
 
 impl SetupStep {
+    /// The steps in the order the rider meets them. The byte values are persisted, so a new step
+    /// takes a new value and its place here.
+    const ORDER: [SetupStep; 2] = [SetupStep::Hello, SetupStep::Language];
+
+    fn index(self) -> Option<usize> {
+        Self::ORDER.iter().position(|&s| s == self)
+    }
+
     /// The step after this one. Setup ends at `Done`.
-    pub const fn next(self) -> Self {
-        match self {
-            SetupStep::Hello | SetupStep::Done => SetupStep::Done,
-        }
+    pub fn next(self) -> Self {
+        self.index().and_then(|i| Self::ORDER.get(i + 1)).copied().unwrap_or(SetupStep::Done)
+    }
+
+    /// The step before this one. The first step has none, so it stays.
+    pub fn prev(self) -> Self {
+        self.index().and_then(|i| i.checked_sub(1)).map_or(self, |i| Self::ORDER[i])
     }
 
     /// An unknown byte reads as `Done`, so a corrupt blob never traps the rider in setup.
-    const fn from_byte(b: u8) -> Self {
-        match b {
-            1 => SetupStep::Hello,
-            _ => SetupStep::Done,
-        }
+    fn from_byte(b: u8) -> Self {
+        Self::ORDER.into_iter().find(|&s| s as u8 == b).unwrap_or(SetupStep::Done)
     }
 }
 

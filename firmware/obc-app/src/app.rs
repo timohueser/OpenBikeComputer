@@ -2350,7 +2350,7 @@ impl App {
         // An unfinished setup opens at its step. A recovered-ride decision already on top stays
         // there, and setup opens on the next boot instead.
         let decision_open = self.ui.stack.last().is_some_and(|top| top.caps().blocks_escape);
-        if let Some(step) = screen::setup::screen(self.settings.setup).filter(|_| !decision_open) {
+        if let Some(step) = screen::setup::screen(&self.settings).filter(|_| !decision_open) {
             screen::apply(&mut self.ui.stack, screen::Transition::Root(step));
             self.ui.map_dirty = true;
         }
@@ -6081,11 +6081,12 @@ mod tests {
         assert_eq!(drain_persist(&mut app), None, "a seeded boot value is already persisted");
     }
 
-    /// A factory-fresh boot opens setup, and nothing but Hello's press leaves it. The press ends
-    /// setup on Home and owes the save that makes the next boot skip it.
+    /// A factory-fresh boot opens setup, and only its own pages leave it. Hello's press opens the
+    /// language step, and Back there returns to Hello. Select on a language ends setup on Home in
+    /// that language, and owes the save that makes the next boot skip setup.
     #[test]
-    fn a_factory_boot_runs_setup_until_hello_is_pressed() {
-        use crate::settings::SetupStep;
+    fn a_factory_boot_runs_setup_through_hello_and_the_language_step() {
+        use crate::settings::{Language, SetupStep};
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::FACTORY);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
@@ -6096,9 +6097,20 @@ mod tests {
         assert!(matches!(app.ui.stack.last(), Some(Screen::Hello(_))), "setup cannot be escaped");
 
         app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupLanguage(_)]));
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.last(), Some(Screen::SetupLanguage(_))), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]), "Back returns to Hello");
+        assert_eq!(app.settings().setup, SetupStep::Hello, "a power loss resumes on the step shown");
+
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(app.settings().language, Language::En, "the cursor commits nothing");
+        app.apply_gesture(Gesture::Press);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
-        assert_eq!(app.settings().setup, SetupStep::Done);
-        assert_eq!(drain_persist(&mut app), Some(1), "the finished setup is saved");
+        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Done, Language::De));
+        assert!(drain_persist(&mut app).is_some(), "the finished setup is saved");
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

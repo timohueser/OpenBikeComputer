@@ -117,7 +117,7 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
-pub use setup::HelloScreen;
+pub use setup::{HelloScreen, SetupLanguageScreen};
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -908,6 +908,9 @@ screens! {
     /// First-use setup's greeting in the four UI languages. Setup refuses the escape and the
     /// drawers: it ends only when its last step is done.
     Hello(HelloScreen) => Caps::modal().blocking(),
+    /// Setup's language step: the Language pick list, where Select ends the step and Back returns
+    /// to Hello.
+    SetupLanguage(SetupLanguageScreen) => Caps::modal().blocking(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),
