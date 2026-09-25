@@ -63,7 +63,7 @@ small, .small { font-size: 12px; }
 nav { display: flex; gap: 4px; }
 nav button { background: transparent; border-color: transparent; padding: 10px 16px; }
 nav button[aria-current=page] { background: var(--soft); color: var(--forest); font-weight: 700; }
-.chrome nav button[aria-current=page], .chrome .account-link[aria-current=page] { background: #0000002e; color: var(--on-rust); box-shadow: inset 0 -2px 0 var(--amber); }
+.chrome nav button[aria-current=page], .chrome .account-link[aria-current=page] { background: #0000002e; color: var(--on-rust); }
 .draft-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--coral); margin-left: 3px; }
 .chrome .draft-dot { background: var(--amber); }
 .app-main { max-width: 1280px; padding: 34px 24px 60px; margin: 0 auto; }

@@ -119,7 +119,7 @@ export class Store {
       const revision = this.writeRevision(base, author, requirements,
         accepted.map(p => ({ requirementId: p.requirementId, review: { author, createdAt: decidedAt, sourceSha: p.sourceSha, proposalId: p.id } })));
       for (const proposal of accepted) this.put('coverage-proposal', proposal.id, { ...proposal, status: 'accepted', decidedBy: author, decidedAt });
-      for (const suggestion of suggestions) this.put('requirement-suggestion', suggestion.id, { ...suggestion, status: 'accepted', decidedBy: author, decidedAt });
+      for (const suggestion of suggestions) this.put('requirement-suggestion', suggestion.id, { ...suggestion, status: 'accepted', decidedBy: author, decidedAt, revisionId: revision.id });
       return revision;
     });
   }
@@ -221,7 +221,7 @@ export class Store {
       assert(!suggestion.requirementId || !this.list<RequirementSuggestion>('requirement-suggestion')
         .some(s => s.status === 'open' && s.requirementId === suggestion.requirementId),
         'A newer suggestion for this requirement is already open.', 409);
-      const { decidedBy, decidedAt, feedback, ...rest } = suggestion;
+      const { decidedBy, decidedAt, feedback, revisionId, ...rest } = suggestion;
       const open: RequirementSuggestion = { ...rest, status: 'open' };
       this.put('requirement-suggestion', id, open);
       return open;

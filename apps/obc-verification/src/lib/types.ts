@@ -78,6 +78,8 @@ export interface RequirementSuggestion {
   author: string; agentToken?: AgentTokenIdentity; createdAt: string;
   status: 'open' | 'accepted' | 'dismissed' | 'superseded'; supersedes?: string;
   feedback?: string; decidedBy?: string; decidedAt?: string;
+  /** The revision whose save accepted it. */
+  revisionId?: number;
 }
 /** `stale` names what changed on the requirement since the base revision; `missing` is set when the requirement is no longer in the current revision. */
 export interface RequirementSuggestionReview extends RequirementSuggestion { stale?: string; missing?: boolean }

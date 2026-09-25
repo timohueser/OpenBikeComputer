@@ -49,6 +49,7 @@ test('requirement suggestions are recorded, superseded, accepted by a save, put 
     const accepted = (await listed()).find((s: any) => s.id === created.id);
     assert.equal(accepted.status, 'accepted');
     assert.equal(accepted.decidedBy, 'owner');
+    assert.equal(accepted.revisionId, saved.id);
     assert.equal(store().latestRevision().id, saved.id);
     assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { accept: false }, owner)).status, 409);
     // One decided or unwritable item refuses the whole save: no revision, and nothing else accepted.

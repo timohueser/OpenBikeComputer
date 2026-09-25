@@ -112,7 +112,7 @@
     {#if !standing.length}<p class="muted small empty">Nothing is waiting. Agents suggest requirements with <code>obc req suggest</code>.</p>{/if}
     {#if decided.length}
       <details class="decided"><summary>Decided ({decided.length})</summary>
-        {#each decided as s (s.id)}<p><span class="badge" class:success={s.status === 'accepted'}>{s.status === 'accepted' ? 'done' : 'dismissed'}</span>{#if s.requirementId}{s.requirementId} · {/if}{s.title} · {s.author} · {day(s.createdAt)}{#if s.decidedBy} · {s.decidedBy}{/if}{#if s.feedback} · “{s.feedback}”{/if} <button class="text-button small" disabled={busy} on:click={() => putBack(s.id)}>Put back</button></p>{/each}
+        {#each decided as s (s.id)}<p><span class="badge" class:success={s.status === 'accepted'}>{s.status === 'accepted' ? 'done' : 'dismissed'}</span>{#if s.requirementId}{s.requirementId} · {/if}{s.title} · {s.author} · {day(s.createdAt)}{#if s.decidedBy} · {s.decidedBy}{/if}{#if s.revisionId} · in r{s.revisionId}{/if}{#if s.feedback} · “{s.feedback}”{/if} <button class="text-button small" disabled={busy} on:click={() => putBack(s.id)}>Put back</button></p>{/each}
       </details>
     {/if}
   </div>
