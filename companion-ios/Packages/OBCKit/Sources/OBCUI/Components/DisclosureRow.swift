@@ -48,6 +48,9 @@ public struct OBCDisclosureRow<Content: View>: View {
                 header
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(label)
+            .accessibilityValue([value, isExpanded.map { $0.wrappedValue ? "Expanded" : "Collapsed" }]
+                .compactMap { $0 }.joined(separator: ", "))
             .accessibilityIdentifier(headerAccessibilityID ?? "")
 
             if expandedNow {
@@ -86,10 +89,10 @@ public struct OBCDisclosureRow<Content: View>: View {
                     .foregroundStyle(OBCTheme.secondary)
             }
 
-            Image(systemName: "chevron.right")
+            Image(systemName: isExpanded == nil ? "chevron.right" : "chevron.down")
                 .font(.system(.footnote, weight: .semibold))
                 .foregroundStyle(OBCTheme.secondary)
-                .rotationEffect(.degrees(expandedNow ? 90 : 0))
+                .rotationEffect(.degrees(expandedNow ? 180 : 0))
                 .padding(.leading, 10)
         }
         .padding(.vertical, 15)

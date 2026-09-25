@@ -131,11 +131,38 @@ final class TripTests: XCTestCase {
         let delete = app.buttons["trip.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")
         delete.tap()
+        XCTAssertTrue(app.sheets.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS 'trip and day routes'"))
+            .firstMatch.waitForExistence(timeout: 5), "confirmation must name device deletion")
         app.sheets.buttons["Delete trip"].tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists)
+    }
+
+    /// Reversing a trip asks before it changes the day order and device progress.
+    @MainActor
+    func testReverseTripExplainsProgressReset() {
+        let app = launch()
+        openTrip(app)
+        let firstDay = day(app, 0).label
+        app.buttons["trip.overflow"].tap()
+        app.buttons["trip.reverse"].tap()
+        XCTAssertTrue(app.sheets.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS 'device progress starts over'"))
+            .firstMatch.waitForExistence(timeout: 5))
+        if app.sheets.buttons["Cancel"].exists {
+            app.sheets.buttons["Cancel"].tap()
+        } else {
+            app.otherElements["PopoverDismissRegion"].tap()
+        }
+        XCTAssertEqual(day(app, 0).label, firstDay)
+        app.buttons["trip.overflow"].tap()
+        app.buttons["trip.reverse"].tap()
+        app.sheets.buttons["Reverse trip"].tap()
+        wait(for: [expectation(for: NSPredicate(format: "label != %@", firstDay),
+                              evaluatedWith: day(app, 0))], timeout: 5)
     }
 
     /// Day 1 ends at a transfer: Day 2 starts 35 km away. The stops sheet lists the fixture
@@ -145,7 +172,7 @@ final class TripTests: XCTestCase {
         let app = launch()
         openTrip(app)
 
-        day(app, 0).press(forDuration: 1)
+        app.buttons["trip.day.0.menu"].tap()
         let stops = app.buttons["trip.day.stops"]
         XCTAssertTrue(stops.waitForExistence(timeout: 5), "day menu did not open")
         stops.tap()

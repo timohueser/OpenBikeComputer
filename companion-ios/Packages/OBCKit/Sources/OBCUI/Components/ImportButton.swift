@@ -48,7 +48,7 @@ public struct OBCImportButton: View {
 
 #Preview("Import button") {
     HStack {
-        Text("Routes").font(.system(.largeTitle, weight: .bold)).foregroundStyle(OBCTheme.ink)
+        Text("Library").font(.system(.largeTitle, weight: .bold)).foregroundStyle(OBCTheme.ink)
         Spacer()
         OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
     }

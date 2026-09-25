@@ -3,10 +3,8 @@ import UniformTypeIdentifiers
 import OBCDomain
 import OBCTransport
 
-/// The hub: the rust device band, the "Routes" title with Select and the amber import button, the
-/// Planned and Tracked segments, search, and one grouped list of track rows. Connection status
-/// lives only in the band and the disconnected banner. A swipe-left deletes the row directly,
-/// because the reveal is the confirm.
+/// The library: the device band, Planned and Rides segments, visible search, and track rows.
+/// Route deletion asks first. Ride deletion moves the ride to Recently Deleted.
 ///
 /// The flows this screen opens stay seams the composition root wires: a card tap, an import pick
 /// and settings.
@@ -27,11 +25,7 @@ public struct MainScreenView: View {
     @State private var isSelecting = false
     @State private var selectedRouteIDs: Set<RouteID> = []
     @State private var groupPromptShown = false
-    // Pull-to-reveal search, Mail-style: hidden until the list is tugged down past the threshold,
-    // and hidden again on scroll-up once the query is cleared. `scrollBaseline` is the sentinel
-    // row's resting position.
-    @State private var searchRevealed = false
-    @State private var scrollBaseline: CGFloat?
+    @State private var routeToDelete: RouteSummary?
 
     public init(
         model: MainScreenModel,
@@ -117,7 +111,7 @@ public struct MainScreenView: View {
                 .padding(.top, 10)
             }
 
-            OBCLargeTitleBar("Routes") {
+            OBCLargeTitleBar("Library") {
                 titleActions
             }
 
@@ -236,63 +230,23 @@ public struct MainScreenView: View {
 
     // MARK: List
 
-    /// Search stays visible while a query is live, whatever the scroll position, so the query
-    /// stays editable.
-    private var searchVisible: Bool {
-        searchRevealed || !model.searchText.isEmpty
-    }
-
     private var list: some View {
         List {
-            // Zero-height sentinel: its offset in the list's space measures top over-scroll. It
-            // sits above the search row, so revealing the row does not move its resting position.
-            Color.clear
-                .frame(height: 0)
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            // Pin the baseline at rest: waiting for the first `onChange` can
-                            // capture it mid-pull, because the sentinel may not move at all until
-                            // the first scroll.
-                            .onAppear {
-                                if scrollBaseline == nil {
-                                    scrollBaseline = geo.frame(in: .named("mainList")).minY
-                                }
-                            }
-                            .onChange(of: geo.frame(in: .named("mainList")).minY) { _, minY in
-                                handleTopOverscroll(minY)
-                            }
-                    }
-                )
-
             Picker("Library", selection: $model.tab) {
                 Text("Planned").tag(MainScreenModel.Tab.planned)
-                Text("Tracked").tag(MainScreenModel.Tab.tracked)
+                Text("Rides").tag(MainScreenModel.Tab.tracked)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .padding(.top, 4)
             .plainRow(bottom: 12)
 
-            if searchVisible {
-                OBCSearchField(
-                    text: $model.searchText,
-                    prompt: model.tab == .planned ? "Search routes" : "Search rides"
-                )
-                .accessibilityIdentifier("main.search")
-                // Transient, Mail-style: once the cleared bar scrolls off the top it
-                // un-reveals. The List culls the row exactly when it leaves the viewport, so
-                // `onDisappear` is the "scrolled away" signal, and the row is off-screen, so
-                // removing it cannot visibly jump. A frame observer cannot do this: it is torn
-                // down in the same cull that would cross the threshold.
-                .onDisappear {
-                    if model.searchText.isEmpty { searchRevealed = false }
-                }
-                .plainRow(bottom: 12)
-            }
+            OBCSearchField(
+                text: $model.searchText,
+                prompt: model.tab == .planned ? "Search routes and trips" : "Search rides"
+            )
+            .accessibilityIdentifier("main.search")
+            .plainRow(bottom: 12)
 
             if model.tab == .tracked {
                 syncLine
@@ -320,25 +274,10 @@ public struct MainScreenView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        // The sentinel must truly be 0pt: the List default would give the empty row about 44pt and
-        // open a gap under the title.
         .environment(\.defaultMinListRowHeight, 0)
-        .coordinateSpace(name: "mainList")
         #if os(iOS)
         .scrollDismissesKeyboard(.immediately)
         #endif
-    }
-
-    private func handleTopOverscroll(_ minY: CGFloat) {
-        guard let baseline = scrollBaseline else {
-            scrollBaseline = minY
-            return
-        }
-        if minY - baseline > 55, !searchRevealed {
-            withAnimation(.easeOut(duration: 0.2)) { searchRevealed = true }
-        }
-        // Un-revealing is the search row's own job: it fires exactly when the cleared bar scrolls
-        // off the top.
     }
 
     /// The small stat line under the segments on Tracked: a ride count while syncing, then
@@ -455,9 +394,19 @@ public struct MainScreenView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                .obcSwipeToDelete {
-                    model.deleteRoute(route.id)
+                .obcSwipeToDelete(requiresConfirmation: true) {
+                    routeToDelete = route
                 }
+                .obcDestructiveConfirm(
+                    "Delete \"\(route.name)\"?",
+                    isPresented: Binding(
+                        get: { routeToDelete?.id == route.id },
+                        set: { if !$0 { routeToDelete = nil } }
+                    ),
+                    message: "Removes it from your library. If it is already on the device, it stays there.",
+                    actionTitle: "Delete route",
+                    onConfirm: { model.deleteRoute(route.id) }
+                )
             }
         }
     }

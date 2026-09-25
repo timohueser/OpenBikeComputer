@@ -41,7 +41,7 @@ final class RouteDetailTests: XCTestCase {
 
     // MARK: Planned dressing
 
-    /// Hero, device state, ledger, waypoints row, profile and delete. The fixture route is on the
+    /// Hero, device state, ledger, waypoints row, profile and More. The fixture route is on the
     /// device and up to date, so the state says so and there is no send button.
     @MainActor
     func testPlannedDetailShowsTheProfileLayout() {
@@ -64,7 +64,7 @@ final class RouteDetailTests: XCTestCase {
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5), "waypoints disclosure missing")
-        XCTAssertTrue(app.buttons["detail.delete"].exists, "delete action missing")
+        XCTAssertTrue(app.buttons["detail.overflow"].exists, "More menu missing")
         snap(app, "E2-route-detail")
     }
 
@@ -127,11 +127,11 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         openPlannedDetail(app)
 
+        app.buttons["detail.overflow"].tap()
         let delete = app.buttons["detail.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "delete action missing")
-        for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
         delete.tap()
-        // Scoped to the sheet: the inline action shares the "Delete route" label.
+        // Confirm the destructive action in the sheet.
         let confirm = app.sheets.buttons["Delete route"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
         snap(app, "H1-delete-from-detail")
@@ -146,12 +146,12 @@ final class RouteDetailTests: XCTestCase {
 
     // MARK: Tracked dressing
 
-    /// The ride's ledger leads with what it recorded, and nothing inert sits on the page.
+    /// Essential totals precede the timeline; secondary statistics start collapsed.
     @MainActor
-    func testTrackedDetailShowsTheRideLedger() {
+    func testTrackedDetailShowsEssentialTotalsBeforeTheTimeline() {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         // Tracked is library-first: sync to pull the ride in first.
         app.buttons["topbar.sync"].tap()
 
@@ -160,10 +160,14 @@ final class RouteDetailTests: XCTestCase {
         card.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
 
-        let distance = app.otherElements["ledger.Distance"]
-        XCTAssertTrue(distance.waitForExistence(timeout: 5), "ride ledger missing")
+        let distance = app.otherElements["summary.Distance"]
+        XCTAssertTrue(distance.waitForExistence(timeout: 5), "ride summary missing")
         XCTAssertEqual(distance.value as? String, "58.2 km")
-        XCTAssertEqual(app.otherElements["ledger.Moving time"].value as? String, "2:51 h")
+        XCTAssertEqual(app.otherElements["summary.Moving time"].value as? String, "2:51 h")
+        XCTAssertEqual(app.otherElements["summary.Climb"].label, "Climb")
+        XCTAssertFalse(app.otherElements["ledger.Avg speed"].exists)
+        XCTAssertTrue(app.buttons["detail.statistics"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["detail.highlights"].firstMatch.exists)
         XCTAssertFalse(app.staticTexts["Strava"].exists, "no service rows until a service works")
         XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")
         snap(app, "E3-ride-detail")
@@ -175,7 +179,7 @@ final class RouteDetailTests: XCTestCase {
     func testTrackedDeleteRoutesThroughH1AndPops() {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
         // Tracked is library-first: sync to pull the ride in first.
         app.buttons["topbar.sync"].tap()
 
@@ -183,10 +187,9 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 30))
         card.tap()
 
+        app.buttons["detail.overflow"].tap()
         let delete = app.buttons["detail.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "E3 delete missing")
-        // The actions sit at the end of the scroll.
-        for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
         delete.tap()
         let confirm = app.sheets.buttons["Delete ride"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")

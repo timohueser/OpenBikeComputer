@@ -179,7 +179,7 @@ final class WebsiteScreenshotTests: XCTestCase {
 
         // Pull the fixture ride off the same mock device, then open it through the ordinary
         // tracked list. One launch owns all five frames and avoids duplicate app setup.
-        app.buttons["Tracked"].tap()
+        app.buttons["Rides"].tap()
 
         XCTAssertTrue(
             app.staticTexts["No rides yet"].waitForExistence(timeout: 5),
@@ -223,14 +223,13 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "the downloaded ride detail did not open"
         )
-        XCTAssertEqual(app.otherElements["ledger.Distance"].value as? String, "4.9 km")
+        XCTAssertEqual(app.otherElements["summary.Distance"].value as? String, "4.9 km")
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the real Grimsel geometry should be visible in the ride hero"
         )
-        // The timeline and highlights fill when the live model starts, a beat after the stats line.
+        // The timeline fills when the live model starts, a beat after the summary.
         waitFor(app, "detail.timeline", "the ride's timeline did not arrive")
-        waitFor(app, "detail.highlights", "the ride's highlights did not arrive")
         waitFor(app, "quietRow.open", "the ride's photo offer did not arrive")
         waitFor(app, "dayNote.offer", "the ride's note prompt did not arrive")
         capture(app, name: "ride-detail")

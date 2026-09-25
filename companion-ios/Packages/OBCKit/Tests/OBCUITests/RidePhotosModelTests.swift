@@ -71,10 +71,22 @@ import OBCTransport
     @Test func withAccessTheRowCountsThePhotosTakenDuringTheRide() async throws {
         let photos = FakePhotos(.full, [Self.candidate("a", at: 100), Self.candidate("b", at: 500), Self.candidate("old", at: -3_600)])
         let model = Self.model(try Self.library(), photos)
-
+        #expect(!model.canAddPhotos)
         await model.start()
-
+        #expect(model.canAddPhotos)
         #expect(model.offer?.title == "Add 2 photos from this ride")
+    }
+
+    @Test func aRideWithoutPointsDoesNotRequestPhotoAccess() async throws {
+        let photos = FakePhotos(.notDetermined, [])
+        let model = RidePhotosModel(
+            rideID: Self.rideID, points: [], library: try Self.library(), photoLibrary: photos
+        )
+        await model.start()
+        #expect(!model.canAddPhotos)
+        #expect(await model.openOffer() == false)
+        #expect(photos.requests == 0)
+        #expect(photos.queries == 0)
     }
 
     @Test func beforeAccessTheRowHasNoCountAndTheLibraryIsNotRead() async throws {
@@ -118,6 +130,12 @@ import OBCTransport
         let otherModel = RidePhotosModel(rideID: other, points: Self.points, library: library, photoLibrary: photos)
         await otherModel.start()
         #expect(otherModel.offer == nil)
+
+        photos.current = .full
+        #expect(await model.openOffer())
+        #expect(!model.accessDenied)
+        await model.loadPicks()
+        #expect(model.picks?.map(\.id) == ["a"])
     }
 
     /// Nothing is added before Add; then the chosen photos land in time order and the row goes
@@ -142,6 +160,12 @@ import OBCTransport
         await reopened.start()
         #expect(reopened.offer == nil)
         #expect(reopened.photos.map(\.assetID) == ["a", "c"])
+
+        #expect(await reopened.openOffer())
+        await reopened.loadPicks()
+        #expect(reopened.selected == ["b"])
+        reopened.addSelected()
+        #expect(reopened.photos.map(\.assetID) == ["a", "b", "c"])
     }
 
     /// Add does not wait for the grid's thumbnails; the strip fills the missing ones and keeps them.
@@ -172,6 +196,10 @@ import OBCTransport
         await reopened.start()
         #expect(reopened.offer == nil)
         #expect(reopened.photos.isEmpty)
+        #expect(await reopened.openOffer())
+        await reopened.loadPicks()
+        reopened.addSelected()
+        #expect(reopened.photos.map(\.assetID) == ["a"])
     }
 
     @Test func fullAccessWithNoPhotosShowsNoRow() async throws {

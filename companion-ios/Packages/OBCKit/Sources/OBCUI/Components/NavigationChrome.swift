@@ -57,7 +57,7 @@ public struct OBCLargeTitleBar<Actions: View>: View {
 
 #Preview("Large title bar") {
     VStack(spacing: 0) {
-        OBCLargeTitleBar("Routes") {
+        OBCLargeTitleBar("Library") {
             OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
         }
         Spacer()

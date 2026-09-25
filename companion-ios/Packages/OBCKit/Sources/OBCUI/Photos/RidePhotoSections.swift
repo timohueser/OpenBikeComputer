@@ -4,7 +4,7 @@ import OBCDomain
 import UIKit
 #endif
 
-/// The ride detail's photo offer: the quiet row, the access prompt and the pick grid.
+/// The photo suggestion and persistent add action share one permission prompt and picker.
 struct RidePhotoOfferRow: View {
     @Bindable var model: RidePhotosModel
     @State private var gridShown = false
@@ -20,6 +20,21 @@ struct RidePhotoOfferRow: View {
                     onOpen: { Task { if await model.openOffer() { gridShown = true } } },
                     onDismiss: { withAnimation(.snappy) { model.dismissOffer() } }
                 )
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("photos.offer")
+            } else {
+                Button {
+                    Task { if await model.openOffer() { gridShown = true } }
+                } label: {
+                    Label("Add photos", systemImage: "photo.on.rectangle")
+                        .font(.system(.subheadline))
+                        .foregroundStyle(OBCTheme.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("photos.addMore")
             }
         }
         .sheet(isPresented: $gridShown, onDismiss: model.closeGrid) {
@@ -51,10 +66,10 @@ struct RidePhotoGridSheet: View {
                         if picks.isEmpty {
                             OBCEmptyStateView(
                                 glyph: .muted(systemImage: "photo.on.rectangle"),
-                                title: "No photos from this ride",
+                                title: model.photos.isEmpty ? "No photos from this ride" : "No more photos from this ride",
                                 message: model.access == .limited
                                     ? "OBC sees only the photos you chose. None of them are from this ride."
-                                    : "Your library has no photos from the time of this ride."
+                                    : "There are no more photos to add from the time of this ride."
                             )
                             .padding(.top, 40)
                         } else {

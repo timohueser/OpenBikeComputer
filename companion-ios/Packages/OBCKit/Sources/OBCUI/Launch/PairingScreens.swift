@@ -203,7 +203,7 @@ struct PairedView: View {
                     .accessibilityIdentifier("pair.pairedTitle")
             }
         } actions: {
-            Button("Go to routes", action: onContinue)
+            Button("Open Library", action: onContinue)
                 .buttonStyle(.obcPrimary)
                 .accessibilityIdentifier("pair.goToRoutes")
         }

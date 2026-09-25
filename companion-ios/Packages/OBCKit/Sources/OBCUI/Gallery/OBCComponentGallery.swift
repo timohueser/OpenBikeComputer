@@ -48,7 +48,7 @@ public struct OBCComponentGallery: View {
                 }
 
                 section("Nav Bar") {
-                    OBCLargeTitleBar("Routes") {
+                    OBCLargeTitleBar("Library") {
                         OBCImportButton(fileExtensions: ["gpx", "tcx"]) { _ in }
                     }
                     .padding(.horizontal, -20)
