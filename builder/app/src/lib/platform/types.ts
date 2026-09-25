@@ -96,5 +96,5 @@ export interface Platform {
 
     readonly styleEditor: StyleEditorService | null;
 
-    readonly siteNav?: { readonly docs: string; readonly simulator: string; readonly github: string };
+    readonly siteNav?: { readonly home: string; readonly docs: string; readonly blog: string; readonly github: string };
 }

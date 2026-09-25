@@ -19,7 +19,9 @@ const SITE_BASE: string =
     import.meta.env.VITE_SITE_BASE || "https://openbikecomputer.com/";
 
 export const LINKS = {
+    home: SITE_BASE,
     docs: `${SITE_BASE}docs/`,
+    blog: `${SITE_BASE}blog/`,
     /** The landing page — which is where the live device demo lives. */
     simulator: SITE_BASE,
     /**
