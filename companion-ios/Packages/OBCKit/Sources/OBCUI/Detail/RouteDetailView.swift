@@ -3,8 +3,8 @@ import OBCDomain
 import OBCTransport
 
 /// The detail screen for a route or ride. One view, four dressings: planned, trip day, tracked,
-/// and imported. A route page leads with what the device holds and the one action, then the
-/// ledger in the device route overview's layout.
+/// and imported. A route page leads with what the device holds and the one action, then its
+/// elevation profile and the ledger in the device route overview's layout.
 public struct RouteDetailView: View {
     @Bindable private var model: RouteDetailModel
     private let deviceName: String
@@ -88,16 +88,16 @@ public struct RouteDetailView: View {
 
                 quietRows
 
-                if !model.stats.isEmpty {
-                    OBCLedger(model.stats)
-                        .padding(.top, 20)
-                }
-
                 if !model.elevationProfile.isEmpty {
                     OBCEyebrow("Elevation")
                         .padding(.top, 20)
                         .padding(.bottom, 6)
                     ElevationProfileView(samples: model.elevationProfile, ticks: photos?.tickFractions ?? [])
+                }
+
+                if !model.stats.isEmpty {
+                    OBCLedger(model.stats)
+                        .padding(.top, 20)
                 }
 
                 if !model.highlights.isEmpty {
