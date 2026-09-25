@@ -1903,7 +1903,7 @@ expect = "SetupSensors"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
 
-# Two sensors saved: the slots show their live status, and the last row reads Continue.
+# Two sensors saved: the slots show their live status, and the cursor opens on Continue.
 [[frame]]
 name = "setup-sensors-added"
 map = "{grimsel}"
@@ -1911,8 +1911,8 @@ script = "p p u d b p p p p"
 expect = "SetupSensors"
 args = ["--fresh", "--sensors", "screen"]
 
-# Select on the power slot opens the Settings scan list for it. Before a hit, the empty list says
-# how to wake a power meter.
+# Select on the power slot opens the scan list for it, in the setup chrome. Before a hit, the empty
+# list says how to wake a power meter.
 [[frame]]
 name = "setup-sensors-scanning"
 map = "{grimsel}"

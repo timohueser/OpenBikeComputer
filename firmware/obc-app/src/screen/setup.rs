@@ -43,7 +43,7 @@ pub(crate) fn screen(s: &Settings) -> Option<Screen> {
         SetupStep::Buttons => Some(Screen::SetupButtons(SetupButtonsScreen::default())),
         SetupStep::Units => Some(Screen::SetupUnits(SetupUnitsScreen(s.units))),
         SetupStep::Theme => Some(Screen::SetupTheme(SetupThemeScreen(s.theme))),
-        SetupStep::Sensors => Some(Screen::SetupSensors(SetupSensorsScreen::default())),
+        SetupStep::Sensors => Some(Screen::SetupSensors(SetupSensorsScreen::new(s))),
         SetupStep::Effort => Some(Screen::SetupEffort(SetupEffortScreen::default())),
         SetupStep::Done => None,
     }
@@ -335,9 +335,9 @@ impl SetupThemeScreen {
 }
 
 /// The sensors step: the three slots of Settings' Sensors page over Skip, which reads Continue
-/// once a sensor is saved. Select on a slot opens the Settings scan list for its kind, where a pick
-/// saves the sensor and returns here. An empty slot says how to wake its sensor, and a saved one
-/// shows its live status.
+/// once a sensor is saved. Select on a slot opens the scan list for its kind, where a pick saves
+/// the sensor and returns here. An empty slot says how to wake its sensor, and a saved one shows
+/// its live status.
 #[derive(Debug, Default)]
 pub struct SetupSensorsScreen {
     /// A slot, or [`SKIP`].
@@ -347,7 +347,16 @@ pub struct SetupSensorsScreen {
 /// The Skip row's index, after the slots.
 const SKIP: usize = SENSOR_SLOTS;
 
+fn any_sensor_saved(s: &Settings) -> bool {
+    s.saved_sensors.iter().any(|s| s.present)
+}
+
 impl SetupSensorsScreen {
+    /// The cursor opens on Continue when a sensor is already saved, and on the first slot if not.
+    pub fn new(s: &Settings) -> Self {
+        SetupSensorsScreen { selected: if any_sensor_saved(s) { SKIP } else { 0 } }
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Step(n) => on_step(&mut self.selected, n, SKIP + 1),
@@ -355,7 +364,7 @@ impl SetupSensorsScreen {
             // Scan mode makes the host run a discovery scan. The scan list lowers it on exit.
             Gesture::Press => {
                 cx.activity.request_sensor_scan(true);
-                Transition::Push(Screen::SetupSensorScan(SensorScanScreen::new(self.selected as u8)))
+                Transition::Push(Screen::SetupSensorScan(SetupSensorScanScreen::new(self.selected as u8)))
             }
             Gesture::Back => back(SetupStep::Sensors, cx),
             Gesture::Hold | Gesture::BackHold => Transition::None,
@@ -377,9 +386,30 @@ impl SetupSensorsScreen {
             }
             nav_row(cv, area, rx.t(kind_msg(slot)), Some(Line2::text(&line)), slot == self.selected, true, false);
         }
-        let label = if saved.iter().any(|s| s.present) { Msg::SetupContinue } else { Msg::SetupSkip };
-        let area = row_rect(h - 8 - HINT_H - 12 - ROW_ONE, w, ROW_ONE);
-        nav_row(cv, area, rx.t(label), None, self.selected == SKIP, true, true);
+        let y = h - 8 - HINT_H - 12 - ROW_ONE;
+        continue_row(cv, rx, y, any_sensor_saved(rx.settings), self.selected == SKIP);
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+    }
+}
+
+/// The sensors step's scan list: the Settings scan list for one slot, under the step's title bar
+/// and over its hint.
+#[derive(Debug)]
+pub struct SetupSensorScanScreen(SensorScanScreen);
+
+impl SetupSensorScanScreen {
+    pub fn new(slot: u8) -> Self {
+        SetupSensorScanScreen(SensorScanScreen::new(slot))
+    }
+
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        self.0.handle(g, cx)
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Sensors, rx.t(kind_msg(self.0.slot as usize)));
+        self.0.draw_list(cv, rx);
         hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
     }
 }
@@ -442,9 +472,8 @@ impl SetupEffortScreen {
             nav_row(cv, row_rect(y, w, ROW_TWO), rx.t(label), Some(Line2::text(text)), i == self.selected, true, true);
             y += ROW_TWO + ROW_GAP;
         }
-        let unset = rx.settings.max_hr == 0 && rx.settings.ftp_w == 0;
-        let go = rx.t(if unset { Msg::SetupSkip } else { Msg::SetupContinue });
-        action_row(cv, row_rect(y, w, ROW_ONE), go, None, self.selected == LIMITS.len(), true, false, 0.0);
+        let set = rx.settings.max_hr != 0 || rx.settings.ftp_w != 0;
+        continue_row(cv, rx, y, set, self.selected == LIMITS.len());
 
         let limits = rx.settings.effort_limits();
         for (i, (metric, value)) in SAMPLE_EFFORT.into_iter().enumerate() {
@@ -461,6 +490,13 @@ impl SetupEffortScreen {
         }
         hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
     }
+}
+
+/// A step's last row at `y`: Skip, or Continue once the step holds a `chosen` value. It acts, so it
+/// has no chevron.
+fn continue_row(cv: &mut impl Surface, rx: &Render, y: i32, chosen: bool, selected: bool) {
+    let label = rx.t(if chosen { Msg::SetupContinue } else { Msg::SetupSkip });
+    action_row(cv, row_rect(y, rx.w, ROW_ONE), label, None, selected, true, false, 0.0);
 }
 
 /// The sample ride the preview shows: a speed in km/h and a distance in km.
@@ -561,6 +597,15 @@ mod tests {
         assert!(matches!(lesson.handle(Gesture::Step(1), &mut cx), Transition::None), "the last press fills");
         assert!(matches!(lesson.handle(Gesture::Back, &mut cx), Transition::Root(Screen::SetupLanguage(_))));
         assert_eq!(cx.settings.setup, SetupStep::Language);
+    }
+
+    /// The cursor opens on the first slot, and on Continue once a sensor is saved.
+    #[test]
+    fn the_sensors_step_opens_on_continue_once_a_sensor_is_saved() {
+        let mut s = Settings::default();
+        assert_eq!(SetupSensorsScreen::new(&s).selected, 0);
+        s.saved_sensors[1] = crate::settings::SavedSensor::saved(1, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(SetupSensorsScreen::new(&s).selected, SKIP);
     }
 
     /// The count starts at the first titled step and ends at the last step.

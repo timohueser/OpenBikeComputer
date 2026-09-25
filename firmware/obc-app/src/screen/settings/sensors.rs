@@ -119,7 +119,7 @@ pub(crate) fn status_line(buf: &mut heapless::String<24>, present: bool, status:
 #[derive(Debug)]
 pub struct SensorScanScreen {
     /// The kind being paired: 0 heart rate, 1 power, 2 cadence. It filters the scan hits.
-    slot: u8,
+    pub(crate) slot: u8,
     selected: usize,
 }
 
@@ -171,7 +171,12 @@ impl SensorScanScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(kind_msg(self.slot as usize)), "");
+        self.draw_list(cv, rx);
+    }
 
+    /// The hits under the title bar, or the scanning state while there is none.
+    pub(crate) fn draw_list(&self, cv: &mut impl Surface, rx: &Render) {
+        let (w, h) = (rx.w, rx.h);
         let len = self.count(rx.sensor_scan_hits);
         if len == 0 {
             empty_state(cv, w, h, rx.t(Msg::SensorsScanning), rx.t(wake_msg(self.slot as usize)));

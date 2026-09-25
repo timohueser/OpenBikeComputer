@@ -6200,11 +6200,10 @@ mod tests {
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
         assert_eq!(app.settings().setup, SetupStep::Theme);
         app.apply_gesture(Gesture::Press);
-        app.apply_gesture(Gesture::Step(-1));
         app.apply_gesture(Gesture::Press);
         assert!(
             matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]),
-            "Up from the first slot reaches Continue"
+            "with a sensor saved, the step opens on Continue"
         );
         assert_eq!(app.settings().setup, SetupStep::Effort);
         assert!(app.settings().saved_sensors[1].present, "the added sensor stays");

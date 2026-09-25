@@ -118,8 +118,8 @@ pub use settings::{
     StatFieldsScreen,
 };
 pub use setup::{
-    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupSensorsScreen, SetupThemeScreen,
-    SetupUnitsScreen,
+    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupSensorScanScreen, SetupSensorsScreen,
+    SetupThemeScreen, SetupUnitsScreen,
 };
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
@@ -923,9 +923,9 @@ screens! {
     SetupTheme(SetupThemeScreen) => Caps::modal().blocking(),
     /// Setup's sensors step: the three sensor slots with their live status, then Skip or Continue.
     SetupSensors(SetupSensorsScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
-    /// The Settings scan list for one slot, opened from the sensors step. It blocks the escape,
-    /// because the step it returns to does.
-    SetupSensorScan(SensorScanScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
+    /// The Settings scan list for one slot in the setup chrome, opened from the sensors step. It
+    /// blocks the escape, because the step it returns to does.
+    SetupSensorScan(SetupSensorScanScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
     /// Setup's effort step: max heart rate and FTP, each edited in the drawer editor over the page,
     /// then a row that continues.
     SetupEffort(SetupEffortScreen) => Caps::modal().blocking(),

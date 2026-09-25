@@ -121,7 +121,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::SetupUnits(SetupUnitsScreen(crate::settings::Units::Metric)),
         Screen::SetupTheme(SetupThemeScreen(crate::settings::Theme::Light)),
         Screen::SetupSensors(SetupSensorsScreen::default()),
-        Screen::SetupSensorScan(SensorScanScreen::new(1)),
+        Screen::SetupSensorScan(SetupSensorScanScreen::new(1)),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
         Screen::Settings(SettingsPage::hub()),
