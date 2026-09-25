@@ -52,6 +52,17 @@ public final class RouteDetailModel {
     @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
     @ObservationIgnored private let ridePoints: [RidePoint]
     @ObservationIgnored private let rides: [RideSummary]
+    public let canReplay: Bool
+
+    /// The recorded line is assembled only after the rider opens Replay.
+    public func replayContent(photos: [RidePhoto], thumbnails: [String: Data]) async -> ReplayContent? {
+        guard canReplay else { return nil }
+        let title = name
+        let ride = ReplayContent.Ride(points: ridePoints, photos: photos, thumbnails: thumbnails)
+        return await Task.detached(priority: .userInitiated) {
+            ReplayContent.ride(title: title, ride: ride)
+        }.value
+    }
     /// The olive line under the title: a ride's date, or where a route came from.
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
@@ -160,6 +171,11 @@ public final class RouteDetailModel {
         fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? ridePoints.map(\.coordinate)
         self.ridePoints = ridePoints
         self.rides = rides
+        if case .tracked = dressing {
+            canReplay = ReplayContent.hasUsableGeometry(ridePoints)
+        } else {
+            canReplay = false
+        }
 
         switch dressing {
         case .planned(let route), .tripDay(let route):

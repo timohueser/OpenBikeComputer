@@ -35,6 +35,7 @@ public final class TripJournalModel {
     public private(set) var trip: Trip?
     /// Nil until loaded, and for a trip without a ride.
     public private(set) var review: TripReview?
+    public private(set) var canReplay = false
     public private(set) var entries: [Entry] = []
     /// The line as the map draws it.
     public private(set) var runs: [LineRun] = []
@@ -51,6 +52,7 @@ public final class TripJournalModel {
     static let photoPinsPerTrip = 20
 
     @ObservationIgnored private let library: any LibraryStore
+    @ObservationIgnored private var replayTracks: [RideID: [RidePoint]] = [:]
     @ObservationIgnored private let placeName: (@Sendable (Coordinate) async -> String?)?
     @ObservationIgnored private var generation = 0
 
@@ -64,6 +66,26 @@ public final class TripJournalModel {
         offer.map { offer in
             "Days \(offer.days.lowerBound + 1)–\(offer.days.upperBound + 1) are \(offer.shortfall > 0 ? "longer" : "shorter") now. Even them out?"
         }
+    }
+
+    /// Build from the same edited tracks the review used, with each ride as a separate piece.
+    public func replayContent() async -> ReplayContent? {
+        guard let trip, let review, canReplay else { return nil }
+        let title = trip.name
+        let days: [(name: String, rides: [ReplayContent.Ride])] = review.days.enumerated().map { index, day in
+            let rides = day.rides.map { ride in
+                ReplayContent.Ride(
+                    points: replayTracks[ride.id] ?? [],
+                    photos: library.rideJournal(ride.id).photos,
+                    thumbnails: library.ridePhotoThumbnails(ride.id)
+                )
+            }
+            let name = trip.dayEnds[index].title.map { "Day \(index + 1) · \($0)" } ?? "Day \(index + 1)"
+            return (name: name, rides: rides)
+        }
+        return await Task.detached(priority: .userInitiated) {
+            ReplayContent.trip(title: title, days: days)
+        }.value
     }
 
     /// Read `trip` against `rides`, the rides as the list shows them.
@@ -81,6 +103,10 @@ public final class TripJournalModel {
 
         self.trip = trip
         self.review = review
+        replayTracks = loaded
+        canReplay = review?.days.flatMap(\.rides).contains {
+            ReplayContent.hasUsableGeometry(loaded[$0.id] ?? [])
+        } ?? false
         guard let review else {
             entries = []
             return

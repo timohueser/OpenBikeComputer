@@ -904,6 +904,11 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Prepare replay assets and test camera engine
+        run: npm ci --prefix companion-ios/ReplayAssets && npm test --prefix companion-ios/ReplayAssets
       - name: OBCKit package tests (XCTest and Swift Testing, host)
         id: swift-tests
         working-directory: companion-ios/Packages/OBCKit
@@ -969,6 +974,9 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install XcodeGen and WebP tools
         run: brew install xcodegen webp
       - name: Start the screenshot simulator
@@ -1038,6 +1046,9 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install XcodeGen
         run: brew install xcodegen
       - uses: actions-rust-lang/setup-rust-toolchain@v1

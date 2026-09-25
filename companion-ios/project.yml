@@ -18,6 +18,7 @@ include:
   - project.local.yml
 
 options:
+  preGenCommand: npm ci --prefix ReplayAssets
   bundleIdPrefix: com.openbikecomputer
   deploymentTarget:
     iOS: "17.0"

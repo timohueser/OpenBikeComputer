@@ -39,6 +39,9 @@ public struct TripDetailView: View {
     @State private var startDateShown = false
     /// The full-screen interactive trip map.
     @State private var mapShown = false
+    @State private var replayShown = false
+    @State private var replayPreparing = false
+    @State private var replayContent: ReplayContent?
     /// The stops sheet of one day end.
     @State private var stopsModel: TripStopsModel?
     /// The trip review, once the trip has a ride.
@@ -199,8 +202,14 @@ public struct TripDetailView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $mapShown) { tripMapCover }
+        .fullScreenCover(isPresented: $replayShown) {
+            if let replayContent { ReplayPlayerView(content: replayContent) }
+        }
         #else
         .sheet(isPresented: $mapShown) { tripMapCover }
+        .sheet(isPresented: $replayShown) {
+            if let replayContent { ReplayPlayerView(content: replayContent) }
+        }
         #endif
     }
 
@@ -382,6 +391,20 @@ public struct TripDetailView: View {
             )
             .padding(.top, 18)
             .accessibilityIdentifier("trip.journal.totals")
+            if journal.canReplay {
+                Button("Replay ridden days", systemImage: "play.circle") {
+                    replayPreparing = true
+                    Task {
+                        replayContent = await journal.replayContent()
+                        replayPreparing = false
+                        replayShown = replayContent != nil
+                    }
+                }
+                .buttonStyle(.obcGhost)
+                .disabled(replayPreparing)
+                .padding(.top, 16)
+                .accessibilityIdentifier("trip.journal.replay")
+            }
         }
     }
 

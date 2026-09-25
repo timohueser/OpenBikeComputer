@@ -1,0 +1,10 @@
+html, body, #map { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: #1c1c1e; font-family: -apple-system, sans-serif; }
+.cesium-widget canvas { touch-action: none; }
+.cesium-viewer-bottom { bottom: max(4px, env(safe-area-inset-bottom)); left: 4px; max-width: calc(100% - 8px); }
+.cesium-credit-textContainer, .cesium-credit-expand-link {
+  color: white; background: rgba(0, 0, 0, 0.8); font-size: 12px; line-height: 1.5;
+}
+.cesium-credit-expand-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; }
+.cesium-credit-lightbox { max-width: calc(100% - 24px); }
+a:focus-visible { outline: 3px solid white; outline-offset: 2px; }
