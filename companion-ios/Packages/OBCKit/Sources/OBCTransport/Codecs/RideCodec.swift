@@ -1,11 +1,11 @@
 import Foundation
 import OBCDomain
 
-/// Ride object v5: verbatim 20-byte recorded samples followed by one fixed 150-byte `OBRF` footer.
+/// Ride object v6: verbatim 20-byte recorded samples followed by one fixed 154-byte `OBRF` footer.
 public enum RideObjectCodec {
-    static let version: UInt8 = 5
+    static let version: UInt8 = 6
     static let sampleLength = 20
-    static let footerLength = 150
+    static let footerLength = 154
     static let nameCapacity = 48
     static let noSensorU8: UInt8 = 0xFF
     static let noSensorU16: UInt16 = 0xFFFF
@@ -56,6 +56,9 @@ public enum RideObjectCodec {
         data.append(UInt8(tripName.count))
         data.append(tripName)
         data.append(Data(repeating: 0, count: nameCapacity - tripName.count))
+        data.append(limitU8(ride.zoneLimits.maxHeartRate))
+        data.append(0)
+        data.appendLE(limitU16(ride.zoneLimits.ftpWatts))
         return data
     }
 
@@ -92,6 +95,11 @@ public enum RideObjectCodec {
         let dayCount = Int(try footer.u8())
         guard let bikeType = BikeType(rawValue: try footer.u8()) else { throw DeviceError.readFailed }
         let tripName = try nameField(&footer, length: Int(try footer.u8()))
+        let maxHeartRateLimit = try footer.u8()
+        guard try footer.u8() == 0 else { throw DeviceError.readFailed }
+        let ftpLimit = try footer.u16()
+        let zoneLimits = RideZoneLimits(maxHeartRate: maxHeartRateLimit == 0 ? nil : Int(maxHeartRateLimit),
+                                        ftpWatts: ftpLimit == 0 ? nil : Int(ftpLimit))
         let trip: RideTrip?
         if tripKey == 0 {
             guard dayIndex == 0, dayCount == 0, tripName.isEmpty else { throw DeviceError.readFailed }
@@ -137,7 +145,7 @@ public enum RideObjectCodec {
             trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: avgHR, maxHeartRate: maxHR, avgCadence: avgCadence,
             avgPower: avgPower, maxPower: maxPower, energyKJ: energy == noEnergy ? nil : Int(energy),
-            bikeType: bikeType, trip: trip)
+            bikeType: bikeType, trip: trip, zoneLimits: zoneLimits)
         return Ride(summary: summary, points: points)
     }
 
@@ -166,6 +174,10 @@ public enum RideObjectCodec {
         guard let value else { return noSensorU16 }
         return UInt16(clamping: Swift.min(value, Int(noSensorU16) - 1))
     }
+
+    /// A limit on the wire: `0` is not set.
+    private static func limitU8(_ value: Int?) -> UInt8 { UInt8(clamping: value ?? 0) }
+    private static func limitU16(_ value: Int?) -> UInt16 { UInt16(clamping: value ?? 0) }
 
     private static func optSensorU8(_ raw: UInt8) -> Int? { raw == noSensorU8 ? nil : Int(raw) }
     private static func optSensorU16(_ raw: UInt16) -> Int? { raw == noSensorU16 ? nil : Int(raw) }

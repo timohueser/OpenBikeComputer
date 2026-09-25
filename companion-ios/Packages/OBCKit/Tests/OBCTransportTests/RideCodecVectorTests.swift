@@ -3,7 +3,7 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// The single cross-language ride-object contract: recorded 20-byte samples plus the v5 footer.
+/// The single cross-language ride-object contract: recorded 20-byte samples plus the v6 footer.
 struct RideCodecVectorTests {
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -15,9 +15,9 @@ struct RideCodecVectorTests {
         .appendingPathComponent("specs/vectors")
 
     private func vector() throws -> Data {
-        let url = Self.vectorsDir.appendingPathComponent("ride-v5.bin")
+        let url = Self.vectorsDir.appendingPathComponent("ride-v6.bin")
         return try #require(FileManager.default.contents(atPath: url.path),
-                            "fixture ride-v5.bin missing at \(url.path)")
+                            "fixture ride-v6.bin missing at \(url.path)")
     }
 
     @Test func decodesAndReencodesTheVectorExactly() throws {
@@ -41,6 +41,7 @@ struct RideCodecVectorTests {
         #expect(summary.bikeType == .gravel)
         #expect(summary.trip == RideTrip(key: 0x0123_4567_89AB_CDEF, dayIndex: 1, dayCount: 3,
                                          name: "Alpen Traverse"))
+        #expect(ride.zoneLimits == RideZoneLimits(maxHeartRate: 185, ftpWatts: 250))
 
         #expect(ride.points.count == 3)
         #expect(ride.points.map(\.segmentStart) == [true, false, true])
@@ -58,8 +59,9 @@ struct RideCodecVectorTests {
     @Test func rejectsBadFooterAndReservedSampleFlags() throws {
         let bytes = try vector()
         let footer = bytes.count - RideObjectCodec.footerLength
-        // Reserved byte, a day past the count, a bike type past the four, trip-name padding.
-        for (offset, value) in [(33, 1), (98, 3), (100, 4), (149, 1)] as [(Int, UInt8)] {
+        // Reserved byte, a day past the count, a bike type past the four, trip-name padding, and
+        // the reserved byte after the max heart rate limit.
+        for (offset, value) in [(33, 1), (98, 3), (100, 4), (149, 1), (151, 1)] as [(Int, UInt8)] {
             var badFooter = bytes
             badFooter[footer + offset] = value
             #expect(throws: (any Error).self) {

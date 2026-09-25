@@ -202,7 +202,7 @@ extension RideSummary {
             climbMeters: climb, descentMeters: descent, trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: heartRate.average, maxHeartRate: heartRate.max, avgCadence: cadence.average,
             avgPower: power.average, maxPower: power.max, energyKJ: joules.map { Int($0 / 1_000) },
-            bikeType: bikeType, trip: trip
+            bikeType: bikeType, trip: trip, zoneLimits: zoneLimits
         )
     }
 }

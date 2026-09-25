@@ -448,6 +448,8 @@ private struct RideDTO: Decodable {
     let bikeType: String?
     /// The trip day the ride started on; absent for a ride without a trip.
     let trip: TripDayDTO?
+    /// The effort limits at the ride's start; absent for a ride recorded without them.
+    let zoneLimits: RideZoneLimits?
 
     struct TripDayDTO: Decodable {
         let key: UInt64
@@ -462,7 +464,8 @@ private struct RideDTO: Decodable {
             movingTime: movingTime, averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
             trackPreview: TrackPreview.normalizing(track.map(\.coordinate)),
             bikeType: BikeType.allCases.first { $0.name.lowercased() == bikeType } ?? .road,
-            trip: trip.map { RideTrip(key: $0.key, dayIndex: $0.dayIndex, dayCount: $0.dayCount, name: $0.name) }
+            trip: trip.map { RideTrip(key: $0.key, dayIndex: $0.dayIndex, dayCount: $0.dayCount, name: $0.name) },
+            zoneLimits: zoneLimits ?? .notSet
         )
         // Fixture tracks carry no timestamps — synthesize them evenly across the
         // moving time, so the encoded payload is a plausible recorded tracklog.

@@ -132,6 +132,7 @@
       "movingTime": 10260,
       "averageSpeedMps": 5.6667,
       "climbMeters": 812,
+      "zoneLimits": { "maxHeartRate": 185, "ftpWatts": 250 },
       "track": [
         { "lat": 42.8672, "lon": -88.4471, "ele": 264 },
         { "lat": 42.8801, "lon": -88.4402, "ele": 288 },
@@ -169,6 +170,7 @@
       "movingTime": 15120,
       "averageSpeedMps": 5.2222,
       "climbMeters": 1180,
+      "zoneLimits": { "maxHeartRate": 185, "ftpWatts": 250 },
       "track": [
         { "lat": 43.0289, "lon": -89.8412, "ele": 260 },
         { "lat": 43.0512, "lon": -89.8004, "ele": 301 },
@@ -188,6 +190,7 @@
       "movingTime": 3900,
       "averageSpeedMps": 6.3611,
       "climbMeters": 140,
+      "zoneLimits": { "maxHeartRate": 185, "ftpWatts": 250 },
       "track": [
         { "lat": 43.1142, "lon": -89.6487, "ele": 277 },
         { "lat": 43.1358, "lon": -89.6102, "ele": 302 },

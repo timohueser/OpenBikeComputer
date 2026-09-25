@@ -964,6 +964,8 @@ private struct RideSummaryDTO: Codable {
     var energyKJ: Int?
     var bikeType: UInt8
     var trip: RideTripDTO?
+    // Optional, so a `summary.json` written before rides carried limits decodes as not set.
+    var zoneLimits: RideZoneLimits?
 
     init(_ summary: RideSummary) {
         source = summary.source
@@ -984,6 +986,7 @@ private struct RideSummaryDTO: Codable {
         energyKJ = summary.energyKJ
         bikeType = summary.bikeType.rawValue
         trip = summary.trip.map(RideTripDTO.init)
+        zoneLimits = summary.zoneLimits
     }
 
     var domain: RideSummary {
@@ -994,7 +997,8 @@ private struct RideSummaryDTO: Codable {
             trackPreview: preview?.domain,
             avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
             avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower, energyKJ: energyKJ,
-            bikeType: BikeType(rawValue: bikeType) ?? .road, trip: trip?.domain, source: source
+            bikeType: BikeType(rawValue: bikeType) ?? .road, trip: trip?.domain,
+            zoneLimits: zoneLimits ?? .notSet, source: source
         )
     }
 }
