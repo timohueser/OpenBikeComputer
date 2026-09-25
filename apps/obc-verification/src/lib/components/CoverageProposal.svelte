@@ -35,9 +35,9 @@
   {/if}
 </article>
 <style>
-  .proposal { padding: 16px 18px; margin: 12px 0 18px; border: 1px solid #e8d3c8; border-left: 4px solid var(--coral); border-radius: 8px; background: #fffaf7; }
+  .proposal { padding: 16px 18px; margin: 12px 0 18px; border: 1px solid var(--coral); border-radius: 8px; background: var(--coral-bg); }
   .top h3 { font-size: 14px; }
   .delta { margin: 2px 0 8px; }
-  .deletes { margin: 12px 0 0; color: var(--amber); }
+  .deletes { margin: 12px 0 0; color: var(--warn); }
   .actions { margin-top: 14px; }
 </style>

@@ -127,19 +127,19 @@
   .eyebrow { display: block; margin: 14px 6px 6px; color: var(--slate); }
   .empty { margin: 14px 6px; }
   .item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; margin: 6px 0; padding: 10px 12px 10px 10px; background: var(--surface); border: 1px solid var(--slate-line); border-radius: 8px; }
-  .item.open { border-color: var(--slate); box-shadow: 0 2px 8px #2e4a6114; }
+  .item.open { border-color: var(--slate); box-shadow: 0 2px 8px #26434a14; }
   .item.done { opacity: .55; }
   .item input[type=checkbox] { margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--slate); }
   .item .title { display: block; width: 100%; padding: 0; text-align: left; font-weight: 600; line-height: 1.35; background: transparent; border-color: transparent; }
   .item .title:hover { background: transparent; text-decoration: underline; }
   .item.done .title { text-decoration: line-through; }
-  .sub { margin-top: 2px; font-size: 11px; color: var(--muted); }
+  .sub { margin-top: 2px; font-size: 12px; color: var(--muted); }
   .sub a { color: var(--slate); font-weight: 600; text-decoration: underline; }
   .body { margin-top: 6px; font-size: 13px; line-height: 1.5; }
   .body .eyebrow { margin: 10px 0 3px; color: var(--muted); }
   .body a { color: var(--slate); font-weight: 600; }
-  .body .statement { padding: 8px 10px; background: var(--slate-bg); border-left: 3px solid var(--slate); border-radius: 0 6px 6px 0; }
-  .stale { margin: 8px 0 0; padding: 6px 9px; font-size: 12px; color: var(--amber); background: #fff6e2; border: 1px solid #ead9b3; border-radius: 6px; }
+  .body .statement { padding: 8px 10px; background: var(--slate-bg); border: 1px solid var(--slate-line); border-radius: 6px; }
+  .stale { margin: 8px 0 0; padding: 6px 9px; font-size: 12px; color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 6px; }
   .x { padding: 2px 4px; font-size: 16px; line-height: 1; color: var(--muted); background: transparent; border-color: transparent; }
   .x:hover { color: var(--bad); background: transparent; }
   .decide { margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--slate-line); }

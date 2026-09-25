@@ -9,11 +9,11 @@
   <span class="dot" aria-hidden="true"></span>{summary.label}{#if summary.total}<span class="count">{summary.covered}/{summary.total}</span>{/if}
 </span>
 <style>
-  .coverage-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; background: var(--soft); color: var(--muted); }
+  .coverage-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 650; line-height: 1.5; white-space: nowrap; background: var(--soft); color: var(--muted); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .7; }
   .count { font-weight: 500; opacity: .8; }
-  .covered { background: #e5eee2; color: var(--forest); }
-  .partial { background: #f8efdc; color: var(--amber); }
-  .uncovered { background: #f9e7e4; color: var(--bad); }
-  .needs-review { background: #fdeae4; color: #a1452f; }
+  .covered { background: var(--good-bg); color: var(--good); }
+  .partial { background: var(--warn-bg); color: var(--warn); }
+  .uncovered { background: var(--bad-bg); color: var(--bad); }
+  .needs-review { background: var(--coral-bg); color: var(--coral); }
 </style>

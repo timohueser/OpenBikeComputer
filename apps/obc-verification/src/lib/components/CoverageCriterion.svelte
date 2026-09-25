@@ -64,35 +64,36 @@
 </article>
 <style>
   .criterion { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); min-width: 0; }
-  .covered { border-color: #cfdcc9; }
+  .covered { border-color: var(--good-line); }
   .removed { opacity: .65; border-style: dashed; }
-  .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; border: 1.5px solid var(--amber); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
-  .covered .mark { background: var(--forest); border-color: var(--forest); }
+  .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; border: 1.5px solid var(--warn); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
+  .covered .mark { background: var(--good); border-color: var(--good); }
   .removed .mark { border-color: var(--line); }
   .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
   .statement { margin: 0; font-weight: 600; line-height: 1.45; }
-  .num { font: 600 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); margin-right: 8px; vertical-align: 1px; }
-  .evidence { display: grid; grid-template-columns: minmax(150px, 34%) 1fr; gap: 2px 14px; margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+  .num { font: 600 12px/1 var(--mono); color: var(--muted); margin-right: 8px; vertical-align: 1px; }
+  .evidence { display: grid; grid-template-columns: minmax(150px, 34%) minmax(0, 1fr); gap: 2px 14px; margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
   .name strong { font-weight: 600; }
   .label { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .name small { display: block; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .added .name strong { color: var(--forest); }
+  .name, .why { min-width: 0; }
+  .name small { display: block; font: 12px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .added .name strong { color: var(--good); }
   .dropped { opacity: .7; }
   .why { color: var(--muted); }
   .line { margin: 0; }
   .outcome { margin-left: 6px; }
   .run { margin-left: 8px; padding: 3px 9px; }
-  .none { margin: 6px 0 0; color: var(--amber); }
-  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .8px; color: var(--forest); font-weight: 700; margin-left: 6px; }
+  .none { margin: 6px 0 0; color: var(--warn); }
+  .tag { font-size: 11.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--good); font-weight: 700; margin-left: 6px; }
   .why details { margin-top: 2px; }
   .why h4 { margin: 8px 0 2px; }
   .foot { margin: 10px -14px -12px -46px; padding: 8px 14px 9px 46px; border-top: 1px solid var(--line); background: var(--paper); border-radius: 0 0 8px 8px; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
-  .covered .foot { border-top-color: #cfdcc9; }
-  .gap { margin: 0; color: var(--amber); }
+  .covered .foot { border-top-color: var(--good-line); }
+  .gap { margin: 0; color: var(--warn); }
   .gap strong { font-weight: 650; }
   .next { margin: 0; }
   .pills { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 1px; }
   del { color: var(--muted); }
-  @media (max-width: 650px) { .evidence { grid-template-columns: 1fr; } }
+  @media (max-width: 650px) { .evidence { grid-template-columns: minmax(0, 1fr); } }
 </style>

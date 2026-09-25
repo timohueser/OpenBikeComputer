@@ -139,7 +139,7 @@
     position: fixed; z-index: 20; visibility: hidden; overflow-y: auto; overscroll-behavior: contain;
     margin: 0; padding: 5px; list-style: none;
     background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
-    box-shadow: 0 6px 24px #24352c1f;
+    box-shadow: 0 6px 24px #1c1b141f;
   }
   .options.placed { visibility: visible; }
   .option {

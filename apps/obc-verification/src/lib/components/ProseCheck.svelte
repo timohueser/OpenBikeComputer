@@ -74,19 +74,19 @@
 <style>
   .state { margin: 6px 0 0; }
   .notes {
-    margin-top: 8px; padding: 9px 12px 11px; border: 1px solid #e6d9bd; border-left: 3px solid #d5a147;
-    border-radius: 8px; background: #fffaef;
+    margin-top: 8px; padding: 9px 12px 11px; border: 1px solid var(--warn-line);
+    border-radius: 8px; background: var(--warn-bg);
   }
   .notes-head { display: flex; gap: 10px; align-items: baseline; margin: 0 0 4px; }
   .note {
     display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
-    padding: 6px 0; border-top: 1px solid #efe3ca; font-size: 13px;
+    padding: 6px 0; border-top: 1px solid var(--warn-line); font-size: 13px;
   }
   .notes-head + .note { border-top: 0; }
   .message { flex: 1; min-width: 180px; color: var(--muted); }
   .source, .fix { padding: 2px 8px; min-height: 0; border-radius: 5px; font-size: 12px; line-height: 1.5; }
-  .source { border-color: transparent; background: #f4e7c9; font-weight: 600; }
-  .source:hover { background: #ebdab3; }
-  .fix { border-color: #d9d3c2; background: var(--surface); }
+  .source { border-color: transparent; background: #f8e2b0; font-weight: 650; }
+  .source:hover { background: var(--warn-line); }
+  .fix { border-color: var(--line-strong); background: var(--surface); }
   .fix:hover { background: var(--soft); }
 </style>

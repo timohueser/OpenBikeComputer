@@ -59,17 +59,18 @@
 <style>
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 0 0 18px; }
   .tile, .chart { background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 16px 18px; }
-  .n { font-size: 28px; letter-spacing: -1px; font-weight: 600; line-height: 1.1; margin: 4px 0 2px; }
+  .n { font-size: 28px; letter-spacing: -.6px; font-weight: 700; line-height: 1.1; margin: 4px 0 2px; }
   .n small { font-size: 14px; letter-spacing: 0; color: var(--muted); font-weight: 500; }
   .bar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin: 10px 0 8px; background: var(--soft); }
   .bar span { display: block; }
   .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
   .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
-  .covered { background: var(--forest); } .partial { background: var(--amber); } .uncovered { background: var(--bad); } .review { background: #a1452f; } .none { background: #c9ccbd; } .manual { background: #7c8db5; }
+  .covered { background: var(--good); } .partial { background: var(--amber); } .uncovered { background: var(--bad); } .review { background: var(--coral); } .none { background: #d6d5c8; } .manual { background: var(--slate); }
   .chart h3 { margin-bottom: 4px; }
   svg { display: block; width: 100%; height: auto; margin-top: 6px; }
   .grid { stroke: var(--line); }
-  .axis { font-size: 11px; fill: var(--muted); }
+  .axis { font-size: 12px; fill: var(--muted); }
   path { fill: none; stroke-width: 2.5; stroke-linejoin: round; }
-  path.covered { stroke: var(--forest); } path.assessed { stroke: var(--amber); stroke-width: 2; stroke-dasharray: 4 3; }
+  /* Mixed toward --warn: plain amber is too faint as a line on white. */
+  path.covered { stroke: var(--good); } path.assessed { stroke: color-mix(in srgb, var(--amber) 55%, var(--warn)); stroke-width: 2; stroke-dasharray: 4 3; }
 </style>
