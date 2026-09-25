@@ -6,9 +6,9 @@
 
     import DeviceChip from "./DeviceChip.svelte";
     import { platform } from "../lib/platform";
-    import { available, DESKTOP_ADDS } from "../lib/platform/gating";
+    import { available } from "../lib/platform/gating";
     import { router, type Route } from "../lib/router.svelte";
-    import { ADVANCED_ROUTE, DESKTOP_ROUTE, DEVICE_ROUTE, RIDES_ROUTE } from "../lib/routes";
+    import { ADVANCED_ROUTE, DEVICE_ROUTE, RIDES_ROUTE } from "../lib/routes";
 
     let header: HTMLElement;
     onMount(startTheme);
@@ -86,12 +86,9 @@
             <DeviceChip />
         {/if}
     </div>
-    {#if siteNav && (tabbed || DESKTOP_ADDS.length)}
+    {#if siteNav && tabbed}
         <div class="app-tools">
-            {#if tabbed}{@render appTabs()}{/if}
-            {#if DESKTOP_ADDS.length}
-                <a class="desktop-link" href={DESKTOP_ROUTE}>Desktop app</a>
-            {/if}
+            {@render appTabs()}
         </div>
     {/if}
 </header>
@@ -101,7 +98,6 @@
     .tab { display: flex; align-items: center; min-height: 44px; padding: 0 12px; font-size: 14px; border-block: 2px solid transparent; white-space: nowrap; }
     .tab.on { font-weight: 700; border-bottom-color: var(--amber); }
     .app-tools { display: flex; align-items: center; gap: 12px; width: min(1400px, 100% - 32px); margin: 0 auto; border-top: 1px solid color-mix(in srgb, var(--cream) 25%, transparent); }
-    .desktop-link { display: flex; align-items: center; min-height: 44px; margin-left: auto; font-size: 14px; white-space: nowrap; }
     @media (max-width: 1100px) {
         .site-head:has(.tabs) :global(.name) { display: none; }
         .site-head:has(.tabs) :global(.short-name) { display: inline; }

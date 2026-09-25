@@ -8,6 +8,7 @@
     import { platform, type StyleEditorModule } from "./lib/platform";
     import { DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
+    import { DESKTOP_ROUTE } from "./lib/routes";
 
     // The advanced editor is maintainer tooling, reached through an `import()`
     // only the dev host declares — product hosts have no reference to the route
@@ -81,6 +82,9 @@
 <footer class="faint small">
     <span>Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</span>
     <span class="legal">
+        {#if platform.siteNav && DESKTOP_ADDS.length}
+            <a href={DESKTOP_ROUTE}>Desktop app</a>
+        {/if}
         <a href={LINKS.licenses}>Licences</a>
         <a href={LINKS.impressum}>Impressum</a>
         <a href={LINKS.datenschutz}>Datenschutz</a>
