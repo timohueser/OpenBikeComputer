@@ -566,12 +566,8 @@ ok = "OK"
 ok = "OK"
 # The controls hint beside the Up and Down glyphs.
 choose = "Choose"
-# The button lesson. The four names label the buttons on the device, at most seven characters.
+# The button lesson. It names the buttons in English in every language, so `hold_back` keeps "BACK".
 buttons_title = "BUTTONS"
-up = "UP"
-down = "DOWN"
-select = "SELECT"
-back = "BACK"
 press_each = "Press each button"
 hold_back = "Hold BACK"
 menu_anywhere = "Menu from anywhere"

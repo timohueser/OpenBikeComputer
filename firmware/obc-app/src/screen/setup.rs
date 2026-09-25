@@ -164,8 +164,8 @@ impl SetupLanguageScreen {
 }
 
 /// The lesson's buttons, in the order of [`SetupButtonsScreen::pressed`]: the left flank top to
-/// bottom, then the right.
-const BUTTON_NAMES: [Msg; 4] = [Msg::SetupUp, Msg::SetupDown, Msg::SetupSelect, Msg::SetupBack];
+/// bottom, then the right. They are English in every language, so they are not catalog strings.
+const BUTTON_NAMES: [&str; 4] = ["UP", "DOWN", "SELECT", "BACK"];
 
 /// The button lesson: a signpost board beside each button, pointing at it, and the one gesture
 /// worth knowing before the first ride. A press fills its board. Until all four are filled every
@@ -206,7 +206,7 @@ impl SetupButtonsScreen {
         let (w, h) = (rx.w, rx.h);
         title_bar(cv, w, h, SetupStep::Buttons, rx.t(Msg::SetupButtonsTitle));
         for (i, name) in BUTTON_NAMES.into_iter().enumerate() {
-            board(cv, w, BOARD_ROWS[i % 2], i >= 2, rx.t(name), self.pressed[i]);
+            board(cv, w, BOARD_ROWS[i % 2], i >= 2, name, self.pressed[i]);
         }
         let y = wrapped(cv, rx.t(Msg::SetupHoldBack), w / 2, TIP_TOP, copy_w(w), Font::Label, INK);
         wrapped(cv, rx.t(Msg::SetupMenuAnywhere), w / 2, y, copy_w(w), Font::Label, SUBTEXT);
