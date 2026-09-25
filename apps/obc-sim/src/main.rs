@@ -132,6 +132,8 @@ struct Args {
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
     boot: bool,
+    /// Headless `--png` only: boot as a factory-fresh device, which opens first-use setup.
+    fresh: bool,
     /// One-time route/trip fixture import directory; defaults to `routes/`.
     routes_dir: Option<String>,
     /// A progress record for the first imported trip: `(day, metres, last finished day)`.
@@ -206,6 +208,7 @@ impl Default for Args {
             no_sound: false,
             expect_screen: None,
             boot: false,
+            fresh: false,
             routes_dir: None,
             trip_progress: None,
             card: None,
@@ -547,6 +550,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--script-after" => a.script_after = Some(it.next().ok_or("--script-after needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
+            "--fresh" => a.fresh = true,
             "--card" => a.card = Some(it.next().ok_or("--card needs a path")?),
             "--create-card" => a.create_card = Some(it.next().ok_or("--create-card needs a path")?),
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
@@ -1021,6 +1025,7 @@ Device state:
   --route-cleanup        Show the storage cleanup dialog
   --no-card               Simulate an absent storage card
   --boot                  Start headless rendering at the power-on Home screen
+  --fresh                 Boot a factory-fresh device, which opens first-use setup
   --battery PCT           Initial battery charge, 0..=100
   --clock DATE            Trusted UTC time, YYYY-MM-DDTHH:MM (local offset defaults to 0)
   --clock-after-script DATE  Set trusted UTC time after the script (same format and offset)
@@ -1265,8 +1270,14 @@ fn main() {
         }
         // Explicit headless settings are applied before the script. Without an explicit clock the
         // device's boot time stays untrusted.
-        if args.clock.is_some() || args.lang.is_some() || args.stat_fields.is_some() || args.sensors.is_some() {
-            let mut settings = obc_app::settings::Settings::default();
+        if args.fresh
+            || args.clock.is_some()
+            || args.lang.is_some()
+            || args.stat_fields.is_some()
+            || args.sensors.is_some()
+        {
+            let mut settings =
+                if args.fresh { obc_app::settings::Settings::FACTORY } else { obc_app::settings::Settings::default() };
             if let Some(clock) = args.clock {
                 settings.clock = clock;
             }
@@ -1986,6 +1997,7 @@ mod cli_tests {
             "--script-after",
             "--expect-screen",
             "--boot",
+            "--fresh",
             "--routes-dir",
             "--tracks-dir",
             "--import",

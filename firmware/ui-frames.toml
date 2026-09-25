@@ -1767,6 +1767,13 @@ map = "{grimsel}"
 expect = "Passkey"
 args = ["--ble", "passkey=42"]
 
+# First-use setup: a factory-fresh device boots into the Hello greeting.
+[[frame]]
+name = "setup-hello"
+map = "{grimsel}"
+expect = "Hello"
+args = ["--fresh"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).

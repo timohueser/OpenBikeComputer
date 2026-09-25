@@ -3,7 +3,7 @@
 //! [`Settings`] is `Copy + PartialEq`, so a single comparison detects a rider edit and flags a
 //! save. The codec ([`encode`]/[`decode`]) is a versioned, CRC-checked, fixed-length blob shared by
 //! the sim file store and the firmware RRAM store; a blank or corrupt read falls back to
-//! [`Settings::default`].
+//! [`Settings::FACTORY`].
 
 use crate::i18n::{t, Msg};
 use crate::screen::BRIGHTNESS_MAX;
@@ -202,6 +202,36 @@ impl Units {
         }
     }
 }
+
+/// How far first-use setup has come. It is persisted, so setup resumes at its step after a power
+/// loss. `Done` is the default, so a blob written before setup existed decodes as a device that is
+/// set up; a blank store boots [`Settings::FACTORY`] instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SetupStep {
+    #[default]
+    Done = 0,
+    Hello = 1,
+}
+
+impl SetupStep {
+    /// The step after this one. Setup ends at `Done`.
+    pub const fn next(self) -> Self {
+        match self {
+            SetupStep::Hello | SetupStep::Done => SetupStep::Done,
+        }
+    }
+
+    /// An unknown byte reads as `Done`, so a corrupt blob never traps the rider in setup.
+    const fn from_byte(b: u8) -> Self {
+        match b {
+            1 => SetupStep::Hello,
+            _ => SetupStep::Done,
+        }
+    }
+}
+
+crate::settings_table::setting_enum_codec!(SetupStep);
 
 setting_enum! {
     /// The colour theme used by every device screen.
@@ -482,6 +512,7 @@ settings_table! {
         sound: SoundLevel = SoundLevel::Loud, since(25);
         /// A click on every button gesture.
         key_tones: bool = false, since(25);
+        setup: SetupStep = SetupStep::Done, since(26);
     }
 
     pub const DEFAULT;
@@ -501,7 +532,7 @@ settings_table! {
     /// declared is read, and the fields appended after it take their declared defaults, so a
     /// firmware update that appends a setting keeps the rider's values.
     ///
-    /// `None` — the host then falls back to [`Settings::default`] — if the version is outside
+    /// `None` — the host then falls back to [`Settings::FACTORY`] — if the version is outside
     /// [`MIN_SUPPORTED`]`..=`[`VERSION`], if the blob is shorter than that version's
     /// [`encoded_len`], or if the CRC over that version's payload fails. Bytes past its encoded
     /// length are ignored, which is what makes the board's fixed-`SLOT_LEN` read work after a bump.
@@ -511,9 +542,13 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole into the live `App`, the board's
 /// Config cache and the `.rodata` [`DEFAULT`](Settings::DEFAULT) image, so a field that widens the
 /// struct widens every one of those.
-const _: () = assert!(core::mem::size_of::<Settings>() == 124, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 126, "Settings grew — was that deliberate?");
 
 impl Settings {
+    /// A factory-fresh device: the defaults, with setup at its first step. Hosts boot it when the
+    /// store holds no valid blob, and a factory reset writes it.
+    pub const FACTORY: Settings = Settings { setup: SetupStep::Hello, ..Settings::DEFAULT };
+
     pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
         use obc_reader::reader::places::HoursFilter;
         if self.find_hide_closed {
@@ -535,9 +570,9 @@ impl Settings {
     }
 }
 
-pub const VERSION: u8 = 25;
+pub const VERSION: u8 = 26;
 
-/// The oldest layout [`decode`] accepts. An older blob resets to defaults.
+/// The oldest layout [`decode`] accepts. An older blob resets to [`Settings::FACTORY`].
 pub const MIN_SUPPORTED: u8 = 19;
 
 /// The encoded length of a `payload`-byte payload: the CRC-covered bytes plus a 2-byte CRC, rounded
@@ -585,7 +620,8 @@ const _: () = {
     assert!(off::ftp_w == 121);
     assert!(off::sound == 123);
     assert!(off::key_tones == 124);
-    assert!(PAYLOAD_LEN == 125, "the CRC moved");
+    assert!(off::setup == 125);
+    assert!(PAYLOAD_LEN == 126, "the CRC moved");
     assert!(ENCODED_LEN == 128, "the blob is no longer 8 RRAM lines");
 };
 
@@ -613,6 +649,7 @@ mod tests {
         assert_eq!(d.find_results, FindResults::default());
         assert_eq!(d.theme, Theme::default());
         assert_eq!(d.sound, SoundLevel::default());
+        assert_eq!(d.setup, SetupStep::default());
 
         // And the whole const is its type's `Default` — the property the field list guards.
         assert_eq!(d, Settings::default());
@@ -660,6 +697,7 @@ mod tests {
             ftp_w: 250,
             sound: SoundLevel::Quiet,
             key_tones: true,
+            setup: SetupStep::Hello,
 
             brightness: 1,
         }
@@ -683,6 +721,7 @@ mod tests {
         let mut expected = every_field_set();
         (expected.theme, expected.max_hr, expected.ftp_w) = (Theme::Light, 0, 0);
         (expected.sound, expected.key_tones) = (SoundLevel::Loud, false);
+        expected.setup = SetupStep::Done;
 
         let mut old = encode(&expected);
         old[0] = 22;
@@ -697,10 +736,25 @@ mod tests {
     fn version_24_blob_keeps_existing_values_and_defaults_the_sound_rows() {
         let mut expected = every_field_set();
         (expected.sound, expected.key_tones) = (SoundLevel::Loud, false);
+        expected.setup = SetupStep::Done;
 
         let mut old = encode(&expected);
         old[0] = 24;
         let old_payload_len = off::sound;
+        let crc = crate::crc16::crc16(&old[..old_payload_len]);
+        old[old_payload_len..old_payload_len + 2].copy_from_slice(&crc.to_le_bytes());
+
+        assert_eq!(decode(&old), Some(expected));
+    }
+
+    /// A device updated from before setup existed is set up already.
+    #[test]
+    fn version_25_blob_keeps_existing_values_and_reads_setup_as_done() {
+        let expected = Settings { setup: SetupStep::Done, ..every_field_set() };
+
+        let mut old = encode(&expected);
+        old[0] = 25;
+        let old_payload_len = off::setup;
         let crc = crate::crc16::crc16(&old[..old_payload_len]);
         old[old_payload_len..old_payload_len + 2].copy_from_slice(&crc.to_le_bytes());
 

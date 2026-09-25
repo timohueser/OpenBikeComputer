@@ -35,9 +35,9 @@ impl ResetScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         if self.done {
-            // Any key clears back to Home. The device would reboot here.
+            // Any key starts setup again. The device would reboot here.
             return match g {
-                Gesture::Press | Gesture::Back => Transition::Home,
+                Gesture::Press | Gesture::Back => crate::screen::setup::go_to(cx.settings.setup),
                 _ => Transition::None,
             };
         }
@@ -48,7 +48,7 @@ impl ResetScreen {
             }
             // `apply_gesture` sees the change and flags the host to persist the cleared settings.
             Gesture::Hold if self.armed => {
-                *cx.settings = Settings::default();
+                *cx.settings = Settings::FACTORY;
                 self.done = true;
                 Transition::None
             }
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn arm_then_hold_resets_to_defaults() {
+    fn arm_then_hold_resets_to_factory_and_starts_setup() {
         let mut s = Settings { units: Units::Imperial, power_saver: true, fix_interval_s: 30, ..Settings::default() };
         let before = s;
         let mut scr = ResetScreen::new();
@@ -127,9 +127,9 @@ mod tests {
         assert!(scr.armed && !scr.done);
         let t = run(&mut scr, &mut s, Gesture::Hold);
         assert!(matches!(t, Transition::None), "stays to show the done message");
-        assert_eq!(s, Settings::default(), "settings were cleared to factory defaults");
+        assert_eq!(s, Settings::FACTORY, "settings were cleared to factory defaults");
         assert!(scr.done);
-        assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Home));
+        assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Root(crate::Screen::Hello(_))));
     }
 
     #[test]

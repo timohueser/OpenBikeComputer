@@ -160,7 +160,7 @@ impl Host {
         let recorder = FlatRideRecorder::new(owner.clone()).map_err(|error| format!("ride recovery: {error:?}"))?;
         let tracks = TrackStore::new(recorder, owner, exports);
         let mut settings_store = FileSettingsStore::open(settings);
-        let boot_settings = settings_store.load().unwrap_or_default();
+        let boot_settings = settings_store.load().unwrap_or(Settings::FACTORY);
         // Absent or unreadable terrain is not fatal; routes stay flat.
         let elevation: Box<dyn ElevationSource> = match obc_host_core::terrain::FlatElevation::open(&map) {
             Ok(Some(terrain)) => terrain,
@@ -178,7 +178,7 @@ impl Host {
         app.set_map_nav_graph(map.tables().has_nav_graph());
         app.set_routes_with_ids(routes.catalog(), routes.ids());
         app.set_rides(rides.catalog(), rides.trip_names());
-        // The phone runs the settings a rider runs: whatever was saved, or the defaults.
+        // The phone runs the settings a rider runs: whatever was saved, or a factory-fresh device.
         app.set_settings(boot_settings);
         app.set_sound_available(true);
         tracks.offer_recovery(&mut app);

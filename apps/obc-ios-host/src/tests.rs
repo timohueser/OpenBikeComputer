@@ -15,8 +15,13 @@ fn card(tag: &str) -> (PathBuf, PathBuf) {
     (card, directory)
 }
 
+/// Open the card as a device that finished first-use setup.
 fn open(card: &Path, directory: &Path) -> Box<Host> {
-    Host::open(card, &directory.join("settings"), &directory.join("exports")).expect("the card opens")
+    let settings = directory.join("settings");
+    if !settings.exists() {
+        FileSettingsStore::open(&settings).save(&Settings::default()).expect("the settings file is written");
+    }
+    Host::open(card, &settings, &directory.join("exports")).expect("the card opens")
 }
 
 /// A fix in the middle of the demo map's extract.
@@ -200,7 +205,7 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
         let length = (obc_ios_frame_width() * obc_ios_frame_height() * 4) as usize;
         let pixels = std::slice::from_raw_parts(frame, length);
         assert!(pixels.iter().skip(3).step_by(4).all(|&alpha| alpha == 0xFF), "opaque alpha for the CGImage");
-        assert_eq!(CStr::from_ptr(obc_ios_screen(host)).to_str().unwrap(), "Map");
+        assert_eq!(CStr::from_ptr(obc_ios_screen(host)).to_str().unwrap(), "Hello", "a new phone starts setup");
 
         // A stationary fix with no stamp: NaN and zero are how C spells an absent value.
         obc_ios_push_fix(host, GRIMSEL.lat, GRIMSEL.lon, f32::NAN, f32::NAN, 0);

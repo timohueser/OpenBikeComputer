@@ -144,7 +144,8 @@ impl LinkControl {
     /// `App` copy before its next save and the phone's write cannot be clobbered.
     pub fn apply_config(&mut self, shared: &mut SharedSettings, name: &str, units: u8) {
         // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
-        self.settings = shared.settings.load().unwrap_or_default();
+        // A blank store is a factory-fresh device, so a phone write cannot skip first-use setup.
+        self.settings = shared.settings.load().unwrap_or(obc_app::Settings::FACTORY);
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
 

@@ -2347,6 +2347,13 @@ impl App {
         // The value came from the store, so it is already persisted: reset the handshake to
         // Clean. A pending edit is discarded, because seeding is a boot operation, not an edit.
         self.settings_ops.note_seeded();
+        // An unfinished setup opens at its step. A recovered-ride decision already on top stays
+        // there, and setup opens on the next boot instead.
+        let decision_open = self.ui.stack.last().is_some_and(|top| top.caps().blocks_escape);
+        if let Some(step) = screen::setup::screen(self.settings.setup).filter(|_| !decision_open) {
+            screen::apply(&mut self.ui.stack, screen::Transition::Root(step));
+            self.ui.map_dirty = true;
+        }
     }
 
     /// Merge the BLE-owned fields (units and device name) of a phone Config write into the live
@@ -4516,15 +4523,16 @@ mod tests {
             }
             assert!(!settings_dirty(&mut app), "{name}: the save is held while the screen is on top");
 
-            // Back out to the Home root, closing any open field on the way.
+            // Back out of the subtree, closing any open field on the way. It ends on the Home root,
+            // or in first-use setup after a reset.
             for _ in 0..MAX_DEPTH_BACKOUT {
-                if app.ui.stack.len() == 1 {
+                if !app.ui.top_is_settings() {
                     break;
                 }
                 assert!(!settings_dirty(&mut app), "{name}: still inside the settings subtree — save held");
                 app.apply_gesture(Gesture::Back);
             }
-            assert_eq!(app.ui.stack.len(), 1, "{name}: backed out to the Home root");
+            assert!(!app.ui.top_is_settings(), "{name}: backed out of the settings subtree");
             assert!(settings_dirty(&mut app), "{name}: leaving the settings subtree flushes the pending save");
             assert!(!settings_dirty(&mut app), "{name}: the flag drains — exactly one save");
         }
@@ -6071,6 +6079,26 @@ mod tests {
         app.arm_settings_save(); // pretend a stale dirty state survived somehow
         app.set_settings(Settings::default()); // boot seed (store load or default)
         assert_eq!(drain_persist(&mut app), None, "a seeded boot value is already persisted");
+    }
+
+    /// A factory-fresh boot opens setup, and nothing but Hello's press leaves it. The press ends
+    /// setup on Home and owes the save that makes the next boot skip it.
+    #[test]
+    fn a_factory_boot_runs_setup_until_hello_is_pressed() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::FACTORY);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
+
+        for g in [Gesture::Back, Gesture::BackHold, Gesture::Hold] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.last(), Some(Screen::Hello(_))), "setup cannot be escaped");
+
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Done);
+        assert_eq!(drain_persist(&mut app), Some(1), "the finished setup is saved");
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

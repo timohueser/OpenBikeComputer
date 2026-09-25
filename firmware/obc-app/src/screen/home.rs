@@ -197,7 +197,7 @@ fn jitter(seed: u32, i: usize) -> (f32, f32) {
 
 /// Trace [`field`] into `LEVELS` iso-lines by marching squares. One pass over the grid keeping two
 /// rolling sample rows (no full-grid buffer). `seed` jitters the bump centres for this open.
-fn contours(cv: &mut impl Surface, w: i32, h: i32, seed: u32) {
+pub(super) fn contours(cv: &mut impl Surface, w: i32, h: i32, seed: u32) {
     let step = w as f32 / COLS as f32;
     let rows = ((h as f32 / step + 0.5) as usize).max(1); // rounded, to keep the cells square
     let stepy = h as f32 / rows as f32;

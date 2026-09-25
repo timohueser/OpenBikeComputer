@@ -58,6 +58,7 @@ mod route_overview;
 mod route_received;
 mod route_swap;
 pub(crate) mod settings;
+pub(crate) mod setup;
 mod start_away;
 mod statistics;
 mod trip_delete;
@@ -116,6 +117,7 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
+pub use setup::HelloScreen;
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -903,6 +905,9 @@ screens! {
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
+    /// First-use setup's greeting in the four UI languages. Setup refuses the escape and the
+    /// drawers: it ends only when its last step is done.
+    Hello(HelloScreen) => Caps::modal().blocking(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),

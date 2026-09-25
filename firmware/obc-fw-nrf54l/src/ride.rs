@@ -766,11 +766,11 @@ pub(crate) async fn run_app(
     // pulsing the manager's work edge every pass.
     let mut sensor_scan_rearm_ms: u32 = 0;
 
-    // Seed the app from the persistent RRAM store at boot; a blank or corrupt page decodes to the
-    // defaults. One brief lock, released at once.
+    // Seed the app from the persistent RRAM store at boot; a blank or corrupt page boots a
+    // factory-fresh device. One brief lock, released at once.
     app.set_settings({
         let mut store = shared.lock().await;
-        store.settings.load().unwrap_or_default()
+        store.settings.load().unwrap_or(obc_app::Settings::FACTORY)
     });
     // The brightness in that seed reaches the panel here, before the first frame is drawn. The
     // per-pass apply at the end of the loop would otherwise leave the light at the level

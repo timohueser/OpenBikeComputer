@@ -370,10 +370,10 @@ impl SimGui {
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
         tracks.offer_recovery(&mut app);
-        // Seed the live settings from the persisted store, falling back to defaults on a first run
-        // or an unreadable file, as the device's boot path does.
+        // Seed the live settings from the persisted store, falling back to a factory-fresh device
+        // on a first run or an unreadable file, as the device's boot path does.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
-        let boot_settings = settings_store.load().unwrap_or_default();
+        let boot_settings = settings_store.load().unwrap_or(obc_app::Settings::FACTORY);
         app.set_settings(boot_settings);
         args.stamp_initial_clock(&mut app);
         app.set_map_nav_graph(map_tables.has_nav_graph());

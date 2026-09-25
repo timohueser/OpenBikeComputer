@@ -526,6 +526,10 @@ tomorrow = "DEMAIN"
 est = "est."
 ok = "OK"
 
+# --- Première configuration ---
+[setup]
+ok = "OK"
+
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]
 title = "RÉCUPÉRATION"

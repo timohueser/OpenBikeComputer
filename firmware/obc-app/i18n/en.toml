@@ -561,6 +561,10 @@ tomorrow = "TOMORROW"
 est = "est."
 ok = "OK"
 
+# --- First-use setup ---
+[setup]
+ok = "OK"
+
 # --- Boot-time recovered ride ---
 [ride_recovery]
 title = "RIDE RECOVERED"
