@@ -141,7 +141,7 @@ struct RootView: View {
                     }
                 )
                 // The main screen draws its own chrome, but the title still names the pop target.
-                .navigationTitle("Routes")
+                .navigationTitle("Library")
                 .navigationDestination(for: MainDestination.self) { destination in
                     detailScreen(for: destination)
                 }
