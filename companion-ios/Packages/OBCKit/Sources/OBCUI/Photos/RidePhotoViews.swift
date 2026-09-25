@@ -27,10 +27,11 @@ public struct RidePhotoStrip: View {
                         Button { onOpen(index) } label: {
                             PhotoThumbnail(data: thumbnails[photo.assetID])
                                 .frame(width: 84, height: 84)
-                                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+                                .clipShape(RoundedRectangle(cornerRadius: TrackRow.sketchRadius))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Photo \(index + 1)")
+                        .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
+                        .accessibilityHint("Opens the photo")
                         .accessibilityIdentifier("photos.strip.\(index)")
                     }
                 }
@@ -67,10 +68,16 @@ public struct RidePhotoGrid: View {
                         .overlay(alignment: .topTrailing) { checkmark(isSelected) }
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(pickLabel(pick))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityIdentifier("photos.pick.\(pick.id)")
             }
         }
+    }
+
+    private func pickLabel(_ pick: RidePhotosModel.Pick) -> String {
+        let time = pick.placed.photo.takenAt.formatted(date: .omitted, time: .shortened)
+        return pick.placed.locationOffTrack ? "Photo at \(time), location off the track" : "Photo at \(time)"
     }
 
     private func caption(_ pick: RidePhotosModel.Pick) -> some View {
@@ -89,12 +96,15 @@ public struct RidePhotoGrid: View {
         .background(LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom))
     }
 
+    /// The list's selection mark: an amber disc with an ink check, or an empty ring.
     private func checkmark(_ isSelected: Bool) -> some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
             .font(.system(.title3, weight: .semibold))
             .symbolRenderingMode(.palette)
-            .foregroundStyle(isSelected ? OBCTheme.surface : .white, isSelected ? OBCTheme.ink : .black.opacity(0.2))
+            .foregroundStyle(isSelected ? OBCTheme.onAmber : .white, isSelected ? OBCTheme.amber : .black.opacity(0.2))
+            .shadow(color: .black.opacity(0.25), radius: 2)
             .padding(6)
+            .obcFixedGeometryType()
     }
 }
 

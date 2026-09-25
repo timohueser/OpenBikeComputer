@@ -10,6 +10,7 @@ import MapKit
 /// card with an Open-route hand-off; a tap on empty map dismisses it.
 public struct TrackMapView: View {
     private let coordinates: [Coordinate]
+    private let ink: TrackPreviewView.Ink
     private let waypoints: [Waypoint]
     /// Multi-stage mode: each stage stroked in its palette color. Empty is single-track.
     private let stages: [MultiTrackPreviewView.Stage]
@@ -25,11 +26,13 @@ public struct TrackMapView: View {
 
     public init(
         coordinates: [Coordinate],
+        ink: TrackPreviewView.Ink = .route,
         waypoints: [Waypoint] = [],
         title: String,
         onClose: @escaping () -> Void
     ) {
         self.coordinates = coordinates
+        self.ink = ink
         self.waypoints = waypoints
         self.stages = []
         self.stageSummaries = []
@@ -48,6 +51,7 @@ public struct TrackMapView: View {
         onOpenStage: ((RouteSummary) -> Void)? = nil
     ) {
         self.coordinates = stages.flatMap(\.coordinates)
+        self.ink = .route
         self.waypoints = []
         self.stages = stages
         self.stageSummaries = stageSummaries
@@ -81,7 +85,7 @@ public struct TrackMapView: View {
         MapReader { proxy in
             Map(initialPosition: .region(MapGeometry.boundingRegion(for: coordinates, pad: 1.4))) {
                 if stages.isEmpty {
-                    TrackMapContent(coordinates: coordinates, dotRadius: 7, waypoints: waypoints)
+                    TrackMapContent(coordinates: coordinates, ink: ink, dotRadius: 7, waypoints: waypoints)
                 } else {
                     ForEach(Array(stages.enumerated()), id: \.offset) { index, stage in
                         let coords = MapGeometry.clLocations(stage.coordinates)

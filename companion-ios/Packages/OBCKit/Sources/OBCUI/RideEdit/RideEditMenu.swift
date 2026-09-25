@@ -42,7 +42,7 @@ public struct RideEditMenu: View {
                 .accessibilityIdentifier("detail.revertRide")
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
         }
         .accessibilityLabel("More")
         .accessibilityIdentifier("detail.overflow")

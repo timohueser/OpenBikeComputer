@@ -39,15 +39,14 @@ extension LibraryStore {
         saveRideViews(views)
     }
 
-    /// Delete a ride's files. An edited ride deletes the synced rides that no other edit still
-    /// covers, and marks them deleted, so a sync does not bring them back.
+    /// Delete a ride's files. An edited ride deletes its synced rides and marks them deleted, so
+    /// a sync does not bring them back.
     public func deleteRide(_ id: RideID) {
         var views = rideViews()
         guard let index = views.firstIndex(where: { $0.id == id }) else { return deleteArchivedRide(id) }
         let view = views.remove(at: index)
         saveRideViews(views)
-        let covered = Set(views.flatMap(\.sources))
-        for source in view.sources.subtracting(covered) {
+        for source in view.sources {
             deleteArchivedRide(source)
             markRideDeleted(source)
         }
@@ -76,8 +75,8 @@ extension LibraryStore {
     }
 
     /// A photo stays with the synced ride that holds it, with its thumbnail; a new photo goes to
-    /// the synced ride whose slice is nearest its time. The photos that other rides show, or that
-    /// an edit hides, stay where they are.
+    /// the synced ride whose slice is nearest its time. The photos that the edit hides stay where
+    /// they are.
     public func saveRideJournal(_ journal: RideJournal, thumbnails: [String: Data], for id: RideID) {
         let views = rideViews()
         guard let view = views.first(where: { $0.id == id }) else {
@@ -115,47 +114,21 @@ extension LibraryStore {
         return true
     }
 
-    /// Make two rides of one at `time`: "‹name› (1)", which keeps the id, and "‹name› (2)". A name
-    /// another ride has takes the next free number. Returns the second ride's id, or nil when a
-    /// part would have fewer than two points.
-    @discardableResult
-    public func splitRide(_ id: RideID, at time: Date, summary: RideSummary) -> RideID? {
-        var edit = RideEditSession(store: self)
-        guard let slices = edit.slices(of: id) else { return nil }
-        let parts = RideEdit.split(slices, at: time)
-        let names = rideSummaries().map(\.name)
-        var first = summary, second = summary
-        first.name = RideEdit.freeName(summary.name, from: 1, taken: names)
-        second.name = RideEdit.freeName(summary.name, from: 2, taken: names + [first.name])
-        let secondID = RideID("edit-\(UUID().uuidString.lowercased())")
-        guard let before = edit.view(id: id, summary: first, slices: parts.before),
-              let after = edit.view(id: secondID, summary: second, slices: parts.after)
-        else { return nil }
-        edit.replace([id], with: [before, after])
-        return secondID
-    }
-
     /// Join `second` onto the end of `first`. The joined ride keeps the first ride's id, name and
     /// bike type.
     @discardableResult
     public func mergeRides(_ first: RideSummary, _ second: RideID) -> Bool {
         var edit = RideEditSession(store: self)
         guard let head = edit.slices(of: first.id), let tail = edit.slices(of: second),
-              let view = edit.view(id: first.id, summary: first, slices: RideEdit.joined(head, tail))
+              let view = edit.view(id: first.id, summary: first, slices: head + tail)
         else { return false }
         edit.replace([first.id, second], with: [view])
         return true
     }
 
-    /// Remove the edits that share a synced ride with `id`, so each of those synced rides shows
-    /// again as it was synced. Returns the ids of the removed edits and of the synced rides.
-    @discardableResult
-    public func revertRide(_ id: RideID) -> Set<RideID> {
-        let views = rideViews()
-        let kept = RideEdit.reverted(views, id: id)
-        saveRideViews(kept)
-        let keptIDs = Set(kept.map(\.id))
-        return Set(views.filter { !keptIDs.contains($0.id) }.flatMap { [$0.id] + $0.sources })
+    /// Remove the edit `id`, so each of its synced rides shows again as it was synced.
+    public func revertRide(_ id: RideID) {
+        saveRideViews(rideViews().filter { $0.id != id })
     }
 }
 

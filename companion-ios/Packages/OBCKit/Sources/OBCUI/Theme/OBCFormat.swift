@@ -140,21 +140,6 @@ public enum OBCFormat {
         return parts.joined(separator: " · ")
     }
 
-    /// Tracked-ride stat line: "Yesterday · 58.2 km · 2:51 · 20.4 kph".
-    public static func trackedSubtitle(
-        _ ride: RideSummary,
-        relativeTo now: Date = Date(),
-        calendar: Calendar = .current,
-        locale: Locale = .current
-    ) -> String {
-        [
-            rideDay(ride.date, relativeTo: now, calendar: calendar, locale: locale),
-            distance(meters: ride.distanceMeters, locale: locale),
-            movingTime(ride.movingTime),
-            speed(mps: ride.averageSpeedMps, locale: locale),
-        ].joined(separator: " · ")
-    }
-
     /// Ride detail stat line: "74.3 km · 5:52 · 12.7 kph · 2,080 m ↑".
     public static func rideStatsLine(_ ride: RideSummary, locale: Locale = .current) -> String {
         [
@@ -188,20 +173,19 @@ public enum OBCFormat {
         return "How was Day \(trip.dayIndex + 1)?"
     }
 
-    /// One highlight: "Furka 2,431 m", "2,431 m at km 31", "18.0 km climb", "62 kph descent" or
-    /// "Biggest day 82.0 km". Lengths use `distance(meters:)`, as every other km in the app.
-    public static func highlight(_ highlight: RideHighlight, locale: Locale = .current) -> String {
+    /// One highlight as a ledger row: HIGHEST POINT 2,431 m at Furka, LONGEST CLIMB 18.0 km,
+    /// FASTEST DESCENT 62 kph, BIGGEST DAY OF THE TRIP 82.0 km.
+    public static func highlight(_ highlight: RideHighlight, locale: Locale = .current) -> OBCStat {
         switch highlight {
         case .highestPoint(let elevation, let distance, let place):
-            let height = "\(climbValue(meters: elevation, locale: locale)) m"
-            if let place { return "\(place) \(height)" }
-            return "\(height) at km \(Int((distance / 1000).rounded()))"
+            let at = place ?? "km \(Int((distance / 1000).rounded()))"
+            return OBCStat(value: climbValue(meters: elevation, locale: locale), unit: "m at \(at)", key: "Highest point")
         case .longestClimb(_, let length):
-            return "\(Self.distance(meters: length, locale: locale)) climb"
+            return OBCStat(value: distanceValue(meters: length, locale: locale), unit: "km", key: "Longest climb")
         case .fastestDescent(let speedMps):
-            return "\(Int((speedMps * 3.6).rounded())) kph descent"
+            return OBCStat(value: "\(Int((speedMps * 3.6).rounded()))", unit: "kph", key: "Fastest descent")
         case .biggestDay(let distance):
-            return "Biggest day \(Self.distance(meters: distance, locale: locale))"
+            return OBCStat(value: distanceValue(meters: distance, locale: locale), unit: "km", key: "Biggest day of the trip")
         }
     }
 

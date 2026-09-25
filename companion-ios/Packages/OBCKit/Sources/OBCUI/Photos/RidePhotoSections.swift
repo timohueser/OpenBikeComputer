@@ -20,8 +20,6 @@ struct RidePhotoOfferRow: View {
                     onOpen: { Task { if await model.openOffer() { gridShown = true } } },
                     onDismiss: { withAnimation(.snappy) { model.dismissOffer() } }
                 )
-                .padding(.top, 4)
-                .padding(.bottom, 8)
             }
         }
         .sheet(isPresented: $gridShown, onDismiss: model.closeGrid) {
@@ -51,12 +49,14 @@ struct RidePhotoGridSheet: View {
                 VStack(spacing: 16) {
                     if let picks = model.picks {
                         if picks.isEmpty {
-                            Text(model.access == .limited
-                                ? "OBC cannot see any photos from this ride."
-                                : "No photos from this ride.")
-                                .font(.system(.subheadline))
-                                .foregroundStyle(OBCTheme.secondary)
-                                .padding(.top, 40)
+                            OBCEmptyStateView(
+                                glyph: .muted(systemImage: "photo.on.rectangle"),
+                                title: "No photos from this ride",
+                                message: model.access == .limited
+                                    ? "OBC sees only the photos you chose. None of them are from this ride."
+                                    : "Your library has no photos from the time of this ride."
+                            )
+                            .padding(.top, 40)
                         } else {
                             RidePhotoGrid(picks: picks, selected: $model.selected)
                         }
