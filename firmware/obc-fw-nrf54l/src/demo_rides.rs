@@ -201,7 +201,9 @@ fn upgrade_v5_rides<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), StoreErr
             }
             store.write(allocation, &footer).map(|_| ())
         };
-        replace(store, &entry, copy, samples + FOOTER_LEN as u64)?;
+        let replaced = replace(store, &entry, copy, samples + FOOTER_LEN as u64);
+        store.close(handle);
+        replaced?;
     }
 }
 
@@ -212,7 +214,10 @@ fn is_v5<D: BlockDevice>(store: &FlatStore<D>, entry: &EntryMeta) -> Result<bool
         return Ok(false);
     }
     let mut head = [0; 8];
-    read_exact(store, &store.open(entry.id, Some(entry.revision))?, len - V5_FOOTER_LEN as u64, &mut head)?;
+    let handle = store.open(entry.id, Some(entry.revision))?;
+    let read = read_exact(store, &handle, len - V5_FOOTER_LEN as u64, &mut head);
+    store.close(handle);
+    read?;
     Ok(head[..5] == *b"OBRF\x05" && u16::from_le_bytes([head[6], head[7]]) as usize == V5_FOOTER_LEN)
 }
 
@@ -356,6 +361,7 @@ fn write_ride<D: BlockDevice>(store: &FlatStore<D>, sensors: usize, start: u32) 
         check.update(&buffer[..count]);
         offset += count as u64;
     }
+    store.close(handle);
     if check.finalize() != payload_crc {
         return Err(StoreError::Media);
     }

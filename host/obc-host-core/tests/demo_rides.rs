@@ -211,7 +211,9 @@ fn put_ride(store: &FlatStore<&SparseDisk>, bytes: &[u8], name: &str) -> EntryMe
 fn stored(store: &FlatStore<&SparseDisk>, id: ObjectId) -> (Revision, Vec<u8>) {
     let entry = store.entries().find(|entry| entry.id == id).unwrap();
     let mut bytes = vec![0; entry.payload_len as usize];
-    store.read(&store.open(id, None).unwrap(), 0, &mut bytes).unwrap();
+    let handle = store.open(id, None).unwrap();
+    store.read(&handle, 0, &mut bytes).unwrap();
+    store.close(handle);
     (entry.revision, bytes)
 }
 
@@ -224,6 +226,9 @@ fn file_seed_replaces_the_v5_fixture_and_upgrades_other_v5_rides_in_place() {
     let old_fixture = put_ride(&store, &v5_file("Kandel", 1_700_000_000), "Kandel");
     let recorded = v5_file("Morning ride", 1_600_000_000);
     let other = put_ride(&store, &recorded, "Morning ride");
+    // More rides than the store has open-object slots, so a leaked handle would refuse the seed.
+    let more: Vec<_> =
+        (0..6).map(|i| put_ride(&store, &v5_file("Older ride", 1_500_000_000 + i), "Older ride")).collect();
 
     let mut fixture = finished_file("Kandel", 1_700_000_000);
     let limits = fixture.len() - 4;
@@ -238,6 +243,7 @@ fn file_seed_replaces_the_v5_fixture_and_upgrades_other_v5_rides_in_place() {
     let footer = decode_footer(upgraded[upgraded.len() - FOOTER_LEN..].try_into().unwrap()).unwrap();
     assert_eq!((footer.name(), footer.start_time), ("Morning ride", 1_600_000_000));
     assert_eq!(footer.limits, EffortLimits::default());
+    assert!(more.iter().all(|ride| stored(&store, ride.id).0 == Revision(2)), "every v5 ride is upgraded");
 
     let sequence = store.sequence();
     let store = FlatStore::mount(&disk);
