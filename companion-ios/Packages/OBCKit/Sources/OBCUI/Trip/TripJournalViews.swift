@@ -223,7 +223,7 @@ extension MultiTrackPreviewView.Stage {
     /// transfer dotted.
     init(_ run: LineRun) {
         switch run.kind {
-        case .ridden: self.init(coordinates: run.coordinates, color: OBCTheme.ride)
+        case .ridden: self = .ride(run.coordinates)
         case .planned: self.init(coordinates: run.coordinates, color: OBCTheme.secondary, dash: [5, 4])
         case .transfer: self.init(coordinates: run.coordinates, color: OBCTheme.secondary, dash: [1.5, 4])
         }

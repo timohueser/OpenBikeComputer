@@ -15,11 +15,19 @@ public struct MultiTrackPreviewView: View {
         public let color: Color
         /// A dashed stage draws thinner and without the halo.
         public let dash: [CGFloat]
+        /// Whether the stage sits on the amber casing: a planned line does, a ride does not.
+        public let cased: Bool
 
-        public init(coordinates: [Coordinate], color: Color, dash: [CGFloat] = []) {
+        public init(coordinates: [Coordinate], color: Color, dash: [CGFloat] = [], cased: Bool = true) {
             self.coordinates = coordinates
             self.color = color
             self.dash = dash
+            self.cased = cased && dash.isEmpty
+        }
+
+        /// A recorded ride: solid in the ride colour, with no casing.
+        public static func ride(_ coordinates: [Coordinate]) -> Stage {
+            Stage(coordinates: coordinates, color: OBCTheme.ride, cased: false)
         }
 
         var lineWidth: CGFloat { dash.isEmpty ? 3.4 : 2 }
@@ -90,7 +98,7 @@ public struct MultiTrackPreviewView: View {
             for (index, stage) in stages.enumerated() where shared[index].points.count > 1 {
                 var path = Path()
                 path.addLines(shared[index].points.map { transform($0) })
-                if stage.dash.isEmpty {
+                if stage.cased {
                     context.stroke(
                         path, with: .color(OBCTheme.routeCasing),
                         style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
@@ -158,7 +166,7 @@ public struct MultiTrackPreviewView: View {
         ) {
             ForEach(Array(stages.enumerated()), id: \.offset) { _, stage in
                 let coords = MapGeometry.clLocations(stage.coordinates)
-                if stage.dash.isEmpty {
+                if stage.cased {
                     MapPolyline(coordinates: coords)
                         .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                 }

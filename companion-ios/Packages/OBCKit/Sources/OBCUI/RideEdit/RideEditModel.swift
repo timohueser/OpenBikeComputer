@@ -20,7 +20,8 @@ public final class RideEditModel {
     public init?(ride: Ride, locale: Locale = .current) {
         let line = MeasuredLine(ridePoints: ride.points)
         guard let editor = LineMarkerEditorModel(
-            line: line, markers: Self.trimMarkers(line), segmentColors: Self.trimColors, dashedSegments: [0, 2]
+            line: line, markers: Self.trimMarkers(line), segmentColors: Self.trimColors, dashedSegments: [0, 2],
+            cased: false
         ) else { return nil }
         self.editor = editor
         points = ride.points
@@ -37,7 +38,7 @@ public final class RideEditModel {
         case .split:
             editor.setMarkers(
                 [LineMarker(id: 0, distance: line.length / 2, name: "Split")],
-                segmentColors: [OBCTheme.stageColor(index: 0), OBCTheme.stageColor(index: 1)]
+                segmentColors: Self.splitColors
             )
         }
     }
@@ -104,5 +105,8 @@ public final class RideEditModel {
         [LineMarker(id: 0, distance: 0, name: "Trim start"), LineMarker(id: 1, distance: line.length, name: "Trim end")]
     }
 
+    /// The kept ride in the ride colour; the cut ends faint and dashed.
     private static let trimColors = [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)]
+    /// Two rides after the split: the ride colour, then the next blue, never a planned magenta.
+    private static let splitColors = [OBCTheme.ride, OBCTheme.day2]
 }
