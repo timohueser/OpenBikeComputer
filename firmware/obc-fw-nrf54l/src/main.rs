@@ -21,6 +21,7 @@ mod board;
 mod buzzer;
 // The raw-card flat store and the board adapter that binds it to sEMMC.
 #[cfg(feature = "seed-rides")]
+#[allow(dead_code)]
 mod demo_rides;
 mod flat_ride;
 mod flat_store;
@@ -867,8 +868,20 @@ async fn main(_spawner: Spawner) {
         let flat = flat_store::mount_at_boot();
         #[cfg(feature = "seed-rides")]
         {
-            let start = option_env!("OBC_DEMO_RIDE_START").unwrap_or("0").parse().unwrap_or(0);
-            match demo_rides::seed(flat, start) {
+            #[cfg(demo_ride_file)]
+            let result = demo_rides::seed_file(flat, include_bytes!(concat!(env!("OUT_DIR"), "/demo_ride.obcr")));
+            #[cfg(not(demo_ride_file))]
+            let result = {
+                let start = option_env!("OBC_DEMO_RIDE_START").unwrap_or("0").parse().unwrap_or(0);
+                demo_rides::seed(flat, start)
+            };
+            match result {
+                #[cfg(demo_ride_file)]
+                Ok(id) => {
+                    info!("demo ride: object {}", id.0);
+                    info!("demo rides: complete");
+                }
+                #[cfg(not(demo_ride_file))]
                 Ok(ids) => {
                     for (name, id) in demo_rides::NAMES.iter().zip(ids) {
                         info!("demo rides: {} = object {}", name, id.0);
@@ -879,6 +892,9 @@ async fn main(_spawner: Spawner) {
                     defmt::error!("demo rides: refused: {:?}", defmt::Debug2Format(&error));
                     idle_blink(&mut led).await
                 }
+            }
+            if cfg!(demo_ride_file) {
+                idle_blink(&mut led).await
             }
         }
         let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
