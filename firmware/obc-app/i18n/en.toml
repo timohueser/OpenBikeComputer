@@ -566,6 +566,16 @@ ok = "OK"
 ok = "OK"
 # The controls hint beside the Up and Down glyphs.
 choose = "Choose"
+# The button lesson. The four names label the buttons on the device, at most seven characters.
+buttons_title = "BUTTONS"
+up = "UP"
+down = "DOWN"
+select = "SELECT"
+back = "BACK"
+press_each = "Press each button"
+hold_back = "Hold BACK"
+menu_anywhere = "Menu from anywhere"
+continue = "Continue"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

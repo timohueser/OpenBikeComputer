@@ -189,6 +189,9 @@ fn seeds(language: Language) -> Vec<Seed> {
             .map(|why| Screen::DfuFailed(DfuFailedScreen::new(why, Some("1.5.0"))))
             .into(),
     ));
+    // The button lesson changes its foot hint once all four buttons are pressed.
+    let lesson = vec![Gesture::Step(-1), Gesture::Step(1), Gesture::Back, Gesture::Press];
+    v.push((Screen::SetupButtons(SetupButtonsScreen::default()), lesson));
     // The About page is taller than the panel, so the lines under the fold are drawn only after it
     // scrolls. One step per line reaches every one of them; the offset clamps at the end.
     v.push((Screen::About(AboutScreen::new()), vec![Gesture::Step(1); 24]));

@@ -1791,13 +1791,53 @@ expect = "SetupLanguage"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
 
-# The cursor moved to Deutsch: the tick stays on the committed language until Select.
+# The cursor moved to Deutsch: the page speaks German, and the tick stays on the committed language
+# until Select.
 [[frame]]
 name = "setup-language-cursor"
 map = "{grimsel}"
 script = "p d"
 expect = "SetupLanguage"
 args = ["--fresh"]
+
+# Setup's button lesson, reached through Hello and the language step: untouched, with Up and Back
+# pressed, and with all four pressed, when Select continues.
+[[frame]]
+name = "setup-buttons"
+map = "{grimsel}"
+script = "p p"
+expect = "SetupButtons"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-buttons"
+map = "{grimsel}"
+script = "p p"
+expect = "SetupButtons"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "setup-buttons-partial"
+map = "{grimsel}"
+script = "p p u b"
+expect = "SetupButtons"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-buttons-done"
+map = "{grimsel}"
+script = "p p u d b p"
+expect = "SetupButtons"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-buttons-done"
+map = "{grimsel}"
+script = "p p u d b p"
+expect = "SetupButtons"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
 
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds

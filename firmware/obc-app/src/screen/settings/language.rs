@@ -47,8 +47,13 @@ impl LanguageScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, rx.t(Msg::LanguageTitle), "");
+        title_frame(cv, rx.w, rx.h, rx.t(Msg::LanguageTitle), "");
+        self.draw_list(cv, rx);
+    }
+
+    /// The pick list under the title bar.
+    pub(crate) fn draw_list(&self, cv: &mut impl Surface, rx: &Render) {
+        let w = rx.w;
         let committed = rx.settings.language;
         for (i, lang) in Language::ALL.iter().enumerate() {
             let y = LIST_TOP + i as i32 * (ROW_ONE + ROW_GAP);

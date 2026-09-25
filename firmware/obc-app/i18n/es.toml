@@ -530,6 +530,15 @@ ok = "OK"
 [setup]
 ok = "OK"
 choose = "Elegir"
+buttons_title = "BOTONES"
+up = "ARRIBA"
+down = "ABAJO"
+select = "ELEGIR"
+back = "ATRÁS"
+press_each = "Pulsa cada botón"
+hold_back = "Mantén ATRÁS"
+menu_anywhere = "El menú, siempre"
+continue = "Continuar"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

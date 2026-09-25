@@ -6082,10 +6082,11 @@ mod tests {
     }
 
     /// A factory-fresh boot opens setup, and only its own pages leave it. Hello's press opens the
-    /// language step, and Back there returns to Hello. Select on a language ends setup on Home in
-    /// that language, and owes the save that makes the next boot skip setup.
+    /// language step, and Back there returns to Hello. Select on a language commits it and opens the
+    /// button lesson. Once each button is pressed there, Select ends setup on Home, and owes the
+    /// save that makes the next boot skip setup.
     #[test]
-    fn a_factory_boot_runs_setup_through_hello_and_the_language_step() {
+    fn a_factory_boot_runs_setup_through_its_steps() {
         use crate::settings::{Language, SetupStep};
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::FACTORY);
@@ -6105,11 +6106,20 @@ mod tests {
         assert_eq!(app.settings().setup, SetupStep::Hello, "a power loss resumes on the step shown");
 
         app.apply_gesture(Gesture::Press);
+        let before = *app.settings();
         app.apply_gesture(Gesture::Step(1));
-        assert_eq!(app.settings().language, Language::En, "the cursor commits nothing");
+        assert_eq!(*app.settings(), before, "the page previews the cursor's language and saves nothing");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupButtons(_)]));
+        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Buttons, Language::De));
+
+        for g in [Gesture::BackHold, Gesture::Step(-1), Gesture::Step(1), Gesture::Back, Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.last(), Some(Screen::SetupButtons(_))), "the lesson's presses stay on it");
         app.apply_gesture(Gesture::Press);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
-        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Done, Language::De));
+        assert_eq!(app.settings().setup, SetupStep::Done);
         assert!(drain_persist(&mut app).is_some(), "the finished setup is saved");
     }
 
