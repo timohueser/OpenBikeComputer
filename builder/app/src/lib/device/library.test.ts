@@ -84,6 +84,7 @@ function rideObject(name: string, startTime: number, points = 24): RideObject {
     }
     return {
         version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
         distanceM: 12_340,

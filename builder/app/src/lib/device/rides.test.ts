@@ -95,6 +95,7 @@ function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): Rid
     }
     return {
         version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
         distanceM: 4210,
@@ -131,6 +132,7 @@ function longRide(points: number): RideObject {
     }
     return {
         version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name: "Long Way Round",
         startTime: 1_783_598_400,
         distanceM: points * 8,
@@ -244,6 +246,7 @@ describe("the ride object", () => {
             energyKj: 756,
             bikeType: 1,
             trip: { key: 0x0123_4567_89ab_cdefn, dayIndex: 1, dayCount: 3, name: "Alpen Traverse" },
+            effortLimits: { maxHrBpm: 185, ftpW: 250 },
         });
         expect(ride.points).toHaveLength(3);
         expect(ride.points[0]).toMatchObject({
@@ -431,7 +434,7 @@ describe("when the export cannot finish", () => {
         const { device, source, close } = deviceWith([]);
         try {
             const future = encodeRideObject(ride);
-            future[future.length - 146] = 6;
+            future[future.length - 150] = 7;
             device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes: future });
             const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,

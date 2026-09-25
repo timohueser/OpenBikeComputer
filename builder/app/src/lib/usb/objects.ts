@@ -39,6 +39,7 @@ const RIDE_FOOTER_LEN = 154;
 const RIDE_NAME_CAP = 48;
 const RIDE_NAME_AT = 42;
 const RIDE_TRIP_AT = 90;
+const RIDE_LIMITS_AT = 150;
 
 /** One recorded point. Coordinates are degrees × 1e7 (a ~1 cm grid); `null` means the sensor was
  *  absent, dropped, or stale. */
@@ -65,6 +66,12 @@ export interface RideTrip {
     name: string;
 }
 
+/** The rider's effort limits when the ride started (spec §7.2); `null` is not set. */
+export interface RideEffortLimits {
+    maxHrBpm: number | null;
+    ftpW: number | null;
+}
+
 /** A downloaded v6 ride: the recorded sample bytes followed by one fixed summary footer. */
 export interface RideObject {
     version: 6;
@@ -85,6 +92,7 @@ export interface RideObject {
     /** The bike type current at the start, `0..=3` (Road, Gravel, MTB, Touring). */
     bikeType: number;
     trip: RideTrip | null;
+    effortLimits: RideEffortLimits;
     points: RidePoint[];
 }
 
@@ -101,7 +109,8 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     }
     const version = data[footer + 4];
     if (version !== 6) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 6.`);
-    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 33] !== 0 || data[footer + 151] !== 0) {
+    const limits = footer + RIDE_LIMITS_AT;
+    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 33] !== 0 || data[limits + 1] !== 0) {
         throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
     const name = footerName(data, footer + RIDE_NAME_AT, data[footer + 5]);
@@ -156,6 +165,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
         energyKj: absent32(view.getUint32(footer + 38, true)),
         bikeType,
         trip: tripKey === 0n ? null : { key: tripKey, dayIndex, dayCount, name: tripName },
+        effortLimits: { maxHrBpm: data[limits] || null, ftpW: view.getUint16(limits + 2, true) || null },
     };
 }
 
@@ -171,7 +181,7 @@ function footerName(data: Uint8Array, at: number, len: number): string {
     }
 }
 
-/** Encode a v6 object, with no effort limits, for the loopback device and byte-contract tests. */
+/** Encode a v6 object for the loopback device and byte-contract tests. */
 export function encodeRideObject(r: RideObject): Uint8Array {
     const name = clippedUtf8(r.name, RIDE_NAME_CAP);
     const footer = r.points.length * RIDE_SAMPLE_LEN;
@@ -214,6 +224,8 @@ export function encodeRideObject(r: RideObject): Uint8Array {
         out.set(tripName, trip + 12);
     }
     out[trip + 10] = r.bikeType;
+    out[footer + RIDE_LIMITS_AT] = r.effortLimits.maxHrBpm ?? 0;
+    view.setUint16(footer + RIDE_LIMITS_AT + 2, r.effortLimits.ftpW ?? 0, true);
     return out;
 }
 
