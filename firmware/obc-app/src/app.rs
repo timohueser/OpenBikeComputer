@@ -2372,6 +2372,15 @@ impl App {
         self.settings.theme = theme;
     }
 
+    /// The theme the frame draws in. Setup's theme step previews the theme under its cursor, and
+    /// the setting changes only when the rider commits it.
+    pub(crate) fn theme(&self) -> crate::settings::Theme {
+        match self.ui.stack.last() {
+            Some(Screen::SetupTheme(step)) => step.0,
+            _ => self.settings.theme,
+        }
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -2996,7 +3005,8 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let style_set = match self.settings.theme {
+        let theme = self.theme();
+        let style_set = match theme {
             crate::settings::Theme::Light => MapStyleSet::Light,
             crate::settings::Theme::Dark => MapStyleSet::Dark,
         };
@@ -3182,7 +3192,6 @@ impl App {
         let covered = ui.base_frozen();
         let recessed = covered && ui.stack.get(base).is_none_or(|s| s.caps().recess);
         let recess = core::cell::Cell::new(recessed);
-        let theme = settings.theme;
         let theme_policy_enabled = core::cell::Cell::new(true);
         let policy = |c: u16| {
             let themed = if theme_policy_enabled.get() { screen::palette::resolve(theme, c) } else { c };
@@ -3254,7 +3263,7 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let themed = |color| color_fn(crate::screen::palette::resolve(self.settings.theme, color));
+        let themed = |color| color_fn(crate::screen::palette::resolve(self.theme(), color));
         self.ui.input.render_overlay(target, w, h, themed);
         self.render_planning_banner(target, w, h, color_fn);
     }
@@ -3267,7 +3276,7 @@ impl App {
     {
         if let Some(message) = self.planning_banner() {
             let text = crate::i18n::t(message, self.settings.language);
-            let themed = |color| color_fn(crate::screen::palette::resolve(self.settings.theme, color));
+            let themed = |color| color_fn(crate::screen::palette::resolve(self.theme(), color));
             crate::screen::vocab::chrome::recalculating_banner(
                 target,
                 &themed,
@@ -6082,8 +6091,8 @@ mod tests {
     }
 
     /// A factory-fresh boot opens setup, and only its own pages leave it. Hello's press opens the
-    /// language step, and Back there returns to Hello. Select on a language ends setup on Home in
-    /// that language, and owes the save that makes the next boot skip setup.
+    /// language step, and Back there returns to Hello. Select on a language commits it and opens
+    /// the next step.
     #[test]
     fn a_factory_boot_runs_setup_through_hello_and_the_language_step() {
         use crate::settings::{Language, SetupStep};
@@ -6108,9 +6117,42 @@ mod tests {
         app.apply_gesture(Gesture::Step(1));
         assert_eq!(app.settings().language, Language::En, "the cursor commits nothing");
         app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]));
+        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Units, Language::De));
+    }
+
+    /// The units and theme steps commit on Select only. The theme step draws the frame in the
+    /// theme under its cursor, and that preview is never saved: a step leaves the setting alone,
+    /// and Back returns to the units step in the committed theme. Select on a theme ends setup.
+    #[test]
+    fn the_units_and_theme_steps_commit_on_select_and_the_theme_preview_saves_nothing() {
+        use crate::settings::{SetupStep, Theme, Units};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Units, ..Settings::FACTORY });
+        let mut host = SettingsHost::default();
+
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(app.settings().units, Units::Metric, "the cursor commits nothing");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        assert_eq!((app.settings().setup, app.settings().units), (SetupStep::Theme, Units::Imperial));
+        let revision = host.drain(&mut app).expect("the step is saved");
+        host.ack(&mut app, revision);
+
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!((app.theme(), app.settings().theme), (Theme::Dark, Theme::Light), "the page previews Dark");
+        assert_eq!(host.drain(&mut app), None, "a preview is not saved");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]));
+        assert_eq!((app.settings().setup, app.theme()), (SetupStep::Units, Theme::Light), "Back drops the preview");
+
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
-        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Done, Language::De));
-        assert!(drain_persist(&mut app).is_some(), "the finished setup is saved");
+        let s = app.settings();
+        assert_eq!((s.setup, s.units, s.theme), (SetupStep::Done, Units::Imperial, Theme::Dark));
+        assert!(host.drain(&mut app).is_some(), "the finished setup is saved");
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

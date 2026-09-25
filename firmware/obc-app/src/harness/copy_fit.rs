@@ -118,6 +118,8 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Passkey(PasskeyScreen::new(123_456)),
         Screen::Hello(HelloScreen),
         Screen::SetupLanguage(SetupLanguageScreen::new(language)),
+        Screen::SetupUnits(SetupUnitsScreen(crate::settings::Units::Metric)),
+        Screen::SetupTheme(SetupThemeScreen(crate::settings::Theme::Light)),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
         Screen::Settings(SettingsPage::hub()),

@@ -531,6 +531,8 @@ ok = "OK"
 [setup]
 ok = "OK"
 choose = "Wählen"
+units = "EINHEITEN"
+theme = "FARBSCHEMA"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

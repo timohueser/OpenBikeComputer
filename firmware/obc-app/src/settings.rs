@@ -213,12 +213,14 @@ pub enum SetupStep {
     Done = 0,
     Hello = 1,
     Language = 2,
+    Units = 4,
+    Theme = 5,
 }
 
 impl SetupStep {
     /// The steps in the order the rider meets them. The byte values are persisted, so a new step
     /// takes a new value and its place here.
-    const ORDER: [SetupStep; 2] = [SetupStep::Hello, SetupStep::Language];
+    const ORDER: [SetupStep; 4] = [SetupStep::Hello, SetupStep::Language, SetupStep::Units, SetupStep::Theme];
 
     fn index(self) -> Option<usize> {
         Self::ORDER.iter().position(|&s| s == self)

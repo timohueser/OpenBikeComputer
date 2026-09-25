@@ -117,7 +117,7 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
-pub use setup::{HelloScreen, SetupLanguageScreen};
+pub use setup::{HelloScreen, SetupLanguageScreen, SetupThemeScreen, SetupUnitsScreen};
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -911,6 +911,10 @@ screens! {
     /// Setup's language step: the Language pick list, where Select ends the step and Back returns
     /// to Hello.
     SetupLanguage(SetupLanguageScreen) => Caps::modal().blocking(),
+    /// Setup's units step: Metric or Imperial over a preview of the ride tiles.
+    SetupUnits(SetupUnitsScreen) => Caps::modal().blocking(),
+    /// Setup's theme step: Light or Dark. The frame draws in the theme under its cursor.
+    SetupTheme(SetupThemeScreen) => Caps::modal().blocking(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),

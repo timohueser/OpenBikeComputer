@@ -256,7 +256,7 @@ impl App {
             let _ = key.shape.push(screen.row());
         }
         if self.ui.stack.iter().skip(base).any(|screen| !matches!(screen, Screen::Home(_))) {
-            key.theme = Some(self.settings().theme);
+            key.theme = Some(self.theme());
         }
         if let Some(drawer) = self.drawer_key() {
             key.drawer = Some(drawer);

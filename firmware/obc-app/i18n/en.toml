@@ -566,6 +566,9 @@ ok = "OK"
 ok = "OK"
 # The controls hint beside the Up and Down glyphs.
 choose = "Choose"
+# The titles of the units and theme steps.
+units = "UNITS"
+theme = "THEME"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

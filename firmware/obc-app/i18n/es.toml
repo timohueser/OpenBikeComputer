@@ -530,6 +530,8 @@ ok = "OK"
 [setup]
 ok = "OK"
 choose = "Elegir"
+units = "UNIDADES"
+theme = "TEMA"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]
