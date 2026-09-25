@@ -20,7 +20,7 @@ test('reading pages share the theme preference and fit a narrow phone', async ({
 test('mobile docs navigation closes with Escape and exposes section links', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/docs/software/formats/');
-  const menu = page.getByRole('button', { name: 'Documentation menu' });
+  const menu = page.getByRole('button', { name: 'Documentation chapters' });
   await expect(page.locator('#docs-navigation')).toHaveJSProperty('inert', true);
   await menu.click();
   await expect(menu).toHaveAttribute('aria-expanded', 'true');
@@ -50,4 +50,32 @@ test('blog images open from the keyboard and restore focus after closing', async
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await expect(image).toBeFocused();
+});
+
+test('global navigation remains available on mobile and restores keyboard focus', async ({ page }) => {
+  for (const [path, current] of [['/', null], ['/docs/', 'Docs'], ['/blog/', 'Blog']]) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(path);
+    const menu = page.getByRole('button', { name: 'Menu', exact: true });
+    const navigation = page.getByRole('navigation', { name: 'Main navigation', exact: true });
+    await expect(navigation).toBeHidden();
+    await menu.focus();
+    await page.keyboard.press('Enter');
+    await expect(menu).toHaveAttribute('aria-expanded', 'true');
+    for (const destination of ['Docs', 'Blog', 'Maps', 'GitHub']) {
+      await expect(navigation.getByRole('link', { name: destination, exact: true })).toBeVisible();
+    }
+    if (current) await expect(navigation.getByRole('link', { name: current, exact: true })).toHaveAttribute('aria-current', 'page');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeFocused();
+    await expect(navigation).toBeHidden();
+    await menu.click();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(menu).toBeHidden();
+    await expect(navigation).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(menu).toHaveAttribute('aria-expanded', 'false');
+    await expect(navigation).toBeHidden();
+  }
 });

@@ -52,9 +52,8 @@ OUT = ROOT / "docs"                              # generated; Trunk copy-dirs th
 # The docs pages have a slide-out sidebar on mobile; the toggle only ships there
 # (blog pages have no sidebar, so the partial gets an empty {{nav_toggle}}).
 NAV_TOGGLE = (
-    '<button class="nav-toggle" aria-label="Documentation menu" aria-controls="docs-navigation" aria-expanded="false">'
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-    'stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>'
+    '<div class="docs-chapters"><button class="nav-toggle" type="button" '
+    'aria-controls="docs-navigation" aria-expanded="false">Documentation chapters</button></div>'
 )
 
 BLOG_CONTENT = CONTENT / "blog"                  # one folder per post
@@ -591,18 +590,11 @@ def fill(template, repl):
 
 
 def builder_link(site_root):
-    """The header's link to the map app, or '' when there isn't one.
-
-    The builder is a sibling app in the same published artifact (`/builder/`), not a
-    rendered page — the site deploy sets OBC_BUILDER_PATH to its site-root-relative
-    path *only* when that deployment has a map catalog configured. Until the bakery
-    publishes one, the builder opens on "couldn't load the map catalog", and a nav
-    link straight into that is a broken front door. So the deploy decides, and a local
-    `python3 build_docs.py` (no variable set) simply renders the header without it."""
-    path = os.environ.get("OBC_BUILDER_PATH", "").strip()
+    """Use the deployed map path, or the standard sibling path in previews."""
+    path = os.environ.get("OBC_BUILDER_PATH", "builder/").strip()
     if not path:
         return ""
-    return '<a class="maps" href="%s%s">Maps</a>' % (esc(site_root), esc(path))
+    return '<a href="%s%s">Maps</a>' % (esc(site_root), esc(path))
 
 
 def site_head(site_root, crumb, nav_toggle=""):
@@ -610,7 +602,9 @@ def site_head(site_root, crumb, nav_toggle=""):
     of the markup, so a nav change can't drift between the docs and blog shells."""
     return fill(SITEHEAD_TEMPLATE.read_text(),
                 {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
-                 "builder_link": builder_link(site_root)})
+                 "builder_link": builder_link(site_root),
+                 "docs_current": ' aria-current="page"' if crumb == "/ docs" else "",
+                 "blog_current": ' aria-current="page"' if crumb == "/ log" else ""})
 
 
 def build_blog(rendered):

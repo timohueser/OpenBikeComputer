@@ -1,5 +1,6 @@
 /* Reading pages share the builder's palette and the landing page's typography. */
 @import "./theme.css";
+@import "./site-header.css";
 
 :root {
   --sidebar-w: 240px;
@@ -25,40 +26,7 @@ body {
 a { color: var(--forest); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 a:hover { color: var(--forest-deep); }
 
-/* Shared public-site header. */
-.site-head { position: sticky; top: 0; z-index: 20; height: var(--head-h); background: var(--rust); color: var(--cream); }
-.head-inner { max-width: 1400px; height: 100%; margin: auto; display: flex; align-items: center; gap: 18px; padding: 0 22px; }
-.brand { display: flex; align-items: center; gap: 12px; flex: none; text-decoration: none; }
-.brand .name { font-family: var(--mono); font-size: 18px; font-weight: 700; }
-.brand .mark { display: block; width: 32px; height: 32px; border-radius: 7px; }
-.brand .crumb { font-size: 13px; }
-.site-head a { color: var(--cream); text-decoration: none; }
-.site-head a:hover { text-decoration: underline; }
-.head-links { margin-left: auto; display: flex; align-items: center; gap: 20px; font-size: 14px; }
-.head-links .home { display: none; }
-.head-links .gh { display: inline-flex; align-items: center; gap: 7px; }
-.head-links .gh svg { width: 17px; height: 17px; }
-.nav-toggle, .theme-toggle {
-  display: grid; place-items: center; width: 40px; height: 40px; padding: 0; flex: none;
-  background: none; border: 1px solid color-mix(in srgb, var(--cream) 40%, transparent);
-  border-radius: 6px; color: var(--cream); cursor: pointer;
-}
-.nav-toggle { display: none; }
-.theme-toggle[hidden] { display: none; }
-.theme-toggle svg, .nav-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; }
-.theme-toggle .sun, :root[data-theme="dark"] .theme-toggle .moon { display: none; }
-:root[data-theme="dark"] .theme-toggle .sun { display: block; }
-.nav-toggle:hover, .theme-toggle:hover { background: #ffffff12; }
-.site-head :focus-visible { outline-color: var(--cream); }
-@media (max-width: 1000px) {
-  .brand .name { display: none; }
-}
-@media (max-width: 700px) {
-  .head-inner { gap: 12px; padding: 0 16px; }
-  .head-links { gap: 14px; }
-  .head-links .gh, .head-links .maps { display: none; }
-}
-@media (max-width: 380px) { .brand .crumb { display: none; } }
+.docs-chapters { display: none; }
 
 /* ----------------------------------------------------------------- layout */
 .layout {
@@ -305,7 +273,10 @@ figure.fig figcaption b, figure.fig figcaption strong { font-style: normal; colo
   .content { padding: 0 34px; }
 }
 @media (max-width: 820px) {
-  .nav-toggle { display: block; }
+  body:has(.docs-chapters) { --head-h: 100px; }
+  .docs-chapters { display: block; position: sticky; top: 56px; z-index: 19; height: 44px; padding: 0 16px; background: var(--parchment); border-bottom: 1px solid var(--line); }
+  .nav-toggle { min-height: 44px; padding: 0; color: var(--ink); background: transparent; border: 0; font: 400 14px var(--sans); cursor: pointer; }
+  .nav-toggle:hover { text-decoration: underline; }
   .layout { grid-template-columns: minmax(0, 1fr) !important; }
   .sidebar {
     position: fixed; top: var(--head-h); left: 0; z-index: 18;

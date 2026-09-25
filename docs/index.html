@@ -8,6 +8,13 @@
   <meta name="theme-color" content="#A4501E" />
   <link data-trunk rel="copy-file" href="assets/theme.js" />
   <script src="theme.js"></script>
+  <link data-trunk rel="copy-file" href="assets/site-header.css" />
+  <link data-trunk rel="copy-file" href="assets/site-navigation.js" />
+  <link rel="stylesheet" href="site-header.css" />
+  <script type="module">
+    import { setupSiteNavigation } from './site-navigation.js';
+    setupSiteNavigation(document.querySelector('.site-head'));
+  </script>
   <title>OpenBikeComputer — a from-scratch bikepacking GPS computer</title>
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking GPS computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
@@ -59,8 +66,7 @@
   <!-- Atkinson Hyperlegible Next and Mono (SIL OFL 1.1, latin subsets), self-hosted: the privacy
        notice promises no externally loaded fonts. Each file carries its licence in its name table. -->
   <link data-trunk rel="copy-dir" href="assets/fonts" />
-  <!-- The header draws Terminus from the firmware's own glyph strips, so the site and the device
-       share one source. The SIL OFL travels with the strips. -->
+  <!-- Device labels draw Terminus from the firmware glyph strips. The SIL OFL travels with them. -->
   <link data-trunk rel="copy-file" href="../firmware/obc-render/fonts/terminus/ter_u20b.raw" data-target-path="terminus" />
   <link data-trunk rel="copy-file" href="../firmware/obc-render/fonts/terminus/ter_u24b.raw" data-target-path="terminus" />
   <link data-trunk rel="copy-file" href="../firmware/obc-render/fonts/terminus/LICENSE" data-target-path="terminus" />
@@ -165,38 +171,11 @@
 
     a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 
-    /* ---------- top bar ---------- */
-    /* The header is the device's own title bar: rust, with the wordmark in Terminus. */
-    header {
-      position: relative;
-      z-index: 2;
-      background: var(--rust);
-      color: var(--cream);
-      margin-bottom: 6px;
-    }
-    header .wrap { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 50px; }
-    .brand { display: flex; align-items: center; gap: 12px; flex: none; color: inherit; text-decoration: none; }
-    /* Until the glyph strip loads, and with JavaScript off, the words show in the mono face. */
+    /* Pixel lettering is reserved for the live device and its feature labels. */
     .px { font-family: var(--mono); font-weight: 700; line-height: 1; display: inline-flex; align-items: center; }
     .px svg { display: block; shape-rendering: crispEdges; fill: currentColor; }
     .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .brand .mark { display: block; width: 32px; height: 32px; border-radius: 7px; }
-    .brand .name { font-size: 17px; }
-    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 15px; }
-    .nav-links a { color: var(--cream); text-decoration: none; opacity: 0.9; padding: 12px 0; }
-    .nav-links a:hover { opacity: 1; text-decoration: underline; }
-    .theme-toggle {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 44px; height: 44px; padding: 0; flex: none;
-      border: 1px solid currentColor; border-radius: 6px;
-      background: transparent; color: var(--cream); cursor: pointer;
-    }
-    .theme-toggle[hidden] { display: none; }
-    .theme-toggle:hover { background: color-mix(in srgb, var(--cream) 12%, transparent); }
-    .theme-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
-    .theme-toggle .sun, :root[data-theme="dark"] .theme-toggle .moon { display: none; }
-    :root[data-theme="dark"] .theme-toggle .sun { display: block; }
-    header :focus-visible { outline-color: var(--cream); }
+    .page-links { position: relative; z-index: 1; display: flex; gap: 24px; padding-block: 12px; font-size: 14px; }
 
     /* ---------- showcase hero: one band, one viewport ----------
        Grid areas so the mobile order (H1 → device → tour card → CTA) is pure CSS. */
@@ -621,21 +600,13 @@
       .features { grid-template-columns: 1fr; }
       h1 { font-size: clamp(30px, 8vw, 40px); }
     }
-    @media (max-width: 760px) {
-      .brand .name { display: none; }
-    }
     @media (max-width: 600px) {
-      .nav-links { gap: 14px; }
-      .nav-links .nav-maps { display: none; }
       .ride-log-head { align-items: flex-start; }
       .ride-log-head .route { max-width: 12rem; }
       .dot .ride-stop-copy { width: 46px; }
       .now .label { flex: 1; }
       .now .ticks { display: none; }
       footer .wrap { gap: 10px; }
-    }
-    @media (max-width: 400px) {
-      .nav-links .nav-blog { display: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -660,34 +631,30 @@
     </g>
   </svg>
 
-  <!-- The only utility nav; nothing here repeats below the fold. GitHub lives in the hero as
-       the primary source/build destination instead of appearing twice in the page chrome. -->
-  <header>
-    <div class="wrap">
+  <header class="site-head">
+    <div class="head-inner">
       <a class="brand" href="./" aria-label="OpenBikeComputer home">
         <img class="mark" src="brand/app-icon.svg" width="32" height="32" alt="" />
-        <span class="name px" data-px="24">OpenBikeComputer</span>
+        <span class="name">OpenBikeComputer</span>
+        <span class="short-name" aria-hidden="true">OBC</span>
       </a>
-      <nav class="nav-links">
-        <a href="#demo">Demo</a>
-        <a href="#features">Features</a>
+      <button class="site-menu-toggle" type="button" aria-controls="site-navigation" aria-expanded="false">Menu</button>
+      <nav class="head-links" id="site-navigation" aria-label="Main navigation">
         <a href="docs/">Docs</a>
-        <a class="nav-blog" href="blog/">Blog</a>
-        <!-- The map app, a sibling in the same published artifact (/builder/ — the path is
-             the app's, the name is what it does for a visitor: pick a region, pick a style,
-             put a map on the card). Written flat, unlike the docs/blog header's version,
-             which build_docs.py omits when OBC_BUILDER_PATH says no catalog is configured:
-             this page is copied by trunk, not rendered, so a conditional here would mean a
-             whole build stage for a state that is now a misconfiguration rather than a
-             phase — and a catalog-less builder is a page that explains itself, not a 404. -->
-        <a class="nav-maps" href="builder/">Maps</a>
+        <a href="blog/">Blog</a>
+        <a href="builder/">Maps</a>
+        <a href="https://github.com/timohueser/OpenBikeComputer">GitHub</a>
+      </nav>
         <button class="theme-toggle" id="theme_toggle" type="button" aria-label="Dark mode" aria-pressed="false" hidden>
           <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z" /></svg>
           <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
         </button>
-      </nav>
     </div>
   </header>
+  <nav class="page-links wrap" aria-label="On this page">
+    <a href="#demo">Demo</a>
+    <a href="#features">Features</a>
+  </nav>
 
   <main>
     <!-- SHOWCASE HERO — one band, one viewport: claim, proof, and the CTA together. -->
