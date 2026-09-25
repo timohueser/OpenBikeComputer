@@ -43,7 +43,7 @@ struct BLEChannelTests {
             let channel = BLEChannel(channel: pipe)
             await #expect(throws: ChannelDropped.self) { try await channel.receiveRecord() }
         }
-        for length in [0, 5] {
+        for length in [0] {
             var header = Data(valid.prefix(16))
             header[12] = UInt8(length)
             let pipe = BufferedChannel()
@@ -51,6 +51,39 @@ struct BLEChannelTests {
             let channel = BLEChannel(channel: pipe, chunkSize: 20)
             await #expect(throws: DeviceError.transferRejected) { try await channel.receiveRecord() }
         }
+    }
+
+    @Test("Peer records can exceed the outbound chunk size", arguments: [229, 240, 1024])
+    func independentReceiveSize(payloadSize: Int) async throws {
+        let pipe = BufferedChannel(readSize: 7)
+        let incoming = try StreamRecord(
+            requestID: RequestID(rawValue: 7)!, offset: 0,
+            payload: Data(repeating: 42, count: payloadSize)).encode()
+        try await pipe.write(incoming)
+        try await pipe.write(record(offset: UInt64(payloadSize)))
+        let channel = BLEChannel(channel: pipe)
+        #expect(try await channel.receiveRecord() == incoming)
+        #expect(try await channel.receiveRecord() == record(offset: UInt64(payloadSize)))
+    }
+
+    @Test("A cancelled partial record is retired; cancellation between records keeps the channel",
+          arguments: [0, 5, 16, 18])
+    func interruptedRecord(consumed: Int) async throws {
+        let bytes = try record()
+        let pipe = InterruptedChannel(prefix: Data(bytes.prefix(consumed)))
+        let channel = BLEChannel(channel: pipe)
+        await #expect(throws: CancellationError.self) { try await channel.receiveRecord() }
+        #expect(pipe.isClosed == (consumed > 0))
+    }
+
+    @Test("A malformed peer record closes the channel before another request can reuse it")
+    func malformedRecordRetiresChannel() async throws {
+        var bytes = try record()
+        bytes[14] = 1
+        let pipe = InterruptedChannel(prefix: bytes)
+        let channel = BLEChannel(channel: pipe)
+        await #expect(throws: WireError.invalidReserved) { try await channel.receiveRecord() }
+        #expect(pipe.isClosed)
     }
 
     @Test("Cancellation and close reach the physical byte channel")
@@ -94,5 +127,25 @@ private final class BufferedChannel: ByteChannel, @unchecked Sendable {
     }
 
     func cancelRead() { lock.withLock { cancelled += 1 } }
+    func close() async { lock.withLock { closed = true } }
+}
+
+/// Supplies a prefix, then cancels the read at a known record boundary.
+private final class InterruptedChannel: ByteChannel, @unchecked Sendable {
+    private let lock = NSLock()
+    private var prefix: Data
+    private var closed = false
+
+    init(prefix: Data) { self.prefix = prefix }
+    var isClosed: Bool { lock.withLock { closed } }
+    func read(maxLength: Int) async throws -> Data {
+        try lock.withLock {
+            guard !prefix.isEmpty else { throw CancellationError() }
+            let part = Data(prefix.prefix(maxLength))
+            prefix.removeFirst(part.count)
+            return part
+        }
+    }
+    func write(_ data: Data) async throws {}
     func close() async { lock.withLock { closed = true } }
 }

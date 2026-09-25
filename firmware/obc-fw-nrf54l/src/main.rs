@@ -20,6 +20,8 @@
 mod board;
 mod buzzer;
 // The raw-card flat store and the board adapter that binds it to sEMMC.
+#[cfg(feature = "seed-rides")]
+mod demo_rides;
 mod flat_ride;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR: native 4-bit SD mode,
@@ -863,6 +865,22 @@ async fn main(_spawner: Spawner) {
         // mount is bounded by the catalog it reads.
         let flat_started = embassy_time::Instant::now();
         let flat = flat_store::mount_at_boot();
+        #[cfg(feature = "seed-rides")]
+        {
+            let start = option_env!("OBC_DEMO_RIDE_START").unwrap_or("0").parse().unwrap_or(0);
+            match demo_rides::seed(flat, start) {
+                Ok(ids) => {
+                    for (name, id) in demo_rides::NAMES.iter().zip(ids) {
+                        info!("demo rides: {} = object {}", name, id.0);
+                    }
+                    info!("demo rides: complete");
+                }
+                Err(error) => {
+                    defmt::error!("demo rides: refused: {:?}", defmt::Debug2Format(&error));
+                    idle_blink(&mut led).await
+                }
+            }
+        }
         let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
 
         // The `&'static StoreSource` is a plain `ByteSource` a render calls straight through. The
