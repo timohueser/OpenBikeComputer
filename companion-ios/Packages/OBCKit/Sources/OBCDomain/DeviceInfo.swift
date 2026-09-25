@@ -3,6 +3,10 @@ import Foundation
 /// Identity of a connected OBC device: the semantic mirror of the GATT Device Information
 /// Service plus the wire `protocol_version`.
 public struct DeviceInfo: Equatable, Sendable {
+    /// The name to show before the device reports its own: the product name, which reads as a
+    /// name anywhere in a sentence.
+    public static let unnamed = "OBC"
+
     /// User-facing device name, as the last-read config reported it. A rename goes through
     /// `DeviceConfig.name`.
     public let name: String

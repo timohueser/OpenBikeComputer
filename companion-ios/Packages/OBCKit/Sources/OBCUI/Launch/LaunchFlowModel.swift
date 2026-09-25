@@ -234,7 +234,7 @@ public final class LaunchFlowModel {
                     try await transport.discover()
                 }
                 // The device exists; let the row slide in and wait for the rider's tap.
-                let name = (try? await transport.deviceInfo().name) ?? "OBC"
+                let name = (try? await transport.deviceInfo().name) ?? DeviceInfo.unnamed
                 guard !Task.isCancelled else { return }
                 phase = .scanning(discovered: DiscoveredDevice(name: name))
             } catch {

@@ -16,7 +16,7 @@ import OBCTransport
 public final class SettingsModel {
     // MARK: Observable state
 
-    public private(set) var deviceName = "Your OBC"
+    public private(set) var deviceName = DeviceInfo.unnamed
     public private(set) var connection: ConnectionState = .connecting
     /// Battery percent, nil until the stream's first value.
     public private(set) var battery: Int?

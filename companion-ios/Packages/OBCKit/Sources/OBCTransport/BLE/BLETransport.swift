@@ -233,7 +233,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         guard versionData.count == 2 else { throw DeviceError.readFailed }
         let b = versionData.startIndex
         let version = UInt16(versionData[b]) | (UInt16(versionData[b + 1]) << 8)
-        let name = await currentPeripheralName() ?? "OBC"
+        let name = await currentPeripheralName() ?? DeviceInfo.unnamed
         let serialValue = try await serial
         let storeID: String?
         if version == OBCProtocol.version {
