@@ -192,7 +192,7 @@ The radio's contract is canonical in
 - **Config and the bond live in the RRAM SETTINGS carve** (`src/settings.rs`), which survives a
   power cycle and a reflash, because it sits above the app image. There is one bond slot; while it
   is occupied the device rejects every new pairing. The hold-guarded **Forget phone** in
-  Settings ▸ Bluetooth is the only device-side clear.
+  Settings ▸ Connections is the only device-side clear.
 - **DIS Firmware Revision is the installed OBCU container's version**, falling back to the bare
   git short hash `build.rs` emits. A probe-flashed board reports a hash, not a version, so no host
   offers it an auto-update.

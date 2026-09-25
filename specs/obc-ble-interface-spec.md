@@ -414,7 +414,7 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
 - **Single-peer policy — reject-when-bonded**: exactly one bond slot, and **while it is occupied the
   device refuses every new pairing attempt** — from a stranger and from a peer claiming the bonded
   identity alike. A stored bond can only be cleared by the rider: the hold-guarded **Forget phone**
-  action in Settings ▸ Bluetooth zeroes the bond slot, removes the peer from the host's bond table
+  action in Settings ▸ Connections zeroes the bond slot, removes the peer from the host's bond table
   and resolving list, and drops the connection if that peer is connected. After Forget, the next
   pairing is open again. Physical possession guards the *clear* step, so a stranger who can see the
   screen cannot silently evict the rider's phone by pairing.
