@@ -18,6 +18,7 @@
         { "path": "software/terrain", "title": "Terrain & elevation" },
         { "path": "software/companion-link", "title": "The companion link" },
         { "path": "software/trips", "title": "Trips and rides" },
+        { "path": "software/ride-replay", "title": "Ride replay" },
         { "path": "software/firmware-updates", "title": "Firmware updates" }
       ]
     },
