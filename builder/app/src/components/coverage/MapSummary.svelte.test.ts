@@ -60,25 +60,38 @@ describe("MapSummary", () => {
         await unmount(component);
     });
 
-    it.each(["region", "box", "lasso", "corridor"])(
-        "discloses partial coverage for a %s without treating a region border as a gap",
-        async (kind) => {
-            const store = {
-                selection: { parts: [{ id: "region", kind }] },
-                ledger: { isFinal: true, totalBytes: 4_096, cellCount: 3, terrain: null },
-                catalog: {},
-                holeCells: () => [],
-                partialDetailCells: () => ["border-1", "border-2"],
-                partialHatchCells: () => [],
-            } as unknown as CoverageStore;
-            const target = document.createElement("div");
-            document.body.append(target);
-            const component = mount(MapSummary, { target, props: { store } });
-            await tick();
-            expect(target.querySelectorAll(".warnline")).toHaveLength(kind === "region" ? 0 : 1);
-            if (kind !== "region") expect(target.textContent).toContain("Street detail may be incomplete");
-            expect(target.querySelector(".total")?.textContent).toContain("4.0 KB");
-            await unmount(component);
-        },
-    );
+    it.each([
+        { label: "a region border", kind: "region", drawnCells: ["border"], warns: false },
+        ...["box", "lasso", "corridor"].flatMap((kind) => [
+            { label: `a region and a fully covered ${kind}`, kind, drawnCells: ["full"], warns: false },
+            { label: `a region and a partly covered ${kind}`, kind, drawnCells: ["full", "border"], warns: true },
+        ]),
+    ])("discloses only affected drawn coverage for $label", async ({ kind, drawnCells, warns }) => {
+        const region = { id: "region", kind: "region" };
+        const drawn = { id: "drawn", kind };
+        const store = {
+            selection: { parts: [region, drawn] },
+            resolution: {
+                parts: [
+                    { part: region, cellsByBand: new Map([["fine", ["full", "border"]]]) },
+                    { part: drawn, cellsByBand: new Map([["fine", drawnCells]]) },
+                ],
+            },
+            ledger: { isFinal: true, totalBytes: 4_096, cellCount: 3, terrain: null },
+            catalog: {
+                schema: { bands: [{ id: "fine", role: "fine", lods: [0], cell_log2: 18 }] },
+            },
+            holeCells: () => [],
+            partialDetailCells: () => ["border"],
+            partialHatchCells: () => [],
+        } as unknown as CoverageStore;
+        const target = document.createElement("div");
+        document.body.append(target);
+        const component = mount(MapSummary, { target, props: { store } });
+        await tick();
+        expect(target.querySelectorAll(".warnline")).toHaveLength(warns ? 1 : 0);
+        if (warns) expect(target.textContent).toContain("Street detail may be incomplete");
+        expect(target.querySelector(".total")?.textContent).toContain("4.0 KB");
+        await unmount(component);
+    });
 });

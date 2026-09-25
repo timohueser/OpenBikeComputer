@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
+    import { detailBandId } from "../../lib/coverage/shape";
     import { formatBytes } from "../../lib/format";
 
     let { store }: { store: CoverageStore } = $props();
@@ -7,8 +8,14 @@
     const ledger = $derived(store.ledger);
     const hasParts = $derived(store.selection.parts.length > 0);
     const holeCount = $derived(store.holeCells().length);
-    const hasDrawnCoverage = $derived(store.selection.parts.some((part) => part.kind !== "region"));
-    const partialCount = $derived(store.partialDetailCells().length);
+    const hasDrawnPartialCoverage = $derived.by(() => {
+        if (!store.resolution) return false;
+        const detailBand = detailBandId(store.catalog);
+        const partial = new Set(store.partialDetailCells());
+        return store.resolution.parts.some(({ part, cellsByBand }) =>
+            part.kind !== "region" && (cellsByBand.get(detailBand) ?? []).some((id) => partial.has(id)),
+        );
+    });
     const partialHatchCount = $derived(store.partialHatchCells().length);
 </script>
 
@@ -44,7 +51,7 @@
             <button type="button" class="warnline small" onclick={() => store.focusWarnings("partial")}>
                 Street detail may stop near these gaps. <span>Show affected edges</span>
             </button>
-        {:else if hasDrawnCoverage && partialCount > 0}
+        {:else if hasDrawnPartialCoverage}
             <p class="warnline small">
                 Street detail may be incomplete at the edge of the available map data.
                 Choose a listed region for its published coverage.
