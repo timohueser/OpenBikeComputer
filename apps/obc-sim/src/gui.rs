@@ -251,6 +251,8 @@ struct SimGui {
     sounder: crate::sounder::SimSounder,
     /// The cue the last pass raised, for the Controls window's Sound line.
     last_cue: Option<obc_ports::Cue>,
+    preview_cue: obc_ports::Cue,
+    preview_volume: obc_ports::Volume,
     /// Milliseconds at which the rider completed the power-off hold, so the powering-off frame is
     /// looked at before the process ends. `None` until then.
     powering_off_at: Option<std::time::Instant>,
@@ -432,6 +434,8 @@ impl SimGui {
             power: crate::panel_power::SimPowerOff,
             sounder,
             last_cue: None,
+            preview_cue: obc_ports::Cue::KeyClick,
+            preview_volume: obc_ports::Volume::Loud,
             powering_off_at: None,
             texture: None,
             elevation: map.elevation(),

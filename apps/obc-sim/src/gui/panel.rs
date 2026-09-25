@@ -5,6 +5,7 @@
 use eframe::egui;
 use obc_app::CameraMode;
 use obc_host_core::TripCatalog;
+use obc_ports::{Cue, Sounder, Volume};
 
 use super::housing::Colorway;
 use super::units::{format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN};
@@ -202,6 +203,34 @@ impl SimGui {
 
                         let cue = self.last_cue.map_or("none yet".into(), |c| format!("{c:?} ({:?})", c.family()));
                         ui.label(format!("Sound · last cue: {cue}"));
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("sound-preview")
+                                .selected_text(
+                                    obc_platform::sound::AUDITION_CUES
+                                        .iter()
+                                        .find(|(cue, _)| *cue == self.preview_cue)
+                                        .map_or("Choose sound", |(_, name)| *name),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (cue, name) in obc_platform::sound::AUDITION_CUES {
+                                        ui.selectable_value(&mut self.preview_cue, cue, name);
+                                    }
+                                });
+                            egui::ComboBox::from_id_salt("sound-volume")
+                                .selected_text(match self.preview_volume {
+                                    Volume::Quiet => "Quiet",
+                                    Volume::Loud => "Loud",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.preview_volume, Volume::Quiet, "Quiet");
+                                    ui.selectable_value(&mut self.preview_volume, Volume::Loud, "Loud");
+                                });
+                            if ui.add_enabled(self.sounder.available(), egui::Button::new("▶ Play")).clicked() {
+                                let cue: Cue = self.preview_cue;
+                                self.sounder.play(obc_platform::sound::pattern(cue), self.preview_volume);
+                                self.last_cue = Some(cue);
+                            }
+                        });
 
                         separator_above(ui);
 

@@ -19,6 +19,7 @@
 //! - `Z <mpp>` — set the map camera to exactly `mpp` metres per pixel and force one redraw.
 //! - `N <from_lon> <from_lat> <to_lon> <to_lat>` — route-plan trigger, LON FIRST, unlike the
 //!   lat-first `F` line.
+//! - `sound <tick|heads-up|good|problem|urgent> <quiet|loud>` — audition a sound directly.
 //! - `ride-damage payload` / `ride-damage metadata` — fabricate a damaged `RECORDING` object. The
 //!   operator issues the reset, because a self-reset would race the confirmation off the wire.
 //! - `ride-repair-fail` — arm a one-shot refusal of the next exact removal, without the commit.
@@ -38,7 +39,7 @@ use core::fmt::Write;
 
 // The pure protocol below needs no embassy-sync, so it is always compiled and the host feeder
 // reuses one canonical codec.
-use obc_ports::{Button, ButtonEvent, Fix, InputEvent};
+use obc_ports::{Button, ButtonEvent, Cue, Fix, InputEvent, Volume};
 
 /// Longest line we accept. The widest message is about 45 bytes, so 64 leaves slack.
 const LINE_MAX: usize = 64;
@@ -75,6 +76,8 @@ pub enum Msg {
     RideRepairFail,
     /// Print the catalog census.
     StoreCensus,
+    /// Play one sound family at the chosen level, independent of rider settings.
+    Sound(Cue, Volume),
 }
 
 /// Which of the two logical recovery refusals a `ride-damage` command fabricates. The third cause,
@@ -116,6 +119,22 @@ pub fn parse_line(line: &str) -> Option<Msg> {
             Some(Msg::Nav { from: (from_lon, from_lat), to: (to_lon, to_lat) })
         }
         "K" => parse_key(&mut it),
+        "sound" => {
+            let cue = match it.next()? {
+                "tick" => Cue::KeyClick,
+                "heads-up" => Cue::ClimbStarts,
+                "good" => Cue::SoundPreview,
+                "problem" => Cue::OffRoute,
+                "urgent" => Cue::BatteryCritical,
+                _ => return None,
+            };
+            let volume = match it.next()? {
+                "quiet" => Volume::Quiet,
+                "loud" => Volume::Loud,
+                _ => return None,
+            };
+            it.next().is_none().then_some(Msg::Sound(cue, volume))
+        }
         // Word tags, so the command name is greppable and is the harness's whole interface.
         "dfu-install" => Some(Msg::DfuInstall),
         "ride-damage" => match it.next()? {
@@ -365,6 +384,7 @@ mod handoff {
     static RIDE_DAMAGE: Signal<CriticalSectionRawMutex, RideDamageKind> = Signal::new();
     static RIDE_REPAIR_FAIL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
     static STORE_CENSUS: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+    static SOUND: Signal<CriticalSectionRawMutex, (obc_ports::Cue, obc_ports::Volume)> = Signal::new();
     /// DFU status lines device-to-host, queued in order: a `Channel`, not a latch, because one arm
     /// emits several phase lines and each must reach the host. An overflowing push is dropped.
     static DFU_STATUS: Channel<CriticalSectionRawMutex, heapless::String<{ super::DFU_STATUS_MAX }>, 4> =
@@ -440,6 +460,10 @@ mod handoff {
             }
             Msg::StoreCensus => {
                 STORE_CENSUS.signal(());
+                EVENT.signal(());
+            }
+            Msg::Sound(cue, volume) => {
+                SOUND.signal((cue, volume));
                 EVENT.signal(());
             }
             // Drop on the unreachable overflow rather than block the RX task. No `EVENT` pulse:
@@ -529,6 +553,11 @@ mod handoff {
         STORE_CENSUS.try_take().is_some()
     }
 
+    /// Take a pending direct sound audition.
+    pub fn take_sound() -> Option<(obc_ports::Cue, obc_ports::Volume)> {
+        SOUND.try_take()
+    }
+
     /// Queue one DFU status line for the host. A full queue drops the line; the RTT log is lossless.
     pub fn dfu_status(text: &str) {
         let mut line: heapless::String<{ super::DFU_STATUS_MAX }> = heapless::String::new();
@@ -561,8 +590,8 @@ mod handoff {
 #[cfg(feature = "debug-link")]
 pub use handoff::{
     dfu_status, dispatch, feed_bytes, set_telemetry, take_dfu_install, take_nav, take_ride_damage,
-    take_ride_repair_fail, take_store_census, take_zoom, wait_dfu_status, wait_event, wait_telemetry, DebugAltimeter,
-    DebugCompass, DebugInput, DebugLocation,
+    take_ride_repair_fail, take_sound, take_store_census, take_zoom, wait_dfu_status, wait_event, wait_telemetry,
+    DebugAltimeter, DebugCompass, DebugInput, DebugLocation,
 };
 
 #[cfg(test)]
@@ -641,6 +670,24 @@ mod tests {
         assert_eq!(parse_line("Z 5"), Some(Msg::Zoom(5.0)));
         assert_eq!(parse_line("Z"), None); // missing value
         assert_eq!(parse_line("Z x"), None); // non-numeric
+    }
+
+    #[test]
+    fn parses_sound_preview() {
+        for (quiet, loud, cue) in [
+            ("sound tick quiet", "sound tick loud", Cue::KeyClick),
+            ("sound heads-up quiet", "sound heads-up loud", Cue::ClimbStarts),
+            ("sound good quiet", "sound good loud", Cue::SoundPreview),
+            ("sound problem quiet", "sound problem loud", Cue::OffRoute),
+            ("sound urgent quiet", "sound urgent loud", Cue::BatteryCritical),
+        ] {
+            assert_eq!(parse_line(quiet), Some(Msg::Sound(cue, Volume::Quiet)));
+            assert_eq!(parse_line(loud), Some(Msg::Sound(cue, Volume::Loud)));
+        }
+        assert_eq!(parse_line("sound urgent"), None);
+        assert_eq!(parse_line("sound unknown loud"), None);
+        assert_eq!(parse_line("sound urgent off"), None);
+        assert_eq!(parse_line("sound urgent loud extra"), None);
     }
 
     #[test]

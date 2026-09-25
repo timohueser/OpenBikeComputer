@@ -9,7 +9,9 @@
 //! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
 //! `A <m>`, `C <deg>`, `H <bpm>` / `P <watts>` / `R <rpm>` (fake BLE sensor injection),
 //! `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark hook), and input
-//! injection `K t <n>` / `K s <d|u>` / `K b <d|u>`; device→host
+//! injection `K t <n>` / `K s <d|u>` / `K b <d|u>`, and
+//! `sound <tick|heads-up|good|problem|urgent> <quiet|loud>` plays one pattern on the board.
+//! Device→host:
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
 //! <bytes> <collect_us> <read_us> <sort_us> <draw_us> <overlay_us> <mpp_milli>` — the last six are
 //! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
@@ -30,7 +32,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use obc_ports::{AltimeterSource, Fix, LocationSource};
+use obc_ports::{AltimeterSource, Cue, Fix, LocationSource, Volume};
 // The canonical USB-CDC codec, authored once on the device side, so the two halves of the protocol
 // cannot drift. Default features only, so the pure codec is pulled without embassy-sync.
 use obc_platform::debug_link::{format_cadence, format_fix, format_hr, format_power, parse_telemetry, Telemetry};
@@ -375,6 +377,8 @@ struct FeederApp {
     pending: Vec<String>,
     // scheduled button-up edges for "hold" presses: (when, line) without the trailing `\n`
     pending_ups: Vec<(Instant, String)>,
+    preview_cue: Cue,
+    preview_volume: Volume,
 }
 
 impl FeederApp {
@@ -400,6 +404,8 @@ impl FeederApp {
             log: std::collections::VecDeque::new(),
             pending: Vec::new(),
             pending_ups: Vec::new(),
+            preview_cue: Cue::KeyClick,
+            preview_volume: Volume::Loud,
         };
         app.selected_port = args.port.clone().or_else(|| app.ports.first().cloned());
         if let Some(path) = &args.gpx {
@@ -827,6 +833,40 @@ impl eframe::App for FeederApp {
                         }
                         if ui.button("Back (hold)").clicked() {
                             self.hold('b');
+                        }
+                    });
+                });
+            });
+            ui.add_space(6.0);
+
+            full_group(ui, |ui| {
+                ui.label(egui::RichText::new("Sound preview").strong());
+                ui.add_enabled_ui(connected, |ui| {
+                    ui.horizontal(|ui| {
+                        let label = obc_platform::sound::AUDITION_CUES
+                            .iter()
+                            .find(|(cue, _)| *cue == self.preview_cue)
+                            .map_or("Choose sound", |(_, name)| *name);
+                        egui::ComboBox::from_id_salt("sound-preview").selected_text(label).show_ui(ui, |ui| {
+                            for (cue, name) in obc_platform::sound::AUDITION_CUES {
+                                ui.selectable_value(&mut self.preview_cue, cue, name);
+                            }
+                        });
+                        egui::ComboBox::from_id_salt("sound-volume")
+                            .selected_text(match self.preview_volume {
+                                Volume::Quiet => "Quiet",
+                                Volume::Loud => "Loud",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.preview_volume, Volume::Quiet, "Quiet");
+                                ui.selectable_value(&mut self.preview_volume, Volume::Loud, "Loud");
+                            });
+                        if ui.button("▶ Play").clicked() {
+                            let volume = match self.preview_volume {
+                                Volume::Quiet => "quiet",
+                                Volume::Loud => "loud",
+                            };
+                            self.key(&format!("sound {} {volume}", label.to_ascii_lowercase()));
                         }
                     });
                 });
