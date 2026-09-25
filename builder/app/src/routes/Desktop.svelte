@@ -14,8 +14,7 @@
 <article>
     <h1>The desktop app</h1>
     <p class="lead muted">
-        The same cell-catalog builder and corridor tools as the website, plus the parts that need a
-        real folder or a native USB driver. Both builders assemble the same downloaded cells.
+        Build maps and route corridors with direct access to folders and USB devices.
     </p>
 
     <section class="card">
@@ -49,8 +48,7 @@
             {/if}
         {:else}
             <p>
-                There are no builds yet. The macOS, Windows and Linux installers will appear on the
-                releases page, each with a SHA-256 to check it against.
+                Installers are not available yet. Check the releases page for macOS, Windows, and Linux builds.
             </p>
             <p class="after"><a href={LINKS.releases}>Releases →</a></p>
         {/if}

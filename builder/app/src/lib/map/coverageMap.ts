@@ -68,41 +68,41 @@ export interface CoverageMapCallbacks {
 // The selection reads amber (a choice being made), warnings read coral, the shelf
 // reads quiet forest.
 const REGION_STYLE: L.PathOptions = {
-    color: "#3c6b39",
+    color: "var(--wood)",
     weight: 1.6,
     opacity: 0.75,
-    fillColor: "#3c6b39",
+    fillColor: "var(--wood)",
     fillOpacity: 0.07,
     interactive: false,
 };
 const REGION_HOVER_STYLE: L.PathOptions = { weight: 2.2, opacity: 0.9, fillOpacity: 0.1 };
 const PART_STYLE: L.PathOptions = {
-    color: "#e3ad33",
+    color: "var(--amber)",
     weight: 2.5,
-    fillColor: "#e3ad33",
+    fillColor: "var(--amber)",
     fillOpacity: 0.12,
     interactive: false,
 };
 const PART_HIGHLIGHT_STYLE: L.PathOptions = { ...PART_STYLE, weight: 4, fillOpacity: 0.2 };
-const ROUTE_STYLE: L.PathOptions = { color: "#cf6a2a", weight: 2.5, interactive: false };
+const ROUTE_STYLE: L.PathOptions = { color: "var(--route)", weight: 2.5, interactive: false };
 const PREVIEW_RING_STYLE: L.PathOptions = {
-    color: "#cf6a2a",
+    color: "var(--coral)",
     weight: 2,
     dashArray: "7 5",
-    fillColor: "#e3ad33",
+    fillColor: "var(--amber)",
     fillOpacity: 0.08,
     interactive: false,
 };
 const PREVIEW_ROUTE_STYLE: L.PathOptions = { ...ROUTE_STYLE, dashArray: "4 4" };
 const WARNING_STYLE: Record<"hole" | "partial", L.PathOptions> = {
-    hole: { color: "#cf6a2a", weight: 1.6, className: "coverage-hatch" },
-    partial: { color: "#cf6a2a", weight: 1, opacity: 0.6, dashArray: "3 3", className: "coverage-hatch faintly" },
+    hole: { color: "var(--coral)", weight: 1.6, className: "coverage-hatch" },
+    partial: { color: "var(--coral)", weight: 1, opacity: 0.6, dashArray: "3 3", className: "coverage-hatch faintly" },
 };
 const BOX_DRAW_STYLE: L.PathOptions = {
-    color: "#cf6a2a",
+    color: "var(--coral)",
     weight: 2,
     dashArray: "7 5",
-    fillColor: "#e3ad33",
+    fillColor: "var(--amber)",
     fillOpacity: 0.18,
 };
 const LASSO_DRAW_STYLE: L.PathOptions = { ...BOX_DRAW_STYLE, dashArray: "5 4" };
@@ -593,7 +593,7 @@ export class CoverageMapView {
         pattern.setAttribute("patternUnits", "userSpaceOnUse");
         const path = document.createElementNS(ns, "path");
         path.setAttribute("d", "M0 8 L8 0");
-        path.setAttribute("stroke", "#cf6a2a");
+        path.setAttribute("stroke", "var(--coral)");
         path.setAttribute("stroke-width", "1.6");
         pattern.appendChild(path);
         defs.appendChild(pattern);

@@ -1,15 +1,4 @@
-<svg class="topo" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-  <g fill="none" stroke="#2c5e54" stroke-width="1.1" stroke-opacity="0.13">
-    <path d="M-50 150 C 240 92, 420 222, 700 172 S 1180 82, 1500 192" />
-    <path d="M-50 220 C 240 165, 430 290, 710 240 S 1180 155, 1500 265" />
-    <path d="M-50 300 C 260 250, 440 370, 720 315 S 1190 235, 1500 350" />
-    <path d="M-50 388 C 250 342, 450 452, 740 402 S 1190 322, 1500 438" />
-    <path d="M-50 470 C 250 426, 470 532, 760 486 S 1200 408, 1500 520" />
-    <path d="M-50 620 C 250 570, 470 690, 760 630 S 1200 545, 1500 665" />
-    <path d="M-50 690 C 250 640, 470 760, 760 700 S 1200 615, 1500 735" />
-    <path d="M-50 760 C 250 712, 470 832, 760 772 S 1200 690, 1500 808" />
-  </g>
-</svg>
+<a class="skip-link" href="#main">Skip to content</a>
 
 <header class="site-head">
   <div class="head-inner">
@@ -18,7 +7,7 @@
       <span class="name">OpenBikeComputer</span>
       <span class="crumb">{{crumb}}</span>
     </a>
-    <nav class="head-links">
+    <nav class="head-links" aria-label="Main navigation">
       <a class="home" href="{{site_root}}">Home</a>
       <a href="{{site_root}}docs/">Docs</a>
       <a href="{{site_root}}blog/">Blog</a>
@@ -28,6 +17,12 @@
         GitHub
       </a>
     </nav>
+    <button class="theme-toggle" id="theme_toggle" type="button" aria-label="Dark mode" aria-pressed="false" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path class="moon" d="M20.5 13.2A8.6 8.6 0 0 1 10.8 3.5 8.6 8.6 0 1 0 20.5 13.2Z" />
+        <g class="sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></g>
+      </svg>
+    </button>
     {{nav_toggle}}
   </div>
 </header>

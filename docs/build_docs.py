@@ -52,7 +52,7 @@ OUT = ROOT / "docs"                              # generated; Trunk copy-dirs th
 # The docs pages have a slide-out sidebar on mobile; the toggle only ships there
 # (blog pages have no sidebar, so the partial gets an empty {{nav_toggle}}).
 NAV_TOGGLE = (
-    '<button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">'
+    '<button class="nav-toggle" aria-label="Documentation menu" aria-controls="docs-navigation" aria-expanded="false">'
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
     'stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>'
 )
@@ -251,7 +251,7 @@ def consume_table(lines, i):
 
     head = "".join(cell("th", c, j) for j, c in enumerate(header))
     body = "".join("<tr>%s</tr>" % "".join(cell("td", c, j) for j, c in enumerate(r)) for r in rows)
-    return '<div class="table-wrap"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (head, body), i
+    return '<div class="table-wrap" role="region" aria-label="Table; scroll horizontally if needed" tabindex="0"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (head, body), i
 
 
 def parse_list(lines, i, indent):
@@ -433,7 +433,7 @@ def render_nav(nav, current_url, base):
             href = base + u
             if href == "":
                 href = "./"
-            active = ' class="active"' if u == current_url else ""
+            active = ' class="active" aria-current="page"' if u == current_url else ""
             badge = ' <span class="soon">soon</span>' if pg.get("soon") else ""
             parts.append('<li><a%s href="%s">%s%s</a></li>' % (active, href, esc(pg["title"]), badge))
         parts.append("</ul>")
@@ -441,11 +441,13 @@ def render_nav(nav, current_url, base):
     return "\n".join(parts)
 
 
-def render_toc(toc):
+def render_toc(toc, mobile=False):
     if len(toc) < 3:
         return ""
     items = "".join('<li class="lvl%d"><a href="#%s">%s</a></li>' % (lvl, slug, esc(text))
                     for lvl, slug, text in toc)
+    if mobile:
+        return '<details class="toc-mobile"><summary>On this page</summary><ul>%s</ul></details>' % items
     return '<aside class="toc"><div class="toc-title">On this page</div><ul>%s</ul></aside>' % items
 
 
@@ -600,7 +602,7 @@ def builder_link(site_root):
     path = os.environ.get("OBC_BUILDER_PATH", "").strip()
     if not path:
         return ""
-    return '<a href="%s%s">Maps</a>' % (esc(site_root), esc(path))
+    return '<a class="maps" href="%s%s">Maps</a>' % (esc(site_root), esc(path))
 
 
 def site_head(site_root, crumb, nav_toggle=""):
@@ -644,6 +646,7 @@ def build_blog(rendered):
             "base": "../",
             "site_root": "../../",
             "css": "../assets/docs.css",
+            "theme_js": "../assets/theme.js",
             "blog_css": "../assets/blog.css",
             "date_iso": p["date"].isoformat(),
             "date_human": human_date(p["date"]),
@@ -665,6 +668,7 @@ def build_blog(rendered):
         "base": "",
         "site_root": "../",
         "css": "assets/docs.css",
+        "theme_js": "assets/theme.js",
         "blog_css": "assets/blog.css",
         "content": timeline,
     })
@@ -761,9 +765,12 @@ def main():
             "title": esc(title),
             "description": attr(desc),   # lands in content="…"; esc() leaves `"` alone
             "site_head": site_head(base + "../", "/ docs", NAV_TOGGLE),
+            "lang": attr(fm.get("lang", "en")),
             "base": base,
             "site_root": base + "../",
             "css": base + "assets/docs.css",
+            "theme_js": base + "assets/theme.js",
+            "mobile_toc": render_toc(toc, mobile=True),
             "nav": render_nav(nav, url, base),
             "toc": render_toc(toc),
             "copy_notice": copy_notice(fm.get("copy", "")),
