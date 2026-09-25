@@ -10,25 +10,33 @@
          --force-device-scale-factor=1 \
          --screenshot=../assets/og-card.png og_card.html
 
-     (run from docs/tools/). Serif is P052 (URW Palladio, urw-base35), the
-     Linux stand-in for the site's Palatino stack — Chrome falls back through
-     the stack if it's missing, so check the render before committing. -->
+     Run from docs/tools/. Wait for document.fonts.ready before capture.
+     Fonts and colours match the landing page's light theme. -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <style>
+  @font-face {
+    font-family: "Atkinson";
+    src: url("../assets/fonts/atkinson-hyperlegible-next-latin.woff2") format("woff2");
+    font-weight: 200 800;
+  }
+  @font-face {
+    font-family: "Atkinson Mono";
+    src: url("../assets/fonts/atkinson-hyperlegible-mono-latin.woff2") format("woff2");
+    font-weight: 200 800;
+  }
   /* 1200x630 card — colourway + housing CSS lifted from docs/index.html. */
   :root {
-    --parchment: #ece8cf;
-    --ink: #24331c;
-    --ink-soft: #4d5b3c;
-    --forest: #3c6b39;
-    --coral: #cf6a2a;
+    --parchment: #F4F2EB;
+    --ink: #1C1B14;
+    --ink-soft: #5C5A2E;
+    --rust: #A4501E;
+    --cream: #FFF2D1;
     --device-body: #488781;
     --device-accent: #8be3bc;
-    --serif: "P052", "Palatino Linotype", Palatino, Georgia, serif;
-    --sans: "Noto Sans", ui-sans-serif, system-ui, sans-serif;
-    --mono: "Noto Sans Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans: "Atkinson", sans-serif;
+    --mono: "Atkinson Mono", monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
@@ -42,31 +50,29 @@
 
   .text {
     position: relative; z-index: 1;
-    padding-left: 76px; width: 660px; flex: none;
+    padding: 66px 0 0 76px; width: 710px; flex: none;
   }
-  .brand { display: flex; align-items: baseline; gap: 14px; margin-bottom: 40px; }
-  .brand .mark {
-    font-family: var(--mono); font-weight: 700; letter-spacing: 0.06em;
-    font-size: 22px; color: var(--parchment); background: var(--forest);
-    padding: 6px 12px; border-radius: 10px;
+  .brand {
+    position: absolute; inset: 0 0 auto; height: 64px; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 76px; background: var(--rust); color: var(--cream);
   }
-  .brand .name { font-family: var(--serif); font-size: 27px; font-weight: 700; color: var(--ink); }
-  .eyebrow {
-    text-transform: uppercase; letter-spacing: 0.26em; font-size: 17px;
-    font-weight: 700; color: var(--forest); margin: 0 0 18px;
-  }
+  .brand .name { display: flex; align-items: center; gap: 14px; font-family: var(--mono); font-size: 24px; font-weight: 700; }
+  .brand img { border-radius: 8px; }
+  .brand .address { font-size: 18px; }
+  .category { font-size: 21px; color: var(--ink-soft); margin: 0 0 22px; }
   h1 {
-    font-family: var(--serif); font-weight: 700; color: var(--ink);
-    font-size: 82px; line-height: 1.04; letter-spacing: -0.01em; margin: 0 0 26px;
+    font-family: var(--sans); font-weight: 800; color: var(--ink);
+    font-size: 82px; line-height: 1.02; letter-spacing: -0.03em; margin: 0 0 24px;
   }
-  h1 em { font-style: italic; color: var(--coral); }
-  .sub { font-size: 26px; color: var(--ink-soft); margin: 0; }
-  .sub b { color: var(--ink); font-weight: 700; }
+  h1 em { font-style: normal; color: var(--rust); }
+  .sub { font-size: 24px; line-height: 1.45; color: var(--ink-soft); margin: 0; }
+  .sub b { color: var(--ink); font-weight: 600; }
 
   /* ---- the device housing, lifted from docs/index.html ---- */
-  .device-col { position: relative; z-index: 1; flex: none; margin-left: 30px; transform: rotate(-5deg); }
+  .device-col { position: relative; isolation: isolate; z-index: 1; flex: none; margin: 56px 0 0 36px; }
     .device {
-      --device-size: 360px;
+      --device-size: 334px;
       position: relative;
       width: var(--device-size);
       padding: calc(var(--device-size) * .05) calc(var(--device-size) * .055) 0;
@@ -117,7 +123,7 @@
 </head>
 <body>
   <svg class="topo" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-    <g fill="none" stroke="#2c5e54" stroke-width="1.1" stroke-opacity="0.17">
+    <g fill="none" stroke="#5C5A2E" stroke-width="1.1" stroke-opacity="0.2">
       <path d="M-50 150 C 240 92, 420 222, 700 172 S 1180 82, 1500 192" />
       <path d="M-50 220 C 240 165, 430 290, 710 240 S 1180 155, 1500 265" />
       <path d="M-50 300 C 260 250, 440 370, 720 315 S 1190 235, 1500 350" />
@@ -129,14 +135,14 @@
     </g>
   </svg>
 
+  <div class="brand">
+    <span class="name"><img src="../assets/brand/app-icon.svg" width="38" height="38" alt="" />OpenBikeComputer</span>
+    <span class="address">openbikecomputer.com</span>
+  </div>
   <div class="text">
-    <div class="brand">
-      <span class="mark">OBC</span>
-      <span class="name">OpenBikeComputer</span>
-    </div>
-    <p class="eyebrow">Open-source bikepacking computer</p>
     <h1>Own your<br><em>adventure.</em></h1>
-    <p class="sub"><b>Try the real firmware live</b> — in your browser.</p>
+    <p class="category">Open-source bikepacking GPS computer</p>
+    <p class="sub"><b>Try the real firmware live</b><br>in your browser.</p>
   </div>
 
   <div class="device-col">
