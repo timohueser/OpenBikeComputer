@@ -2,7 +2,7 @@
 
 The GATT surface the device serves to the companion app: the two SIG services, the custom OBC
 Control service, its live characteristics, and the payload layouts of the objects those
-characteristics carry. Pairing and encryption are §8.
+characteristics carry. Pairing and encryption are §8. The QR link that starts pairing is §9.
 
 Object transfers are **not** here. They are protocol v4, whose normative contract is
 [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md); §5.1 of that document binds it to the
@@ -430,3 +430,115 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   device-side privacy. The phone stores that identity and reconnects on any advertising contact.
   Identifying the phone behind its rotating RPA uses the stored peer IRK in the controller resolving
   list, not a filter accept-list.
+
+## 9. Pairing link
+
+During first-use setup the device shows a QR code. The code holds a universal link. The phone
+camera opens the app from the link, and the app finds the one device that shows the code. Pairing
+then runs as §8 specifies. The link carries no secret: the passkey stays the only proof that the
+rider holds the device.
+
+### 9.1 The link
+
+```
+https://openbikecomputer.com/pair/?s=<serial>
+```
+
+| Part | Bytes |
+|---|---|
+| scheme and host | `https://openbikecomputer.com`, lowercase |
+| path | `/pair/` |
+| query | one item, `s=<serial>` |
+| `<serial>` | the Serial Number String of §3.1: 16 uppercase hex digits, `[0-9A-F]{16}` |
+
+Example: `https://openbikecomputer.com/pair/?s=0123456789ABCDEF`. The link is 53 ASCII bytes. It has
+no fragment and no percent-encoding.
+
+**Why the serial.** The app can use only what it sees before it pairs:
+
+- The device address is not available. CoreBluetooth gives an app an opaque identifier per phone,
+  never the address.
+- The factory name `OBC-XXXX` holds only the last four digits of the serial. Two devices can have
+  the same factory name.
+- The serial is the full 64-bit factory device id, and the open DIS serves it before pairing (§8).
+
+The serial is not secret. The device gives it to every central in range.
+
+### 9.2 The QR code
+
+| Property | Value |
+|---|---|
+| Symbol | QR Code model 2 (ISO/IEC 18004) |
+| Version | 4 (33 × 33 modules) |
+| Error correction | level M |
+| Segment | one byte-mode segment with the 53 link bytes |
+| Mask | the mask that the standard penalty rule selects |
+| Module | 5 × 5 px or larger |
+| Quiet zone | 4 modules or more on each side |
+| Colors | dark modules on a light background, in each theme |
+
+Version 4 at level M holds 62 bytes in byte mode. At 5 px per module the code and its quiet zone
+use 205 × 205 px, which fits the 240 px panel width.
+
+### 9.3 Device rules
+
+- The device shows the code only while its bond slot is empty (§8). A bonded device refuses every
+  new pairing, so its code would be of no use.
+- While the device shows the code, it advertises the OBC Control service UUID (§3.3) and its
+  factory name `OBC-XXXX`, where `XXXX` is the last four digits of the serial. First-use setup
+  follows a factory reset, which clears the name that the rider set.
+
+### 9.4 App rules
+
+1. **Validate.** The link is valid when the host is `openbikecomputer.com`, the path is `/pair/`,
+   and the query has exactly one `s` item that matches `[0-9A-F]{16}`. The app ignores query items
+   with other names. For an invalid link, the app tells the rider that the code is not an OBC
+   pairing code, and it does not scan.
+2. **Scan.** The app scans for the OBC Control service UUID. A candidate is a device whose
+   advertised local name is `OBC-` followed by the last four digits of `s`.
+3. **Match.** The app connects to a candidate and reads the Serial Number String (§3.1). It does no
+   gated operation first. When the value equals `s`, the app starts pairing (§8). When it does not,
+   the app disconnects and ignores that device for the rest of the scan.
+4. **Not found.** When the scan window ends without a match, the app tells the rider that it did
+   not find the OBC and offers a new scan.
+
+The app never pairs with a device whose serial it did not match to `s`. After a match, a pairing
+failure is as §8 specifies: a wrong passkey and a bonded device look the same to the app.
+
+### 9.5 When the app is not installed
+
+The phone opens the link in the browser. `https://openbikecomputer.com/pair/` serves one static page
+for each query. The page:
+
+- tells the rider that the code is for the OBC companion app, and how to install the app;
+- tells the rider to scan the code on the OBC again after the install, because iOS does not give
+  the link to an app that it installs later;
+- does not store or send `s`.
+
+### 9.6 Associated domains
+
+A universal link opens the app only when the app and the domain each name the other.
+
+- **App entitlement.** `com.apple.developer.associated-domains` holds
+  `applinks:openbikecomputer.com`.
+- **Domain file.** `https://openbikecomputer.com/.well-known/apple-app-site-association`, with no
+  file extension. The server sends it over HTTPS with a valid certificate, with status 200, with no
+  redirect, and with `Content-Type: application/json`.
+
+```json
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["<TEAM_ID>.com.openbikecomputer.companion"],
+        "components": [{ "/": "/pair/" }]
+      }
+    ]
+  }
+}
+```
+
+`<TEAM_ID>` is the Apple Developer team id that signs the release app. The component matches only
+the path `/pair/`, so every other page of the site opens in the browser. The file does not limit
+the query, because the app validates it (§9.4). iOS gets the file through the Apple CDN when it
+installs or updates the app, so a change to the file does not reach a phone immediately.
