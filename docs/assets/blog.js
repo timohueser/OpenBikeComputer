@@ -5,10 +5,9 @@
 
   /* ------------------------------------------------------------------ lightbox */
   function buildLightbox() {
-    var lb = document.createElement("div");
+    var lb = document.createElement("dialog");
     lb.className = "lb";
-    lb.setAttribute("role", "dialog");
-    lb.setAttribute("aria-modal", "true");
+    lb.setAttribute("aria-label", "Image preview");
     lb.innerHTML =
       '<div class="lb-hint">scroll to zoom · drag to pan · esc to close</div>' +
       '<img alt="">' +
@@ -27,18 +26,19 @@
     }
     function reset() { scale = 1; tx = 0; ty = 0; apply(); }
     function close() {
-      lb.classList.remove("open");
+      lb.close();
       document.body.style.overflow = "";
       if (opener && opener.focus) opener.focus();
       opener = null;
     }
 
-    lb.open = function (src, caption) {
+    lb.showImage = function (src, caption) {
       opener = document.activeElement;
       img.src = src;
+      img.alt = caption || "";
       cap.textContent = caption || "";
       reset();
-      lb.classList.add("open");
+      lb.showModal();
       document.body.style.overflow = "hidden";
       closeBtn.focus();   // put keyboard users inside the dialog
     };
@@ -46,12 +46,10 @@
     lb.addEventListener("click", function (e) {
       if (e.target !== img) close();
     });
-    document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && lb.classList.contains("open")) close();
-    });
+    lb.addEventListener("cancel", function (event) { event.preventDefault(); close(); });
 
     lb.addEventListener("wheel", function (e) {
-      if (!lb.classList.contains("open")) return;
+      if (!lb.open) return;
       e.preventDefault();
       var factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
       var next = Math.min(8, Math.max(1, scale * factor));
@@ -122,9 +120,15 @@
     var imgs = document.querySelectorAll(".post .prose img, .prose.post img");
     Array.prototype.forEach.call(imgs, function (im) {
       if (im.closest(".cmp") || im.closest(".model") || im.closest(".lb")) return;
+      im.tabIndex = 0;
+      im.setAttribute("role", "button");
+      im.setAttribute("aria-label", "Enlarge image: " + (im.alt || "Blog image"));
+      im.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); im.click(); }
+      });
       im.addEventListener("click", function () {
         if (!lightbox) lightbox = buildLightbox();
-        lightbox.open(im.currentSrc || im.src, im.getAttribute("alt"));
+        lightbox.showImage(im.currentSrc || im.src, im.getAttribute("alt"));
       });
     });
   }

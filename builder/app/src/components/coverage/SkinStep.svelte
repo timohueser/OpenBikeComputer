@@ -84,13 +84,15 @@
     <button type="button" aria-pressed={mode === "light"} class:active={mode === "light"} onclick={() => (mode = "light")}>Light</button>
     <button type="button" aria-pressed={mode === "dark"} class:active={mode === "dark"} onclick={() => (mode = "dark")}>Dark</button>
 </div>
-<p class="small faint theme-note">Both styles are included. The device follows its display theme.</p>
+<p class="small faint theme-note">Light and dark styles are included.</p>
 <div class="cards">
     {#each visibleSkins as skin (skin.id)}
         <button
             type="button"
             class="skin"
             class:selected={selected.id === skin.id}
+            aria-label={skin.name}
+            aria-pressed={selected.id === skin.id}
             onclick={() => mode === "light" ? (store.lightSkinId = skin.id) : (store.darkSkinId = skin.id)}
         >
             {#if isCustomSkinId(skin.id)}
@@ -116,15 +118,16 @@
             {:else}
                 <span class="shot placeholder" aria-hidden="true"></span>
             {/if}
-            <span class="label-line">
-                <span class="name">{skin.name}</span>
-                {#if isCustomSkinId(skin.id)}<span class="custom-tag">custom</span>{/if}
-            </span>
+            {#if isCustomSkinId(skin.id)}
+                <span class="label-line">
+                    <span class="name">{skin.name}</span>
+                    <span class="custom-tag">custom</span>
+                </span>
+            {/if}
         </button>
     {/each}
 </div>
 <div class="actions">
-    <p class="small faint note">Styles reuse the same cells — edits never re-download anything.</p>
     {#if isCustomSkinId(selected.id)}
         <button type="button" class="text-action danger" onclick={removeSelected}>Delete</button>
     {/if}
@@ -139,8 +142,8 @@
 
 <style>
     .cards {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+        display: flex;
+        flex-wrap: wrap;
         gap: 10px;
     }
 
@@ -173,6 +176,7 @@
     }
 
     .skin {
+        width: min(100%, 240px);
         display: flex;
         flex-direction: column;
         align-items: flex-start;
@@ -181,7 +185,7 @@
         background: var(--parchment);
         border: 1px solid var(--parchment-3);
         border-radius: 12px;
-        padding: 7px 7px 11px;
+        padding: 5px;
         transition:
             border-color 0.15s,
             box-shadow 0.15s;
@@ -193,14 +197,14 @@
 
     .skin.selected {
         border: 2px solid var(--forest);
-        padding: 6px 6px 10px;
-        box-shadow: 0 2px 10px rgba(60, 107, 57, 0.16);
+        padding: 4px;
     }
 
     .shot {
         display: block;
         width: 100%;
         aspect-ratio: 1;
+        height: auto;
         object-fit: cover;
         border-radius: 8px;
         border: 1px solid var(--parchment-3);
@@ -247,11 +251,6 @@
         align-items: center;
         gap: 10px;
         margin-top: 8px;
-    }
-
-    .note {
-        flex: 1;
-        margin: 0;
     }
 
     .customize {
