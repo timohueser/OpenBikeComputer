@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Kandel · OBC Flyover</title>
+  <link rel="stylesheet" href="cesium/Widgets/widgets.css">
+  <link rel="stylesheet" href="style.css">
+  <script>window.CESIUM_BASE_URL = './cesium/';</script>
+  <script src="cesium/Cesium.js"></script>
+</head>
+<body>
+  <main>
+    <div id="map" aria-label="Interactive 3D terrain"></div>
+    <header><h1>Kandel</h1><span id="distance">Ride flyover</span></header>
+    <div id="notice" role="status"><span id="message">Loading the terrain…</span><button id="retry" hidden>Try again</button></div>
+    <section id="controls" aria-label="Replay controls">
+      <div class="mode" role="group" aria-label="Camera mode">
+        <button id="follow" aria-pressed="true" disabled>Follow</button>
+        <button id="free" aria-pressed="false" disabled>Free camera</button>
+        <button id="overview" disabled>Overview</button>
+      </div>
+      <p id="hint">A calm flight along the ride.</p>
+      <div class="profile">
+        <canvas id="profile" aria-hidden="true"></canvas>
+        <input id="scrub" type="range" min="0" max="1" step="0.0001" value="0" aria-label="Ride position" disabled>
+      </div>
+      <div class="playback">
+        <button id="play" class="primary" disabled>Play</button>
+        <output id="position" for="scrub">0.0 km</output>
+        <output id="altitude">— m</output>
+        <button id="rate" aria-label="Playback speed" disabled>1×</button>
+      </div>
+      <div class="diagnostics"><span id="performance">Preparing renderer</span><button id="fps" aria-label="Target frame rate">60 fps target</button></div>
+    </section>
+  </main>
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>

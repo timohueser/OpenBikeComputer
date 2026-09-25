@@ -1,0 +1,140 @@
+<meta charset="utf-8">
+<style>
+#obc-replay-mock { color-scheme:light; --paper:#f5f5f3; --ink:#242424; --line:#cececa; --map:#e3e3df; --muted:#60605c; font:16px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; color:var(--ink); max-width:390px; margin:0 auto; }
+#obc-replay-mock * { box-sizing:border-box; }
+#obc-replay-mock button,#obc-replay-mock select { font:inherit; color:inherit; cursor:pointer; min-height:44px; }
+#obc-replay-mock button { border:1px solid var(--line); border-radius:10px; padding:9px 13px; background:var(--paper); }
+#obc-replay-mock button:disabled { opacity:.5; cursor:default; }
+#obc-replay-mock .strong { color:#fff; background:#30302e; border-color:#30302e; }
+#obc-replay-mock .plain { border:0; background:transparent; }
+#obc-replay-mock .row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+#obc-replay-mock .mock-tools { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:13px; }
+#obc-replay-mock select { flex:1; min-width:180px; background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:6px; }
+#obc-replay-mock .phone { border:1px solid #aaa; border-radius:24px; overflow:hidden; background:var(--paper); position:relative; }
+#obc-replay-mock .status { height:35px; padding:11px 22px 0; font-size:12px; font-weight:600; }
+#obc-replay-mock .nav { height:56px; padding:0 10px; }
+#obc-replay-mock .nav b { font-size:16px; }
+#obc-replay-mock .content { padding:0 20px 24px; }
+#obc-replay-mock h2 { font-size:28px; line-height:1.15; letter-spacing:-.025em; font-weight:600; margin:24px 0 6px; }
+#obc-replay-mock h3 { font-size:17px; font-weight:600; margin:24px 0 12px; }
+#obc-replay-mock .sub { font-size:13px; color:var(--muted); }
+#obc-replay-mock .hero { position:relative; height:155px; background:var(--map); border-radius:10px; overflow:hidden; }
+#obc-replay-mock .hero svg { width:100%; height:100%; }
+#obc-replay-mock .hero span { position:absolute; bottom:10px; right:12px; font-size:12px; background:var(--paper); padding:4px 8px; border-radius:6px; }
+#obc-replay-mock .stats { padding:20px 0; border-bottom:1px solid var(--line); margin-bottom:16px; }
+#obc-replay-mock .stats b { font-size:21px; font-weight:500; display:block; }
+#obc-replay-mock .replay-entry { width:100%; text-align:left; }
+#obc-replay-mock .list-row { padding:13px 0; border-bottom:1px solid var(--line); }
+#obc-replay-mock .scene { position:relative; height:342px; overflow:hidden; background:var(--map); touch-action:none; }
+#obc-replay-mock canvas { width:100%; height:100%; display:block; }
+#obc-replay-mock .scene-controls { position:absolute; left:12px; right:12px; top:12px; display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+#obc-replay-mock .mode { padding:8px 10px; background:var(--paper); border-radius:8px; font-size:13px; }
+#obc-replay-mock .reset { position:absolute; left:12px; bottom:30px; }
+#obc-replay-mock .credit { position:absolute; bottom:5px; left:12px; font-size:11px; color:#4b4b48; }
+#obc-replay-mock .photo { position:absolute; top:70px; left:40px; right:40px; background:var(--paper); padding:10px; border-radius:12px; border:1px solid #aaa; }
+#obc-replay-mock .photo-placeholder { height:125px; background:#c7c7c2; display:grid; place-items:center; color:#4b4b48; }
+#obc-replay-mock .photo button { width:100%; margin-top:8px; }
+#obc-replay-mock .notice { position:absolute; inset:65px 28px; background:var(--paper); border-radius:12px; padding:24px 18px; display:flex; flex-direction:column; justify-content:center; text-align:center; gap:14px; }
+#obc-replay-mock .notice button { align-self:center; }
+#obc-replay-mock .dock { padding:16px 20px 22px; }
+#obc-replay-mock .progress-label { font-size:14px; font-variant-numeric:tabular-nums; }
+#obc-replay-mock .profile { position:relative; height:102px; margin:8px 0 0; }
+#obc-replay-mock .profile svg { width:100%; height:100%; display:block; }
+#obc-replay-mock .scrub { width:100%; height:44px; margin:0; accent-color:#333; }
+#obc-replay-mock .playback { display:grid; grid-template-columns:1fr 1.5fr 1fr; gap:12px; align-items:center; }
+#obc-replay-mock .playback button { white-space:nowrap; }
+#obc-replay-mock .home { width:110px; height:4px; background:#333; border-radius:3px; margin:0 auto 9px; }
+#obc-replay-mock .caption { text-align:center; font-size:12px; color:var(--muted); margin-top:10px; }
+#obc-replay-mock [hidden] { display:none !important; }
+</style>
+<div id="obc-replay-mock" aria-label="Ride replay wireframe">
+  <div class="mock-tools"><label for="obc-example">Preview</label><select id="obc-example"><option value="ride">Ride details</option><option value="trip">Trip review</option><option value="player">Automatic follow</option><option value="adjusted">Adjusted follow</option><option value="overview">Overview</option><option value="photo">Photo moment</option><option value="loading">Loading</option><option value="error">Map unavailable</option></select></div>
+  <div class="phone">
+    <div class="status">9:41</div>
+    <section class="detail">
+      <div class="nav row"><span>Back</span><b class="detail-kind">Ride</b><span>More</span></div>
+      <div class="content">
+        <div class="hero" role="img" aria-label="Existing map preview; schematic route"><svg viewBox="0 0 330 155"><path d="M-20 120L100 20 230 170M180 -20L60 155M260 -20L330 110" fill="none" stroke="#c8c8c3" stroke-width="14"/><path d="M50 110C100 150 180 125 210 75S300 15 240 30 190 5 155 65 70 30 50 110" fill="none" stroke="#656560" stroke-width="4"/></svg><span>Open map</span></div>
+        <h2 class="detail-title">Kandel</h2><div class="sub detail-sub">Recorded ride · 59.2 km</div>
+        <div class="row stats"><div><b class="distance">59.2 km</b><span class="sub">Distance</span></div><div><b class="duration">4 h 12 min</b><span class="sub duration-label">Ride time</span></div></div>
+        <button class="replay-entry row strong" type="button"><span class="entry-label">Replay ride</span><span aria-hidden="true">Play</span></button>
+        <section class="ride-extras"><h3>Elevation</h3><svg viewBox="0 0 320 90" role="img" aria-label="Illustrative elevation profile"><path d="M0 85L0 70 30 65 60 70 85 42 110 48 145 15 175 23 200 45 230 40 255 62 290 70 320 72V85Z" fill="#d6d6d0"/><path d="M0 70L30 65 60 70 85 42 110 48 145 15 175 23 200 45 230 40 255 62 290 70 320 72" fill="none" stroke="#555550" stroke-width="2"/></svg><h3>Photos</h3><div class="sub">3 photos along the ride</div></section>
+        <section class="trip-extras" hidden><h3>Ridden days</h3><div class="list-row row"><span>Day 1 · The valley</span><span class="sub">42 km</span></div><div class="list-row row"><span>Day 2 · The pass</span><span class="sub">51 km</span></div><div class="list-row row"><span>Day 3 · The lake</span><span class="sub">38 km</span></div><h3>Still to ride</h3><div class="sub">Day 4 · Excluded from replay</div></section>
+      </div>
+    </section>
+    <section class="player" hidden>
+      <div class="nav row"><button class="plain close" type="button">Close</button><b class="player-title">Kandel</b><span class="sub">Replay</span></div>
+      <div class="scene" aria-label="Schematic terrain. Drag to adjust the following camera.">
+        <canvas aria-label="Schematic terrain and rider; visual interaction study"></canvas>
+        <div class="scene-controls"><span class="mode" role="status">Following</span><button class="overview" type="button">Overview</button></div>
+        <button class="reset" type="button" hidden>Reset camera</button>
+        <div class="photo" hidden><div class="photo-placeholder">Ride photo</div><div class="row"><b>The climb</b><span class="sub">Photo 1 of 3</span></div><button class="photo-close" type="button">Continue</button></div>
+        <div class="notice" hidden><b class="notice-title">Loading terrain</b><span class="sub notice-text">Your ride is ready.</span><button class="retry" type="button" hidden>Try again</button></div>
+        <div class="credit">Map data attribution</div>
+      </div>
+      <div class="dock">
+        <div class="row progress-label"><b class="position">18.9 / 59.2 km</b><span class="height">840 m</span></div>
+        <div class="profile"><svg viewBox="0 0 320 102" role="img" aria-label="Illustrative elevation profile with current position"><path d="M0 80L0 66 30 61 60 66 85 38 110 44 145 11 175 19 200 41 230 36 255 58 290 66 320 68V80Z" fill="#d6d6d0"/><path d="M0 66L30 61 60 66 85 38 110 44 145 11 175 19 200 41 230 36 255 58 290 66 320 68" fill="none" stroke="#656560" stroke-width="2"/><line class="cursor" x1="102" x2="102" y1="4" y2="80" stroke="#252525" stroke-width="2"/><circle cx="145" cy="11" r="4" fill="#555"/><text x="0" y="98" font-size="11" fill="#60605c">0 km</text><text x="320" y="98" text-anchor="end" font-size="11" fill="#60605c" class="end-distance">59.2 km</text></svg></div>
+        <input class="scrub" type="range" min="0" max="1000" value="320" aria-label="Distance along ride" />
+        <div class="playback"><button class="photo-jump plain" type="button">Photos</button><button class="play strong" type="button">Play</button><button class="speed plain" type="button">1×</button></div>
+      </div>
+    </section>
+    <div class="home"></div>
+  </div>
+  <div class="caption">Gray wireframe · Illustrative terrain, photos and values</div>
+</div>
+<script>
+(() => {
+  const root=document.getElementById('obc-replay-mock'), q=s=>root.querySelector(s);
+  const state={screen:'ride',source:'ride',mode:'auto',progress:.32,playing:false,angle:0,speed:1,photo:false,photos:true};
+  const canvas=q('canvas'), ctx=canvas.getContext('2d');
+  const route=Array.from({length:101},(_,i)=>({x:Math.sin(i*.055)*90+Math.sin(i*.19)*20,y:145-i*3}));
+  function point(p){const f=p*100,i=Math.min(99,Math.floor(f)),t=f-i;return {x:route[i].x*(1-t)+route[i+1].x*t,y:route[i].y*(1-t)+route[i+1].y*t};}
+  function draw(){
+    const w=canvas.clientWidth||350,h=canvas.clientHeight||342;canvas.width=w*2;canvas.height=h*2;ctx.scale(2,2);ctx.fillStyle='#e3e3df';ctx.fillRect(0,0,w,h);
+    const rider=point(state.progress),overview=state.mode==='overview',a=state.angle;
+    const project=p=>{let x=p.x-(overview?0:rider.x),y=p.y-(overview?0:rider.y);return {x:w/2+(x*Math.cos(a)-y*Math.sin(a))*.85,y:(overview?h/2:h*.64)+(x*Math.sin(a)+y*Math.cos(a))*.68};};
+    ctx.strokeStyle='#c2c2bc';ctx.lineWidth=1;
+    for(let j=-8;j<12;j++){ctx.beginPath();for(let i=-14;i<15;i++){const p=project({x:i*28,y:j*32+Math.sin(i*.6+j*.2)*25});i===-14?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);}ctx.stroke();}
+    ctx.lineCap='round';ctx.lineJoin='round';
+    const line=(end,color,width)=>{ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();route.slice(0,end).forEach((p,i)=>{p=project(p);i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y);});ctx.stroke();};
+    line(101,'#b0b0aa',4);line(Math.floor(state.progress*100)+1,'#343432',4);
+    const p=project(rider);ctx.beginPath();ctx.arc(p.x,p.y,7,0,Math.PI*2);ctx.fillStyle='#292927';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.stroke();
+  }
+  function render(){
+    const detail=['ride','trip'].includes(state.screen),trip=state.source==='trip',total=trip?131:59.2;
+    q('.detail').hidden=!detail;q('.player').hidden=detail;
+    q('.detail-kind').textContent=trip?'Trip':'Ride';q('.detail-title').textContent=trip?'Across the Alps':'Kandel';
+    q('.detail-sub').textContent=trip?'Trip review · 3 ridden days':'Recorded ride · 59.2 km';q('.distance').textContent=trip?'131 km':'59.2 km';q('.duration').textContent=trip?'3 days':'4 h 12 min';q('.duration-label').textContent=trip?'Ridden':'Ride time';
+    q('.entry-label').textContent=trip?'Replay ridden days':'Replay ride';q('.ride-extras').hidden=trip;q('.trip-extras').hidden=!trip;
+    q('.player-title').textContent=trip?'Day '+Math.min(3,1+Math.floor(state.progress*3))+' of 3':'Kandel';
+    q('.mode').textContent=state.mode==='auto'?'Following':state.mode==='adjusted'?'Following · Your angle':'Overview';
+    q('.overview').textContent=state.mode==='overview'?'Follow rider':'Overview';q('.reset').hidden=state.mode!=='adjusted';
+    q('.photo').hidden=!state.photo;q('.photo-jump').hidden=!state.photos;
+    q('.notice').hidden=!['loading','error'].includes(state.screen);q('.retry').hidden=state.screen!=='error';
+    q('.notice-title').textContent=state.screen==='error'?'Map unavailable':'Loading terrain';q('.notice-text').textContent=state.screen==='error'?'Check your connection and try again.':'Your ride is ready.';
+    q('.play').disabled=['loading','error'].includes(state.screen);q('.scrub').disabled=q('.play').disabled;
+    q('.position').textContent=(state.progress*total).toFixed(1)+' / '+total+' km';q('.height').textContent=Math.round(420+650*Math.sin(state.progress*Math.PI))+' m';
+    q('.end-distance').textContent=total+' km';q('.cursor').setAttribute('x1',state.progress*320);q('.cursor').setAttribute('x2',state.progress*320);
+    q('.scrub').value=state.progress*1000;q('.play').textContent=state.playing?'Pause':state.progress>=1?'Replay':'Play';q('.speed').textContent=state.speed+'×';
+    draw();
+  }
+  function preview(value){state.screen=value;state.playing=false;state.photo=value==='photo';state.mode=value==='overview'?'overview':value==='adjusted'?'adjusted':'auto';state.angle=value==='adjusted'?.8:0;if(['ride','trip'].includes(value))state.source=value;q('#obc-example').value=value;render();}
+  q('#obc-example').onchange=e=>preview(e.target.value);
+  q('.replay-entry').onclick=()=>preview('player');q('.close').onclick=()=>preview(state.source);
+  q('.overview').onclick=()=>{if(state.mode==='overview')state.mode=state.angle?'adjusted':'auto';else state.mode='overview';render();};
+  q('.reset').onclick=()=>{state.mode='auto';state.angle=0;render();};
+  q('.scrub').oninput=e=>{state.progress=+e.target.value/1000;state.playing=false;state.photo=false;render();};
+  q('.play').onclick=()=>{if(state.progress>=1)state.progress=0;state.photo=false;state.playing=!state.playing;render();};
+  q('.speed').onclick=()=>{state.speed=state.speed===1?.5:state.speed===.5?2:1;render();};
+  q('.photo-jump').onclick=()=>{state.progress=.45;state.photo=true;state.playing=false;render();};
+  q('.photo-close').onclick=()=>{state.photo=false;state.playing=true;render();};q('.retry').onclick=()=>preview('player');
+  let drag=null,last=0,raf=0;
+  canvas.onpointerdown=e=>{drag=e.clientX;canvas.setPointerCapture(e.pointerId);};
+  canvas.onpointermove=e=>{if(drag===null)return;state.angle+=(e.clientX-drag)/130;drag=e.clientX;state.mode='adjusted';render();};
+  canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+  function tick(now){if(!root.isConnected)return;if(state.playing){state.progress=Math.min(1,state.progress+Math.min((now-last)/1000,.1)*state.speed/60);if(state.progress>=1)state.playing=false;render();}last=now;raf=requestAnimationFrame(tick);}
+  new ResizeObserver(()=>draw()).observe(canvas);render();raf=requestAnimationFrame(tick);
+  if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:render});tweak.addToggle(state,'photos',{label:'Photo moments'});}
+})();
+</script>

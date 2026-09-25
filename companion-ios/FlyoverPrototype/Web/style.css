@@ -1,0 +1,55 @@
+:root {
+  color-scheme: light dark;
+  /* Companion OBCTheme day/tent tokens. The web renderer cannot import SwiftUI. */
+  --page: #f4f2eb; --ink: #1c1b14; --secondary: #5c5a2e; --surface: #fff;
+  --fill: #5c5a2e17; --amber: #f4a81d; --profile: #e3dfc4; --line: #5c5a2e26;
+  font: 16px -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--ink); background: var(--page);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --page: #16150f; --ink: #f2efe3; --secondary: #bdb47e; --surface: #201f17;
+    --fill: #bdb47e21; --amber: #f2a93a; --profile: #34331f; --line: #bdb47e26; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { height: 100dvh; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+#map { flex: 1; min-height: 120px; position: relative; }
+header { position: absolute; top: max(16px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left));
+  padding: 9px 14px; border-radius: 11px; background: var(--page); pointer-events: none; }
+h1 { font-size: 20px; margin: 0 0 2px; }
+header span, #hint { color: var(--secondary); font-size: 13px; }
+#notice { position: absolute; left: 16px; right: 16px; top: 35%; padding: 16px; border-radius: 14px;
+  background: var(--page); text-align: center; }
+#notice[hidden], [hidden] { display: none !important; }
+#retry { display: block; margin: 12px auto 0; }
+#controls { padding: 12px max(16px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: var(--page); }
+button { font: inherit; font-size: 15px; font-weight: 600; color: var(--ink); border: 0;
+  background: var(--fill); border-radius: 11px; min-height: 44px; padding: 0 15px; touch-action: manipulation; }
+button:disabled { opacity: 0.4; }
+button:active:not(:disabled) { opacity: 0.7; }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--secondary); outline-offset: 3px; }
+.mode { display: flex; gap: 4px; }
+.mode button { flex: 1; padding: 0 8px; font-size: 14px; }
+.mode button[aria-pressed="true"] { color: var(--page); background: var(--ink); }
+#hint { margin: 8px 0 0; min-height: 17px; }
+.profile { position: relative; height: 90px; margin: 4px 0; }
+#profile { display: block; width: 100%; height: 100%; }
+#scrub { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize; touch-action: none; }
+.profile:focus-within { outline: 2px solid var(--secondary); outline-offset: 2px; }
+.playback { display: flex; align-items: center; gap: 14px; }
+.primary { background: var(--amber); color: #1c1b14; min-width: 88px; }
+output { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#altitude { color: var(--secondary); }
+#rate { margin-left: auto; min-width: 50px; }
+.diagnostics { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+#fps { font-size: 11px; color: var(--secondary); background: none; padding: 0; }
+::selection { background: var(--amber); color: #1c1b14; }
+.cesium-viewer-bottom { max-width: calc(100% - 10px); }
+.cesium-credit-textContainer, .cesium-credit-expand-link { background: #16150fcc; }
+@media (orientation: landscape) and (min-width: 650px) {
+  main { flex-direction: row; }
+  #controls { width: 330px; flex-shrink: 0; display: flex; flex-direction: column; justify-content: center; padding-top: max(12px, env(safe-area-inset-top)); }
+  #notice { right: 346px; }
+  .profile { height: 80px; }
+  .playback { gap: 9px; }
+}

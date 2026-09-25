@@ -705,3 +705,9 @@ route = "manual"
 command = "companion-ios/scripts/test-application.sh"
 platforms = ["macos"]
 triggers = ["companion-ios/OBCCompanionUITests/**"]
+
+[[suite]]
+id = "manual.flyover-camera"
+route = "manual"
+command = "npm test --prefix companion-ios/FlyoverPrototype"
+triggers = ["companion-ios/FlyoverPrototype/**"]

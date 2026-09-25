@@ -1,0 +1,12 @@
+{
+  "name": "obc-flyover-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "node prepare.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "cesium": "1.145.0"
+  }
+}

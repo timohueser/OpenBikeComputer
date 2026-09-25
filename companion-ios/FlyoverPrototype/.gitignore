@@ -1,0 +1,6 @@
+node_modules/
+Web/cesium/
+DerivedData/
+*.xcodeproj/
+App/Info.plist
+!Web/kandel.gpx
