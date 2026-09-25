@@ -29,7 +29,6 @@ final class RouteDetailModelTests: XCTestCase {
         )
 
         XCTAssertEqual(model.name, "Kettle Moraine Loop")
-        XCTAssertNil(model.tag, "a route page has no hero tag")
         XCTAssertTrue(model.isRenamable)
         XCTAssertNil(model.subtitle, "no source file was threaded in")
         XCTAssertEqual(model.waypoints.count, 4)
@@ -115,7 +114,7 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: Tracked
 
-    func testTrackedDressingShowsItsStatsLineProfileAndHighlights() {
+    func testTrackedDressingShowsItsLedgerProfileAndHighlights() {
         let control = makeControl()
         let entry = control.fixtures.rides[0]  // Kettle Moraine Loop (ride)
         let ride = entry.summary
@@ -123,10 +122,9 @@ final class RouteDetailModelTests: XCTestCase {
             transport: MockTransport(control: control), dressing: .tracked(ride), ridePoints: entry.points
         )
 
-        XCTAssertTrue(model.stats.isEmpty, "the stats line replaces the strip")
-        XCTAssertEqual(model.statsLine, OBCFormat.rideStatsLine(ride))
-        XCTAssertTrue(model.tag?.text.hasPrefix("Tracked · ") == true)
-        XCTAssertTrue(model.tag?.isAccent == true)
+        XCTAssertEqual(model.stats.map(\.key), ["Distance", "Moving time", "Avg speed", "Climb", "Descent"])
+        XCTAssertEqual(model.stats[1].value, OBCFormat.movingTime(ride.movingTime))
+        XCTAssertFalse(model.ink.cased, "a ride has no planned-route casing")
         XCTAssertNotNil(model.subtitle)
         XCTAssertTrue(model.isRenamable)
         XCTAssertTrue(model.elevationProfile.isEmpty && model.highlights.isEmpty, "whole-track work waits for start()")
@@ -203,7 +201,6 @@ final class RouteDetailModelTests: XCTestCase {
 
         XCTAssertEqual(model.name, "Schwarzwald Tour · Tag 2")
         XCTAssertEqual(model.subtitle, "Imported from Komoot")
-        XCTAssertNil(model.tag)
         XCTAssertTrue(model.isRenamable, "E1 renames before save")
         XCTAssertEqual(model.waypoints.count, 2)
         XCTAssertEqual(model.elevationProfile.count, 10)

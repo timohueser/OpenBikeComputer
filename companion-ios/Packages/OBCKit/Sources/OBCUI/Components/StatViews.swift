@@ -2,7 +2,7 @@ import SwiftUI
 
 /// One formatted statistic for the strips and grids: a tabular value, an optional small
 /// unit, and an uppercase key ("62.4 km / DISTANCE").
-public struct OBCStat: Identifiable {
+public struct OBCStat: Identifiable, Equatable {
     public let value: String
     public let unit: String?
     public let key: String

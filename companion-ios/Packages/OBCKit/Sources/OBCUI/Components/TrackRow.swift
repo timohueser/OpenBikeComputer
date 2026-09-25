@@ -36,11 +36,16 @@ public struct TrackRow: View {
         )
     }
 
-    /// Recorded ride: "Yesterday · 58.2 km · 2:51 · 20.4 kph", in the ride colour.
+    /// Recorded ride: "Yesterday · 58.2 km ▲812 m 2:51 h", in the ride colour.
     public init(ride: RideSummary, relativeTo now: Date = Date()) {
-        let line = OBCFormat.trackedSubtitle(ride, relativeTo: now)
+        let stats = RowStats(
+            lead: OBCFormat.rideDay(ride.date, relativeTo: now),
+            distanceMeters: ride.distanceMeters,
+            climbMeters: ride.climbMeters,
+            time: "\(OBCFormat.movingTime(ride.movingTime)) h"
+        )
         self.init(
-            name: ride.name, stats: RowStats(text: Text(line), label: line), detail: nil,
+            name: ride.name, stats: stats, detail: nil,
             sketch: TrackPreviewView(ride.trackPreview, ink: .ride, showsChrome: false),
             onDevice: .notOnDevice, dayCount: nil, isSelected: nil
         )
@@ -178,20 +183,23 @@ private struct RowStats {
     let text: Text
     let label: String
 
-    init(text: Text, label: String) {
-        self.text = text
-        self.label = label
-    }
-
-    /// "[lead · ]18.7 km ▲1,087 m[ 1:19 h]". The climb mark is a drawn triangle, not a glyph.
+    /// "[lead · ]18.7 km ▲1,087 m[ 1:19 h]".
     init(lead: String? = nil, distanceMeters: Double, climbMeters: Double, time: String? = nil) {
         let distance = OBCFormat.distance(meters: distanceMeters)
         let climb = "\(OBCFormat.climbValue(meters: climbMeters)) m"
-        let up = Text(Image(systemName: "arrowtriangle.up.fill")).font(.system(.caption2))
         let prefix = lead.map { "\($0) · " } ?? ""
         let suffix = time.map { "\u{2002}\($0)" } ?? ""
-        text = Text("\(prefix)\(distance)\u{2002}\(up)\u{2009}\(climb)\(suffix)")
+        text = Text("\(prefix)\(distance)\u{2002}\(Text.obcClimb(meters: climbMeters))\(suffix)")
         label = [lead, distance, "\(climb) climb", time].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+extension Text {
+    /// "▲1,087 m": a climb behind a drawn triangle, never the ↑ glyph. VoiceOver reads the
+    /// caller's own label.
+    static func obcClimb(meters: Double) -> Text {
+        let up = Text(Image(systemName: "arrowtriangle.up.fill")).font(.system(.caption2))
+        return Text("\(up)\u{2009}\(OBCFormat.climbValue(meters: meters)) m")
     }
 }
 

@@ -23,7 +23,7 @@ public struct RouteDetailView: View {
     private let photos: RidePhotosModel?
     /// A tracked ride's day note.
     private let dayNote: DayNoteModel?
-    /// The quiet rows under a ride's stats line, such as a merge suggestion.
+    /// The quiet rows over a ride's ledger, such as a merge suggestion.
     private let quietRows: AnyView?
 
     @State private var renameShown = false
@@ -86,12 +86,6 @@ public struct RouteDetailView: View {
                     EmptyView()
                 }
 
-                if let photos {
-                    RidePhotoOfferRow(model: photos)
-                }
-                if let dayNote {
-                    DayNoteOfferRow(model: dayNote, photos: photos)
-                }
                 quietRows
 
                 if !model.stats.isEmpty {
@@ -107,7 +101,7 @@ public struct RouteDetailView: View {
                 }
 
                 if !model.highlights.isEmpty {
-                    highlightsLine
+                    highlights
                 }
 
                 if let photos {
@@ -116,20 +110,7 @@ public struct RouteDetailView: View {
                 if let dayNote {
                     DayNoteEntry(model: dayNote, photos: photos)
                 }
-
-                if !model.sensorRows.isEmpty {
-                    OBCGroupedSection {
-                        ForEach(model.sensorRows) { row in
-                            OBCListRow(
-                                label: row.label,
-                                value: row.value,
-                                showsDivider: row.id != model.sensorRows.last?.id
-                            )
-                        }
-                    }
-                    .padding(.top, 16)
-                    .accessibilityIdentifier("detail.sensorSummary")
-                }
+                RideOffers(photos: photos, dayNote: dayNote)
 
                 if case .planned = model.dressing {
                     bikeTypeRow
@@ -150,9 +131,7 @@ public struct RouteDetailView: View {
                 }
 
                 if case .tracked = model.dressing {
-                    // Ride detail B: the ride's facts first, then sensors, bike type and services.
                     bikeTypeRow
-                    servicesBlock
                 }
                 actions
             }
@@ -189,9 +168,8 @@ public struct RouteDetailView: View {
     private var hero: some View {
         let preview = MapTrackPreviewView(
             model.preview,
+            ink: model.ink,
             style: .hero,
-            tag: model.tag?.text,
-            tagColor: model.tag?.isAccent == true ? OBCTheme.ink : OBCTheme.secondary,
             waypoints: model.waypoints,
             totalDistanceMeters: model.distanceMeters,
             photoPins: photos?.pinCoordinates ?? []
@@ -207,15 +185,24 @@ public struct RouteDetailView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("detail.expandMap")
-            .accessibilityLabel("Open full map")
+            .accessibilityLabel(mapLabel)
+            .accessibilityHint("Opens the full map")
         } else {
             preview
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(mapLabel)
         }
+    }
+
+    private var mapLabel: String {
+        if case .tracked = model.dressing { return "Map of the ride" }
+        return "Map of the route"
     }
 
     private var trackMapCover: some View {
         TrackMapView(
             coordinates: model.mapCoordinates,
+            ink: model.ink,
             waypoints: model.waypoints,
             title: model.name,
             onClose: { mapShown = false }
@@ -255,26 +242,17 @@ public struct RouteDetailView: View {
                     .foregroundStyle(OBCTheme.secondary)
                     .accessibilityIdentifier("detail.source")
             }
-            if let statsLine = model.statsLine {
-                Text(statsLine)
-                    .font(.system(.subheadline, weight: .medium).monospacedDigit())
-                    .foregroundStyle(OBCTheme.ink)
-                    .padding(.top, 6)
-                    .accessibilityIdentifier("detail.statsLine")
-            }
         }
         .padding(.top, 14)
     }
 
-    private var highlightsLine: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+    private var highlights: some View {
+        VStack(alignment: .leading, spacing: 6) {
             OBCEyebrow("Highlights")
-            Text(model.highlights.joined(separator: " · "))
-                .font(.system(.footnote, weight: .medium).monospacedDigit())
-                .foregroundStyle(OBCTheme.secondary)
+            OBCLedger(model.highlights)
         }
-        .padding(.top, 14)
-        .accessibilityElement(children: .combine)
+        .padding(.top, 20)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.highlights")
     }
 
@@ -289,21 +267,6 @@ public struct RouteDetailView: View {
         .padding(.top, 12)
     }
 
-    /// Connected services. The affordance is inert until the services land.
-    private var servicesBlock: some View {
-        OBCConnectedServicesBlock(services: [
-            OBCServiceStatus(
-                name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.tint,
-                state: .uploaded("Uploaded on import")
-            ),
-            OBCServiceStatus(
-                name: "Komoot", systemImage: "location.circle", tileColor: OBCTheme.tint,
-                state: .notUploaded("Not uploaded")
-            ),
-        ])
-        .padding(.top, 22)
-        .accessibilityIdentifier("detail.services")
-    }
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: 10) {
@@ -339,7 +302,6 @@ public struct RouteDetailView: View {
                 // The trip page uploads and deletes the whole trip.
                 EmptyView()
             case .tracked:
-                // The services block above carries the per-ride upload.
                 Button("Delete ride") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")
