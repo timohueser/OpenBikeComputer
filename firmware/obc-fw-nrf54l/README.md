@@ -100,10 +100,11 @@ riscv64-elf-gcc`, or the apt package `gcc-riscv64-unknown-elf`, or `RISCV_GCC=<p
 Run `cargo run --release` here or `obc flash` from the checkout root.
 Select a probe with `PROBE_RS_PROBE=VID:PID:SERIAL`. BLE and USB are always enabled.
 
-For finished test rides, run `obc flash seed-rides` over J4. Wait for `demo rides: complete`.
-This adds three 30-minute GPS loops: GPS, heart rate, and heart rate with power, dated the
-previous three days. Existing names are skipped. Existing objects remain; unformatted cards
-and active recordings are refused. Press Ctrl-C, then run `obc flash` to restore normal firmware. The rides remain on the card.
+Run `obc flash seed-rides` over J4 for three finished demo rides. To seed one finished ride
+file instead, set `OBC_DEMO_RIDE_FILE` to its absolute path. See the
+[Kandel fixture](../../fixtures/sources/kandel-ride/README.md). Wait for `demo rides: complete`,
+then restore normal firmware. The rides remain. Existing objects are preserved; unformatted
+cards, active recordings, and conflicting fixture names are refused.
 
 | Feature | What it does |
 | :-- | :-- |
