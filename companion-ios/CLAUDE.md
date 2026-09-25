@@ -27,7 +27,9 @@ pbxproj.**
 
 ## Build and test
 
-Needs Xcode 26.x, an iOS simulator runtime, XcodeGen and the Rust toolchain.
+Needs Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and the Rust toolchain.
+XcodeGen installs the pinned replay renderer with npm. Before package tests without XcodeGen, run
+`npm ci --prefix companion-ios/ReplayAssets` from the repository root.
 
 ```sh
 obc companion-core   # the Rust router the app links; run it again after a Rust change
