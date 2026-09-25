@@ -24,33 +24,44 @@ public final class RideSyncCoordinator {
             case download, confirmationPending, unsupported, sourceUnavailable, refused
         }
 
+        /// Every reason but `download` is about the mark that tells the OBC a ride is saved on the
+        /// phone: the rides themselves are saved.
         public var title: String {
-            reason == .download ? "Sync interrupted." : "Device confirmation pending."
+            reason == .download ? "Sync interrupted." : "Rides saved on this phone."
         }
         public var message: String {
             switch reason {
             case .download: "Got \(landed) of \(total) rides."
-            case .confirmationPending: "Your rides are saved on this phone. Retry to confirm them on the device."
-            case .unsupported: "Your rides are saved on this phone. This device does not support archive confirmation."
-            case .sourceUnavailable: "Your rides are saved on this phone. The device ride changed or is no longer available."
-            case .refused: "Your rides are saved on this phone. The device refused archive confirmation."
+            case .confirmationPending:
+                "The OBC did not answer when the app marked them as synced, so the OBC does not show them as synced yet."
+            case .unsupported: "This OBC cannot show rides as synced. Update its firmware."
+            case .sourceUnavailable: "A ride changed or was deleted on the OBC before the app could mark it as synced."
+            case .refused: "The OBC could not mark them as synced. Its memory card is full or read-only."
             }
+        }
+        /// Resume continues a download; Try again sends the synced marks again.
+        public var actionTitle: String {
+            reason == .download ? "Resume" : "Try again"
         }
     }
 
     /// Pacing, injectable so the coordinator tests run in milliseconds.
     public struct Timing: Sendable {
-    /// How long the check holds before the button returns to idle.
+        /// How long the check holds before the button returns to idle.
         public var syncDoneHold: Duration
-    /// How long the "synced N new rides just now" line stays up.
+        /// How long the "synced N new rides just now" line stays up.
         public var syncedLineHold: Duration
+        /// How long a receipt that got no answer waits before its one automatic resend.
+        public var confirmRetryDelay: Duration
 
         public init(
             syncDoneHold: Duration = .seconds(2),
-            syncedLineHold: Duration = .seconds(60)
+            syncedLineHold: Duration = .seconds(60),
+            confirmRetryDelay: Duration = .seconds(3)
         ) {
             self.syncDoneHold = syncDoneHold
             self.syncedLineHold = syncedLineHold
+            self.confirmRetryDelay = confirmRetryDelay
         }
     }
 
@@ -230,12 +241,13 @@ public final class RideSyncCoordinator {
                 }
             }
 
-            var confirmationFailure: SyncInterruption.Reason?
+            var confirmations = Confirmations()
             for receipt in receipts {
-                if let failure = try await confirm(receipt) { confirmationFailure = failure }
+                confirmations.record(receipt, try await confirm(receipt))
             }
             try Task.checkCancellation()
             guard !fresh.isEmpty else {
+                let confirmationFailure = try await settle(confirmations)
                 syncState = .idle
                 if let confirmationFailure {
                     syncInterruption = SyncInterruption(landed: 0, total: 0, reason: confirmationFailure)
@@ -289,8 +301,8 @@ public final class RideSyncCoordinator {
                     onRideLanded(ride)
                     landed += 1
                     syncProgress = SyncProgress(done: landed, total: fresh.count)
-                    if let receipt, let failure = try await confirm(receipt) {
-                        confirmationFailure = failure
+                    if let receipt {
+                        confirmations.record(receipt, try await confirm(receipt))
                     }
                 }
             } catch {
@@ -301,6 +313,7 @@ public final class RideSyncCoordinator {
             try Task.checkCancellation()
             let outcome = await download.handle.outcome
             try Task.checkCancellation()
+            let confirmationFailure = try await settle(confirmations)
             syncProgress = nil
             syncInterruption = nil
             activeDownload = nil
@@ -331,6 +344,28 @@ public final class RideSyncCoordinator {
         }
     }
 
+    /// The receipts of one run that failed: those that got no answer, and the last refusal.
+    private struct Confirmations {
+        var unanswered: [RideArchiveReceipt] = []
+        var refusal: SyncInterruption.Reason?
+
+        mutating func record(_ receipt: RideArchiveReceipt, _ failure: SyncInterruption.Reason?) {
+            if failure == .confirmationPending { unanswered.append(receipt) } else if let failure { refusal = failure }
+        }
+    }
+
+    /// A receipt that got no answer is sent once more after a pause, because the device can be
+    /// busy for a moment and a receipt is idempotent. Only a second failure reaches the banner.
+    private func settle(_ confirmations: Confirmations) async throws -> SyncInterruption.Reason? {
+        var failure = confirmations.refusal
+        guard !confirmations.unanswered.isEmpty else { return failure }
+        try await Task.sleep(for: timing.confirmRetryDelay)
+        for receipt in confirmations.unanswered {
+            if let again = try await confirm(receipt) { failure = failure ?? again }
+        }
+        return failure
+    }
+
     private func confirm(_ receipt: RideArchiveReceipt) async throws -> SyncInterruption.Reason? {
         try Task.checkCancellation()
         do {
@@ -344,6 +379,7 @@ public final class RideSyncCoordinator {
             }
         } catch {
             try Task.checkCancellation()
+            NSLog("OBC ride archive receipt got no answer: %@", String(describing: error))
             return .confirmationPending
         }
     }

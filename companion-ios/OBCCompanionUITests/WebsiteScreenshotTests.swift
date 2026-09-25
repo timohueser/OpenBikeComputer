@@ -228,8 +228,8 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the real Grimsel geometry should be visible in the ride hero"
         )
-        // The profile and highlights fill when the live model starts, a beat after the stats line.
-        waitFor(app, "detail.elevationProfile", "the ride's elevation profile did not arrive")
+        // The timeline and highlights fill when the live model starts, a beat after the stats line.
+        waitFor(app, "detail.timeline", "the ride's timeline did not arrive")
         waitFor(app, "detail.highlights", "the ride's highlights did not arrive")
         waitFor(app, "quietRow.open", "the ride's photo offer did not arrive")
         waitFor(app, "dayNote.offer", "the ride's note prompt did not arrive")

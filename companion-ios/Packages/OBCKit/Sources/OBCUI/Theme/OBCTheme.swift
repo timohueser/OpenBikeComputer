@@ -69,6 +69,20 @@ public enum OBCTheme {
     /// The area under an elevation line.
     public static let profileFill = Color(day: 0xE3DFC4, tent: 0x34331F)
 
+    // MARK: Effort
+    /// Heart rate and power zones Z1 to Z5: the device's climb ramp, tuned, with a sage grey for
+    /// the easy zone.
+    public static let zones: [Color] = [
+        Color(day: 0x8DA7A1, tent: 0x6F8A85),
+        Color(day: 0x4E9A55, tent: 0x6CC47A),
+        Color(day: 0xD2AE2A, tent: 0xE8C44A),
+        Color(day: 0xE0782A, tent: 0xF29248),
+        Color(day: 0xC43A2C, tent: 0xF06A55),
+    ]
+    /// The device climb screen's grade bands, green to red: the zone ramp above its easy zone,
+    /// with the elevation amber for 6–9 %.
+    public static let gradeBands: [Color] = [zones[1], zones[2], amber, zones[3], zones[4]]
+
     // MARK: Device illustration
     // The little hardware drawing on the launch and pairing screens. These draw the device, not
     // app chrome, so they keep the exact device colours in both appearances.

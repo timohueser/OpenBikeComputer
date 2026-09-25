@@ -445,11 +445,13 @@ struct RootView: View {
                         onDismiss: { mainModel.dismissMergeSuggestion(for: id) }
                     ))
                 )
-                // An edit, or new points, build the screen's models again: they hold the points
-                // they were built with.
+                // An edit, new points, or a new device revision of the ride build the screen's
+                // models again: they hold the ride they were built with. A revision can change the
+                // summary alone, such as its zone limits, with every sample the same.
                 .id(tracked.map { [Double(mainModel.rideEditCount), Double($0.points.count),
                                    $0.points.first?.timestamp.timeIntervalSince1970 ?? 0,
-                                   $0.points.last?.timestamp.timeIntervalSince1970 ?? 0] })
+                                   $0.points.last?.timestamp.timeIntervalSince1970 ?? 0,
+                                   Double(ride.source?.revision ?? 0)] })
                 // A rename builds the screen again too, so the title shows the new name.
                 .id(ride.name)
                 // Above both rebuilds, so an edit that lands while the sheet is open cannot close it.

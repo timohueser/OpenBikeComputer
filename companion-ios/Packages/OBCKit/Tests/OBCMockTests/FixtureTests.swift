@@ -9,7 +9,7 @@ final class FixtureTests: XCTestCase {
     func testDefaultFixturesMatchDesignSampleData() {
         let set = FixtureSet.load("default")
         XCTAssertEqual(set.deviceInfo.name, "Trailhead")
-        for name in ["default", "empty", "large", "trips", "journal", "website", "website-rides"] {
+        for name in ["default", "empty", "large", "trips", "journal", "website", "website-rides", "effort"] {
             XCTAssertEqual(FixtureSet.load(name).deviceInfo.libraryScope?.storeID, FixtureSet.defaultStoreID)
         }
         XCTAssertEqual(set.battery, 82)
@@ -23,6 +23,20 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(route?.waypoints.count, 4)
         XCTAssertEqual(route?.waypoints.first?.name, "Ottawa Lake trailhead")
         XCTAssertEqual(route?.waypoints.last?.distanceAlongMeters, 62_400)
+    }
+
+    /// The effort set covers the timeline's three states: zones, sensors without limits, and no
+    /// sensors.
+    func testEffortFixturesCarrySensorsAndLimits() {
+        let rides = FixtureSet.load("effort").rides.map { $0.ride() }
+        XCTAssertEqual(rides.map(\.zoneLimits), [
+            RideZoneLimits(maxHeartRate: 185, ftpWatts: 250), .notSet, .notSet,
+        ])
+        XCTAssertEqual(rides.map { RideTimeline(ride: $0).channels }, [
+            [.elevation, .speed, .heartRate, .power, .cadence], [.elevation, .speed],
+            [.elevation, .speed, .heartRate, .cadence],
+        ])
+        XCTAssertNotNil(rides[0].summary.energyKJ)
     }
 
     func testRouteSummariesCarryANormalizedTrackPreview() {

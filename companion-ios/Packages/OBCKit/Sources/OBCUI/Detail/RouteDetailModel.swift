@@ -8,7 +8,7 @@ import OBCTransport
 ///
 /// A planned route is library-first: its waypoints and profile come in as `preloadedDetail`,
 /// derived from the saved record's own geometry, so the screen never asks the device for a route
-/// the phone already holds. Tracked computes its profile and highlights from the synced ride
+/// the phone already holds. Tracked computes its timeline and highlights from the synced ride
 /// points in `start()`, which runs once on the live model. Imported computes everything up front.
 @MainActor @Observable
 public final class RouteDetailModel {
@@ -29,8 +29,12 @@ public final class RouteDetailModel {
     public private(set) var name: String
     /// Waypoints in ride order; empty until the detail read lands.
     public private(set) var waypoints: [Waypoint] = []
-    /// Elevation samples for the profile card; empty hides the card.
+    /// Elevation samples for a route's profile card; empty hides the card. A ride draws its
+    /// `timeline` instead.
     public private(set) var elevationProfile: [Double] = []
+    /// A tracked ride's channels on one distance axis; nil until `start()`, and for a ride
+    /// without a tracklog.
+    public private(set) var timeline: RideTimeline?
     /// A tracked ride's highlights as ledger rows, the most notable first; empty elsewhere.
     public private(set) var highlights: [OBCStat] = []
     public private(set) var maxGradePercent: Double?
@@ -228,14 +232,15 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Watch the link, and fill a tracked ride's profile and highlights. A host may build throwaway
+    /// Watch the link, and fill a tracked ride's timeline and highlights. A host may build throwaway
     /// models on every render, so this whole-track work waits for the live one.
     public func start() {
         guard !started else { return }
         started = true
         if case .tracked(let summary) = dressing {
             let ride = Ride(summary: summary, points: ridePoints)
-            elevationProfile = MeasuredLine.elevationProfile(ridePoints: ridePoints)
+            let timeline = RideTimeline(ride: ride)
+            self.timeline = timeline.length > 0 ? timeline : nil
             highlights = RideHighlights.compute(ride, library: rides).map { OBCFormat.highlight($0) }
         }
         connectionWatch = Task { [weak self, transport] in

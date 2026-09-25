@@ -26,6 +26,8 @@ public struct MapTrackPreviewView: View {
     var photoPins: [Coordinate] = []
     /// The index in `photoPins` of the photo on screen.
     var highlightedPhoto: Int? = nil
+    /// A ride timeline's cursor. The basemap marks it; the grid does not.
+    var cursor: Coordinate? = nil
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -37,7 +39,8 @@ public struct MapTrackPreviewView: View {
         waypoints: [Waypoint] = [],
         totalDistanceMeters: Double = 0,
         photoPins: [Coordinate] = [],
-        highlightedPhoto: Int? = nil
+        highlightedPhoto: Int? = nil,
+        cursor: Coordinate? = nil
     ) {
         self.preview = preview
         self.ink = ink
@@ -47,6 +50,7 @@ public struct MapTrackPreviewView: View {
         self.totalDistanceMeters = totalDistanceMeters
         self.photoPins = photoPins
         self.highlightedPhoto = highlightedPhoto
+        self.cursor = cursor
     }
 
     private var mode: MapPreviewMode {
@@ -81,7 +85,7 @@ public struct MapTrackPreviewView: View {
         ) {
             TrackMapContent(
                 coordinates: coordinates, ink: ink, dotRadius: style.dotRadius, waypoints: waypoints,
-                photoPins: photoPins, highlightedPhoto: highlightedPhoto
+                photoPins: photoPins, highlightedPhoto: highlightedPhoto, cursor: cursor
             )
         }
         .allowsHitTesting(false)
@@ -114,6 +118,7 @@ struct TrackMapContent: MapContent {
     var waypoints: [Waypoint] = []
     var photoPins: [Coordinate] = []
     var highlightedPhoto: Int?
+    var cursor: Coordinate?
 
     var body: some MapContent {
         let coords = MapGeometry.clLocations(coordinates)
@@ -144,6 +149,15 @@ struct TrackMapContent: MapContent {
         ForEach(photoPinOrder, id: \.self) { index in
             Annotation("", coordinate: MapGeometry.clLocations([photoPins[index]])[0]) {
                 PhotoPin(highlighted: index == highlightedPhoto)
+            }
+        }
+        if let cursor {
+            Annotation("", coordinate: MapGeometry.clLocations([cursor])[0]) {
+                Circle()
+                    .fill(OBCTheme.amber)
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 2.5))
+                    .shadow(color: .black.opacity(0.3), radius: 1.5, y: 1)
             }
         }
     }

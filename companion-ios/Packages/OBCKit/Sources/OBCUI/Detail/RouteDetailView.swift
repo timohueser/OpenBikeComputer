@@ -3,8 +3,9 @@ import OBCDomain
 import OBCTransport
 
 /// The detail screen for a route or ride. One view, four dressings: planned, trip day, tracked,
-/// and imported. A route page leads with what the device holds and the one action, then the
-/// ledger in the device route overview's layout.
+/// and imported. A route page leads with what the device holds and the one action, then its
+/// elevation profile and the ledger in the device route overview's layout. A ride page leads with
+/// its timeline and zones, then the ledger.
 public struct RouteDetailView: View {
     @Bindable private var model: RouteDetailModel
     private let deviceName: String
@@ -30,6 +31,9 @@ public struct RouteDetailView: View {
     @State private var deleteConfirmShown = false
     @State private var waypointsExpanded = false
     @State private var mapShown = false
+    /// The timeline's cursor, in metres along the ride; nil before the first scrub.
+    @State private var cursor: Double?
+    @State private var openChannel: RideTimeline.Channel?
     @State private var replayShown = false
     @State private var replayPreparing = false
     @State private var replayContent: ReplayContent?
@@ -91,6 +95,20 @@ public struct RouteDetailView: View {
 
                 quietRows
 
+                if let timeline = model.timeline {
+                    RideTimelineCard(timeline: timeline, cursor: $cursor, photoTicks: photos?.tickFractions ?? []) {
+                        openChannel = $0
+                    }
+                    .padding(.top, 20)
+                    RideZonesCard(timeline: timeline)
+                        .padding(.top, 12)
+                } else if !model.elevationProfile.isEmpty {
+                    OBCEyebrow("Elevation")
+                        .padding(.top, 20)
+                        .padding(.bottom, 6)
+                    ElevationProfileView(samples: model.elevationProfile)
+                }
+
                 if !model.stats.isEmpty {
                     OBCLedger(model.stats)
                         .padding(.top, 20)
@@ -110,13 +128,6 @@ public struct RouteDetailView: View {
                     .disabled(replayPreparing)
                     .padding(.top, 16)
                     .accessibilityIdentifier("detail.replay")
-                }
-
-                if !model.elevationProfile.isEmpty {
-                    OBCEyebrow("Elevation")
-                        .padding(.top, 20)
-                        .padding(.bottom, 6)
-                    ElevationProfileView(samples: model.elevationProfile, ticks: photos?.tickFractions ?? [])
                 }
 
                 if !model.highlights.isEmpty {
@@ -171,6 +182,11 @@ public struct RouteDetailView: View {
             if let replayContent { ReplayPlayerView(content: replayContent) }
         }
         #endif
+        .sheet(item: $openChannel) { channel in
+            if let timeline = model.timeline {
+                RideChannelSheet(timeline: timeline, channel: channel, cursor: $cursor)
+            }
+        }
         .obcRenameSheet(
             renameTitle,
             isPresented: $renameShown,
@@ -197,7 +213,8 @@ public struct RouteDetailView: View {
             style: .hero,
             waypoints: model.waypoints,
             totalDistanceMeters: model.distanceMeters,
-            photoPins: photos?.pinCoordinates ?? []
+            photoPins: photos?.pinCoordinates ?? [],
+            cursor: cursor.flatMap { model.timeline?.line.coordinate(at: $0) }
         )
         .frame(height: 200)
         .padding(.top, 8)

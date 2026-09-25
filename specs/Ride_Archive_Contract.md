@@ -92,8 +92,9 @@ and exact-source retry with a new RequestId and renewed StoreId check. STATUS is
 A receipt response has a ten-second deadline. Expiry cancels its parked receive and leaves
 confirmation pending; it does not assume that the write failed or immediately retry the request.
 
-A failed receipt keeps the phone archive and earlier batch successes. The existing sync banner
-and Resume action expose pending confirmation, unsupported devices and device refusals. Resume
+A failed receipt keeps the phone archive and earlier batch successes. A receipt without an answer
+is sent once more at the end of its sync run, after a short pause. The sync banner and its action
+expose a receipt that still has no answer, unsupported devices and device refusals. The action
 or a later reconnect revalidates the archives and retries without downloading them again. A
 changed or absent source is terminal for that receipt; a fresh catalog decides any later download.
 There is no persistent receipt queue or local device-acknowledgment mirror. Sync counts describe
