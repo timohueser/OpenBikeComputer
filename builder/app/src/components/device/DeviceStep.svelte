@@ -99,7 +99,7 @@
                 <button type="button" class="btn primary" disabled={prompting} onclick={connect}>
                     Connect device
                 </button>
-                <p class="small faint">Plug the OBC in over USB, then pick it from the browser's list.</p>
+                <p class="small faint">Connect by USB, then choose your device.</p>
             </div>
             {#if session.status === "error" && session.error}
                 <p class="note error small" role="alert">{session.error}</p>

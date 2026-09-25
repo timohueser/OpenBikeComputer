@@ -151,7 +151,7 @@ command = "npm test --prefix apps/obc-web-demo/tests/browser"
 jobs = ["wasm"]
 fixtures = ["embedded-demo-assets"]
 platforms = ["linux", "macos"]
-triggers = ["apps/obc-web-demo/**", "apps/obc-sim/assets/**", "docs/index.html", "docs/Trunk.toml"]
+triggers = ["apps/obc-web-demo/**", "apps/obc-sim/assets/**", "docs/index.html", "docs/Trunk.toml", "docs/assets/**", "docs/templates/**", "docs/build_docs.py"]
 
 [[suite]]
 id = "web.builder-vitest"
@@ -160,6 +160,7 @@ command = "cd builder/app && npm test"
 jobs = ["web"]
 fixtures = ["checked-in-web-fixtures"]
 triggers = [
+  "docs/assets/theme.css", "docs/assets/fonts/**",
   "builder/app/**/*.test.ts",
   "builder/app/src/**",
   "builder/app/test-support/**",
@@ -188,7 +189,7 @@ command = "npm test --prefix builder/app/tests/browser"
 jobs = ["web-browser"]
 fixtures = ["checked-in-web-fixtures"]
 platforms = ["linux", "macos"]
-triggers = ["builder/app/**", "apps/obc-web-assemble/**", "tools/fixture_catalog.py"]
+triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/**", "apps/obc-web-assemble/**", "tools/fixture_catalog.py"]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
 # it against `build-wasm-bridges.sh` and the Trunk page are triggered by those files too.
@@ -411,7 +412,7 @@ id = "ci.web-build"
 route = "ordinary"
 command = "obc check frontend"
 jobs = ["desktop-frontend", "web"]
-triggers = ["builder/app/package.json", "builder/app/package-lock.json", "builder/app/src/**"]
+triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/src/**"]
 
 [[suite]]
 id = "ci.docs"
