@@ -55,7 +55,7 @@ public struct OBCComponentGallery: View {
                 }
 
                 section("GPS Track Preview") {
-                    TrackPreviewView(.obcSample, style: .hero, tag: "Planned")
+                    TrackPreviewView(.obcSample, style: .hero)
                         .frame(height: 214)
                     HStack(spacing: 16) {
                         TrackPreviewView(.obcSample)
@@ -227,13 +227,6 @@ public struct OBCComponentGallery: View {
                     TripReviewGallerySection()
                 }
                 #endif
-
-                section("Connected Services") {
-                    OBCConnectedServicesBlock(services: [
-                        OBCServiceStatus(name: "Strava", systemImage: "bolt.fill", tileColor: OBCTheme.tint, state: .uploaded("Uploaded on import")),
-                        OBCServiceStatus(name: "Komoot", systemImage: "location.circle", tileColor: OBCTheme.tint, state: .notUploaded("Not uploaded")),
-                    ])
-                }
 
                 section("Launch & Pairing") {
                     launchScreen { LaunchConnectingView(deviceName: "Trailhead") }

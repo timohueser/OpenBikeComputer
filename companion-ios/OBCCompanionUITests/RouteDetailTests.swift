@@ -146,9 +146,9 @@ final class RouteDetailTests: XCTestCase {
 
     // MARK: Tracked dressing
 
-    /// The ride's stats line, the tracked tag, and the coming-soon services block.
+    /// The ride's ledger leads with what it recorded, and nothing inert sits on the page.
     @MainActor
-    func testTrackedDetailShowsRideStatsAndServices() {
+    func testTrackedDetailShowsTheRideLedger() {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
@@ -160,11 +160,11 @@ final class RouteDetailTests: XCTestCase {
         card.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
 
-        let stats = app.staticTexts["detail.statsLine"]
-        XCTAssertTrue(stats.waitForExistence(timeout: 5), "ride stats line missing")
-        XCTAssertTrue(stats.label.hasPrefix("58.2 km · 2:51 · "), "distance and moving time lead: \(stats.label)")
-        XCTAssertTrue(app.staticTexts["Strava"].exists, "services block missing")
-        XCTAssertTrue(app.staticTexts["Komoot"].exists)
+        let distance = app.otherElements["ledger.Distance"]
+        XCTAssertTrue(distance.waitForExistence(timeout: 5), "ride ledger missing")
+        XCTAssertEqual(distance.value as? String, "58.2 km")
+        XCTAssertEqual(app.otherElements["ledger.Moving time"].value as? String, "2:51 h")
+        XCTAssertFalse(app.staticTexts["Strava"].exists, "no service rows until a service works")
         XCTAssertTrue(app.buttons["detail.rename"].exists, "E3 name must stay editable")
         snap(app, "E3-ride-detail")
     }
@@ -185,7 +185,7 @@ final class RouteDetailTests: XCTestCase {
 
         let delete = app.buttons["detail.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "E3 delete missing")
-        // The actions sit at the end of the scroll, below the services block.
+        // The actions sit at the end of the scroll.
         for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
         delete.tap()
         let confirm = app.sheets.buttons["Delete ride"]

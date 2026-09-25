@@ -294,6 +294,7 @@ public final class RideSyncCoordinator {
                     }
                 }
             } catch {
+                NSLog("OBC ride sync failed after %d rides: %@", landed, String(describing: error))
                 batchFailed = true
                 download.handle.cancel()
             }
@@ -321,6 +322,7 @@ public final class RideSyncCoordinator {
             lastSyncCount = nil
         } catch {
             guard !Task.isCancelled else { return }
+            NSLog("OBC ride catalog failed: %@", String(describing: error))
             syncProgress = nil
             syncState = .idle
             // A failed reconnect catalog cannot establish which archived sources still match.

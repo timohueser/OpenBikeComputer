@@ -59,7 +59,8 @@ public struct LineMarkerEditor: View {
             let inner = first + 1 <= last ? model.line.vertices[(first + 1)...last].map(\.coordinate) : []
             return MultiTrackPreviewView.Stage(
                 coordinates: [model.line.coordinate(at: from)] + inner + [model.line.coordinate(at: to)],
-                color: model.segmentColors[segment]
+                color: model.segmentColors[segment],
+                cased: model.cased
             )
         }
         return MultiTrackPreviewView(stages: stages, showsChrome: false)

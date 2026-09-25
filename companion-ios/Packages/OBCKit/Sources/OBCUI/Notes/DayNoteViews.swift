@@ -44,7 +44,6 @@ struct DayNoteOfferRow: View {
                     },
                     onDismiss: { withAnimation(.snappy) { model.dismissOffer() } }
                 )
-                .padding(.bottom, 8)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("dayNote.offer")
             }
