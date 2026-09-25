@@ -538,6 +538,8 @@ menu_anywhere = "Menü, von überall"
 continue = "Weiter"
 units = "EINHEITEN"
 theme = "FARBSCHEMA"
+effort = "ZONEN"
+skip = "Überspringen"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

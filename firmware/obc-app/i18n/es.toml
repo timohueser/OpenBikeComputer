@@ -537,6 +537,8 @@ menu_anywhere = "El menú, siempre"
 continue = "Continuar"
 units = "UNIDADES"
 theme = "TEMA"
+effort = "ZONAS"
+skip = "Omitir"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

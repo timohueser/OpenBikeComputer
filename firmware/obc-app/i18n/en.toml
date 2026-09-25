@@ -575,6 +575,9 @@ continue = "Continue"
 # The titles of the units and theme steps.
 units = "UNITS"
 theme = "THEME"
+# The effort step: its title, and its last row while neither limit is set.
+effort = "ZONES"
+skip = "Skip"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

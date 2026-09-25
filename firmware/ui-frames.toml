@@ -1887,6 +1887,39 @@ script = "p p u d b p p p d"
 expect = "SetupTheme"
 args = ["--fresh"]
 
+# Setup's effort step after the theme step: max heart rate and FTP unset, the last row Skip, and
+# the plain ride tiles.
+[[frame]]
+name = "setup-effort"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupEffort"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-effort"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupEffort"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Select on Max heart rate: the drawer editor rises over the page on 180 bpm.
+[[frame]]
+name = "setup-effort-editor"
+map = "{grimsel}"
+script = "p p u d b p p p p p w"
+expect = "ContextDrawer"
+args = ["--fresh"]
+
+# Both limits set, 185 bpm and 250 W, and the cursor on Continue: the tiles take their zones.
+[[frame]]
+name = "setup-effort-set"
+map = "{grimsel}"
+script = "p p u d b p p p p p d*5 p d p d*10 p d w"
+expect = "SetupEffort"
+args = ["--fresh"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).

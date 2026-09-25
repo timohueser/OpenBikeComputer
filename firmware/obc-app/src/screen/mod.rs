@@ -117,7 +117,9 @@ pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
 };
-pub use setup::{HelloScreen, SetupButtonsScreen, SetupLanguageScreen, SetupThemeScreen, SetupUnitsScreen};
+pub use setup::{
+    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupThemeScreen, SetupUnitsScreen,
+};
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -918,6 +920,9 @@ screens! {
     SetupUnits(SetupUnitsScreen) => Caps::modal().blocking(),
     /// Setup's theme step: Light or Dark. The frame draws in the theme under its cursor.
     SetupTheme(SetupThemeScreen) => Caps::modal().blocking(),
+    /// Setup's effort step: max heart rate and FTP, each edited in the drawer editor over the page,
+    /// then a row that continues.
+    SetupEffort(SetupEffortScreen) => Caps::modal().blocking(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),
