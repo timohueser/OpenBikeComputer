@@ -442,14 +442,27 @@ private struct RideDTO: Decodable {
     let movingTime: TimeInterval
     let averageSpeedMps: Double
     let climbMeters: Double
+    let descentMeters: Double?
     let payloadBytes: Int?
-    let track: [GeoDTO]
+    let track: [FixDTO]
     /// A bike type name in lowercase; absent is Road.
     let bikeType: String?
     /// The trip day the ride started on; absent for a ride without a trip.
     let trip: TripDayDTO?
     /// The effort limits at the ride's start; absent for a ride recorded without them.
     let zoneLimits: RideZoneLimits?
+
+    /// A fix: `t` is seconds from the start, and a sensor value is absent without that sensor.
+    struct FixDTO: Decodable {
+        let lat: Double
+        let lon: Double
+        let ele: Double?
+        let t: TimeInterval?
+        let hr: Int?
+        let pw: Int?
+        let cad: Int?
+        var coordinate: Coordinate { Coordinate(latitude: lat, longitude: lon) }
+    }
 
     struct TripDayDTO: Decodable {
         let key: UInt64
@@ -459,21 +472,30 @@ private struct RideDTO: Decodable {
     }
 
     var entry: RideEntry {
+        // A fix without a time sits evenly across the moving time, so the encoded payload is a
+        // plausible recorded tracklog.
+        let step = track.count > 1 ? movingTime / Double(track.count - 1) : 0
+        let points = track.enumerated().map { index, fix in
+            RidePoint(timestamp: date.addingTimeInterval(fix.t ?? Double(index) * step),
+                      coordinate: fix.coordinate, elevationMeters: fix.ele,
+                      heartRate: fix.hr, cadence: fix.cad, power: fix.pw)
+        }
+        // The sensor totals the device records for these samples.
+        let heartRates = track.compactMap(\.hr), powers = track.compactMap(\.pw), cadences = track.compactMap(\.cad)
+        func mean(_ values: [Int]) -> Int? { values.isEmpty ? nil : values.reduce(0, +) / values.count }
+        let joules = zip(points, points.dropFirst()).reduce(0.0) { sum, pair in
+            sum + Double(pair.1.power ?? 0) * pair.1.timestamp.timeIntervalSince(pair.0.timestamp)
+        }
         let summary = RideSummary(
             id: RideID(id), name: name, date: date, distanceMeters: distanceMeters,
             movingTime: movingTime, averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
-            trackPreview: TrackPreview.normalizing(track.map(\.coordinate)),
+            descentMeters: descentMeters ?? 0, trackPreview: TrackPreview.normalizing(track.map(\.coordinate)),
+            avgHeartRate: mean(heartRates), maxHeartRate: heartRates.max(), avgCadence: mean(cadences),
+            avgPower: mean(powers), maxPower: powers.max(), energyKJ: powers.isEmpty ? nil : Int(joules / 1_000),
             bikeType: BikeType.allCases.first { $0.name.lowercased() == bikeType } ?? .road,
             trip: trip.map { RideTrip(key: $0.key, dayIndex: $0.dayIndex, dayCount: $0.dayCount, name: $0.name) },
             zoneLimits: zoneLimits ?? .notSet
         )
-        // Fixture tracks carry no timestamps — synthesize them evenly across the
-        // moving time, so the encoded payload is a plausible recorded tracklog.
-        let step = track.count > 1 ? movingTime / Double(track.count - 1) : 0
-        let points = track.enumerated().map { index, geo in
-            RidePoint(timestamp: date.addingTimeInterval(Double(index) * step),
-                      coordinate: geo.coordinate, elevationMeters: geo.ele)
-        }
         return RideEntry(summary: summary, points: points, downloadByteCount: payloadBytes)
     }
 }
