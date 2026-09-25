@@ -218,17 +218,19 @@ pub enum SetupStep {
     Theme = 5,
     Sensors = 6,
     Effort = 7,
+    Qr = 8,
 }
 
 impl SetupStep {
     /// The steps in the order the rider meets them. The byte values are persisted, so a new step
     /// takes a new value and its place here.
-    pub(crate) const ORDER: [SetupStep; 7] = [
+    pub(crate) const ORDER: [SetupStep; 8] = [
         SetupStep::Hello,
         SetupStep::Language,
         SetupStep::Buttons,
         SetupStep::Units,
         SetupStep::Theme,
+        SetupStep::Qr,
         SetupStep::Sensors,
         SetupStep::Effort,
     ];

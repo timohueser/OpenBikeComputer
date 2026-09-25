@@ -38,6 +38,7 @@ pub(crate) mod map;
 mod map_transfer;
 mod menu;
 mod nav_route;
+mod pair_code;
 pub mod palette;
 mod passkey;
 mod peak_article;
@@ -90,6 +91,7 @@ pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
 pub use nav_route::{NavFailScreen, NavPlanningScreen, PlanKind};
+pub use pair_code::PairPhoneScreen;
 pub use passkey::PasskeyScreen;
 pub use peak_article::PeakArticleScreen;
 pub use peak_view::PeakViewScreen;
@@ -118,8 +120,8 @@ pub use settings::{
     StatFieldsScreen,
 };
 pub use setup::{
-    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupSensorScanScreen, SetupSensorsScreen,
-    SetupThemeScreen, SetupUnitsScreen,
+    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupNoAppScreen, SetupQrScreen,
+    SetupSensorScanScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
 };
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
@@ -921,6 +923,11 @@ screens! {
     SetupUnits(SetupUnitsScreen) => Caps::modal().blocking(),
     /// Setup's theme step: Light or Dark. The frame draws in the theme under its cursor.
     SetupTheme(SetupThemeScreen) => Caps::modal().blocking(),
+    /// Setup's pairing step: the QR code of the pairing link. A bond ends the step, and Back opens
+    /// the page that asks whether to ride without the app.
+    SetupQr(SetupQrScreen) => Caps::modal().blocking(),
+    /// Ride without the app: a row back to the code and Skip, which ends the pairing step.
+    SetupNoApp(SetupNoAppScreen) => Caps::modal().blocking(),
     /// Setup's sensors step: the three sensor slots with their live status, then Skip or Continue.
     SetupSensors(SetupSensorsScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
     /// The Settings scan list for one slot in the setup chrome, opened from the sensors step. It
@@ -988,6 +995,9 @@ screens! {
     /// it replaces the last per-route popup of the burst. It holds the trip's durable id, not a
     /// catalog index, so no rescan remap is needed.
     TripReceived(TripReceivedScreen) => Caps::modal(),
+    /// The pairing code, opened from Connections while no phone is paired. It waits for the rider
+    /// to pair on the phone, so idle return leaves it up. A bond closes it.
+    PairPhone(PairPhoneScreen) => Caps::modal(),
     /// The BLE pairing passkey card. Host-pushed when the seam's passkey goes `Some`, popped when
     /// it clears. Opaque and non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal().blocking(),

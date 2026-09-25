@@ -702,14 +702,34 @@ script = "B u p d d p"
 expect = "Sound"
 
 # Connections (group 3): the Bluetooth switch, the Sensors door, the phone's status line (read-only,
-# the cursor skips it) and the guarded Forget row — drawn only while there is a bond to drop.
-# Unpaired: no Forget row, one step lands on Sensors and the next wraps. Paired: two steps select
-# the Forget row (the shaded guarded base), and a partial hold fills it warning-red.
+# the cursor skips it), then the pairing code's door while no phone is paired, or the guarded Forget
+# row while there is a bond to drop. Paired: two steps select the Forget row (the shaded guarded
+# base), and a partial hold fills it warning-red.
 [[frame]]
 name = "connections"
 map = "{grimsel}"
 script = "B u p d d d p"
 expect = "Connections"
+
+# Unpaired: two steps select the pairing code's door, and Select opens the code.
+[[frame]]
+name = "connections-pair"
+map = "{grimsel}"
+script = "B u p d d d p d d"
+expect = "Connections"
+
+[[frame]]
+name = "connections-pair"
+map = "{grimsel}"
+script = "B u p d d d p d d"
+expect = "Connections"
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "pair-phone"
+map = "{grimsel}"
+script = "B u p d d d p d d p"
+expect = "PairPhone"
 
 [[frame]]
 name = "connections-paired"
@@ -1887,18 +1907,59 @@ script = "p p u d b p p p d"
 expect = "SetupTheme"
 args = ["--fresh"]
 
+# Setup's pairing step after the theme step: the QR code of the pairing link, which the sim's
+# serial makes the spec's example link. The code stays dark on light in the Dark theme.
+[[frame]]
+name = "setup-qr"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupQr"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-qr"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupQr"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "setup-qr-dark"
+map = "{grimsel}"
+script = "p p u d b p p p d p"
+expect = "SetupQr"
+args = ["--fresh"]
+
+# Back on the pairing step asks whether to ride without the app. Skip passes the step, which the
+# later setup frames do.
+[[frame]]
+name = "setup-no-app"
+map = "{grimsel}"
+script = "p p u d b p p p p b"
+expect = "SetupNoApp"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-no-app"
+map = "{grimsel}"
+script = "p p u d b p p p p b"
+expect = "SetupNoApp"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
 # Setup's sensors step with no sensor saved: each slot says how to wake its sensor, over Skip.
 [[frame]]
 name = "setup-sensors"
 map = "{grimsel}"
-script = "p p u d b p p p p"
+script = "p p u d b p p p p b d p"
 expect = "SetupSensors"
 args = ["--fresh"]
 
 [[frame]]
 name = "setup-sensors"
 map = "{grimsel}"
-script = "p p u d b p p p p"
+script = "p p u d b p p p p b d p"
 expect = "SetupSensors"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
@@ -1907,7 +1968,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "setup-sensors-added"
 map = "{grimsel}"
-script = "p p u d b p p p p"
+script = "p p u d b p p p p b d p"
 expect = "SetupSensors"
 args = ["--fresh", "--sensors", "screen"]
 
@@ -1916,14 +1977,14 @@ args = ["--fresh", "--sensors", "screen"]
 [[frame]]
 name = "setup-sensors-scanning"
 map = "{grimsel}"
-script = "p p u d b p p p p d p"
+script = "p p u d b p p p p b d p d p"
 expect = "SetupSensorScan"
 args = ["--fresh"]
 
 [[frame]]
 name = "setup-sensors-scanning"
 map = "{grimsel}"
-script = "p p u d b p p p p d p"
+script = "p p u d b p p p p b d p d p"
 expect = "SetupSensorScan"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
@@ -1933,14 +1994,14 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "setup-effort"
 map = "{grimsel}"
-script = "p p u d b p p p p u p"
+script = "p p u d b p p p p b d p u p"
 expect = "SetupEffort"
 args = ["--fresh"]
 
 [[frame]]
 name = "setup-effort"
 map = "{grimsel}"
-script = "p p u d b p p p p u p"
+script = "p p u d b p p p p b d p u p"
 expect = "SetupEffort"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
@@ -1949,7 +2010,7 @@ langs = ["de", "fr", "es"]
 [[frame]]
 name = "setup-effort-editor"
 map = "{grimsel}"
-script = "p p u d b p p p p u p p w"
+script = "p p u d b p p p p b d p u p p w"
 expect = "ContextDrawer"
 args = ["--fresh"]
 
@@ -1957,7 +2018,7 @@ args = ["--fresh"]
 [[frame]]
 name = "setup-effort-set"
 map = "{grimsel}"
-script = "p p u d b p p p p u p p d*5 p d p d*10 p d w"
+script = "p p u d b p p p p b d p u p p d*5 p d p d*10 p d w"
 expect = "SetupEffort"
 args = ["--fresh"]
 

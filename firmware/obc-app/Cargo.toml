@@ -30,6 +30,9 @@ heapless = "0.8"
 # shim the renderer and route crates use.
 libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 
+# The QR code of the pairing link (BLE spec §9): no_std, no heap, no unsafe, no dependencies.
+qrcodegen-no-heap = "1.8"
+
 [features]
 # Host-only. It turns on the captured-fixture test targets and the small read-only accessors they
 # need; the device build never enables it and carries none of it.

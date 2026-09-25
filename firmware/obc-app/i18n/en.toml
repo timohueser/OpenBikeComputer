@@ -313,6 +313,7 @@ title = "CONNECTIONS"
 phone = "Phone"
 sensors = "Sensors"
 not_paired = "Not paired"
+pair = "Pair phone"
 connected = "connected"
 
 # --- The phone link: its status words and the Forget action ---
@@ -411,6 +412,10 @@ off_route = "Off route"
 title = "PAIRING"
 enter_code = "Enter this code"
 on_phone = "on your phone"
+
+# --- The pairing code: the QR code of the pairing link ---
+[pair]
+scan = "Scan with your phone"
 
 # --- Rides list screen ---
 [rides]
@@ -580,6 +585,15 @@ skip = "Skip"
 units = "UNITS"
 theme = "THEME"
 effort = "ZONES"
+# The pairing step: its title, its Back hint, and the page that asks to ride without the app.
+qr = "GET THE APP"
+no_app = "No app?"
+no_app_title = "NO APP"
+offline = "Works offline"
+needs_app = "Needs the app"
+recording = "Ride recording"
+ride_sync = "Ride sync"
+show_code = "Show the code"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

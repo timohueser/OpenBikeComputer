@@ -51,13 +51,17 @@ pub(crate) fn resolved_name(store: &LinkControl) -> heapless::String<48> {
     s
 }
 
-/// The serial number string: the 64-bit FICR `DEVICEID` as 16 uppercase hex digits, high word
-/// first, so its last four digits are [`device_name`]'s `XXXX`. Also the USB `iSerialNumber`, which
-/// is what makes a plugged-in device distinguishable in the browser's chooser.
-pub(crate) fn serial_string() -> heapless::String<16> {
+/// The 64-bit FICR `DEVICEID`, high word first, so its low 16 bits are [`device_name`]'s `XXXX`.
+pub(crate) fn serial() -> u64 {
     let (id0, id1) = device_id_words();
+    (u64::from(id1) << 32) | u64::from(id0)
+}
+
+/// The serial number string: [`serial`] as 16 uppercase hex digits. Also the USB `iSerialNumber`,
+/// which is what makes a plugged-in device distinguishable in the browser's chooser.
+pub(crate) fn serial_string() -> heapless::String<16> {
     let mut s = heapless::String::new();
-    let _ = core::fmt::write(&mut s, format_args!("{:08X}{:08X}", id1, id0));
+    let _ = core::fmt::write(&mut s, format_args!("{:016X}", serial()));
     s
 }
 

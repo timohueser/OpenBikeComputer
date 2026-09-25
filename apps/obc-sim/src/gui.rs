@@ -387,6 +387,7 @@ impl SimGui {
         app.set_backlight_available(obc_ports::Backlight::available(&backlight));
         let sounder = crate::sounder::SimSounder::open(!args.no_sound);
         app.set_sound_available(obc_ports::Sounder::available(&sounder));
+        app.set_serial(crate::SIM_SERIAL);
         // The window draws into one resident device-64 plane and presents it by self-diff, as the
         // board does, so the frozen base's rows survive between frames.
         app.set_resident_frame(true);

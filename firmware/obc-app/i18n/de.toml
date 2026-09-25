@@ -286,6 +286,7 @@ title = "VERBINDUNG"
 phone = "Telefon"
 sensors = "Sensoren"
 not_paired = "Nicht gekoppelt"
+pair = "Handy koppeln"
 connected = "verbunden"
 
 # --- The phone link: its status words and the Forget action ---
@@ -383,6 +384,10 @@ off_route = "Abseits"
 title = "KOPPLUNG"
 enter_code = "Code eingeben"
 on_phone = "am Handy"
+
+# --- The pairing code: the QR code of the pairing link ---
+[pair]
+scan = "Mit dem Handy scannen"
 
 # --- Rides list screen ---
 [rides]
@@ -542,6 +547,14 @@ skip = "Überspringen"
 units = "EINHEITEN"
 theme = "FARBSCHEMA"
 effort = "ZONEN"
+qr = "APP HOLEN"
+no_app = "Ohne App?"
+no_app_title = "OHNE APP"
+offline = "Funktioniert offline"
+needs_app = "Braucht die App"
+recording = "Aufzeichnung"
+ride_sync = "Fahrten-Sync"
+show_code = "Code zeigen"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]
