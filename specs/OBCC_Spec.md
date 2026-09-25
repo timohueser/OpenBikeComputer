@@ -326,9 +326,11 @@ MUST read `bytes`, `sha256`, and OBCM version from the artifact rather than a
 recipe or sidecar.
 
 `partial` is true exactly when the baked sources do not fully cover the cell
-square. Consumers MUST expose partial coverage rather than presenting it as
-canonical. A canonical cell MUST NOT be replaced by a partial bake of the same
-schema revision.
+square. Consumers MUST disclose partial coverage when selected ground can extend
+beyond the source coverage. A named region's border-only overhang does not require
+a warning. Partial cells next to missing cells MUST remain visible as coverage
+limits. A canonical cell MUST NOT be replaced by a partial bake of the same schema
+revision.
 
 `known_empty` is required; an empty list means the band has no verified-empty
 coverage. Each entry is an inclusive run from `start` through `end`. Both ids MUST be
@@ -566,8 +568,8 @@ The root's `RegionEntry.terrain` prices that selection:
 | `bytes` | integer | Sum of the real `bytes` of the downloadable ones. |
 
 These bytes are **not** part of `bytes` or `bytes_by_band`, which are the OBCM
-per-file projection (OBCA §4). A rider may take the map without the raster or the
-raster without the map, so a consumer MUST present the two prices separately.
+per-file projection (OBCA §4). A consumer that includes terrain in a download
+MUST include these bytes in the displayed total size.
 
 ### 13.4 The one coupling, stated and guarded
 

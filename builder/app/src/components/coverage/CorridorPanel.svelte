@@ -409,13 +409,12 @@
             <p class="small error">{previewError}</p>
         {:else if adds && checkedCount}
             <p class="mono small adds">
-                adds {formatBytes(adds.addsBytes)} · {adds.addsCells}
-                {adds.addsCells === 1 ? "cell" : "cells"}{adds.patches > 1
+                Adds {formatBytes(adds.addsBytes)} to the total{adds.patches > 1
                     ? ` · ${adds.patches - 1} ${adds.patches === 2 ? "gap" : "gaps"} between routes`
                     : ""}
             </p>
         {:else if checkedCount}
-            <p class="mono small adds faint">pricing…</p>
+            <p class="mono small adds faint">Calculating…</p>
         {/if}
 
         <div class="commit">

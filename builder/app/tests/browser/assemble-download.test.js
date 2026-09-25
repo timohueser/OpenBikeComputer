@@ -70,7 +70,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
       buffer: Buffer.from('<gpx><trk><name>Fixture Route</name><trkseg><trkpt lat="47.30" lon="7.62"/><trkpt lat="47.34" lon="7.68"/></trkseg></trk></gpx>'),
     });
     await expect(corridor.locator('.routes li')).toContainText('Fixture Route');
-    await expect(corridor.locator('.adds')).toContainText('adds');
+    await expect(corridor.locator('.adds')).toContainText('Adds');
     await corridor.locator('input[type="range"]').evaluate((slider) => {
       slider.value = '50';
       slider.dispatchEvent(new Event('input', { bubbles: true }));
@@ -79,8 +79,8 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await corridor.getByRole('button', { name: 'Add to map' }).click();
     const corridorPart = page.locator('.parts li').filter({ hasText: 'Corridor — Fixture Route' });
     await expect(corridorPart).toBeVisible();
-    await expect(corridorPart.locator('.price')).not.toHaveText('Calculating…');
-    await expect(corridorPart.locator('.price')).not.toHaveText('0 B');
+    await expect(page.locator('.ledger .total')).toContainText('estimated total');
+    await expect(page.locator('.ledger .total')).not.toHaveText(/^0 B/);
     await corridorPart.getByRole('button', { name: 'Remove Fixture Route' }).click();
     await expect(corridorPart).toHaveCount(0);
     await expect(page.locator('.parts li')).toHaveCount(0);
@@ -93,7 +93,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await page.locator(`[aria-label^="Add ${REGION} ("]`).click();
     await expect(page.locator(`[aria-label="${REGION} is already in the map"]`)).toBeVisible();
 
-    await expect(page.locator('.ledger .total')).toContainText('cells');
+    await expect(page.locator('.ledger .total')).toContainText('estimated total');
     const originalTotal = await page.locator('.ledger .total').innerText();
     await page.getByRole('button', { name: 'Draw a box' }).click();
     const map = page.locator('.leaflet-container');
@@ -107,8 +107,8 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await page.mouse.up();
     const boxPart = page.locator('.parts li').filter({ hasText: 'Box' });
     await expect(boxPart).toBeVisible();
-    await expect(boxPart.locator('.price')).not.toHaveText('Calculating…');
-    await expect(boxPart.locator('.price')).not.toHaveText('0 B');
+    await expect(page.locator('.ledger .total')).toContainText('estimated total');
+    await expect(page.locator('.ledger .total')).not.toHaveText(/^0 B/);
     await boxPart.getByRole('button', { name: /^Remove Box/ }).click();
     await expect(boxPart).toHaveCount(0);
     await expect(page.locator('.ledger .total')).toHaveText(originalTotal);
@@ -122,10 +122,17 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await page.mouse.up();
     const lassoPart = page.locator('.parts li').filter({ hasText: 'Lasso' });
     await expect(lassoPart).toBeVisible();
-    await expect(lassoPart.locator('.price')).not.toHaveText('Calculating…');
-    await expect(lassoPart.locator('.price')).not.toHaveText('0 B');
+    await expect(page.locator('.ledger .total')).toContainText('estimated total');
+    await expect(page.locator('.ledger .total')).not.toHaveText(/^0 B/);
     await lassoPart.getByRole('button', { name: /^Remove Lasso/ }).click();
     await expect(lassoPart).toHaveCount(0);
+
+    const styles = page.locator('.style-options');
+    await expect(styles).not.toHaveAttribute('open');
+    await styles.locator('summary').click();
+    await expect(styles.getByRole('button', { name: 'Customize light' })).toBeVisible();
+    await styles.locator('summary').click();
+    await expect(styles).not.toHaveAttribute('open');
 
     const download = page.getByRole('button', { name: 'Download map' });
     // Enabled only once the ledger is final and the memory projection has been admitted.
