@@ -38,7 +38,7 @@ public struct OBCGroupedSection<Rows: View>: View {
 }
 
 /// One grouped-list row. Chevron implies `action`; `value` renders trailing
-/// faint; `comingSoon` badges and disables the row.
+/// faint.
 public struct OBCListRow<Trailing: View>: View {
     let icon: String?
     let iconColor: Color
@@ -50,7 +50,6 @@ public struct OBCListRow<Trailing: View>: View {
     let value: String?
     var showsChevron: Bool
     var disabled: Bool
-    var comingSoon: Bool
     var showsDivider: Bool
     let action: (() -> Void)?
     @ViewBuilder let trailing: Trailing
@@ -64,7 +63,6 @@ public struct OBCListRow<Trailing: View>: View {
         value: String? = nil,
         showsChevron: Bool = false,
         disabled: Bool = false,
-        comingSoon: Bool = false,
         showsDivider: Bool = true,
         action: (() -> Void)? = nil,
         @ViewBuilder trailing: () -> Trailing
@@ -77,7 +75,6 @@ public struct OBCListRow<Trailing: View>: View {
         self.value = value
         self.showsChevron = showsChevron
         self.disabled = disabled
-        self.comingSoon = comingSoon
         self.showsDivider = showsDivider
         self.action = action
         self.trailing = trailing()
@@ -92,7 +89,7 @@ public struct OBCListRow<Trailing: View>: View {
                 Text(label)
                     .font(.system(.callout))
                     .foregroundStyle(
-                        disabled || comingSoon ? OBCTheme.secondary : labelColor ?? OBCTheme.ink)
+                        disabled ? OBCTheme.secondary : labelColor ?? OBCTheme.ink)
                 if let detail {
                     Text(detail)
                         .font(.system(.caption).monospacedDigit())
@@ -100,9 +97,6 @@ public struct OBCListRow<Trailing: View>: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if comingSoon {
-                OBCSoonBadge()
-            }
             if let value {
                 Text(value)
                     .font(.system(.subheadline))
@@ -125,7 +119,7 @@ public struct OBCListRow<Trailing: View>: View {
         }
         .contentShape(Rectangle())
 
-        if let action, !disabled, !comingSoon {
+        if let action, !disabled {
             Button(action: action) { content }.buttonStyle(.plain)
         } else {
             content
@@ -145,7 +139,6 @@ public extension OBCListRow where Trailing == EmptyView {
         value: String? = nil,
         showsChevron: Bool = false,
         disabled: Bool = false,
-        comingSoon: Bool = false,
         showsDivider: Bool = true,
         action: (() -> Void)? = nil
     ) {
@@ -158,7 +151,6 @@ public extension OBCListRow where Trailing == EmptyView {
             value: value,
             showsChevron: showsChevron,
             disabled: disabled,
-            comingSoon: comingSoon,
             showsDivider: showsDivider,
             action: action,
             trailing: { EmptyView() }
@@ -209,12 +201,7 @@ public struct OBCSoonBadge: View {
         VStack(spacing: 26) {
             OBCGroupedSection("Device", footer: "Renaming updates the name shown on the device at the next sync.") {
                 OBCListRow(icon: "pencil", iconColor: OBCTheme.tint, label: "Name", value: "Trailhead", showsChevron: true) {}
-                OBCListRow(icon: "arrow.triangle.2.circlepath", iconColor: OBCTheme.tint, label: "Firmware update", comingSoon: true)
                 OBCListRow(icon: "xmark.circle", iconColor: OBCTheme.danger, label: "Forget this device", showsDivider: false) {}
-            }
-            OBCGroupedSection("Connected services") {
-                OBCListRow(icon: "bolt", iconColor: OBCTheme.tint, label: "Strava", comingSoon: true)
-                OBCListRow(icon: "dot.radiowaves.left.and.right", iconColor: OBCTheme.tint, label: "Komoot", comingSoon: true, showsDivider: false)
             }
         }
         .padding(20)

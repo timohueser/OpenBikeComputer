@@ -2,12 +2,12 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The Settings screen: device management, a firmware section, the connected-services
-/// seam, the app's appearance, and About. Nothing here implies a cloud or an account.
+/// The Settings screen: device management, firmware, the app's appearance, and About. Nothing
+/// here implies a cloud or an account.
 public struct SettingsView: View {
     @Bindable private var model: SettingsModel
-    /// Push the firmware-update screen. `nil` keeps the Firmware row a coming-soon
-    /// placeholder (previews, and any wiring that does not host the update screen).
+    /// Push the firmware-update screen. `nil` leaves the Update firmware row out (previews, and
+    /// any wiring that does not host the update screen).
     private let onOpenFirmwareUpdate: (() -> Void)?
 
     /// Debug-only: five taps on the App version row open the mock dev panel. `nil` in
@@ -20,6 +20,7 @@ public struct SettingsView: View {
     @Environment(\.openURL) private var openURL
 
     private static let gitHubURL = URL(string: "https://github.com/timohueser/OpenBikeComputer")!
+    private static let docsURL = URL(string: "https://openbikecomputer.com/docs/")!
 
     public init(
         model: SettingsModel,
@@ -37,7 +38,6 @@ public struct SettingsView: View {
             VStack(spacing: 26) {
                 deviceGroup
                 firmwareGroup
-                servicesGroup
                 appGroup
                 aboutGroup
             }
@@ -74,10 +74,7 @@ public struct SettingsView: View {
     // MARK: Device
 
     private var deviceGroup: some View {
-        OBCGroupedSection(
-            "Device",
-            footer: "Forgetting removes the bond. Your routes and rides stay on this phone."
-        ) {
+        OBCGroupedSection("Device") {
             deviceRow
             OBCListRow(
                 icon: "pencil",
@@ -90,7 +87,7 @@ public struct SettingsView: View {
                 }
             )
             OBCListRow(
-                icon: "power",
+                icon: "xmark.circle",
                 iconColor: OBCTheme.danger,
                 label: "Forget device",
                 labelColor: OBCTheme.danger,
@@ -121,11 +118,6 @@ public struct SettingsView: View {
                     .foregroundStyle(model.isConnected ? OBCTheme.ink : OBCTheme.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if let firmware = model.firmwareDisplay {
-                Text(firmware)
-                    .font(.system(.subheadline))
-                    .foregroundStyle(OBCTheme.secondary)
-            }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 16)
@@ -137,7 +129,7 @@ public struct SettingsView: View {
     // MARK: Firmware
 
     private var firmwareGroup: some View {
-        OBCGroupedSection("Firmware", footer: firmwareFooter) {
+        OBCGroupedSection("Firmware", footer: "Updates install only after you confirm on \(model.deviceName).") {
             if let onOpenFirmwareUpdate {
                 OBCListRow(
                     icon: "arrow.down.to.line",
@@ -145,13 +137,6 @@ public struct SettingsView: View {
                     label: "Update firmware",
                     showsChevron: true,
                     action: onOpenFirmwareUpdate
-                )
-            } else {
-                OBCListRow(
-                    icon: "arrow.down.to.line",
-                    iconColor: OBCTheme.tint,
-                    label: "Update over the air",
-                    comingSoon: true
                 )
             }
             // The one switch behind the launch sheet and the background check.
@@ -172,58 +157,12 @@ public struct SettingsView: View {
             }
             .accessibilityIdentifier("firmware.autoCheck")
             OBCListRow(
-                icon: "clock",
+                icon: "cpu",
                 iconColor: OBCTheme.tint,
                 label: "Firmware version",
                 value: model.firmwareLine,
                 showsDivider: false
             )
-        }
-    }
-
-    private var firmwareFooter: String {
-        guard onOpenFirmwareUpdate != nil else {
-            return "OTA updates will arrive in a later release. For now, flash from the desktop tool."
-        }
-        return "Send new firmware over Bluetooth — a file you picked, or the published update the "
-            + "app finds for you. Checking is an anonymous request for one public file: no account, "
-            + "and nothing about your device or your rides is sent."
-    }
-
-    // MARK: Connected services
-
-    private var servicesGroup: some View {
-        OBCGroupedSection(
-            "Connected services",
-            footer: "Later: link a service, then flip auto-sync on import to push every new "
-                + "ride automatically. Off or a push fails? Upload a single ride from its "
-                + "detail — your choice, on your device."
-        ) {
-            OBCListRow(
-                icon: "bolt.fill",
-                iconColor: OBCTheme.tint,
-                label: "Strava sync",
-                comingSoon: true
-            )
-            OBCListRow(
-                icon: "map",
-                iconColor: OBCTheme.tint,
-                label: "Komoot sync",
-                comingSoon: true
-            )
-            OBCListRow(
-                icon: "square.and.arrow.down",
-                iconColor: OBCTheme.tint,
-                label: "Auto-sync on import",
-                disabled: true,
-                showsDivider: false
-            ) {
-                Toggle("Auto-sync on import", isOn: .constant(false))
-                    .labelsHidden()
-                    .disabled(true)
-                    .tint(OBCTheme.tint)
-                OBCSoonBadge("Soon")
-            }
         }
     }
 
@@ -243,8 +182,15 @@ public struct SettingsView: View {
             footer: "No account. No subscription. No cloud."
         ) {
             OBCListRow(
+                icon: "book",
+                iconColor: OBCTheme.tint,
+                label: "Documentation",
+                showsChevron: true,
+                action: { openURL(Self.docsURL) }
+            )
+            OBCListRow(
                 icon: "chevron.left.forwardslash.chevron.right",
-                iconColor: OBCTheme.ink,
+                iconColor: OBCTheme.tint,
                 label: "OpenBikeComputer on GitHub",
                 showsChevron: true,
                 action: { openURL(Self.gitHubURL) }
