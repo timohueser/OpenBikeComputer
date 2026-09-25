@@ -2,8 +2,9 @@ import SwiftUI
 import OBCDomain
 
 /// One row of a library list: the 96 x 72 track sketch, the name at full width and an olive stat
-/// line. Routes, trips and rides share it. The on-device chip sits inside the sketch, so it never
-/// shortens the name. At accessibility text sizes the sketch moves above the text.
+/// line. Routes, trips and rides share it. The on-device chip ends the stat line, or takes its own
+/// line under it when the line has no room, so it never shortens the name or the stats. A trip's
+/// sketch carries its day count in the corner, as the device's route menu badges a trip. At accessibility text sizes the sketch moves above the text.
 public struct TrackRow: View {
     let name: String
     let stats: Text
@@ -13,6 +14,8 @@ public struct TrackRow: View {
     let detail: String?
     let sketch: TrackPreviewView
     let onDevice: OnDeviceState
+    /// A trip's day count, badged on the sketch; `nil` for a route or a ride.
+    let dayCount: Int?
     /// `nil` outside selection; otherwise whether this row is picked.
     let isSelected: Bool?
 
@@ -28,7 +31,7 @@ public struct TrackRow: View {
         self.init(
             name: route.name, stats: stats, detail: nil,
             sketch: TrackPreviewView(route.trackPreview, showsChrome: false),
-            onDevice: onDevice, isSelected: isSelected
+            onDevice: onDevice, dayCount: nil, isSelected: isSelected
         )
     }
 
@@ -38,7 +41,7 @@ public struct TrackRow: View {
         self.init(
             name: ride.name, stats: RowStats(text: Text(line), label: line), detail: nil,
             sketch: TrackPreviewView(ride.trackPreview, ink: .ride, showsChrome: false),
-            onDevice: .notOnDevice, isSelected: nil
+            onDevice: .notOnDevice, dayCount: nil, isSelected: nil
         )
     }
 
@@ -62,13 +65,13 @@ public struct TrackRow: View {
         self.init(
             name: tripName, stats: rowStats, detail: dateLine,
             sketch: TrackPreviewView(tracks: tracks, showsChrome: false),
-            onDevice: onDevice, isSelected: nil
+            onDevice: onDevice, dayCount: stats.dayCount, isSelected: nil
         )
     }
 
     private init(
         name: String, stats: RowStats, detail: String?, sketch: TrackPreviewView,
-        onDevice: OnDeviceState, isSelected: Bool?
+        onDevice: OnDeviceState, dayCount: Int?, isSelected: Bool?
     ) {
         self.name = name
         self.stats = stats.text
@@ -78,6 +81,7 @@ public struct TrackRow: View {
         self.detail = detail
         self.sketch = sketch
         self.onDevice = onDevice
+        self.dayCount = dayCount
         self.isSelected = isSelected
     }
 
@@ -105,19 +109,12 @@ public struct TrackRow: View {
 
     private var sketchCell: some View {
         sketch
-            // The track and its end marks stay above the chip's strip.
-            .keepingBottomClear(onDevice == .notOnDevice ? 0 : OnDeviceChip.height + Self.chipInset)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(alignment: .bottomLeading) {
-                if onDevice != .notOnDevice {
-                    OnDeviceChip(upToDate: onDevice == .upToDate).padding(Self.chipInset)
-                }
+            .overlay(alignment: .topTrailing) {
+                if let dayCount { DayCountBadge(count: dayCount).padding(4) }
             }
             .accessibilityHidden(true)
     }
-
-    /// The chip's distance from the sketch's corner.
-    private static let chipInset: CGFloat = 4
 
     private var text: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -125,10 +122,7 @@ public struct TrackRow: View {
                 .font(.system(.body, weight: .semibold))
                 .foregroundStyle(OBCTheme.ink)
                 .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
-            stats
-                .font(.system(.subheadline).monospacedDigit())
-                .foregroundStyle(OBCTheme.secondary)
-                .accessibilityLabel(statsLabel)
+            statLine
             if let detail {
                 Text(detail)
                     .font(.system(.subheadline).monospacedDigit())
@@ -138,6 +132,30 @@ public struct TrackRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // The list separator starts under the text, past the sketch.
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+    }
+
+    /// The stats, then the chip on the same line when both fit, else the chip under them.
+    @ViewBuilder
+    private var statLine: some View {
+        let styled = stats
+            .font(.system(.subheadline).monospacedDigit())
+            .foregroundStyle(OBCTheme.secondary)
+            .accessibilityLabel(statsLabel)
+        if onDevice == .notOnDevice {
+            styled
+        } else {
+            let chip = OnDeviceChip(upToDate: onDevice == .upToDate).accessibilityHidden(true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    styled.fixedSize()
+                    chip
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    styled.fixedSize(horizontal: false, vertical: true)
+                    chip
+                }
+            }
+        }
     }
 
     private func selectionMark(_ selected: Bool) -> some View {
@@ -177,7 +195,6 @@ private struct RowStats {
 public struct OnDeviceChip: View {
     let upToDate: Bool
 
-    /// The chip's fixed height, so a sketch can keep its strip clear of the track.
     static let height: CGFloat = 16
 
     public init(upToDate: Bool = true) {
@@ -236,6 +253,19 @@ public extension View {
     }
 }
 
+/// The device's folder count: the number in its pixel font on a small ink box.
+struct DayCountBadge: View {
+    let count: Int
+
+    var body: some View {
+        PixelText("\(count)", scale: 2 / 3, color: OBCTheme.surface)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 16, minHeight: 16)
+            .background(OBCTheme.ink, in: RoundedRectangle(cornerRadius: 4))
+            .accessibilityIdentifier("trip.dayCountBadge")
+    }
+}
+
 /// A row's shape while the library loads: the sketch block, then a name and a stat-line bar.
 public struct TrackRowSkeleton: View {
     public init() {}
@@ -266,6 +296,11 @@ public struct TrackRowSkeleton: View {
         TrackRow(route: route).obcGroupedRow(first: true, last: false)
         TrackRow(route: route, onDevice: .upToDate).obcGroupedRow(first: false, last: false)
         TrackRow(route: route, onDevice: .outdated).obcGroupedRow(first: false, last: false)
+        TrackRow(
+            tripName: "Driftless Weekender", stats: TripStats(distanceMeters: 56_500, elevationGainMeters: 381, dayCount: 3),
+            daySummaries: [route, route, route], onDevice: .upToDate
+        )
+        .obcGroupedRow(first: false, last: false)
         TrackRowSkeleton().obcGroupedRow(first: false, last: true)
     }
     .listStyle(.plain)

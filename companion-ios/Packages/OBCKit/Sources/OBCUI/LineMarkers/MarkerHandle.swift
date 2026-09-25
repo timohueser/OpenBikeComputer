@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The grab mark for one marker, drawn the same on the profile and on the map: a pin in the
-/// colour of the day it ends, with its tip on the line. A fixed marker's pin is faded.
+/// The grab mark for one marker, drawn the same on the profile and on the map: an amber pin, the
+/// one thing to drag, with a dot in the colour of the segment it ends and its tip on the line. A
+/// fixed marker cannot move, so its pin is a faded olive.
 struct MarkerHandleView: View {
     let color: Color
     let isActive: Bool
@@ -13,10 +14,16 @@ struct MarkerHandleView: View {
     static let dragLift: CGFloat = 28
 
     var body: some View {
+        let width: CGFloat = isActive ? 20 : 16
         PinShape()
-            .fill(color)
+            .fill(isFixed ? OBCTheme.secondary : OBCTheme.amber)
             .overlay(PinShape().stroke(OBCTheme.surface, lineWidth: 2))
-            .frame(width: isActive ? 20 : 16, height: isActive ? 27 : 22)
+            .overlay(alignment: .top) {
+                Circle().fill(color)
+                    .frame(width: width * 0.42, height: width * 0.42)
+                    .padding(.top, width * 0.29)
+            }
+            .frame(width: width, height: isActive ? 27 : 22)
             .shadow(color: OBCTheme.ink.opacity(0.22), radius: isActive ? 4 : 1.5, y: 1)
             .opacity(isFixed ? 0.45 : 1)
             .frame(width: Self.size.width, height: Self.size.height, alignment: .bottom)

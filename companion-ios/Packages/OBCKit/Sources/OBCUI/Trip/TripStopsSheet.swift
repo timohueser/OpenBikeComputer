@@ -48,14 +48,19 @@ public struct TripStopsSheet: View {
         let end = model.dayEnd
         let name = end.title ?? end.name.map { "to \($0)" }
         return VStack(alignment: .leading, spacing: 3) {
-            Text(["Day \(model.day + 1)", name].compactMap { $0 }.joined(separator: " · "))
+            Text("DAY \(model.day + 1)")
+                .font(.system(.caption, weight: .semibold).monospacedDigit())
+                .kerning(1)
+                .foregroundStyle(OBCTheme.stageColor(index: model.day))
+            Text(name ?? "Where to stop")
                 .font(.system(.title2, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
-                .lineLimit(1)
-            Text("End of day · km \(OBCFormat.distanceValue(meters: end.distance)) of \(OBCFormat.distanceValue(meters: model.lineLength))")
-                .font(.system(.caption).monospacedDigit())
+                .lineLimit(2)
+            Text("Ends now at km \(OBCFormat.distanceValue(meters: end.distance)) of \(OBCFormat.distanceValue(meters: model.lineLength))")
+                .font(.system(.subheadline).monospacedDigit())
                 .foregroundStyle(OBCTheme.secondary)
         }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -102,12 +107,12 @@ public struct TripStopsSheet: View {
     /// Where the day ends now, between the stops before it and after it.
     private var dayEndRule: some View {
         HStack(spacing: 8) {
-            Text("DAY END NOW · KM \(OBCFormat.distanceValue(meters: model.dayEnd.distance))")
+            Text("DAY ENDS HERE NOW · KM \(OBCFormat.distanceValue(meters: model.dayEnd.distance))")
                 .font(.system(.caption2, weight: .semibold).monospacedDigit())
                 .kerning(1)
-                .foregroundStyle(OBCTheme.ink)
+                .foregroundStyle(OBCTheme.stageColor(index: model.day))
                 .fixedSize()
-            OBCTheme.hairlineStrong.frame(height: 1.5)
+            OBCTheme.stageColor(index: model.day).frame(height: 1.5)
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 14)
@@ -139,7 +144,6 @@ public struct TripStopsSheet: View {
     private func panel(@ViewBuilder _ content: () -> some View) -> some View {
         VStack(spacing: 0, content: content)
             .background(OBCTheme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline))
+            .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
     }
 }

@@ -55,7 +55,7 @@ public struct TripDayEditorView: View {
                 .presentationBackgroundInteraction(.enabled(upThrough: Self.topDetent))
                 // A swipe on the day list scrolls it; the grab handle and the header resize.
                 .presentationContentInteraction(.scrolls)
-                .presentationBackground(OBCTheme.page)
+                .presentationBackground(OBCTheme.surface2)
                 .presentationDragIndicator(.visible)
                 .interactiveDismissDisabled()
             }
@@ -151,6 +151,7 @@ struct DayEditorSheet: View {
     @State private var dayRename: Int?
 
     @Environment(\.obcIsOnline) private var isOnline
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var trip: Trip { model.trip }
 
@@ -177,7 +178,7 @@ struct DayEditorSheet: View {
         // grows to the content and the sheet centres it.
         .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
         .clipped()
-        .background(OBCTheme.page)
+        .background(OBCTheme.surface2)
         .onGeometryChange(for: CGFloat.self) { $0.size.height + $0.safeAreaInsets.bottom } action: { sheetHeight = $0 }
         .alert("Discard changes?", isPresented: $discardShown) {
             Button("Discard", role: .destructive, action: onClose)
@@ -217,22 +218,30 @@ struct DayEditorSheet: View {
 
     // MARK: Header
 
-    /// "4 days · 324 km · ~5 h a day", with the stepper beside it in split mode. The lowest
-    /// detent is this line: it holds no button, and one height fits both modes.
+    /// "4 days · 324 km" and "about 5 h a day", with the stepper beside them in split mode. The
+    /// lowest detent is this line: it holds no button, and one height fits both modes.
     private var header: some View {
         HStack(spacing: 12) {
             let hours = Int((model.averageDayDuration / 3600).rounded())
-            Text(
-                "\(trip.dayCount) \(trip.dayCount == 1 ? "day" : "days") · "
-                    + "\(OBCFormat.distance(meters: model.handles.line.length)) · "
-                    + (hours < 1 ? "under 1 h a day" : "~\(hours) h a day"))
-                .font(.system(.subheadline, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(OBCTheme.ink)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .accessibilityIdentifier("dayEditor.summary")
-            Spacer(minLength: 0)
+            let layout = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+            layout {
+                Text(
+                    "\(trip.dayCount) \(trip.dayCount == 1 ? "day" : "days") · "
+                        + OBCFormat.distance(meters: model.handles.line.length))
+                    .font(.system(.headline))
+                    .monospacedDigit()
+                    .foregroundStyle(OBCTheme.ink)
+                    .accessibilityIdentifier("dayEditor.summary")
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                Text(hours < 1 ? "under 1 h a day" : "about \(hours) h a day")
+                    .font(.system(.subheadline).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if model.isSplitMode {
                 Stepper(
                     "Days",
@@ -249,10 +258,18 @@ struct DayEditorSheet: View {
     // MARK: Rows
 
     private var list: some View {
-        List {
+        // The committed days set the bar scale, so a drag frame re-renders only the day rows.
+        let longest = model.stats.map(\.distanceMeters).max() ?? 0
+        return List {
             ForEach(0..<trip.dayCount, id: \.self) { day in
-                dayRow(day)
-                    .listRowBackground(model.selectedDay == day ? OBCTheme.surface2 : OBCTheme.surface)
+                dayRow(day, longest: longest)
+                    .listRowBackground(
+                        OBCTheme.surface.overlay(model.selectedDay == day ? OBCTheme.fill : Color.clear))
+                if let meters = model.transfers.indices.contains(day) ? model.transfers[day] : nil {
+                    TripTransferRow(kind: trip.dayEnds[day].transfer, meters: meters)
+                        .listRowBackground(OBCTheme.surface)
+                        .accessibilityIdentifier("dayEditor.transfer.\(day)")
+                }
             }
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets())
@@ -261,22 +278,26 @@ struct DayEditorSheet: View {
         .listStyle(.insetGrouped)
         #endif
         .scrollContentBackground(.hidden)
+        // A transfer line is shorter than a list row's default minimum.
+        .environment(\.defaultMinListRowHeight, 0)
         .contentMargins(.top, 12, for: .scrollContent)
         .animation(.snappy(duration: 0.28), value: trip.dayCount)
     }
 
-    /// One day: its colour, number, name and figures, and its menu. A tap highlights it.
-    private func dayRow(_ day: Int) -> some View {
+    /// One day: its colour, number, name, figures and bar, and its menu. A tap highlights it.
+    private func dayRow(_ day: Int, longest: Double) -> some View {
         let end = trip.dayEnds[day]
         let isLast = day == trip.dayCount - 1
+        let endsAtTransfer = !isLast && model.removeBlocker(day) != nil
         return HStack(spacing: 0) {
             DayFigureRow(
                 model: model, day: day,
                 title: end.title ?? end.name.map { "to \($0)" },
                 date: trip.dayDates()[day].map { OBCFormat.tripDay($0) },
-                note: !isLast && model.removeBlocker(day) != nil ? "transfer" : nil,
+                spokenNote: endsAtTransfer ? "ends at a transfer" : nil,
                 route: model.notes.indices.contains(day) ? model.notes[day] : nil,
-                showsDivider: !isLast
+                longest: longest,
+                showsDivider: !isLast && !endsAtTransfer
             ) {
                 model.select(day)
             }
@@ -290,7 +311,7 @@ struct DayEditorSheet: View {
             }
             .accessibilityLabel("Day \(day + 1) actions")
             .accessibilityIdentifier("dayEditor.day.\(day).menu")
-            .padding(.trailing, 6)
+            .padding(.trailing, 4)
         }
         .contextMenu { dayActions(day) }
     }
@@ -336,9 +357,11 @@ private struct DayFigureRow: View {
     let day: Int
     let title: String?
     let date: String?
-    let note: String?
+    let spokenNote: String?
     /// How the day reaches its stop or rides a gap.
     let route: String?
+    /// The longest day's distance: the full length of the bar.
+    let longest: Double
     let showsDivider: Bool
     let action: () -> Void
 
@@ -346,14 +369,16 @@ private struct DayFigureRow: View {
         let stats = model.live.days[day] ?? (model.stats.indices.contains(day) ? model.stats[day] : nil)
         let figures = stats.map {
             [OBCFormat.distance(meters: $0.distanceMeters), OBCFormat.climb(meters: $0.climbMeters),
-             "~" + OBCFormat.movingTime($0.duration)].joined(separator: " · ")
+             OBCFormat.movingTime($0.duration) + " h"].joined(separator: " · ")
         }
         TripDayRow(
             color: OBCTheme.stageColor(index: day),
             number: day + 1,
             title: title,
-            detail: [date, figures, note].compactMap { $0 }.joined(separator: " · "),
+            detail: [date, figures].compactMap { $0 }.joined(separator: " · "),
             note: route,
+            fraction: longest > 0 ? (stats?.distanceMeters ?? 0) / longest : 0,
+            spokenNote: spokenNote,
             showsDivider: showsDivider,
             action: action
         )

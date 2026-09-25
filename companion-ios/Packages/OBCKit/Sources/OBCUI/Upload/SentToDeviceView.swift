@@ -1,10 +1,13 @@
 import SwiftUI
 import OBCDomain
 
-/// The confirmation after a send: the device drawn with the screen it now shows, "‹route› is on
-/// ‹device›", where to find it, and Done.
+/// The confirmation after a send: the device drawn with the screen it now shows, "‹name› is on
+/// ‹device›", where to find it, and Done. A route shows its overview; a trip shows the card the
+/// device puts up when a trip lands.
 public struct SentToDeviceView: View {
-    let overview: DeviceRouteOverview
+    private let screen: DeviceGlyphView.Variant
+    private let name: String
+    private let whereLine: String
     let deviceName: String
     let onDone: () -> Void
 
@@ -12,30 +15,41 @@ public struct SentToDeviceView: View {
     @State private var shown = false
 
     public init(overview: DeviceRouteOverview, deviceName: String, onDone: @escaping () -> Void) {
-        self.overview = overview
+        screen = .routeOverview(overview)
+        name = overview.name
+        whereLine = "It is under Routes on the device."
+        self.deviceName = deviceName
+        self.onDone = onDone
+    }
+
+    public init(trip: DeviceTripCard, deviceName: String, onDone: @escaping () -> Void) {
+        screen = .tripCard(trip)
+        name = trip.name
+        whereLine = trip.dayCount == 1
+            ? "It is under Routes on the device." : "Its \(trip.dayCount) days are under Routes on the device."
         self.deviceName = deviceName
         self.onDone = onDone
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            DeviceGlyphView(variant: .routeOverview(overview))
+            DeviceGlyphView(variant: screen)
                 .padding(.top, 4)
                 .padding(.bottom, 24)
                 .scaleEffect(shown || reduceMotion ? 1 : 0.94)
                 .opacity(shown || reduceMotion ? 1 : 0)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(deviceName) screen showing \(overview.name)")
+                .accessibilityLabel("\(deviceName) screen showing \(name)")
                 .accessibilityAddTraits(.isImage)
                 .accessibilityIdentifier("upload.deviceScreen")
 
-            Text("\(overview.name) is on \(deviceName)")
+            Text("\(name) is on \(deviceName)")
                 .font(.system(.title2, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("upload.doneTitle")
-            Text("It is under Routes on the device.")
+            Text(whereLine)
                 .font(.system(.body))
                 .foregroundStyle(OBCTheme.secondary)
                 .multilineTextAlignment(.center)
