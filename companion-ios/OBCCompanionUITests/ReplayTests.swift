@@ -6,10 +6,12 @@ final class ReplayTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    @MainActor private func launch() -> XCUIApplication {
+    @MainActor private func launch(extraArguments: [String] = []) -> XCUIApplication {
+        XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
         app.launchArguments = ["-OBCScenario", "syncUpToDate", "-OBCFixtures", "journal",
                                "-OBCHideMockHUD", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += extraArguments
         app.launch()
         XCTAssertTrue(app.buttons["main.trip.alps-traverse"].waitForExistence(timeout: 10))
         app.buttons["main.trip.alps-traverse"].tap()
@@ -28,6 +30,34 @@ final class ReplayTests: XCTestCase {
         app.buttons["replay.close"].tap()
         XCTAssertTrue(app.buttons["trip.journal.replay"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["replay.close"].exists)
+    }
+
+    @MainActor func testLargeTextAndLandscapeKeepControlsReachable() {
+        let app = launch(extraArguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
+                                          "-obc.appearance", "dark"])
+        let live = ProcessInfo.processInfo.environment["OBC_REPLAY_LIVE"] == "1"
+        if live {
+            let ready = NSPredicate(format: "enabled == true")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: app.buttons["replay.play"])], timeout: 60), .completed)
+        }
+        XCTAssertTrue(app.buttons["replay.close"].isHittable)
+        capture(app, "replay-dark-large-text")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let rotated = NSPredicate { _, _ in app.frame.width > app.frame.height }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: rotated, object: app)], timeout: 5), .completed)
+        defer { XCUIDevice.shared.orientation = .portrait }
+        XCTAssertTrue(app.buttons["replay.close"].isHittable)
+        let dock = app.scrollViews["replay.controls"]
+        if !app.buttons["replay.play"].isHittable { dock.swipeUp() }
+        XCTAssertTrue(app.buttons["replay.play"].isHittable)
+        if live {
+            let map = app.webViews.firstMatch
+            let from = map.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            from.press(forDuration: 0.2, thenDragTo: from.withOffset(CGVector(dx: 45, dy: 0)))
+            XCTAssertTrue(app.buttons["Reset camera"].waitForExistence(timeout: 5))
+        }
+        capture(app, "replay-dark-large-landscape")
+        app.buttons["replay.close"].tap()
     }
 
     /// Provider-dependent device evidence is opt-in; ordinary CI does not depend on public tiles.
@@ -55,6 +85,8 @@ final class ReplayTests: XCTestCase {
         XCTAssertEqual(play.label, "Play")
         capture(app, "replay-adjusted-scrub")
         XCUIDevice.shared.orientation = .landscapeLeft
+        let rotated = NSPredicate { _, _ in app.frame.width > app.frame.height }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: rotated, object: app)], timeout: 5), .completed)
         capture(app, "replay-landscape")
         XCUIDevice.shared.orientation = .portrait
         XCUIDevice.shared.press(.home)

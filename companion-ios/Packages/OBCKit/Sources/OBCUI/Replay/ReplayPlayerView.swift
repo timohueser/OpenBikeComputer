@@ -5,6 +5,7 @@ public struct ReplayPlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var model: ReplayPlayerModel
     @State private var rendererVisible = true
     #if canImport(UIKit)
@@ -13,12 +14,31 @@ public struct ReplayPlayerView: View {
 
     public init(content: ReplayContent) { _model = State(initialValue: ReplayPlayerModel(content: content)) }
 
+    private var usesSideDock: Bool {
+        verticalSizeClass == .compact && dynamicTypeSize.isAccessibilitySize
+    }
+
+    private var playerLayout: AnyLayout {
+        usesSideDock ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            header
-            terrain
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            controls
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                header
+                // Keep the renderer alive when the control dock changes axes.
+                playerLayout {
+                    terrain.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if usesSideDock {
+                        ScrollView { controls }
+                            .accessibilityIdentifier("replay.controls")
+                            .frame(width: min(360, geometry.size.width * 0.42))
+                            .background(OBCTheme.surface)
+                    } else {
+                        controls.fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
         }
         .foregroundStyle(OBCTheme.ink)
         .background(OBCTheme.page)
@@ -50,32 +70,80 @@ public struct ReplayPlayerView: View {
             if id != nil { announce("Ride photo. Continue resumes playback.") }
         }
         .onDisappear { model.suspend(); updateIdleTimer(playing: false) }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("replay.player")
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Button("Close", systemImage: "xmark") { dismiss() }
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityIdentifier("replay.close")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.content.title).font(.headline).lineLimit(1)
-                if let day = model.day { Text(day).font(.caption).foregroundStyle(OBCTheme.secondary) }
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 12) {
+                closeButton
+                if dynamicTypeSize.isAccessibilitySize && verticalSizeClass != .compact {
+                    if let day = model.day { dayLabel(day) }
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.content.title).font(.headline).lineLimit(1)
+                        if let day = model.day { dayLabel(day) }
+                    }
+                }
+                Spacer(minLength: 0)
+                overviewButton
             }
-            Spacer(minLength: 0)
-            Button(model.camera == .overview ? "Follow rider" : "Overview",
-                   systemImage: model.camera == .overview ? "location" : "map") {
-                model.setCamera(model.camera == .overview ? "follow" : "overview")
+            if dynamicTypeSize.isAccessibilitySize && verticalSizeClass != .compact {
+                Text(model.content.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
             }
-            .font(.subheadline)
-            .frame(minHeight: 44)
-            .disabled(model.phase != .ready)
-            .accessibilityIdentifier("replay.overview")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
+        .fixedSize(horizontal: false, vertical: true)
         .background(OBCTheme.surface)
+    }
+
+    private var closeButton: some View {
+        Button { dismiss() } label: {
+            Image(systemName: "xmark")
+                .font(.title3)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Close")
+        .accessibilityIdentifier("replay.close")
+    }
+
+    private func dayLabel(_ day: String) -> some View {
+        Text(day).font(.caption).lineLimit(1).foregroundStyle(OBCTheme.secondary)
+    }
+
+    private var cameraDescription: String {
+        model.camera == .overview ? "Overview" : model.camera == .adjusted ? "Following · Your angle" : "Following"
+    }
+
+    private var overviewButton: some View {
+        Button {
+            model.setCamera(model.camera == .overview ? "follow" : "overview")
+        } label: {
+            adaptiveLabel(model.camera == .overview ? "Follow rider" : "Overview",
+                          symbol: model.camera == .overview ? "location" : "map")
+                .font(.subheadline)
+                .fixedSize(horizontal: true, vertical: true)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .disabled(model.phase != .ready)
+        .accessibilityValue(cameraDescription)
+        .accessibilityIdentifier("replay.overview")
+    }
+
+    @ViewBuilder private func adaptiveLabel(_ title: String, symbol: String) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            Label(title, systemImage: symbol).labelStyle(.iconOnly)
+        } else {
+            Label(title, systemImage: symbol)
+        }
     }
 
     private var terrain: some View {
@@ -87,17 +155,22 @@ public struct ReplayPlayerView: View {
             if model.phase == .ready {
                 VStack {
                     HStack {
-                        Text(model.camera == .overview ? "Overview" : model.camera == .adjusted ? "Following · Your angle" : "Following")
-                            .font(.caption)
-                            .padding(8)
-                            .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+                        if !dynamicTypeSize.isAccessibilitySize {
+                            Text(cameraDescription)
+                                .font(.caption)
+                                .padding(8)
+                                .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+                        }
                         Spacer()
                         if model.camera == .adjusted {
-                            Button("Reset camera", systemImage: "arrow.counterclockwise") { model.setCamera("auto") }
-                                .font(.subheadline)
-                                .padding(.horizontal, 12)
-                                .frame(minHeight: 44)
-                                .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+                            Button { model.setCamera("auto") } label: {
+                                adaptiveLabel("Reset camera", symbol: "arrow.counterclockwise")
+                                    .font(.subheadline)
+                                    .padding(.horizontal, 12)
+                                    .frame(minWidth: 44, minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
                         }
                     }
                     Spacer(minLength: 0)
@@ -107,16 +180,19 @@ public struct ReplayPlayerView: View {
             if let photo = model.photo, let data = photo.thumbnailData, let image = Image(photoData: data) {
                 VStack(spacing: 8) {
                     image.resizable().scaledToFit()
-                        .frame(maxHeight: verticalSizeClass == .compact ? 90 : 180)
+                        .frame(maxHeight: verticalSizeClass == .compact ? 60 : 180)
                         .accessibilityLabel("Photo from this ride")
-                    Button("Continue", systemImage: "play.fill") { model.continuePhoto() }
-                        .frame(maxWidth: .infinity, minHeight: 44)
+                    Button { model.continuePhoto() } label: {
+                        Label("Continue", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
                 }
                 .padding(12)
                 .frame(maxWidth: 320)
                 .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
                 .padding(.horizontal, 24)
-                .padding(.vertical, 56)
+                .padding(.vertical, verticalSizeClass == .compact ? 8 : 56)
             }
             status
         }
@@ -128,22 +204,29 @@ public struct ReplayPlayerView: View {
         case .loading:
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Loading terrain").font(.headline)
+                Text("Loading terrain").font(.headline).multilineTextAlignment(.center)
             }
-            .padding(24)
+            .padding(16)
             .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
             .accessibilityElement(children: .combine)
         case .failed(let message):
-            VStack(spacing: 12) {
-                Text("Map unavailable").font(.headline)
-                Text(message).font(.subheadline).multilineTextAlignment(.center)
-                Button("Try again", systemImage: "arrow.clockwise") { model.retry() }
-                    .frame(minHeight: 44)
+            ScrollView {
+                VStack(spacing: 12) {
+                    Text("Map unavailable").font(.headline)
+                    Text(message).font(.subheadline).multilineTextAlignment(.center)
+                    Button { model.retry() } label: {
+                        Label("Try again", systemImage: "arrow.clockwise")
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                }
+                .padding(24)
             }
-            .padding(24)
             .frame(maxWidth: 320)
             .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
             .padding(20)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("replay.error")
         case .ready: EmptyView()
         }
@@ -156,6 +239,7 @@ public struct ReplayPlayerView: View {
                 VStack(alignment: .leading) { distanceLabel; elevationLabel }
             }
             .font(.subheadline.monospacedDigit())
+            .fixedSize(horizontal: false, vertical: true)
             ReplayProfileView(model: model, height: verticalSizeClass == .compact ? 48 : 86)
                 .disabled(model.phase != .ready)
             HStack(spacing: 16) {
@@ -175,10 +259,13 @@ public struct ReplayPlayerView: View {
                 Button {
                     model.togglePlayback()
                 } label: {
-                    Label(model.playing ? "Pause" : model.distance >= model.content.totalDistance ? "Replay" : "Play",
-                          systemImage: model.playing ? "pause.fill" : "play.fill")
+                    adaptiveLabel(model.playing ? "Pause" : model.distance >= model.content.totalDistance ? "Replay" : "Play",
+                                  symbol: model.playing ? "pause.fill" : "play.fill")
                         .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 10)
                         .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .foregroundStyle(OBCTheme.onAmber)
                 .background(OBCTheme.amber, in: RoundedRectangle(cornerRadius: OBCTheme.controlRadius))
