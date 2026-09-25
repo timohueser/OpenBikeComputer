@@ -23,6 +23,10 @@
     const store = new CoverageStore(client, rootBody);
 
     const partCount = $derived(store.selection.parts.length);
+    const styleNames = $derived([
+        store.lightSkins.length ? store.lightSkin.name : null,
+        store.darkSkins.length ? store.darkSkin.name : null,
+    ].filter(Boolean).join(" / "));
     let downloadStep = $state<{ sendToDevice: SendAssembledMap }>();
     let sendReady = $state(false);
     const sendAssembled: SendAssembledMap = (device, ctx) => {
@@ -60,7 +64,7 @@
             <details class="style-options">
                 <summary>
                     <span>Map style <span class="small faint">· Optional</span></span>
-                    <span class="small muted">{store.lightSkin.name} / {store.darkSkin.name}</span>
+                    <span class="small muted">{styleNames}</span>
                 </summary>
                 <div class="style-picker"><SkinStep {store} /></div>
             </details>
