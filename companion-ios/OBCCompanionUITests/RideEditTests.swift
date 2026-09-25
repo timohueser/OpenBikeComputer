@@ -95,7 +95,7 @@ final class RideEditTests: XCTestCase {
         XCTAssertTrue(merge.waitForExistence(timeout: 5), "the row expands and asks first")
         snap(app, "detail-merge-expanded")
         merge.tap()
-        XCTAssertTrue(app.staticTexts["detail.statsLine"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["ledger.Distance"].waitForExistence(timeout: 5))
         XCTAssertFalse(suggestion.exists, "the merged ride has no next ride to merge")
         snap(app, "detail-merged")
         app.navigationBars.buttons.element(boundBy: 0).tap()

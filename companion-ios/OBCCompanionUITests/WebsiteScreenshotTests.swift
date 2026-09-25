@@ -223,7 +223,7 @@ final class WebsiteScreenshotTests: XCTestCase {
             app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5),
             "the downloaded ride detail did not open"
         )
-        XCTAssertTrue(app.staticTexts["detail.statsLine"].label.hasPrefix("4.9 km · "))
+        XCTAssertEqual(app.otherElements["ledger.Distance"].value as? String, "4.9 km")
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the real Grimsel geometry should be visible in the ride hero"
@@ -233,11 +233,6 @@ final class WebsiteScreenshotTests: XCTestCase {
         waitFor(app, "detail.highlights", "the ride's highlights did not arrive")
         waitFor(app, "quietRow.open", "the ride's photo offer did not arrive")
         waitFor(app, "dayNote.offer", "the ride's note prompt did not arrive")
-        // The services block is static markup on the tracked dressing.
-        XCTAssertTrue(
-            app.descendants(matching: .any)["detail.services"].firstMatch.exists,
-            "the connected-services block did not lay out"
-        )
         capture(app, name: "ride-detail")
     }
 }

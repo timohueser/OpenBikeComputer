@@ -94,9 +94,10 @@ struct RideTotalsCard: View {
                         Text(OBCFormat.distance(meters: totals.distanceMeters))
                             .font(.obcStat(.title2))
                             .foregroundStyle(OBCTheme.ink)
-                        Text(statLine)
+                        statLine
                             .font(.system(.subheadline).monospacedDigit())
                             .foregroundStyle(OBCTheme.secondary)
+                            .accessibilityLabel(statLabel)
                     }
                     Spacer(minLength: 0)
                 }
@@ -121,12 +122,16 @@ struct RideTotalsCard: View {
         .accessibilityIdentifier("library.totals")
     }
 
-    private var statLine: String {
-        [
-            totals.rideCount == 1 ? "1 ride" : "\(totals.rideCount) rides",
-            OBCFormat.movingTime(totals.movingTime),
-            OBCFormat.climb(meters: totals.climbMeters),
-        ].joined(separator: " · ")
+    private var rides: String { totals.rideCount == 1 ? "1 ride" : "\(totals.rideCount) rides" }
+    private var time: String { "\(OBCFormat.movingTime(totals.movingTime)) h" }
+
+    /// "12 rides · 41:10 h ▲8,210 m", in the rows' grammar.
+    private var statLine: Text {
+        Text("\(rides) · \(time)\u{2002}\(Text.obcClimb(meters: totals.climbMeters))")
+    }
+
+    private var statLabel: String {
+        "\(rides), \(time), \(OBCFormat.climbValue(meters: totals.climbMeters)) m climb"
     }
 
     /// The coarsest lines that still read at sketch size.

@@ -79,22 +79,6 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(OBCFormat.plannedSubtitle(route, locale: en), "62.4 km · 840 m ↑")
     }
 
-    func testTrackedSubtitleMatchesDesignRow() {
-        let now = date(2026, 7, 1, hour: 12)
-        let ride = RideSummary(
-            id: RideID("d1"),
-            name: "Kettle Moraine Loop",
-            date: date(2026, 6, 30, hour: 8),
-            distanceMeters: 58_200,
-            movingTime: 2 * 3600 + 51 * 60,
-            averageSpeedMps: 20.4 / 3.6
-        )
-        XCTAssertEqual(
-            OBCFormat.trackedSubtitle(ride, relativeTo: now, calendar: cal, locale: en),
-            "Yesterday · 58.2 km · 2:51 · 20.4 kph"
-        )
-    }
-
     func testRideStatsLineMatchesTheWireframe() {
         let ride = RideSummary(
             id: RideID("d2"), name: "Day 2", date: date(2026, 9, 30, hour: 8),
@@ -123,18 +107,16 @@ final class OBCFormatTests: XCTestCase {
         XCTAssertEqual(OBCFormat.notePrompt(day2), "How was Day 2?")
     }
 
-    func testHighlightsReadAsOneShortPhraseEach() {
-        XCTAssertEqual(
-            OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: "Furka"), locale: en),
-            "Furka 2,431 m"
-        )
-        XCTAssertEqual(
-            OBCFormat.highlight(.highestPoint(elevation: 2_431, distance: 31_200, place: nil), locale: en),
-            "2,431 m at km 31"
-        )
-        XCTAssertEqual(OBCFormat.highlight(.longestClimb(ascent: 1_100, length: 18_000), locale: en), "18.0 km climb")
-        XCTAssertEqual(OBCFormat.highlight(.fastestDescent(speedMps: 62 / 3.6), locale: en), "62 kph descent")
-        XCTAssertEqual(OBCFormat.highlight(.biggestDay(distance: 82_000), locale: en), "Biggest day 82.0 km")
+    func testHighlightsReadAsLedgerRows() {
+        func row(_ highlight: RideHighlight) -> String {
+            let stat = OBCFormat.highlight(highlight, locale: en)
+            return [stat.key, stat.value, stat.unit].compactMap { $0 }.joined(separator: " ")
+        }
+        XCTAssertEqual(row(.highestPoint(elevation: 2_431, distance: 31_200, place: "Furka")), "Highest point 2,431 m at Furka")
+        XCTAssertEqual(row(.highestPoint(elevation: 2_431, distance: 31_200, place: nil)), "Highest point 2,431 m at km 31")
+        XCTAssertEqual(row(.longestClimb(ascent: 1_100, length: 18_000)), "Longest climb 18.0 km")
+        XCTAssertEqual(row(.fastestDescent(speedMps: 62 / 3.6)), "Fastest descent 62 kph")
+        XCTAssertEqual(row(.biggestDay(distance: 82_000)), "Biggest day of the trip 82.0 km")
     }
 
     // MARK: Stat-strip parts (the value and unit split)

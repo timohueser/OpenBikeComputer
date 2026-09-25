@@ -1,7 +1,7 @@
 import SwiftUI
 import OBCDomain
 
-/// The quiet row under a ride's stats line: "Merge with Day 2 Ulrichen (2)?". A tap opens the
+/// The quiet row over a ride's ledger: "Merge with Day 2 Ulrichen (2)?". A tap opens the
 /// row in place with the next ride's start and length, and Merge and Cancel; ✕ or a swipe
 /// dismisses it for good. `load` finds the next ride once, off the
 /// first frame.
@@ -41,7 +41,7 @@ public struct RideMergeSuggestion: View {
                         )
                     }
                 }
-                .padding(.bottom, 8)
+                .padding(.top, 14)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("detail.mergeSuggestion")
             }
@@ -74,9 +74,7 @@ public struct RideMergeSuggestion: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(OBCTheme.surface.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).strokeBorder(OBCTheme.hairline))
+        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
     }
 }
 

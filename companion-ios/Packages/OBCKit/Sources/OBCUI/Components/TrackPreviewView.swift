@@ -79,8 +79,6 @@ public struct TrackPreviewView: View {
     /// The zigzag mark when there is nothing to draw. A many-track sketch stays bare instead.
     private let showsPlaceholder: Bool
     var style: Style = .thumbnail
-    var tag: String? = nil
-    var tagColor: Color = OBCTheme.secondary
     var showsChrome: Bool = true
     var markers: [Marker] = []
 
@@ -88,8 +86,6 @@ public struct TrackPreviewView: View {
         _ preview: TrackPreview?,
         ink: Ink = .route,
         style: Style = .thumbnail,
-        tag: String? = nil,
-        tagColor: Color = OBCTheme.secondary,
         showsChrome: Bool = true,
         markers: [Marker] = []
     ) {
@@ -98,8 +94,6 @@ public struct TrackPreviewView: View {
         self.showsEnds = true
         self.showsPlaceholder = true
         self.style = style
-        self.tag = tag
-        self.tagColor = tagColor
         self.showsChrome = showsChrome
         self.markers = markers
     }
@@ -122,22 +116,6 @@ public struct TrackPreviewView: View {
     public var body: some View {
         canvas
             .background(OBCTheme.sketchGround)
-            .overlay(alignment: .topLeading) {
-                if let tag {
-                    Text(tag.uppercased())
-                        .font(.system(.caption2, weight: .semibold).monospacedDigit())
-                        .kerning(1)
-                        .foregroundStyle(tagColor)
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 7)
-                        .background(OBCTheme.surface.opacity(0.9))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6).strokeBorder(OBCTheme.hairline)
-                        )
-                        .padding(10)
-                }
-            }
             .clipShape(RoundedRectangle(cornerRadius: showsChrome ? OBCTheme.radiusPanel : 0))
             .overlay {
                 if showsChrome {
@@ -158,8 +136,7 @@ public struct TrackPreviewView: View {
             let transform = Self.fittingTransform(
                 for: TrackPreview(points: [], aspectRatio: aspectRatio),
                 in: size,
-                inset: style.dotRadius + 3,
-                topInset: tag == nil ? 0 : Self.tagBandHeight
+                inset: style.dotRadius + 3
             )
             let paths = drawn.map { line -> (Path, Ink) in
                 var path = Path()
@@ -193,22 +170,17 @@ public struct TrackPreviewView: View {
         StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
     }
 
-    /// The corner tag's height with its padding. A tagged fit starts below it, so the tag never
-    /// covers a node dot.
-    static let tagBandHeight: CGFloat = 34
-
     /// Maps unit-square track points into `size`, keeping the source aspect ratio
     /// (centred letterbox), with a uniform `inset` so round caps and node dots never
-    /// clip, below a `topInset` band. Internal for the geometry unit tests.
+    /// clip. Internal for the geometry unit tests.
     static func fittingTransform(
         for preview: TrackPreview,
         in size: CGSize,
-        inset: CGFloat,
-        topInset: CGFloat = 0
+        inset: CGFloat
     ) -> (TrackPreview.Point) -> CGPoint {
         let available = CGSize(
             width: max(size.width - 2 * inset, 1),
-            height: max(size.height - 2 * inset - topInset, 1)
+            height: max(size.height - 2 * inset, 1)
         )
         let aspect = preview.aspectRatio > 0 ? preview.aspectRatio : 1
         // Fit a rect of the track's aspect into the available box.
@@ -218,7 +190,7 @@ public struct TrackPreviewView: View {
         }
         let origin = CGPoint(
             x: (size.width - fitted.width) / 2,
-            y: topInset + (size.height - topInset - fitted.height) / 2
+            y: (size.height - fitted.height) / 2
         )
         return { point in
             CGPoint(
@@ -280,7 +252,7 @@ public struct TrackPreviewView: View {
 
 #Preview("Track preview") {
     VStack(spacing: 16) {
-        TrackPreviewView(.obcSample, style: .hero, tag: "Planned")
+        TrackPreviewView(.obcSample, style: .hero)
             .frame(height: 214)
         HStack(spacing: 16) {
             TrackPreviewView(.obcSample)
