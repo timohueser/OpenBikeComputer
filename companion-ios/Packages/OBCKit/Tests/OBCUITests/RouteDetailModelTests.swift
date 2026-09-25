@@ -114,7 +114,7 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: Tracked
 
-    func testTrackedDressingShowsItsLedgerProfileAndHighlights() {
+    func testTrackedDressingShowsItsLedgerTimelineAndHighlights() {
         let control = makeControl()
         let entry = control.fixtures.rides[0]  // Kettle Moraine Loop (ride)
         let ride = entry.summary
@@ -127,15 +127,13 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertFalse(model.ink.cased, "a ride has no planned-route casing")
         XCTAssertNotNil(model.subtitle)
         XCTAssertTrue(model.isRenamable)
-        XCTAssertTrue(model.elevationProfile.isEmpty && model.highlights.isEmpty, "whole-track work waits for start()")
+        XCTAssertTrue(model.timeline == nil && model.highlights.isEmpty, "whole-track work waits for start()")
 
         model.start()
         let highlights = RideHighlights.compute(entry.ride()).map { OBCFormat.highlight($0) }
         XCTAssertFalse(highlights.isEmpty)
         XCTAssertEqual(model.highlights, highlights)
-        XCTAssertEqual(model.elevationProfile.count, RouteStats.profileSampleCount)
-        XCTAssertEqual(model.elevationProfile.first, entry.points.first?.elevationMeters)
-        XCTAssertEqual(model.elevationProfile.last, entry.points.last?.elevationMeters)
+        XCTAssertEqual(model.timeline?.channels, [.elevation, .speed], "a ride without sensors")
     }
 
     func testTrackedRideWithoutElevationOrPointsHasNoProfile() {
@@ -147,7 +145,7 @@ final class RouteDetailModelTests: XCTestCase {
                 transport: MockTransport(control: control), dressing: .tracked(entry.summary), ridePoints: points
             )
             model.start()
-            XCTAssertTrue(model.elevationProfile.isEmpty, "no profile card without elevation")
+            XCTAssertEqual(model.timeline?.channels, points.isEmpty ? nil : [.speed], "no elevation strip without elevation")
         }
     }
 
