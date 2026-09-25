@@ -79,3 +79,15 @@ test('global navigation remains available on mobile and restores keyboard focus'
     await expect(navigation).toBeHidden();
   }
 });
+
+test('landing anchors stay below the sticky header', async ({ page }) => {
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const anchor of ['demo', 'features']) {
+      await page.goto(`/#${anchor}`);
+      await expect.poll(() => page.locator(`#${anchor}`).evaluate(element =>
+        element.getBoundingClientRect().top - document.querySelector('.site-head').getBoundingClientRect().bottom
+      )).toBeGreaterThanOrEqual(-1);
+    }
+  }
+});
