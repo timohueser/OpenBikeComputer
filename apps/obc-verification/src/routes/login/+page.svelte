@@ -14,7 +14,7 @@
 </script>
 
 <svelte:head><title>Sign in · OpenBikeComputer verification</title></svelte:head>
-<main class="login-shell">
+<main class="login-shell" id="main">
   <a class="brand" href="https://openbikecomputer.com"><img class="brand-icon" src="/brand/app-icon.svg" width="32" height="32" alt="" />OpenBikeComputer</a>
   <section class="login-card">
     <div class="eyebrow">Maintainer workspace</div><h1>Verification & releases</h1>

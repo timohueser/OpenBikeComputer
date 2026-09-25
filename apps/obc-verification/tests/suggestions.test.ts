@@ -14,7 +14,7 @@ process.env.ORIGIN = 'https://verify.example.com';
 function request(path: string, method = 'GET', data?: unknown, actor?: Actor) {
   return api({ params: { path }, url: new URL(`${process.env.ORIGIN}/api/${path}`), request: new Request(`${process.env.ORIGIN}/api/${path}`, { method, headers: { 'content-type': 'application/json', origin: process.env.ORIGIN! }, body: data === undefined ? undefined : JSON.stringify(data) }), locals: { actor }, cookies: { get: () => undefined }, getClientAddress: () => '127.0.0.1' } as unknown as RequestEvent);
 }
-test('requirement suggestions are recorded, superseded, decided, put back, and never change a requirement', async () => {
+test('requirement suggestions are recorded, superseded, accepted by a save, put back, and never change a requirement', async () => {
   const owner: Actor = { name: 'owner', role: 'owner' };
   const agent: Actor = { name: 'agent', role: 'agent' };
   try {
@@ -38,14 +38,25 @@ test('requirement suggestions are recorded, superseded, decided, put back, and n
     assert.equal(second.supersedes, first.id);
     assert.deepEqual((await listed()).map((s: any) => s.status).sort(), ['open', 'open', 'superseded']);
 
-    // A decision is an acknowledgment. It records who decided, and it leaves the requirements exactly as they were.
-    const before = JSON.stringify(store().latestRevision());
+    // The save that writes the requirement accepts the suggestion, so a discarded draft leaves it open.
     assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { accept: true }, agent)).status, 403);
-    const accepted = await (await request(`requirement-suggestions/${created.id}`, 'POST', { accept: true }, owner)).json();
+    assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { accept: true }, owner)).status, 400);
+    const save = (acceptSuggestions: string[], keep = (r: Requirement) => !!r) => {
+      const current = store().latestRevision();
+      return request('requirements', 'PUT', { baseRevision: current.id, requirements: current.requirements.filter(keep), acceptSuggestions }, owner);
+    };
+    const saved = await (await save([created.id])).json();
+    const accepted = (await listed()).find((s: any) => s.id === created.id);
     assert.equal(accepted.status, 'accepted');
     assert.equal(accepted.decidedBy, 'owner');
-    assert.equal(JSON.stringify(store().latestRevision()), before, 'accepting writes no requirement and no revision');
+    assert.equal(accepted.revisionId, saved.id);
+    assert.equal(store().latestRevision().id, saved.id);
     assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { accept: false }, owner)).status, 409);
+    // One decided or unwritable item refuses the whole save: no revision, and nothing else accepted.
+    assert.equal((await save([second.id, created.id])).status, 409);
+    assert.equal((await save([second.id], r => r.id !== 'EXAMPLE-002')).status, 400);
+    assert.equal(store().latestRevision().id, saved.id, 'a refused save writes no revision');
+    assert.equal((await listed()).find((s: any) => s.id === second.id).status, 'open');
 
     // A tick taken back leaves the suggestion exactly as the agent wrote it, and it can be decided again.
     assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { reopen: true }, agent)).status, 403);
@@ -54,7 +65,7 @@ test('requirement suggestions are recorded, superseded, decided, put back, and n
     assert.equal(reopened.decidedBy, undefined);
     assert.equal((await request(`requirement-suggestions/${created.id}`, 'POST', { reopen: true }, owner)).status, 409);
     assert.equal((await request(`requirement-suggestions/${second.id}`, 'POST', { reopen: true }, owner)).status, 409, 'an open suggestion has no decision to take back');
-    assert.equal((await (await request(`requirement-suggestions/${created.id}`, 'POST', { accept: true }, owner)).json()).status, 'accepted');
+    assert.equal((await save([created.id])).status, 200);
 
     // An edit to the statement leaves the open change suggestion behind; the owner reads it before deciding.
     const edited = store().latestRevision();

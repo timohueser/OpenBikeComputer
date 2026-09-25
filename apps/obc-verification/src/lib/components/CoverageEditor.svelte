@@ -20,7 +20,9 @@
   let procedureDraft: { criterionId: string; test: VerificationTest } | null = null;
   $: editing = !!manualDraft || !!procedureDraft;
   $: plan = requirement.coverage!;
-  $: covered = plan.criteria.filter(c => criterionCovered(requirement, c)).length;
+  $: covered = plan.criteria.filter(done).length;
+  /** Evidence counts once it says what it proves; the save refuses it before then. */
+  const done = (c: AcceptanceCriterion) => criterionCovered(requirement, c) && c.evidence.every(e => e.rationale.trim());
   $: manual = requirement.tests.filter(t => t.kind === 'manual' && t.title.toLowerCase().includes(search.toLowerCase()));
   $: automated = catalog.cases.filter(c => `${c.name} ${c.suite} ${c.file ?? ''}`.toLowerCase().includes(search.toLowerCase()));
   const name = (e: CoverageEvidence) => evidenceTest(requirement, e)?.title ?? e.caseId ?? e.testId;
@@ -81,10 +83,9 @@
   <p class="progress small"><strong>{covered} of {plan.criteria.length}</strong> {plan.criteria.length === 1 ? 'criterion' : 'criteria'} covered <span class="muted">· a criterion is covered once it has evidence and no gap</span></p>
   <div class="criteria">
     {#each plan.criteria as criterion, index (criterion.id)}
-      {@const done = criterionCovered(requirement, criterion)}
-      <fieldset class="criterion" class:done class:flagged={!!flag && criterion.id === flag} disabled={busy}>
+      <fieldset class="criterion" class:done={done(criterion)} class:flagged={!!flag && criterion.id === flag} disabled={busy}>
         {#if flag && criterion.id === flag}<span class="flag small" use:reveal>The failed save named this criterion.</span>{/if}
-        <span class="mark" aria-hidden="true">{done ? '✓' : ''}</span>
+        <span class="mark" aria-hidden="true">{done(criterion) ? '✓' : ''}</span>
         <div class="body">
           <div class="head">
             <textarea class="statement" rows={1} maxlength={5000} aria-label={`Criterion ${index + 1}`} placeholder="What must be true? One checkable statement." bind:value={criterion.statement} on:input={changed}></textarea>
@@ -99,8 +100,9 @@
                   <option value="">level?</option>
                   {#each TEST_LEVELS as l}<option value={l}>{l}</option>{/each}
                 </select>
-                <input maxlength={5000} aria-label="What this test proves" placeholder="What does this test prove?" bind:value={evidence.rationale} on:input={changed} />
+                <input maxlength={5000} aria-label="What this test proves" aria-invalid={!evidence.rationale.trim()} aria-describedby={evidence.rationale.trim() ? undefined : `why-${criterion.id}-${i}`} class:missing={!evidence.rationale.trim()} placeholder="What does this test prove?" bind:value={evidence.rationale} on:input={changed} />
               </div>
+              {#if !evidence.rationale.trim()}<p class="missing-note small" id={`why-${criterion.id}-${i}`}>Say what this test proves. The revision cannot be saved without it.</p>{/if}
               {#if procedureDraft && procedureDraft.criterionId === criterion.id && procedureDraft.test.id === test?.id}<TestEditor bind:test={procedureDraft.test} onsave={keepProcedure} oncancel={cancelProcedure} />{/if}
             </div>
           {/each}
@@ -137,13 +139,15 @@
   .editor { margin-top: 12px; }
   .evidence-line { display: flex; gap: 7px; align-items: center; }
   .evidence-line input { margin-top: 0; }
+  .evidence-line input.missing { border-color: var(--coral); }
+  .missing-note { margin: 4px 0 0; color: var(--coral); }
   .level-pick { width: auto; flex-shrink: 0; margin-top: 0; padding: 7px 8px; font-size: 12px; }
   .progress { margin: 0 0 12px; }
   .criteria { display: flex; flex-direction: column; gap: 8px; }
   .criterion { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-  .done { border-color: #cfdcc9; }
-  .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 8px; border-radius: 50%; border: 1.5px solid var(--amber); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
-  .done .mark { background: var(--forest); border-color: var(--forest); }
+  .done { border-color: var(--good-line); }
+  .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 8px; border-radius: 50%; border: 1.5px solid var(--warn); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
+  .done .mark { background: var(--good); border-color: var(--good); }
   .body { flex: 1; min-width: 0; }
   .head { display: flex; gap: 8px; align-items: flex-start; }
   .statement { min-height: 0; margin: 0; font-weight: 600; field-sizing: content; }
@@ -157,9 +161,9 @@
   .choices { max-height: 260px; overflow: auto; margin: 8px 0; }
   .choice { display: block; width: 100%; text-align: left; margin-top: 5px; padding: 7px 10px; overflow-wrap: anywhere; white-space: normal; }
   .choice span { display: block; }
-  .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--amber); border-color: #e6d9bf; background: #fffcf4; }
-  .gap::placeholder { color: #b39a6b; }
-  .criterion.flagged { border-color: var(--coral); background: #fff7f4; }
+  .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--warn); border-color: var(--warn-line); background: var(--warn-bg); }
+  .gap::placeholder { color: var(--warn); opacity: .75; }
+  .criterion.flagged { border-color: var(--coral); background: var(--coral-bg); }
   .flag { display: block; margin: 0 0 6px; color: var(--coral); font-weight: 600; }
   .next { display: flex; gap: 8px; margin-top: 8px; }
   .next select { width: auto; margin: 0; font-size: 12px; padding: 6px 8px; text-transform: uppercase; letter-spacing: .3px; }

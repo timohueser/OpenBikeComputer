@@ -15,6 +15,8 @@
   let now = Date.now();
   let error = '';
   let notice = '';
+  /** The token whose revocation waits for a second click. */
+  let revoking = '';
   const status = (token: AgentToken, time: number) => token.revokedAt ? 'Revoked' : Date.parse(token.expiresAt) <= time ? 'Expired' : 'Active';
   $: visible = tokens.filter(token => showInactive || status(token, now) === 'Active');
 
@@ -33,7 +35,7 @@
     finally { busy = false; }
   }
   async function revoke(token: AgentToken) {
-    busy = true; error = ''; notice = '';
+    busy = true; error = ''; notice = ''; revoking = '';
     try {
       await api(`/api/admin/agent-tokens/${encodeURIComponent(token.id)}`, 'DELETE');
       tokens = tokens.map(value => value.id === token.id ? { ...value, revokedAt: new Date().toISOString() } : value);
@@ -89,7 +91,10 @@
       <div class="row"><h3>{token.name}</h3><span class="badge">{status(token, now)}</span></div>
       <p class="small muted">Created by {token.issuedBy.name} · {date(token.createdAt)}<br />Expires {date(token.expiresAt)} · Last used {token.lastUsedAt ? date(token.lastUsedAt) : 'never'}</p>
       {#if token.revokedAt}<p class="small muted">Revoked {date(token.revokedAt)}</p>
-      {:else if status(token, now) === 'Active'}<button class="danger" disabled={busy} on:click={() => revoke(token)}>Revoke token</button>{/if}
+      {:else if status(token, now) === 'Active'}
+        {#if revoking === token.id}<div class="alert warning"><strong>Revoke {token.name}? The agent loses access at once.</strong><div class="actions"><button class="danger" disabled={busy} on:click={() => revoke(token)}>Revoke</button><button on:click={() => revoking = ''}>Keep</button></div></div>
+        {:else}<button class="danger" disabled={busy} on:click={() => revoking = token.id}>Revoke token</button>{/if}
+      {/if}
     </article>
   {:else}<p class="muted">{showInactive ? 'No agent tokens have been created.' : 'No active agent tokens.'}</p>{/each}
 {/if}
