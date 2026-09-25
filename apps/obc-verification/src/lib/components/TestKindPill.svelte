@@ -62,22 +62,22 @@
 <style>
   .holder { display: inline-block; vertical-align: 1px; }
   .pill {
-    display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 650;
+    display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11.5px; font-weight: 650;
     letter-spacing: .3px; text-transform: uppercase; line-height: 1.6; cursor: pointer;
     border: 1px solid var(--line); background: var(--soft); color: var(--muted); min-height: 0;
   }
   .pill.static { cursor: default; flex-shrink: 0; }
-  /* Low-chroma tints, in the same family as the existing badges. */
-  .k-unit { background: #e7eee3; border-color: #cbdac2; color: #3d5a41; }
-  .k-integration { background: #e2eceb; border-color: #c4d9d6; color: #2f5a55; }
-  .k-system { background: #f4ecda; border-color: #e0d3b3; color: #6f5622; }
-  .k-human { background: #f4e8e3; border-color: #e0cabe; color: #8a4a33; }
-  .k-until-automated { background: #ecebe6; border-color: #d7d6cc; color: #5f6158; }
+  /* Low-chroma tints of the palette roles; integration takes the ride navy. */
+  .k-unit { background: var(--good-bg); border-color: var(--good-line); color: var(--good); }
+  .k-integration { background: #e8eaf5; border-color: #c8cde8; color: #2d3e96; }
+  .k-system { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn); }
+  .k-human { background: var(--coral-bg); border-color: var(--coral-line); color: var(--coral); }
+  .k-until-automated { background: #eeede6; border-color: var(--line-strong); color: var(--muted); }
   .pop {
     position: fixed; z-index: 20; visibility: hidden; overflow-y: auto; overscroll-behavior: contain;
     display: flex; flex-direction: column; gap: 7px; padding: 11px 12px; text-align: left;
     background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
-    box-shadow: 0 6px 24px #24352c1f; font-size: 12px; line-height: 1.45; color: var(--ink);
+    box-shadow: 0 6px 24px #1c1b141f; font-size: 12px; line-height: 1.45; color: var(--ink);
   }
   .pop.placed { visibility: visible; }
   .pop-head {

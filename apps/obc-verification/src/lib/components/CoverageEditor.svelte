@@ -141,9 +141,9 @@
   .progress { margin: 0 0 12px; }
   .criteria { display: flex; flex-direction: column; gap: 8px; }
   .criterion { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-  .done { border-color: #cfdcc9; }
-  .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 8px; border-radius: 50%; border: 1.5px solid var(--amber); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
-  .done .mark { background: var(--forest); border-color: var(--forest); }
+  .done { border-color: var(--good-line); }
+  .mark { flex-shrink: 0; width: 20px; height: 20px; margin-top: 8px; border-radius: 50%; border: 1.5px solid var(--warn); color: white; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
+  .done .mark { background: var(--good); border-color: var(--good); }
   .body { flex: 1; min-width: 0; }
   .head { display: flex; gap: 8px; align-items: flex-start; }
   .statement { min-height: 0; margin: 0; font-weight: 600; field-sizing: content; }
@@ -157,9 +157,9 @@
   .choices { max-height: 260px; overflow: auto; margin: 8px 0; }
   .choice { display: block; width: 100%; text-align: left; margin-top: 5px; padding: 7px 10px; overflow-wrap: anywhere; white-space: normal; }
   .choice span { display: block; }
-  .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--amber); border-color: #e6d9bf; background: #fffcf4; }
-  .gap::placeholder { color: #b39a6b; }
-  .criterion.flagged { border-color: var(--coral); background: #fff7f4; }
+  .gap { min-height: 0; margin: 10px 0 0; font-size: 13px; padding: 7px 10px; field-sizing: content; color: var(--warn); border-color: var(--warn-line); background: var(--warn-bg); }
+  .gap::placeholder { color: var(--warn); opacity: .75; }
+  .criterion.flagged { border-color: var(--coral); background: var(--coral-bg); }
   .flag { display: block; margin: 0 0 6px; color: var(--coral); font-weight: 600; }
   .next { display: flex; gap: 8px; margin-top: 8px; }
   .next select { width: auto; margin: 0; font-size: 12px; padding: 6px 8px; text-transform: uppercase; letter-spacing: .3px; }
