@@ -8,7 +8,7 @@
 use heapless::String;
 
 use obc_formats::obcr::NAME_CAP;
-use obc_formats::ride::TripRef;
+use obc_formats::ride::{EffortLimits, TripRef};
 use obc_route::RideInfo;
 pub const MAX_RIDES: usize = 128;
 pub const UI_RIDES_CAP: usize = 32;
@@ -31,7 +31,7 @@ const _: () = assert!(
 
 // The board holds `UI_RIDES_CAP` entries resident; a field that grows one costs 32 times its size.
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<RideEntry>() == 112);
+const _: () = assert!(core::mem::size_of::<RideEntry>() == 120);
 
 /// A stored ride's header facts for the Rides screen, plus the device-local `synced` flag the
 /// unsynced-delete guard keys on.
@@ -54,6 +54,9 @@ pub struct RideSummary {
     pub avg_cadence: Option<u8>,
     pub avg_power: Option<u16>,
     pub energy_kj: Option<u32>,
+    /// The effort limits in force when the ride started. The detail's zones come from these,
+    /// never from the current settings.
+    pub limits: EffortLimits,
 }
 
 impl RideSummary {
@@ -72,6 +75,7 @@ impl RideSummary {
             avg_cadence: info.avg_cadence,
             avg_power: info.avg_power,
             energy_kj: info.energy_kj,
+            limits: info.limits,
         }
     }
 }

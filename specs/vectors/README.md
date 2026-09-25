@@ -2,7 +2,7 @@
 
 Binary fixtures pinning the byte layouts of
 [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR route format
-([`OBCR_Spec.md`](../OBCR_Spec.md)), the 20-byte ride-sample codec and complete ride-v5
+([`OBCR_Spec.md`](../OBCR_Spec.md)), the 20-byte ride-sample codec and complete ride-v6
 object, and the OBCT terrain raster ([`OBCT_Spec.md`](../OBCT_Spec.md)), consumed by
 **four** implementations:
 
@@ -31,8 +31,8 @@ A drift on any side fails that side's tests — the files are the contract.
 | `route-visit-waypoint-overlap.obcr`, `route-visit-index-overlap.obcr` | OBCR v5 §1.1 envelope | each shares the descriptor's last four reserved-zero bytes with another section; both codecs MUST reject them |
 | `eta.csv` | [`OBCR_Spec.md`](../OBCR_Spec.md) §1.2 estimate | one row per case: bike type, distance, ascent and the expected whole seconds, for every bike type. `obc-formats` and the `OBCKit` Swift tests read it |
 | `track-log.obct` | sample-codec vector (five complete 20-byte records, no header) | shaped for sensor/signed-coordinate coverage only; it is not accepted as a ride or recovery input |
-| `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of finished `ride-v5.bin` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
-| `ride-v5.bin` | ride object v5 (spec §7.2) | "Sensor Ride": three exact 20-byte recorded samples (including segment flags and mixed sensor presence), followed by the fixed 150-byte summary footer with 95 m of descent and 756 kJ. The ride started on day index 1 of 3 of the `trip-v3.bin` trip ("Alpen Traverse", key `0x0123_4567_89AB_CDEF`), on a Gravel bike |
+| `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of finished `ride-v6.bin` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
+| `ride-v6.bin` | ride object v6 (spec §7.2) | "Sensor Ride": three exact 20-byte recorded samples (including segment flags and mixed sensor presence), followed by the fixed 154-byte summary footer with 95 m of descent and 756 kJ. The ride started on day index 1 of 3 of the `trip-v3.bin` trip ("Alpen Traverse", key `0x0123_4567_89AB_CDEF`), on a Gravel bike, with max HR 185 and FTP 250 |
 | `status-command-result.bin` | `status` msg 3 §4.3 | the answer to an accepted `installFw`: `cmd` 3, `ok`, `detail` 0. Pins the four-byte layout and the position of `detail` |
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. It is the shape of a fielded container and of the device-written rollback snapshot, and pairing it with the v2 file below pins the offset-compatibility guarantee across implementations |

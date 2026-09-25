@@ -533,6 +533,10 @@
       "averageSpeedMps": 3.2774,
       "climbMeters": 274,
       "payloadBytes": 98060,
+      "zoneLimits": {
+        "maxHeartRate": 185,
+        "ftpWatts": 250
+      },
       "track": [
         {
           "lat": 46.601847,

@@ -338,7 +338,7 @@ impl StatisticsScreen {
             // the caption, so it has its own drawer. An effort tile with a zone takes its tint.
             match (placed.field.graph(), placed.field.category(), cell.zone) {
                 (Some(m), ..) => {
-                    let limit = rx.settings.effort_limits().of(m);
+                    let limit = m.limit(rx.settings.effort_limits());
                     let history = rx.recorder.effort().history(m);
                     graph_field(cv, area, GraphBlock::Live, &cell.caption, &cell.value, cell.zone, history, m, limit);
                 }

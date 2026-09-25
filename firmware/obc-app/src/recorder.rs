@@ -21,7 +21,7 @@ use obc_route::RideStats;
 use crate::altitude::AltitudeFusion;
 use crate::breadcrumb::Breadcrumb;
 use crate::device_core::{OperationToken, RecorderCapabilities, RecorderTag, TokenSource};
-use crate::effort::{Effort, Gauge, Limits, Metric, Reading};
+use crate::effort::{Effort, EffortLimits, Gauge, Metric, Reading};
 use crate::placement::define_placement_constructors;
 
 use crate::CatalogObjectId;
@@ -76,11 +76,13 @@ struct Motion {
     segment_start: bool,
 }
 
-/// What a ride records about its start: the current bike type and the trip day it started on.
+/// What a ride records about its start: the current bike type, the trip day it started on and the
+/// rider's effort limits. A later settings change does not reach a ride already started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RideOrigin {
     pub bike: BikeType,
     pub trip: Option<TripRef>,
+    pub limits: EffortLimits,
 }
 
 /// The state that must cross a reset when a journaled ride is continued.
@@ -184,7 +186,7 @@ pub enum RecorderError {
 /// this domain may attempt — a catalog it could not read completely is not one it may mutate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDamage {
-    /// The recovered bytes are not a ride-v5 sample/footer boundary.
+    /// The recovered bytes are not a ride sample/footer boundary.
     Payload,
     /// The recovered samples carry no decodable continuation image.
     Metadata,
@@ -539,7 +541,7 @@ impl RecorderMachine {
             cadence_ms: 0,
             energy_j: None,
             effort: Effort::new(),
-            origin: RideOrigin { bike: BikeType::Road, trip: None },
+            origin: RideOrigin { bike: BikeType::Road, trip: None, limits: EffortLimits { max_hr: 0, ftp_w: 0 } },
         }
     );
 
@@ -888,7 +890,7 @@ impl RecorderMachine {
     }
 
     /// Scroll the effort history to this pass and zone the latest values against the limits.
-    pub(crate) fn advance_effort(&mut self, limits: Limits) {
+    pub(crate) fn advance_effort(&mut self, limits: EffortLimits) {
         let power = self.power_last.map(|_| self.effort.power());
         self.effort.advance(self.sensor_now_ms, limits, self.hr_last, power);
     }
@@ -1144,7 +1146,7 @@ impl RecorderMachine {
     }
 
     /// The map's effort gauge for a `w` px wide panel, or `None` when no band shows.
-    pub fn gauge(&self, limits: Limits, w: i32) -> Option<Gauge> {
+    pub fn gauge(&self, limits: EffortLimits, w: i32) -> Option<Gauge> {
         crate::effort::gauge(self.reading(Metric::Power), self.reading(Metric::Hr), limits, w)
     }
 
@@ -1213,6 +1215,7 @@ impl RecorderMachine {
             max_power: self.max_power(),
             energy_kj: self.kj(),
             bike: self.origin.bike,
+            limits: self.origin.limits,
             trip: self.origin.trip,
             trip_name: Name::EMPTY,
         }
@@ -2346,7 +2349,11 @@ mod tests {
     #[test]
     fn a_recovered_continuation_restores_the_raw_summary_state() {
         let state = RideContinuation {
-            origin: RideOrigin { bike: BikeType::Mtb, trip: TripRef::new(9, 1, 3) },
+            origin: RideOrigin {
+                bike: BikeType::Mtb,
+                trip: TripRef::new(9, 1, 3),
+                limits: EffortLimits { max_hr: 185, ftp_w: 250 },
+            },
             ridden_m: 12_345.5,
             moving_m: 12_000.25,
             moving_s: 2_400.0,
@@ -2370,6 +2377,11 @@ mod tests {
         assert_eq!((rec.ride_stats().energy_kj, rec.ride_stats().descent_m), (Some(19), 123), "and reach the footer");
         assert_eq!(rec.climb_m(), 321.0);
         assert_eq!((rec.ride_stats().bike, rec.ride_stats().trip), (BikeType::Mtb, TripRef::new(9, 1, 3)));
+        assert_eq!(
+            rec.ride_stats().limits,
+            EffortLimits { max_hr: 185, ftp_w: 250 },
+            "a resumed ride keeps its limits"
+        );
     }
 
     #[test]

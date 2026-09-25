@@ -1095,10 +1095,14 @@ impl App {
         self.catalogs.trips()
     }
 
-    /// What a ride that starts now records: the current bike type, and the trip day when the
-    /// loaded route is one.
+    /// What a ride that starts now records: the current bike type and effort limits, and the trip
+    /// day when the loaded route is one.
     pub(crate) fn ride_origin(&self) -> crate::RideOrigin {
-        crate::RideOrigin { bike: self.settings.bike_type, trip: self.loaded_trip_day() }
+        crate::RideOrigin {
+            bike: self.settings.bike_type,
+            trip: self.loaded_trip_day(),
+            limits: self.settings.effort_limits(),
+        }
     }
 
     /// The trip day of the loaded route. A day built from the rest of the day before counts as the
@@ -6243,6 +6247,7 @@ mod tests {
         app.recorder.set_origin(crate::RideOrigin {
             bike: obc_formats::bike::BikeType::Road,
             trip: obc_formats::ride::TripRef::new(42, 2, 3),
+            ..Default::default()
         });
         let record = finish_at(&mut app, 25_000);
         assert_eq!((record.day, record.day_route.id, record.metres, record.last_finished), (2, 30, 8_000, Some(2)));
@@ -6256,7 +6261,11 @@ mod tests {
         assert_eq!(app.loaded_trip_day(), None, "without a ride, an internal route is no trip day");
         app.test_start_ride();
         let day3 = obc_formats::ride::TripRef::new(42, 2, 3);
-        app.recorder.set_origin(crate::RideOrigin { bike: obc_formats::bike::BikeType::Road, trip: day3 });
+        app.recorder.set_origin(crate::RideOrigin {
+            bike: obc_formats::bike::BikeType::Road,
+            trip: day3,
+            ..Default::default()
+        });
         assert_eq!(app.loaded_trip_day(), day3);
         assert_eq!(app.trip_later_m(), Some(0), "Day 3 is the last day");
     }
@@ -6333,6 +6342,7 @@ mod tests {
         app.recorder.set_origin(crate::RideOrigin {
             bike: obc_formats::bike::BikeType::Road,
             trip: obc_formats::ride::TripRef::new(42, 1, 3),
+            ..Default::default()
         });
         finish_at(&mut app, 54_000);
         let stats = app.recorder.ride_stats();
@@ -6353,6 +6363,7 @@ mod tests {
         app.recorder.set_origin(crate::RideOrigin {
             bike: obc_formats::bike::BikeType::Road,
             trip: obc_formats::ride::TripRef::new(42, 2, 3),
+            ..Default::default()
         });
         let stats = app.recorder.ride_stats();
         app.land_day_done(1, &stats);

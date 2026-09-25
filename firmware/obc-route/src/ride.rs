@@ -1,6 +1,6 @@
-//! Recorded-ride v5 summary access.
+//! Recorded-ride v6 summary access.
 //!
-//! The object begins with the existing 20-byte track samples and ends with one fixed 150-byte
+//! The object begins with the existing 20-byte track samples and ends with one fixed 154-byte
 //! footer. Recording therefore writes the final bytes directly; finalize is one footer append,
 //! never a whole-ride conversion.
 
@@ -10,7 +10,8 @@ use obc_formats::{
     bike::BikeType,
     io::{ByteSource, DecodeError, Error},
     ride::{
-        checked_object_len, decode_footer, encode_footer, Footer, Name, TripRef, FOOTER_LEN, MAGIC, NAME_CAP, VERSION,
+        checked_object_len, decode_footer, encode_footer, EffortLimits, Footer, Name, TripRef, FOOTER_LEN, MAGIC,
+        NAME_CAP, VERSION,
     },
 };
 
@@ -37,6 +38,8 @@ pub struct RideStats {
     pub energy_kj: Option<u32>,
     /// The bike type that was current when the ride started.
     pub bike: BikeType,
+    /// The effort limits that were in force when the ride started.
+    pub limits: EffortLimits,
     /// The trip day the ride started on.
     pub trip: Option<TripRef>,
     pub trip_name: Name,
@@ -76,6 +79,7 @@ pub fn encode_summary_footer(
     footer.descent_m = stats.descent_m;
     footer.energy_kj = stats.energy_kj;
     footer.bike = stats.bike;
+    footer.limits = stats.limits;
     footer.set_trip(stats.trip, stats.trip_name);
     encode_footer(&footer)
 }
@@ -99,6 +103,8 @@ pub struct RideInfo {
     pub max_power: Option<u16>,
     pub energy_kj: Option<u32>,
     pub bike: BikeType,
+    /// The effort limits in force when the ride started.
+    pub limits: EffortLimits,
     pub trip: Option<TripRef>,
     pub trip_name: String<NAME_CAP>,
 }
@@ -145,6 +151,7 @@ impl RideInfo {
             max_power: footer.max_power,
             energy_kj: footer.energy_kj,
             bike: footer.bike,
+            limits: footer.limits,
             trip: footer.trip(),
             trip_name,
         })

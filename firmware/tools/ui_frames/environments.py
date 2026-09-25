@@ -62,19 +62,21 @@ def plain_route(stage: Stage) -> Staging:
 
 def _ride(samples, name, start, distance_m, moving_s, climb_m, descent_m, hr, trip):
     """A ride object as `specs/obc-ble-interface-spec.md` §7.2 lays it out: 20-byte samples, then
-    the 150-byte footer. `samples` are `(lon, lat, ele)`; `hr` is one heart rate per sample or
-    `None`; `trip` is `(key, day index, day count, name)` or `None`.
+    the 154-byte footer. `samples` are `(lon, lat, ele)`; `hr` is one heart rate per sample or
+    `None`, and a ride with heart rate records a 185 bpm max HR and a 250 W FTP; `trip` is
+    `(key, day index, day count, name)` or `None`.
     """
     body = bytearray()
     for i, (lon, lat, ele) in enumerate(samples):
         body += struct.pack("<iihHIBBH", lon, lat, ele, i == 0, i * 5000, hr[i] if hr else 0xFF, 0xFF, 0xFFFF)
     raw = name.encode()
     avg_hr = round(sum(hr) / len(hr)) if hr else 0xFF
-    footer = struct.pack("<4sBBHIIIHHHI", b"OBRF", 5, len(raw), 150, start, distance_m, moving_s, 0, climb_m,
+    footer = struct.pack("<4sBBHIIIHHHI", b"OBRF", 6, len(raw), 154, start, distance_m, moving_s, 0, climb_m,
                          descent_m, len(samples))
     footer += struct.pack("<BBBBHHI48s", avg_hr, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, 0xFFFF_FFFF, raw)
     key, day, days, trip_name = trip or (0, 0, 0, "")
     footer += struct.pack("<QBBBB48s", key, day, days, 1, len(trip_name.encode()), trip_name.encode())
+    footer += struct.pack("<BBH", *((185, 0, 250) if hr else (0, 0, 0)))
     return bytes(body + footer)
 
 
@@ -99,14 +101,14 @@ def _metric(a, b):
 
 def tracks(stage: Stage) -> Staging:
     """Four stored rides for the Rides screens, oldest first, so the import gives the newest the
-    highest id: two loose copies of the pinned `ride-v5.bin` vector, "Sensor Ride" with all three
+    highest id: two loose copies of the pinned `ride-v6.bin` vector, "Sensor Ride" with all three
     sensors, and two days of the trip "Alps traverse" on the Grimsel climb's track. Day 2 has a
     heart rate that rises and falls with the climb; Day 1 has no sensor. Every ride is unsynced;
     the flat store stages no archive rows.
     """
     where = stage.dir("tracks")
-    vector = (stage.vectors / "ride-v5.bin").read_bytes()
-    footer = len(vector) - 150
+    vector = (stage.vectors / "ride-v6.bin").read_bytes()
+    footer = len(vector) - 154
     for index, distance in enumerate((12_345, 17_800)):
         loose = bytearray(vector)
         struct.pack_into("<I", loose, footer + 12, distance)

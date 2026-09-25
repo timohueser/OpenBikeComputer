@@ -61,7 +61,8 @@ function loopRide(
     }
     const distanceM = Math.round(radiusDeg * 111_000 * 2 * Math.PI * 1.2);
     return {
-        version: 5,
+        version: 6,
+        effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
         distanceM,

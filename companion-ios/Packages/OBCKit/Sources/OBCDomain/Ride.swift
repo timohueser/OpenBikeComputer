@@ -125,6 +125,9 @@ public struct Ride: Identifiable, Equatable, Sendable {
 
     public var id: RideID { summary.id }
 
+    /// The effort limits the ride's zones are taken from, never the rider's current settings.
+    public var zoneLimits: RideZoneLimits { summary.zoneLimits }
+
     public init(summary: RideSummary, points: [RidePoint]) {
         self.summary = summary
         self.points = points
@@ -186,6 +189,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     public var bikeType: BikeType
     /// The trip day the ride started on, or nil.
     public var trip: RideTrip?
+    /// The effort limits that were in force when the ride started.
+    public var zoneLimits: RideZoneLimits
 
     public init(
         id: RideID,
@@ -205,6 +210,7 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         energyKJ: Int? = nil,
         bikeType: BikeType = .road,
         trip: RideTrip? = nil,
+        zoneLimits: RideZoneLimits = .notSet,
         source: RideSource? = nil
     ) {
         self.id = id
@@ -224,6 +230,7 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.energyKJ = energyKJ
         self.bikeType = bikeType
         self.trip = trip
+        self.zoneLimits = zoneLimits
         self.source = source
     }
 }
