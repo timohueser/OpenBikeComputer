@@ -85,8 +85,12 @@ final class SettingsTests: XCTestCase {
 
         app.navigationBars.buttons.firstMatch.tap()  // back to the main screen
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Summit"].waitForExistence(timeout: 5),
-                      "top bar kept the old name")
+        // The top bar is one VoiceOver stop that leads with the name: "Summit, connected, …".
+        let device = app.descendants(matching: .any)["topbar.device"].firstMatch
+        let renamed = NSPredicate(format: "label BEGINSWITH 'Summit,'")
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: renamed, object: device)], timeout: 5),
+            .completed, "top bar kept the old name: \(device.label)")
     }
 
     /// Forget confirms with the reassurance copy, then lands on the pairing prompt.

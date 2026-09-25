@@ -6,6 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{title}} — OpenBikeComputer log</title>
   <meta name="description" content="{{description}}" />
+  <meta name="theme-color" content="#A4501E" />
+  <script src="{{theme_js}}"></script>
   <link rel="stylesheet" href="{{css}}" />
   <link rel="stylesheet" href="{{blog_css}}" />
   <link rel="alternate" type="application/atom+xml" title="OpenBikeComputer log" href="{{base}}feed.xml" />
@@ -14,7 +16,7 @@
 <body class="blog">
   {{site_head}}
 
-  <main class="post-wrap">
+  <main class="post-wrap" id="main" tabindex="-1">
     <article class="prose post">
       <header class="post-head">
         <a class="back" href="{{base}}">&#8592; Expedition log</a>
@@ -36,7 +38,7 @@
         <a href="{{site_root}}docs/impressum/">Impressum</a>
         <a href="{{site_root}}docs/datenschutz/">Datenschutz</a>
       </nav>
-      <span class="foot-trail">Headed for the trail.</span>
+
       <span class="foot-credit">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, under the <a href="https://opendatacommons.org/licenses/odbl/" target="_blank" rel="noopener">ODbL</a>.</span>
     </footer>
   </main>
