@@ -182,10 +182,8 @@ mod tests {
         assert_eq!(footer.name(), "Kandel (simulated)");
         assert_eq!(footer.start_time, 1_790_236_800);
         assert!(footer.climb_m >= 20 && footer.descent_m >= 20);
-        let records: Vec<_> = bytes[..bytes.len() - FOOTER_LEN]
-            .chunks_exact(RECORD_LEN)
-            .map(|b| decode_record(b.try_into().unwrap()))
-            .collect();
+        let records: Vec<_> =
+            bytes[..bytes.len() - FOOTER_LEN].as_chunks::<RECORD_LEN>().0.iter().map(decode_record).collect();
         for (source, sample) in track.points.iter().zip(&records) {
             assert_eq!((sample.lat, sample.lon, sample.ele), (source.lat, source.lon, source.ele.unwrap() as i16));
         }
