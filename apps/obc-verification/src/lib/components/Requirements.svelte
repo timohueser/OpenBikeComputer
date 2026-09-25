@@ -342,7 +342,7 @@
   }
   /** Review keys. Letters act only outside text fields and the suggestions panel, which has its own. */
   function reviewKeys(event: KeyboardEvent) {
-    const target = event.target as HTMLElement | null;
+    const target = event.target instanceof Element ? event.target : null;
     if (!visible) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (dirty && !busy && !procedureOpen) save(); return; }
     // The panel closes its own feedback box, so Escape there leaves the coverage review alone.
