@@ -60,12 +60,10 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
   display: flex; align-items: center; gap: 7px;
   padding: 8px 11px; border-radius: 6px;
   color: var(--ink-soft); text-decoration: none;
-  border-left: 2px solid transparent;
 }
 .nav-list a:hover { background: var(--parchment-2); color: var(--ink); }
 .nav-list a.active {
   background: var(--parchment-2); color: var(--forest-deep); font-weight: 600;
-  border-left-color: var(--coral);
 }
 .nav-list .soon {
   font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
@@ -145,6 +143,7 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
   color: var(--ink-soft); font-size: 14px;
 }
 .copy-notice strong { color: var(--ink); }
+.layout .callout, .layout .copy-notice { border-left-color: var(--line); }
 
 /* tables */
 .table-wrap { overflow-x: auto; margin: 20px 0; }
@@ -213,14 +212,14 @@ figure.fig figcaption b, figure.fig figcaption strong { font-style: normal; colo
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--ink-faint); margin-bottom: 10px;
 }
-.toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--line); }
+.toc ul { list-style: none; margin: 0; padding: 0; }
 .toc li a {
-  display: block; padding: 4px 0 4px 14px; margin-left: -1px;
-  color: var(--ink-faint); text-decoration: none; border-left: 2px solid transparent;
+  display: block; padding: 4px 10px 4px 14px; border-radius: 6px;
+  color: var(--ink-faint); text-decoration: none;
 }
 .toc li.lvl3 a { padding-left: 26px; font-size: 12.5px; }
 .toc li a:hover { color: var(--ink); }
-.toc li a.active { color: var(--forest-deep); border-left-color: var(--coral); font-weight: 600; }
+.toc li a.active { color: var(--forest-deep); background: var(--parchment-2); font-weight: 600; }
 
 /* ----------------------------------------------------------------- doc footer */
 .doc-foot {
