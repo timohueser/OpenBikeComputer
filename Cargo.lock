@@ -3072,6 +3072,8 @@ dependencies = [
 name = "obc-replay"
 version = "0.1.0"
 dependencies = [
+ "obc-elevation",
+ "obc-formats",
  "obc-ports",
 ]
 

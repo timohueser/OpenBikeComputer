@@ -1,6 +1,15 @@
 schema = 1
 base_url = "https://fixtures.openbikecomputer.com/v1/"
 
+[packages.kandel-ride]
+summary = "Finished v6 Kandel development ride with simulated heart rate, cadence, power and effort limits"
+archive = "packages/183efc8fccdd7d9780d042e298ffc90b6017c4edd0f93456a8066597c95e4f6b.tar.gz"
+sha256 = "183efc8fccdd7d9780d042e298ffc90b6017c4edd0f93456a8066597c95e4f6b"
+bytes = 53219
+provenance = "Owner-provided kandel.gpx Komoot export, source SHA-256 172f9fa679e21fd4412adbdaf0dd86f8d32b6df174f2be5568edf0252a6b03da. The gpx_to_ride example preserves all track points, elevation and relative timing; sensors are deterministic simulations. The ride-object v6 footer records max HR 185 bpm and FTP 250 W. The finished ride starts at 2026-09-24 08:00 UTC and is named Kandel (simulated). Rebuild and device seeding commands: sources/kandel-ride/README.md."
+license = "User-provided Komoot export; source redistribution terms unconfirmed. GPL-3.0-only for the simulation code."
+tracked_sources = { "kandel.gpx" = "sources/kandel-ride/kandel.gpx", "README.md" = "sources/kandel-ride/README.md" }
+
 # Package ids are stable logical names. The archive path, byte count, and digest
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
