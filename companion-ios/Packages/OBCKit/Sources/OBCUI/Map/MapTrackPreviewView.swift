@@ -16,9 +16,8 @@ import MapKit
 /// distance-fraction placement.
 public struct MapTrackPreviewView: View {
     let preview: TrackPreview?
+    var ink: TrackPreviewView.Ink = .route
     var style: TrackPreviewView.Style = .thumbnail
-    var tag: String? = nil
-    var tagColor: Color = OBCTheme.secondary
     var showsChrome: Bool = true
     var waypoints: [Waypoint] = []
     /// Only needed to place `waypoints` on the grid.
@@ -32,9 +31,8 @@ public struct MapTrackPreviewView: View {
 
     public init(
         _ preview: TrackPreview?,
+        ink: TrackPreviewView.Ink = .route,
         style: TrackPreviewView.Style = .thumbnail,
-        tag: String? = nil,
-        tagColor: Color = OBCTheme.secondary,
         showsChrome: Bool = true,
         waypoints: [Waypoint] = [],
         totalDistanceMeters: Double = 0,
@@ -42,9 +40,8 @@ public struct MapTrackPreviewView: View {
         highlightedPhoto: Int? = nil
     ) {
         self.preview = preview
+        self.ink = ink
         self.style = style
-        self.tag = tag
-        self.tagColor = tagColor
         self.showsChrome = showsChrome
         self.waypoints = waypoints
         self.totalDistanceMeters = totalDistanceMeters
@@ -61,7 +58,7 @@ public struct MapTrackPreviewView: View {
         switch mode {
         case .grid:
             TrackPreviewView(
-                preview, style: style, tag: tag, tagColor: tagColor,
+                preview, ink: ink, style: style,
                 showsChrome: showsChrome,
                 markers: TrackPreviewView.Marker.middleWaypointPins(
                     waypoints, on: preview, totalDistanceMeters: totalDistanceMeters
@@ -83,16 +80,11 @@ public struct MapTrackPreviewView: View {
             interactionModes: []
         ) {
             TrackMapContent(
-                coordinates: coordinates, dotRadius: style.dotRadius, waypoints: waypoints,
+                coordinates: coordinates, ink: ink, dotRadius: style.dotRadius, waypoints: waypoints,
                 photoPins: photoPins, highlightedPhoto: highlightedPhoto
             )
         }
-        // The camera frames the track inside the safe area, so this keeps it clear of the tag.
-        .safeAreaPadding(.top, tag == nil ? 0 : TrackPreviewView.tagBandHeight)
         .allowsHitTesting(false)
-        .overlay(alignment: .topLeading) {
-            if let tag { MapPreviewTag(tag, color: tagColor) }
-        }
         .clipShape(RoundedRectangle(cornerRadius: showsChrome ? OBCTheme.radiusPanel : 0))
         .overlay {
             if showsChrome {
@@ -101,7 +93,7 @@ public struct MapTrackPreviewView: View {
         }
         #else
         TrackPreviewView(
-            preview, style: style, tag: tag, tagColor: tagColor,
+            preview, ink: ink, style: style,
             showsChrome: showsChrome,
             markers: TrackPreviewView.Marker.middleWaypointPins(
                 waypoints, on: preview, totalDistanceMeters: totalDistanceMeters
@@ -117,6 +109,7 @@ public struct MapTrackPreviewView: View {
 /// start and end already have dots.
 struct TrackMapContent: MapContent {
     let coordinates: [Coordinate]
+    var ink: TrackPreviewView.Ink = .route
     var dotRadius: CGFloat = 5
     var waypoints: [Waypoint] = []
     var photoPins: [Coordinate] = []
@@ -124,11 +117,12 @@ struct TrackMapContent: MapContent {
 
     var body: some MapContent {
         let coords = MapGeometry.clLocations(coordinates)
-        // Halo casing under the stroke.
+        if ink.cased {
+            MapPolyline(coordinates: coords)
+                .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
+        }
         MapPolyline(coordinates: coords)
-            .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
-        MapPolyline(coordinates: coords)
-            .stroke(OBCTheme.route, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
+            .stroke(ink.color, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
         if let first = coords.first {
             Annotation("", coordinate: first) { endMark(Circle(), fill: OBCTheme.ink) }
         }
@@ -204,35 +198,10 @@ struct PhotoPin: View {
 }
 #endif
 
-/// The corner tag badge, matching `TrackPreviewView`'s so a card reads the same
-/// whether it drew a map or the grid.
-struct MapPreviewTag: View {
-    let text: String
-    let color: Color
-
-    init(_ text: String, color: Color) {
-        self.text = text
-        self.color = color
-    }
-
-    var body: some View {
-        Text(text.uppercased())
-            .font(.system(.caption2, weight: .semibold).monospacedDigit())
-            .kerning(1)
-            .foregroundStyle(color)
-            .padding(.vertical, 5)
-            .padding(.horizontal, 7)
-            .background(OBCTheme.surface.opacity(0.9))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(OBCTheme.hairline))
-            .padding(10)
-    }
-}
-
 #if DEBUG
 #Preview("Map track preview") {
     VStack(spacing: 16) {
-        MapTrackPreviewView(.obcSample, style: .hero, tag: "Planned")
+        MapTrackPreviewView(.obcSample, style: .hero)
             .frame(height: 214)
         HStack(spacing: 16) {
             MapTrackPreviewView(.obcSample)

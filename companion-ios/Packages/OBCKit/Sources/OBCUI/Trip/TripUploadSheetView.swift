@@ -10,8 +10,6 @@ import OBCTransport
 public struct TripUploadSheetView: View {
     private let model: TripUploadModel
     @Environment(\.dismiss) private var dismiss
-    /// The measured content height, which the detent follows.
-    @State private var contentHeight: CGFloat = 260
 
     public init(model: TripUploadModel) {
         self.model = model
@@ -19,27 +17,19 @@ public struct TripUploadSheetView: View {
 
     public var body: some View {
         OBCSheetContainer {
-            ScrollView {
-                Group {
-                    switch model.phase {
-                    case .uploading:
-                        progressContent(interrupted: false)
-                    case .interrupted:
-                        progressContent(interrupted: true)
-                    case .done:
-                        SentToDeviceView(trip: model.card, deviceName: model.deviceName) { model.dismiss() }
-                    case .failed:
-                        failedContent
-                    }
+            Group {
+                switch model.phase {
+                case .uploading:
+                    progressContent(interrupted: false)
+                case .interrupted:
+                    progressContent(interrupted: true)
+                case .done:
+                    SentToDeviceView(trip: model.card, deviceName: model.deviceName) { model.dismiss() }
+                case .failed:
+                    failedContent
                 }
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
-            .scrollBounceBehavior(.basedOnSize)
         }
-        // The container's bottom inset stands in for the home-indicator safe area, so the detent
-        // is the measured content plus the grabber band and that inset.
-        .ignoresSafeArea(.container, edges: .bottom)
-        .presentationDetents([.height(contentHeight + 74)])
         .interactiveDismissDisabled(model.phase == .uploading || model.phase == .interrupted)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tripUpload.sheet")

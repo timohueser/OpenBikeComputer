@@ -11,8 +11,6 @@ import OBCTransport
 public struct UploadSheetView: View {
     private let model: UploadSheetModel
     @Environment(\.dismiss) private var dismiss
-    /// The measured content height, which the detent follows.
-    @State private var contentHeight: CGFloat = 260
 
     public init(model: UploadSheetModel) {
         self.model = model
@@ -20,29 +18,21 @@ public struct UploadSheetView: View {
 
     public var body: some View {
         OBCSheetContainer {
-            ScrollView {
-                Group {
-                    switch model.phase {
-                    case .uploading:
-                        progressContent(interrupted: false)
-                    case .interrupted:
-                        progressContent(interrupted: true)
-                    case .done:
-                        SentToDeviceView(overview: model.overview, deviceName: model.deviceName) {
-                            model.dismiss()
-                        }
-                    case .failed:
-                        failedContent
+            Group {
+                switch model.phase {
+                case .uploading:
+                    progressContent(interrupted: false)
+                case .interrupted:
+                    progressContent(interrupted: true)
+                case .done:
+                    SentToDeviceView(overview: model.overview, deviceName: model.deviceName) {
+                        model.dismiss()
                     }
+                case .failed:
+                    failedContent
                 }
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
-            .scrollBounceBehavior(.basedOnSize)
         }
-        // The container's bottom inset stands in for the home-indicator safe area, so the detent
-        // is the measured content plus the grabber band and that inset.
-        .ignoresSafeArea(.container, edges: .bottom)
-        .presentationDetents([.height(contentHeight + 74)])
         // Mid-transfer the sheet owns the upload: Cancel is the escape, not an
         // accidental swipe that would silently abort or orphan the transfer.
         .interactiveDismissDisabled(model.phase == .uploading || model.phase == .interrupted)

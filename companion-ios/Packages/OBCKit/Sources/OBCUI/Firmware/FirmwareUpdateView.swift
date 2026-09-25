@@ -124,11 +124,8 @@ public struct FirmwareUpdateView: View {
         }
         if model.updateStatus == .available {
             VStack(spacing: 16) {
-                OBCGroupedSection(
-                    "Update available",
-                    footer: "Downloaded and checked on this phone, then sent over Bluetooth. "
-                        + "Nothing is installed until you confirm it on \(model.deviceName)."
-                ) {
+                // Once a file is staged, its own section carries the safety line.
+                OBCGroupedSection("Update available", footer: model.phase == .idle ? model.safetyLine : nil) {
                     releaseRow
                     if let notes = model.releaseNotesURL {
                         OBCListRow(
@@ -167,7 +164,7 @@ public struct FirmwareUpdateView: View {
 
     private var releaseRow: some View {
         HStack(spacing: 12) {
-            OBCIconTile(systemImage: "sparkles", color: OBCTheme.tint)
+            OBCIconTile(systemImage: "arrow.down.to.line", color: OBCTheme.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.latestVersionLine)
                     .font(.system(.callout, weight: .semibold))
@@ -227,7 +224,7 @@ public struct FirmwareUpdateView: View {
     /// its failure line above the button.
     private var stagedFileGroup: some View {
         VStack(spacing: 16) {
-            OBCGroupedSection("Update file") {
+            OBCGroupedSection("Update file", footer: model.safetyLine) {
                 stagedFileRow
                 OBCListRow(
                     icon: "arrow.triangle.2.circlepath",
@@ -243,19 +240,20 @@ public struct FirmwareUpdateView: View {
                 noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.danger, text: failure)
             } else if model.stagedMatchesRunning {
                 noticeCard(
-                    icon: "checkmark.seal",
+                    icon: "checkmark",
                     tint: OBCTheme.secondary,
                     text: "\(model.deviceName) is already running this version."
                 )
             }
 
-            Button("Send to bike computer") { model.send() }
+            Button("Send to \(model.deviceName)") { model.send() }
                 .buttonStyle(.obcPrimary)
                 .disabled(!model.canSend)
+                .accessibilityIdentifier("firmware.send")
 
             if model.connection != .connected {
                 Text("Connect to \(model.deviceName) to send the update.")
-                    .font(.system(.caption))
+                    .font(.system(.footnote))
                     .foregroundStyle(OBCTheme.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -264,7 +262,7 @@ public struct FirmwareUpdateView: View {
 
     private var stagedFileRow: some View {
         HStack(spacing: 12) {
-            OBCIconTile(systemImage: "shippingbox", color: OBCTheme.tint)
+            OBCIconTile(systemImage: "doc", color: OBCTheme.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.stagedVersionLine)
                     .font(.system(.callout, weight: .semibold))
@@ -286,7 +284,7 @@ public struct FirmwareUpdateView: View {
     /// Streaming to the device: progress and cancel. `.interrupted` swaps in Resume.
     private var transferGroup: some View {
         VStack(spacing: 16) {
-            OBCGroupedSection("Sending update") {
+            OBCGroupedSection("Sending to \(model.deviceName)") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text(model.stagedVersionLine)
@@ -294,17 +292,18 @@ public struct FirmwareUpdateView: View {
                             .foregroundStyle(OBCTheme.ink)
                         Spacer()
                         Text(model.percentLine)
-                            .font(.system(.footnote).monospacedDigit())
+                            .font(.obcStat(.footnote))
                             .foregroundStyle(OBCTheme.ink)
                     }
                     OBCProgressBar(value: model.fraction)
                     if model.phase == .interrupted {
-                        Text("The link dropped. Resume sends it again from the start.")
-                            .font(.system(.caption))
+                        Text("The link dropped. Nothing was installed. Resume sends it again from the start.")
+                            .font(.system(.footnote))
                             .foregroundStyle(OBCTheme.secondary)
                     }
                 }
                 .padding(16)
+                .accessibilityElement(children: .combine)
             }
 
             if model.phase == .interrupted {
@@ -316,46 +315,45 @@ public struct FirmwareUpdateView: View {
         }
     }
 
-    /// installFw accepted: the rider confirms on the device, which reboots.
+    /// installFw accepted: the device shows its confirm card, then the frame it holds while it
+    /// installs.
     private var awaitingGroup: some View {
-        OBCGroupedSection {
-            VStack(spacing: 12) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(.title))
-                    .foregroundStyle(OBCTheme.secondary)
-                Text(model.awaitingTitle)
-                    .font(.system(.title3, weight: .bold))
-                    .foregroundStyle(OBCTheme.ink)
-                Text(model.awaitingMessage)
-                    .font(.system(.subheadline))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 26)
-            .padding(.horizontal, 18)
-        }
+        deviceState(
+            model.isInstalling
+                ? .installing
+                : .confirm(installed: model.runningVersion ?? "", update: model.staged?.version ?? ""),
+            title: model.awaitingTitle,
+            message: model.awaitingMessage
+        )
     }
 
     /// The device reconnected on the staged version.
     private var doneGroup: some View {
-        OBCGroupedSection {
-            VStack(spacing: 12) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(.title))
-                    .foregroundStyle(OBCTheme.rust)
-                Text("Update complete")
-                    .font(.system(.title3, weight: .bold))
-                    .foregroundStyle(OBCTheme.ink)
-                Text(model.doneMessage)
-                    .font(.system(.subheadline))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 26)
-            .padding(.horizontal, 18)
+        deviceState(
+            .updated(version: model.runningVersion ?? ""),
+            title: "Update complete",
+            message: model.doneMessage
+        )
+    }
+
+    private func deviceState(_ card: DeviceFirmwareCard, title: String, message: String) -> some View {
+        VStack(spacing: 0) {
+            DeviceGlyphView(variant: .firmware(card))
+                .padding(.top, 8)
+                .padding(.bottom, 28)
+            Text(title)
+                .font(.system(.title2, weight: .bold))
+                .foregroundStyle(OBCTheme.ink)
+                .multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("firmware.stateTitle")
+            Text(message)
+                .font(.system(.body))
+                .foregroundStyle(OBCTheme.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 6)
         }
+        .frame(maxWidth: .infinity)
     }
 
     #if DEBUG
@@ -402,11 +400,7 @@ public struct FirmwareUpdateView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(14)
-        .background(OBCTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        .overlay(
-            RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.hairline)
-        )
+        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
     }
 }
 

@@ -253,8 +253,8 @@ and it never writes to the photo library.
 ### Day notes
 
 The prompt "How was Day 2?" opens a writer with the date, the places and the distance of the day.
-The note saves while the rider types. The rides of one trip day share one note, so a split or a
-merge never moves it.
+The note saves while the rider types. The rides of one trip day share one note, so a merge never
+moves it.
 
 ### The trip review
 
@@ -273,6 +273,6 @@ The rides list has a year menu and bike-type filters, a totals card, and a map w
 it. The rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
 keeps the ride's bike type and opens as an import, so it can become the next day of a trip.
 
-The rider can trim a ride, split it, or merge it with the next ride. When the next ride starts
+The rider can trim a ride or merge it with the next ride. When the next ride starts
 soon after and near the end of a ride, on the same trip day, the ride detail offers to merge them.
 Photos stay with their time, and the day note stays with its day.

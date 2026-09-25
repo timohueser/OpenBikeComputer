@@ -74,43 +74,6 @@ public enum RideEdit {
         }
     }
 
-    /// The slices before and after `time`. The point at `time` ends the first part and starts
-    /// the second, so the two parts meet without a gap.
-    public static func split(
-        _ slices: [RideSlice], at time: Date
-    ) -> (before: [RideSlice], after: [RideSlice]) {
-        (trimmed(slices, to: .distantPast...time), trimmed(slices, to: time...Date.distantFuture))
-    }
-
-    /// `first` then `second`. Where both sides of a split meet again, the two slices become one,
-    /// so a split and a merge give back the ride without a gap.
-    public static func joined(_ first: [RideSlice], _ second: [RideSlice]) -> [RideSlice] {
-        guard var last = first.last, let next = second.first,
-              last.source == next.source, last.end >= next.start
-        else { return first + second }
-        last.end = max(last.end, next.end)
-        return first.dropLast() + [last] + second.dropFirst()
-    }
-
-    /// "‹name› (n)" with the smallest n from `number` whose name no ride has, ignoring case as the
-    /// import's name collision does.
-    public static func freeName(_ name: String, from number: Int, taken: some Sequence<String>) -> String {
-        let taken = Set(taken.map { $0.lowercased() })
-        return (number...).lazy.map { "\(name) (\($0))" }.first { !taken.contains($0.lowercased()) }!
-    }
-
-    /// `views` without the views that share a source with the view `id`, and without the views
-    /// that share a source with those, and so on. Each freed source shows again as it was synced.
-    public static func reverted(_ views: [RideView], id: RideID) -> [RideView] {
-        guard let view = views.first(where: { $0.id == id }) else { return views }
-        var freed = view.sources
-        var kept = views
-        while let index = kept.firstIndex(where: { !$0.sources.isDisjoint(with: freed) }) {
-            freed.formUnion(kept.remove(at: index).sources)
-        }
-        return kept
-    }
-
     /// Whether two rides, `first` then `second`, look like one ride with a break: the second
     /// starts within `maxGapMeters` and `maxGapSeconds` of where the first ended, on the same
     /// trip day or both without a trip.
@@ -127,9 +90,9 @@ public enum RideEdit {
         }
     }
 
-    /// The view that shows a photo of `source` taken at `time`: the view whose span holds the
-    /// time, else the nearest one within `RidePhotoPlacement.margin`, as for an unedited ride.
-    /// Nil when every view of the source hides it: it stays with the synced ride until a revert.
+    /// The view that shows a photo of `source` taken at `time`: the view of the source when its
+    /// span holds the time, or is within `RidePhotoPlacement.margin` of it, as for an unedited ride.
+    /// Nil when the view hides it: it stays with the synced ride until a revert.
     public static func view(showing time: Date, of source: RideID, in views: [RideView]) -> RideID? {
         let spans = views.filter { $0.sources.contains(source) }.compactMap { view in view.span.map { (view.id, $0) } }
         guard let nearest = spans.min(by: { RideView.gap(time, $0.1) < RideView.gap(time, $1.1) }),

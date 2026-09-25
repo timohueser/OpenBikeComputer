@@ -246,7 +246,6 @@ struct RootView: View {
                 },
                 onNotNow: { updateSurfaceModel.dismiss() }
             )
-            .presentationDetents([.height(400)])
         }
         // A tapped update notice lands on the update screen. A cold-launch tap is picked up by
         // the `.task` above, a foreground one here.
@@ -544,7 +543,7 @@ struct RootView: View {
         })
     }
 
-    /// Edit ride and Revert to original. A revert that removes this ride's id pops the detail.
+    /// Edit ride and Revert to original.
     private func rideEditMenu(for ride: Ride) -> RideEditMenu {
         let id = ride.id
         return RideEditMenu(
@@ -554,14 +553,10 @@ struct RootView: View {
             onEdit: { edit in
                 switch edit {
                 case .trim(let range): mainModel.trimRide(id, to: range)
-                case .split(let time): mainModel.splitRide(id, at: time)
                 case .mergeWithNext: mainModel.mergeRideWithNext(id)
                 }
             },
-            onRevert: {
-                mainModel.revertRide(id)
-                if !mainModel.rides.contains(where: { $0.id == id }) { path.removeAll() }
-            }
+            onRevert: { mainModel.revertRide(id) }
         )
     }
 

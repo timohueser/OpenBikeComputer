@@ -31,8 +31,8 @@ public final class RouteDetailModel {
     public private(set) var waypoints: [Waypoint] = []
     /// Elevation samples for the profile card; empty hides the card.
     public private(set) var elevationProfile: [Double] = []
-    /// A tracked ride's highlights, the most notable first; empty elsewhere.
-    public private(set) var highlights: [String] = []
+    /// A tracked ride's highlights as ledger rows, the most notable first; empty elsewhere.
+    public private(set) var highlights: [OBCStat] = []
     public private(set) var maxGradePercent: Double?
     /// The type the estimate uses and an upload writes. Changed through `setBikeType(_:)`.
     public private(set) var bikeType: BikeType
@@ -57,6 +57,9 @@ public final class RouteDetailModel {
     public private(set) var distanceMeters: Double = 0
     private var climbMeters: Double = 0
     private var pointCount = 0
+    /// False for a ride whose points carry no elevation, or that has no points and no climb, so
+    /// its climb and descent read as unknown, not 0.
+    private let hasElevation: Bool
     /// The `OBCR_Spec.md` §1.2 estimate. Distance and climb hold the upload's header figures, so it
     /// is the estimate the device shows for this route and type.
     private var estimatedDuration: TimeInterval? {
@@ -160,6 +163,13 @@ public final class RouteDetailModel {
         fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? ridePoints.map(\.coordinate)
         self.ridePoints = ridePoints
         self.rides = rides
+        if case .tracked(let ride) = dressing {
+            hasElevation = ridePoints.isEmpty
+                ? ride.climbMeters + ride.descentMeters > 0
+                : ridePoints.contains { $0.elevationMeters != nil }
+        } else {
+            hasElevation = true
+        }
 
         switch dressing {
         case .planned(let route), .tripDay(let route):
@@ -229,11 +239,10 @@ public final class RouteDetailModel {
 
     // MARK: Header dressing
 
-    /// The hero's corner tag, and whether it reads in the tracked accent colour. A route page
-    /// has none: its title and source line say what it is.
-    public var tag: (text: String, isAccent: Bool)? {
-        guard case .tracked(let ride) = dressing else { return nil }
-        return ("Tracked · \(OBCFormat.rideDay(ride.date))", true)
+    /// How the map draws the line: a ride in its own colour with no casing, anything planned on it.
+    public var ink: TrackPreviewView.Ink {
+        if case .tracked = dressing { return .ride }
+        return .route
     }
 
     /// The landing's navigation title.
@@ -253,10 +262,10 @@ public final class RouteDetailModel {
 
     // MARK: Ledger
 
-    /// The route ledger, in the device route overview's order; empty for a ride, which has the
-    /// one stats line instead.
+    /// The ledger, in the device route overview's order. A ride lists what it recorded, then one
+    /// row per sensor value it carries; a value it never measured reads "—", never 0.
     public var stats: [OBCStat] {
-        if case .tracked = dressing { return [] }
+        if case .tracked(let ride) = dressing { return Self.rideStats(ride, hasElevation: hasElevation) }
         return [
             OBCStat(value: OBCFormat.distanceValue(meters: distanceMeters), unit: "km", key: "Distance"),
             OBCStat(value: OBCFormat.climbValue(meters: climbMeters), unit: "m", key: "Climb"),
@@ -275,39 +284,31 @@ public final class RouteDetailModel {
         return OBCStat(value: "—", key: "Max grade")
     }
 
-    /// A tracked ride's one stats line under its title; nil on the other dressings.
-    public var statsLine: String? {
-        guard case .tracked(let ride) = dressing else { return nil }
-        return OBCFormat.rideStatsLine(ride)
+    private static func rideStats(_ ride: RideSummary, hasElevation: Bool) -> [OBCStat] {
+        func stat(_ value: String?, _ unit: String, _ key: String) -> OBCStat {
+            value.map { OBCStat(value: $0, unit: unit, key: key) } ?? OBCStat(value: "—", key: key)
+        }
+        let moving = ride.movingTime > 0
+        var stats = [
+            stat(OBCFormat.distanceValue(meters: ride.distanceMeters), "km", "Distance"),
+            stat(moving ? OBCFormat.movingTime(ride.movingTime) : nil, "h", "Moving time"),
+            stat(moving ? OBCFormat.speedValue(mps: ride.averageSpeedMps) : nil, "kph", "Avg speed"),
+            stat(hasElevation ? OBCFormat.climbValue(meters: ride.climbMeters) : nil, "m", "Climb"),
+            stat(hasElevation ? OBCFormat.climbValue(meters: ride.descentMeters) : nil, "m", "Descent"),
+        ]
+        let sensors: [(Int?, String, String)] = [
+            (ride.avgHeartRate, "bpm", "Avg heart rate"), (ride.maxHeartRate, "bpm", "Max heart rate"),
+            (ride.avgPower, "W", "Avg power"), (ride.maxPower, "W", "Max power"),
+            (ride.energyKJ, "kJ", "Energy"), (ride.avgCadence, "rpm", "Avg cadence"),
+        ]
+        for case let (value?, unit, key) in sensors { stats.append(stat("\(value)", unit, key)) }
+        return stats
     }
 
     /// Whole minutes, floored, as the device route overview shows the same estimate.
     private var estimateStat: OBCStat {
         guard let estimatedDuration else { return OBCStat(value: "—", key: "Est. time") }
         return OBCStat(value: OBCFormat.movingTime((estimatedDuration / 60).rounded(.down) * 60), unit: "h", key: "Est. time")
-    }
-
-    // MARK: Ride sensor summary (tracked only)
-
-    /// One plain label and value row of the per-ride sensor summary.
-    public struct SensorRow: Identifiable, Equatable, Sendable {
-        public let label: String
-        public let value: String
-        public var id: String { label }
-    }
-
-    /// The tracked ride's sensor rows, in the design's fixed order: one row per value the ride
-    /// actually carries, and nothing at all when it carries none. No dead rows for an absent value.
-    public var sensorRows: [SensorRow] {
-        guard case .tracked(let ride) = dressing else { return [] }
-        var rows: [SensorRow] = []
-        if let v = ride.avgHeartRate { rows.append(SensorRow(label: "Avg heart rate", value: "\(v) bpm")) }
-        if let v = ride.maxHeartRate { rows.append(SensorRow(label: "Max heart rate", value: "\(v) bpm")) }
-        if let v = ride.avgPower { rows.append(SensorRow(label: "Avg power", value: "\(v) W")) }
-        if let v = ride.maxPower { rows.append(SensorRow(label: "Max power", value: "\(v) W")) }
-        if let v = ride.energyKJ { rows.append(SensorRow(label: "Energy", value: "\(v) kJ")) }
-        if let v = ride.avgCadence { rows.append(SensorRow(label: "Avg cadence", value: "\(v) rpm")) }
-        return rows
     }
 
     // MARK: Actions

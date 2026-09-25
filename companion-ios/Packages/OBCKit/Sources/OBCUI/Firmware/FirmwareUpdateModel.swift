@@ -160,14 +160,23 @@ public final class FirmwareUpdateModel {
 
     public var percentLine: String { "\(Int((progress.fraction * 100).rounded()))%" }
 
+    /// The link dropped after an accepted install: the device restarted to install.
+    public var isInstalling: Bool { sawDropSinceInstall }
+
     public var awaitingTitle: String {
-        sawDropSinceInstall ? "Installing update" : "Confirm on \(deviceName)"
+        isInstalling ? "Installing update" : "Confirm on \(deviceName)"
     }
 
     public var awaitingMessage: String {
-        sawDropSinceInstall
-            ? "\(deviceName) is installing the update. It'll reconnect here when it's done."
-            : "Confirm the update on \(deviceName). It restarts to install, then reconnects here."
+        isInstalling
+            ? "Keep \(deviceName) powered on. It reconnects here when it is done."
+            : "Choose Install on \(deviceName). It restarts to install, then reconnects here."
+    }
+
+    /// What the device and its bootloader guarantee around a send, and nothing more.
+    public var safetyLine: String {
+        "If the link drops, send it again. Nothing installs until you confirm on \(deviceName), "
+            + "and a failed install keeps the current firmware."
     }
 
     public var doneMessage: String {

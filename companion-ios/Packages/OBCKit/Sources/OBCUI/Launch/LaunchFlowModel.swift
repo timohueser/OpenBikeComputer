@@ -37,9 +37,9 @@ public final class LaunchFlowModel {
         public var reason: String {
             switch self {
             case .timeout:
-                "We scanned for 30 seconds and didn't see it. A couple of things to check:"
+                "We scanned for 30 seconds and didn't see it. Check that:"
             case .rejected:
-                "Pairing didn't go through. If the passkey was wrong, try again. If the device is already paired to another phone, use Forget phone in its Bluetooth settings, then pair again."
+                "If the code was wrong, try again. If the OBC is already paired to another phone, open Settings ▸ Connections on the OBC, hold Forget phone, then try again."
             }
         }
     }
@@ -234,7 +234,7 @@ public final class LaunchFlowModel {
                     try await transport.discover()
                 }
                 // The device exists; let the row slide in and wait for the rider's tap.
-                let name = (try? await transport.deviceInfo().name) ?? "OBC"
+                let name = (try? await transport.deviceInfo().name) ?? DeviceInfo.unnamed
                 guard !Task.isCancelled else { return }
                 phase = .scanning(discovered: DiscoveredDevice(name: name))
             } catch {

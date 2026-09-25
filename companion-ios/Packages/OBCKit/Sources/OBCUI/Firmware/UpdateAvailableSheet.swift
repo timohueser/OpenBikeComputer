@@ -33,7 +33,7 @@ public struct UpdateAvailableSheet: View {
                     .foregroundStyle(OBCTheme.ink)
 
                 HStack(spacing: 12) {
-                    OBCIconTile(systemImage: "sparkles", color: OBCTheme.tint)
+                    OBCIconTile(systemImage: "arrow.down.to.line", color: OBCTheme.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(versionLine)
                             .font(.system(.callout, weight: .semibold))
@@ -43,18 +43,19 @@ public struct UpdateAvailableSheet: View {
                             .foregroundStyle(OBCTheme.secondary)
                     }
                 }
+                .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("firmware.updateSheet.release")
 
-                Text("Published for \(update.deviceName). You send it from the firmware screen, "
-                    + "and it installs only after you confirm it on the device.")
+                Text("It installs only after you confirm on \(update.deviceName).")
                     .font(.system(.subheadline))
                     .foregroundStyle(OBCTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let notes = update.release.notesURL {
                     Button("Release notes") { openURL(notes) }
-                        .font(.system(.subheadline, weight: .medium))
+                        .font(.system(.subheadline, weight: .semibold))
                         .foregroundStyle(OBCTheme.tint)
+                        .frame(minHeight: 44)
                         .accessibilityIdentifier("firmware.updateSheet.releaseNotes")
                 }
 
@@ -105,7 +106,6 @@ public struct UpdateAvailableSheet: View {
                         onView: {},
                         onNotNow: { shown = false }
                     )
-                    .presentationDetents([.height(400)])
                 }
         }
     }

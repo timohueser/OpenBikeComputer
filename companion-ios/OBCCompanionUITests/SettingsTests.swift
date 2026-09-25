@@ -51,7 +51,7 @@ final class SettingsTests: XCTestCase {
 
         // Each lower group scrolls off the top as the next comes up, so assert each as it appears.
         reveal(app, "Update firmware")
-        reveal(app, "Strava sync")
+        reveal(app, "Documentation")
         reveal(app, "OpenBikeComputer on GitHub")
         reveal(app, "No account. No subscription. No cloud.")
     }

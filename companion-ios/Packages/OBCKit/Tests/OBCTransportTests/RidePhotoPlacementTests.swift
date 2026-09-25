@@ -108,20 +108,6 @@ struct RidePhotoPlacementTests {
         #expect(abs((after.first?.distanceMeters ?? 0) - 200) < 1)
     }
 
-    /// A split part keeps the photos of its own time.
-    @Test func eachSplitPartGetsItsPhotos() {
-        let photos = [600.0, 3_000, 5_400].map { RidePhoto(assetID: "\(Int($0))", takenAt: time($0)) }
-        let ride = straight(step: 60)
-        let first = Array(ride[...20]), second = Array(ride[21...])
-
-        let placedFirst = RidePhotoPlacement.place(photos, on: first, line: MeasuredLine(ridePoints: first))
-        let placedSecond = RidePhotoPlacement.place(photos, on: second, line: MeasuredLine(ridePoints: second))
-
-        #expect(placedFirst.map(\.id) == ["600"])
-        #expect(placedSecond.map(\.id) == ["3000", "5400"])
-        #expect(abs((placedSecond.first?.distanceMeters ?? 0) - 290) < 1)
-    }
-
     @Test func photosComeBackInTimeOrder() {
         let candidates = [900.0, 100, 500].map { PhotoCandidate(assetID: "\(Int($0))", takenAt: time($0)) }
 

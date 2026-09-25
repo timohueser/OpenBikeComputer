@@ -170,7 +170,7 @@ public final class TripJournalModel {
             parts.append(place.map { "\($0) \(height)" } ?? "High point \(height)")
         }
         if let biggest = review.biggestDay {
-            parts.append(OBCFormat.highlight(.biggestDay(distance: review.days[biggest].totals.distanceMeters)))
+            parts.append("Biggest day \(OBCFormat.distance(meters: review.days[biggest].totals.distanceMeters))")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
