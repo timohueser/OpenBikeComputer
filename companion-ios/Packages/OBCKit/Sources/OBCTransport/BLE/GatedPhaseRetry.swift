@@ -18,17 +18,19 @@ struct GatedPairingWindowError: Error {}
 enum GatedPhaseRetry {
     static func runOnce(
         beat: Duration,
-        sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         isRetryable: (any Error) -> Bool,
         attempt: () async throws -> Void
     ) async throws {
+        try Task.checkCancellation()
         do {
             try await attempt()
         } catch {
             guard isRetryable(error) else { throw error }
             // Give the firmware's post-PairingComplete window a beat to drain, then retry the
             // gated phase once on the now bonded link. The second attempt is final.
-            await sleep(beat)
+            try await sleep(beat)
+            try Task.checkCancellation()
             try await attempt()
         }
     }
