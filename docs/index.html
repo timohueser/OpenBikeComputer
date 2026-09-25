@@ -487,6 +487,7 @@
     .ctl-arrow { font-size: 15px; line-height: 1; }
     /* Splits the row into the device's two flanks: Up/Down on the left, Select/Back on the right. */
     .ctl-gap { width: 14px; }
+    .ctl-drawers { flex-basis: 100%; display: flex; gap: 8px; justify-content: center; }
     @media (max-width: 380px) { .ctl-gap { display: none; } }
     /* While a guided demo drives, the manual controls dim but stay clickable — a tap on any of
        them takes control (see the demo engine). */
@@ -818,6 +819,10 @@
             <span class="ctl-gap" aria-hidden="true"></span>
             <button class="ctl" data-btn="press" disabled>Select</button>
             <button class="ctl" data-btn="back" disabled>Back</button>
+            <div class="ctl-drawers">
+              <button class="ctl" data-cmd="quick" disabled>Top drawer</button>
+              <button class="ctl" data-cmd="context" disabled>Bottom drawer</button>
+            </div>
           </div>
           <div class="compass-control" id="compass_control" hidden>
             <label for="compass_heading">Look around <output id="compass_value">250°</output></label>
@@ -1706,6 +1711,14 @@
       }
 
       // ---- on-screen buttons (touch + mouse) ---------------------------------------------------
+      document.querySelectorAll('.ctl[data-cmd]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (!ready()) return;
+          stage.focus({ preventScroll: true });
+          grabIfDemo();
+          cmd(btn.getAttribute('data-cmd'));
+        });
+      });
       document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
         var g = btn.getAttribute('data-btn'); // 'press' | 'back'
         var h = holdable(g, g === 'press' ? 'hold' : 'backhold', [btn, g === 'press' ? sideSelect : sideBack]);
