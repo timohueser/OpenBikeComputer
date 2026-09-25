@@ -6,8 +6,17 @@ copy: ai
 
 # OpenBikeComputer documentation
 
-OpenBikeComputer is an open-source bikepacking computer. It provides offline maps, route
-navigation, and ride recording, with no network on the ride.
+OpenBikeComputer is an open-source bikepacking computer in development. The prototype provides
+offline maps, route navigation, and ride recording.
+
+## Start here
+
+- [Try the device](../#demo): explore a ride in the browser demo.
+- [Prepare a map](../builder/): choose coverage and download a map.
+- [Build your own](build/): check the status of the build guide.
+- [Work on the software](src:README.md): find setup instructions and the source code.
+
+## How the system fits together
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">

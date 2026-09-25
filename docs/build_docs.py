@@ -695,6 +695,9 @@ def check_links(rendered):
     me to do by hand."""
     pages = set(rendered)
     slugs = {url: set(HEADING_ID_RE.findall(content)) for url, content in rendered.items()}
+    # The landing page is authored HTML, outside this renderer's output.
+    pages.add("")
+    slugs[""] = set(re.findall(r'\bid="([^"]+)"', (ROOT / "index.html").read_text()))
 
     broken = []
     for url, content in sorted(rendered.items()):
