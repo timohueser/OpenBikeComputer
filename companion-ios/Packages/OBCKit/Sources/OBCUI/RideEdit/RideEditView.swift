@@ -2,12 +2,11 @@ import SwiftUI
 import OBCDomain
 
 /// Edit mode: the ride on a tall map and its profile with the shared handles, the line that
-/// says what Save keeps, and the actions Trim, Split here and Merge with next.
+/// says what Save keeps, and the actions Trim and Merge with next.
 public struct RideEditView: View {
     /// What the rider chose. The host applies it after the screen closes.
     public enum Edit: Equatable, Sendable {
         case trim(ClosedRange<Date>)
-        case split(Date)
         case mergeWithNext
     }
 
@@ -90,8 +89,7 @@ public struct RideEditView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(spacing: 0) {
-                    action("Trim", selected: model.mode == .trim, id: "trim") { model.select(.trim) }
-                    action("Split here", selected: model.mode == .split, id: "split") { model.select(.split) }
+                    action("Trim", selected: true, id: "trim") {}
                     action("Merge with next", selected: false, id: "merge") { mergeShown = true }
                         .disabled(nextRide == nil)
                 }
@@ -121,10 +119,6 @@ public struct RideEditView: View {
     }
 
     private func save() {
-        if let range = model.trimRange {
-            onClose(.trim(range))
-        } else if let time = model.splitTime {
-            onClose(.split(time))
-        }
+        if let range = model.trimRange { onClose(.trim(range)) }
     }
 }
