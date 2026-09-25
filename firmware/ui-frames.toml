@@ -1887,6 +1887,47 @@ script = "p p u d b p p p d"
 expect = "SetupTheme"
 args = ["--fresh"]
 
+# Setup's sensors step with no sensor saved: each slot says how to wake its sensor, over Skip.
+[[frame]]
+name = "setup-sensors"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupSensors"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-sensors"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupSensors"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Two sensors saved: the slots show their live status, and the last row reads Continue.
+[[frame]]
+name = "setup-sensors-added"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupSensors"
+args = ["--fresh", "--sensors", "screen"]
+
+# Select on the power slot opens the Settings scan list for it. Before a hit, the empty list says
+# how to wake a power meter.
+[[frame]]
+name = "setup-sensors-scanning"
+map = "{grimsel}"
+script = "p p u d b p p p p d p"
+expect = "SetupSensorScan"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-sensors-scanning"
+map = "{grimsel}"
+script = "p p u d b p p p p d p"
+expect = "SetupSensorScan"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).

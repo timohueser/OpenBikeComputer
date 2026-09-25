@@ -425,6 +425,8 @@ mod tests {
                 ("Landmarks", RenderKeyKind::Map),
                 ("Statistics", RenderKeyKind::Statistics),
                 ("Climb", RenderKeyKind::Climb),
+                ("SetupSensors", RenderKeyKind::SensorSettings),
+                ("SetupSensorScan", RenderKeyKind::SensorSettings),
                 ("PeakView", RenderKeyKind::Statistics),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),

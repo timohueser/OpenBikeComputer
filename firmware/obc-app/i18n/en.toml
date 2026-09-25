@@ -338,6 +338,9 @@ connecting = "Connecting"
 connected = "Connected"
 scanning = "Searching..."
 forget = "Forget sensor"
+# How to wake a sensor so a scan finds it. A row cuts it at 16 characters.
+wake_strap = "Wear the strap"
+wake_cranks = "Spin the cranks"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]
@@ -572,6 +575,7 @@ press_each = "Press each button"
 hold_back = "Hold BACK"
 menu_anywhere = "Menu from anywhere"
 continue = "Continue"
+skip = "Skip"
 # The titles of the units and theme steps.
 units = "UNITS"
 theme = "THEME"

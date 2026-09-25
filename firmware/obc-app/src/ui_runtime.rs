@@ -421,9 +421,9 @@ impl UiRuntime {
         }
     }
 
-    /// The Sensors pages, and Connections, whose Sensors door counts the connected ones.
+    /// Whether the top screen draws the sensor status or the scan hits.
     fn sensors_screen_up(&self) -> bool {
-        matches!(self.stack.last(), Some(Screen::Sensors(_) | Screen::SensorScan(_) | Screen::Connections(_)))
+        self.stack.last().is_some_and(|s| s.caps().render_key == crate::screen::RenderKeyKind::SensorSettings)
     }
 
     /// Whether the base screen draws the connected indicator: everything whose base is

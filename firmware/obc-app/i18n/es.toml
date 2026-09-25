@@ -310,6 +310,8 @@ connecting = "Conectando"
 connected = "Conectado"
 scanning = "Buscando..."
 forget = "Olvidar sensor"
+wake_strap = "Ponte la banda"
+wake_cranks = "Pedalea un poco"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]
@@ -535,6 +537,7 @@ press_each = "Pulsa cada botón"
 hold_back = "Mantén BACK"
 menu_anywhere = "El menú, siempre"
 continue = "Continuar"
+skip = "Omitir"
 units = "UNIDADES"
 theme = "TEMA"
 

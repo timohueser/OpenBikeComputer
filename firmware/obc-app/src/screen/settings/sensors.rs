@@ -19,11 +19,20 @@ use crate::settings::{Language, SavedSensor, SENSOR_SLOTS};
 use crate::Msg;
 
 /// The label key for a slot. The slot index is the sensor kind.
-fn kind_msg(slot: usize) -> Msg {
+pub(crate) fn kind_msg(slot: usize) -> Msg {
     match slot {
         0 => Msg::SensorsHeartRate,
         1 => Msg::SensorsPower,
         _ => Msg::SensorsCadence,
+    }
+}
+
+/// How the rider wakes a slot's sensor so a scan finds it: a strap wakes on the skin, a power or
+/// cadence sensor on a crank turn.
+pub(crate) fn wake_msg(slot: usize) -> Msg {
+    match slot {
+        0 => Msg::SensorsWakeStrap,
+        _ => Msg::SensorsWakeCranks,
     }
 }
 
@@ -85,7 +94,7 @@ impl SensorsScreen {
 
 /// Compose one row's status line into `buf`. A saved slot whose status snapshot is not yet current
 /// reads `Searching`, so the line does not contradict the armed Forget footer.
-fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStatus, lang: Language) {
+pub(crate) fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStatus, lang: Language) {
     if !present {
         let _ = buf.push_str(crate::t(Msg::SensorsNotSet, lang));
         return;
@@ -165,7 +174,7 @@ impl SensorScanScreen {
 
         let len = self.count(rx.sensor_scan_hits);
         if len == 0 {
-            empty_state(cv, w, h, rx.t(Msg::SensorsScanning), "");
+            empty_state(cv, w, h, rx.t(Msg::SensorsScanning), rx.t(wake_msg(self.slot as usize)));
             return;
         }
 
