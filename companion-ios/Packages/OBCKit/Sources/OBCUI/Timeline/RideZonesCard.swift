@@ -95,7 +95,7 @@ struct RideZoneBar: View {
     }
 
     private func legendItem(_ item: (zone: Int, shown: String, spoken: String)) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(OBCTheme.zones[item.zone])
                 .frame(width: 8, height: 8)
@@ -107,14 +107,16 @@ struct RideZoneBar: View {
     }
 }
 
-/// Legend items side by side, left to right, starting a new row only where the next item does
-/// not fit, so a larger text size wraps instead of stacking one item per line.
+/// Legend items side by side, left to right. Where one row does not fit, as at a larger text size,
+/// the items wrap into as few rows as fit, with nearly the same number of items in each row.
 struct LegendRows: Layout {
-    var spacing: CGFloat = 12
+    var spacing: CGFloat = 8
     var rowSpacing: CGFloat = 4
 
+    /// Takes the whole proposed width, so placement arranges the rows it measured.
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        arrange(subviews, width: proposal.width ?? .infinity).size
+        let size = arrange(subviews, width: proposal.width ?? .infinity).size
+        return CGSize(width: proposal.width.map { max($0, size.width) } ?? size.width, height: size.height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
@@ -124,11 +126,16 @@ struct LegendRows: Layout {
     }
 
     private func arrange(_ subviews: Subviews, width: CGFloat) -> (origins: [CGPoint], size: CGSize) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        // The fewest rows that fit, then as many items per row as that row count needs.
+        var perRow = sizes.count
+        while perRow > 1, !fits(sizes, perRow: perRow, width: width) { perRow -= 1 }
+        let rows = (sizes.count + perRow - 1) / max(perRow, 1)
+        perRow = rows > 0 ? (sizes.count + rows - 1) / rows : perRow
         var origins: [CGPoint] = []
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > 0, x + size.width > width {
+        for (index, size) in sizes.enumerated() {
+            if index > 0, index % perRow == 0 {
                 x = 0
                 y += rowHeight + rowSpacing
                 rowHeight = 0
@@ -139,5 +146,12 @@ struct LegendRows: Layout {
             rowHeight = max(rowHeight, size.height)
         }
         return (origins, CGSize(width: widest, height: y + rowHeight))
+    }
+
+    private func fits(_ sizes: [CGSize], perRow: Int, width: CGFloat) -> Bool {
+        stride(from: 0, to: sizes.count, by: perRow).allSatisfy { start in
+            let row = sizes[start..<min(start + perRow, sizes.count)]
+            return row.reduce(0) { $0 + $1.width } + spacing * CGFloat(row.count - 1) <= width
+        }
     }
 }
