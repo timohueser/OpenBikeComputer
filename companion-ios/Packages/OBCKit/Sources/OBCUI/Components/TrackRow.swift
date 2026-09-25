@@ -2,8 +2,8 @@ import SwiftUI
 import OBCDomain
 
 /// One row of a library list: the 96 x 72 track sketch, the name at full width and an olive stat
-/// line. Routes, trips and rides share it. The on-device chip sits inside the sketch, so it never
-/// shortens the name. At accessibility text sizes the sketch moves above the text.
+/// line. Routes, trips and rides share it. The on-device chip ends the stat line, or takes its own
+/// line under it when the line has no room, so it never shortens the name or the stats. At accessibility text sizes the sketch moves above the text.
 public struct TrackRow: View {
     let name: String
     let stats: Text
@@ -105,19 +105,9 @@ public struct TrackRow: View {
 
     private var sketchCell: some View {
         sketch
-            // The track and its end marks stay above the chip's strip.
-            .keepingBottomClear(onDevice == .notOnDevice ? 0 : OnDeviceChip.height + Self.chipInset)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(alignment: .bottomLeading) {
-                if onDevice != .notOnDevice {
-                    OnDeviceChip(upToDate: onDevice == .upToDate).padding(Self.chipInset)
-                }
-            }
             .accessibilityHidden(true)
     }
-
-    /// The chip's distance from the sketch's corner.
-    private static let chipInset: CGFloat = 4
 
     private var text: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -125,10 +115,7 @@ public struct TrackRow: View {
                 .font(.system(.body, weight: .semibold))
                 .foregroundStyle(OBCTheme.ink)
                 .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
-            stats
-                .font(.system(.subheadline).monospacedDigit())
-                .foregroundStyle(OBCTheme.secondary)
-                .accessibilityLabel(statsLabel)
+            statLine
             if let detail {
                 Text(detail)
                     .font(.system(.subheadline).monospacedDigit())
@@ -138,6 +125,30 @@ public struct TrackRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // The list separator starts under the text, past the sketch.
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+    }
+
+    /// The stats, then the chip on the same line when both fit, else the chip under them.
+    @ViewBuilder
+    private var statLine: some View {
+        let styled = stats
+            .font(.system(.subheadline).monospacedDigit())
+            .foregroundStyle(OBCTheme.secondary)
+            .accessibilityLabel(statsLabel)
+        if onDevice == .notOnDevice {
+            styled
+        } else {
+            let chip = OnDeviceChip(upToDate: onDevice == .upToDate).accessibilityHidden(true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    styled.fixedSize()
+                    chip
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    styled.fixedSize(horizontal: false, vertical: true)
+                    chip
+                }
+            }
+        }
     }
 
     private func selectionMark(_ selected: Bool) -> some View {
@@ -177,7 +188,6 @@ private struct RowStats {
 public struct OnDeviceChip: View {
     let upToDate: Bool
 
-    /// The chip's fixed height, so a sketch can keep its strip clear of the track.
     static let height: CGFloat = 16
 
     public init(upToDate: Bool = true) {
