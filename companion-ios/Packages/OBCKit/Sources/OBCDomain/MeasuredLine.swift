@@ -30,8 +30,12 @@ public struct MeasuredLine: Equatable, Sendable {
     public var length: Double { vertices.last?.distance ?? 0 }
 
     /// `elevations` is index-aligned with `coordinates`; a short or empty array reads as
-    /// missing. `pieceStarts` lists the vertices a gap leads into.
-    public init(coordinates: [Coordinate], elevations: [Double?] = [], pieceStarts: [Int] = []) {
+    /// missing. `pieceStarts` lists the vertices a gap leads into. `distanceBetween` changes
+    /// the metric without changing the vertex and gap rules.
+    public init(
+        coordinates: [Coordinate], elevations: [Double?] = [], pieceStarts: [Int] = [],
+        distanceBetween: (Coordinate, Coordinate) -> Double = { $0.routeDistance(to: $1) }
+    ) {
         let starts = Set(pieceStarts.filter { $0 > 0 && $0 < coordinates.count })
         var vertices: [Vertex] = []
         vertices.reserveCapacity(coordinates.count)
@@ -43,7 +47,7 @@ public struct MeasuredLine: Equatable, Sendable {
         for (index, coordinate) in coordinates.enumerated() {
             if index < elevations.count, let known = elevations[index] { elevation = known }
             if index > 0, !starts.contains(index) {
-                distance += coordinates[index - 1].routeDistance(to: coordinate)
+                distance += distanceBetween(coordinates[index - 1], coordinate)
             }
             if let last = confirmed {
                 if elevation >= last + RouteStats.climbHysteresisMeters {

@@ -253,9 +253,17 @@ triggers = [
 ]
 
 [[suite]]
+id = "ios.replay-camera"
+route = "ordinary"
+command = "npm ci --prefix companion-ios/ReplayAssets && npm test --prefix companion-ios/ReplayAssets"
+jobs = ["ios-unit"]
+platforms = ["linux", "macos"]
+triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**"]
+
+[[suite]]
 id = "swift.obckit-host"
 route = "ordinary"
-command = "cd companion-ios/Packages/OBCKit && xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO"
+command = "npm ci --prefix companion-ios/ReplayAssets && cd companion-ios/Packages/OBCKit && xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO"
 jobs = ["ios-unit"]
 fixtures = ["captured-met", "legacy-library"]
 platforms = ["macos"]
@@ -295,6 +303,7 @@ triggers = [
   "companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift",
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
+  "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Sources/**",
 ]
 
@@ -518,6 +527,7 @@ triggers = [
   "companion-ios/scripts/generate-website-fixture.py",
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
+  "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCRouting/**",
@@ -537,6 +547,7 @@ platforms = ["macos"]
 triggers = [
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
+  "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCRouting/**",
@@ -556,6 +567,7 @@ platforms = ["macos"]
 triggers = [
   "companion-ios/OBCDevice/**",
   "companion-ios/project.yml",
+  "companion-ios/ReplayAssets/**",
   "apps/obc-ios-host/**",
   "host/obc-host-core/**",
   "tools/build-ios-host.sh",

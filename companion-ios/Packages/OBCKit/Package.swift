@@ -62,7 +62,7 @@ let package = Package(
             dependencies: ["OBCDomain", "OBCTransport"],
             // The device's Terminus glyph strips, copied from `firmware/obc-render/fonts/terminus/`.
             // `PixelTextTests` fails when a copy drifts from the firmware file.
-            resources: [.copy("Resources/Terminus")],
+            resources: [.copy("Resources/Terminus"), .copy("Resources/Replay")],
             swiftSettings: languageMode
         ),
         .testTarget(

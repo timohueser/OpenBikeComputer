@@ -30,6 +30,9 @@ public struct RouteDetailView: View {
     @State private var deleteConfirmShown = false
     @State private var waypointsExpanded = false
     @State private var mapShown = false
+    @State private var replayShown = false
+    @State private var replayPreparing = false
+    @State private var replayContent: ReplayContent?
 
     @Environment(\.obcIsOnline) private var isOnline
 
@@ -93,6 +96,22 @@ public struct RouteDetailView: View {
                         .padding(.top, 20)
                 }
 
+                if model.canReplay {
+                    Button("Replay ride", systemImage: "play.circle") {
+                        replayPreparing = true
+                        Task {
+                            replayContent = await model.replayContent(
+                                photos: photos?.photos ?? [], thumbnails: photos?.thumbnails ?? [:])
+                            replayPreparing = false
+                            replayShown = replayContent != nil
+                        }
+                    }
+                    .buttonStyle(.obcGhost)
+                    .disabled(replayPreparing)
+                    .padding(.top, 16)
+                    .accessibilityIdentifier("detail.replay")
+                }
+
                 if !model.elevationProfile.isEmpty {
                     OBCEyebrow("Elevation")
                         .padding(.top, 20)
@@ -143,8 +162,14 @@ public struct RouteDetailView: View {
         .accessibilityIdentifier("detail.screen")
         #if os(iOS)
         .fullScreenCover(isPresented: $mapShown) { trackMapCover }
+        .fullScreenCover(isPresented: $replayShown) {
+            if let replayContent { ReplayPlayerView(content: replayContent) }
+        }
         #else
         .sheet(isPresented: $mapShown) { trackMapCover }
+        .sheet(isPresented: $replayShown) {
+            if let replayContent { ReplayPlayerView(content: replayContent) }
+        }
         #endif
         .obcRenameSheet(
             renameTitle,
