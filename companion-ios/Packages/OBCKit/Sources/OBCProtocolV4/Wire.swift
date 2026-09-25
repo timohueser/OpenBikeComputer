@@ -1,4 +1,5 @@
 import Foundation
+import OBCDomain
 
 public enum FlatStoreV4 {
     public static let wireMajor: UInt8 = 4
@@ -429,6 +430,8 @@ public struct PutRequest: Hashable, Sendable {
     public let kind: ObjectKind
     public let displayName: String
 
+    /// `displayName` is shortened to the 48-byte field on a character boundary, the same rule the
+    /// route and trip objects apply to their own name.
     public init(
         objectID: ObjectID? = nil, expectedRevision: Revision? = nil,
         payloadLength: UInt64, payloadCRC32: UInt32, kind: ObjectKind,
@@ -439,12 +442,11 @@ public struct PutRequest: Hashable, Sendable {
         self.payloadLength = payloadLength
         self.payloadCRC32 = payloadCRC32
         self.kind = kind
-        self.displayName = displayName
+        self.displayName = displayName.truncatedToUTF8Bytes(FlatStoreV4.maximumDisplayNameLength)
     }
 
     fileprivate func encode() throws -> Data {
         let name = Data(displayName.utf8)
-        guard name.count <= FlatStoreV4.maximumDisplayNameLength else { throw WireError.invalidCombination }
         guard (objectID == nil && expectedRevision == nil)
             || (objectID?.rawValue ?? 0) != 0 && (expectedRevision?.rawValue ?? 0) != 0
         else { throw WireError.invalidCombination }
