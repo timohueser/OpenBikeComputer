@@ -1,26 +1,9 @@
 <script lang="ts">
-    // Step 1's ledger of parts: each composed part — a region, a box, a corridor —
-    // as one removable row with its own price.
-    //
-    // The bytes shown are the part's **gross** bytes: the honest answer to "how big
-    // is this part". Cells shared with another part are counted in both, so rows do
-    // not sum to the map's total — the row's title says what removing it would
-    // actually free, which is the other question a ✕ button answers.
-    //
-    // While any corridor part exists, the ledger also carries the **one global
-    // corridor width**: the radius is a property of the map, not of the panel that
-    // first set it, so the control lives here with the parts it re-buffers, reachable
-    // after commit rather than locked inside a closed panel. Moving it re-resolves
-    // every corridor part live, and each corridor row's price flashes as it
-    // re-prices. The corridor panel's slider is this same value — one fact, two
-    // places, never two widths.
-
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import {
         CORRIDOR_RADIUS_MAX_M,
         CORRIDOR_RADIUS_MIN_M,
     } from "../../lib/coverage/store.svelte";
-    import { formatBytes } from "../../lib/format";
     import ToolIcon from "./ToolIcon.svelte";
 
     let { store }: { store: CoverageStore } = $props();
@@ -28,14 +11,6 @@
     const parts = $derived(store.resolution?.parts ?? []);
     const hasCorridor = $derived(store.selection.parts.some((p) => p.kind === "corridor"));
     const radiusKm = $derived(Math.round(store.selection.corridorRadiusM / 1000));
-
-    function priceTitle(bytes: number, marginal: number): string {
-        if (bytes === marginal) return formatBytes(bytes);
-        if (marginal === 0) {
-            return `${formatBytes(bytes)} in this part — all of it shared with other parts, so removing it frees nothing`;
-        }
-        return `${formatBytes(bytes)} in this part — removing it frees ${formatBytes(marginal)}, the rest is shared with other parts`;
-    }
 </script>
 
 {#if parts.length === 0}
@@ -64,22 +39,6 @@
                     </button>
                 {:else if p.pending}
                     <span class="mono faint small price">Calculating…</span>
-                {:else if p.part.kind === "corridor"}
-                    <!-- Keyed by the global width, so a slider move re-mounts
-                         the span and its flash animation runs: the re-pricing
-                         is visible on the rows it touches (#1041 A6). -->
-                    {#key store.selection.corridorRadiusM}
-                        <span
-                            class="mono faint small price price-flash"
-                            title={priceTitle(p.bytes, p.marginalBytes)}
-                        >
-                            {formatBytes(p.bytes)}
-                        </span>
-                    {/key}
-                {:else}
-                    <span class="mono faint small price" title={priceTitle(p.bytes, p.marginalBytes)}>
-                        {formatBytes(p.bytes)}
-                    </span>
                 {/if}
                 <button
                     type="button"
@@ -209,30 +168,5 @@
         padding: 0;
         border: none;
         background: none;
-    }
-
-    /* A slider move re-mounts each corridor row's price ({#key}), and the
-       fresh span runs this once: the global control visibly re-prices the
-       rows it touches. */
-    .price-flash {
-        border-radius: 6px;
-        padding: 0 4px;
-        margin-right: -4px;
-        animation: repriced 0.9s ease-out;
-    }
-
-    @keyframes repriced {
-        from {
-            background: rgba(227, 173, 51, 0.55);
-        }
-        to {
-            background: transparent;
-        }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-        .price-flash {
-            animation: none;
-        }
     }
 </style>

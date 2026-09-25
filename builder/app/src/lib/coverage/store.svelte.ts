@@ -322,40 +322,22 @@ export class CoverageStore {
         return [...seen].sort();
     }
 
-    /**
-     * Partial cells in the **detail band** — the warning sentence's full count.
-     *
-     * Detail band only, unlike the holes: the bands overlap on the ground, so a
-     * cross-band partial count would count the same ground two or three times,
-     * and the detail band is where the outline is drawn from and street detail
-     * lives. The coarse context band never appears here at all.
-     */
+    /** Partial cells in the detail band; coarse context never warns. */
     partialDetailCells(): string[] {
         const coverage = this.ledger?.coverage;
         if (!coverage) return [];
         return coverage.partialDetailByBand.get(detailBandId(this.catalog)) ?? [];
     }
 
-    /**
-     * The partial detail cells that **hatch**: only those abutting a hole in the
-     * same band. At extract scale most fine-band partials are border-overhang
-     * normality, and hatching a curated pick's whole border would be a noise tax
-     * — where a partial cell meets a hole, though, the detail visibly stops. The
-     * warning sentence keeps the full count ({@link partialDetailCells}).
-     */
+    /** Warn on partial detail cells next to a hole. Region-border overhang alone
+     *  does not establish a missing-data gap inside the selected region. */
     partialHatchCells(): string[] {
         const detailHoles =
             this.ledger?.coverage.holesByBand.get(detailBandId(this.catalog)) ?? [];
         return cellsTouchingHoles(this.partialDetailCells(), detailHoles);
     }
 
-    /**
-     * Point the map at the selection's warned ground — the ledger's warning line
-     * and the map's hatched patches are the same fact in two places, and clicking
-     * either zooms to it. For partials that is the *hatched* subset: with nothing
-     * hatched there is nothing to fly to, and the summary renders the sentence
-     * unclickable.
-     */
+    /** Focus the same missing ground that the summary warns about and the map hatches. */
     focusWarnings(kind: "hole" | "partial"): void {
         const ids = kind === "hole" ? this.holeCells() : this.partialHatchCells();
         const box = coverageBbox(ids.map((id) => parseCellId(id)));

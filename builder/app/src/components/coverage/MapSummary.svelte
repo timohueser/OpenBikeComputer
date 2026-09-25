@@ -1,16 +1,4 @@
 <script lang="ts">
-    // The Map summary ledger: the always-visible card that keeps score — total
-    // bytes, cells, and every warning the selection has earned.
-    //
-    // Two disciplines from the ledger module, honoured rather than restated: the
-    // total is summed real cell bytes and is only *printed* once `isFinal` (a
-    // pending region prices as 0 B with a straight face otherwise), and partial
-    // cells in the coarse context band never appear here at all.
-    //
-    // The fits-on-card meter needs a number only a connected card can give, and
-    // connecting is a later step — so until then the card says where that check
-    // happens instead of drawing a meter against a guess.
-
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
 
@@ -18,11 +6,8 @@
 
     const ledger = $derived(store.ledger);
     const hasParts = $derived(store.selection.parts.length > 0);
-    // Holes from every band, matching the hatched squares one for one;
-    // `store.holeCells` explains the dedup. The partial sentence keeps the detail
-    // band's full count while the map hatches only the hole-adjacent subset, so the
-    // line is a zoom target exactly when there is hatch to zoom to.
     const holeCount = $derived(store.holeCells().length);
+    const hasDrawnCoverage = $derived(store.selection.parts.some((part) => part.kind !== "region"));
     const partialCount = $derived(store.partialDetailCells().length);
     const partialHatchCount = $derived(store.partialHatchCells().length);
 </script>
@@ -32,20 +17,19 @@
 
     {#if store.indexError}
         <p class="small error">
-            Couldn't load the cell catalog: {store.indexError}
+            Couldn't load map coverage: {store.indexError}
             <button type="button" class="retry" onclick={() => store.reloadIndices()}>retry</button>
         </p>
     {:else if store.resolutionError}
         <p class="small error">This selection can't be built: {store.resolutionError}</p>
     {:else if !ledger}
-        <p class="small muted">Loading the cell catalog…</p>
+        <p class="small muted">Loading map coverage…</p>
     {:else if !hasParts}
         <p class="small muted">Choose coverage on the map.</p>
     {:else}
         {#if ledger.isFinal}
             <p class="mono total">
-                {formatBytes(ledger.totalBytes)} · {ledger.cellCount}
-                {ledger.cellCount === 1 ? "cell" : "cells"}
+                {formatBytes(ledger.totalBytes)} <span class="small muted">estimated total{ledger.terrain ? ", including elevation" : ""}</span>
             </p>
         {:else}
             <p class="mono total faint">Calculating…</p>
@@ -53,48 +37,27 @@
 
         {#if holeCount > 0}
             <button type="button" class="warnline small" onclick={() => store.focusWarnings("hole")}>
-                ⚠ {holeCount}
-                {holeCount === 1 ? "cell" : "cells"} not baked yet — the map will have holes there
+                Map data is missing in some selected areas. <span>Show gaps on map</span>
             </button>
         {/if}
-        {#if partialCount > 0}
-            {#if partialHatchCount > 0}
-                <button type="button" class="warnline small" onclick={() => store.focusWarnings("partial")}>
-                    ⚠ {partialCount}
-                    {partialCount === 1 ? "cell is" : "cells are"} only partly baked — detail may stop at
-                    the extract's edge
-                </button>
-            {:else}
-                <!-- Same sentence, not a button: nothing is hatched (no partial
-                     cell abuts a hole, #1041 A9), so there is nothing on the
-                     map for a click to fly to. -->
-                <p class="warnline small">
-                    ⚠ {partialCount}
-                    {partialCount === 1 ? "cell is" : "cells are"} only partly baked — detail may stop at
-                    the extract's edge
-                </p>
-            {/if}
+        {#if partialHatchCount > 0}
+            <button type="button" class="warnline small" onclick={() => store.focusWarnings("partial")}>
+                Street detail may stop near these gaps. <span>Show affected edges</span>
+            </button>
+        {:else if hasDrawnCoverage && partialCount > 0}
+            <p class="warnline small">
+                Street detail may be incomplete at the edge of the available map data.
+                Choose a listed region for its published coverage.
+            </p>
         {/if}
 
-        <!-- Elevation (EL4). One line, no toggle: terrain is ~5 % of a download
-             and a switch would be a decision a rider should not have to make.
-             The size is stated separately from the map's because OBCC §13.3
-             requires it — the two are separate prices — and the credit is the
-             catalog's own string, which §13.5 makes a MUST rather than a
-             courtesy: a dataset change must carry its own notice with it. -->
         {#if ledger.terrain}
-            <p class="small faint terrain">
-                Includes {formatBytes(ledger.terrain.bytes)} of elevation data.
-                {#if ledger.terrain.missingCount > 0}
-                    {ledger.terrain.missingCount}
-                    {ledger.terrain.missingCount === 1 ? "square has" : "squares have"} no elevation coverage;
-                    climbs there read as flat.
-                {/if}
-            </p>
+            {#if ledger.terrain.missingCount > 0}
+                <p class="small error terrain">
+                    Elevation data is missing in some selected areas. Climbs there read as flat.
+                </p>
+            {/if}
             <p class="small faint attribution">{ledger.terrain.attribution}</p>
-            <!-- The licence obligation covers every listed reference as well: summit
-                 heights in this raster come from a national model, and its licence asks
-                 for the same credit. One line each, from the catalog. -->
             {#each ledger.terrain.references as reference (reference.key)}
                 <p class="small faint attribution">
                     Summit heights from {reference.product}: {reference.attribution} ({reference.licence})
@@ -102,10 +65,6 @@
             {/each}
         {/if}
 
-        <!-- The map data's own credit — the catalog's string, the same
-             take-it-from-the-document rule as the terrain line above. The map
-             this card prices is a derivative database of OSM, and the licence
-             is part of what a rider downloads. -->
         {#if store.catalog.source}
             <p class="small faint attribution">
                 {store.catalog.source.attribution} · <a
@@ -167,6 +126,7 @@
         text-decoration: none;
     }
 
+    .warnline span,
     button.warnline:hover {
         text-decoration: underline;
     }

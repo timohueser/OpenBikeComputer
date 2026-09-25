@@ -1186,7 +1186,7 @@
 </script>
 
 {#if !ledger || ledger.cellCount === 0}
-    <p class="line muted small">Choose coverage in step 1.</p>
+    <p class="line muted small">Choose a region or draw an area on the map.</p>
 {:else}
     <div class="split">
         {#if proof}
@@ -1226,18 +1226,6 @@
         {/if}
 
         <div class="facts">
-            {#if ledger.isFinal}
-                <p class="line statband">
-                    <span class="mono big">{formatBytes(ledger.totalBytes)}</span>
-                    <span class="small faint">
-                        {ledger.cellCount}
-                        {ledger.cellCount === 1 ? "cell" : "cells"}
-                    </span>
-                </p>
-            {:else}
-                <p class="line statband"><span class="mono big faint">Calculating…</span></p>
-            {/if}
-
             {#if refusal}
                 <p class="line warn small">{refusal}</p>
             {:else if estimateError}
@@ -1404,19 +1392,6 @@
         margin: 0;
         line-height: 1.45;
     }
-
-    .statband {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-        flex-wrap: wrap;
-    }
-
-    .statband .big {
-        font-size: 19px;
-        font-weight: 600;
-    }
-
 
     .line.warn {
         color: var(--coral);

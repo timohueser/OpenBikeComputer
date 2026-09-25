@@ -1,6 +1,5 @@
 <script lang="ts">
-    // Step 2 on the cell catalog: the Light and Dark style tables stamped into
-    // every map. Editing either never changes the downloaded cells.
+    // Styles change presentation, never the selected geographic data.
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import SkinEditor from "../skin/SkinEditor.svelte";
@@ -176,7 +175,7 @@
     }
 
     .skin {
-        width: min(100%, 240px);
+        width: min(100%, 144px);
         display: flex;
         flex-direction: column;
         align-items: flex-start;

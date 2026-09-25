@@ -24,6 +24,7 @@
         uboxToDegrees,
     } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
+    import { ledgerForRegion } from "../../lib/catalog/ledger";
     import { formatBytes } from "../../lib/format";
     import {
         CoverageMapView,
@@ -368,8 +369,8 @@
     function priceLabel(priced: { bytes: number; cells: number } | { refused: true } | null): string {
         if (!priced) return "";
         if ("refused" in priced) return "too large for one map";
-        if (priced.cells === 0) return "nothing baked here yet";
-        return `≈ ${formatBytes(priced.bytes)} · ${priced.cells} ${priced.cells === 1 ? "cell" : "cells"}`;
+        if (priced.cells === 0) return "Map data is not available here";
+        return `≈ ${formatBytes(priced.bytes)} total`;
     }
 
     const partCount = $derived(store.selection.parts.length);
@@ -459,7 +460,7 @@
                             class:added
                             aria-label={added
                                 ? `${region.name} is already in the map`
-                                : `Add ${region.name} (${formatBytes(region.bytes)})`}
+                                : `Add ${region.name} (${formatBytes(ledgerForRegion(store.catalog, region).totalBytes)})`}
                             onclick={() => pickFromList(region)}
                         >
                             <span
@@ -467,7 +468,7 @@
                                         · {parent}</span
                                     >{/if}</span
                             >
-                            <span class="mono faint">{formatBytes(region.bytes)}</span>
+                            <span class="mono faint">{formatBytes(ledgerForRegion(store.catalog, region).totalBytes)}</span>
                         </button>
                     </div>
                 {/each}
@@ -507,11 +508,11 @@
                             class:added
                             aria-label={added
                                 ? `${row.region.name} is already in the map`
-                                : `Add ${row.region.name} (${formatBytes(row.region.bytes)})`}
+                                : `Add ${row.region.name} (${formatBytes(ledgerForRegion(store.catalog, row.region).totalBytes)})`}
                             onclick={() => pickFromList(row.region)}
                         >
                             <span>{added ? "✓ " : ""}{row.region.name}</span>
-                            <span class="mono faint">{formatBytes(row.region.bytes)}</span>
+                            <span class="mono faint">{formatBytes(ledgerForRegion(store.catalog, row.region).totalBytes)}</span>
                         </button>
                     </div>
                 {/each}
@@ -543,7 +544,7 @@
                         onclick={() => pickLadder(id)}
                     >
                         <span>{store.hasRegion(id) ? "✓ " : ""}{region.name}</span>
-                        <span class="mono faint">{formatBytes(region.bytes)}</span>
+                        <span class="mono faint">{formatBytes(ledgerForRegion(store.catalog, region).totalBytes)}</span>
                     </button>
                 {/if}
             {/each}

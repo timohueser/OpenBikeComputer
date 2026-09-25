@@ -1,14 +1,4 @@
 <script lang="ts">
-    // The builder's home when the catalog is a cell store. The steps column is
-    // the narrative spine, the map pane
-    // responds, and only the column scrolls. Step 1 is a ledger of composed
-    // parts and the map owns selection
-    // through its tool rail.
-    //
-    // Step 4 is the device step. The one-file assembler exposes a disk-backed
-    // sink to it, so a rider may assemble straight into a v4 PUT without first
-    // downloading and selecting the same `.obcm`.
-
     import type { CatalogClient } from "../../lib/catalog/client";
     import { CoverageStore } from "../../lib/coverage/store.svelte";
     import { available } from "../../lib/platform/gating";
@@ -47,8 +37,7 @@
     <div class="steps">
         <section class="card">
             <div class="step-head">
-                <span class="num">1</span>
-                <h3>Coverage</h3>
+                <h3>Choose coverage</h3>
                 {#if partCount > 0}
                     <span class="small faint">
                         {partCount}
@@ -66,24 +55,21 @@
 
         <section class="card">
             <div class="step-head">
-                <span class="num">2</span>
-                <h3>Map style</h3>
+                <h3>Download your map</h3>
             </div>
-            <SkinStep {store} />
-        </section>
-
-        <section class="card">
-            <div class="step-head">
-                <span class="num">3</span>
-                <h3>Download</h3>
-            </div>
+            <details class="style-options">
+                <summary>
+                    <span>Map style <span class="small faint">· Optional</span></span>
+                    <span class="small muted">{store.lightSkin.name} / {store.darkSkin.name}</span>
+                </summary>
+                <div class="style-picker"><SkinStep {store} /></div>
+            </details>
             <DownloadStep bind:this={downloadStep} {store} onSendReadyChange={(ready) => (sendReady = ready)} />
         </section>
 
         <section class="card">
             <div class="step-head">
-                <span class="num">4</span>
-                <h3>{available("deviceDashboard") ? "Send to device" : "Device"}</h3>
+                <h3>Or send directly to device</h3>
             </div>
             {#if available("deviceDashboard")}
                 <MapSendStep ledger={store.ledger} {sendAssembled} {sendReady} />
@@ -143,17 +129,26 @@
         text-align: right;
     }
 
-    .num {
-        width: 21px;
-        height: 21px;
-        flex: none;
-        font-family: var(--mono);
+    .style-options {
+        margin-bottom: 16px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 14px;
+    }
+
+    .style-options summary {
+        cursor: pointer;
         color: var(--ink);
-        font-size: 12px;
-        font-weight: 600;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
+        line-height: 1.6;
+    }
+
+    .style-options summary > span:last-child {
+        display: block;
+        margin-left: 18px;
+        overflow-wrap: anywhere;
+    }
+
+    .style-picker {
+        padding-top: 14px;
     }
 
     @media (max-width: 940px) {

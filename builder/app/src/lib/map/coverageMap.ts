@@ -396,7 +396,7 @@ export class CoverageMapView {
         for (const warning of warnings) {
             const rect = L.rectangle(warning.bounds, WARNING_STYLE[warning.kind]);
             rect.on("click", () => this.cb.onWarningClick(warning.kind));
-            rect.bindTooltip(warning.kind === "hole" ? "not baked yet — hole" : "partly baked — detail may stop here", {
+            rect.bindTooltip(warning.kind === "hole" ? "Map data is missing here" : "Street detail may stop here", {
                 className: "preview-tip",
                 sticky: true,
             });
