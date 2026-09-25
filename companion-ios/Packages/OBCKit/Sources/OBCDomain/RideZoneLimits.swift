@@ -24,10 +24,6 @@ public struct RideZoneLimits: Equatable, Sendable, Codable {
         ftpWatts.map { Self.zone(watts, limit: $0, edges: Self.powerEdges) }
     }
 
-    /// The Z2...Z5 edges in percent of the limit, for zone bands behind a chart.
-    public static var heartRateEdgePercents: [Int] { heartRateEdges.map(\.0) }
-    public static var powerEdgePercents: [Int] { powerEdges.map(\.0) }
-
     /// The Z2...Z5 edges in percent of the limit, and whether a value exactly on the edge is
     /// already in the upper zone. The device's `effort.rs` holds the same table.
     private static let heartRateEdges = [(60, true), (70, true), (80, true), (90, true)]

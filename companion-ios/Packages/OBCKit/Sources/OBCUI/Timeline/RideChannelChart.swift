@@ -81,9 +81,9 @@ extension RideTimeline {
 /// width, so a redraw on a cursor move never touches the ride's samples.
 struct RideChannelChart: View {
     enum Style {
-        /// A timeline strip: heart rate and power coloured by zone, a plain elevation line.
+        /// A timeline strip: a plain elevation line.
         case strip
-        /// The detail chart: zone bands behind heart rate and power, elevation coloured by grade.
+        /// The detail chart: elevation coloured by grade, and a dot on the cursor.
         case detail
     }
 
@@ -107,17 +107,6 @@ struct RideChannelChart: View {
             }
             func point(_ column: Int, _ value: Double) -> CGPoint {
                 CGPoint(x: size.width * (CGFloat(column) + 0.5) / CGFloat(columns), y: y(value))
-            }
-
-            if style == .detail, let edges = timeline.zoneEdges(channel) {
-                let bounds = [range.lowerBound] + edges + [range.upperBound]
-                for zone in 0..<RideTimeline.zoneCount {
-                    let top = y(min(max(bounds[zone + 1], range.lowerBound), range.upperBound))
-                    let bottom = y(min(max(bounds[zone], range.lowerBound), range.upperBound))
-                    guard bottom > top else { continue }
-                    context.fill(Path(CGRect(x: 0, y: top, width: size.width, height: bottom - top)),
-                                 with: .color(OBCTheme.zones[zone].opacity(0.16)))
-                }
             }
 
             if channel == .elevation {
@@ -185,7 +174,7 @@ struct RideChannelChart: View {
         case (.elevation, .detail):
             guard column < grades.count else { return -1 }
             return RideTimeline.gradeBand(percent: grades[column])
-        case (.heartRate, .strip), (.power, .strip):
+        case (.heartRate, _), (.power, _):
             return timeline.zone(channel, value: value) ?? -1
         default:
             return -1

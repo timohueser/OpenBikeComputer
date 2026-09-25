@@ -2,8 +2,8 @@ import SwiftUI
 import OBCDomain
 
 /// One channel of a ride, large: the chart with the shared cursor, its minimum, average and
-/// maximum, and its time in zones. Heart rate and power shade their zone bands; elevation
-/// colours its line by grade, as the device's climb screen does.
+/// maximum, and its time in zones. Heart rate and power colour their line by zone, as on the
+/// timeline; elevation colours its line by grade, as the device's climb screen does.
 struct RideChannelSheet: View {
     let timeline: RideTimeline
     let channel: RideTimeline.Channel

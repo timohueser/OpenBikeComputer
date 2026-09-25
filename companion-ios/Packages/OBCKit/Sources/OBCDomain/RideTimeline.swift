@@ -57,7 +57,11 @@ public struct RideTimeline: Sendable {
 
     /// Whether the ride has a limit for this channel, so its values have zones.
     public func isZoned(_ channel: Channel) -> Bool {
-        zoneEdges(channel) != nil
+        switch channel {
+        case .heartRate: return limits.maxHeartRate != nil
+        case .power: return limits.ftpWatts != nil
+        case .elevation, .speed, .cadence: return false
+        }
     }
 
     /// Index 0 is Z1. Nil for a channel without zones.
@@ -68,18 +72,6 @@ public struct RideTimeline: Sendable {
         case .power: return limits.powerZone(watts: rounded)
         case .elevation, .speed, .cadence: return nil
         }
-    }
-
-    /// The Z2...Z5 edges in the channel's unit, for zone bands behind a chart.
-    public func zoneEdges(_ channel: Channel) -> [Double]? {
-        let edges: (limit: Int?, percents: [Int])
-        switch channel {
-        case .heartRate: edges = (limits.maxHeartRate, RideZoneLimits.heartRateEdgePercents)
-        case .power: edges = (limits.ftpWatts, RideZoneLimits.powerEdgePercents)
-        case .elevation, .speed, .cadence: return nil
-        }
-        guard let limit = edges.limit, limit > 0 else { return nil }
-        return edges.percents.map { Double($0 * limit) / 100 }
     }
 
     /// Seconds in each zone, Z1 first. A sample's zone holds from the fix before it; a pause gap
