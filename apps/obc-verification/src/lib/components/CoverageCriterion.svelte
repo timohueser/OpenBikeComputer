@@ -19,7 +19,7 @@
   export let procedures: VerificationTest[] = [];
   /** The release view sets this to show each evidence test's outcome in one candidate. */
   export let result: ((test: VerificationTest) => { outcome: string; detail?: string; label?: string; disabled?: boolean; onrun?: () => void }) | undefined = undefined;
-  $: covered = !removed && (proposed ? proposedCovered(criterion) : criterionCovered(requirement, criterion));
+  $: covered = !removed && (proposed ? proposedCovered(criterion) : criterionCovered(requirement, criterion)) && criterion.evidence.every(e => e.rationale.trim());
   /** A removed criterion takes all of its evidence with it. */
   $: kept = removed ? [] : criterion.evidence;
   $: dropped = removed ? criterion.evidence : previous?.evidence.filter(e => !criterion.evidence.some(n => evidenceKey(n) === evidenceKey(e))) ?? [];

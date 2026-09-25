@@ -232,8 +232,6 @@ fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .menu-item { display: block; width: 100%; text-align: left; justify-content: flex-start; border-color: transparent; background: transparent; padding: 8px 10px; margin: 0; font-size: 13px; font-weight: 400; cursor: pointer; border-radius: 5px; }
 .menu-item:hover { background: var(--soft); }
 del { text-decoration: line-through; }
-.review-queue { border-color: var(--coral-line); background: var(--coral-bg); color: var(--coral); font-weight: 650; }
-.review-queue:hover { background: #f7e0d2; }
 .suggest-toggle { border-color: var(--slate-line); background: var(--slate-bg); color: var(--slate-strong); font-weight: 650; }
 .suggest-toggle:hover { background: #dce7e6; }
 .suggest-toggle[aria-pressed=true] { background: var(--slate); color: var(--surface); border-color: var(--slate); }

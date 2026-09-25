@@ -2,9 +2,12 @@
   import { onMount } from 'svelte';
   import type { Catalog, Revision } from '$lib/types';
   import { coverageProgress } from '$lib/coverage';
+  import type { Filter } from '$lib/filters';
   import { api, message } from './api';
   export let revision: Revision;
   export let catalog: Catalog;
+  /** Opens the requirements view with this filter. */
+  export let onfilter: (filter: Filter) => void;
   let revisions: Revision[] = [];
   let error = '';
   onMount(async () => { try { revisions = await api<Revision[]>('/api/revisions'); } catch (e) { error = message(e); } });
@@ -32,7 +35,8 @@
   <section class="tile" aria-label="Requirements">
     <div class="eyebrow">Requirements</div><div class="n">{now.states.covered} <small>of {now.active} covered</small></div>
     <div class="bar"><span class="covered" style:width={pct(now.states.covered, now.active)}></span><span class="partial" style:width={pct(now.states.partial, now.active)}></span><span class="uncovered" style:width={pct(now.states.uncovered, now.active)}></span><span class="review" style:width={pct(now.states['needs-review'], now.active)}></span></div>
-    <div class="legend"><span><i class="covered"></i>{now.states.covered} covered</span><span><i class="partial"></i>{now.states.partial} partial</span><span><i class="uncovered"></i>{now.states.uncovered} not covered</span>{#if now.states['needs-review']}<span><i class="review"></i>{now.states['needs-review']} needs review</span>{/if}<span><i class="none"></i>{now.states.unassessed} not assessed</span></div>
+    <div class="legend"><span><i class="covered"></i>{now.states.covered} covered</span><button class="legend-link" on:click={() => onfilter('partial')}><i class="partial"></i>{now.states.partial} partial</button><span><i class="uncovered"></i>{now.states.uncovered} not covered</span>{#if now.states['needs-review']}<span><i class="review"></i>{now.states['needs-review']} needs review</span>{/if}<button class="legend-link" on:click={() => onfilter('unassessed')}><i class="none"></i>{now.states.unassessed} not assessed</button></div>
+    <button class="text-button small open" on:click={() => onfilter('all')}>Open requirements →</button>
   </section>
   <section class="tile" aria-label="Acceptance criteria">
     <div class="eyebrow">Acceptance criteria</div><div class="n">{now.criteria.covered} <small>of {now.criteria.total} covered</small></div>
@@ -46,7 +50,7 @@
   </section>
 </div>
 <section class="chart" aria-label="Covered requirements per revision">
-  <div class="row"><h3>Covered requirements per revision</h3>{#if history.length}<span class="small muted">r{history[0].id} – r{history[history.length - 1].id} · {day(history[0].at)} – {day(history[history.length - 1].at)}</span>{/if}</div>
+  <div class="row"><h2>Covered requirements per revision</h2>{#if history.length}<span class="small muted">r{history[0].id} – r{history[history.length - 1].id} · {day(history[0].at)} – {day(history[history.length - 1].at)}</span>{/if}</div>
   <svg viewBox="0 0 {W} {H}" role="img" aria-label="Covered and assessed requirements over time">
     {#each ticks as t}<line x1={L} x2={W - R} y1={y(t)} y2={y(t)} class="grid" /><text x={L - 6} y={y(t) + 4} class="axis" text-anchor="end">{t}</text>{/each}
     {#if history.length}
@@ -66,7 +70,10 @@
   .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
   .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
   .covered { background: var(--good); } .partial { background: var(--amber); } .uncovered { background: var(--bad); } .review { background: var(--coral); } .none { background: #d6d5c8; } .manual { background: var(--slate); }
-  .chart h3 { margin-bottom: 4px; }
+  .chart h2 { margin-bottom: 4px; font-size: 15px; }
+  .legend-link { padding: 0; border: 0; background: transparent; font-size: inherit; color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+  .legend-link:hover { background: transparent; color: var(--ink); }
+  .open { margin-top: 8px; }
   svg { display: block; width: 100%; height: auto; margin-top: 6px; }
   .grid { stroke: var(--line); }
   .axis { font-size: 12px; fill: var(--muted); }
