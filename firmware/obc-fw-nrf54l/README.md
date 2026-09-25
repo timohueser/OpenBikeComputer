@@ -1,8 +1,7 @@
 # obc-fw-nrf54l — nRF54LM20-DK firmware
 
-The real hardware target: `obc-app` on an nRF54LM20-DK (Cortex-M33), with the map, routes and
-rides on a microSD card. It drives the reflective LS021B7DD02 memory LCD through the nRF54L's FLPR
-RISC-V coprocessor, which is the only display path.
+`obc-app` runs on the nRF54LM20-DK. Maps, routes and rides use microSD. The FLPR coprocessor
+drives the LS021B7DD02 memory LCD.
 
 [`src/board.rs`](src/board.rs) is the canonical peripheral and pin ledger and the constructors in
 `src/main.rs` are the executable authority; if this README disagrees with them, fix both. The
@@ -98,20 +97,13 @@ app reflash. A device without it shows no LED blink and never boots.
 Every build compiles the RISC-V blob, so it needs an `rv32emc`-capable GNU gcc: `brew install
 riscv64-elf-gcc`, or the apt package `gcc-riscv64-unknown-elf`, or `RISCV_GCC=<path>`.
 
-Build from this crate directory — it is standalone, for `thumbv8m.main-none-eabihf`. `cargo run`
-flashes and streams defmt/RTT over the on-board J-Link:
+Run `cargo run --release` here or `obc flash` from the checkout root.
+Select a probe with `PROBE_RS_PROBE=VID:PID:SERIAL`. BLE and USB are always enabled.
 
-```sh
-cargo run --release                          # the shipping shape
-cargo run --release --features synth         # indoor: the SynthLocation square loop, no GPS
-cargo run --release --features debug-uart    # indoor: a recorded ride over VCOM. Needs HWFC OFF
-```
-
-If cargo prompts to pick a probe, pass `--probe <vid:pid:serial>`.
-
-**There is no `ble` feature and no `usb` feature.** The map and ride loop, the on-device router,
-the nrf-sdc + MPSL + TrouBLE stack (`src/ble/`) and the USB device plane are in every build, in one
-image that advertises as `OBC-XXXX`, the FICR serial tail. These features are opt-in overlays:
+For finished test rides, run `obc flash seed-rides` over J4. Wait for `demo rides: complete`.
+This adds three 30-minute GPS loops: GPS, heart rate, and heart rate with power, dated the
+previous three days. Existing names are skipped. Existing objects remain; unformatted cards
+and active recordings are refused. Press Ctrl-C, then run `obc flash` to restore normal firmware. The rides remain on the card.
 
 | Feature | What it does |
 | :-- | :-- |
@@ -119,6 +111,7 @@ image that advertises as `OBC-XXXX`, the FICR serial tail. These features are op
 | `debug-uart` | Streams GPS, altimeter and compass from a host over VCOM, and enables the VCOM word-tag commands. Takes precedence over the real sensors and `synth`. |
 | `com-hw` | Drives the COM wave from a zero-CPU TIMER21 → DPPIC20 → GPIOTE20 chain instead of `com::com_task`. Off by default until it is verified on glass and a logic analyzer. |
 | `sd-bench` | Adds SD read counters and one `map SD bench:` RTT line per map redraw. Use with `synth`. |
+| `seed-rides` | Adds finished demo rides. Use `obc flash seed-rides`. |
 | `peak-view-demo` | Seeds a Kleine Scheidegg fix and opens Peak View at boot. |
 | `resource-report` | Adds the `.obc_resources` table for `firmware/tools/resource_guard.py`. Diagnostic only — never flash or package this image as the shipping artifact. |
 | `flat-store-reset` | Destructive maintenance mode for `flat_store_bench` only. |

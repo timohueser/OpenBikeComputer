@@ -50,6 +50,9 @@ synth = []
 # Seed a Kleine Scheidegg test fix and open the selected map's Peak View at boot.
 peak-view-demo = []
 
+# Development-only: add three finished demo rides at boot, before the storage writer starts.
+seed-rides = []
+
 # On-device SD read profiler. Adds relaxed counters at the concrete BlockDevice boundary and one
 # RTT line per map redraw, splitting the renderer's logical ByteSource requests from the physical
 # sEMMC command shape and wall time. Off in every shipping build; use with `synth` so a moving
