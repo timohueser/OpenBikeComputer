@@ -87,7 +87,7 @@ public struct MainScreenView: View {
                     systemImage: "exclamationmark.triangle",
                     title: interruption.title,
                     message: interruption.message,
-                    actionTitle: "Resume",
+                    actionTitle: interruption.actionTitle,
                     action: { sync.resumeSync() }
                 )
                 .accessibilityIdentifier("syncInterruptedBanner")

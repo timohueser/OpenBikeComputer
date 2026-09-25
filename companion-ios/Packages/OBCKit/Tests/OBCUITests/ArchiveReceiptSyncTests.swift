@@ -42,7 +42,8 @@ struct ArchiveReceiptSyncTests {
         let peer = ReceiptPeer(rides: rides, failures: failures)
         let transport = ReceiptTransport(base: MockTransport(control: control), peer: peer)
         return (RideSyncCoordinator(transport: transport, library: library,
-                                   timing: .init(syncDoneHold: .zero, syncedLineHold: .seconds(300))), peer, control)
+                                   timing: .init(syncDoneHold: .zero, syncedLineHold: .seconds(300),
+                                                 confirmRetryDelay: .zero)), peer, control)
     }
     private func wait(_ condition: () -> Bool) async {
         while !condition() {
@@ -63,21 +64,35 @@ struct ArchiveReceiptSyncTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let library = FileLibraryStore(directory: dir)
         let ride = ride()
-        let (sync, peer, control) = setup([ride], library: library, failures: 1)
+        let source = ride.summary.source!
+        let (sync, peer, control) = setup([ride], library: library, failures: 2)
         await waitConnection(sync, .connected)
         sync.sync()
         await wait { sync.syncInterruption?.reason == .confirmationPending }
-        #expect(library.archivedRideSource(ride.id) == ride.summary.source)
+        #expect(library.archivedRideSource(ride.id) == source)
         #expect(sync.lastSyncCount == nil)
         #expect(await peer.downloads == [[ride.id]])
-        #expect(await peer.receipts == [ride.summary.source!])
+        #expect(await peer.receipts == [source, source], "one automatic resend before the banner")
         control.connection = .outOfRange
         await waitConnection(sync, .outOfRange)
         control.connection = .connected
-        await peer.waitForReceipts(2)
+        await peer.waitForReceipts(3)
         await wait { sync.syncState == .idle }
         #expect(sync.syncInterruption == nil)
         #expect(await peer.downloads == [[ride.id]])
+        #expect(await peer.receipts == [source, source, source])
+    }
+
+    @Test func oneUnansweredReceiptIsResentWithoutABanner() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let library = FileLibraryStore(directory: dir)
+        let ride = ride()
+        let (sync, peer, _) = setup([ride], library: library, failures: 1)
+        await waitConnection(sync, .connected)
+        sync.sync()
+        await wait { sync.lastSyncCount == 1 }
+        #expect(sync.syncInterruption == nil)
         #expect(await peer.receipts == [ride.summary.source!, ride.summary.source!])
     }
 
