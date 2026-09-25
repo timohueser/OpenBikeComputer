@@ -19,6 +19,9 @@ public struct TrackRow: View {
     /// `nil` outside selection; otherwise whether this row is picked.
     let isSelected: Bool?
 
+    /// The corner radius of a list sketch; photo thumbnails beside it match.
+    public static let sketchRadius: CGFloat = 10
+
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// Planned route: "18.7 km ▲1,087 m 1:19 h".
@@ -114,7 +117,7 @@ public struct TrackRow: View {
 
     private var sketchCell: some View {
         sketch
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: Self.sketchRadius))
             .overlay(alignment: .topTrailing) {
                 if let dayCount { DayCountBadge(count: dayCount).padding(4) }
             }
@@ -280,7 +283,7 @@ public struct TrackRowSkeleton: View {
 
     public var body: some View {
         HStack(spacing: 14) {
-            OBCSkeleton(cornerRadius: 10).frame(width: 96, height: 72)
+            OBCSkeleton(cornerRadius: TrackRow.sketchRadius).frame(width: 96, height: 72)
             VStack(alignment: .leading, spacing: 9) {
                 OBCSkeleton().frame(width: 150, height: 15)
                 OBCSkeleton().frame(width: 110, height: 11)
