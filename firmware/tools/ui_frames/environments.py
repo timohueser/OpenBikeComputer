@@ -62,8 +62,9 @@ def plain_route(stage: Stage) -> Staging:
 
 def _ride(samples, name, start, distance_m, moving_s, climb_m, descent_m, hr, trip):
     """A ride object as `specs/obc-ble-interface-spec.md` §7.2 lays it out: 20-byte samples, then
-    the 154-byte footer, with no effort limits. `samples` are `(lon, lat, ele)`; `hr` is one heart
-    rate per sample or `None`; `trip` is `(key, day index, day count, name)` or `None`.
+    the 154-byte footer. `samples` are `(lon, lat, ele)`; `hr` is one heart rate per sample or
+    `None`, and a ride with heart rate records a 185 bpm max HR and a 250 W FTP; `trip` is
+    `(key, day index, day count, name)` or `None`.
     """
     body = bytearray()
     for i, (lon, lat, ele) in enumerate(samples):
@@ -75,7 +76,7 @@ def _ride(samples, name, start, distance_m, moving_s, climb_m, descent_m, hr, tr
     footer += struct.pack("<BBBBHHI48s", avg_hr, 0xFF, 0xFF, 0, 0xFFFF, 0xFFFF, 0xFFFF_FFFF, raw)
     key, day, days, trip_name = trip or (0, 0, 0, "")
     footer += struct.pack("<QBBBB48s", key, day, days, 1, len(trip_name.encode()), trip_name.encode())
-    footer += struct.pack("<BBH", 0, 0, 0)
+    footer += struct.pack("<BBH", *((185, 0, 250) if hr else (0, 0, 0)))
     return bytes(body + footer)
 
 

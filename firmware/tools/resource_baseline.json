@@ -26,7 +26,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 58184,
+        "app": 58440,
         "map_cache": 37084,
         "map_tables": 7528,
         "route_cache": 9260,
@@ -90,9 +90,9 @@
       "_boot_chain_roots_note": "The mount_in_place root is unscoped because toolchains demangle FlatStore<D> differently. The symbol resolver rejects missing or ambiguous roots; a second matching constructor must be resolved with an explicit, portable needle.",
       "_ride_zone_limits_allocation_measurement": {
         "source_commit": "claude/ride-zone-limits on develop 0a0b15804",
-        "build": "cargo build --release --locked --features resource-report on the pinned aarch64-apple-darwin host, rustc 1.96.0",
-        "changes": "flat_ride_delta +4 B over 566 B: the ride footer grows from 150 B to 154 B to keep the effort limits in force at the ride start. The App allocation is unchanged, because the limits sit in padding of the recorder's ride origin. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,480 B linked resident inside the band, residual main stack 43,944 B, poll frame 9,864 B."
+        "build": "cargo build --release --locked --features resource-report on the pinned aarch64-apple-darwin host, rustc 1.96.0 (App 58,440 B)",
+        "changes": "flat_ride_delta +4 B over 566 B: the ride footer grows from 150 B to 154 B to keep the effort limits in force at the ride start. App +256 B over 58,184 B: each of the 32 resident ride catalog entries keeps its ride's 4 B limits for the detail's zones, and the u64 object id rounds the entry from 112 B to 120 B. All other named allocations and ceilings are unchanged.",
+        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,736 B linked resident inside the band, residual main stack 43,688 B, poll frame 9,864 B, init_idle frame 1,856 B."
       },
       "_sound_cues_allocation_measurement": {
         "source_commit": "a6485a93 on claude/sound-s7-alerts, merged with develop at fac1d7cc",

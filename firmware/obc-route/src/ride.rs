@@ -103,6 +103,8 @@ pub struct RideInfo {
     pub max_power: Option<u16>,
     pub energy_kj: Option<u32>,
     pub bike: BikeType,
+    /// The effort limits in force when the ride started.
+    pub limits: EffortLimits,
     pub trip: Option<TripRef>,
     pub trip_name: String<NAME_CAP>,
 }
@@ -149,6 +151,7 @@ impl RideInfo {
             max_power: footer.max_power,
             energy_kj: footer.energy_kj,
             bike: footer.bike,
+            limits: footer.limits,
             trip: footer.trip(),
             trip_name,
         })
