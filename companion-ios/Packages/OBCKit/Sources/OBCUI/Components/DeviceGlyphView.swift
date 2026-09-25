@@ -4,34 +4,25 @@ import SwiftUI
 /// memory-LCD screen, and the four side buttons. Every dimension derives from the
 /// shell height through `Metrics`, off the same 308×470 body and 240×320 panel
 /// proportions the simulator housing uses, so the glyph is the device in miniature.
+/// The screen draws a device page in its exact on-glass colours and Terminus.
 struct DeviceGlyphView: View {
     enum Variant {
-        /// Named title bar and the amber track squiggle.
+        /// The title bar with the device's name and the amber track squiggle.
         case home(name: String)
-        /// Blank title bar and "PAIR" on screen. Drawn a little smaller.
-        case pairing
-        /// The device's route overview for a route it now holds. Drawn large, at two thirds of a
-        /// point per panel pixel, so each panel pixel is whole screen pixels at 3x.
+        /// The device's pairing card. The app never knows the code, so the digits are blanks.
+        case passkey
+        /// The device's route overview for a route it now holds.
         case routeOverview(DeviceRouteOverview)
-        /// The card the device shows when a trip lands, drawn as large as the route overview.
+        /// The card the device shows when a trip lands.
         case tripCard(DeviceTripCard)
+        /// A card of the device's firmware-update flow.
+        case firmware(DeviceFirmwareCard)
     }
 
     let variant: Variant
 
-    /// The pairing glyph sits flat; the others cast a drop shadow.
-    private var isRaised: Bool {
-        if case .pairing = variant { return false }
-        return true
-    }
-
-    private var glyphHeight: CGFloat {
-        switch variant {
-        case .home: 148
-        case .pairing: 126
-        case .routeOverview, .tripCard: 470 * 2 / 3
-        }
-    }
+    /// Two thirds of a point per panel pixel, so each panel pixel is whole screen pixels at 3x.
+    private static let glyphHeight: CGFloat = 470 * 2 / 3
 
     /// The device's real proportions, scaled to a glyph height. Ratios are
     /// `dimension / 470`, the body height in the housing's screen-pixel units.
@@ -56,10 +47,8 @@ struct DeviceGlyphView: View {
         var chinInset: CGFloat { height * 30 / 470 }
     }
 
-    private var m: Metrics { Metrics(height: glyphHeight) }
-
     var body: some View {
-        let m = self.m
+        let m = Metrics(height: Self.glyphHeight)
         ZStack(alignment: .top) {
             // The celadon rim: the same slab grown evenly on all four sides.
             RoundedRectangle(cornerRadius: m.radius + m.lip)
@@ -68,7 +57,7 @@ struct DeviceGlyphView: View {
 
             RoundedRectangle(cornerRadius: m.radius)
                 .fill(OBCTheme.deviceBody)
-                .shadow(color: OBCTheme.deviceBody.opacity(0.3), radius: 13, y: isRaised ? 14 : 0)
+                .shadow(color: OBCTheme.deviceBody.opacity(0.3), radius: 13, y: 14)
 
             // Bezel and screen, seated high so the wordmark chin reads below them.
             RoundedRectangle(cornerRadius: m.bezelRadius)
@@ -90,52 +79,43 @@ struct DeviceGlyphView: View {
                 .padding(.bottom, m.chinInset)
         }
         .frame(width: m.width, height: m.height)
-        .overlay(alignment: .leading) { sideButtons.offset(x: -m.buttonProtrude) }
-        .overlay(alignment: .trailing) { sideButtons.offset(x: m.buttonProtrude) }
+        .overlay(alignment: .leading) { sideButtons(m).offset(x: -m.buttonProtrude) }
+        .overlay(alignment: .trailing) { sideButtons(m).offset(x: m.buttonProtrude) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isImage)
+        .accessibilityLabel(accessibilityText)
     }
 
     @ViewBuilder
     private var screenContent: some View {
-        let m = self.m
         switch variant {
         case .home(let name):
-            VStack(spacing: 0) {
-                Text(name.uppercased())
-                    .font(.system(size: m.screenWidth * 0.113, weight: .bold, design: .monospaced))
-                    .kerning(0.5)
-                    .minimumScaleFactor(0.7)
-                    .lineLimit(1)
-                    .foregroundStyle(OBCTheme.deviceHeaderText)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: m.screenHeight * 0.2)
-                    .background(OBCTheme.deviceHeader)
-                TrackSquiggle()
-                    .stroke(OBCTheme.deviceTrack, style: StrokeStyle(lineWidth: 3.4, lineCap: .round))
-                    .frame(maxHeight: .infinity)
-                    .padding(.horizontal, m.screenWidth * 0.08)
-                    .padding(.vertical, m.screenHeight * 0.08)
-            }
-        case .pairing:
-            VStack(spacing: 0) {
-                OBCTheme.deviceHeader
-                    .frame(height: m.screenHeight * 0.2)
-                Text("PAIR")
-                    .font(.system(size: m.screenWidth * 0.16, weight: .bold, design: .monospaced))
-                    .foregroundStyle(OBCTheme.deviceHeader)
-                    .frame(maxHeight: .infinity)
-            }
+            DeviceHomeScreen(name: name)
+        case .passkey:
+            DevicePasskeyScreen()
         case .routeOverview(let overview):
             DeviceRouteOverviewScreen(overview: overview)
         case .tripCard(let card):
             DeviceTripCardScreen(card: card)
+        case .firmware(let card):
+            DeviceFirmwareScreen(card: card)
+        }
+    }
+
+    private var accessibilityText: String {
+        switch variant {
+        case .home(let name): "\(name), the bike computer"
+        case .passkey: "The bike computer's pairing screen, which shows a six-digit code"
+        case .routeOverview(let overview): "The bike computer's screen showing \(overview.name)"
+        case .tripCard(let card): "The bike computer's screen showing \(card.name)"
+        case .firmware(let card): card.accessibilityText
         }
     }
 
     /// One flank's pair of buttons. The `.leading`/`.trailing` overlay alignment
     /// centres the pair on the body's vertical midpoint, as on the hardware.
-    private var sideButtons: some View {
-        let m = self.m
-        return VStack(spacing: m.buttonGap) {
+    private func sideButtons(_ m: Metrics) -> some View {
+        VStack(spacing: m.buttonGap) {
             ForEach(0..<2, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: 2)
                     .fill(OBCTheme.deviceButton)
@@ -143,20 +123,26 @@ struct DeviceGlyphView: View {
             }
         }
     }
+}
 
-    /// The little route line on the home screen.
-    private struct TrackSquiggle: Shape {
-        func path(in rect: CGRect) -> Path {
-            // The source path is "M12 60 C 20 40 34 44 40 52 C 48 62 60 40 68 20" in
-            // an 80×74 box.
+/// The name in the title bar over the amber track squiggle.
+private struct DeviceHomeScreen: View {
+    let name: String
+
+    var body: some View {
+        Canvas { context, size in
+            let title = name.count <= 15 ? name : String(name.prefix(13)).trimmingCharacters(in: .whitespaces) + ".."
+            context.deviceFrame(size: size, title: title)
+            // The source path is "M12 60 C 20 40 34 44 40 52 C 48 62 60 40 68 20" in an 80×74 box.
+            let box = CGRect(x: 24, y: 70, width: 192, height: 200)
             func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                CGPoint(x: rect.minX + x / 80 * rect.width, y: rect.minY + y / 74 * rect.height)
+                CGPoint(x: box.minX + x / 80 * box.width, y: box.minY + y / 74 * box.height)
             }
             var path = Path()
             path.move(to: point(12, 60))
             path.addCurve(to: point(40, 52), control1: point(20, 40), control2: point(34, 44))
             path.addCurve(to: point(68, 20), control1: point(48, 62), control2: point(60, 40))
-            return path
+            context.stroke(path, with: .color(OBCTheme.deviceTrack), style: StrokeStyle(lineWidth: 6, lineCap: .round))
         }
     }
 }

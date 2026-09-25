@@ -37,9 +37,9 @@ public final class LaunchFlowModel {
         public var reason: String {
             switch self {
             case .timeout:
-                "We scanned for 30 seconds and didn't see it. A couple of things to check:"
+                "We scanned for 30 seconds and didn't see it. Check that:"
             case .rejected:
-                "Pairing didn't go through. If the passkey was wrong, try again. If the device is already paired to another phone, use Forget phone in its Bluetooth settings, then pair again."
+                "If the code was wrong, try again. If the OBC is already paired to another phone, open Settings ▸ Connections on the OBC, hold Forget phone, then try again."
             }
         }
     }

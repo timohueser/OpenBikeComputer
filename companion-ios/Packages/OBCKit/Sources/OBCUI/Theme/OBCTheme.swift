@@ -86,6 +86,8 @@ public enum OBCTheme {
     public static let deviceHeaderText = Color(hex: 0xFFFFFF)
     /// The device screen's track amber, from the on-glass palette. Also its selected-row fill.
     public static let deviceTrack = Color(hex: 0xFFAA00)
+    /// The device's warning orange, as in "Keep power on."
+    public static let deviceWarning = Color(hex: 0xFF5500)
     /// Device text and lines.
     public static let deviceInk = Color(hex: 0x000000)
     /// Device captions and units.

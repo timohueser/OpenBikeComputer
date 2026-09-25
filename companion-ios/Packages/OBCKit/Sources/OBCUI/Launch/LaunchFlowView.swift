@@ -59,7 +59,11 @@ public struct LaunchFlowView<Main: View>: View {
                 onHelp: { model.showPairingHelp() }
             )
         case .radioBlocked(let block):
-            RadioBlockedView(block: block, onBrowseLibrary: { model.browseLibrary() })
+            RadioBlockedView(
+                block: block,
+                onRetry: { model.retryPairing() },
+                onBrowseLibrary: { model.browseLibrary() }
+            )
         case .main:
             main
         }

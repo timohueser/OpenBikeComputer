@@ -1,7 +1,7 @@
 import SwiftUI
 
 // The launch-side states around the pairing flow: bonded and quietly reconnecting,
-// and radio blocked. Dumb views.
+// the bonded device unreachable, and the radio blocked. Dumb views.
 
 /// Bonded launch, connecting. Brief and non-blocking by contract: the flow model caps
 /// it with `Timing.connectGrace` and always resolves to main.
@@ -16,54 +16,20 @@ struct LaunchConnectingView: View {
 
                 HStack(spacing: 10) {
                     OBCSpinner()
+                        .accessibilityHidden(true)
                     Text("Connecting to \(deviceName)")
-                        .font(.system(.subheadline, weight: .semibold))
+                        .font(.system(.headline))
                         .foregroundStyle(OBCTheme.ink)
                         .accessibilityIdentifier("launch.connectingTitle")
-                    TrailingDots()
                 }
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
 
-                Text("This can take a moment when the device wakes from sleep.")
-                    .font(.system(.footnote))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .frame(maxWidth: 230)
+                LaunchMessage("This can take a moment when the OBC wakes from sleep.")
             }
         } actions: {
-            brandChip
-        }
-    }
-
-    private var brandChip: some View {
-        HStack(spacing: 8) {
-            Text("OBC")
-                .font(.system(.caption2, weight: .semibold).monospacedDigit())
-            Text("OpenBikeComputer")
-                .font(.system(.caption2))
-                .opacity(0.85)
-        }
-        .foregroundStyle(OBCTheme.onRust)
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(OBCTheme.rust, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    /// The animated trailing "···".
-    private struct TrailingDots: View {
-        var body: some View {
-            TimelineView(.periodic(from: .now, by: 0.4)) { context in
-                let step = Int(context.date.timeIntervalSinceReferenceDate / 0.4) % 3
-                HStack(spacing: 2) {
-                    ForEach(0..<3, id: \.self) { index in
-                        Text("·")
-                            .font(.system(.subheadline, weight: .bold))
-                            .foregroundStyle(OBCTheme.ink)
-                            .opacity(index <= step ? 1 : 0.25)
-                    }
-                }
-            }
+            // The wordmark: the product's name in the device's own type.
+            PixelText("OpenBikeComputer", size: .label, color: OBCTheme.secondary)
+                .accessibilityHidden(true)
         }
     }
 }
@@ -79,29 +45,20 @@ struct LaunchConnectFailedView: View {
     var body: some View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
-                Circle()
-                    .fill(OBCTheme.danger.opacity(0.1))
-                    .frame(width: 88, height: 88)
-                    .overlay {
-                        BluetoothRune(slashed: true)
-                            .stroke(OBCTheme.danger, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            .frame(width: 40, height: 40)
-                    }
-                    .padding(.bottom, 24)
+                // The device drawn dark and grey: it is there, but not answering.
+                DeviceGlyphView(variant: .home(name: deviceName))
+                    .grayscale(1)
+                    .opacity(0.45)
+                    .accessibilityHidden(true)
+                    .padding(.bottom, 34)
 
-                Text("Can't reach \(deviceName)")
-                    .font(.system(.title, weight: .bold))
-                    .foregroundStyle(OBCTheme.ink)
-                    .multilineTextAlignment(.center)
+                LaunchTitle("Can't reach \(deviceName)")
                     .accessibilityIdentifier("launch.connectFailedTitle")
                     .padding(.bottom, 8)
 
-                Text("It's probably asleep or out of range. Your routes are still here — the app connects on its own once \(deviceName) is nearby.")
-                    .font(.system(.subheadline))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .frame(maxWidth: 260)
+                LaunchMessage(
+                    "It is asleep or out of range. The app connects on its own when \(deviceName) is nearby."
+                )
             }
         } actions: {
             Button("Try again", action: onRetry)
@@ -114,43 +71,40 @@ struct LaunchConnectFailedView: View {
     }
 }
 
-/// Radio off, or the state after the rider denied Bluetooth. Point to the fix and
+/// Radio off, or the state after the rider denied Bluetooth. Say which switch fixes it, and
 /// never trap the rider: the library stays reachable.
 struct RadioBlockedView: View {
     let block: LaunchFlowModel.RadioBlock
+    let onRetry: () -> Void
     let onBrowseLibrary: () -> Void
 
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         LaunchScreenScaffold {
-            VStack(spacing: 6) {
-                Circle()
-                    .fill(OBCTheme.fill)
-                    .frame(width: 78, height: 78)
-                    .overlay {
-                        BluetoothRune(slashed: true)
-                            .stroke(OBCTheme.secondary, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
-                            .frame(width: 36, height: 36)
-                    }
-                    .padding(.bottom, 12)
+            VStack(spacing: 0) {
+                RadioBlockedGlyph(block: block)
+                    .padding(.bottom, 28)
 
-                Text(title)
-                    .font(.system(.title3, weight: .bold))
-                    .foregroundStyle(OBCTheme.ink)
+                LaunchTitle(title)
                     .accessibilityIdentifier("radio.title")
+                    .padding(.bottom, 8)
 
-                Text(message)
-                    .font(.system(.subheadline))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .frame(maxWidth: 230)
+                LaunchMessage(message)
             }
         } actions: {
-            Button("Open Settings", action: openSettings)
-                .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("radio.openSettings")
+            switch block {
+            case .off:
+                // iOS has no public link to the Bluetooth switch, so the fix is the rider's and
+                // the action re-checks.
+                Button("Try again", action: onRetry)
+                    .buttonStyle(.obcPrimary)
+                    .accessibilityIdentifier("radio.tryAgain")
+            case .denied:
+                Button("Open Settings", action: openSettings)
+                    .buttonStyle(.obcPrimary)
+                    .accessibilityIdentifier("radio.openSettings")
+            }
             Button("Browse library", action: onBrowseLibrary)
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("radio.browseLibrary")
@@ -166,10 +120,8 @@ struct RadioBlockedView: View {
 
     private var message: String {
         switch block {
-        case .off:
-            "Turn on Bluetooth to reach your OBC. Your library is still here to browse."
-        case .denied:
-            "OBC uses Bluetooth to connect to your bike computer — allow it in Settings. Nothing leaves your phone."
+        case .off: "Turn on Bluetooth in Control Center or in Settings ▸ Bluetooth, then try again."
+        case .denied: "OBC needs Bluetooth to reach your bike computer. Turn it on for OBC in Settings."
         }
     }
 
@@ -182,18 +134,18 @@ struct RadioBlockedView: View {
     }
 }
 
-#Preview("A · connecting") {
+#Preview("Connecting") {
     LaunchConnectingView(deviceName: "Trailhead")
 }
 
-#Preview("A-timeout · can't reach") {
+#Preview("Can't reach") {
     LaunchConnectFailedView(deviceName: "Trailhead", onRetry: {}, onGoToRoutes: {})
 }
 
-#Preview("H8 · bluetooth off") {
-    RadioBlockedView(block: .off, onBrowseLibrary: {})
+#Preview("Bluetooth off") {
+    RadioBlockedView(block: .off, onRetry: {}, onBrowseLibrary: {})
 }
 
-#Preview("H7 · permission denied") {
-    RadioBlockedView(block: .denied, onBrowseLibrary: {})
+#Preview("Permission denied") {
+    RadioBlockedView(block: .denied, onRetry: {}, onBrowseLibrary: {})
 }

@@ -195,18 +195,13 @@ final class LaunchFlowModelTests: XCTestCase {
 
     // MARK: The rejected-pairing copy
 
-    /// The `.rejected` copy must offer the passkey retry and name the already-paired possibility
+    /// The `.rejected` copy must offer the code retry and name the already-paired possibility
     /// with its recovery, without asserting which failure happened.
     func testRejectedCopyCoversBothPasskeyAndAlreadyBonded() {
         let reason = LaunchFlowModel.PairingFailure.rejected.reason
 
-        XCTAssertTrue(reason.contains("passkey"), "must mention the passkey path")
         XCTAssertTrue(
-            reason.localizedCaseInsensitiveContains("already paired to another phone"),
-            "must name the already-bonded possibility"
-        )
-        XCTAssertTrue(
-            reason.contains("If the passkey was wrong") && reason.contains("If the device is already paired"),
+            reason.contains("If the code was wrong") && reason.contains("If the OBC is already paired to another phone"),
             "must present both as possibilities, not assert one"
         )
 
