@@ -93,7 +93,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     await page.locator(`[aria-label^="Add ${REGION} ("]`).click();
     await expect(page.locator(`[aria-label="${REGION} is already in the map"]`)).toBeVisible();
 
-    await expect(page.locator('.ledger .total')).toContainText('estimated total, including elevation');
+    await expect(page.locator('.ledger .total')).toContainText('estimated total');
     const originalTotal = await page.locator('.ledger .total').innerText();
     await page.getByRole('button', { name: 'Draw a box' }).click();
     const map = page.locator('.leaflet-container');

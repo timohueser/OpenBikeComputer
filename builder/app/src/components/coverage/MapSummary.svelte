@@ -36,7 +36,7 @@
     {:else}
         {#if ledger.isFinal}
             <p class="mono total">
-                {formatBytes(ledger.totalBytes)} <span class="small muted">estimated total{ledger.terrain ? ", including elevation" : ""}</span>
+                {formatBytes(ledger.totalBytes)} <span class="small muted">estimated total</span>
             </p>
         {:else}
             <p class="mono total faint">Calculating…</p>

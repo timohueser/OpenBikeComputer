@@ -40,7 +40,7 @@ describe("MapSummary", () => {
         await tick();
         const content = (element: Element) => element.textContent?.replace(/\s+/g, " ").trim();
 
-        expect(content(target.querySelector(".total")!)).toContain("4.0 KB estimated total, including elevation");
+        expect(content(target.querySelector(".total")!)).toContain("4.0 KB estimated total");
         expect([...target.querySelectorAll(".warnline")].map(content)).toEqual([
             expect.stringContaining("Map data is missing in some selected areas"),
             expect.stringContaining("Street detail may stop near these gaps"),
