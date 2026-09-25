@@ -540,6 +540,8 @@ press_each = "Drücke jede Taste"
 hold_back = "ZURÜCK halten"
 menu_anywhere = "Menü, von überall"
 continue = "Weiter"
+units = "EINHEITEN"
+theme = "FARBSCHEMA"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

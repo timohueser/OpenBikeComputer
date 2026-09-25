@@ -1,17 +1,13 @@
 //! The Language screen: a pick list of the four languages, each by its own name and flag, so it
 //! reads to a speaker who cannot read the current UI language. A press commits and returns.
 
-use obc_render::{
-    text::{Font, TextAlign},
-    Surface,
-};
+use obc_render::Surface;
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
-use crate::screen::vocab::flags::{draw_flag, FLAG_H};
-use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_GAP, ROW_ONE};
-use crate::screen::vocab::sheet::committed_tick;
-use crate::screen::{palette, Ctx, Render, Transition};
+use crate::screen::vocab::flags::draw_flag;
+use crate::screen::vocab::rows::{choice_row, row_rect, ROW_GAP, ROW_ONE};
+use crate::screen::{Ctx, Render, Transition};
 use crate::settings::Language;
 use crate::Msg;
 
@@ -55,28 +51,11 @@ impl LanguageScreen {
     pub(crate) fn draw_list(&self, cv: &mut impl Surface, rx: &Render) {
         let w = rx.w;
         let committed = rx.settings.language;
-        for (i, lang) in Language::ALL.iter().enumerate() {
-            let y = LIST_TOP + i as i32 * (ROW_ONE + ROW_GAP);
-            let area = row_rect(y, w, ROW_ONE);
-            row_cursor(cv, area, i == self.selected, false);
-            let x = area.top_left.x + 10;
-            let cy = y + ROW_ONE / 2;
-            draw_flag(cv, x + 1, cy - FLAG_H / 2, *lang);
-            cv.text_vcentered(
-                lang.name(),
-                x + 30,
-                (y, ROW_ONE),
-                Font::Body,
-                TextAlign::Left,
-                if i == self.selected { palette::ON_ACCENT } else { palette::INK },
-            );
-            if *lang == committed {
-                let tx = area.top_left.x + area.size.width as i32 - 22;
-                // The committed tick of the drawer editor, at row scale.
-                for k in 0..2 {
-                    committed_tick(cv, tx + k, cy - k, palette::WOOD);
-                }
-            }
+        for (i, &lang) in Language::ALL.iter().enumerate() {
+            let area = row_rect(LIST_TOP + i as i32 * (ROW_ONE + ROW_GAP), w, ROW_ONE);
+            choice_row(cv, area, lang.name(), i == self.selected, lang == committed, |cv, x, y| {
+                draw_flag(cv, x, y, lang)
+            });
         }
     }
 }

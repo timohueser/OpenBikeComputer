@@ -576,6 +576,9 @@ press_each = "Press each button"
 hold_back = "Hold BACK"
 menu_anywhere = "Menu from anywhere"
 continue = "Continue"
+# The titles of the units and theme steps.
+units = "UNITS"
+theme = "THEME"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

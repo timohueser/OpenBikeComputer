@@ -539,6 +539,8 @@ press_each = "Essayez chacun"
 hold_back = "Maintenir RETOUR"
 menu_anywhere = "Le menu, partout"
 continue = "Continuer"
+units = "UNITÉS"
+theme = "THÈME"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]

@@ -1839,6 +1839,54 @@ expect = "SetupButtons"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
 
+# Setup's units step, after the button lesson: Metric and Imperial over the ride tiles.
+[[frame]]
+name = "setup-units"
+map = "{grimsel}"
+script = "p p u d b p p"
+expect = "SetupUnits"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-units"
+map = "{grimsel}"
+script = "p p u d b p p"
+expect = "SetupUnits"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# The cursor on Imperial: the tiles read in miles, and the tick stays on Metric.
+[[frame]]
+name = "setup-units-imperial"
+map = "{grimsel}"
+script = "p p u d b p p d"
+expect = "SetupUnits"
+args = ["--fresh"]
+
+# Setup's theme step on Light, the committed theme.
+[[frame]]
+name = "setup-theme"
+map = "{grimsel}"
+script = "p p u d b p p p"
+expect = "SetupTheme"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-theme"
+map = "{grimsel}"
+script = "p p u d b p p p"
+expect = "SetupTheme"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# The cursor on Dark: the whole page previews Dark, and the tick stays on Light.
+[[frame]]
+name = "setup-theme-dark"
+map = "{grimsel}"
+script = "p p u d b p p p d"
+expect = "SetupTheme"
+args = ["--fresh"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).

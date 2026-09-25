@@ -19,13 +19,15 @@ use obc_render::{
 
 use crate::i18n::t;
 use crate::input::Gesture;
-use crate::settings::{Language, Settings, SetupStep};
+use crate::settings::{Language, Settings, SetupStep, Theme, Units};
 use crate::Msg;
 
 use super::home::contours;
 use super::settings::LanguageScreen;
-use super::vocab::chrome::{copy_w, title_frame, wrapped};
-use super::vocab::rows::ROW_X;
+use super::vocab::chrome::{copy_w, title_frame, wrapped, LIST_TOP};
+use super::vocab::flags::{FLAG_H, FLAG_W};
+use super::vocab::rows::{choice_row, nav_row, row_rect, row_tick, Line2, ROW_GAP, ROW_ONE, ROW_TWO, ROW_X};
+use super::vocab::tiles::tile;
 use super::{palette, Ctx, Render, Screen, Transition};
 
 /// The screen of the current setup step, or `None` once setup is done.
@@ -34,6 +36,8 @@ pub(crate) fn screen(s: &Settings) -> Option<Screen> {
         SetupStep::Hello => Some(Screen::Hello(HelloScreen)),
         SetupStep::Language => Some(Screen::SetupLanguage(SetupLanguageScreen::new(s.language))),
         SetupStep::Buttons => Some(Screen::SetupButtons(SetupButtonsScreen::default())),
+        SetupStep::Units => Some(Screen::SetupUnits(SetupUnitsScreen(s.units))),
+        SetupStep::Theme => Some(Screen::SetupTheme(SetupThemeScreen(s.theme))),
         SetupStep::Done => None,
     }
 }
@@ -250,6 +254,112 @@ fn arrow(cv: &mut impl Surface, (tip, base, end): (i32, i32, i32), cy: i32, r: i
     cv.triangle(a, c, d, color);
 }
 
+/// The units step: Metric or Imperial, each with the symbols it reads in, over the ride tiles in
+/// the units under the cursor.
+#[derive(Debug)]
+pub struct SetupUnitsScreen(pub(crate) Units);
+
+impl SetupUnitsScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Step(n) => {
+                self.0 = self.0.stepped(n);
+                Transition::None
+            }
+            Gesture::Press => {
+                cx.settings.units = self.0;
+                finish(SetupStep::Units, cx)
+            }
+            Gesture::Back => back(SetupStep::Units, cx),
+            Gesture::Hold | Gesture::BackHold => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Units, rx.t(Msg::SetupUnits));
+        for (i, units) in Units::ALL.into_iter().enumerate() {
+            let area = row_rect(LIST_TOP + i as i32 * (ROW_TWO + ROW_GAP), w, ROW_TWO);
+            let symbols = if units.is_imperial() { "mi \u{b7} ft" } else { "km \u{b7} m" };
+            let name = units.name(rx.settings.language);
+            nav_row(cv, area, name, Some(Line2::text(symbols)), units == self.0, true, false);
+            if units == rx.settings.units {
+                row_tick(cv, area);
+            }
+        }
+        ride_preview(cv, rx, self.0);
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+    }
+}
+
+/// The theme step: Light or Dark. The whole page draws in the theme under the cursor (see
+/// [`App::theme`](crate::App::theme)), and only Select commits it.
+#[derive(Debug)]
+pub struct SetupThemeScreen(pub(crate) Theme);
+
+impl SetupThemeScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Step(n) => {
+                self.0 = self.0.stepped(n);
+                Transition::None
+            }
+            Gesture::Press => {
+                cx.settings.theme = self.0;
+                finish(SetupStep::Theme, cx)
+            }
+            Gesture::Back => back(SetupStep::Theme, cx),
+            Gesture::Hold | Gesture::BackHold => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Theme, rx.t(Msg::SetupTheme));
+        for (i, theme) in Theme::ALL.into_iter().enumerate() {
+            let area = row_rect(LIST_TOP + i as i32 * (ROW_ONE + ROW_GAP), w, ROW_ONE);
+            let name = theme.name(rx.settings.language);
+            let committed = theme == rx.settings.theme;
+            choice_row(cv, area, name, theme == self.0, committed, |cv, x, y| swatch(cv, x, y, theme));
+        }
+        ride_preview(cv, rx, rx.settings.units);
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+    }
+}
+
+/// A theme's page in the flag slot: its paper, its ink round the edge, and two lines of text. The
+/// colours are ones the theme mapping keeps, so each swatch shows its own theme on either page.
+fn swatch(cv: &mut impl Surface, x: i32, y: i32, theme: Theme) {
+    use palette::*;
+    let (paper, ink) = match theme {
+        Theme::Light => (ART_WHITE, ON_ACCENT),
+        Theme::Dark => (ON_ACCENT, ART_WHITE),
+    };
+    cv.fill(rect(x, y, FLAG_W, FLAG_H), ink);
+    cv.fill(rect(x + 1, y + 1, FLAG_W - 2, FLAG_H - 2), paper);
+    cv.fill(rect(x + 4, y + 3, FLAG_W - 8, 2), ink);
+    cv.fill(rect(x + 4, y + 7, FLAG_W - 12, 2), ink);
+}
+
+/// The sample ride the preview shows: a speed in km/h and a distance in km.
+const SAMPLE: (f32, f32) = (24.5, 86.4);
+
+/// Two ride tiles over the [`hint`], so a step shows what it changes on the ride screens. They sit
+/// at one place on every step, so a step changes them in place.
+fn ride_preview(cv: &mut impl Surface, rx: &Render, units: Units) {
+    use palette::*;
+    let (gap, tile_h) = (6, 54);
+    let tile_w = (rx.w - 2 * ROW_X - gap) / 2;
+    let y = rx.h - 8 - HINT_H - 12 - tile_h;
+    let (mut speed, mut dist) = (heapless::String::<8>::new(), heapless::String::<8>::new());
+    let _ = write!(speed, "{:.1}", units.speed(SAMPLE.0));
+    let _ = write!(dist, "{:.1}", units.dist(SAMPLE.1));
+    for (i, (caption, value)) in [(units.speed_label(), speed), (units.dist_label(), dist)].into_iter().enumerate() {
+        let area = rect(ROW_X + i as i32 * (tile_w + gap), y, tile_w, tile_h);
+        tile(cv, area, &rx.marquee, caption, &value, false, TextAlign::Left, PARCHMENT_SHADE, SUBTEXT, INK);
+    }
+}
+
 /// The rider's place among the titled steps, as `(n, of)`. Hello, the first step, has no title
 /// bar, so the count starts at the step after it.
 fn place(step: SetupStep) -> (usize, usize) {
@@ -330,9 +440,7 @@ mod tests {
     /// The count starts at the first titled step and ends at the last step.
     #[test]
     fn the_title_bar_counts_the_titled_steps() {
-        let of = SetupStep::ORDER.len() - 1;
-        assert_eq!(place(SetupStep::Language), (1, of));
-        assert_eq!(place(SetupStep::Buttons), (2, of));
-        assert_eq!(place(SetupStep::ORDER[of]), (of, of));
+        let places = [SetupStep::Language, SetupStep::Buttons, SetupStep::Units, SetupStep::Theme].map(place);
+        assert_eq!(places, [(1, 4), (2, 4), (3, 4), (4, 4)]);
     }
 }
