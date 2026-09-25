@@ -160,6 +160,7 @@ fn stats() -> obc_route::RideStats {
         max_power: None,
         energy_kj: None,
         bike: obc_formats::bike::BikeType::Road,
+        limits: obc_formats::ride::EffortLimits::default(),
         trip: None,
         trip_name: obc_formats::ride::Name::EMPTY,
     }

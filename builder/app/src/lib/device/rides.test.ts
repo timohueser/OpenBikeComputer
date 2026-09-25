@@ -4,7 +4,7 @@
  * Two things are being decided here, and only one of them is "does the flow work".
  *
  * The first is **byte identity**: the GPX a visitor saves has to be the file the device itself would
- * have written. The pinned pair is `specs/vectors/ride-v5.bin` → `track-export.gpx`, produced by the
+ * have written. The pinned pair is `specs/vectors/ride-v6.bin` → `track-export.gpx`, produced by the
  * real `obc_route::track_to_gpx`, and the export path has to land on those exact bytes after a full
  * round trip through the wire's ride object — with one documented exception the wire format makes
  * unavoidable, asserted as *the only* exception rather than waved at.
@@ -94,7 +94,7 @@ function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): Rid
         });
     }
     return {
-        version: 5,
+        version: 6,
         name,
         startTime,
         distanceM: 4210,
@@ -130,7 +130,7 @@ function longRide(points: number): RideObject {
         });
     }
     return {
-        version: 5,
+        version: 6,
         name: "Long Way Round",
         startTime: 1_783_598_400,
         distanceM: points * 8,
@@ -189,7 +189,7 @@ function deviceWith(rides: RideObject[], options: LoopbackOptions & FlatDeviceOp
 
 describe("the exported GPX", () => {
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
-        const ride = { ...decodeRideObject(vector("ride-v5.bin")), name: TRACK_NAME };
+        const ride = { ...decodeRideObject(vector("ride-v6.bin")), name: TRACK_NAME };
         const { entries, source, close } = deviceWith([ride]);
         try {
             // The catalog is what a rider picks from, so the export starts where they do.
@@ -225,10 +225,10 @@ describe("the exported GPX", () => {
 
 describe("the ride object", () => {
     it("decodes and re-encodes the cross-language vector byte-for-byte", () => {
-        const bytes = vector("ride-v5.bin");
+        const bytes = vector("ride-v6.bin");
         const ride = decodeRideObject(bytes);
         expect(ride).toMatchObject({
-            version: 5,
+            version: 6,
             name: "Sensor Ride",
             startTime: 1_751_460_000,
             distanceM: 12_345,

@@ -35,7 +35,7 @@ const NO_U8 = 0xff;
 const NO_U16 = 0xffff;
 const NO_U32 = 0xffffffff;
 const RIDE_SAMPLE_LEN = 20;
-const RIDE_FOOTER_LEN = 150;
+const RIDE_FOOTER_LEN = 154;
 const RIDE_NAME_CAP = 48;
 const RIDE_NAME_AT = 42;
 const RIDE_TRIP_AT = 90;
@@ -65,9 +65,9 @@ export interface RideTrip {
     name: string;
 }
 
-/** A downloaded v5 ride: the recorded sample bytes followed by one fixed summary footer. */
+/** A downloaded v6 ride: the recorded sample bytes followed by one fixed summary footer. */
 export interface RideObject {
-    version: 5;
+    version: 6;
     name: string;
     startTime: number;
     distanceM: number;
@@ -89,7 +89,7 @@ export interface RideObject {
 }
 
 /**
- * Decode the only ride-object format: verbatim 20-byte samples followed by the fixed 150-byte v5
+ * Decode the only ride-object format: verbatim 20-byte samples followed by the fixed 154-byte v6
  * footer. The footer's point count determines the complete object length.
  */
 export function decodeRideObject(data: Uint8Array): RideObject {
@@ -100,8 +100,8 @@ export function decodeRideObject(data: Uint8Array): RideObject {
         throw new ObjectDecodeError("ride object has no OBRF footer.");
     }
     const version = data[footer + 4];
-    if (version !== 5) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 5.`);
-    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 33] !== 0) {
+    if (version !== 6) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 6.`);
+    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 33] !== 0 || data[footer + 151] !== 0) {
         throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
     const name = footerName(data, footer + RIDE_NAME_AT, data[footer + 5]);
@@ -139,7 +139,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     }
 
     return {
-        version: 5,
+        version: 6,
         points,
         name,
         startTime: view.getUint32(footer + 8, true),
@@ -171,7 +171,7 @@ function footerName(data: Uint8Array, at: number, len: number): string {
     }
 }
 
-/** Encode a v5 object for the loopback device and byte-contract tests. */
+/** Encode a v6 object, with no effort limits, for the loopback device and byte-contract tests. */
 export function encodeRideObject(r: RideObject): Uint8Array {
     const name = clippedUtf8(r.name, RIDE_NAME_CAP);
     const footer = r.points.length * RIDE_SAMPLE_LEN;
@@ -188,7 +188,7 @@ export function encodeRideObject(r: RideObject): Uint8Array {
         out[p + 17] = pt.cadenceRpm ?? NO_U8;
         view.setUint16(p + 18, pt.powerW ?? NO_U16, true);
     });
-    out.set([0x4f, 0x42, 0x52, 0x46, 5, name.length], footer);
+    out.set([0x4f, 0x42, 0x52, 0x46, 6, name.length], footer);
     view.setUint16(footer + 6, RIDE_FOOTER_LEN, true);
     view.setUint32(footer + 8, r.startTime, true);
     view.setUint32(footer + 12, r.distanceM, true);

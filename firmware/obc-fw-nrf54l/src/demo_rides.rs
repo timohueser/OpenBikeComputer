@@ -1,7 +1,7 @@
 //! Development-only finished rides. Called before the board starts its storage writer.
 
 use obc_crc::Crc32;
-use obc_formats::ride::{encode_footer, Footer, FOOTER_LEN, SAMPLE_LEN};
+use obc_formats::ride::{encode_footer, EffortLimits, Footer, FOOTER_LEN, SAMPLE_LEN};
 use obc_formats::track::encode_record;
 use obc_ports::TrackPoint;
 use obc_storage::flat::{
@@ -132,6 +132,9 @@ fn write_ride<D: BlockDevice>(store: &FlatStore<D>, sensors: usize, start: u32) 
     );
     footer.descent_m = descent;
     footer.energy_kj = (sensors == 2).then_some(power_sum * STEP_SECONDS / 1000);
+    if sensors >= 1 {
+        footer.limits = EffortLimits { max_hr: 185, ftp_w: 250 };
+    }
     let bytes = encode_footer(&footer);
     store.write(&mut allocation, &bytes)?;
     crc.update(&bytes);

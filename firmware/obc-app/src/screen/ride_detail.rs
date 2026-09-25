@@ -250,11 +250,11 @@ fn sensor_page(cv: &mut impl Surface, rx: &RenderFrame<'_, '_>, ride: &RideSumma
     if let Some(hr) = ride.avg_hr {
         let series = facts.hr().iter().map(|&v| u16::from(v));
         let caption = caption(avg, rx.t(Msg::TileHr));
-        ride_graph(cv, area(), &caption, hr.into(), series, Metric::Hr, limits.of(Metric::Hr));
+        ride_graph(cv, area(), &caption, hr.into(), series, Metric::Hr, Metric::Hr.limit(limits));
     }
     if let Some(power) = ride.avg_power {
         let caption = caption(avg, rx.t(Msg::TilePwrShort));
-        ride_graph(cv, area(), &caption, power, facts.power(), Metric::Power, limits.of(Metric::Power));
+        ride_graph(cv, area(), &caption, power, facts.power(), Metric::Power, Metric::Power.limit(limits));
     }
     let mut row = y + 2;
     let mut ledger = |caption: &str, value: heapless::String<8>| {

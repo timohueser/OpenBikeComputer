@@ -102,8 +102,9 @@ Select a probe with `PROBE_RS_PROBE=VID:PID:SERIAL`. BLE and USB are always enab
 
 For finished test rides, run `obc flash seed-rides` over J4. Wait for `demo rides: complete`.
 This adds three 30-minute GPS loops: GPS, heart rate, and heart rate with power, dated the
-previous three days. Existing names are skipped. Existing objects remain; unformatted cards
-and active recordings are refused. Press Ctrl-C, then run `obc flash` to restore normal firmware. The rides remain on the card.
+previous three days. The two sensor rides record max HR 185 and FTP 250. Existing names are
+skipped. Existing objects remain; unformatted cards and active recordings are refused. Press
+Ctrl-C, then run `obc flash` to restore normal firmware. The rides remain on the card.
 
 | Feature | What it does |
 | :-- | :-- |

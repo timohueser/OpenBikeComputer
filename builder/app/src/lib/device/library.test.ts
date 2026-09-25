@@ -83,7 +83,7 @@ function rideObject(name: string, startTime: number, points = 24): RideObject {
         });
     }
     return {
-        version: 5,
+        version: 6,
         name,
         startTime,
         distanceM: 12_340,

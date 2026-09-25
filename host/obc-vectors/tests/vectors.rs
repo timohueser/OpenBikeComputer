@@ -9,7 +9,7 @@ use obc_route::{
     for_each_waypoint, track_to_gpx, BikeType, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK,
 };
 use obc_vectors::{
-    all, crc32, dir, ride_v5, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
+    all, crc32, dir, ride_v6, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
     TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME, TRIP_DAYS,
     TRIP_KEY, TRIP_NAME, TRIP_START_DATE,
 };
@@ -169,7 +169,7 @@ fn route_descriptor_envelopes_match_the_shared_overlap_contract() {
 
 /// The sample-codec vector and the finished-ride GPX export. `track-log.obct` is exactly five
 /// complete 20-byte records used only to pin the sample codec. The exporter consumes
-/// `ride-v5.bin`; unfinished/headerless arrays are deliberately not a ride input.
+/// `ride-v6.bin`; unfinished/headerless arrays are deliberately not a ride input.
 #[test]
 fn track_vectors_pin_the_log_and_its_export() {
     let log = fixture("track-log.obct");
@@ -200,10 +200,10 @@ fn track_vectors_pin_the_log_and_its_export() {
     assert_eq!((point(0).segment_start, point(3).segment_start), (true, true), "two segments");
     assert_eq!((point(3).lon, point(3).lat, point(3).ele), (-122_419_400, -37_774_900, -12), "negative signs");
 
-    // The export re-derives from the checked-in finished ride-v5 object.
+    // The export re-derives from the checked-in finished ride-v6 object.
     let mut sink = VecSink::default();
-    track_to_gpx(&SliceSource(&fixture("ride-v5.bin")), TRACK_NAME, &mut sink).unwrap();
-    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from ride-v5.bin");
+    track_to_gpx(&SliceSource(&fixture("ride-v6.bin")), TRACK_NAME, &mut sink).unwrap();
+    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from ride-v6.bin");
 
     // The shapes the exporter's branches produce, spelled out once (the browser bridge reproduces
     // this exact text, so a change here is a change to a cross-language contract).
@@ -223,13 +223,13 @@ fn track_vectors_pin_the_log_and_its_export() {
     assert!(!gpx.contains("<time>"), "no fabricated timestamps");
 }
 
-/// A ride-v5 object's length is exactly its verbatim samples plus one fixed footer.
+/// A ride-v6 object's length is exactly its verbatim samples plus one fixed footer.
 #[test]
 fn ride_vector_length_is_self_describing() {
-    let ride = ride_v5();
-    assert_eq!(fixture("ride-v5.bin"), ride);
+    let ride = ride_v6();
+    assert_eq!(fixture("ride-v6.bin"), ride);
     let footer = &ride[ride.len() - RIDE_FOOTER_LEN..];
-    assert_eq!(&footer[..5], b"OBRF\x05");
+    assert_eq!(&footer[..5], b"OBRF\x06");
     let point_count = u32::from_le_bytes(footer[26..30].try_into().unwrap());
     assert_eq!(ride.len(), TRACK_RECORD_LEN * point_count as usize + RIDE_FOOTER_LEN);
 }
@@ -237,9 +237,9 @@ fn ride_vector_length_is_self_describing() {
 /// The independent vector reads through the production footer and detail codecs.
 #[test]
 fn ride_vector_reads_through_the_production_codec() {
-    let ride = fixture("ride-v5.bin");
+    let ride = fixture("ride-v6.bin");
     let info = obc_route::RideInfo::read(&SliceSource(&ride)).unwrap();
-    assert_eq!(info.version, 5);
+    assert_eq!(info.version, 6);
     assert_eq!(info.name.as_str(), "Sensor Ride");
     assert_eq!(info.start_time, 1_751_460_000);
     assert_eq!(info.distance_m, 12_345);

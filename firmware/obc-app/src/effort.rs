@@ -7,6 +7,7 @@
 //! Zones are indices `0..=4` for Z1..Z5. Without a limit (max HR or FTP of 0) nothing has a zone.
 //! The limits are the rider's settings and are passed in, never copied here.
 
+pub use obc_formats::ride::EffortLimits;
 use obc_route::POWER_STEP_W;
 
 /// Bars in a history graph: five minutes of 5 s buckets.
@@ -67,6 +68,15 @@ impl Metric {
         }
     }
 
+    /// This metric's limit, or `None` when it is not set.
+    pub fn limit(self, limits: EffortLimits) -> Option<u32> {
+        let v = match self {
+            Metric::Hr => limits.max_hr as u32,
+            Metric::Power => limits.ftp_w as u32,
+        };
+        (v > 0).then_some(v)
+    }
+
     /// The zone of `value` against `limit`, with no hysteresis.
     pub fn zone_of(self, value: u32, limit: u32) -> u8 {
         let v = value * 100;
@@ -120,23 +130,6 @@ impl Metric {
     }
 }
 
-/// The rider's two limits, as the settings store them: `0` is not set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Limits {
-    pub max_hr: u8,
-    pub ftp_w: u16,
-}
-
-impl Limits {
-    pub fn of(self, m: Metric) -> Option<u32> {
-        let v = match m {
-            Metric::Hr => self.max_hr as u32,
-            Metric::Power => self.ftp_w as u32,
-        };
-        (v > 0).then_some(v)
-    }
-}
-
 /// A live value and its zone. The zone is `None` without a limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
@@ -153,9 +146,9 @@ pub struct Gauge {
 
 /// The map gauge for a `w` px wide panel: power when the meter is live and FTP is set, otherwise
 /// heart rate when the strap is live and max HR is set, otherwise none.
-pub fn gauge(power: Option<Reading>, hr: Option<Reading>, limits: Limits, w: i32) -> Option<Gauge> {
+pub fn gauge(power: Option<Reading>, hr: Option<Reading>, limits: EffortLimits, w: i32) -> Option<Gauge> {
     let (m, r, limit) =
-        [(Metric::Power, power), (Metric::Hr, hr)].into_iter().find_map(|(m, r)| Some((m, r?, limits.of(m)?)))?;
+        [(Metric::Power, power), (Metric::Hr, hr)].into_iter().find_map(|(m, r)| Some((m, r?, m.limit(limits)?)))?;
     let slot = (w / 5).max(0);
     let fill = (m.position(r.value as u32, limit) * slot as f32) as i32;
     Some(Gauge { zone: r.zone?, fill_px: fill.clamp(0, 5 * slot) as u16 })
@@ -246,11 +239,11 @@ impl Effort {
     /// Once per pass: scroll the history to `now_ms`, so the graph moves through a dropout, and
     /// step each zone to the latest value against the rider's limits.
     /// `hr` and `power` are the latest values, `None` before a metric's first sample.
-    pub(crate) fn advance(&mut self, now_ms: u32, limits: Limits, hr: Option<u16>, power: Option<u16>) {
+    pub(crate) fn advance(&mut self, now_ms: u32, limits: EffortLimits, hr: Option<u16>, power: Option<u16>) {
         self.roll(now_ms);
         for (m, value) in [(Metric::Hr, hr), (Metric::Power, power)] {
             let shown = Some(self.zone[m as usize]).filter(|&z| z != NO_ZONE);
-            self.zone[m as usize] = match (value, limits.of(m)) {
+            self.zone[m as usize] = match (value, m.limit(limits)) {
                 (Some(v), Some(l)) => m.step(shown, v as u32, l),
                 _ => NO_ZONE,
             };
@@ -325,7 +318,7 @@ pub(crate) fn sanitize_ftp(v: &mut u16) {
 mod tests {
     use super::*;
 
-    const LIMITS: Limits = Limits { max_hr: 200, ftp_w: 200 };
+    const LIMITS: EffortLimits = EffortLimits { max_hr: 200, ftp_w: 200 };
 
     #[test]
     fn zone_edges_follow_the_table() {
@@ -354,14 +347,14 @@ mod tests {
         assert_eq!(hr(&mut e, 159, 3_000), Some(3), "1 bpm under the edge holds Z4");
         assert_eq!(hr(&mut e, 157, 4_000), Some(2), "past the margin, it drops");
         assert_eq!(hr(&mut e, 200, 5_000), Some(4), "a jump crosses several zones at once");
-        e.advance(5_000, Limits { max_hr: 0, ftp_w: 200 }, Some(200), None);
+        e.advance(5_000, EffortLimits { max_hr: 0, ftp_w: 200 }, Some(200), None);
         assert_eq!(e.zone(Metric::Hr), None, "no max HR, no zone");
     }
 
     #[test]
     fn the_first_power_reading_takes_its_zone_outright() {
         let mut e = Effort::new();
-        let ftp = Limits { max_hr: 0, ftp_w: 250 };
+        let ftp = EffortLimits { max_hr: 0, ftp_w: 250 };
         e.advance(0, ftp, None, None);
         assert_eq!(e.zone(Metric::Power), None, "no sample yet, no zone");
         e.sample(Metric::Power, 190, 1_000);
@@ -411,7 +404,7 @@ mod tests {
         assert_eq!(gauge(power, hr, LIMITS, w), Some(Gauge { zone: 3, fill_px: fill }));
         assert_eq!(gauge(None, hr, LIMITS, w), Some(Gauge { zone: 2, fill_px: 2 * 48 + 24 }), "stale power: HR");
         assert_eq!(gauge(None, None, LIMITS, w), None, "no live sensor, no gauge");
-        let no_ftp = Limits { max_hr: 0, ftp_w: 0 };
+        let no_ftp = EffortLimits { max_hr: 0, ftp_w: 0 };
         assert_eq!(gauge(power, None, no_ftp, w), None, "live power without FTP draws no gauge");
         assert_eq!(gauge(None, reading(90, 0), LIMITS, w).unwrap().fill_px, 0, "below the span is empty");
         assert_eq!(gauge(None, reading(220, 4), LIMITS, w).unwrap().fill_px, 240, "above it is full");

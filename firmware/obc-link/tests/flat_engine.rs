@@ -404,7 +404,7 @@ fn metadata_is_readable_but_only_the_device_can_mutate_it() {
 fn a_finished_journal_ride_is_the_exact_object_served_by_normal_get() {
     let disk = formatted_card(140);
     let mut device = boot(&disk);
-    let bytes = include_bytes!("../../../specs/vectors/ride-v5.bin");
+    let bytes = include_bytes!("../../../specs/vectors/ride-v6.bin");
     let (id, revision) = device.finish_recording(bytes, "FS8 vector");
 
     let entry = device.entry(id).expect("the final catalog names the ride");

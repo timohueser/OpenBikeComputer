@@ -623,7 +623,7 @@ Then, on a fixed cadence of **10 seconds**:
 
 1. The recorder lends only the points appended since the last checkpoint that returned success,
    together with the running payload CRC and resume image. The production bound is sixteen 20-byte
-   samples plus the 144-byte final footer: **464 bytes**, independent of the durable tail length.
+   samples plus the 154-byte final footer: **474 bytes**, independent of the durable tail length.
 2. Storage reads the previous logical slot in bounded chunks, folds its CRC while copying it into the
    next slot, appends the lent bytes, and zero-pads to 16,384 bytes. A bad source CRC refuses the
    checkpoint before its header is written. If the reconstructed tail is shorter than 16,384 bytes,
@@ -635,7 +635,7 @@ Then, on a fixed cadence of **10 seconds**:
    payload CRC and resume image, and name the proof sequence in its header.
 5. Only after both gates are durable, copy the proof slot's identical 16,384 bytes to the payload page
    at the old flushed length and synchronize. A successful call consumes the complete lent append;
-   the recorder clears its 404-byte buffer. The seam admits at most one page crossing per call, so
+   the recorder clears its 474-byte buffer. The seam admits at most one page crossing per call, so
    this is at most one proof/logical pair.
 
 The rare boundary is a **two-slot rollover**, including when the remainder is empty: one checkpoint
@@ -820,7 +820,7 @@ defines it, not here.
 | Ride journal headers | 16 × 512-byte records, each isolated in one 16 KiB page |
 | Ride journal tail per slot | 16,384 bytes |
 | Ride checkpoint cadence | 10 s |
-| Ride recorder append buffer | 464 bytes (16 × 20-byte samples + 144-byte footer) |
+| Ride recorder append buffer | 474 bytes (16 × 20-byte samples + 154-byte footer) |
 | Ride reserve at start | 32 MiB (32 extents at the 1 MiB minimum) |
 | Rides recording at once | 1 |
 | Retained previous revisions per object | 1 |

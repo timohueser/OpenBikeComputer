@@ -1,11 +1,11 @@
-//! Recorded ride v5 contract: verbatim samples, one fixed footer, and footer-based readers.
+//! Recorded ride v6 contract: verbatim samples, one fixed footer, and footer-based readers.
 
 use core::cell::RefCell;
 
 use obc_formats::{
     bike::BikeType,
     io::{ByteSource, Error, SliceSource},
-    ride::{Name, TripRef, FOOTER_LEN, VERSION},
+    ride::{decode_footer, EffortLimits, Name, TripRef, FOOTER_LEN, VERSION},
     track::encode_record,
 };
 use obc_ports::TrackPoint;
@@ -27,6 +27,7 @@ const STATS: RideStats = RideStats {
     max_power: Some(480),
     energy_kj: Some(756),
     bike: BikeType::Mtb,
+    limits: EffortLimits { max_hr: 185, ftp_w: 250 },
     trip: TripRef::new(7, 0, 2),
     trip_name: Name::EMPTY,
 };
@@ -66,6 +67,8 @@ fn recorded_samples_are_the_served_bytes() {
         (Some(142), Some(176), Some(85), Some(210), Some(480), Some(756))
     );
     assert_eq!((info.bike, info.trip, info.trip_name.as_str()), (BikeType::Mtb, STATS.trip, "Alpen"));
+    let footer = decode_footer(ride[ride.len() - FOOTER_LEN..].try_into().unwrap()).unwrap();
+    assert_eq!(footer.limits, STATS.limits);
 }
 
 struct ReadSpy<'a> {

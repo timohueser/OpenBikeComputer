@@ -168,7 +168,7 @@ A route object's payload is exactly the bytes of an OBCR file
 ([`OBCR_Spec.md`](OBCR_Spec.md)); the device stores and serves it verbatim. An update package's
 payload is exactly the bytes of an OBCU container ([`OBCU_Spec.md`](OBCU_Spec.md) §1).
 
-### 7.2 `ride` — ride object v5
+### 7.2 `ride` — ride object v6
 
 A ride payload is the sample stream the device recorded, followed by one fixed summary footer.
 There is no leading header and no finish-time conversion. Protocol-v4 `GET` serves the stored bytes
@@ -187,14 +187,14 @@ Each sample is a 20-byte record:
 | 17 | 1 | cadence, rpm; `0xFF` = absent/stale |
 | 18 | 2 | power, watts; `0xFFFF` = absent/stale |
 
-The final 150 bytes are the summary footer:
+The final 154 bytes are the summary footer:
 
 | Offset | Size | Field |
 | --: | --: | :-- |
 | 0 | 4 | magic `OBRF` (`4F 42 52 46`) |
-| 4 | 1 | version, `5` |
+| 4 | 1 | version, `6` |
 | 5 | 1 | UTF-8 name length, `0..=48` |
-| 6 | 2 | footer length, `150` |
+| 6 | 2 | footer length, `154` |
 | 8 | 4 | start time, Unix seconds |
 | 12 | 4 | total distance, metres |
 | 16 | 4 | moving time, seconds |
@@ -216,6 +216,9 @@ The final 150 bytes are the summary footer:
 | 100 | 1 | bike type, `0..=3` (Road, Gravel, MTB, Touring) |
 | 101 | 1 | UTF-8 trip name length, `0..=48` |
 | 102 | 48 | UTF-8 trip name followed by zero padding |
+| 150 | 1 | maximum heart rate limit, bpm; `0` = not set |
+| 151 | 1 | reserved, zero |
+| 152 | 2 | FTP limit, watts; `0` = not set |
 
 - **Climb and descent.** The device counts both with the same dead band, from the same altitude
   samples.
@@ -230,13 +233,23 @@ The final 150 bytes are the summary footer:
 - **Trip name.** The device writes the name of the trip when the ride is saved, so the name stays
   after the trip is deleted. It is empty when the device no longer holds a trip with that key.
 - **No trip.** With trip key 0, the day index, the day count and every trip-name byte are zero.
+- **Effort limits.** The rider's maximum heart rate and FTP settings when the ride starts. A
+  continued ride keeps them, and a later settings change does not reach the ride. A reader takes
+  the effort zones of the ride from these limits, never from the current settings. A limit of `0`
+  gives that metric no zones. The zone edges are fixed percentages of the limit, so the footer
+  holds no edges. A value `v` against limit `L` is in the highest zone whose edge it reaches:
+
+  | Metric | Z2 | Z3 | Z4 | Z5 |
+  | :-- | :-- | :-- | :-- | :-- |
+  | Heart rate | `100·v ≥ 60·L` | `100·v ≥ 70·L` | `100·v ≥ 80·L` | `100·v ≥ 90·L` |
+  | Power | `100·v ≥ 55·L` | `100·v > 75·L` | `100·v > 90·L` | `100·v > 105·L` |
 
 The footer is last because the flat-store payload pages are write-once. A list row reads precisely
-150 bytes at `object length − 150`; a full reader requires
-`object length == point_count × 20 + 150`. A reader rejects any other footer length.
+154 bytes at `object length − 154`; a full reader requires
+`object length == point_count × 20 + 154`. A reader rejects any other footer length.
 Finalize appends this footer and performs one store commit that publishes the final length and CRC
-and clears `RECORDING`. `specs/vectors/ride-v5.bin` pins three sample records — including sensor
-sentinels and segment flags — and a footer on a trip day.
+and clears `RECORDING`. `specs/vectors/ride-v6.bin` pins three sample records — including sensor
+sentinels and segment flags — and a footer on a trip day with both effort limits set.
 
 ### 7.3 `config` — the Config object
 

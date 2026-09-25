@@ -1041,7 +1041,11 @@ mod tests {
             app.activity.mode = Mode::Riding;
             app.test_start_ride();
             let trip = day.and_then(|day| obc_formats::ride::TripRef::new(42, day, 2));
-            app.recorder.set_origin(crate::RideOrigin { bike: obc_formats::bike::BikeType::Road, trip });
+            app.recorder.set_origin(crate::RideOrigin {
+                bike: obc_formats::bike::BikeType::Road,
+                trip,
+                ..Default::default()
+            });
             // Finish on the Paused page.
             let paused = crate::screen::Transition::Push(Screen::RideControl(crate::screen::RideControl::new()));
             crate::screen::apply(&mut app.ui.stack, paused);
