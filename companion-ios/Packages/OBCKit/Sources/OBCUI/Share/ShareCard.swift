@@ -22,7 +22,7 @@ public struct ShareCardContent {
             OBCStat(value: OBCFormat.speedValue(mps: summary.averageSpeedMps), unit: "kph", key: "Avg"),
             OBCStat(value: OBCFormat.climbValue(meters: summary.climbMeters), unit: "m", key: "Climb"),
         ]
-        stages = [MultiTrackPreviewView.Stage(coordinates: ride.points.map(\.coordinate), color: OBCTheme.ride)]
+        stages = [.ride(ride.points.map(\.coordinate))]
         // The detail screen's profile, on the same distance axis.
         elevations = MeasuredLine.elevationProfile(ridePoints: ride.points)
     }
@@ -47,15 +47,17 @@ public struct ShareCardContent {
         elevations = trip.measuredLine.elevationProfile(count: RouteStats.profileSampleCount)
     }
 
-    var coordinates: [Coordinate] { stages.flatMap(\.coordinates) }
     var hasProfile: Bool { elevations.count > 1 }
 }
 
-/// The share image in points: edge-to-edge bands of photo, map, profile and stats. It renders
-/// at 3x: 1080 × 1350 pixels, a 4:5 portrait that Instagram and messages show uncropped.
+/// The share image in points: the device's rust title bar, then edge-to-edge bands of photo,
+/// map, profile and stats. It renders at 3x: 1080 × 1350 pixels, a 4:5 portrait that Instagram
+/// and messages show uncropped. It is always in the Day colours: the image leaves the app, and a
+/// light card reads the same in every app that shows it.
 struct ShareCard: View {
     static let size = CGSize(width: 360, height: 450)
     static let profileHeight: CGFloat = 44
+    static let barHeight: CGFloat = 22
 
     let content: ShareCardContent
     /// The map snapshot at exactly `mapSize`, or nil for the grid fallback.
@@ -65,20 +67,21 @@ struct ShareCard: View {
 
     /// The photo gives up height to the profile: below about 140 points MapKit drops the
     /// Apple Maps attribution from the snapshot.
-    static func photoHeight(showsProfile: Bool) -> CGFloat { showsProfile ? 190 : 225 }
+    static func photoHeight(showsProfile: Bool) -> CGFloat { showsProfile ? 168 : 203 }
 
     /// The snapshot size the card shows uncropped, so the Apple Maps attribution stays visible.
     static func mapSize(hasPhoto: Bool, showsProfile: Bool) -> CGSize {
         let photo = hasPhoto ? photoHeight(showsProfile: showsProfile) : 0
         let profile = showsProfile ? profileHeight : 0
         let stats: CGFloat = hasPhoto ? 72 : 150
-        return CGSize(width: size.width, height: size.height - photo - profile - stats)
+        return CGSize(width: size.width, height: size.height - barHeight - photo - profile - stats)
     }
 
     /// With a photo, the heading sits on the photo: below the map, a band that also held the
     /// heading would leave a map too short for MapKit to draw its attribution.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            titleBar
             if let photo {
                 Image(uiImage: photo)
                     .resizable()
@@ -115,6 +118,14 @@ struct ShareCard: View {
         .environment(\.colorScheme, .light)
     }
 
+    /// The device's title bar, as the ride was recorded on it.
+    private var titleBar: some View {
+        PixelText("OPENBIKECOMPUTER", scale: 2 / 3, color: OBCTheme.onRust)
+            .padding(.horizontal, 20)
+            .frame(width: Self.size.width, height: Self.barHeight, alignment: .leading)
+            .background(OBCTheme.rust)
+    }
+
     private func heading(onPhoto: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(content.dateLine.uppercased())
@@ -137,7 +148,7 @@ struct ShareCard: View {
                 if index > 0 { Spacer(minLength: 8) }
                 VStack(alignment: .leading, spacing: 2) {
                     (Text(stat.value)
-                        .font(.system(.body, weight: .medium).monospacedDigit())
+                        .font(.obcStat(.body))
                         .foregroundColor(OBCTheme.ink)
                         + Text(stat.unit.map { " \($0)" } ?? "")
                         .font(.system(.caption2, weight: .medium).monospacedDigit())
@@ -155,14 +166,10 @@ struct ShareCard: View {
         return Group {
             if let map {
                 Image(uiImage: map).resizable()
-            } else if content.stages.count > 1 {
-                // `ImageRenderer` cannot draw a live map, so the trip always takes the grid.
-                MultiTrackPreviewView(stages: content.stages, showsChrome: false)
-                    .environment(\.obcIsOnline, false)
             } else {
-                TrackPreviewView(
-                    TrackPreview.normalizing(content.coordinates), style: .hero, showsChrome: false
-                )
+                // `ImageRenderer` cannot draw a live map, so without a snapshot it takes the grid.
+                MultiTrackPreviewView(stages: content.stages, showsChrome: false, showsEnds: true)
+                    .environment(\.obcIsOnline, false)
             }
         }
         .frame(width: size.width, height: size.height)
