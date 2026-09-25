@@ -196,6 +196,9 @@ fn seeds(language: Language) -> Vec<Seed> {
     // The button lesson changes its foot hint once all four buttons are pressed.
     let lesson = vec![Gesture::Step(-1), Gesture::Step(1), Gesture::Back, Gesture::Press];
     v.push((Screen::SetupButtons(SetupButtonsScreen::default()), lesson));
+    // The effort step's last row reads Skip until a limit is set, and each limit opens its editor.
+    let effort = vec![Gesture::Press, Gesture::Press, Gesture::Step(1), Gesture::Press];
+    v.push((Screen::SetupEffort(SetupEffortScreen::default()), effort));
     // The About page is taller than the panel, so the lines under the fold are drawn only after it
     // scrolls. One step per line reaches every one of them; the offset clamps at the end.
     v.push((Screen::About(AboutScreen::new()), vec![Gesture::Step(1); 24]));
@@ -270,6 +273,8 @@ fn walk(
         if step > 0 {
             app.advance_animations(InputClock(now));
             app.apply_gesture(gestures[step - 1]);
+            // A sheet the gesture pushed starts its open on the first tick after it.
+            app.advance_animations(InputClock(now));
             now += SLIDE_STEP_MS;
             app.advance_animations(InputClock(now));
         }
@@ -293,8 +298,8 @@ fn walk(
     drawn
 }
 
-/// Longer than any sheet slide, so the page a gesture opened has landed before the next one.
-const SLIDE_STEP_MS: u32 = 400;
+/// Longer than any sheet open or slide, so the page a gesture opened has landed before it is drawn.
+const SLIDE_STEP_MS: u32 = 500;
 
 /// Why `drawn` does not fit, if it does not.
 fn complaint(name: &str, language: Language, drawn: &obc_render::text_tap::TextDraw) -> Option<String> {

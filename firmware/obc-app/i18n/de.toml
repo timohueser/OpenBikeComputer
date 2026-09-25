@@ -541,6 +541,7 @@ continue = "Weiter"
 skip = "Überspringen"
 units = "EINHEITEN"
 theme = "FARBSCHEMA"
+effort = "ZONEN"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

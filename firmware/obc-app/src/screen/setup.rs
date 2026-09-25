@@ -10,25 +10,29 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::prelude::Point;
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
     Surface,
 };
 
+use crate::effort::Metric;
 use crate::i18n::t;
 use crate::input::Gesture;
 use crate::settings::{Language, Settings, SetupStep, Theme, Units, SENSOR_SLOTS};
 use crate::Msg;
 
+use super::context_drawer::{ContextDrawerScreen, ContextValue};
 use super::home::contours;
 use super::settings::{kind_msg, status_line, wake_msg, LanguageScreen, SensorScanScreen};
 use super::vocab::chrome::{copy_w, title_frame, wrapped, LIST_TOP};
 use super::vocab::flags::{FLAG_H, FLAG_W};
 use super::vocab::list::on_step;
-use super::vocab::rows::{choice_row, nav_row, row_rect, row_tick, Line2, ROW_GAP, ROW_ONE, ROW_TWO, ROW_X};
-use super::vocab::tiles::tile;
+use super::vocab::rows::{
+    action_row, choice_row, nav_row, row_rect, row_tick, Line2, ROW_GAP, ROW_ONE, ROW_TWO, ROW_X,
+};
+use super::vocab::tiles::{tile, zone_tile};
 use super::{palette, Ctx, Render, Screen, Transition};
 
 /// The screen of the current setup step, or `None` once setup is done.
@@ -40,6 +44,7 @@ pub(crate) fn screen(s: &Settings) -> Option<Screen> {
         SetupStep::Units => Some(Screen::SetupUnits(SetupUnitsScreen(s.units))),
         SetupStep::Theme => Some(Screen::SetupTheme(SetupThemeScreen(s.theme))),
         SetupStep::Sensors => Some(Screen::SetupSensors(SetupSensorsScreen::default())),
+        SetupStep::Effort => Some(Screen::SetupEffort(SetupEffortScreen::default())),
         SetupStep::Done => None,
     }
 }
@@ -393,23 +398,92 @@ fn swatch(cv: &mut impl Surface, x: i32, y: i32, theme: Theme) {
     cv.fill(rect(x + 4, y + 7, FLAG_W - 12, 2), ink);
 }
 
+/// The effort step: the two limits the effort zones are cut from, and a row that continues. A
+/// value row opens the drawer editor as a sheet over the page, as on the Ride settings page, and
+/// the editor's Select commits and saves the value. The last row reads Skip while neither limit
+/// is set. The ride tiles below show the zones a limit gives, and a plain tile without one.
+#[derive(Debug, Default)]
+pub struct SetupEffortScreen {
+    selected: usize,
+}
+
+/// The value rows, then the continue row at `LIMITS.len()`.
+const LIMITS: [(Msg, ContextValue); 2] = [(Msg::RideMaxHr, ContextValue::MaxHr), (Msg::RideFtp, ContextValue::Ftp)];
+
+/// The sample efforts the preview shows, in bpm and watts.
+const SAMPLE_EFFORT: [(Metric, u32); 2] = [(Metric::Hr, 152), (Metric::Power, 210)];
+
+impl SetupEffortScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Step(n) => on_step(&mut self.selected, n, LIMITS.len() + 1),
+            Gesture::Press => match LIMITS.get(self.selected) {
+                Some(&(label, value)) => Transition::Push(Screen::ContextDrawer(ContextDrawerScreen::editor(
+                    value,
+                    label,
+                    &cx.context_facts(),
+                ))),
+                None => finish(SetupStep::Effort, cx),
+            },
+            Gesture::Back => back(SetupStep::Effort, cx),
+            Gesture::Hold | Gesture::BackHold => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Effort, rx.t(Msg::SetupEffort));
+        let facts = rx.context_facts();
+        let mut y = LIST_TOP;
+        for (i, (label, value)) in LIMITS.into_iter().enumerate() {
+            let mut buf = heapless::String::<24>::new();
+            let text = value.choice_label(value.committed(&facts), rx, &mut buf);
+            nav_row(cv, row_rect(y, w, ROW_TWO), rx.t(label), Some(Line2::text(text)), i == self.selected, true, true);
+            y += ROW_TWO + ROW_GAP;
+        }
+        let unset = rx.settings.max_hr == 0 && rx.settings.ftp_w == 0;
+        let go = rx.t(if unset { Msg::SetupSkip } else { Msg::SetupContinue });
+        action_row(cv, row_rect(y, w, ROW_ONE), go, None, self.selected == LIMITS.len(), true, false, 0.0);
+
+        let limits = rx.settings.effort_limits();
+        for (i, (metric, value)) in SAMPLE_EFFORT.into_iter().enumerate() {
+            let caption = rx.t(if metric == Metric::Hr { Msg::TileHr } else { Msg::TilePwr });
+            let mut text = heapless::String::<8>::new();
+            let _ = write!(text, "{value}");
+            let area = preview_tile(rx, i);
+            match metric.limit(limits) {
+                Some(limit) => zone_tile(cv, area, caption, &text, metric.zone_of(value, limit)),
+                None => {
+                    tile(cv, area, &rx.marquee, caption, &text, false, TextAlign::Left, PARCHMENT_SHADE, SUBTEXT, INK)
+                }
+            }
+        }
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+    }
+}
+
 /// The sample ride the preview shows: a speed in km/h and a distance in km.
 const SAMPLE: (f32, f32) = (24.5, 86.4);
 
-/// Two ride tiles over the [`hint`], so a step shows what it changes on the ride screens. They sit
-/// at one place on every step, so a step changes them in place.
+/// Two ride tiles over the [`hint`], so a step shows what it changes on the ride screens.
 fn ride_preview(cv: &mut impl Surface, rx: &Render, units: Units) {
     use palette::*;
-    let (gap, tile_h) = (6, 54);
-    let tile_w = (rx.w - 2 * ROW_X - gap) / 2;
-    let y = rx.h - 8 - HINT_H - 12 - tile_h;
     let (mut speed, mut dist) = (heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(speed, "{:.1}", units.speed(SAMPLE.0));
     let _ = write!(dist, "{:.1}", units.dist(SAMPLE.1));
     for (i, (caption, value)) in [(units.speed_label(), speed), (units.dist_label(), dist)].into_iter().enumerate() {
-        let area = rect(ROW_X + i as i32 * (tile_w + gap), y, tile_w, tile_h);
+        let area = preview_tile(rx, i);
         tile(cv, area, &rx.marquee, caption, &value, false, TextAlign::Left, PARCHMENT_SHADE, SUBTEXT, INK);
     }
+}
+
+/// The left (`i` 0) or right preview tile over the [`hint`]. The tiles sit at one place on every
+/// step, so a step changes them in place.
+fn preview_tile(rx: &Render, i: usize) -> Rectangle {
+    let (gap, tile_h) = (6, 54);
+    let tile_w = (rx.w - 2 * ROW_X - gap) / 2;
+    rect(ROW_X + i as i32 * (tile_w + gap), rx.h - 8 - HINT_H - 12 - tile_h, tile_w, tile_h)
 }
 
 /// The rider's place among the titled steps, as `(n, of)`. Hello, the first step, has no title
@@ -492,7 +566,14 @@ mod tests {
     /// The count starts at the first titled step and ends at the last step.
     #[test]
     fn the_title_bar_counts_the_titled_steps() {
-        let places = [SetupStep::Language, SetupStep::Buttons, SetupStep::Units, SetupStep::Theme, SetupStep::Sensors];
-        assert_eq!(places.map(place), [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]);
+        let places = [
+            SetupStep::Language,
+            SetupStep::Buttons,
+            SetupStep::Units,
+            SetupStep::Theme,
+            SetupStep::Sensors,
+            SetupStep::Effort,
+        ];
+        assert_eq!(places.map(place), [(1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]);
     }
 }

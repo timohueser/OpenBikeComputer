@@ -2140,9 +2140,10 @@ impl App {
     /// It is resolved here, not in a screen, because the recogniser already swallowed the
     /// chord's constituents and the sheet must open over whatever the rider is on. Two rules
     /// live here only: a modal that declares [`Caps::blocks_chords`](crate::screen::Caps) stops
-    /// every chord, and one drawer is open at a time, so the same chord again closes it.
+    /// every chord, also under a sheet it opened, and one drawer is open at a time, so the same
+    /// chord again closes it.
     pub fn apply_chord(&mut self, chord: Chord) -> bool {
-        if self.ui.stack.last().is_some_and(|s| s.caps().blocks_chords) {
+        if screen::base_screen(&self.ui.stack).is_some_and(|s| s.caps().blocks_chords) {
             return false;
         }
         // The powering-off frame refuses a squeeze. It cannot be said in `Caps`, because the
@@ -6166,9 +6167,10 @@ mod tests {
     }
 
     /// The sensors step adds a sensor through the Settings scan list, which setup's escape refusal
-    /// covers too. A cursor move saves nothing, Back returns to the theme step, and the last row ends setup.
+    /// covers too. A cursor move saves nothing, Back returns to the theme step, and the last row
+    /// opens the effort step.
     #[test]
-    fn the_sensors_step_adds_through_the_scan_list_and_its_last_row_ends_setup() {
+    fn the_sensors_step_adds_through_the_scan_list_and_its_last_row_opens_the_effort_step() {
         use crate::settings::{SavedSensor, SetupStep};
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_settings(Settings { setup: SetupStep::Sensors, ..Settings::FACTORY });
@@ -6200,9 +6202,59 @@ mod tests {
         app.apply_gesture(Gesture::Press);
         app.apply_gesture(Gesture::Step(-1));
         app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]), "Up from the first slot reaches Continue");
-        assert_eq!(app.settings().setup, SetupStep::Done);
+        assert!(
+            matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]),
+            "Up from the first slot reaches Continue"
+        );
+        assert_eq!(app.settings().setup, SetupStep::Effort);
         assert!(app.settings().saved_sensors[1].present, "the added sensor stays");
+    }
+
+    /// The effort step edits each limit in the drawer editor over the page: the editor's Select
+    /// commits and saves the value, and its Back discards. The sheet keeps setup's refusals of the
+    /// chords, the escape and the idle return. Back on the page returns to the sensors step with the
+    /// committed limits kept, and the last row ends setup.
+    #[test]
+    fn the_effort_step_edits_its_limits_in_the_drawer_editor() {
+        use crate::input::Chord;
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let factory = Settings { setup: SetupStep::Effort, idle_return: IdleReturn::S15, ..Settings::FACTORY };
+        app.set_settings(factory);
+        let mut host = SettingsHost::default();
+
+        app.apply_gesture(Gesture::Press);
+        let editing = |app: &App| {
+            matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_), Screen::ContextDrawer(_)])
+        };
+        assert!(editing(&app), "Select on Max heart rate opens its editor");
+        assert!(!app.apply_chord(Chord::Quick));
+        app.apply_gesture(Gesture::BackHold);
+        idle_tick(&mut app, 60_000);
+        idle_tick(&mut app, 120_000);
+        assert!(editing(&app), "the sheet keeps setup's refusals");
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]));
+        assert_eq!(app.settings().max_hr, 181, "an unset limit opens on 180 bpm");
+        let revision = host.drain(&mut app).expect("the committed limit is saved");
+        host.ack(&mut app, revision);
+
+        for g in [Gesture::Step(1), Gesture::Press, Gesture::Step(3), Gesture::Back] {
+            app.apply_gesture(g);
+        }
+        assert_eq!((app.settings().ftp_w, host.drain(&mut app)), (0, None), "the editor's Back discards");
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert_eq!((app.settings().setup, app.settings().max_hr), (SetupStep::Sensors, 181));
+
+        for g in [Gesture::Step(-1), Gesture::Press, Gesture::Step(-1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]), "the last row ends setup");
+        let s = app.settings();
+        assert_eq!((s.setup, s.max_hr, s.ftp_w), (SetupStep::Done, 181, 0));
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

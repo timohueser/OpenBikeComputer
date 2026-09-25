@@ -118,7 +118,8 @@ pub use settings::{
     StatFieldsScreen,
 };
 pub use setup::{
-    HelloScreen, SetupButtonsScreen, SetupLanguageScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
+    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupSensorsScreen, SetupThemeScreen,
+    SetupUnitsScreen,
 };
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
@@ -925,6 +926,9 @@ screens! {
     /// The Settings scan list for one slot, opened from the sensors step. It blocks the escape,
     /// because the step it returns to does.
     SetupSensorScan(SensorScanScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
+    /// Setup's effort step: max heart rate and FTP, each edited in the drawer editor over the page,
+    /// then a row that continues.
+    SetupEffort(SetupEffortScreen) => Caps::modal().blocking(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),

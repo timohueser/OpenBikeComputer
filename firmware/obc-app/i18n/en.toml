@@ -576,9 +576,10 @@ hold_back = "Hold BACK"
 menu_anywhere = "Menu from anywhere"
 continue = "Continue"
 skip = "Skip"
-# The titles of the units and theme steps.
+# The titles of the units, theme and effort steps.
 units = "UNITS"
 theme = "THEME"
+effort = "ZONES"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

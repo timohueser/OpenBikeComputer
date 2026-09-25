@@ -511,12 +511,13 @@ impl UiRuntime {
         }
     }
 
-    /// Whether the top screen is exempt from the idle-return timeout: the modal cards that stay
+    /// Whether the base screen is exempt from the idle-return timeout: the modal cards that stay
     /// put until dismissed, the route-planning spinner, and the SD-sideload update flow. It reads
     /// the declared [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal
-    /// card cannot be forgotten here.
+    /// card cannot be forgotten here. The base answers, because a sheet over a card is not
+    /// consent to take the card away.
     fn idle_return_exempt(&self) -> bool {
-        self.stack.last().is_some_and(|s| s.caps().idle_exempt)
+        crate::screen::base_screen(&self.stack).is_some_and(|s| s.caps().idle_exempt)
     }
 
     /// Whether the top screen is a deliberate ride view that must never time out while a ride is

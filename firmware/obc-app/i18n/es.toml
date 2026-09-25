@@ -540,6 +540,7 @@ continue = "Continuar"
 skip = "Omitir"
 units = "UNIDADES"
 theme = "TEMA"
+effort = "ZONAS"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]
