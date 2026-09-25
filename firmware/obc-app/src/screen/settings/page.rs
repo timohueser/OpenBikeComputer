@@ -37,6 +37,8 @@ pub(crate) enum Door {
     About,
     /// The factory reset's confirm page. A door lettered as the destructive act it leads to.
     Reset,
+    /// The pairing code, the one setup shows.
+    PairPhone,
 }
 
 /// Something a row does when pressed, or, for a destructive act, when held.
@@ -140,6 +142,7 @@ pub(crate) static CONNECTIONS: Menu = Menu {
         toggle(Msg::BluetoothRadio, ContextToggle::BleEnabled),
         door(Msg::ConnectionsSensors, Door::Sensors),
         info(Msg::ConnectionsPhone, Info::PhoneStatus),
+        door(Msg::ConnectionsPair, Door::PairPhone),
         act(Msg::BluetoothForget, Act::ForgetPhone),
     ],
 };
@@ -182,10 +185,12 @@ pub(crate) static FIRMWARE: Menu = Menu {
 
 impl Item {
     /// Whether the row is on the page at all. The phone's Forget row is drawn only while there is a
-    /// bond to drop, and the Sound door only on a platform that can make a sound.
+    /// bond to drop, the pairing code's door only while the radio is on and no phone is paired, and
+    /// the Sound door only on a platform that can make a sound.
     fn shown(self, state: &AppState) -> bool {
         match self {
             Item::Act(Act::ForgetPhone) => state.bond_status.can_forget(state.device.ble_paired),
+            Item::Door(Door::PairPhone) => state.device.ble_link != BleLink::Off && !state.device.ble_paired,
             Item::Door(Door::Sound) => state.sound_available,
             _ => true,
         }
@@ -371,6 +376,7 @@ impl Door {
             }
             Door::About => Screen::About(super::AboutScreen::new()),
             Door::Reset => Screen::Reset(super::ResetScreen::new()),
+            Door::PairPhone => Screen::PairPhone(crate::screen::PairPhoneScreen),
         }
     }
 
@@ -544,20 +550,28 @@ mod tests {
     }
 
     #[test]
-    fn the_cursor_skips_info_rows_and_the_forget_row_comes_and_goes() {
+    fn the_cursor_skips_info_rows_and_the_phone_rows_come_and_go() {
         let (mut st, mut s) = world();
         let mut conn = SettingsPage::new(&CONNECTIONS);
         assert_eq!(conn.selected, 0, "starts on the Bluetooth switch");
         run(&mut conn, &mut st, &mut s, Gesture::Step(1));
         assert_eq!(conn.selected, 1, "→ Sensors");
         run(&mut conn, &mut st, &mut s, Gesture::Step(1));
-        assert_eq!(conn.selected, 0, "unpaired: the info row and the hidden Forget row are skipped, so it wraps");
+        assert_eq!(conn.selected, 3, "unpaired: past the info row to the pairing code");
+        assert!(matches!(run(&mut conn, &mut st, &mut s, Gesture::Press), Transition::Push(Screen::PairPhone(_))));
+        run(&mut conn, &mut st, &mut s, Gesture::Step(1));
+        assert_eq!(conn.selected, 0, "the hidden Forget row is skipped, so it wraps");
         run(&mut conn, &mut st, &mut s, Gesture::Hold);
         assert!(!st.ble_forget_requested, "unpaired: a hold does nothing");
 
+        st.device.ble_link = BleLink::Off;
+        run(&mut conn, &mut st, &mut s, Gesture::Step(-1));
+        assert_eq!(conn.selected, 1, "with the radio off, no code is offered");
+        st.device.ble_link = BleLink::Advertising;
+
         st.device.ble_paired = true;
-        run(&mut conn, &mut st, &mut s, Gesture::Step(2));
-        assert_eq!(conn.selected, 3, "paired: the Forget row is on the page, past the info row");
+        run(&mut conn, &mut st, &mut s, Gesture::Step(1));
+        assert_eq!(conn.selected, 4, "paired: the Forget row replaces the pairing code's");
         assert!(conn.selection_is_guarded(&st));
         run(&mut conn, &mut st, &mut s, Gesture::Press);
         assert!(!st.ble_forget_requested, "a plain press never forgets");

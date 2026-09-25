@@ -1,6 +1,7 @@
 //! The Factory Reset screen. The long-press threshold is about 500 ms, which is too short to feel
 //! safe alone, so a reset takes two steps: a press to arm, then a hold to erase. A hold on an
-//! un-armed screen does nothing. The reset clears the settings, but keeps the files on the card.
+//! un-armed screen does nothing. The reset clears the settings and forgets the paired phone, so the
+//! setup it starts can pair a phone again. It keeps the files on the card.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -47,8 +48,10 @@ impl ResetScreen {
                 Transition::None
             }
             // `apply_gesture` sees the change and flags the host to persist the cleared settings.
+            // The forget takes the Forget phone path, and does nothing while no phone is paired.
             Gesture::Hold if self.armed => {
                 *cx.settings = Settings::FACTORY;
+                cx.state.ble_forget_requested = true;
                 self.done = true;
                 Transition::None
             }
@@ -107,27 +110,32 @@ mod tests {
     use crate::{AppState, Mode, Units};
 
     fn run(scr: &mut ResetScreen, s: &mut Settings, g: Gesture) -> Transition {
-        let mut st = AppState::new(0, 0, 1.0);
+        run_in(scr, s, &mut AppState::new(0, 0, 1.0), g)
+    }
+
+    fn run_in(scr: &mut ResetScreen, s: &mut Settings, st: &mut AppState, g: Gesture) -> Transition {
         let mut act = Activity::new(Mode::Idle);
-        let mut cx = test_ctx(&mut st, &mut act, s);
+        let mut cx = test_ctx(st, &mut act, s);
         scr.handle(g, &mut cx)
     }
 
     #[test]
-    fn arm_then_hold_resets_to_factory_and_starts_setup() {
+    fn arm_then_hold_resets_to_factory_forgets_the_phone_and_starts_setup() {
         let mut s = Settings { units: Units::Imperial, power_saver: true, fix_interval_s: 30, ..Settings::default() };
         let before = s;
+        let mut st = AppState::new(0, 0, 1.0);
         let mut scr = ResetScreen::new();
 
-        run(&mut scr, &mut s, Gesture::Hold);
+        run_in(&mut scr, &mut s, &mut st, Gesture::Hold);
         assert!(!scr.done, "an un-armed hold does nothing");
-        assert_eq!(s, before, "and changes no settings");
+        assert_eq!((s, st.ble_forget_requested), (before, false), "and changes no settings");
 
-        run(&mut scr, &mut s, Gesture::Press);
+        run_in(&mut scr, &mut s, &mut st, Gesture::Press);
         assert!(scr.armed && !scr.done);
-        let t = run(&mut scr, &mut s, Gesture::Hold);
+        let t = run_in(&mut scr, &mut s, &mut st, Gesture::Hold);
         assert!(matches!(t, Transition::None), "stays to show the done message");
         assert_eq!(s, Settings::FACTORY, "settings were cleared to factory defaults");
+        assert!(st.ble_forget_requested, "the paired phone is forgotten");
         assert!(scr.done);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Root(crate::Screen::Hello(_))));
     }

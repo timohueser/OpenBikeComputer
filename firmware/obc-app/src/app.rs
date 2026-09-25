@@ -124,6 +124,9 @@ pub struct AppState {
     /// Whether this platform can make a sound, declared once by the host at composition through
     /// [`App::set_sound_available`]. `false` hides the Sound settings page and plays no cue.
     pub sound_available: bool,
+    /// The factory device id that the DIS Serial Number String spells (BLE spec §3.1), declared
+    /// once by the host through [`App::set_serial`].
+    pub serial: u64,
 
     /// The Up-ahead timeline's category filter. It resets to Everything on each entry to the
     /// list. It lives here, not on the list screen, because the sheet that edits it sits above
@@ -155,6 +158,7 @@ impl AppState {
             bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
             sound_available: false,
+            serial: 0,
 
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
@@ -911,6 +915,11 @@ impl App {
                 break;
             }
         }
+    }
+
+    /// Declare the factory serial. The host calls this once at boot.
+    pub fn set_serial(&mut self, serial: u64) {
+        self.state.serial = serial;
     }
 
     /// Feed the loaded map's display name and OBCM format version on map load. The System
@@ -1861,8 +1870,28 @@ impl App {
         if changed && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
+        if status.paired {
+            self.close_pairing_code();
+        }
         self.ui.cards.set_passkey(status.passkey);
         self.sweep_cards();
+    }
+
+    /// Close the pairing code, which shows only while the bond slot is empty (BLE spec §9.3). In
+    /// setup a bond ends the pairing step; the page Connections opened returns there.
+    fn close_pairing_code(&mut self) {
+        let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::SetupQr(_) | Screen::PairPhone(_))) else {
+            return;
+        };
+        if matches!(self.ui.stack[i], Screen::SetupQr(_)) {
+            self.settings.setup = screen::setup::after(crate::settings::SetupStep::Qr, true);
+            self.settings_ops.note_edited();
+            screen::apply(&mut self.ui.stack, screen::setup::go_to(&self.settings));
+        } else {
+            self.ui.stack.truncate(i);
+        }
+        self.ui.cancel_holds();
+        self.ui.map_dirty = true;
     }
 
     /// Whether the passkey card is currently up. A route-upload popup is dropped, not queued,
@@ -6134,7 +6163,7 @@ mod tests {
     /// The units and theme steps commit on Select only. The theme step draws the frame in the
     /// theme under its cursor, and that preview is never saved: a step leaves the setting alone,
     /// and Back returns to the units step in the committed theme. Select on a theme opens the
-    /// sensors step.
+    /// pairing step.
     #[test]
     fn the_units_and_theme_steps_commit_on_select_and_the_theme_preview_saves_nothing() {
         use crate::settings::{SetupStep, Theme, Units};
@@ -6160,14 +6189,14 @@ mod tests {
         app.apply_gesture(Gesture::Press);
         app.apply_gesture(Gesture::Step(1));
         app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]));
         let s = app.settings();
-        assert_eq!((s.setup, s.units, s.theme), (SetupStep::Sensors, Units::Imperial, Theme::Dark));
+        assert_eq!((s.setup, s.units, s.theme), (SetupStep::Qr, Units::Imperial, Theme::Dark));
         assert!(host.drain(&mut app).is_some(), "the step is saved");
     }
 
     /// The sensors step adds a sensor through the Settings scan list, which setup's escape refusal
-    /// covers too. A cursor move saves nothing, Back returns to the theme step, and the last row
+    /// covers too. A cursor move saves nothing, Back returns to the pairing step, and the last row
     /// opens the effort step.
     #[test]
     fn the_sensors_step_adds_through_the_scan_list_and_its_last_row_opens_the_effort_step() {
@@ -6197,9 +6226,12 @@ mod tests {
         assert!(!app.sensor_scan_active());
 
         app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
-        assert_eq!(app.settings().setup, SetupStep::Theme);
-        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Qr);
+        // Skip the app: Back opens the way out, and its second row skips.
+        for g in [Gesture::Back, Gesture::Step(1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
         app.apply_gesture(Gesture::Step(-1));
         app.apply_gesture(Gesture::Press);
         assert!(
@@ -6208,6 +6240,80 @@ mod tests {
         );
         assert_eq!(app.settings().setup, SetupStep::Effort);
         assert!(app.settings().saved_sensors[1].present, "the added sensor stays");
+    }
+
+    /// The pairing step's way out. Back opens the page that asks to ride without the app: its
+    /// first row returns to the code, Skip ends the step, and Back walks on to the theme step.
+    #[test]
+    fn back_on_the_pairing_step_offers_to_skip_the_app() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
+        let way_out =
+            |app: &App| matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_), Screen::SetupNoApp(_)]);
+
+        app.apply_gesture(Gesture::Back);
+        assert!(way_out(&app));
+        app.apply_gesture(Gesture::BackHold);
+        assert!(way_out(&app), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]), "the first row");
+
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Theme);
+
+        for g in [Gesture::Press, Gesture::Back, Gesture::Step(1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]), "Skip");
+        assert_eq!(app.settings().setup, SetupStep::Sensors);
+    }
+
+    /// A bond ends the pairing step, under the passkey card too, and the step is saved. A bonded
+    /// device passes the step by in both directions, because it shows no code (BLE spec §9.3).
+    #[test]
+    fn a_bond_ends_the_pairing_step_and_a_bonded_device_passes_it_by() {
+        use crate::ble::{BleLink, BleStatus};
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
+        let mut host = SettingsHost::default();
+
+        app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: false });
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_), Screen::Passkey(_)]));
+        app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Sensors);
+        assert!(host.drain(&mut app).is_some(), "the step is saved");
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+    }
+
+    /// Connections offers the pairing code while no phone is paired. Back returns to the page, and
+    /// so does a bond.
+    #[test]
+    fn connections_opens_the_pairing_code_until_a_phone_pairs() {
+        use crate::ble::{BleLink, BleStatus};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        let connections = crate::screen::SettingsPage::new(&crate::screen::settings::page::CONNECTIONS);
+        let _ = app.ui.stack.push(Screen::Connections(connections));
+        // The Bluetooth switch, then the Sensors door, then the pairing code's door.
+        for g in [Gesture::Step(1), Gesture::Step(1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.last(), Some(Screen::PairPhone(_))));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.last(), Some(Screen::Connections(_))));
+
+        app.apply_gesture(Gesture::Press);
+        app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
+        assert!(matches!(app.ui.stack.last(), Some(Screen::Connections(_))), "a bond closes the code");
     }
 
     /// The effort step edits each limit in the drawer editor over the page: the editor's Select

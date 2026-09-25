@@ -730,6 +730,7 @@ pub(crate) async fn run_app(
     let mut backlight_level = u8::MAX;
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
     app.set_sound_available(obc_ports::Sounder::available(&buzzer));
+    app.set_serial(crate::link::identity::serial());
     // The map plane is one resident framebuffer that the present scans out of, so every repaint is a
     // repaint over the last frame. That is what lets the app leave a frozen base's rows alone while
     // a drawer's sheet grows over them.

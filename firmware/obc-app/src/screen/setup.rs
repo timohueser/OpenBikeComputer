@@ -1,8 +1,9 @@
 //! First-use setup. A new device, and one after a factory reset, boots into it instead of Home.
 //! The step is persisted in [`Settings::setup`](crate::Settings), so setup resumes at its step
 //! after a power loss. Each step is a screen: [`screen`] maps a step to it. Select ends the step
-//! through [`finish`], and Back returns to the step before through [`back`]. A new step is a
-//! [`SetupStep`] variant, its place in `SetupStep::ORDER`, its screen, and its arm in [`screen`].
+//! through [`finish`], and Back returns to the step before through [`back`]. Both pass by a step
+//! that does not show (see [`shows`]). A new step is a [`SetupStep`] variant, its place in
+//! `SetupStep::ORDER`, its screen, and its arm in [`screen`].
 //!
 //! The first step is Hello: a greeting in the four UI languages, because the language is not chosen
 //! yet. Every step after it is a titled page: [`title_bar`] at its head and the [`hint`] at its
@@ -25,8 +26,9 @@ use crate::Msg;
 
 use super::context_drawer::{ContextDrawerScreen, ContextValue};
 use super::home::contours;
+use super::pair_code::code_page;
 use super::settings::{kind_msg, status_line, wake_msg, LanguageScreen, SensorScanScreen};
-use super::vocab::chrome::{copy_w, title_frame, wrapped, LIST_TOP};
+use super::vocab::chrome::{copy_w, row_check, title_frame, wrapped, wrapped_line_pitch, LIST_TOP};
 use super::vocab::flags::{FLAG_H, FLAG_W};
 use super::vocab::list::on_step;
 use super::vocab::rows::{
@@ -43,6 +45,7 @@ pub(crate) fn screen(s: &Settings) -> Option<Screen> {
         SetupStep::Buttons => Some(Screen::SetupButtons(SetupButtonsScreen::default())),
         SetupStep::Units => Some(Screen::SetupUnits(SetupUnitsScreen(s.units))),
         SetupStep::Theme => Some(Screen::SetupTheme(SetupThemeScreen(s.theme))),
+        SetupStep::Qr => Some(Screen::SetupQr(SetupQrScreen)),
         SetupStep::Sensors => Some(Screen::SetupSensors(SetupSensorsScreen::default())),
         SetupStep::Effort => Some(Screen::SetupEffort(SetupEffortScreen::default())),
         SetupStep::Done => None,
@@ -54,16 +57,36 @@ pub(crate) fn go_to(s: &Settings) -> Transition {
     screen(s).map_or(Transition::Home, Transition::Root)
 }
 
-/// End setup step `step`: persist the next step and go to it.
+/// Whether `step` shows. The pairing step shows its code only while the bond slot is empty (BLE
+/// spec §9.3), so a bonded device passes it by.
+fn shows(step: SetupStep, paired: bool) -> bool {
+    step != SetupStep::Qr || !paired
+}
+
+/// The first step that shows as `walk` leaves `step`.
+fn walk_to_shown(step: SetupStep, paired: bool, walk: fn(SetupStep) -> SetupStep) -> SetupStep {
+    let mut to = walk(step);
+    while !shows(to, paired) {
+        to = walk(to);
+    }
+    to
+}
+
+/// The first step after `step` that shows.
+pub(crate) fn after(step: SetupStep, paired: bool) -> SetupStep {
+    walk_to_shown(step, paired, SetupStep::next)
+}
+
+/// End setup step `step`: persist the next step that shows and go to it.
 fn finish(step: SetupStep, cx: &mut Ctx) -> Transition {
-    cx.settings.setup = step.next();
+    cx.settings.setup = after(step, cx.state.device.ble_paired);
     go_to(cx.settings)
 }
 
-/// Leave setup step `step` for the one before it. The persisted step follows, so a power loss
-/// resumes on the step the rider sees.
+/// Leave setup step `step` for the one before it that shows. The persisted step follows, so a
+/// power loss resumes on the step the rider sees.
 fn back(step: SetupStep, cx: &mut Ctx) -> Transition {
-    cx.settings.setup = step.prev();
+    cx.settings.setup = walk_to_shown(step, cx.state.device.ble_paired, SetupStep::prev);
     go_to(cx.settings)
 }
 
@@ -166,7 +189,7 @@ impl SetupLanguageScreen {
         let lang = self.0.cursor();
         title_bar(cv, rx.w, rx.h, SetupStep::Language, t(Msg::LanguageTitle, lang));
         self.0.draw_list(cv, rx);
-        hint(cv, rx.w, rx.h, true, t(Msg::SetupChoose, lang), Some(t(Msg::SetupOk, lang)));
+        hint(cv, rx.w, rx.h, true, t(Msg::SetupChoose, lang), Some(Key::Ok(t(Msg::SetupOk, lang))));
     }
 }
 
@@ -218,7 +241,7 @@ impl SetupButtonsScreen {
         let y = wrapped(cv, rx.t(Msg::SetupHoldBack), w / 2, TIP_TOP, copy_w(w), Font::Label, INK);
         wrapped(cv, rx.t(Msg::SetupMenuAnywhere), w / 2, y, copy_w(w), Font::Label, SUBTEXT);
         if self.learnt() {
-            hint(cv, w, h, false, rx.t(Msg::SetupContinue), Some(rx.t(Msg::SetupOk)));
+            hint(cv, w, h, false, rx.t(Msg::SetupContinue), Some(Key::Ok(rx.t(Msg::SetupOk))));
         } else {
             hint(cv, w, h, false, rx.t(Msg::SetupPressEach), None);
         }
@@ -295,7 +318,7 @@ impl SetupUnitsScreen {
             }
         }
         ride_preview(cv, rx, self.0);
-        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
 }
 
@@ -330,7 +353,7 @@ impl SetupThemeScreen {
             choice_row(cv, area, name, theme == self.0, committed, |cv, x, y| swatch(cv, x, y, theme));
         }
         ride_preview(cv, rx, rx.settings.units);
-        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
 }
 
@@ -380,8 +403,94 @@ impl SetupSensorsScreen {
         let label = if saved.iter().any(|s| s.present) { Msg::SetupContinue } else { Msg::SetupSkip };
         let area = row_rect(h - 8 - HINT_H - 12 - ROW_ONE, w, ROW_ONE);
         nav_row(cv, area, rx.t(label), None, self.selected == SKIP, true, true);
-        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
+}
+
+/// The pairing step: the code that opens the app on this OBC (BLE spec §9). The OBC advertises and
+/// accepts pairing while the step shows, and a bond ends the step (see
+/// [`App::set_ble_status`](crate::App::set_ble_status)). Back asks whether to ride without the app.
+#[derive(Debug)]
+pub struct SetupQrScreen;
+
+impl SetupQrScreen {
+    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Back => Transition::Push(Screen::SetupNoApp(SetupNoAppScreen::default())),
+            _ => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Qr, rx.t(Msg::SetupQr));
+        code_page(cv, rx);
+        hint(cv, w, h, false, rx.t(Msg::SetupNoApp), Some(Key::Back));
+    }
+}
+
+/// The pairing step's way out: what works without the app and what needs it, over a row back to
+/// the code and Skip, which ends the step. Back walks on to the step before the pairing step, so
+/// that step stays one press away, as on every setup page.
+#[derive(Debug, Default)]
+pub struct SetupNoAppScreen {
+    /// 0 returns to the code, 1 is Skip.
+    selected: usize,
+}
+
+/// What works without the app, then what needs it: a heading and its two items each.
+const NO_APP: [(Msg, [Msg; 2]); 2] = [
+    (Msg::SetupOffline, [Msg::MenuMap, Msg::SetupRecording]),
+    (Msg::SetupNeedsApp, [Msg::MenuRoutes, Msg::SetupRideSync]),
+];
+
+impl SetupNoAppScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Step(n) => on_step(&mut self.selected, n, 2),
+            Gesture::Press if self.selected == 0 => Transition::Pop,
+            Gesture::Press => finish(SetupStep::Qr, cx),
+            Gesture::Back => back(SetupStep::Qr, cx),
+            Gesture::Hold | Gesture::BackHold => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Qr, rx.t(Msg::SetupNoAppTitle));
+        let mut y = LIST_TOP + 4;
+        for (i, (heading, items)) in NO_APP.into_iter().enumerate() {
+            cv.text(rx.t(heading), Point::new(ROW_X, y), Font::Caption, TextAlign::Left, SUBTEXT);
+            y += wrapped_line_pitch(Font::Caption);
+            for item in items {
+                let cy = y + Font::Label.cap_mid() as i32;
+                if i == 0 {
+                    row_check(cv, Point::new(ROW_X + 8, cy), INK);
+                } else {
+                    phone(cv, ROW_X + 8, cy);
+                }
+                cv.text(rx.t(item), Point::new(ROW_X + 24, y), Font::Label, TextAlign::Left, INK);
+                y += wrapped_line_pitch(Font::Label);
+            }
+            y += 10;
+        }
+        let top = h - 8 - HINT_H - 12 - 2 * ROW_ONE - ROW_GAP;
+        for (i, label) in [Msg::SetupShowCode, Msg::SetupSkip].into_iter().enumerate() {
+            let area = row_rect(top + i as i32 * (ROW_ONE + ROW_GAP), w, ROW_ONE);
+            action_row(cv, area, rx.t(label), None, i == self.selected, true, false, 0.0);
+        }
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
+    }
+}
+
+/// A phone centred on `(cx, cy)`, the height of a Label capital: what needs the app. The outline
+/// is doubled for a 2 px stroke, as the passkey card's phone is.
+fn phone(cv: &mut impl Surface, cx: i32, cy: i32) {
+    use palette::*;
+    cv.round_outline(rect(cx - 5, cy - 8, 10, 17), 3, INK);
+    cv.round_outline(rect(cx - 4, cy - 7, 8, 15), 2, INK);
+    cv.hline(cx - 1, cy + 4, 2, INK);
 }
 
 /// A theme's page in the flag slot: its paper, its ink round the edge, and two lines of text. The
@@ -459,7 +568,7 @@ impl SetupEffortScreen {
                 }
             }
         }
-        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(rx.t(Msg::SetupOk)));
+        hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
 }
 
@@ -505,10 +614,19 @@ fn title_bar(cv: &mut impl Surface, w: i32, h: i32, step: SetupStep, title: &str
 /// The height of the [`hint`] band.
 const HINT_H: i32 = 40;
 
+/// The button a [`hint`] names after its text.
+#[derive(Clone, Copy)]
+enum Key<'a> {
+    /// Select, as the amber `OK`: Hello's button in small, so it names the press the rider has
+    /// already made.
+    Ok(&'a str),
+    /// Back, outlined and named as the button is.
+    Back,
+}
+
 /// The controls hint at the foot of a titled setup page: the Up and Down glyphs when they choose,
-/// the `text`, and the amber `ok` when Select confirms. The amber OK is Hello's button in small, so
-/// it names the press the rider has already made.
-fn hint(cv: &mut impl Surface, w: i32, h: i32, arrows: bool, text: &str, ok: Option<&str>) {
+/// the `text`, and the `key` that acts.
+fn hint(cv: &mut impl Surface, w: i32, h: i32, arrows: bool, text: &str, key: Option<Key>) {
     use palette::*;
     let font = Font::Label;
     let top = h - 8 - HINT_H;
@@ -519,9 +637,14 @@ fn hint(cv: &mut impl Surface, w: i32, h: i32, arrows: bool, text: &str, ok: Opt
     // Up and Down side by side, each `2k` wide.
     let k = 5;
     let arrows_w = if arrows { 4 * k + 3 + 8 } else { 0 };
-    let pill_w = ok.map_or(0, |ok| text_width(ok, font) as i32 + 16);
+    let label = match key {
+        Some(Key::Ok(ok)) => ok,
+        Some(Key::Back) => "BACK",
+        None => "",
+    };
+    let pill_w = text_width(label, font) as i32 + 16;
     let text_w = text_width(text, font) as i32;
-    let left = (w - (arrows_w + text_w + if ok.is_some() { 24 + pill_w } else { 0 })) / 2;
+    let left = (w - (arrows_w + text_w + if key.is_some() { 24 + pill_w } else { 0 })) / 2;
 
     if arrows {
         let x = left;
@@ -532,11 +655,19 @@ fn hint(cv: &mut impl Surface, w: i32, h: i32, arrows: bool, text: &str, ok: Opt
     let x = left + arrows_w;
     cv.text_vcentered(text, x, span, font, TextAlign::Left, SUBTEXT);
 
-    if let Some(ok) = ok {
-        let px = x + text_w + 24;
-        cv.round(rect(px, cy - 12, pill_w, 24), 6, AMBER);
-        cv.text_vcentered(ok, px + pill_w / 2, span, font, TextAlign::Center, ON_ACCENT);
-    }
+    let pill = rect(x + text_w + 24, cy - 12, pill_w, 24);
+    let ink = match key {
+        Some(Key::Ok(_)) => {
+            cv.round(pill, 6, AMBER);
+            ON_ACCENT
+        }
+        Some(Key::Back) => {
+            cv.round_outline(pill, 6, INK);
+            INK
+        }
+        None => return,
+    };
+    cv.text_vcentered(label, x + text_w + 24 + pill_w / 2, span, font, TextAlign::Center, ink);
 }
 
 #[cfg(test)]
@@ -571,9 +702,10 @@ mod tests {
             SetupStep::Buttons,
             SetupStep::Units,
             SetupStep::Theme,
+            SetupStep::Qr,
             SetupStep::Sensors,
             SetupStep::Effort,
         ];
-        assert_eq!(places.map(place), [(1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]);
+        assert_eq!(places.map(place), [(1, 7), (2, 7), (3, 7), (4, 7), (5, 7), (6, 7), (7, 7)]);
     }
 }

@@ -285,6 +285,7 @@ title = "CONNEXIONS"
 phone = "Téléphone"
 sensors = "Capteurs"
 not_paired = "Non appairé"
+pair = "Appairer tél."
 connected = "connecté"
 
 # --- The phone link: its status words and the Forget action ---
@@ -382,6 +383,10 @@ off_route = "Écart"
 title = "APPAIRAGE"
 enter_code = "Entrez ce code"
 on_phone = "sur le tél."
+
+# --- The pairing code: the QR code of the pairing link ---
+[pair]
+scan = "Scannez avec le tél."
 
 # --- Rides list screen ---
 [rides]
@@ -541,6 +546,14 @@ skip = "Passer"
 units = "UNITÉS"
 theme = "THÈME"
 effort = "ZONES"
+qr = "L'APPLI OBC"
+no_app = "Sans appli"
+no_app_title = "SANS APPLI"
+offline = "Marche hors ligne"
+needs_app = "Il faut l'appli"
+recording = "Enregistrement"
+ride_sync = "Synchro sorties"
+show_code = "Voir le code"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]
