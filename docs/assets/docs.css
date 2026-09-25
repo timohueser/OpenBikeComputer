@@ -28,9 +28,9 @@ a:hover { color: var(--forest-deep); }
 /* Shared public-site header. */
 .site-head { position: sticky; top: 0; z-index: 20; height: var(--head-h); background: var(--rust); color: var(--cream); }
 .head-inner { max-width: 1400px; height: 100%; margin: auto; display: flex; align-items: center; gap: 18px; padding: 0 22px; }
-.brand { display: flex; align-items: baseline; gap: 12px; flex: none; text-decoration: none; }
-.brand .name, .brand .mark { font-family: var(--mono); font-size: 18px; font-weight: 700; }
-.brand .mark { display: none; }
+.brand { display: flex; align-items: center; gap: 12px; flex: none; text-decoration: none; }
+.brand .name { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+.brand .mark { display: block; width: 32px; height: 32px; border-radius: 7px; }
 .brand .crumb { font-size: 13px; }
 .site-head a { color: var(--cream); text-decoration: none; }
 .site-head a:hover { text-decoration: underline; }
@@ -52,7 +52,6 @@ a:hover { color: var(--forest-deep); }
 .site-head :focus-visible { outline-color: var(--cream); }
 @media (max-width: 1000px) {
   .brand .name { display: none; }
-  .brand .mark { display: inline; }
 }
 @media (max-width: 700px) {
   .head-inner { gap: 12px; padding: 0 16px; }

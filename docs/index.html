@@ -12,9 +12,9 @@
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking GPS computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
 
-  <!-- Favicon: the OBC mark (rust rounded square, mono wordmark), inline SVG. -->
-  <link rel="icon"
-    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23A4501E'/%3E%3Ctext x='32' y='42' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='22' font-weight='700' letter-spacing='1' fill='%23FFF2D1' text-anchor='middle'%3EOBC%3C/text%3E%3C/svg%3E" />
+  <link rel="icon" type="image/svg+xml" href="brand/signpost.svg" />
+  <link rel="apple-touch-icon" href="brand/apple-touch-icon.png" />
+  <link data-trunk rel="copy-dir" href="assets/brand" />
 
   <!-- Open Graph / Twitter share card. og:image must be ABSOLUTE — scrapers don't
        resolve relative URLs. The PNG is composed by docs/tools/og_card.html (the
@@ -175,12 +175,12 @@
       margin-bottom: 6px;
     }
     header .wrap { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 50px; }
-    .brand { display: flex; align-items: center; flex: none; }
+    .brand { display: flex; align-items: center; gap: 12px; flex: none; color: inherit; text-decoration: none; }
     /* Until the glyph strip loads, and with JavaScript off, the words show in the mono face. */
     .px { font-family: var(--mono); font-weight: 700; line-height: 1; display: inline-flex; align-items: center; }
     .px svg { display: block; shape-rendering: crispEdges; fill: currentColor; }
     .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .brand .mark { display: none; font-size: 17px; }
+    .brand .mark { display: block; width: 32px; height: 32px; border-radius: 7px; }
     .brand .name { font-size: 17px; }
     .nav-links { display: flex; align-items: center; gap: 22px; font-size: 15px; }
     .nav-links a { color: var(--cream); text-decoration: none; opacity: 0.9; padding: 12px 0; }
@@ -623,7 +623,6 @@
     }
     @media (max-width: 760px) {
       .brand .name { display: none; }
-      .brand .mark { display: inline-flex; }
     }
     @media (max-width: 600px) {
       .nav-links { gap: 14px; }
@@ -665,10 +664,10 @@
        the primary source/build destination instead of appearing twice in the page chrome. -->
   <header>
     <div class="wrap">
-      <div class="brand">
-        <span class="mark px" data-px="24">OBC</span>
+      <a class="brand" href="./" aria-label="OpenBikeComputer home">
+        <img class="mark" src="brand/app-icon.svg" width="32" height="32" alt="" />
         <span class="name px" data-px="24">OpenBikeComputer</span>
-      </div>
+      </a>
       <nav class="nav-links">
         <a href="#demo">Demo</a>
         <a href="#features">Features</a>

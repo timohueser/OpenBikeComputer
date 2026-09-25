@@ -37,6 +37,7 @@
 <header>
     <div class="inner">
         <div class="brand">
+            <img class="mark" src={`${import.meta.env.BASE_URL}brand/app-icon.svg`} width="32" height="32" alt="" />
             <span class="name">OpenBikeComputer</span>
             <span class="short-name" aria-label="OpenBikeComputer">OBC</span>
             {#if !tabbed}
@@ -107,7 +108,8 @@
         justify-content: space-between;
         gap: 18px;
     }
-    .brand { display: flex; align-items: baseline; gap: 12px; flex: none; }
+    .brand { display: flex; align-items: center; gap: 12px; flex: none; }
+    .mark { border-radius: 7px; flex: none; }
     .name, .short-name { font-family: var(--mono); font-size: 18px; font-weight: 700; }
     .short-name { display: none; }
     .crumb { font-size: 13px; }

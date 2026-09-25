@@ -1,0 +1,22 @@
+{
+  "images": [
+    {
+      "idiom": "universal",
+      "filename": "signpost.png"
+    },
+    {
+      "idiom": "universal",
+      "filename": "signpost-dark.png",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ]
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}
