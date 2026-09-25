@@ -20,7 +20,7 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     /// CoreBluetooth closes the L2CAP channel when the `CBL2CAPChannel` is deallocated. Holding
     /// only its streams lets the object die at the end of the `didOpen` callback, and the system
     /// tears the CoC down milliseconds later, so the peer sees it close before a byte flows.
-    private let channel: CBL2CAPChannel
+    private let channel: CBL2CAPChannel?
     private let input: InputStream
     private let output: OutputStream
     private let lock = NSLock()
@@ -30,6 +30,7 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     /// declared dead. Generous: even the slowest negotiated link moves a chunk every connection
     /// interval.
     private let stallTimeout: TimeInterval
+    private let onFailure: @Sendable () -> Void
 
     private var inbound = Data()
     private var outbound = Data()
@@ -37,15 +38,29 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     private var writeWaiter: CheckedContinuation<Void, Error>?
     private var closed = false
     private var failed = false
+    private var waitingForControl = false
     /// When bytes last moved, or a waiter parked: the watchdog's reference point.
     private var lastActivity = Date()
     private var stallTimer: Timer?
 
-    public init(channel: CBL2CAPChannel, stallTimeout: TimeInterval = 10) {
+    public convenience init(
+        channel: CBL2CAPChannel, stallTimeout: TimeInterval = 10,
+        onFailure: @escaping @Sendable () -> Void = {}
+    ) {
+        self.init(
+            channel: channel, input: channel.inputStream, output: channel.outputStream,
+            stallTimeout: stallTimeout, onFailure: onFailure)
+    }
+
+    init(
+        channel: CBL2CAPChannel? = nil, input: InputStream, output: OutputStream,
+        stallTimeout: TimeInterval, onFailure: @escaping @Sendable () -> Void
+    ) {
         self.channel = channel
-        self.input = channel.inputStream
-        self.output = channel.outputStream
+        self.input = input
+        self.output = output
         self.stallTimeout = stallTimeout
+        self.onFailure = onFailure
         // A dedicated run-loop thread services the CoC's stream delegate events. A run loop with
         // no input sources returns from `run()` immediately, so pin it alive with a `Port`, or the
         // thread exits before the streams are ever scheduled, no bytes flow, and the peer sees the
@@ -99,21 +114,28 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     }
 
     public func read(maxLength: Int) async throws -> Data {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            lock.lock()
-            if !inbound.isEmpty {
-                let n = Swift.min(maxLength, inbound.count)
-                let out = inbound.prefix(n)
-                inbound.removeFirst(n)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                lock.lock()
+                // Cancellation and waiter installation share the lock. A cancel that arrives
+                // before this read parks must not leave a waiter for the stall watchdog.
+                if Task.isCancelled { lock.unlock(); cont.resume(throwing: CancellationError()); return }
+                if !inbound.isEmpty {
+                    let n = Swift.min(maxLength, inbound.count)
+                    let out = inbound.prefix(n)
+                    inbound.removeFirst(n)
+                    lock.unlock()
+                    cont.resume(returning: Data(out))
+                    return
+                }
+                if closed { lock.unlock(); cont.resume(returning: Data()); return }
+                if failed { lock.unlock(); cont.resume(throwing: ChannelDropped()); return }
+                readWaiter = (maxLength, cont)
+                lastActivity = Date()
                 lock.unlock()
-                cont.resume(returning: Data(out))
-                return
             }
-            if closed { lock.unlock(); cont.resume(returning: Data()); return }  // clean EOF
-            if failed { lock.unlock(); cont.resume(throwing: ChannelDropped()); return }
-            readWaiter = (maxLength, cont)
-            lastActivity = Date()
-            lock.unlock()
+        } onCancel: {
+            cancelRead()
         }
     }
 
@@ -133,14 +155,25 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         read?.cont.resume(throwing: CancellationError())
     }
 
+    /// A control reply can be the only outstanding work after the final upload byte.
+    func expectControlResponse(_ waiting: Bool) {
+        lock.withLock {
+            waitingForControl = waiting
+            if waiting { lastActivity = Date() }
+        }
+    }
+
     private func beginClose() -> CheckedContinuation<Data, Error>? {
         lock.lock()
         guard !closed else { lock.unlock(); return nil }
         closed = true
+        let needsTeardown = !failed
         let read = readWaiter; readWaiter = nil
         let write = writeWaiter; writeWaiter = nil
         lock.unlock()
-        perform(#selector(teardown), on: thread, with: nil, waitUntilDone: false)
+        if needsTeardown {
+            perform(#selector(teardown), on: thread, with: nil, waitUntilDone: false)
+        }
         // A parked writer, a backpressured send when the cancel or close lands, is never re-armed
         // by a stream event on a self-initiated close, so resume it here or its continuation leaks
         // and the awaiting send hangs forever. A write fails like any other drop, and the read
@@ -222,7 +255,7 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
     private func checkStall() {
         lock.lock()
         let stalled = !closed && !failed
-            && (readWaiter != nil || writeWaiter != nil)
+            && (readWaiter != nil || writeWaiter != nil || waitingForControl)
             && Date().timeIntervalSince(lastActivity) > stallTimeout
         lock.unlock()
         if stalled { fail(cleanEnd: false) }
@@ -230,11 +263,12 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
 
     private func fail(cleanEnd: Bool) {
         lock.lock()
-        guard !failed else { lock.unlock(); return }
+        guard !failed && !closed else { lock.unlock(); return }
         failed = true
         let read = readWaiter; readWaiter = nil
         let write = writeWaiter; writeWaiter = nil
         lock.unlock()
+        onFailure()
         if cleanEnd { read?.cont.resume(returning: Data()) } else { read?.cont.resume(throwing: ChannelDropped()) }
         write?.resume(throwing: ChannelDropped())
         // A failed channel never carries another transfer, because `isOpen` is false and the
