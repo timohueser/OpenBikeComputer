@@ -15,7 +15,7 @@
 
 <svelte:head><title>Sign in · OpenBikeComputer verification</title></svelte:head>
 <main class="login-shell">
-  <a class="brand" href="https://openbikecomputer.com"><span class="brand-icon">↗</span>OpenBikeComputer</a>
+  <a class="brand" href="https://openbikecomputer.com"><img class="brand-icon" src="/brand/app-icon.svg" width="32" height="32" alt="" />OpenBikeComputer</a>
   <section class="login-card">
     <div class="eyebrow">Maintainer workspace</div><h1>Verification & releases</h1>
     <p class="muted">Requirements, their tests, and the evidence for each release.</p>
