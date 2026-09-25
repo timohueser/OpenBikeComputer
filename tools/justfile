@@ -107,27 +107,32 @@ format-card *args:
     cd "$OBC_ROOT"
     _run cargo run --release -p obc-usb --bin obc-format-card -- "$@"
 
-# Build & flash the board. Opts (space-separated): debug-uart  synth  build.
+# Build & flash the board. Opts (space-separated): debug-uart  synth  seed-rides  build.
 # The radio and the USB plane are in every image (#889, #1530) — there is nothing to turn on.
 # e.g.  obc flash            (real sensors)   obc flash debug-uart
 #       obc flash build      (compile only, no flash)
-# Build & flash the board. Opts: debug-uart synth build (e.g. obc flash debug-uart)
+# Build & flash the board. Opts: debug-uart synth seed-rides build (e.g. obc flash seed-rides)
 [group('device')]
 flash *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_riscv || exit 1
-    du=0 synth=0 action=run
+    du=0 synth=0 seed=0 action=run
     for o in "$@"; do case "$o" in
       debug-uart|du)      du=1 ;;
       synth)              synth=1 ;;
+      seed-rides)         seed=1 ;;
       build|build-only)   action=build ;;
-      *) _err "unknown flash option: '$o'  (want: debug-uart synth build)"; exit 1 ;;
+      *) _err "unknown flash option: '$o'  (want: debug-uart synth seed-rides build)"; exit 1 ;;
     esac; done
     [[ "$action" == run ]] && { ensure_probe || exit 1; }
     a=(); feats=()
     (( du ))    && feats+=(debug-uart)
     (( synth )) && feats+=(synth)
+    if (( seed )); then
+      feats+=(seed-rides)
+      export OBC_DEMO_RIDE_START="$(python3 -c 'import time; print(int(time.time()) - 3 * 86400)')"
+    fi
     (( ${#feats[@]} )) && a+=(--features "$(IFS=,; echo "${feats[*]}")")
     cd "$OBC_ROOT/firmware/obc-fw-nrf54l"
     # `${a[@]+"${a[@]}"}`, not `"${a[@]}"`: macOS ships bash 3.2, where expanding an EMPTY array
