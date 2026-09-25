@@ -2,13 +2,16 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 
-/// The whole-trip upload sheet: the queued mode of the upload sheet, presented over
-/// the trip page. It is the single-route sheet with a "Step X of Y" header over the
-/// per-transfer bar, and a skipped and committed tally in the done state. Interruption
-/// and cancel read the same as a single upload: uploads restart, they do not resume.
+/// The whole-trip send sheet, presented over the trip page: the route send sheet with a line
+/// that names the day moving now. A drop offers Send again, which restarts that day; completion
+/// shows the device with the card it puts up when a trip lands.
+///
+/// It sizes its detent to its content, as the route send sheet does.
 public struct TripUploadSheetView: View {
     private let model: TripUploadModel
     @Environment(\.dismiss) private var dismiss
+    /// The measured content height, which the detent follows.
+    @State private var contentHeight: CGFloat = 260
 
     public init(model: TripUploadModel) {
         self.model = model
@@ -16,18 +19,27 @@ public struct TripUploadSheetView: View {
 
     public var body: some View {
         OBCSheetContainer {
-            switch model.phase {
-            case .uploading:
-                progressContent(interrupted: false)
-            case .interrupted:
-                progressContent(interrupted: true)
-            case .done:
-                doneContent
-            case .failed:
-                failedContent
+            ScrollView {
+                Group {
+                    switch model.phase {
+                    case .uploading:
+                        progressContent(interrupted: false)
+                    case .interrupted:
+                        progressContent(interrupted: true)
+                    case .done:
+                        SentToDeviceView(trip: model.card, deviceName: model.deviceName) { model.dismiss() }
+                    case .failed:
+                        failedContent
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .presentationDetents([.height(sheetHeight)])
+        // The container's bottom inset stands in for the home-indicator safe area, so the detent
+        // is the measured content plus the grabber band and that inset.
+        .ignoresSafeArea(.container, edges: .bottom)
+        .presentationDetents([.height(contentHeight + 74)])
         .interactiveDismissDisabled(model.phase == .uploading || model.phase == .interrupted)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tripUpload.sheet")
@@ -38,160 +50,75 @@ public struct TripUploadSheetView: View {
         .onDisappear { model.sheetDismissed() }
     }
 
-    private var sheetHeight: CGFloat {
-        switch model.phase {
-        case .uploading: 300
-        case .interrupted: 360
-        case .done: 330
-        case .failed: 320
-        }
-    }
-    // MARK: Uploading the queue
+    // MARK: Sending, and its interrupted framing
 
     @ViewBuilder
     private func progressContent(interrupted: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .center, spacing: 13) {
-                iconTile(
-                    systemImage: interrupted ? "exclamationmark.triangle" : "square.and.arrow.up",
-                    color: interrupted ? OBCTheme.danger : OBCTheme.secondary
-                )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(interrupted ? "Upload interrupted" : "Uploading \(model.tripName)")
-                        .font(.system(.callout, weight: .semibold))
-                        .foregroundStyle(OBCTheme.ink)
-                        .accessibilityIdentifier("tripUpload.title")
-                    Text(model.sizeLine)
-                        .font(.system(.caption).monospacedDigit())
-                        .foregroundStyle(OBCTheme.secondary)
-                        .accessibilityIdentifier("tripUpload.sizeLine")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(interrupted ? "Connection lost" : "Sending to \(model.deviceName)")
+                    .font(.system(.title3, weight: .bold))
+                    .foregroundStyle(OBCTheme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("tripUpload.title")
                 Text(model.percentLine)
-                    .font(.system(.body, weight: .medium).monospacedDigit())
+                    .font(.obcStat(.title3))
                     .foregroundStyle(interrupted ? OBCTheme.secondary : OBCTheme.ink)
                     .accessibilityIdentifier("tripUpload.percent")
             }
-            .padding(.bottom, 10)
-
-            // The queued-mode header: which step of how many is moving now.
             Text(model.stepProgressLabel)
-                .font(.system(.caption).monospacedDigit())
+                .font(.system(.subheadline).monospacedDigit())
                 .foregroundStyle(OBCTheme.secondary)
+                .padding(.top, 2)
                 .accessibilityIdentifier("tripUpload.stepLabel")
-                .padding(.bottom, 12)
+            Text(model.sizeLine)
+                .font(.system(.subheadline).monospacedDigit())
+                .foregroundStyle(OBCTheme.secondary)
+                .padding(.bottom, 14)
+                .accessibilityIdentifier("tripUpload.sizeLine")
 
             OBCProgressBar(value: model.fraction)
 
-            HStack(alignment: .top, spacing: 8) {
-                Text("◆")
-                    .font(.system(.caption))
-                    .foregroundStyle(interrupted ? OBCTheme.danger : OBCTheme.secondary)
-                Text(interrupted
-                    ? "The link to \(model.deviceName) dropped. Finished days are kept — resume restarts this one."
-                    : "Sending each day in order, then the trip. Keep \(model.deviceName) awake and nearby.")
-                    .font(.system(.caption))
-                    .lineSpacing(2)
-                    .foregroundStyle(OBCTheme.secondary)
-            }
-            .padding(.top, 13)
+            Text(interrupted
+                ? "\(model.deviceName) went out of range. The days sent so far stay on it. Sending again starts this day from the beginning."
+                : "The days go one at a time, then the trip. Keep \(model.deviceName) on and near your phone.")
+                .font(.system(.subheadline))
+                .foregroundStyle(OBCTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 14)
 
             if interrupted {
-                Button("Resume upload") { model.resume() }
+                Button("Send again") { model.resume() }
                     .buttonStyle(.obcPrimary)
                     .accessibilityIdentifier("tripUpload.resume")
-                    .padding(.top, 18)
-                Button("Cancel upload") { model.cancel() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("tripUpload.cancel")
-                    .padding(.top, 10)
-            } else {
-                Button("Cancel upload") { model.cancel() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("tripUpload.cancel")
-                    .padding(.top, 18)
+                    .padding(.top, 20)
             }
+            Button("Cancel") { model.cancel() }
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("tripUpload.cancel")
+                .padding(.top, interrupted ? 10 : 20)
         }
-    }
-
-    // MARK: Done, with the tally
-
-    private var doneContent: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Circle()
-                    .fill(OBCTheme.rust)
-                    .frame(width: 64, height: 64)
-                    .background(Circle().fill(OBCTheme.rust.opacity(0.12)).frame(width: 80, height: 80))
-                Image(systemName: "checkmark")
-                    .font(.system(.title, weight: .bold))
-                    .foregroundStyle(OBCTheme.onRust)
-            }
-            .padding(.top, 6)
-            .padding(.bottom, 14)
-
-            Text("Trip on the device")
-                .font(.system(.title3, weight: .bold))
-                .foregroundStyle(OBCTheme.ink)
-                .accessibilityIdentifier("tripUpload.doneTitle")
-            Text("\(model.tripName) is ready to ride. It'll show as a folder under Routes on \(model.deviceName).")
-                .font(.system(.footnote))
-                .lineSpacing(3)
-                .foregroundStyle(OBCTheme.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 260)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
-            Text(model.doneTally)
-                .font(.system(.caption).monospacedDigit())
-                .foregroundStyle(OBCTheme.secondary)
-                .accessibilityIdentifier("tripUpload.doneTally")
-                .padding(.bottom, 18)
-
-            Button("Done") { model.dismiss() }
-                .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("tripUpload.done")
-        }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: Failed, from a precheck deficit or a device reject mid-queue
 
     private var failedContent: some View {
-        VStack(spacing: 0) {
-            iconTile(
-                systemImage: "externaldrive.badge.exclamationmark",
-                color: OBCTheme.danger
-            )
-            .padding(.top, 6)
-            .padding(.bottom, 14)
-
+        VStack(alignment: .leading, spacing: 0) {
             Text(model.failedTitle)
                 .font(.system(.title3, weight: .bold))
                 .foregroundStyle(OBCTheme.ink)
                 .accessibilityIdentifier("tripUpload.failedTitle")
             Text(model.failedMessage)
-                .font(.system(.footnote))
-                .lineSpacing(3)
+                .font(.system(.subheadline))
                 .foregroundStyle(OBCTheme.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 270)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
-                .padding(.bottom, 18)
+                .padding(.bottom, 20)
                 .accessibilityIdentifier("tripUpload.failedMessage")
 
             Button("Close") { model.dismiss() }
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("tripUpload.close")
         }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func iconTile(systemImage: String, color: Color) -> some View {
-        Image(systemName: systemImage)
-            .font(.system(.title3, weight: .medium))
-            .foregroundStyle(color)
-            .frame(width: 44, height: 44)
-            .background(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium).fill(color.opacity(0.12)))
     }
 }

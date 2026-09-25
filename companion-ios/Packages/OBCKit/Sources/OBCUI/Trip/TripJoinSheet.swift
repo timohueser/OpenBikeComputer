@@ -104,30 +104,37 @@ public struct TripJoinSheet: View {
     private func row(index: Int, file: File) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if index > 0 { joinLine(from: order[index - 1], to: file) }
-            HStack(spacing: 12) {
-                Circle().fill(OBCTheme.stageColor(index: index)).frame(width: 10, height: 10)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Day \(index + 1)")
-                        .font(.system(.callout))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("DAY \(index + 1)")
+                        .font(.system(.caption, weight: .semibold).monospacedDigit())
+                        .kerning(1)
+                        .foregroundStyle(OBCTheme.stageColor(index: index))
+                    Text(file.fileName)
+                        .font(.system(.body, weight: .semibold))
                         .foregroundStyle(OBCTheme.ink)
-                    Text("\(file.fileName) · \(OBCFormat.distance(meters: file.distanceMeters)) · \(OBCFormat.climb(meters: file.climbMeters))")
-                        .font(.system(.caption).monospacedDigit())
-                        .foregroundStyle(OBCTheme.secondary)
                         .lineLimit(2)
                 }
+                Text("\(OBCFormat.distance(meters: file.distanceMeters)) · \(OBCFormat.climb(meters: file.climbMeters))")
+                    .font(.system(.subheadline).monospacedDigit())
+                    .foregroundStyle(OBCTheme.secondary)
             }
             .padding(.vertical, 12)
+            .accessibilityElement(children: .combine)
         }
     }
 
-    /// "joins" when the day before ends within 200 m of this start, else "gap 3.4 km".
+    /// "Starts where Day 1 ends" when the day before ends within 200 m of this start, else the
+    /// transfer the gap becomes: "Starts 3.4 km away, not ridden".
     private func joinLine(from previous: File, to file: File) -> some View {
         let gap = TripJoin.gaps([previous.joinFile, file.joinFile])[0]
         let joins = gap <= TripJoin.joinMeters
-        return Text(joins ? "joins" : "gap \(OBCFormat.distance(meters: gap))")
-            .font(.system(.caption).monospacedDigit())
-            .foregroundStyle(joins ? OBCTheme.secondary : OBCTheme.danger)
-            .padding(.top, 8)
-            .padding(.leading, 22)
+        return HStack(spacing: 8) {
+            if !joins { TransferDash() }
+            Text(joins ? "Starts where the day before ends" : "Starts \(OBCFormat.distance(meters: gap)) away, not ridden")
+                .font(.system(.footnote).monospacedDigit())
+        }
+        .foregroundStyle(OBCTheme.secondary)
+        .padding(.top, 10)
     }
 }

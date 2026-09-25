@@ -477,7 +477,9 @@ struct RootView: View {
                 onEvenOut: { offer in Task { await mainModel.evenOutDays(id, from: offer.fixedBefore) } },
                 onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) },
                 onOpenDay: { path.append(.tripDay(id: id, day: $0)) },
-                encodeGPX: { GPXTripEncoder.encode($0) }
+                encodeGPX: { GPXTripEncoder.encode($0) },
+                uploadTiming: TripUploadModel.Timing(
+                    doneAutoDismiss: OBCCompanionApp.launchUploadTiming().doneAutoDismiss)
             )
         case .dayEditor(let id, let isSplitMode):
             DayEditorHost(make: { mainModel.dayEditor(id, isSplitMode: isSplitMode) }) {

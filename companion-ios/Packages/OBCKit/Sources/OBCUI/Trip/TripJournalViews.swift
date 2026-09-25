@@ -21,41 +21,8 @@ extension TransferKind {
     }
 }
 
-/// The trip page's line between two days with a transfer: "Train · 3.6 km", or
-/// "Transfer · 3.6 km" without a label. A tap picks the label.
-public struct TripTransferRow: View {
-    let kind: TransferKind?
-    let meters: Double
-    let onPick: (TransferKind?) -> Void
-
-    public init(kind: TransferKind?, meters: Double, onPick: @escaping (TransferKind?) -> Void) {
-        self.kind = kind
-        self.meters = meters
-        self.onPick = onPick
-    }
-
-    public var body: some View {
-        Menu {
-            TransferPicker(kind: kind, onPick: onPick)
-        } label: {
-            HStack(spacing: 6) {
-                Text("\(kind?.title ?? "Transfer") · \(OBCFormat.distance(meters: meters))")
-                Image(systemName: "chevron.up.chevron.down").font(.system(.caption2, weight: .semibold))
-            }
-            .font(.system(.caption).monospacedDigit())
-            .foregroundStyle(OBCTheme.secondary)
-            .padding(.vertical, 8)
-            .padding(.leading, 38)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .bottom) { OBCTheme.hairline.frame(height: 1).padding(.leading, 38) }
-    }
-}
-
 /// The label choice both transfer lines open.
-private struct TransferPicker: View {
+struct TransferPicker: View {
     let kind: TransferKind?
     let onPick: (TransferKind?) -> Void
 
@@ -101,12 +68,7 @@ public struct TripJournalTransfer: View {
 
     private var line: some View {
         HStack(spacing: 10) {
-            Path { path in
-                path.move(to: CGPoint(x: 0, y: 0.5))
-                path.addLine(to: CGPoint(x: 28, y: 0.5))
-            }
-            .stroke(OBCTheme.hairlineStrong, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [1.5, 4]))
-            .frame(width: 28, height: 1)
+            TransferDash()
             Image(systemName: kind?.systemImage ?? "arrow.right").font(.system(.caption2))
             Text(Self.text(kind: kind, from: from, to: to))
                 .font(.system(.caption).monospacedDigit())
@@ -114,6 +76,7 @@ public struct TripJournalTransfer: View {
                 .minimumScaleFactor(0.85)
             Spacer(minLength: 0)
         }
+        .frame(minHeight: 44)
         .foregroundStyle(OBCTheme.secondary)
     }
 }

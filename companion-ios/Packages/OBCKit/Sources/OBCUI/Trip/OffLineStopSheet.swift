@@ -32,8 +32,8 @@ public struct OffLineStopSheet: View {
                 .accessibilityIdentifier("offLine.onLine")
             } else {
                 HStack(spacing: 12) {
-                    card(.outAndBack, title: "Out and back", note: "main line unchanged", option: model.outAndBack)
-                    card(.via, title: "Via the stop", note: "dashed = old line", option: model.via)
+                    card(.outAndBack, title: "Out and back", note: "the line stays", option: model.outAndBack)
+                    card(.via, title: "Via the stop", note: "the line moves", option: model.via)
                 }
                 if model.isDownloading, model.outAndBack == .routing || model.via == .routing {
                     Text("Getting map data…")
@@ -62,7 +62,7 @@ public struct OffLineStopSheet: View {
                     .foregroundStyle(OBCTheme.ink)
                     .lineLimit(1)
                 Text("\(OBCFormat.stopOffset(meters: model.offset)) · end of Day \(model.day + 1)")
-                    .font(.system(.caption).monospacedDigit())
+                    .font(.system(.subheadline).monospacedDigit())
                     .foregroundStyle(OBCTheme.secondary)
             }
         }
@@ -102,9 +102,11 @@ public struct OffLineStopSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(OBCTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .overlay(
-                RoundedRectangle(cornerRadius: OBCTheme.radiusPanel)
-                    .strokeBorder(isCurrent ? OBCTheme.ink : OBCTheme.hairline, lineWidth: isCurrent ? 1.5 : 1))
+            .overlay {
+                if isCurrent {
+                    RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.ink, lineWidth: 1.5)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

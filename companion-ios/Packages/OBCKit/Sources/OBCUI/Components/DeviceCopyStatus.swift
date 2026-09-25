@@ -3,19 +3,26 @@ import OBCDomain
 
 /// What the device holds of this route, and the one action when there is something to do: the
 /// state row, then an amber Send or Update while the device is connected. An up-to-date copy gets
-/// no button, and a device out of reach gets a plain line instead of one.
+/// no button, and a device out of reach gets a plain line instead of one. The route page and the
+/// trip page both lead with it.
 public struct DeviceCopyStatus: View {
     let state: OnDeviceState
     let connection: ConnectionState
     let deviceName: String
+    /// The screen's identifier prefix: `detail` on the route page, `trip` on the trip page.
+    let idPrefix: String
     let onSend: () -> Void
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
-    public init(state: OnDeviceState, connection: ConnectionState, deviceName: String, onSend: @escaping () -> Void) {
+    public init(
+        state: OnDeviceState, connection: ConnectionState, deviceName: String, idPrefix: String = "detail",
+        onSend: @escaping () -> Void
+    ) {
         self.state = state
         self.connection = connection
         self.deviceName = deviceName
+        self.idPrefix = idPrefix
         self.onSend = onSend
     }
 
@@ -40,12 +47,12 @@ public struct DeviceCopyStatus: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel([stateLine, linkLine].compactMap { $0 }.joined(separator: ". "))
-            .accessibilityIdentifier("detail.deviceState")
+            .accessibilityIdentifier("\(idPrefix).deviceState")
 
             if let actionTitle, connection == .connected {
                 Button(actionTitle, action: onSend)
                     .buttonStyle(.obcPrimary)
-                    .accessibilityIdentifier("detail.upload")
+                    .accessibilityIdentifier("\(idPrefix).upload")
             }
         }
     }

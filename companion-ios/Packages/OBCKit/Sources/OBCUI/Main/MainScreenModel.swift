@@ -546,15 +546,19 @@ public final class MainScreenModel {
     /// day route is up to date. A trip the phone never pushed reads `.notOnDevice`.
     public func tripOnDeviceState(_ id: TripID) -> OnDeviceState {
         guard let trip = trip(id) else { return .notOnDevice }
-        let days = dayRoutes(of: trip)
         let tripSelf = OnDeviceState.determine(
             provenCommittedCRC: provenTripCommittedCRC(for: trip),
             currentCRC: { currentTripPayloadCRC(for: trip) }
         )
-        let dayStates = days.map { day in
+        return Self.composeTripState(tripSelf: tripSelf, dayStates: tripDayOnDeviceStates(id))
+    }
+
+    /// Each day route's copy on the connected device, in day order.
+    public func tripDayOnDeviceStates(_ id: TripID) -> [OnDeviceState] {
+        guard let trip = trip(id) else { return [] }
+        return dayRoutes(of: trip).map { day in
             OnDeviceState.determine(provenCommittedCRC: provenDayCRC(trip, day: day.day), currentCRC: { day.crc32 })
         }
-        return Self.composeTripState(tripSelf: tripSelf, dayStates: dayStates)
     }
 
     /// A day route's copy on the connected device. A copy made on another device or in another
@@ -811,7 +815,8 @@ public final class MainScreenModel {
             ))
         }
         return TripUploadModel(
-            transport: transport, tripName: trip.name, deviceName: deviceName,
+            transport: transport, card: DeviceTripCard(name: trip.name, days: days.map { $0.summary(tripID: id) }),
+            deviceName: deviceName,
             precheck: plan.precheck, steps: steps,
             timing: timing, activity: transferActivity
         )

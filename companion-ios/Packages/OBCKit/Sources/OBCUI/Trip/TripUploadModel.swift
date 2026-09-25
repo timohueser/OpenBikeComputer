@@ -83,14 +83,16 @@ public final class TripUploadModel: Identifiable {
     public private(set) var connection: ConnectionState = .connected
     /// The current queue step, zero-based, which drives the header.
     public private(set) var stepIndex = 0
-    /// Days skipped because the device already held them: the done state's tally.
+    /// Days skipped because the device already held them.
     public private(set) var skippedCount = 0
-    /// Objects committed so far, days and trip: the done state's tally.
+    /// Objects committed so far, days and trip.
     public private(set) var committedCount = 0
 
     // MARK: Fixed facts
 
-    public let tripName: String
+    /// What the device's TRIP RECEIVED card shows once the trip lands.
+    public let card: DeviceTripCard
+    public var tripName: String { card.name }
     public let deviceName: String
     /// Total queue steps: the header's denominator.
     public let stepCount: Int
@@ -111,7 +113,7 @@ public final class TripUploadModel: Identifiable {
 
     public init(
         transport: any DeviceLink,
-        tripName: String,
+        card: DeviceTripCard,
         deviceName: String,
         precheck: TripUploadPrecheck,
         steps: [QueueStep],
@@ -119,7 +121,7 @@ public final class TripUploadModel: Identifiable {
         activity: TransferActivity? = nil
     ) {
         self.transport = transport
-        self.tripName = tripName
+        self.card = card
         self.deviceName = deviceName
         self.precheck = precheck
         self.steps = steps
@@ -145,27 +147,19 @@ public final class TripUploadModel: Identifiable {
         return steps[stepIndex].title
     }
 
-    /// The queued-mode header over the per-transfer bar. It counts every step, skips and trip
-    /// object included, in the denominator.
+    /// The queued-mode line over the bar: "Day 2 · 3 of 4". It counts every step, skips and the
+    /// trip object included.
     public var stepProgressLabel: String {
         let position = min(stepIndex + 1, stepCount)
-        let title = currentStepTitle ?? tripName
-        return "Step \(position) of \(stepCount) — \(title)"
-    }
-
-    /// The done-state tally.
-    public var doneTally: String {
-        var parts = ["\(committedCount) uploaded"]
-        if skippedCount > 0 { parts.append("\(skippedCount) already on device") }
-        return parts.joined(separator: " · ")
+        return "\(currentStepTitle ?? tripName) · \(position) of \(stepCount)"
     }
 
     // MARK: Failure copy
 
     public var failedTitle: String {
         switch failure {
-        case .storagePrecheck, .device(.storageFull): "Device storage full"
-        default: "Couldn't upload trip"
+        case .storagePrecheck, .device(.storageFull): "\(deviceName) is full"
+        default: "Not sent"
         }
     }
 
@@ -173,11 +167,11 @@ public final class TripUploadModel: Identifiable {
         switch failure {
         case .storagePrecheck(let deficit):
             let noun = deficit == 1 ? "route" : "routes"
-            return "\(tripName) needs \(deficit) more \(noun) than \(deviceName) has room for. Delete routes on the device to make room, then upload the trip again."
+            return "\(tripName) needs room for \(deficit) more \(noun). Delete routes on \(deviceName), then send again."
         case .device(.storageFull):
-            return "\(deviceName)'s storage filled up mid-upload. Delete routes on the device to make room, then upload the trip again."
+            return "There is no room for more routes. Delete routes on \(deviceName), then send again. The days sent so far stay on it."
         default:
-            return "\(deviceName) didn't answer. Check that it's awake and nearby, then upload the trip again."
+            return "\(deviceName) did not answer. Make sure it is on and near your phone, then send again."
         }
     }
 
