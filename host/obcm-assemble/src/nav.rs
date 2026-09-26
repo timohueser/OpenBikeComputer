@@ -27,7 +27,7 @@ use obc_formats::obcm::{
 use obc_map_scene::ground_dist_m;
 
 use crate::emit::{scaled, MapWriter, SCALE};
-use crate::extsort::{ByteSpill, ExternalSort, SpillReader, SpillWriter};
+use crate::extsort::{ByteSpill, ExternalSort, Order, SpillReader, SpillWriter};
 use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
 use crate::qtree;
@@ -662,7 +662,7 @@ pub(crate) fn merge_profiled(
     let mut seam_digest: Vec<u64> = Vec::new(); // slot → §4.6.5 digest, still accumulating
     let mut node_out = SpillWriter::<NODE_REC>::create(scratch, share)?;
     let mut edge_out = SpillWriter::<EDGE_REC>::create(scratch, share)?;
-    let mut dups = ExternalSort::<DUP_REC>::new(scratch, budget / 2, by_dup_key);
+    let mut dups = ExternalSort::<DUP_REC, _>::new(scratch, budget / 2, by_dup_key);
     let mut id_count: u32 = 0;
     let mut edge_count: u32 = 0;
     // Where each cell's minted ids start, with the total appended — the map from a collection id
@@ -898,7 +898,7 @@ pub(crate) fn merge_profiled(
     // `emit_nodes` puts them back in it. The degree cap refuses the entries that arrive after a
     // node is full, so reproducing that order is the whole requirement.
     let mut pool_out = SpillWriter::<POOL_REC>::create(scratch, share)?;
-    let mut adj = ExternalSort::<ADJ_REC>::new(scratch, budget / 2, by_adjacency);
+    let mut adj = ExternalSort::<ADJ_REC, _>::new(scratch, budget / 2, by_adjacency);
     let mut anchors = SpillWriter::<ANCHOR_REC>::create(scratch, share)?;
     let mut snap_ord = 0u32;
     let mut source_edge = [0u8; NAV_CHUNK_SIZE];
@@ -977,7 +977,7 @@ pub(crate) fn merge_profiled(
         scratch.remove(anchors)?;
         None
     } else {
-        let mut sort = ExternalSort::<ANCHOR_REC>::new(scratch, budget / 2, by_anchor_tree_order);
+        let mut sort = ExternalSort::<ANCHOR_REC, _>::new(scratch, budget / 2, by_anchor_tree_order);
         for rec in SpillReader::<ANCHOR_REC>::open(scratch, anchors, share)? {
             sort.push(rec?)?;
         }
@@ -1046,11 +1046,11 @@ fn emit_nodes(
     share: usize,
     nodes_file: ScratchId,
     node_count: u32,
-    adj: ExternalSort<'_, ADJ_REC>,
+    adj: ExternalSort<'_, ADJ_REC, impl Order<ADJ_REC>>,
     global_bbox: UBox,
     stats: &mut NavStats,
 ) -> Result<qtree::Flattened> {
-    let mut nodes = ExternalSort::<NODE_TREE_REC>::new(scratch, budget / 2, by_node_tree_order);
+    let mut nodes = ExternalSort::<NODE_TREE_REC, _>::new(scratch, budget / 2, by_node_tree_order);
     for (dense, rec) in SpillReader::<DENSE_NODE>::open(scratch, nodes_file, share)?.enumerate() {
         let rec = rec?;
         let lat = i32::from_le_bytes(rec[0..4].try_into().expect("4 bytes"));
@@ -1198,7 +1198,11 @@ fn append_snap_anchors(
 ///
 /// What comes back is the dead copies' collection indices, ascending, and `deltas` has gained the
 /// digest contribution each of them owes back to its two endpoints.
-fn dedup(sort: ExternalSort<'_, DUP_REC>, deltas: &mut Vec<(u32, u64)>, stats: &mut NavStats) -> Result<Vec<u32>> {
+fn dedup(
+    sort: ExternalSort<'_, DUP_REC, impl Order<DUP_REC>>,
+    deltas: &mut Vec<(u32, u64)>,
+    stats: &mut NavStats,
+) -> Result<Vec<u32>> {
     let mut dead: Vec<u32> = Vec::new();
     let mut previous: Option<(u64, u32, u32, u32, u8)> = None;
     for rec in sort.finish()? {
@@ -1235,8 +1239,8 @@ fn join_first<'s>(
     pruned: &prune::Pruned,
     dead: &[u32],
     dense_by_id: ScratchId,
-) -> Result<ExternalSort<'s, DENSE_REC>> {
-    let mut sort = ExternalSort::<EDGE_REC>::new(scratch, budget / 2, by_edge_a);
+) -> Result<ExternalSort<'s, DENSE_REC, impl Order<DENSE_REC>>> {
+    let mut sort = ExternalSort::<EDGE_REC, _>::new(scratch, budget / 2, by_edge_a);
     {
         let mut labels = SpillReader::<4>::open(scratch, pruned.edge_comp, share)?;
         let mut next_dead = 0usize;
@@ -1260,7 +1264,7 @@ fn join_first<'s>(
     scratch.remove(edge_file)?;
     scratch.remove(pruned.edge_comp)?;
 
-    let mut out = ExternalSort::<DENSE_REC>::new(scratch, budget / 2, by_endpoint_b);
+    let mut out = ExternalSort::<DENSE_REC, _>::new(scratch, budget / 2, by_endpoint_b);
     let mut dense = SpillReader::<JOIN_REC>::open(scratch, dense_by_id, share)?;
     let mut head = dense.next().transpose()?;
     for rec in sort.finish()? {
@@ -1291,11 +1295,11 @@ fn join_second<'s>(
     scratch: &'s dyn ScratchStore,
     budget: usize,
     share: usize,
-    sort: ExternalSort<'s, DENSE_REC>,
+    sort: ExternalSort<'s, DENSE_REC, impl Order<DENSE_REC>>,
     dense_by_id: ScratchId,
     stats: &mut NavStats,
-) -> Result<ExternalSort<'s, DENSE_REC>> {
-    let mut out = ExternalSort::<DENSE_REC>::new(scratch, budget / 2, by_emission);
+) -> Result<ExternalSort<'s, DENSE_REC, impl Order<DENSE_REC>>> {
+    let mut out = ExternalSort::<DENSE_REC, _>::new(scratch, budget / 2, by_emission);
     let mut dense = SpillReader::<JOIN_REC>::open(scratch, dense_by_id, share)?;
     let mut head = dense.next().transpose()?;
     let mut kept = 0usize;
@@ -1394,7 +1398,7 @@ fn renumber(
     // Two readers and two sorts are alive at once, so the sorts take half the budget each and the
     // readers a share. The streams are read strictly forward, which is why their share is small.
     let read_budget = share.max(NODE_REC);
-    let mut sort = ExternalSort::<SORT_REC>::new(scratch, (budget / 2).max(SORT_REC), by_node_key);
+    let mut sort = ExternalSort::<SORT_REC, _>::new(scratch, (budget / 2).max(SORT_REC), by_node_key);
     {
         let mut labels = SpillReader::<4>::open(scratch, node_comp, read_budget)?;
         let mut next_delta = 0usize;
@@ -1421,7 +1425,7 @@ fn renumber(
 
     let mut nodes = SpillWriter::<DENSE_NODE>::create(scratch, share)?;
     let mut count = 0u32;
-    let mut by_id = ExternalSort::<JOIN_REC>::new(scratch, (budget / 2).max(JOIN_REC), by_join_id);
+    let mut by_id = ExternalSort::<JOIN_REC, _>::new(scratch, (budget / 2).max(JOIN_REC), by_join_id);
     for rec in sort.finish()? {
         let (lat, lon, _, id) = node_key(&rec?);
         let dense = count;

@@ -24,7 +24,7 @@
 //! implement, for an input that is tens of megabytes at the very worst.
 use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF};
 
-use crate::extsort::{ByteReader, ByteSpill, ExternalSort, SpillReader, SpillWriter};
+use crate::extsort::{ByteReader, ByteSpill, ExternalSort, Order, SpillReader, SpillWriter};
 use crate::grid::UBox;
 use crate::scratch::{ScratchId, ScratchStore};
 use crate::{Error, Result};
@@ -509,7 +509,7 @@ struct Frame {
 /// moment the running total passes it. That is the same verdict: a running total that passes the
 /// capacity proves the total does, and a node whose accumulation never passes it has a total that
 /// does not.
-struct Shape<'s> {
+struct Shape<'s, O> {
     capacity: usize,
     cur: Cur,
     stack: Vec<Frame>,
@@ -523,11 +523,11 @@ struct Shape<'s> {
     /// numbering is arithmetic over.
     at_depth: Vec<u32>,
     branches: Vec<u32>,
-    out: ExternalSort<'s, NODE_REC>,
+    out: ExternalSort<'s, NODE_REC, O>,
 }
 
-impl<'s> Shape<'s> {
-    fn new(bbox: UBox, capacity: usize, out: ExternalSort<'s, NODE_REC>) -> Shape<'s> {
+impl<'s, O: Order<NODE_REC>> Shape<'s, O> {
+    fn new(bbox: UBox, capacity: usize, out: ExternalSort<'s, NODE_REC, O>) -> Shape<'s, O> {
         Shape {
             capacity,
             cur: Cur { bbox, depth: 0, prefix: 0 },
@@ -633,7 +633,7 @@ impl<'s> Shape<'s> {
     }
 
     /// Close the open node and every node still open above it.
-    fn finish(mut self) -> Result<(ExternalSort<'s, NODE_REC>, Vec<u32>)> {
+    fn finish(mut self) -> Result<(ExternalSort<'s, NODE_REC, O>, Vec<u32>)> {
         loop {
             self.close_leaf()?;
             if !self.advance() {
@@ -691,7 +691,7 @@ pub fn flatten_streaming(
     let share = (budget / 8).max(TREE_REC);
 
     // 1. The shape.
-    let mut shape = Shape::new(bbox, capacity, ExternalSort::<NODE_REC>::new(scratch, budget / 2, by_bfs));
+    let mut shape = Shape::new(bbox, capacity, ExternalSort::<NODE_REC, _>::new(scratch, budget / 2, by_bfs));
     // A leaf's run is named by stream position, not by `ord`, so that is what goes into the shape
     // pass. The two differ the moment the tree order is not the input order.
     for (pos, rec) in SpillReader::<TREE_REC>::open(scratch, points, share)?.enumerate() {
@@ -713,7 +713,7 @@ pub fn flatten_streaming(
     // 2. The index and the bin packing, in BFS order.
     let mut index = SpillWriter::<4>::create(scratch, share)?;
     // A quarter, because the chunk layout merges this while its own sort takes half.
-    let mut places = ExternalSort::<PLACE_REC>::new(scratch, budget / 4, by_first);
+    let mut places = ExternalSort::<PLACE_REC, _>::new(scratch, budget / 4, by_first);
     let mut free = FirstFit::new();
     let mut bins = 0usize;
     let mut dropped = 0usize;
@@ -772,14 +772,14 @@ pub fn flatten_streaming(
 fn lay_out_chunks(
     scratch: &dyn ScratchStore,
     budget: usize,
-    places: ExternalSort<'_, PLACE_REC>,
+    places: ExternalSort<'_, PLACE_REC, impl Order<PLACE_REC>>,
     points: ScratchId,
     recs: ScratchId,
     chunk_count: u64,
     chunk_size: usize,
 ) -> Result<ScratchId> {
     let share = (budget / 8).max(PIECE_REC);
-    let mut pieces = ExternalSort::<PIECE_REC>::new(scratch, budget / 2, by_position);
+    let mut pieces = ExternalSort::<PIECE_REC, _>::new(scratch, budget / 2, by_position);
     {
         let mut points_in = SpillReader::<TREE_REC>::open(scratch, points, share)?;
         let mut recs_in = ByteReader::open(scratch, recs, share)?;

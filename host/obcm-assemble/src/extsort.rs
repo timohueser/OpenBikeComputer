@@ -22,10 +22,13 @@
 //! Callers should still prefer a comparator that is a total order, because then the result does not
 //! depend on stability at all. What a comparator may not be is inconsistent: `sort_by` guarantees
 //! nothing beyond "does not panic, does not lose records" for one, and the k-way merge would
-//! produce an unsorted stream, so determinism would be lost silently. Comparators here are `fn`
-//! pointers over plain byte arrays precisely so they are easy to keep pure.
+//! produce an unsorted stream, so determinism would be lost silently. Comparators here are plain
+//! functions over byte arrays precisely so they are easy to keep pure. Pass one by name: a named
+//! `fn` is its own zero-sized type, so the sort and the merge are compiled for it and inline it,
+//! where a [`Comparator`] pointer costs an indirect call per comparison.
 
 use std::cmp::Ordering;
+use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 
 use crate::scratch::{ScratchId, ScratchStore};
@@ -33,6 +36,11 @@ use crate::Result;
 
 /// How two `R`-byte records order. See the module header for the contract.
 pub type Comparator<const R: usize> = fn(&[u8; R], &[u8; R]) -> Ordering;
+
+/// A comparator passed by name, or a [`Comparator`] pointer.
+pub trait Order<const R: usize>: Fn(&[u8; R], &[u8; R]) -> Ordering + Copy {}
+
+impl<const R: usize, F: Fn(&[u8; R], &[u8; R]) -> Ordering + Copy> Order<R> for F {}
 
 /// How many `R`-byte records `budget` bytes hold — at least one, or a sort could never make
 /// progress.
@@ -285,48 +293,48 @@ impl<const R: usize> Iterator for BlockReader<'_, R> {
 ///
 /// `Ord` is reversed so [`BinaryHeap`]'s max-heap pops the smallest record, and ties go to the
 /// lowest run index — runs are numbered in push order, which is what makes the whole sort stable.
-struct Head<const R: usize> {
+struct Head<const R: usize, O> {
     rec: [u8; R],
     run: usize,
-    order: Comparator<R>,
+    order: O,
 }
 
-impl<const R: usize> Ord for Head<R> {
+impl<const R: usize, O: Order<R>> Ord for Head<R, O> {
     fn cmp(&self, other: &Self) -> Ordering {
         (self.order)(&other.rec, &self.rec).then_with(|| other.run.cmp(&self.run))
     }
 }
 
-impl<const R: usize> PartialOrd for Head<R> {
+impl<const R: usize, O: Order<R>> PartialOrd for Head<R, O> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<const R: usize> PartialEq for Head<R> {
+impl<const R: usize, O: Order<R>> PartialEq for Head<R, O> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl<const R: usize> Eq for Head<R> {}
+impl<const R: usize, O: Order<R>> Eq for Head<R, O> {}
 
 /// A sort of `R`-byte records that never holds more than its budget.
 ///
 /// Push everything, then [`ExternalSort::finish`] for the sorted stream. Dropping an unfinished
 /// sort removes its runs.
-pub struct ExternalSort<'s, const R: usize> {
+pub struct ExternalSort<'s, const R: usize, O = Comparator<R>> {
     scratch: &'s dyn ScratchStore,
     budget: usize,
     /// Records the run buffer may hold — `budget / R`.
     cap: usize,
     buf: Vec<[u8; R]>,
     runs: Vec<(ScratchId, u64)>,
-    order: Comparator<R>,
+    order: O,
 }
 
-impl<'s, const R: usize> ExternalSort<'s, R> {
-    pub fn new(scratch: &'s dyn ScratchStore, budget: usize, order: Comparator<R>) -> ExternalSort<'s, R> {
+impl<'s, const R: usize, O: Order<R>> ExternalSort<'s, R, O> {
+    pub fn new(scratch: &'s dyn ScratchStore, budget: usize, order: O) -> ExternalSort<'s, R, O> {
         let cap = records_in(budget / RUN_SHARE, R);
         ExternalSort { scratch, budget, cap, buf: Vec::new(), runs: Vec::new(), order }
     }
@@ -370,7 +378,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
 
     /// The sorted records. Nothing is materialized: a single run that never spilled is served from
     /// the buffer that already holds it, and anything larger is merged as it is read.
-    pub fn finish(mut self) -> Result<SortedRecords<'s, R>> {
+    pub fn finish(mut self) -> Result<SortedRecords<'s, R, O>> {
         if self.runs.is_empty() {
             self.buf.sort_by(self.order);
             return Ok(SortedRecords {
@@ -388,7 +396,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
         // budget has records still runs, slower and correct.
         let per = records_in(self.budget / (self.runs.len() + 1), R);
         let mut cursors: Vec<BlockReader<'s, R>> = Vec::with_capacity(self.runs.len());
-        let mut heap: BinaryHeap<Head<R>> = BinaryHeap::with_capacity(self.runs.len());
+        let mut heap: BinaryHeap<Head<R, O>> = BinaryHeap::with_capacity(self.runs.len());
         for (run, &(id, count)) in self.runs.iter().enumerate() {
             let mut cursor = BlockReader::new(self.scratch, id, 0, count * R as u64, per);
             if let Some(rec) = cursor.next() {
@@ -401,7 +409,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
     }
 }
 
-impl<const R: usize> Drop for ExternalSort<'_, R> {
+impl<const R: usize, O> Drop for ExternalSort<'_, R, O> {
     fn drop(&mut self) {
         for &(id, _) in &self.runs {
             let _ = self.scratch.remove(id);
@@ -409,14 +417,14 @@ impl<const R: usize> Drop for ExternalSort<'_, R> {
     }
 }
 
-enum Source<'s, const R: usize> {
+enum Source<'s, const R: usize, O> {
     Memory {
         buf: Vec<[u8; R]>,
         at: usize,
     },
     Merge {
         cursors: Vec<BlockReader<'s, R>>,
-        heap: BinaryHeap<Head<R>>,
+        heap: BinaryHeap<Head<R, O>>,
         /// `None` once a run's file is already deleted, which happens the moment its cursor
         /// exhausts rather than when the stream drops. On the merge's workloads push order
         /// correlates with key order, so runs drain one after another and the spill shrinks while
@@ -426,12 +434,12 @@ enum Source<'s, const R: usize> {
 }
 
 /// The sorted stream. Read it once, front to back; the runs behind it are deleted when it drops.
-pub struct SortedRecords<'s, const R: usize> {
-    source: Source<'s, R>,
+pub struct SortedRecords<'s, const R: usize, O = Comparator<R>> {
+    source: Source<'s, R, O>,
     scratch: &'s dyn ScratchStore,
 }
 
-impl<const R: usize> Iterator for SortedRecords<'_, R> {
+impl<const R: usize, O: Order<R>> Iterator for SortedRecords<'_, R, O> {
     type Item = Result<[u8; R]>;
 
     fn next(&mut self) -> Option<Result<[u8; R]>> {
@@ -442,9 +450,12 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
                 Some(Ok(rec))
             }
             Source::Merge { cursors, heap, runs } => {
-                let head = heap.pop()?;
+                // The run's next record replaces its head in place, which costs one sift instead
+                // of a pop and a push.
+                let mut head = heap.peek_mut()?;
+                let rec = head.rec;
                 match cursors[head.run].next() {
-                    Some(Ok(rec)) => heap.push(Head { rec, run: head.run, order: head.order }),
+                    Some(Ok(next)) => head.rec = next,
                     Some(Err(e)) => return Some(Err(e)),
                     None => {
                         // This run's last record is the one being handed out, so its file is dead
@@ -452,9 +463,10 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
                         if let Some(id) = runs[head.run].take() {
                             let _ = self.scratch.remove(id);
                         }
+                        PeekMut::pop(head);
                     }
                 }
-                Some(Ok(head.rec))
+                Some(Ok(rec))
             }
         }
     }
@@ -465,7 +477,7 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
 /// Best-effort by design: a scratch file that cannot be deleted is bytes nothing can reach any
 /// more, on a host that is about to drop its whole scratch area. Failing an assembly over it would
 /// turn a storage hiccup into a map that was never written.
-impl<const R: usize> Drop for SortedRecords<'_, R> {
+impl<const R: usize, O> Drop for SortedRecords<'_, R, O> {
     fn drop(&mut self) {
         if let Source::Merge { runs, cursors, heap } = &mut self.source {
             cursors.clear();
