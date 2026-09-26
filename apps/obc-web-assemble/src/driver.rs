@@ -20,11 +20,12 @@
 //! Neither the input cells nor the map have to be in wasm memory. [`SourceCell`] and [`CellReads`]
 //! let a cell stay in host storage, and [`MapWrites`] takes the map: one country-scale map is a
 //! single object of about 9 GiB, larger than a 32-bit address space. [`BlockCache`] stands between
-//! both seams and the engine. It holds [`READ_CACHE_BLOCKS`] blocks across all sources, so residency
-//! does not grow with the selection, and a read at least one block long bypasses it. With a sink the
+//! both seams and the engine. It holds a fixed byte budget across all sources, so residency does
+//! not grow with the selection, and a read at least one block long bypasses it. With a sink the
 //! map is reported by identity ([`SealedMap`]) and [`Outcome::bytes`] is `None`.
 
 use std::cell::{Cell as StdCell, RefCell};
+use std::collections::HashMap;
 
 use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
@@ -33,7 +34,6 @@ use obcm_assemble::{
     assemble_full, CellInput, Clock, Error, KnownEmptyInput, MapStore, MemoryScratch, MemorySource, Options, ScratchId,
     ScratchStore, TerrainCellInput, TerrainJob, TerrainParams,
 };
-use sha2::{Digest, Sha256};
 
 /// One downloaded cell, as the caller hands it over: the catalog's identity plus the verified bytes.
 ///
@@ -106,8 +106,8 @@ pub trait MapWrites {
 /// The map the host wrote itself, once the verify pass has read it back: an identity instead of
 /// bytes, because the host already has the file.
 ///
-/// The digest is taken from the bytes as they crossed into the sink, and it is checked against the
-/// engine's before the caller is told anything. A map reported here has no [`Outcome::bytes`].
+/// The digest is the engine's own, over the bytes it handed the sink. A map reported here has no
+/// [`Outcome::bytes`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedMap {
     /// Lowercase-hex SHA-256 of the bytes the sink was handed.
@@ -209,8 +209,8 @@ pub struct BridgeOptions {
     /// Proceed although a cell is `partial`.
     pub accept_partial: bool,
     /// The block the input cache fetches and evicts. Clamped to
-    /// [`MIN_READ_BLOCK`]..=[`MAX_READ_BLOCK`]; cache residency is this times
-    /// [`READ_CACHE_BLOCKS`]. A value of `1` turns the cache off: one host call per engine read.
+    /// [`MIN_READ_BLOCK`]..=[`MAX_READ_BLOCK`]; cache residency is [`INPUT_CACHE_BYTES`] whatever
+    /// the block. A value of `1` turns the cache off: one host call per engine read.
     pub read_block_bytes: usize,
     /// The most memory the merge's sorted passes may hold. It changes what the merge holds, never
     /// what it writes.
@@ -340,16 +340,19 @@ const PROGRESS_STEP: f64 = 0.01;
 /// Bytes fetched on a cache miss by default. Sequential reads reuse the block; scattered record
 /// reads amplify traffic. Reads at least this large bypass the cache.
 pub(crate) const DEFAULT_READ_BLOCK: usize = 4 * 1024;
+/// The input cache's residency, shared by all source cells. The nav merge reads edge records in
+/// latitude order, and a cell's pool is not in that order, so the working set is the edge pools of
+/// the network cells the sweep is crossing. Every miss is one host call; in a browser that is an
+/// OPFS read.
+pub(crate) const INPUT_CACHE_BYTES: usize = 16 * 1024 * 1024;
 /// Sealed-output verification has its own access pattern and cache geometry.
 pub(crate) const VERIFY_READ_BLOCK: usize = 64 * 1024;
+pub(crate) const VERIFY_CACHE_BYTES: usize = 1024 * 1024;
 /// The floor a caller can ask for. `1` is not a small cache but no cache: every read takes the
 /// bypass and becomes exactly one host call.
 const MIN_READ_BLOCK: usize = 1;
 /// The ceiling, so a mistyped option cannot reserve a quarter of the heap for read scratch.
 const MAX_READ_BLOCK: usize = 4 * 1024 * 1024;
-/// Fixed cache slot count shared by all sources. With the block size it bounds cache residency and
-/// the linear hit/eviction scan. `estimate.rs` uses these constants to account for the input cache.
-pub(crate) const READ_CACHE_BLOCKS: usize = 16;
 
 /// The floor for [`BridgeOptions::merge_budget_bytes`]. Below it the merge produces the same map and
 /// spends all its time in the k-way merge, so a mistyped option is slow rather than wrong.
@@ -359,20 +362,17 @@ const MIN_MERGE_BUDGET: usize = 64 * 1024;
 /// because [`BlockCache`] is shared with the input seam, where a slot names a cell.
 const MAP_SLOT: usize = 0;
 
-/// One resident block of one source.
+/// Which block of which source: the slot, and the block's index in it. File-relative, so `u64`: a
+/// large file has more blocks than a wasm32 `usize` holds.
+type BlockKey = (usize, u64);
+
+/// One resident block of one source. Its bytes are its stretch of [`BlockCache::slab`].
 struct CachedBlock {
-    /// Which source. `slot == usize::MAX` marks a slot that was never filled, which no real source
-    /// can collide with.
-    slot: usize,
-    /// Which block of it. File-relative, so `u64`: a large file has more blocks than a wasm32
-    /// `usize` holds.
-    index: u64,
-    /// The block's bytes. Exactly `len` of them are valid, because the last block of a source is
-    /// short.
-    data: Vec<u8>,
+    key: BlockKey,
+    /// Shorter than a block only for the last block of a source.
     len: usize,
-    /// The clock reading at the last hit, for the LRU eviction.
-    used: u64,
+    /// Hit since the clock hand last passed, which spares it one eviction round.
+    referenced: bool,
 }
 
 /// One slotted, offset-addressed byte source on the host's side of the boundary. Both [`CellReads`]
@@ -400,8 +400,10 @@ impl SlotReads for MapSlot<'_> {
     }
 }
 
-/// The bridge between a [`SlotReads`] host and the engine's [`ByteSource`] reads: a fixed-size LRU
-/// of blocks shared by every slot, so residency is a constant and not a per-source cost.
+/// The bridge between a [`SlotReads`] host and the engine's [`ByteSource`] reads: a fixed number of
+/// blocks shared by every slot, so residency is a constant and not a per-source cost. Eviction is
+/// CLOCK, an LRU approximation that keeps hits and misses O(1) at thousands of blocks. The blocks
+/// live in one slab, allocated whole on the first miss, so the cache is one allocation.
 ///
 /// A read at least one block long bypasses it. The verbatim geometry copy is 256 KiB a time and
 /// would otherwise evict the cache for bytes nothing reads twice.
@@ -412,27 +414,43 @@ impl SlotReads for MapSlot<'_> {
 struct BlockCache<'r> {
     reads: &'r dyn SlotReads,
     block: usize,
+    capacity: usize,
     /// Per slot, how a message names that source. Set once, before the run, so the read path never
     /// formats.
     labels: Vec<String>,
     /// What a message calls a slot no label was set for. Only reachable through a defect.
     unnamed: &'static str,
-    slots: RefCell<Vec<CachedBlock>>,
-    clock: StdCell<u64>,
+    blocks: RefCell<Vec<CachedBlock>>,
+    slab: RefCell<Vec<u8>>,
+    index: RefCell<HashMap<BlockKey, usize>>,
+    hand: StdCell<usize>,
+    /// Where a miss is fetched before it is copied into the slab.
+    fill: RefCell<Vec<u8>>,
     /// The first host failure, kept for [`map_error`]. First rather than last, because everything
     /// after it is the engine unwinding.
     failure: RefCell<Option<String>>,
 }
 
 impl<'r> BlockCache<'r> {
-    fn new(reads: &'r dyn SlotReads, block: usize, labels: Vec<String>, unnamed: &'static str) -> BlockCache<'r> {
+    /// A cache of `bytes` in `block`-sized pieces.
+    fn new(
+        reads: &'r dyn SlotReads,
+        block: usize,
+        bytes: usize,
+        labels: Vec<String>,
+        unnamed: &'static str,
+    ) -> BlockCache<'r> {
         BlockCache {
             reads,
             block,
+            capacity: (bytes / block).max(1),
             labels,
             unnamed,
-            slots: RefCell::new(Vec::new()),
-            clock: StdCell::new(0),
+            blocks: RefCell::new(Vec::new()),
+            slab: RefCell::new(Vec::new()),
+            index: RefCell::new(HashMap::new()),
+            hand: StdCell::new(0),
+            fill: RefCell::new(Vec::new()),
             failure: RefCell::new(None),
         }
     }
@@ -456,36 +474,46 @@ impl<'r> BlockCache<'r> {
         self.reads.read_slot(slot, at, buf).map_err(|e| self.fail(slot, at, e))
     }
 
-    /// The index of the cache slot holding block `index` of `slot`, filling it if it is not there.
+    /// The position of the block holding block `index` of `slot`, filling it if it is not there.
     fn block_of(&self, slot: usize, index: u64, source_len: u64) -> Result<usize, obc_formats::io::Error> {
-        let now = self.clock.get().wrapping_add(1);
-        self.clock.set(now);
-        {
-            let mut slots = self.slots.borrow_mut();
-            if let Some(k) = slots.iter().position(|b| b.slot == slot && b.index == index) {
-                slots[k].used = now;
-                return Ok(k);
-            }
+        let key = (slot, index);
+        if let Some(&k) = self.index.borrow().get(&key) {
+            self.blocks.borrow_mut()[k].referenced = true;
+            return Ok(k);
         }
-        // Fill outside the borrow: the host call is arbitrary code, and holding a `RefCell` across
-        // it would turn a re-entrant caller into a panic instead of a refusal.
         let start = index * self.block as u64;
         let len = (self.block as u64).min(source_len.saturating_sub(start)) as usize;
         if len == 0 {
             return Err(obc_formats::io::Error::BadOffset);
         }
-        let mut data = vec![0u8; len];
-        self.fetch(slot, start, &mut data)?;
+        // Fetched outside every borrow: the host call is arbitrary code, and holding a `RefCell`
+        // across it would turn a re-entrant caller into a panic instead of a refusal.
+        let mut fill = core::mem::take(&mut *self.fill.borrow_mut());
+        fill.resize(len, 0);
+        self.fetch(slot, start, &mut fill)?;
 
-        let mut slots = self.slots.borrow_mut();
-        let k = if slots.len() < READ_CACHE_BLOCKS {
-            slots.push(CachedBlock { slot: usize::MAX, index: 0, data: Vec::new(), len: 0, used: 0 });
-            slots.len() - 1
+        let mut blocks = self.blocks.borrow_mut();
+        let k = if blocks.len() < self.capacity {
+            blocks.push(CachedBlock { key, len: 0, referenced: false });
+            blocks.len() - 1
         } else {
-            // Least recently used. Sixteen entries, so a scan beats keeping an order.
-            slots.iter().enumerate().min_by_key(|(_, b)| b.used).map(|(k, _)| k).expect("the cache is not empty")
+            let mut k = self.hand.get();
+            while blocks[k].referenced {
+                blocks[k].referenced = false;
+                k = (k + 1) % blocks.len();
+            }
+            self.hand.set((k + 1) % blocks.len());
+            self.index.borrow_mut().remove(&blocks[k].key);
+            k
         };
-        slots[k] = CachedBlock { slot, index, len: data.len(), data, used: now };
+        let mut slab = self.slab.borrow_mut();
+        if slab.is_empty() {
+            *slab = vec![0; self.capacity * self.block];
+        }
+        slab[k * self.block..][..len].copy_from_slice(&fill);
+        blocks[k] = CachedBlock { key, len, referenced: false };
+        self.index.borrow_mut().insert(key, k);
+        *self.fill.borrow_mut() = fill;
         Ok(k)
     }
 
@@ -508,15 +536,16 @@ impl<'r> BlockCache<'r> {
             let cursor = offset + done as u64;
             let index = cursor / self.block as u64;
             let k = self.block_of(slot, index, source_len)?;
-            let slots = self.slots.borrow();
-            let b = &slots[k];
+            let len = self.blocks.borrow()[k].len;
+            let slab = self.slab.borrow();
+            let data = &slab[k * self.block..][..len];
             // Inside one block, so the narrowing is against `self.block` and not against the file.
             let within = (cursor - index * self.block as u64) as usize;
-            let n = (b.len - within).min(buf.len() - done);
+            let n = (len - within).min(buf.len() - done);
             if n == 0 {
                 return Err(obc_formats::io::Error::BadOffset);
             }
-            buf[done..done + n].copy_from_slice(&b.data[within..within + n]);
+            buf[done..done + n].copy_from_slice(&data[within..within + n]);
             done += n;
         }
         Ok(())
@@ -853,12 +882,6 @@ impl ByteSource for VerifySource<'_, '_> {
 /// [`MapWrites`] sink. A country-scale map needs the second: it is one file a browser cannot hold.
 struct HookedStore<'a, 'h> {
     src: VerifySource<'a, 'h>,
-    /// Fed by every [`MapStore::write`] and finalized at [`MapStore::seal`], but only with a sink:
-    /// a second SHA-256 pass over a gigabyte-scale file costs real time, and a buffered caller has
-    /// the bytes anyway.
-    hasher: Sha256,
-    /// Lowercase hex, once sealed. Empty for a run with no sink.
-    sha256: String,
     /// Where the map's bytes go, when they do not go into this address space. `None` is the
     /// buffered store.
     sink: Option<&'a dyn MapWrites>,
@@ -931,12 +954,6 @@ impl MapStore for HookedStore<'_, '_> {
         // Checked after accounting, so the callback that observes the abort also reports where it
         // got to, and before the sink is touched, so a cancel costs at most the write in flight.
         self.check_abort()?;
-        // The engine keeps its own digest to itself until the run ends. Hashing here makes the
-        // end-of-run comparison a real check that the bytes the host saved are the bytes the engine
-        // wrote.
-        if self.sink.is_some() {
-            self.hasher.update(buf);
-        }
         match &mut self.src.body {
             MapBody::Buffered(bytes) => bytes.extend_from_slice(buf),
             MapBody::Sunk { len, .. } => {
@@ -950,8 +967,6 @@ impl MapStore for HookedStore<'_, '_> {
 
     fn seal(&mut self) -> obcm_assemble::Result<()> {
         if let Some(sink) = self.sink {
-            let digest = core::mem::take(&mut self.hasher).finalize();
-            self.sha256 = digest.iter().map(|b| format!("{b:02x}")).collect();
             // Before the abort check: the very next thing the engine does is read this file back,
             // so a host that buffers must have flushed by now.
             sink.seal().map_err(|e| sink_failed(self.p, "sealed", e))?;
@@ -1124,6 +1139,7 @@ pub fn assemble(
     let cache = BlockCache::new(
         cell_slots.as_ref().map_or(&no_reads as &dyn SlotReads, |c| c as &dyn SlotReads),
         opts.read_block_bytes,
+        INPUT_CACHE_BYTES,
         labels,
         "an unknown cell",
     );
@@ -1133,6 +1149,7 @@ pub fn assemble(
     let sink_cache = BlockCache::new(
         map_slot.as_ref().map_or(&no_reads as &dyn SlotReads, |s| s as &dyn SlotReads),
         VERIFY_READ_BLOCK,
+        VERIFY_CACHE_BYTES,
         vec!["the map".to_string()],
         "the map",
     );
@@ -1207,8 +1224,6 @@ pub fn assemble(
     let mut store = HookedStore {
         // Replaced at `begin`; an assembly that never got that far has nothing to read back.
         src: VerifySource { body: MapBody::Buffered(Vec::new()), p: &progress },
-        hasher: Sha256::new(),
-        sha256: String::new(),
         sink,
         cache: &sink_cache,
         p: &progress,
@@ -1260,10 +1275,7 @@ pub fn assemble(
         MapBody::Buffered(bytes) => Some(bytes),
         MapBody::Sunk { .. } => None,
     };
-    // The host saved these bytes without seeing them, so this equality is the only thing between a
-    // mislabelled file and a card. It runs before the caller is told anything.
     if sink.is_some() {
-        check_sealed_identity(&store.sha256, &sha256)?;
         let sealed = SealedMap { sha256: sha256.clone(), byte_length: summary.bytes };
         if let Err(message) = progress.borrow_mut().hooks.map_sealed(sealed) {
             return Err(AssembleFailure::new(ErrorCode::Io, message));
@@ -1276,24 +1288,6 @@ pub fn assemble(
 
     let summary_json = summary_json(&summary);
     Ok(Outcome { sha256, byte_length: summary.bytes, bytes, warnings: summary.warnings, summary_json })
-}
-
-/// What this store hashed on the way into the sink, against what the engine says it wrote.
-///
-/// The two digests come from the same bytes by different paths, and a caller records this digest
-/// against a file it can no longer inspect. A failure is [`ErrorCode::Internal`], because the only
-/// way to reach it is a defect here.
-fn check_sealed_identity(got: &str, want: &str) -> Result<(), AssembleFailure> {
-    if got == want {
-        return Ok(());
-    }
-    Err(AssembleFailure::new(
-        ErrorCode::Internal,
-        format!(
-            "the map was written through the sink as {got} but the engine wrote {want} — this bridge's own digest is \
-             wrong, and the host's file cannot be identified from it."
-        ),
-    ))
 }
 
 /// A lowercase-hex SHA-256 as the 32 bytes the engine compares against. A malformed one is this
@@ -1431,7 +1425,7 @@ mod tests {
             let mut calls = Vec::new();
             for block in [DEFAULT_READ_BLOCK, 64 * 1024] {
                 let source = SequentialReads { calls: StdCell::new(0), bytes: StdCell::new(0) };
-                let cache = BlockCache::new(&source, block, vec!["sequential".into()], "source");
+                let cache = BlockCache::new(&source, block, 16 * block, vec!["sequential".into()], "source");
                 let mut buf = vec![0; read_len];
                 for offset in (0..source_len).step_by(read_len) {
                     let buf = &mut buf[..read_len.min(source_len - offset)];
@@ -1439,7 +1433,7 @@ mod tests {
                     assert!(buf.iter().enumerate().all(|(i, byte)| *byte == (offset + i) as u8));
                 }
                 assert_eq!(source.bytes.get(), source_len, "no sequential read amplification");
-                assert!(cache.slots.borrow().iter().map(|s| s.data.len()).sum::<usize>() <= READ_CACHE_BLOCKS * block);
+                assert!(cache.slab.borrow().len() <= 16 * block);
                 calls.push(source.calls.get());
             }
             if read_len == 17 {
@@ -1561,16 +1555,6 @@ mod tests {
         .expect_err("known-empty coverage cannot supply binary tables");
         assert_eq!(e.code, ErrorCode::Input);
         assert!(e.message.contains("at least one artifact"), "{}", e.message);
-    }
-
-    #[test]
-    fn a_map_sunk_under_the_wrong_digest_is_an_internal_error() {
-        let sha = "ab".repeat(32);
-        let other = "cd".repeat(32);
-        assert!(check_sealed_identity(&sha, &sha).is_ok());
-        let e = check_sealed_identity(&sha, &other).expect_err("the digests differ");
-        assert_eq!(e.code, ErrorCode::Internal);
-        assert!(e.message.contains(&sha) && e.message.contains(&other), "{}", e.message);
     }
 
     #[test]

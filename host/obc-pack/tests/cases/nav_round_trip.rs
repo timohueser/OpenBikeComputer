@@ -143,9 +143,9 @@ fn four_way_crossing_round_trips_identically() {
     let center = &decoded[&0];
     assert_eq!(center.neighbors.len(), 4, "the crossing has degree 4");
     for (k, e) in edges.iter().enumerate() {
-        // The crossing's k-th adjacency entry: arm id, its inline coord, the cost, the kind.
-        let adj = center.neighbors[k];
-        assert_eq!(adj.id, e.b);
+        // The crossing's entry for this arm: its inline coord, the cost, the kind. Entries follow the
+        // pool order, not the input order.
+        let adj = *center.neighbors.iter().find(|n| n.id == e.b).expect("the crossing lists every arm");
         // Exact delta reconstruction: the neighbor's stored i16 delta + the record's own coord must
         // reproduce the neighbor node's absolute coord bit-for-bit.
         assert_eq!((adj.lon, adj.lat), graph.nodes[e.b as usize].coord, "neighbor coord = node coord + i16 delta");
@@ -162,6 +162,44 @@ fn four_way_crossing_round_trips_identically() {
         assert_eq!(poly, e.polyline, "edge {k} polyline survives byte-exact");
         assert_eq!(len, e.length_m, "edge {k} length");
     }
+}
+
+/// The edge pool follows `obcm-assemble`'s emission order, lower endpoint by `(lat, lon)` and then
+/// the upper one, whatever order the graph lists its edges in. An assembly then reads each cell's
+/// pool front to back.
+#[test]
+fn the_edge_pool_is_in_emission_order() {
+    // A 3×3 lattice whose edges are listed from the north-east corner backwards.
+    let nodes: Vec<Node> = (0..9u32)
+        .map(|k| Node { id: k, coord: (100_000 + 1_000 * (k % 3) as i32, 100_000 + 1_000 * (k / 3) as i32) })
+        .collect();
+    let mut edges = Vec::new();
+    for k in (0..9u32).rev() {
+        let right = (k % 3 != 2).then_some(k + 1);
+        let up = (k < 6).then_some(k + 3);
+        for n in [right, up].into_iter().flatten() {
+            let polyline = vec![nodes[n as usize].coord, nodes[k as usize].coord];
+            edges.push(Edge { a: n, b: k, polyline, length_m: 1_000, kind: 0 });
+        }
+    }
+    let decoded = decode_all(&map_with(&NavGraph { nodes, edges }));
+
+    let lat_lon = |id: u32| {
+        let (lon, lat) = decoded[&id].coord;
+        (lat, lon)
+    };
+    let mut pool: Vec<(u32, _)> = decoded
+        .iter()
+        .flat_map(|(&a, d)| d.neighbors.iter().map(move |n| (n.edge_id, a, n.id)))
+        .map(|(edge_id, a, b)| {
+            let (p, q) = (lat_lon(a), lat_lon(b));
+            (edge_id, (p.min(q), p.max(q)))
+        })
+        .collect();
+    pool.sort_unstable();
+    pool.dedup();
+    assert_eq!(pool.len(), 12, "every lattice edge is pooled once");
+    assert!(pool.windows(2).all(|w| w[0].1 <= w[1].1), "edge ids follow the emission order: {pool:?}");
 }
 
 /// An empty graph (a map with no routable ways) serializes and parses: an empty

@@ -22,17 +22,22 @@
 //! Callers should still prefer a comparator that is a total order, because then the result does not
 //! depend on stability at all. What a comparator may not be is inconsistent: `sort_by` guarantees
 //! nothing beyond "does not panic, does not lose records" for one, and the k-way merge would
-//! produce an unsorted stream, so determinism would be lost silently. Comparators here are `fn`
-//! pointers over plain byte arrays precisely so they are easy to keep pure.
+//! produce an unsorted stream, so determinism would be lost silently. Comparators here are plain
+//! functions over byte arrays precisely so they are easy to keep pure. Pass one by name: a named
+//! `fn` is its own zero-sized type, so the sort and the merge are compiled for it and inline it,
+//! where a function pointer would cost an indirect call per comparison.
 
 use std::cmp::Ordering;
+use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 
 use crate::scratch::{ScratchId, ScratchStore};
 use crate::Result;
 
 /// How two `R`-byte records order. See the module header for the contract.
-pub type Comparator<const R: usize> = fn(&[u8; R], &[u8; R]) -> Ordering;
+pub trait Order<const R: usize>: Fn(&[u8; R], &[u8; R]) -> Ordering + Copy {}
+
+impl<const R: usize, F: Fn(&[u8; R], &[u8; R]) -> Ordering + Copy> Order<R> for F {}
 
 /// How many `R`-byte records `budget` bytes hold — at least one, or a sort could never make
 /// progress.
@@ -105,6 +110,102 @@ impl<'s, const R: usize> SpillWriter<'s, R> {
         // the difference between the write buffer and the read buffer coexisting and not.
         self.buf = Vec::new();
         Ok((self.id, self.written))
+    }
+}
+
+/// A stream of variable-length records on the scratch seam: append bytes, get back the offset they
+/// landed at.
+///
+/// The fixed-width streams above cannot hold a junction record, which is 13 bytes plus 17 per
+/// neighbour: padding three million of them to the 421-byte maximum would cost seven times what they
+/// are.
+pub struct ByteSpill<'s> {
+    scratch: &'s dyn ScratchStore,
+    id: ScratchId,
+    buf: Vec<u8>,
+    cap: usize,
+    at: u64,
+}
+
+impl<'s> ByteSpill<'s> {
+    pub fn create(scratch: &'s dyn ScratchStore, budget: usize) -> Result<ByteSpill<'s>> {
+        Ok(ByteSpill { scratch, id: scratch.create()?, buf: Vec::new(), cap: budget.max(1), at: 0 })
+    }
+
+    /// Append one record; the offset it starts at is how it is found again.
+    pub fn push(&mut self, rec: &[u8]) -> Result<u32> {
+        let at = u32::try_from(self.at).map_err(|_| {
+            crate::Error::Capacity("the merged quadtree record bytes pass 4 GiB, which no OBCM section can hold".into())
+        })?;
+        if self.buf.len() + rec.len() > self.cap {
+            self.flush()?;
+        }
+        self.buf.extend_from_slice(rec);
+        self.at += rec.len() as u64;
+        Ok(at)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.buf.is_empty() {
+            self.scratch.append(self.id, &self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    pub fn seal(mut self) -> Result<ScratchId> {
+        self.flush()?;
+        self.buf = Vec::new();
+        Ok(self.id)
+    }
+}
+
+/// A [`ByteSpill`] read front to back, through a buffer of at most `budget` bytes.
+pub struct ByteReader<'s> {
+    scratch: &'s dyn ScratchStore,
+    id: ScratchId,
+    /// Next byte of the file to fetch.
+    at: u64,
+    end: u64,
+    buf: Vec<u8>,
+    pos: usize,
+    cap: usize,
+}
+
+impl<'s> ByteReader<'s> {
+    pub fn open(scratch: &'s dyn ScratchStore, id: ScratchId, budget: usize) -> Result<ByteReader<'s>> {
+        let end = scratch.len(id)?;
+        Ok(ByteReader { scratch, id, at: 0, end, buf: Vec::new(), pos: 0, cap: budget.max(1) })
+    }
+
+    /// The stream's position: how many bytes have been read so far.
+    pub fn offset(&self) -> u64 {
+        self.at - (self.buf.len() - self.pos) as u64
+    }
+
+    /// Fill `out` with the stream's next bytes. Running out first is a defect in whatever wrote it.
+    pub fn read_exact(&mut self, out: &mut [u8]) -> Result<()> {
+        let mut done = 0;
+        while done < out.len() {
+            if self.pos == self.buf.len() {
+                let want = (self.cap as u64).min(self.end - self.at) as usize;
+                if want == 0 {
+                    return Err(crate::Error::Scratch(format!(
+                        "{} ends at byte {}, inside a record",
+                        self.id, self.end
+                    )));
+                }
+                self.buf.resize(want, 0);
+                self.scratch.read_at(self.id, self.at, &mut self.buf)?;
+                self.at += want as u64;
+                self.pos = 0;
+            }
+            let n = (self.buf.len() - self.pos).min(out.len() - done);
+            out[done..done + n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+            self.pos += n;
+            done += n;
+        }
+        Ok(())
     }
 }
 
@@ -189,48 +290,48 @@ impl<const R: usize> Iterator for BlockReader<'_, R> {
 ///
 /// `Ord` is reversed so [`BinaryHeap`]'s max-heap pops the smallest record, and ties go to the
 /// lowest run index — runs are numbered in push order, which is what makes the whole sort stable.
-struct Head<const R: usize> {
+struct Head<const R: usize, O> {
     rec: [u8; R],
     run: usize,
-    order: Comparator<R>,
+    order: O,
 }
 
-impl<const R: usize> Ord for Head<R> {
+impl<const R: usize, O: Order<R>> Ord for Head<R, O> {
     fn cmp(&self, other: &Self) -> Ordering {
         (self.order)(&other.rec, &self.rec).then_with(|| other.run.cmp(&self.run))
     }
 }
 
-impl<const R: usize> PartialOrd for Head<R> {
+impl<const R: usize, O: Order<R>> PartialOrd for Head<R, O> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<const R: usize> PartialEq for Head<R> {
+impl<const R: usize, O: Order<R>> PartialEq for Head<R, O> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl<const R: usize> Eq for Head<R> {}
+impl<const R: usize, O: Order<R>> Eq for Head<R, O> {}
 
 /// A sort of `R`-byte records that never holds more than its budget.
 ///
 /// Push everything, then [`ExternalSort::finish`] for the sorted stream. Dropping an unfinished
 /// sort removes its runs.
-pub struct ExternalSort<'s, const R: usize> {
+pub struct ExternalSort<'s, const R: usize, O> {
     scratch: &'s dyn ScratchStore,
     budget: usize,
     /// Records the run buffer may hold — `budget / R`.
     cap: usize,
     buf: Vec<[u8; R]>,
     runs: Vec<(ScratchId, u64)>,
-    order: Comparator<R>,
+    order: O,
 }
 
-impl<'s, const R: usize> ExternalSort<'s, R> {
-    pub fn new(scratch: &'s dyn ScratchStore, budget: usize, order: Comparator<R>) -> ExternalSort<'s, R> {
+impl<'s, const R: usize, O: Order<R>> ExternalSort<'s, R, O> {
+    pub fn new(scratch: &'s dyn ScratchStore, budget: usize, order: O) -> ExternalSort<'s, R, O> {
         let cap = records_in(budget / RUN_SHARE, R);
         ExternalSort { scratch, budget, cap, buf: Vec::new(), runs: Vec::new(), order }
     }
@@ -274,7 +375,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
 
     /// The sorted records. Nothing is materialized: a single run that never spilled is served from
     /// the buffer that already holds it, and anything larger is merged as it is read.
-    pub fn finish(mut self) -> Result<SortedRecords<'s, R>> {
+    pub fn finish(mut self) -> Result<SortedRecords<'s, R, O>> {
         if self.runs.is_empty() {
             self.buf.sort_by(self.order);
             return Ok(SortedRecords {
@@ -292,7 +393,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
         // budget has records still runs, slower and correct.
         let per = records_in(self.budget / (self.runs.len() + 1), R);
         let mut cursors: Vec<BlockReader<'s, R>> = Vec::with_capacity(self.runs.len());
-        let mut heap: BinaryHeap<Head<R>> = BinaryHeap::with_capacity(self.runs.len());
+        let mut heap: BinaryHeap<Head<R, O>> = BinaryHeap::with_capacity(self.runs.len());
         for (run, &(id, count)) in self.runs.iter().enumerate() {
             let mut cursor = BlockReader::new(self.scratch, id, 0, count * R as u64, per);
             if let Some(rec) = cursor.next() {
@@ -305,7 +406,7 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
     }
 }
 
-impl<const R: usize> Drop for ExternalSort<'_, R> {
+impl<const R: usize, O> Drop for ExternalSort<'_, R, O> {
     fn drop(&mut self) {
         for &(id, _) in &self.runs {
             let _ = self.scratch.remove(id);
@@ -313,14 +414,14 @@ impl<const R: usize> Drop for ExternalSort<'_, R> {
     }
 }
 
-enum Source<'s, const R: usize> {
+enum Source<'s, const R: usize, O> {
     Memory {
         buf: Vec<[u8; R]>,
         at: usize,
     },
     Merge {
         cursors: Vec<BlockReader<'s, R>>,
-        heap: BinaryHeap<Head<R>>,
+        heap: BinaryHeap<Head<R, O>>,
         /// `None` once a run's file is already deleted, which happens the moment its cursor
         /// exhausts rather than when the stream drops. On the merge's workloads push order
         /// correlates with key order, so runs drain one after another and the spill shrinks while
@@ -330,12 +431,12 @@ enum Source<'s, const R: usize> {
 }
 
 /// The sorted stream. Read it once, front to back; the runs behind it are deleted when it drops.
-pub struct SortedRecords<'s, const R: usize> {
-    source: Source<'s, R>,
+pub struct SortedRecords<'s, const R: usize, O> {
+    source: Source<'s, R, O>,
     scratch: &'s dyn ScratchStore,
 }
 
-impl<const R: usize> Iterator for SortedRecords<'_, R> {
+impl<const R: usize, O: Order<R>> Iterator for SortedRecords<'_, R, O> {
     type Item = Result<[u8; R]>;
 
     fn next(&mut self) -> Option<Result<[u8; R]>> {
@@ -346,9 +447,12 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
                 Some(Ok(rec))
             }
             Source::Merge { cursors, heap, runs } => {
-                let head = heap.pop()?;
+                // The run's next record replaces its head in place, which costs one sift instead
+                // of a pop and a push.
+                let mut head = heap.peek_mut()?;
+                let rec = head.rec;
                 match cursors[head.run].next() {
-                    Some(Ok(rec)) => heap.push(Head { rec, run: head.run, order: head.order }),
+                    Some(Ok(next)) => head.rec = next,
                     Some(Err(e)) => return Some(Err(e)),
                     None => {
                         // This run's last record is the one being handed out, so its file is dead
@@ -356,9 +460,10 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
                         if let Some(id) = runs[head.run].take() {
                             let _ = self.scratch.remove(id);
                         }
+                        PeekMut::pop(head);
                     }
                 }
-                Some(Ok(head.rec))
+                Some(Ok(rec))
             }
         }
     }
@@ -369,7 +474,7 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
 /// Best-effort by design: a scratch file that cannot be deleted is bytes nothing can reach any
 /// more, on a host that is about to drop its whole scratch area. Failing an assembly over it would
 /// turn a storage hiccup into a map that was never written.
-impl<const R: usize> Drop for SortedRecords<'_, R> {
+impl<const R: usize, O> Drop for SortedRecords<'_, R, O> {
     fn drop(&mut self) {
         if let Source::Merge { runs, cursors, heap } = &mut self.source {
             cursors.clear();
@@ -425,7 +530,7 @@ mod tests {
 
     fn sorted_with(budget: usize, input: &[(u32, u32)]) -> (Vec<(u32, u32)>, usize) {
         let scratch = MemoryScratch::new();
-        let mut sort = ExternalSort::<R>::new(&scratch, budget, by_key);
+        let mut sort = ExternalSort::<R, _>::new(&scratch, budget, by_key);
         for &(k, t) in input {
             sort.push(rec(k, t)).expect("push");
             assert!(sort.resident_bytes() <= (budget / RUN_SHARE).max(R), "the run buffer passed its share");
@@ -470,7 +575,7 @@ mod tests {
     #[test]
     fn an_empty_sort_yields_nothing_and_touches_no_scratch() {
         let scratch = MemoryScratch::new();
-        let sort = ExternalSort::<R>::new(&scratch, 1 << 20, by_key);
+        let sort = ExternalSort::<R, _>::new(&scratch, 1 << 20, by_key);
         assert_eq!(sort.finish().expect("finish").count(), 0);
         assert_eq!(scratch.resident_bytes(), 0);
     }
@@ -559,7 +664,7 @@ mod tests {
     fn abandoned_runs_die_with_the_sort_or_its_transferred_stream() {
         for finish in [false, true] {
             let scratch = Counting::new();
-            let mut sort = ExternalSort::<R>::new(&scratch, 4 * R, by_key);
+            let mut sort = ExternalSort::<R, _>::new(&scratch, 4 * R, by_key);
             for i in 0..6 {
                 sort.push(rec(i, i)).expect("push");
             }
@@ -581,7 +686,7 @@ mod tests {
     fn scratch_failures_remove_existing_and_partially_written_runs() {
         for failure in ["push", "finish write", "finish read"] {
             let scratch = Counting::new();
-            let mut sort = ExternalSort::<R>::new(&scratch, 4 * R, by_key);
+            let mut sort = ExternalSort::<R, _>::new(&scratch, 4 * R, by_key);
             for i in 0..3 {
                 sort.push(rec(i, i)).expect("push");
             }
@@ -611,7 +716,7 @@ mod tests {
     fn a_drained_runs_file_dies_mid_stream_not_at_drop() {
         let scratch = Counting::new();
         // A budget of 8 records → runs of 4 → 64 sequential records spill 16 runs.
-        let mut sort = ExternalSort::<R>::new(&scratch, 8 * R * RUN_SHARE, by_key);
+        let mut sort = ExternalSort::<R, _>::new(&scratch, 8 * R * RUN_SHARE, by_key);
         for i in 0..64u32 {
             sort.push(rec(i, i)).expect("push");
         }
