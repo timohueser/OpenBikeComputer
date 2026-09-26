@@ -17,6 +17,7 @@
 //! islands, renumber, lay the edge pool out, rebuild the node quadtree.
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use obc_formats::obcm::{
     nav_edge_id, nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, nav_index_padding, CHUNK_END,
@@ -63,6 +64,36 @@ struct NodeRef {
 
 /// [`NodeRef::seam`] for a node that is not on a grid boundary line.
 const NO_SEAM: u32 = u32::MAX;
+
+/// The collection's maps, keyed by ids and coordinates. Nothing iterates them, so their hasher
+/// cannot reach the output, and it runs for every adjacency entry, so it is one multiply rather
+/// than a seeded SipHash.
+type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdHasher>>;
+
+/// A multiply-rotate hasher over integer keys.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b.into());
+        }
+    }
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n.into());
+    }
+    fn write_i32(&mut self, n: i32) {
+        self.write_u32(n as u32);
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(0xf135_7aea_2e62_a9c5);
+    }
+    /// The rotation brings the product's well-mixed high bits down to where the table indexes.
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+}
 
 /// Where an edge's record is, in the cell that wrote it — ten bytes instead of the record.
 ///
@@ -657,7 +688,7 @@ pub(crate) fn merge_profiled(
 
     // 1/2. The serialized node set, unified at boundary coordinates only. Everything but the seam
     // table is per cell and is spilled as the cell ends.
-    let mut seam: HashMap<(i32, i32), u32> = HashMap::new(); // coordinate → seam slot
+    let mut seam: IdMap<(i32, i32), u32> = IdMap::default(); // coordinate → seam slot
     let mut seam_id: Vec<u32> = Vec::new(); // slot → the id its first cell minted
     let mut seam_digest: Vec<u64> = Vec::new(); // slot → §4.6.5 digest, still accumulating
     let mut node_out = SpillWriter::<NODE_REC>::create(scratch, share)?;
@@ -684,15 +715,14 @@ pub(crate) fn merge_profiled(
         // each record exactly once; the quadtree walk, whose leaves share bin-packed chunks, would
         // not.
         let base = id_count;
-        let mut local: HashMap<u32, NodeRef> = HashMap::new();
-        // (id, lat, lon, chunk, offset)
-        let mut records: Vec<(u32, i32, i32, usize, usize)> = Vec::new();
+        let mut local: IdMap<u32, NodeRef> = IdMap::default();
+        // (node, lat, lon, offset into `chunks`)
+        let mut records: Vec<(NodeRef, i32, i32, usize)> = Vec::new();
         // The coordinates of the ids this cell minted, indexed by `id - base` — the only per-node
         // array alive at any point.
         let mut minted: Vec<(i32, i32)> = Vec::new();
-        let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(dir.chunk_count);
-        for k in 0..dir.chunk_count {
-            let chunk = cell.read(data_start + (k * dir.chunk_size) as u64, dir.chunk_size)?;
+        let chunks = cell.read(data_start, dir.chunk_count * dir.chunk_size)?;
+        for (k, chunk) in chunks.chunks_exact(dir.chunk_size).enumerate() {
             let mut at = 0usize;
             while at + NAV_NODE_FIXED_LEN <= chunk.len() {
                 let degree = chunk[at + 12];
@@ -734,10 +764,9 @@ pub(crate) fn merge_profiled(
                 if local.insert(id, node).is_some() {
                     return Err(Error::Format(format!("cell {}: node id {id} appears twice", cell.id)));
                 }
-                records.push((id, lat, lon, k, at));
+                records.push((node, lat, lon, k * dir.chunk_size + at));
                 at += rec_len;
             }
-            chunks.push(chunk);
         }
 
         // Pass B: adjacency → edges. Every edge shows up in both endpoints' records under the same
@@ -750,13 +779,12 @@ pub(crate) fn merge_profiled(
         // are all in its own cell, and a seam node's total goes to the seam table, where later
         // cells can still add to it.
         let mut cell_digest = vec![0u64; minted.len()];
-        let mut cell_edges: HashMap<u32, usize> = HashMap::new();
+        let mut cell_edges: IdMap<u32, usize> = IdMap::default();
         let mut pending: Vec<MergedEdge> = Vec::new();
-        for &(own_id, lat, lon, k, at) in &records {
-            let chunk = &chunks[k];
-            let degree = chunk[at + 12] as usize;
+        for &(own_node, lat, lon, at) in &records {
+            let degree = chunks[at + 12] as usize;
             for n in 0..degree {
-                let e = &chunk[at + NAV_NODE_FIXED_LEN + n * NAV_NEIGHBOR_LEN..][..NAV_NEIGHBOR_LEN];
+                let e = &chunks[at + NAV_NODE_FIXED_LEN + n * NAV_NEIGHBOR_LEN..][..NAV_NEIGHBOR_LEN];
                 let nbr_id = u32::from_le_bytes(e[0..4].try_into().expect("4 bytes"));
                 let edge_id = u32::from_le_bytes(e[8..12].try_into().expect("4 bytes"));
                 let cost_m = u16::from_le_bytes(e[12..14].try_into().expect("2 bytes")) as u32;
@@ -770,15 +798,13 @@ pub(crate) fn merge_profiled(
                     let edge: &mut MergedEdge = &mut pending[index];
                     // This entry runs from this record's node, so it is the a→b direction exactly
                     // when that node is the edge's `a`.
-                    let own = local.get(&own_id).expect("own id interned above").id;
-                    if own == edge.a {
+                    if own_node.id == edge.a {
                         edge.ascent_ab = ascent_m;
                     } else {
                         edge.ascent_ba = ascent_m;
                     }
                     continue;
                 }
-                let own_node = *local.get(&own_id).expect("own id interned above");
                 let nbr_node = *local.get(&nbr_id).ok_or_else(|| {
                     Error::Format(format!("cell {}: neighbour id {nbr_id} resolves to no record", cell.id))
                 })?;
