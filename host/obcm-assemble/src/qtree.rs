@@ -419,8 +419,9 @@ fn by_first(a: &[u8; PLACE_REC], b: &[u8; PLACE_REC]) -> std::cmp::Ordering {
 
 /// The most chunk-region bytes one [`PIECE_REC`] carries. Chunk order is not tree order, so a leaf's
 /// packed bytes are sorted into place in pieces: a whole chunk per leaf would pad the sort to several
-/// times the bytes it moves.
-const PIECE: usize = 64;
+/// times the bytes it moves. 55 makes the record 64 bytes, the widest that wasm moves with inline
+/// loads and stores; a wider one costs the sort a `memory.copy` call per move.
+const PIECE: usize = 55;
 
 /// One piece of the chunk region: `position u64, len u8`, then [`PIECE`] bytes, of which `len` are
 /// the region's bytes from `position` on.
