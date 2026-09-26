@@ -25,7 +25,7 @@
 //! produce an unsorted stream, so determinism would be lost silently. Comparators here are plain
 //! functions over byte arrays precisely so they are easy to keep pure. Pass one by name: a named
 //! `fn` is its own zero-sized type, so the sort and the merge are compiled for it and inline it,
-//! where a [`Comparator`] pointer costs an indirect call per comparison.
+//! where a function pointer would cost an indirect call per comparison.
 
 use std::cmp::Ordering;
 use std::collections::binary_heap::PeekMut;
@@ -35,9 +35,6 @@ use crate::scratch::{ScratchId, ScratchStore};
 use crate::Result;
 
 /// How two `R`-byte records order. See the module header for the contract.
-pub type Comparator<const R: usize> = fn(&[u8; R], &[u8; R]) -> Ordering;
-
-/// A comparator passed by name, or a [`Comparator`] pointer.
 pub trait Order<const R: usize>: Fn(&[u8; R], &[u8; R]) -> Ordering + Copy {}
 
 impl<const R: usize, F: Fn(&[u8; R], &[u8; R]) -> Ordering + Copy> Order<R> for F {}
@@ -323,7 +320,7 @@ impl<const R: usize, O: Order<R>> Eq for Head<R, O> {}
 ///
 /// Push everything, then [`ExternalSort::finish`] for the sorted stream. Dropping an unfinished
 /// sort removes its runs.
-pub struct ExternalSort<'s, const R: usize, O = Comparator<R>> {
+pub struct ExternalSort<'s, const R: usize, O> {
     scratch: &'s dyn ScratchStore,
     budget: usize,
     /// Records the run buffer may hold — `budget / R`.
@@ -434,7 +431,7 @@ enum Source<'s, const R: usize, O> {
 }
 
 /// The sorted stream. Read it once, front to back; the runs behind it are deleted when it drops.
-pub struct SortedRecords<'s, const R: usize, O = Comparator<R>> {
+pub struct SortedRecords<'s, const R: usize, O> {
     source: Source<'s, R, O>,
     scratch: &'s dyn ScratchStore,
 }
@@ -533,7 +530,7 @@ mod tests {
 
     fn sorted_with(budget: usize, input: &[(u32, u32)]) -> (Vec<(u32, u32)>, usize) {
         let scratch = MemoryScratch::new();
-        let mut sort = ExternalSort::<R>::new(&scratch, budget, by_key);
+        let mut sort = ExternalSort::<R, _>::new(&scratch, budget, by_key);
         for &(k, t) in input {
             sort.push(rec(k, t)).expect("push");
             assert!(sort.resident_bytes() <= (budget / RUN_SHARE).max(R), "the run buffer passed its share");
@@ -578,7 +575,7 @@ mod tests {
     #[test]
     fn an_empty_sort_yields_nothing_and_touches_no_scratch() {
         let scratch = MemoryScratch::new();
-        let sort = ExternalSort::<R>::new(&scratch, 1 << 20, by_key);
+        let sort = ExternalSort::<R, _>::new(&scratch, 1 << 20, by_key);
         assert_eq!(sort.finish().expect("finish").count(), 0);
         assert_eq!(scratch.resident_bytes(), 0);
     }
@@ -667,7 +664,7 @@ mod tests {
     fn abandoned_runs_die_with_the_sort_or_its_transferred_stream() {
         for finish in [false, true] {
             let scratch = Counting::new();
-            let mut sort = ExternalSort::<R>::new(&scratch, 4 * R, by_key);
+            let mut sort = ExternalSort::<R, _>::new(&scratch, 4 * R, by_key);
             for i in 0..6 {
                 sort.push(rec(i, i)).expect("push");
             }
@@ -689,7 +686,7 @@ mod tests {
     fn scratch_failures_remove_existing_and_partially_written_runs() {
         for failure in ["push", "finish write", "finish read"] {
             let scratch = Counting::new();
-            let mut sort = ExternalSort::<R>::new(&scratch, 4 * R, by_key);
+            let mut sort = ExternalSort::<R, _>::new(&scratch, 4 * R, by_key);
             for i in 0..3 {
                 sort.push(rec(i, i)).expect("push");
             }
@@ -719,7 +716,7 @@ mod tests {
     fn a_drained_runs_file_dies_mid_stream_not_at_drop() {
         let scratch = Counting::new();
         // A budget of 8 records → runs of 4 → 64 sequential records spill 16 runs.
-        let mut sort = ExternalSort::<R>::new(&scratch, 8 * R * RUN_SHARE, by_key);
+        let mut sort = ExternalSort::<R, _>::new(&scratch, 8 * R * RUN_SHARE, by_key);
         for i in 0..64u32 {
             sort.push(rec(i, i)).expect("push");
         }

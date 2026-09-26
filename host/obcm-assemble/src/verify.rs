@@ -30,7 +30,7 @@ use obc_reader::{
     MapCache, MapTables, NavDirectory, NavNodeRef, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES,
 };
 
-use crate::extsort::ExternalSort;
+use crate::extsort::{ExternalSort, Order};
 use crate::grid::AlignedBox;
 use crate::scratch::ScratchStore;
 use crate::{Error, Result};
@@ -614,7 +614,7 @@ fn verify_nav(
 
         // Walk 2: the adjacency checks, streaming; on band 0, the union-find and the claims.
         let mut done: Vec<u64> = vec![0; words(total)];
-        let mut claims = first.then(|| ExternalSort::<CLAIM_LEN>::new(scratch, claim_budget, by_claim));
+        let mut claims = first.then(|| ExternalSort::<CLAIM_LEN, _>::new(scratch, claim_budget, by_claim));
         let mut fault: Option<String> = None;
         let mut spill: Option<Error> = None;
         for_each_reached_node(reader, &reached, &mut chunk, |node| {
@@ -731,7 +731,11 @@ fn for_each_reached_node(
 /// Because the pass is grouped by edge id, a map with both a disagreeing edge and an undecodable
 /// one names whichever comes first by id. Both are refusals and no check is weakened; only the
 /// message changes.
-fn check_edges(reader: &Reader<'_>, sort: ExternalSort<'_, CLAIM_LEN>, report: &mut VerifyReport) -> Result<()> {
+fn check_edges(
+    reader: &Reader<'_>,
+    sort: ExternalSort<'_, CLAIM_LEN, impl Order<CLAIM_LEN>>,
+    report: &mut VerifyReport,
+) -> Result<()> {
     let mut points: heapless::Vec<(i32, i32), MAX_EDGE_PTS> = heapless::Vec::new();
     let mut previous: Option<[u8; CLAIM_LEN]> = None;
     let mut open: Option<Group> = None;
