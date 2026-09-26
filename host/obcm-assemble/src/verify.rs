@@ -470,8 +470,12 @@ fn claim_coord(r: &[u8; CLAIM_LEN]) -> (i32, i32) {
 }
 
 /// Claims order by their bytes, which is `(edge_id, from, cost, kind)` — see [`claim`].
+///
+/// The edge id is compared first as one word, which is the same order: it decides every comparison
+/// but those between one edge's own claims, and this runs once per step of the claim sort, where a
+/// byte-wise compare is a byte loop in wasm.
 fn by_claim(a: &[u8; CLAIM_LEN], b: &[u8; CLAIM_LEN]) -> Ordering {
-    a.cmp(b)
+    claim_edge(a).cmp(&claim_edge(b)).then_with(|| a.cmp(b))
 }
 
 /// A bitmap over dense node ids: `words(n)` `u64`s cover ids `0..n`.
