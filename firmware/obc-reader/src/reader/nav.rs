@@ -349,28 +349,54 @@ impl<'a> Reader<'a> {
             return Err(Error::TooShort);
         }
         let mut read_error = None;
-        self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
+        self.for_each_nav_chunk(view, |cid| {
             if read_error.is_some() {
                 return;
             }
-            let (start, end) = match dir.chunk_range(cid) {
-                Some(r) => r,
-                None => return,
-            };
-            if end > self.src.len() {
-                return;
-            }
-            let chunk = &mut scratch[..dir.chunk_size];
-            if let Err(error) = self.src.read_at(start, chunk) {
+            // A leaf that names no chunk of the section is skipped, not fatal.
+            if let Err(Error::Source(error)) = self.for_each_nav_node_in_chunk(cid, scratch, &mut visit) {
                 read_error = Some(error);
-                return;
             }
-            decode_nav_chunk(chunk, &mut visit);
-        })
-        .map_err(Error::from)?;
+        })?;
         if let Some(error) = read_error {
             return Err(Error::Source(error));
         }
+        Ok(())
+    }
+
+    /// Visit the node chunk id of every non-empty nav leaf overlapping `view`, in quadtree order. It
+    /// reads only the index; bin packing lets several leaves name one chunk.
+    ///
+    /// # Reentrancy
+    ///
+    /// As [`Reader::for_each_nav_node`].
+    pub fn for_each_nav_chunk(&self, view: &BBox, mut visit: impl FnMut(u32)) -> Result<(), Error> {
+        let dir = *self.nav_directory();
+        if dir.is_empty() {
+            return Ok(());
+        }
+        self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| visit(cid)).map_err(Error::from)
+    }
+
+    /// Visit every junction record of node chunk `chunk_id`, in record order. `scratch` is as for
+    /// [`Reader::for_each_nav_node`]; an id past the section's chunks is [`Error::BadOffset`].
+    pub fn for_each_nav_node_in_chunk(
+        &self,
+        chunk_id: u32,
+        scratch: &mut [u8],
+        mut visit: impl FnMut(NavNodeRef),
+    ) -> Result<(), Error> {
+        let dir = self.nav_directory();
+        if scratch.len() < dir.chunk_size {
+            return Err(Error::TooShort);
+        }
+        let (start, end) = dir.chunk_range(chunk_id).ok_or(Error::BadOffset)?;
+        if end > self.src.len() {
+            return Err(Error::BadOffset);
+        }
+        let chunk = &mut scratch[..dir.chunk_size];
+        self.src.read_at(start, chunk).map_err(Error::Source)?;
+        decode_nav_chunk(chunk, &mut visit);
         Ok(())
     }
 

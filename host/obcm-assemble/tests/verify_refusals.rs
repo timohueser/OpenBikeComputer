@@ -8,15 +8,16 @@
 //! So this suite packs one small, genuinely routable map with the real packer, asserts the pass
 //! accepts it, then corrupts one field at a time in the written bytes and asserts the pass names
 //! what broke: an out-of-range node id, a hole in the numbering, two records under one id in both
-//! flavours, an adjacency entry that resolves nowhere, one whose deltas point somewhere else, an
-//! edge that does not decode, and the two directions of an edge disagreeing.
+//! flavours, a node chunk no leaf reaches, a leaf past the node chunks, an adjacency entry that
+//! resolves nowhere, one whose deltas point somewhere else, an edge that does not decode, and the
+//! two directions of an edge disagreeing.
 //!
 //! Each test runs at two budgets: the default, where the junction table is one band, and one so
 //! small the table is banded and the claims spill through the scratch seam in many runs. A refusal
 //! that only fires in one of the two shapes is the failure mode this file exists to catch.
 
 use obc_elevation::NullElevation;
-use obc_formats::obcm::{CHUNK_END, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
+use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
 use obc_pack::config::default_profiles;
 use obc_pack::config::LineStyle as PackLineStyle;
 use obc_pack::geom::Geom;
@@ -26,7 +27,7 @@ use obc_pack::progress::Progress;
 use obc_pack::quadtree::build_lod_with;
 use obc_pack::serialize::Style;
 use obc_pack::{serialize_lods, LodLayer};
-use obc_reader::{MapCache, MapTables, Reader};
+use obc_reader::{MapCache, MapTables, NavDirectory, Reader};
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::verify::verify_map;
 use obcm_assemble::{Error, MemoryScratch, MemorySource, VerifyReport, DEFAULT_MERGE_BUDGET};
@@ -35,8 +36,7 @@ use obcm_assemble::{Error, MemoryScratch, MemorySource, VerifyReport, DEFAULT_ME
 /// own [`AlignedBox`] can state.
 const BOX: AlignedBox = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 19 };
 
-/// A small nav chunk, so the fixture's nine junctions genuinely span several chunks and the walk's
-/// re-delivery, which is what the digest check exists for, actually happens.
+/// A small nav chunk, so the fixture's nine junctions genuinely span several chunks.
 const CHUNK_SIZE: usize = 512;
 
 /// The grid's spacing in µdeg — wide enough that the `int16` neighbour deltas are large and the
@@ -146,18 +146,31 @@ fn refuses(what: &str, wants: &str, break_it: impl Fn(&mut Vec<u8>)) {
     }
 }
 
+fn nav_directory(bytes: &[u8]) -> NavDirectory {
+    let src = MemorySource(bytes.to_vec());
+    let tables = MapTables::parse(&src).expect("the fixture parses");
+    let cache = MapCache::new_boxed();
+    *Reader::new(&src, &tables, &cache).nav_directory()
+}
+
 /// Where the node chunks begin, and how many there are.
 ///
 /// Through the directory's own `data_start`, which is `align_up(index_offset + node_count × 4, U)`.
 /// Spelling that out as the bare sum here would land this suite a few bytes before the first chunk,
 /// find no record at all, and turn every mutation below into a silent no-op.
 fn node_chunks(bytes: &[u8]) -> (usize, usize, usize) {
-    let src = MemorySource(bytes.to_vec());
-    let tables = MapTables::parse(&src).expect("the fixture parses");
-    let cache = MapCache::new_boxed();
-    let reader = Reader::new(&src, &tables, &cache);
-    let dir = *reader.nav_directory();
+    let dir = nav_directory(bytes);
     (dir.data_start().expect("the fixture's nav directory resolves") as usize, dir.chunk_count, dir.chunk_size)
+}
+
+/// File offset and node chunk id of every non-empty leaf of the nav quadtree index.
+fn nav_leaves(bytes: &[u8]) -> Vec<(usize, u32)> {
+    let dir = nav_directory(bytes);
+    (0..dir.node_count)
+        .map(|i| dir.index_offset as usize + 4 * i)
+        .map(|at| (at, u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))))
+        .filter(|&(_, v)| v & BRANCH_BIT == 0 && v != EMPTY_LEAF)
+        .collect()
 }
 
 /// Absolute file offsets of every junction record, in chunk order — the addresses a mutation names.
@@ -273,8 +286,8 @@ fn two_records_under_one_id_are_refused() {
 }
 
 /// …and the digest's own case: same id, same coordinates, a different adjacency list. This is the
-/// one the pass has to catch for the delivery-dedup to be sound — walk 2 processes a re-delivered
-/// record once, which is only legal because a repeat that differs is refused here.
+/// one the pass has to catch for the repeat dedup to be sound — walk 2 processes a repeated record
+/// once, which is only legal because a repeat that differs is refused here.
 #[test]
 fn one_id_with_two_adjacency_lists_is_refused() {
     refuses("one id, two adjacency lists", "different adjacency", |bytes| {
@@ -285,6 +298,35 @@ fn one_id_with_two_adjacency_lists_is_refused() {
         assert_ne!(bytes[first + 12], 0, "the fixture's junctions have neighbours");
         let identity: [u8; 12] = bytes[first..first + 12].try_into().expect("12 bytes");
         bytes[second..second + 12].copy_from_slice(&identity);
+    });
+}
+
+/// A record is the graph's only if the quadtree reaches its chunk: a router finds a junction through
+/// its leaf. Every leaf that names the chunk holding id 0 is pointed at another chunk, so the
+/// records are still in the file and a pass that read every chunk would accept the map.
+#[test]
+fn a_chunk_no_leaf_reaches_is_refused() {
+    refuses("an orphaned node chunk", "not dense", |bytes| {
+        let (base, _, size) = node_chunks(bytes);
+        let zero = node_records(bytes).into_iter().find(|&at| node_id(bytes, at) == 0).expect("id 0");
+        let orphan = ((zero - base) / size) as u32;
+        let leaves = nav_leaves(bytes);
+        let other = leaves.iter().map(|&(_, c)| c).find(|&c| c != orphan).expect("the fixture has a second chunk");
+        for (at, chunk) in leaves {
+            if chunk == orphan {
+                bytes[at..at + 4].copy_from_slice(&other.to_le_bytes());
+            }
+        }
+    });
+}
+
+/// A leaf that names a chunk past the section is a mis-relocated index.
+#[test]
+fn a_leaf_past_the_node_chunks_is_refused() {
+    refuses("a leaf past the node chunks", "past the section's", |bytes| {
+        let (_, chunks, _) = node_chunks(bytes);
+        let (at, _) = nav_leaves(bytes)[0];
+        bytes[at..at + 4].copy_from_slice(&(chunks as u32).to_le_bytes());
     });
 }
 

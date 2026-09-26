@@ -18,14 +18,17 @@
 //! and the union-find keeps each component's size in its root's slot.
 //!
 //! What stays resident and proportional to the graph is 4.25 bytes per junction: the union-find
-//! (4 B) and two bitmaps (⅛ B each). Everything else is the band, at most the budget, plus the
-//! sort's buffers — a ceiling of `1.125 × budget`, whatever the map.
+//! (4 B) and two bitmaps (⅛ B each), plus one bit per 512-byte node chunk. Everything else is the
+//! band, at most the budget, plus the sort's buffers — a ceiling of `1.125 × budget`, whatever the
+//! map.
 use std::cmp::Ordering;
 
 use obc_formats::io::ByteSource;
 use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_NODE_FIXED_LEN};
 use obc_map_scene::BBox;
-use obc_reader::{MapCache, MapTables, NavNodeRef, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES};
+use obc_reader::{
+    MapCache, MapTables, NavDirectory, NavNodeRef, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES,
+};
 
 use crate::extsort::ExternalSort;
 use crate::grid::AlignedBox;
@@ -262,8 +265,8 @@ struct NodeTable {
     span: usize,
     /// `(lat, lon)` per in-band id, offset by `lo` — absolute µdeg, as the records store them.
     coords: Vec<(i32, i32)>,
-    /// [`record_digest`] of the record that claimed each in-band id, so a re-delivery can be told
-    /// from a second, different record wearing the same id.
+    /// [`record_digest`] of the record that claimed each in-band id, so a second copy of the same
+    /// record can be told from a different record wearing the same id.
     digest: Vec<u64>,
     /// One bit per in-band id: a junction record for this id was seen.
     seen: Vec<u64>,
@@ -287,10 +290,11 @@ impl NodeTable {
 
     /// Record one junction — or, when it is not this band's, just count it.
     ///
-    /// The quadtree's bin packing can hand the same record back more than once, so a repeat
-    /// carrying the same content is accepted. A repeat that disagrees is two different junctions
-    /// wearing one id, and is a verify failure: the coordinates get their own message because they
-    /// are what the rest of the pass indexes by, and any other difference is caught by the digest.
+    /// The walk decodes each reached chunk once, so a repeat is a second record under the same id.
+    /// A repeat carrying the same content is one junction stored twice and is accepted. A repeat
+    /// that disagrees is two different junctions wearing one id, and is a verify failure: the
+    /// coordinates get their own message because they are what the rest of the pass indexes by,
+    /// and any other difference is caught by the digest.
     ///
     /// Proving a repeat is a repeat is what lets the adjacency walk process each junction exactly
     /// once.
@@ -397,8 +401,8 @@ impl NodeTable {
 /// of every adjacency entry — `Ascent M` included, because the question here is "are these the same
 /// record?", not "do the two directions of an edge agree?".
 ///
-/// Its only job is to tell a quadtree re-delivery, which has identical bytes, from a second record
-/// that merely shares an id.
+/// Its only job is to tell a second copy of a record, which has identical bytes, from a second
+/// record that merely shares an id.
 fn record_digest(node: &NavNodeRef<'_>) -> u64 {
     #[inline]
     fn fold(h: u64, v: u64) -> u64 {
@@ -535,17 +539,18 @@ const BAND_BYTES_PER_NODE: usize = 16;
 /// histogram, as a report.
 ///
 /// Two walks per band, and no resident graph. The nav section is on disk by the time verify runs,
-/// so re-reading it is the cheap side of every trade here:
+/// so re-reading it is the cheap side of every trade here. Both walks decode the records of the
+/// chunks the quadtree reaches ([`reached_chunks`]), in file order:
 ///
 /// 1. Walk 1 fills one band of the [`NodeTable`] — coordinates, a [`record_digest`] and a seen bit
-///    per in-band id — while counting every delivered record's degree against the cap and every id
-///    against the section's capacity. Band 0's walk also learns the graph's junction count, since
-///    the directory's `node_count` is the quadtree index's size.
+///    per in-band id — while counting every record's degree against the cap and every id against
+///    the section's capacity. Band 0's walk also learns the graph's junction count, since the
+///    directory's `node_count` is the quadtree index's size.
 /// 2. Walk 2 re-reads the same records and checks each adjacency entry streaming: the neighbour
 ///    resolves, which density makes a bounds test, and, for the neighbours this band holds, the
-///    entry's `int16` deltas reconstruct the coordinate that neighbour's own record states. Bin
-///    packing delivers a record once per leaf that shares its chunk, and walk 1 has proved every
-///    repeat is the same record, so a `done` bitmap lets this walk process each junction once.
+///    entry's `int16` deltas reconstruct the coordinate that neighbour's own record states. Walk 1
+///    has proved every repeated id is the same record, so a `done` bitmap lets this walk process
+///    each junction once.
 ///
 /// Band 0's walk 2 also feeds the union-find and emits one [`claim`] per adjacency entry into an
 /// [`ExternalSort`]; later bands re-check only the coordinates they now hold, so the claim stream
@@ -568,6 +573,7 @@ fn verify_nav(
 
     let claim_budget = (budget / CLAIM_SHARE).max(4 * CLAIM_LEN);
     let span = (budget / BAND_BYTES_PER_NODE).max(1);
+    let reached = reached_chunks(reader, view, &dir)?;
 
     let mut total = 0usize;
     let mut parent: Vec<u32> = Vec::new();
@@ -578,14 +584,12 @@ fn verify_nav(
         // Walk 1: this band of the junction table; on band 0, the global record invariants.
         let mut nodes = NodeTable::new(lo, span, ceiling);
         let mut over_cap = 0usize;
-        reader
-            .for_each_nav_node(view, &mut chunk, |node| {
-                if first && node.degree() > NAV_MAX_DEGREE {
-                    over_cap += 1;
-                }
-                nodes.see(node.id, node.lat, node.lon, record_digest(&node));
-            })
-            .map_err(|e| Error::Verify(format!("the nav walk failed: {e:?}")))?;
+        for_each_reached_node(reader, &reached, &mut chunk, |node| {
+            if first && node.degree() > NAV_MAX_DEGREE {
+                over_cap += 1;
+            }
+            nodes.see(node.id, node.lat, node.lon, record_digest(&node));
+        })?;
         if over_cap > 0 {
             return Err(Error::Verify(format!(
                 "{over_cap} junction(s) exceed the §8.3 degree cap of {NAV_MAX_DEGREE}"
@@ -609,41 +613,38 @@ fn verify_nav(
         let mut claims = first.then(|| ExternalSort::<CLAIM_LEN>::new(scratch, claim_budget, by_claim));
         let mut fault: Option<String> = None;
         let mut spill: Option<Error> = None;
-        reader
-            .for_each_nav_node(view, &mut chunk, |node| {
-                if fault.is_some() || spill.is_some() || mark(&mut done, node.id) {
+        for_each_reached_node(reader, &reached, &mut chunk, |node| {
+            if fault.is_some() || spill.is_some() || mark(&mut done, node.id) {
+                return;
+            }
+            for n in node.neighbors() {
+                // Density, checked band by band, makes "every neighbour resolves" a bounds test
+                // against the junction count, so band 0 answers it for every neighbour.
+                if first && n.id as usize >= total {
+                    fault = Some(format!("neighbour id {} of node {} resolves to no record (§4.8.4)", n.id, node.id));
                     return;
                 }
-                for n in node.neighbors() {
-                    // Density, checked band by band, makes "every neighbour resolves" a bounds test
-                    // against the junction count, so band 0 answers it for every neighbour.
-                    if first && n.id as usize >= total {
-                        fault =
-                            Some(format!("neighbour id {} of node {} resolves to no record (§4.8.4)", n.id, node.id));
+                if let Some(coord) = nodes.get(n.id) {
+                    if coord != (n.lat, n.lon) {
+                        fault = Some(format!(
+                            "node {}'s int16 delta reconstructs neighbour {} at {:?}, but its record says \
+                             {coord:?}",
+                            node.id,
+                            n.id,
+                            (n.lat, n.lon)
+                        ));
                         return;
                     }
-                    if let Some(coord) = nodes.get(n.id) {
-                        if coord != (n.lat, n.lon) {
-                            fault = Some(format!(
-                                "node {}'s int16 delta reconstructs neighbour {} at {:?}, but its record says \
-                                 {coord:?}",
-                                node.id,
-                                n.id,
-                                (n.lat, n.lon)
-                            ));
-                            return;
-                        }
-                    }
-                    if let Some(sort) = claims.as_mut() {
-                        union(&mut parent, node.id, n.id);
-                        if let Err(e) = sort.push(claim(n.edge_id, node.id, n.cost_m, n.way_kind, node.lat, node.lon)) {
-                            spill = Some(e);
-                            return;
-                        }
+                }
+                if let Some(sort) = claims.as_mut() {
+                    union(&mut parent, node.id, n.id);
+                    if let Err(e) = sort.push(claim(n.edge_id, node.id, n.cost_m, n.way_kind, node.lat, node.lon)) {
+                        spill = Some(e);
+                        return;
                     }
                 }
-            })
-            .map_err(|e| Error::Verify(format!("the nav walk failed: {e:?}")))?;
+            }
+        })?;
         if fault.is_some() || spill.is_some() {
             return Err(spill.unwrap_or_else(|| Error::Verify(fault.expect("a fault or a spill failure"))));
         }
@@ -669,12 +670,59 @@ fn verify_nav(
     Ok(())
 }
 
+/// One bit per node chunk: some quadtree leaf names it. A record is the graph's only if the index
+/// reaches its chunk, so this is the set the record walks decode, whatever order they read it in.
+fn reached_chunks(reader: &Reader<'_>, view: &BBox, dir: &NavDirectory) -> Result<Vec<u64>> {
+    let mut reached = vec![0u64; words(dir.chunk_count)];
+    let mut stray = None;
+    reader
+        .for_each_nav_chunk(view, |id| {
+            if (id as usize) < dir.chunk_count {
+                mark(&mut reached, id);
+            } else {
+                stray.get_or_insert(id);
+            }
+        })
+        .map_err(|e| Error::Verify(format!("the nav quadtree walk failed: {e:?}")))?;
+    if let Some(id) = stray {
+        return Err(Error::Verify(format!(
+            "a nav quadtree leaf names node chunk {id}, past the section's {} chunks",
+            dir.chunk_count
+        )));
+    }
+    Ok(reached)
+}
+
+/// Every junction record of every reached chunk, in file order.
+///
+/// Leaf order is scattered across the section, and bin packing names a chunk once per leaf that
+/// shares it, so walking the leaves reads the section many times over through a small read-back
+/// cache. File order reads it once, front to back.
+fn for_each_reached_node(
+    reader: &Reader<'_>,
+    reached: &[u64],
+    chunk: &mut [u8],
+    mut visit: impl FnMut(NavNodeRef<'_>),
+) -> Result<()> {
+    for (w, &word) in reached.iter().enumerate() {
+        let mut bits = word;
+        while bits != 0 {
+            let id = (w * 64) as u32 + bits.trailing_zeros();
+            bits &= bits - 1;
+            reader
+                .for_each_nav_node_in_chunk(id, chunk, &mut visit)
+                .map_err(|e| Error::Verify(format!("the nav walk failed at node chunk {id}: {e:?}")))?;
+        }
+    }
+    Ok(())
+}
+
 /// The edge half, in one pass over the sorted claim stream: both directions agree, every `Edge Id`
 /// decodes, and the record's polyline ends at the junctions that claim it.
 ///
-/// The stream is sorted, so equal claims are adjacent and the dedup is a scan. Quadtree
-/// re-deliveries are already gone, through the `done` bitmap, so what it removes is the one case
-/// that survives: a junction with two neighbours over a single edge id at the same cost and kind.
+/// The stream is sorted, so equal claims are adjacent and the dedup is a scan. Repeated records are
+/// already gone, through the `done` bitmap, so what it removes is the one case that survives: a
+/// junction with two neighbours over a single edge id at the same cost and kind.
 ///
 /// Because the pass is grouped by edge id, a map with both a disagreeing edge and an undecodable
 /// one names whichever comes first by id. Both are refusals and no check is weakened; only the
@@ -833,11 +881,10 @@ mod tests {
         assert!(format!("{err}").contains("1 of the 4 ids"), "{err}");
     }
 
-    /// Bin packing re-delivers a record when two leaves share a chunk. Same bytes, same answer —
-    /// the pass must not care.
+    /// One junction stored twice is the same bytes twice, and the pass must not care.
     #[test]
-    fn a_re_delivered_record_is_not_a_duplicate() {
-        let t = table(8, &digested(&[(0, 0, 1), (1, 10, 11), (0, 0, 1)])).expect("an idempotent re-delivery");
+    fn a_repeated_record_is_not_a_duplicate() {
+        let t = table(8, &digested(&[(0, 0, 1), (1, 10, 11), (0, 0, 1)])).expect("an idempotent repeat");
         assert_eq!(t.total(), 2);
     }
 
@@ -847,7 +894,7 @@ mod tests {
         assert!(format!("{err}").contains("two §8.3 records with different coordinates"), "{err}");
     }
 
-    /// Walk 2 skips a re-delivered record, which is only sound because a record that differs in
+    /// Walk 2 skips a repeated record, which is only sound because a record that differs in
     /// anything but its coordinates is refused here.
     #[test]
     fn one_id_with_two_adjacency_lists_is_refused() {
@@ -864,7 +911,7 @@ mod tests {
         let step = span / 16;
         for (name, ids) in [
             ("ascending", (0..span as u32).collect::<Vec<u32>>()),
-            // The shape a real quadtree walk produces: chunk-ordered, so the ids arrive scattered.
+            // The shape a real walk produces: chunk-ordered, so the ids arrive scattered.
             ("scattered", (0..span as u32).map(|i| (i * 40_507) % span as u32).collect()),
         ] {
             let mut t = NodeTable::new(0, span, span);
@@ -947,7 +994,7 @@ mod tests {
         assert_eq!(by_claim(&claim(1, 0, 0, 0, i32::MAX, 0), &claim(1, 0, 0, 0, i32::MIN, 0)), Ordering::Greater);
     }
 
-    /// The `done` bitmap is what makes walk 2 one pass per junction rather than one per delivery.
+    /// The `done` bitmap is what makes walk 2 one pass per junction rather than one per record.
     #[test]
     fn the_done_bitmap_reports_a_repeat() {
         let mut bits = vec![0u64; words(130)];
