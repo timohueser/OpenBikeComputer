@@ -299,6 +299,11 @@ fn children(bbox: UBox) -> [UBox; 4] {
 /// would hold it — and two points inside one floor-bounded box get the same key, which is why the
 /// sort key ends in the record's input order.
 pub fn tree_key(lat: i32, lon: i32, bbox: UBox) -> u64 {
+    square_key(lat, lon, bbox).unwrap_or_else(|| descent_key(lat, lon, bbox))
+}
+
+/// [`tree_key`] as the descent itself.
+fn descent_key(lat: i32, lon: i32, bbox: UBox) -> u64 {
     let (mut min_lon, mut min_lat, mut max_lon, mut max_lat) = bbox;
     let mut key = 0u64;
     let mut depth = 0;
@@ -323,6 +328,41 @@ pub fn tree_key(lat: i32, lon: i32, bbox: UBox) -> u64 {
         depth += 1;
     }
     key
+}
+
+/// [`tree_key`] for a point inside a square of `2^k` µdeg, which every assembly bbox is, or `None`.
+///
+/// Every midline there halves an even side exactly, so the descent's digit at depth `d` is bit
+/// `k - 1 - d` of the point's offsets into the box, and the key is those bits interleaved. The
+/// descent stops at the first side under [`SPLIT_FLOOR`], which for a power of two is a side under
+/// the next power of two.
+fn square_key(lat: i32, lon: i32, bbox: UBox) -> Option<u64> {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    let side = max_lon - min_lon;
+    let (dx, dy) = (lon as i64 - min_lon, lat as i64 - min_lat);
+    let square = side > 0 && side & (side - 1) == 0 && max_lat - min_lat == side;
+    if !square || !(0..side).contains(&dx) || !(0..side).contains(&dy) {
+        return None;
+    }
+    let k = side.trailing_zeros();
+    let floor_log2 = (SPLIT_FLOOR as u64).next_power_of_two().trailing_zeros();
+    let levels = (k + 1).saturating_sub(floor_log2).min(MAX_LEVELS);
+    if levels == 0 {
+        return Some(0);
+    }
+    let shift = k - levels;
+    let east = (dx >> shift) as u64;
+    let south = !(dy >> shift) as u64 & ((1u64 << levels) - 1);
+    Some((spread(east) | spread(south) << 1) << (64 - 2 * levels))
+}
+
+/// The low 32 bits of `x` moved to the even bit positions.
+fn spread(x: u64) -> u64 {
+    let x = (x | x << 16) & 0x0000_ffff_0000_ffff;
+    let x = (x | x << 8) & 0x00ff_00ff_00ff_00ff;
+    let x = (x | x << 4) & 0x0f0f_0f0f_0f0f_0f0f;
+    let x = (x | x << 2) & 0x3333_3333_3333_3333;
+    (x | x << 1) & 0x5555_5555_5555_5555
 }
 
 /// The deepest a tree over `bbox` can go, or `None` when that is more than [`MAX_LEVELS`].
@@ -880,6 +920,33 @@ mod tests {
         fn record_len(&self) -> usize {
             self.2
         }
+    }
+
+    #[test]
+    fn the_square_shortcut_is_the_descent() {
+        let mut x = 0x9e37_79b9u32;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        for k in 0..=29u32 {
+            let side = 1i64 << k;
+            for (min_lon, min_lat) in [(0, 0), (7_340_032, 47_185_920), (-side, -2 * side), (-5, 11)] {
+                let bbox = (min_lon, min_lat, min_lon + side, min_lat + side);
+                for _ in 0..200 {
+                    // Mostly inside the box, and one step outside it on every side, where only the
+                    // descent applies.
+                    let lon = (min_lon + next() as i64 % (side + 2) - 1) as i32;
+                    let lat = (min_lat + next() as i64 % (side + 2) - 1) as i32;
+                    assert_eq!(tree_key(lat, lon, bbox), descent_key(lat, lon, bbox), "({lat}, {lon}) in {bbox:?}");
+                }
+            }
+        }
+        // Not a power-of-two square: the descent answers.
+        assert_eq!(square_key(5, 5, (0, 0, 12, 12)), None);
+        assert_eq!(square_key(5, 5, (0, 0, 16, 32)), None);
     }
 
     /// A record writer that honours its own declared `record_len`, so the capacity guard sees the
