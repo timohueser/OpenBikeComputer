@@ -14,17 +14,17 @@
 //! same tree over a stream: the shape is a pure function of the points' coordinates, their record
 //! sizes, the capacity and the floor, so it can be recovered from a stream sorted in tree order
 //! ([`tree_key`]) without the points ever being addressable. A leaf is a contiguous run of that
-//! stream, and the two walks below turn the runs into the index, the bin packing and a placement
-//! plan the caller emits chunks from. `the_streaming_tree_is_the_tree_build_and_flatten_make`
-//! compares the two paths' index and chunk bytes.
+//! stream, and the walks below turn the runs into the index, the bin packing and the chunk bytes.
+//! `the_streaming_tree_is_the_tree_build_and_flatten_make` compares the two paths' index and chunk
+//! bytes.
 //!
 //! The nav section, which is gigabytes at DACH scale, goes through [`flatten_streaming`]
 //! exclusively. [`build`] and [`flatten`] survive as that test's oracle and for the POI section,
 //! which gives each non-empty leaf its own padded chunk — a policy [`flatten_streaming`] does not
 //! implement, for an input that is tens of megabytes at the very worst.
-use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
+use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF};
 
-use crate::extsort::{ExternalSort, SpillWriter};
+use crate::extsort::{ByteReader, ByteSpill, ExternalSort, SpillReader, SpillWriter};
 use crate::grid::UBox;
 use crate::scratch::{ScratchId, ScratchStore};
 use crate::{Error, Result};
@@ -299,18 +299,27 @@ fn children(bbox: UBox) -> [UBox; 4] {
 /// would hold it — and two points inside one floor-bounded box get the same key, which is why the
 /// sort key ends in the record's input order.
 pub fn tree_key(lat: i32, lon: i32, bbox: UBox) -> u64 {
-    let mut box_ = bbox;
+    let (mut min_lon, mut min_lat, mut max_lon, mut max_lat) = bbox;
     let mut key = 0u64;
     let mut depth = 0;
-    while !at_floor(box_) && depth < MAX_LEVELS {
-        let (min_lon, min_lat, max_lon, max_lat) = box_;
+    while !at_floor((min_lon, min_lat, max_lon, max_lat)) && depth < MAX_LEVELS {
         let mid_lon = (min_lon + max_lon).div_euclid(2);
         let mid_lat = (min_lat + max_lat).div_euclid(2);
         let west = (lon as i64) < mid_lon;
         let south = (lat as i64) < mid_lat;
         let digit = ((south as u64) << 1) | (!west) as u64;
         key |= digit << digit_shift(depth);
-        box_ = children(box_)[digit as usize];
+        // Into the child [`children`] names by `digit`, without building the other three.
+        if west {
+            max_lon = mid_lon;
+        } else {
+            min_lon = mid_lon;
+        }
+        if south {
+            max_lat = mid_lat;
+        } else {
+            min_lat = mid_lat;
+        }
         depth += 1;
     }
     key
@@ -339,7 +348,8 @@ pub fn depth_bound(bbox: UBox) -> Option<u32> {
 ///
 /// `ord` is the record's position in the caller's input order, which is the order [`build`]'s
 /// partition preserves inside a leaf and therefore the order [`flatten`] packs a leaf in. `at` and
-/// `len` say where the packed bytes are, and the tree never looks at them.
+/// `len` say where the record's bytes are in the caller's record stream, which is in the same tree
+/// order.
 pub const TREE_REC: usize = 18;
 
 pub fn tree_record(key: u64, ord: u32, at: u32, len: u16) -> [u8; TREE_REC] {
@@ -401,9 +411,28 @@ pub fn place_count(r: &[u8; PLACE_REC]) -> u32 {
     u32::from_le_bytes(r[12..16].try_into().expect("4 bytes"))
 }
 
-/// Emission order for the chunk bytes: chunk, then offset inside it.
-fn by_placement(a: &[u8; PLACE_REC], b: &[u8; PLACE_REC]) -> std::cmp::Ordering {
-    (place_chunk(a), place_at(a)).cmp(&(place_chunk(b), place_at(b)))
+/// Tree order: where the leaf's run starts in the tree-ordered stream. Runs never overlap, so this
+/// is a total order.
+fn by_first(a: &[u8; PLACE_REC], b: &[u8; PLACE_REC]) -> std::cmp::Ordering {
+    place_first(a).cmp(&place_first(b))
+}
+
+/// The most chunk-region bytes one [`PIECE_REC`] carries. Chunk order is not tree order, so a leaf's
+/// packed bytes are sorted into place in pieces: a whole chunk per leaf would pad the sort to several
+/// times the bytes it moves.
+const PIECE: usize = 64;
+
+/// One piece of the chunk region: `position u64, len u8`, then [`PIECE`] bytes, of which `len` are
+/// the region's bytes from `position` on.
+const PIECE_REC: usize = 9 + PIECE;
+
+fn piece_position(r: &[u8; PIECE_REC]) -> u64 {
+    u64::from_le_bytes(r[0..8].try_into().expect("8 bytes"))
+}
+
+/// Region order. Pieces never overlap, so this is a total order.
+fn by_position(a: &[u8; PIECE_REC], b: &[u8; PIECE_REC]) -> std::cmp::Ordering {
+    piece_position(a).cmp(&piece_position(b))
 }
 
 /// One node of the tree as the shape pass hands it to the index pass: `depth u8, prefix u64,
@@ -616,29 +645,26 @@ impl<'s> Shape<'s> {
     }
 }
 
-/// What [`flatten_streaming`] produces: the index and the placement plan, both on the scratch seam,
-/// plus the counters the directory needs.
+/// What [`flatten_streaming`] produces: the index and the chunk region, both on the scratch seam in
+/// their wire form, plus the counters the directory needs.
 #[derive(Debug)]
 pub struct Flattened {
     /// The index, already in its wire form — `Node Count` little-endian `uint32`s.
     pub index: ScratchId,
     pub node_count: u32,
     pub chunk_count: u32,
-    /// One [`PLACE_REC`] per non-empty leaf, in chunk-emission order.
-    pub places: ScratchId,
-    /// The tree-ordered point stream this was built from, handed back because the placement plan
-    /// names each leaf as a run of it. [`read_run`] is how the caller reads one back.
-    pub points: ScratchId,
-    pub leaf_count: u64,
+    /// `chunk_count` chunks of packed records, each padded with the `0xFF` sentinel.
+    pub chunks: ScratchId,
     /// Records the chunk-capacity guard refused.
     pub dropped: usize,
 }
 
 /// [`build`] plus [`flatten`] with `bin_pack`, over a stream: the tree's shape from a tree-ordered
-/// record stream, the bin packing over its leaves, and a plan the caller emits chunk bytes from.
+/// record stream, the bin packing over its leaves, and the chunk bytes.
 ///
-/// `points` is a [`TREE_REC`] stream sorted by [`by_tree_order`]; nothing else about it is assumed,
-/// and it is read forward once here plus once per leaf, by range, later. The two walks are:
+/// `points` is a [`TREE_REC`] stream sorted by [`by_tree_order`]. `recs` holds the records' packed
+/// bytes back to back in the same order, so each point's `at` is where its bytes start. Both files
+/// are consumed. The three walks are:
 ///
 /// 1. Shape — one forward pass ([`Shape`]) that closes every node as the stream passes it, holding
 ///    the path and the open node's points and nothing else, and files each closed node under
@@ -646,10 +672,12 @@ pub struct Flattened {
 /// 2. Index and bins — that file read back in BFS order, which is the order [`flatten`] numbers the
 ///    index in and the order it opens and fills chunks in. A branch's `First Child` is arithmetic,
 ///    because children are laid out in groups of four in their parents' order.
+/// 3. Chunks — [`lay_out_chunks`], which reads both streams forward once.
 pub fn flatten_streaming(
     scratch: &dyn ScratchStore,
     budget: usize,
     points: ScratchId,
+    recs: ScratchId,
     bbox: UBox,
     capacity: usize,
     chunk_size: usize,
@@ -666,7 +694,7 @@ pub fn flatten_streaming(
     let mut shape = Shape::new(bbox, capacity, ExternalSort::<NODE_REC>::new(scratch, budget / 2, by_bfs));
     // A leaf's run is named by stream position, not by `ord`, so that is what goes into the shape
     // pass. The two differ the moment the tree order is not the input order.
-    for (pos, rec) in crate::extsort::SpillReader::<TREE_REC>::open(scratch, points, share)?.enumerate() {
+    for (pos, rec) in SpillReader::<TREE_REC>::open(scratch, points, share)?.enumerate() {
         let rec = rec?;
         let pos = u32::try_from(pos).map_err(|_| {
             Error::Capacity("a quadtree over more than 4 G records: the leaf runs are named by a uint32".into())
@@ -684,11 +712,11 @@ pub fn flatten_streaming(
 
     // 2. The index and the bin packing, in BFS order.
     let mut index = SpillWriter::<4>::create(scratch, share)?;
-    let mut places = ExternalSort::<PLACE_REC>::new(scratch, budget / 2, by_placement);
+    // A quarter, because the chunk layout merges this while its own sort takes half.
+    let mut places = ExternalSort::<PLACE_REC>::new(scratch, budget / 4, by_first);
     let mut free = FirstFit::new();
     let mut bins = 0usize;
     let mut dropped = 0usize;
-    let mut leaves = 0u64;
     let mut written = 0u32;
     for rec in nodes.finish()? {
         let rec = rec?;
@@ -723,7 +751,6 @@ pub fn flatten_streaming(
                 };
                 free.set(bin, chunk_size - used);
                 places.push(place_record(bin as u32, at as u32, first, count))?;
-                leaves += 1;
                 bin as u32 & !BRANCH_BIT
             }
         };
@@ -733,19 +760,95 @@ pub fn flatten_streaming(
     debug_assert_eq!(written, node_count, "the BFS walk must visit every node the shape pass closed");
     let (index, _) = index.seal()?;
 
-    let mut out = SpillWriter::<PLACE_REC>::create(scratch, share)?;
-    for rec in places.finish()? {
-        out.push(rec?)?;
+    let chunks = lay_out_chunks(scratch, budget, places, points, recs, bins as u64, chunk_size)?;
+    Ok(Flattened { index, node_count, chunk_count: bins as u32, chunks, dropped })
+}
+
+/// The chunk region: every leaf's records at the place the bin packing gave the leaf, in `ord`
+/// order under the same capacity guard, and every byte no record claims set to the `0xFF` sentinel.
+///
+/// The leaves are walked in tree order, so `points` and `recs` are each read front to back once.
+/// Chunks are opened in BFS order, so each leaf's packed bytes go through a sort by region position.
+fn lay_out_chunks(
+    scratch: &dyn ScratchStore,
+    budget: usize,
+    places: ExternalSort<'_, PLACE_REC>,
+    points: ScratchId,
+    recs: ScratchId,
+    chunk_count: u64,
+    chunk_size: usize,
+) -> Result<ScratchId> {
+    let share = (budget / 8).max(PIECE_REC);
+    let mut pieces = ExternalSort::<PIECE_REC>::new(scratch, budget / 2, by_position);
+    {
+        let mut points_in = SpillReader::<TREE_REC>::open(scratch, points, share)?;
+        let mut recs_in = ByteReader::open(scratch, recs, share)?;
+        let mut pos = 0u32;
+        // One leaf at a time: its records' bytes, and `(ord, start, len)` into them.
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut order: Vec<(u32, usize, usize)> = Vec::new();
+        let mut packed: Vec<u8> = Vec::with_capacity(chunk_size);
+        for place in places.finish()? {
+            let place = place?;
+            // Every point is in exactly one leaf, so the runs tile the stream.
+            assert_eq!(place_first(&place), pos, "a leaf run starts where the previous one ended");
+            bytes.clear();
+            order.clear();
+            for _ in 0..place_count(&place) {
+                let r =
+                    points_in.next().ok_or_else(|| Error::Scratch("the point stream ends inside a leaf".into()))??;
+                assert_eq!(u64::from(rec_at(&r)), recs_in.offset(), "the records are in the points' order");
+                let start = bytes.len();
+                bytes.resize(start + rec_len(&r) as usize, 0);
+                recs_in.read_exact(&mut bytes[start..])?;
+                order.push((rec_ord(&r), start, rec_len(&r) as usize));
+                pos += 1;
+            }
+            order.sort_unstable_by_key(|&(ord, _, _)| ord);
+            let at = place_at(&place) as usize;
+            packed.clear();
+            for &(_, start, len) in &order {
+                if at + packed.len() + len > chunk_size {
+                    continue; // co-located overflow inside one leaf, counted as `dropped`
+                }
+                packed.extend_from_slice(&bytes[start..start + len]);
+            }
+            let base = u64::from(place_chunk(&place)) * chunk_size as u64 + at as u64;
+            for (k, piece) in packed.chunks(PIECE).enumerate() {
+                let mut rec = [0u8; PIECE_REC];
+                rec[0..8].copy_from_slice(&(base + (k * PIECE) as u64).to_le_bytes());
+                rec[8] = piece.len() as u8;
+                rec[9..9 + piece.len()].copy_from_slice(piece);
+                pieces.push(rec)?;
+            }
+        }
     }
-    Ok(Flattened {
-        index,
-        node_count,
-        chunk_count: bins as u32,
-        places: out.seal()?.0,
-        points,
-        leaf_count: leaves,
-        dropped,
-    })
+    scratch.remove(points)?;
+    scratch.remove(recs)?;
+
+    let mut out = ByteSpill::create(scratch, share)?;
+    let fill = vec![CHUNK_END; chunk_size.max(1)];
+    let pad = |out: &mut ByteSpill<'_>, from: u64, to: u64| -> Result<()> {
+        let mut at = from;
+        while at < to {
+            let n = (to - at).min(fill.len() as u64) as usize;
+            out.push(&fill[..n])?;
+            at += n as u64;
+        }
+        Ok(())
+    };
+    let mut at = 0u64;
+    for rec in pieces.finish()? {
+        let rec = rec?;
+        let position = piece_position(&rec);
+        debug_assert!(position >= at, "pieces never overlap");
+        pad(&mut out, at, position)?;
+        let len = rec[8] as usize;
+        out.push(&rec[9..9 + len])?;
+        at = position + len as u64;
+    }
+    pad(&mut out, at, chunk_count * chunk_size as u64)?;
+    out.seal()
 }
 
 /// One leaf's records, in the caller's input order, which is the order [`flatten`] packs a leaf in
@@ -753,7 +856,7 @@ pub fn flatten_streaming(
 ///
 /// A leaf is a chunk's worth of records, so this is a bounded read; the one exception is a leaf the
 /// floor could not split, which is also the only leaf that can overflow its chunk.
-pub fn read_run(scratch: &dyn ScratchStore, points: ScratchId, first: u32, count: u32) -> Result<Vec<[u8; TREE_REC]>> {
+fn read_run(scratch: &dyn ScratchStore, points: ScratchId, first: u32, count: u32) -> Result<Vec<[u8; TREE_REC]>> {
     let mut buf = vec![0u8; count as usize * TREE_REC];
     scratch.read_at(points, first as u64 * TREE_REC as u64, &mut buf)?;
     let mut out: Vec<[u8; TREE_REC]> = buf.as_chunks::<TREE_REC>().0.to_vec();
@@ -952,57 +1055,31 @@ mod tests {
             let (want_index, want_nodes, want_chunks, want_bins, want_dropped) =
                 flatten(&tree, CHUNK, true, &|p: &&Q, out: &mut Vec<u8>| pack_q(p, out));
 
-            // …and the streaming one, over the same points as a tree-ordered stream.
+            // …and the streaming one, over the same points and their packed bytes as tree-ordered
+            // streams.
             let scratch = crate::scratch::MemoryScratch::new();
-            let mut recs: Vec<[u8; TREE_REC]> =
-                points.iter().map(|q| tree_record(tree_key(q.lat, q.lon, bbox), q.ord, 0, q.len as u16)).collect();
-            recs.sort_by(by_tree_order);
+            let mut points: Vec<&Q> = points.iter().collect();
+            points.sort_by_key(|q| (tree_key(q.lat, q.lon, bbox), q.ord));
             let mut sorted = SpillWriter::<TREE_REC>::create(&scratch, 1 << 16).expect("a scratch write");
-            for r in recs {
-                sorted.push(r).expect("a scratch write");
+            let mut recs = ByteSpill::create(&scratch, 1 << 16).expect("a scratch write");
+            for q in points {
+                let mut body = Vec::new();
+                pack_q(q, &mut body);
+                let at = recs.push(&body).expect("a scratch write");
+                sorted
+                    .push(tree_record(tree_key(q.lat, q.lon, bbox), q.ord, at, q.len as u16))
+                    .expect("a scratch write");
             }
             let (sorted, _) = sorted.seal().expect("a scratch seal");
-            let flat = flatten_streaming(&scratch, 1 << 16, sorted, bbox, CHUNK, CHUNK).expect("the streaming tree");
+            let recs = recs.seal().expect("a scratch seal");
+            let flat =
+                flatten_streaming(&scratch, 1 << 16, sorted, recs, bbox, CHUNK, CHUNK).expect("the streaming tree");
 
             assert_eq!(read_all(&scratch, flat.index), want_index, "trial {trial}: the §8.2 index differs");
             assert_eq!(flat.node_count, want_nodes, "trial {trial}: node count");
             assert_eq!(flat.chunk_count, want_bins, "trial {trial}: chunk count");
             assert_eq!(flat.dropped, want_dropped, "trial {trial}: dropped records");
-
-            // The chunk bytes, emitted from the plan exactly as `nav::emit_chunks` does.
-            let bodies: Vec<Vec<u8>> = points
-                .iter()
-                .map(|q| {
-                    let mut b = Vec::new();
-                    pack_q(q, &mut b);
-                    b
-                })
-                .collect();
-            let mut got: Vec<u8> = Vec::new();
-            let mut chunk: Vec<u8> = Vec::new();
-            let mut current = 0u32;
-            let plan = read_all(&scratch, flat.places);
-            for p in plan.as_chunks::<PLACE_REC>().0 {
-                while current < place_chunk(p) {
-                    chunk.resize(CHUNK, obc_formats::obcm::CHUNK_END);
-                    got.extend_from_slice(&chunk);
-                    chunk.clear();
-                    current += 1;
-                }
-                assert_eq!(chunk.len(), place_at(p) as usize, "trial {trial}: the plan and the write disagree");
-                for r in read_run(&scratch, flat.points, place_first(p), place_count(p)).expect("a leaf run") {
-                    let body = &bodies[rec_ord(&r) as usize];
-                    if chunk.len() + body.len() > CHUNK {
-                        continue;
-                    }
-                    chunk.extend_from_slice(body);
-                }
-            }
-            if flat.chunk_count > 0 {
-                chunk.resize(CHUNK, obc_formats::obcm::CHUNK_END);
-                got.extend_from_slice(&chunk);
-                assert_eq!(current + 1, flat.chunk_count, "trial {trial}: every chunk is opened by a leaf");
-            }
+            let got = read_all(&scratch, flat.chunks);
             assert_eq!(got, want_chunks, "trial {trial}: the streamed chunk bytes are not the packed ones");
         }
     }
@@ -1017,7 +1094,8 @@ mod tests {
         let points = scratch.create().expect("a scratch file");
         let huge: UBox = (0, 0, 1 << 50, 1 << 50);
         assert!(depth_bound(huge).is_none(), "the fixture has to be past the bound to test the refusal");
-        let err = flatten_streaming(&scratch, 1 << 16, points, huge, 512, 512).expect_err("past the key's depth");
+        let recs = scratch.create().expect("a scratch file");
+        let err = flatten_streaming(&scratch, 1 << 16, points, recs, huge, 512, 512).expect_err("past the key's depth");
         assert!(format!("{err}").contains("levels"), "got: {err}");
     }
 }

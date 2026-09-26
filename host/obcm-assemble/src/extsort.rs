@@ -108,6 +108,102 @@ impl<'s, const R: usize> SpillWriter<'s, R> {
     }
 }
 
+/// A stream of variable-length records on the scratch seam: append bytes, get back the offset they
+/// landed at.
+///
+/// The fixed-width streams above cannot hold a junction record, which is 13 bytes plus 17 per
+/// neighbour: padding three million of them to the 421-byte maximum would cost seven times what they
+/// are.
+pub struct ByteSpill<'s> {
+    scratch: &'s dyn ScratchStore,
+    id: ScratchId,
+    buf: Vec<u8>,
+    cap: usize,
+    at: u64,
+}
+
+impl<'s> ByteSpill<'s> {
+    pub fn create(scratch: &'s dyn ScratchStore, budget: usize) -> Result<ByteSpill<'s>> {
+        Ok(ByteSpill { scratch, id: scratch.create()?, buf: Vec::new(), cap: budget.max(1), at: 0 })
+    }
+
+    /// Append one record; the offset it starts at is how it is found again.
+    pub fn push(&mut self, rec: &[u8]) -> Result<u32> {
+        let at = u32::try_from(self.at).map_err(|_| {
+            crate::Error::Capacity("the merged quadtree record bytes pass 4 GiB, which no OBCM section can hold".into())
+        })?;
+        if self.buf.len() + rec.len() > self.cap {
+            self.flush()?;
+        }
+        self.buf.extend_from_slice(rec);
+        self.at += rec.len() as u64;
+        Ok(at)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.buf.is_empty() {
+            self.scratch.append(self.id, &self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    pub fn seal(mut self) -> Result<ScratchId> {
+        self.flush()?;
+        self.buf = Vec::new();
+        Ok(self.id)
+    }
+}
+
+/// A [`ByteSpill`] read front to back, through a buffer of at most `budget` bytes.
+pub struct ByteReader<'s> {
+    scratch: &'s dyn ScratchStore,
+    id: ScratchId,
+    /// Next byte of the file to fetch.
+    at: u64,
+    end: u64,
+    buf: Vec<u8>,
+    pos: usize,
+    cap: usize,
+}
+
+impl<'s> ByteReader<'s> {
+    pub fn open(scratch: &'s dyn ScratchStore, id: ScratchId, budget: usize) -> Result<ByteReader<'s>> {
+        let end = scratch.len(id)?;
+        Ok(ByteReader { scratch, id, at: 0, end, buf: Vec::new(), pos: 0, cap: budget.max(1) })
+    }
+
+    /// The stream's position: how many bytes have been read so far.
+    pub fn offset(&self) -> u64 {
+        self.at - (self.buf.len() - self.pos) as u64
+    }
+
+    /// Fill `out` with the stream's next bytes. Running out first is a defect in whatever wrote it.
+    pub fn read_exact(&mut self, out: &mut [u8]) -> Result<()> {
+        let mut done = 0;
+        while done < out.len() {
+            if self.pos == self.buf.len() {
+                let want = (self.cap as u64).min(self.end - self.at) as usize;
+                if want == 0 {
+                    return Err(crate::Error::Scratch(format!(
+                        "{} ends at byte {}, inside a record",
+                        self.id, self.end
+                    )));
+                }
+                self.buf.resize(want, 0);
+                self.scratch.read_at(self.id, self.at, &mut self.buf)?;
+                self.at += want as u64;
+                self.pos = 0;
+            }
+            let n = (self.buf.len() - self.pos).min(out.len() - done);
+            out[done..done + n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+            self.pos += n;
+            done += n;
+        }
+        Ok(())
+    }
+}
+
 /// One `R`-byte record stream being read front to back, through a buffer of at most `budget` bytes.
 pub struct SpillReader<'s, const R: usize> {
     inner: BlockReader<'s, R>,
