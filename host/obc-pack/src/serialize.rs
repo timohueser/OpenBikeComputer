@@ -1519,6 +1519,18 @@ pub fn serialize_nav_section(
         }
     }
 
+    // The pool follows `obcm-assemble`'s emission order: lower endpoint by `(lat, lon)`, then the
+    // upper one, then cost and kind. An assembly then reads each cell's pool front to back. The
+    // sort is stable, so an exact tie keeps its input order.
+    let lat_lon = |id: u32| {
+        let (lon, lat) = coords[id as usize];
+        (lat, lon)
+    };
+    edges.sort_by_key(|e| {
+        let (a, b) = (lat_lon(e.a), lat_lon(e.b));
+        (a.min(b), a.max(b), e.cost_m, e.kind)
+    });
+
     // Edge pool: records back to back in `edges` order, each pushed to the next chunk start if it
     // would straddle a boundary.
     let edge_facts: Vec<_> = edges.iter().map(|e| crate::nav::integrate_edge_facts(&e.polyline, terrain)).collect();
