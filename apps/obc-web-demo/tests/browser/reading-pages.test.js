@@ -85,9 +85,10 @@ test('landing anchors stay below the sticky header', async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     for (const anchor of ['demo', 'features']) {
       await page.goto(`/#${anchor}`);
-      await expect.poll(() => page.locator(`#${anchor}`).evaluate(element =>
+      // Wait for the smooth scroll to land: the next resize or fragment jump would interrupt it.
+      await expect.poll(() => page.locator(`#${anchor}`).evaluate(element => Math.abs(
         element.getBoundingClientRect().top - document.querySelector('.site-head').getBoundingClientRect().bottom
-      )).toBeGreaterThanOrEqual(-1);
+      ))).toBeLessThanOrEqual(1);
     }
   }
 });
