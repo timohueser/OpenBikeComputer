@@ -419,8 +419,9 @@ pub async fn run(
 
                 // The link is bondable only while no bond is stored. With a bond present the control
                 // plane rejects the pairing attempt outright, so a stranger can never mint a
-                // replacement bond; Forget phone is the only re-pair path. A bonded phone's silent
-                // reconnect is encryption resumption, not pairing, so neither knob touches it.
+                // replacement bond; Forget phone and a factory reset are the only re-pair paths. A
+                // bonded phone's silent reconnect is encryption resumption, not pairing, so neither
+                // knob touches it.
                 let open_pairing = !state::status().paired;
                 if let Err(e) = conn.raw().set_bondable(open_pairing) {
                     warn!("ble: set_bondable failed: {:?}", defmt::Debug2Format(&e));

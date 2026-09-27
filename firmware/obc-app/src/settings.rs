@@ -216,9 +216,9 @@ pub enum SetupStep {
     Buttons = 3,
     Units = 4,
     Theme = 5,
-    Sensors = 6,
-    Effort = 7,
-    Qr = 8,
+    Qr = 6,
+    Sensors = 7,
+    Effort = 8,
     AllSet = 9,
 }
 
