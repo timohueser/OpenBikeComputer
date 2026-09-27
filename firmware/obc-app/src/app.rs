@@ -1911,7 +1911,7 @@ impl App {
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
         let arrival = self.arrival_view();
-        let in_setup = self.settings.setup != crate::settings::SetupStep::Done;
+        let in_setup = self.settings.in_setup();
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival, in_setup);
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
@@ -2177,10 +2177,13 @@ impl App {
     /// It is resolved here, not in a screen, because the recogniser already swallowed the
     /// chord's constituents and the sheet must open over whatever the rider is on. Two rules
     /// live here only: a modal that declares [`Caps::blocks_chords`](crate::screen::Caps) stops
-    /// every chord, also under a sheet it opened, and one drawer is open at a time, so the same
-    /// chord again closes it.
+    /// every chord, and one drawer is open at a time, so the same chord again closes it.
     pub fn apply_chord(&mut self, chord: Chord) -> bool {
-        if screen::base_screen(&self.ui.stack).is_some_and(|s| s.caps().blocks_chords) {
+        if self.ui.stack.last().is_some_and(|s| s.caps().blocks_chords) {
+            return false;
+        }
+        // Setup ends only on its own pages, and the Assistant is a place of its own.
+        if chord == Chord::Assistant && self.settings.in_setup() {
             return false;
         }
         // The powering-off frame refuses a squeeze. It cannot be said in `Caps`, because the
@@ -2410,10 +2413,10 @@ impl App {
         self.settings.theme = theme;
     }
 
-    /// The theme the frame draws in. Setup's theme step previews the theme under its cursor, and
-    /// the setting changes only when the rider commits it.
+    /// The theme the frame draws in. Setup's theme step previews the theme under its cursor, also
+    /// under a drawer, and the setting changes only when the rider commits it.
     pub(crate) fn theme(&self) -> crate::settings::Theme {
-        match self.ui.stack.last() {
+        match screen::base_screen(&self.ui.stack) {
             Some(Screen::SetupTheme(step)) => step.0,
             _ => self.settings.theme,
         }
@@ -6356,7 +6359,7 @@ mod tests {
 
     /// The effort step edits each limit in the drawer editor over the page: the editor's Select
     /// commits and saves the value, and its Back discards. The sheet keeps setup's refusals of the
-    /// chords, the escape and the idle return. Back on the page returns to the sensors step with the
+    /// Assistant chord, the escape and the idle return. Back on the page returns to the sensors step with the
     /// committed limits kept, and the last row opens the All set page.
     #[test]
     fn the_effort_step_edits_its_limits_in_the_drawer_editor() {
@@ -6372,7 +6375,7 @@ mod tests {
             matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_), Screen::ContextDrawer(_)])
         };
         assert!(editing(&app), "Select on Max heart rate opens its editor");
-        assert!(!app.apply_chord(Chord::Quick));
+        assert!(!app.apply_chord(Chord::Assistant));
         app.apply_gesture(Gesture::BackHold);
         idle_tick(&mut app, 60_000);
         idle_tick(&mut app, 120_000);
@@ -6428,6 +6431,20 @@ mod tests {
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
         assert_eq!(app.settings().setup, SetupStep::Done);
         assert!(host.drain(&mut app).is_some(), "setup is saved as done");
+    }
+
+    /// The quick drawer opens over setup for the power and the light, and holds no way out of it.
+    /// The Assistant chord and the escape stay refused.
+    #[test]
+    fn the_quick_drawer_opens_over_setup() {
+        use crate::input::Chord;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::FACTORY);
+        assert!(!app.apply_chord(Chord::Assistant));
+        assert!(app.apply_chord(Chord::Quick));
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_), Screen::QuickDrawer(_)]));
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.get(1), Some(Screen::Hello(_))), "setup cannot be escaped");
     }
 
     /// A route card waits while setup runs, because its VIEW leads on to a ride, and lands once

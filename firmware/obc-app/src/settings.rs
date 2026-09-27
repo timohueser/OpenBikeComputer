@@ -575,6 +575,11 @@ impl Settings {
     /// store holds no valid blob, and a factory reset writes it.
     pub const FACTORY: Settings = Settings { setup: SetupStep::Hello, ..Settings::DEFAULT };
 
+    /// Whether first-use setup is running.
+    pub(crate) fn in_setup(&self) -> bool {
+        self.setup != SetupStep::Done
+    }
+
     pub(crate) fn find_hours_filter(&self) -> obc_reader::reader::places::HoursFilter {
         use obc_reader::reader::places::HoursFilter;
         if self.find_hide_closed {

@@ -54,14 +54,16 @@ enum Control {
 
 /// The controls this device actually has, in row order. On a platform whose panel has no light the
 /// brightness row is dropped, because a slider that moves over zero photons is a lie. The row comes
-/// back the moment the hardware does, and nothing else about the sheet changes.
-fn controls(backlight: bool) -> &'static [Control] {
-    const WITH_LIGHT: [Control; 4] = [Control::Brightness, Control::Ble, Control::Settings, Control::Power];
-    const NO_LIGHT: [Control; 3] = [Control::Ble, Control::Settings, Control::Power];
+/// back the moment the hardware does, and nothing else about the sheet changes. While setup runs
+/// the Settings row is dropped, because setup ends only on its own pages.
+fn controls(backlight: bool, in_setup: bool) -> &'static [Control] {
+    const ALL: [Control; 4] = [Control::Brightness, Control::Ble, Control::Settings, Control::Power];
+    const SETUP: [Control; 3] = [Control::Brightness, Control::Ble, Control::Power];
+    let row: &'static [Control] = if in_setup { &SETUP } else { &ALL };
     if backlight {
-        &WITH_LIGHT
+        row
     } else {
-        &NO_LIGHT
+        &row[1..]
     }
 }
 
@@ -168,7 +170,7 @@ impl QuickDrawerScreen {
     }
 
     fn handle_root(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let row = controls(cx.backlight);
+        let row = controls(cx.backlight, cx.settings.in_setup());
         match g {
             Gesture::Step(n) => {
                 self.selected = super::vocab::list::step_selection(self.selected as usize, n, row.len()) as u8;
@@ -293,7 +295,7 @@ impl QuickDrawerScreen {
     /// The unlabelled icons, plus one line naming the selected one.
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         const STEP: i32 = 57;
-        let row = controls(rx.backlight);
+        let row = controls(rx.backlight, rx.settings.in_setup());
         let first = x + (rx.w - STEP * (row.len() as i32 - 1)) / 2;
         for (i, control) in row.iter().enumerate() {
             let c = Point::new(first + i as i32 * STEP, top + 32);
@@ -459,6 +461,14 @@ mod tests {
     use crate::activity::Mode;
     use crate::screen::test_ctx;
     use crate::{Activity, AppState, Settings};
+
+    /// While setup runs the row has no Settings control, because setup ends only on its own pages.
+    #[test]
+    fn setup_drops_the_settings_control() {
+        assert!(controls(true, false).contains(&Control::Settings));
+        assert_eq!(controls(true, true), [Control::Brightness, Control::Ble, Control::Power]);
+        assert_eq!(controls(false, true), [Control::Ble, Control::Power]);
+    }
 
     /// A drawer with its animations already finished, so `handle` acts immediately. The first tick
     /// is the open's origin, so it is taken a whole [`OPEN_MS`] before `now_ms`.

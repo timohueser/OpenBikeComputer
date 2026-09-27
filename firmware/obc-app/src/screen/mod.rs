@@ -913,36 +913,37 @@ screens! {
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
     /// First-use setup's greeting in the four UI languages. Setup refuses the escape and the
-    /// drawers: it ends only when its last step is done.
-    Hello(HelloScreen) => Caps::modal().blocking(),
+    /// Assistant chord: it ends only when its last step is done. The quick drawer opens over it
+    /// without its Settings control.
+    Hello(HelloScreen) => Caps::modal().blocks_escape(),
     /// Setup's language step: the Language pick list, where Select ends the step and Back returns
     /// to Hello.
-    SetupLanguage(SetupLanguageScreen) => Caps::modal().blocking(),
+    SetupLanguage(SetupLanguageScreen) => Caps::modal().blocks_escape(),
     /// Setup's button lesson: each press fills its button's board. Once all four are filled,
     /// Select ends the step and Back returns to the language step.
-    SetupButtons(SetupButtonsScreen) => Caps::modal().blocking(),
+    SetupButtons(SetupButtonsScreen) => Caps::modal().blocks_escape(),
     /// Setup's units step: Metric or Imperial over a preview of the ride tiles.
-    SetupUnits(SetupUnitsScreen) => Caps::modal().blocking(),
+    SetupUnits(SetupUnitsScreen) => Caps::modal().blocks_escape(),
     /// Setup's theme step: Light or Dark. The frame draws in the theme under its cursor.
-    SetupTheme(SetupThemeScreen) => Caps::modal().blocking(),
+    SetupTheme(SetupThemeScreen) => Caps::modal().blocks_escape(),
     /// Setup's pairing step: the QR code of the pairing link. A bond ends the step, and Back opens
     /// the page that asks whether to ride without the app.
-    SetupQr(SetupQrScreen) => Caps::modal().blocking(),
+    SetupQr(SetupQrScreen) => Caps::modal().blocks_escape(),
     /// Ride without the app: a row back to the code and Skip, which ends the pairing step.
-    SetupNoApp(SetupNoAppScreen) => Caps::modal().blocking(),
+    SetupNoApp(SetupNoAppScreen) => Caps::modal().blocks_escape(),
     /// The page a bond opens on the pairing step: the phone is paired, and each side goes on with
     /// its own steps. Select opens the next step.
-    SetupPaired(SetupPairedScreen) => Caps::modal().blocking(),
+    SetupPaired(SetupPairedScreen) => Caps::modal().blocks_escape(),
     /// Setup's sensors step: the three sensor slots with their live status, then Skip or Continue.
-    SetupSensors(SetupSensorsScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
+    SetupSensors(SetupSensorsScreen) => Caps::modal().blocks_escape().key(RenderKeyKind::SensorSettings),
     /// The Settings scan list for one slot in the setup chrome, opened from the sensors step. It
     /// blocks the escape, because the step it returns to does.
-    SetupSensorScan(SetupSensorScanScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
+    SetupSensorScan(SetupSensorScanScreen) => Caps::modal().blocks_escape().key(RenderKeyKind::SensorSettings),
     /// Setup's effort step: max heart rate and FTP, each edited in the drawer editor over the page,
     /// then a row that continues.
-    SetupEffort(SetupEffortScreen) => Caps::modal().blocking(),
+    SetupEffort(SetupEffortScreen) => Caps::modal().blocks_escape(),
     /// Setup's last step: what the rider set up. Select ends setup and opens Home.
-    SetupAllSet(SetupAllSetScreen) => Caps::modal().blocking(),
+    SetupAllSet(SetupAllSetScreen) => Caps::modal().blocks_escape(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),
