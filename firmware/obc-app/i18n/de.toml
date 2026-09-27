@@ -388,6 +388,7 @@ on_phone = "am Handy"
 # --- The pairing code: the QR code of the pairing link ---
 [pair]
 scan = "Mit dem Handy scannen"
+unplug = "Zum Koppeln abstecken"
 
 # --- Rides list screen ---
 [rides]

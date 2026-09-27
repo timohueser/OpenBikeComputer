@@ -1931,6 +1931,15 @@ script = "p p u d b p p p d p"
 expect = "SetupQr"
 args = ["--fresh"]
 
+# A USB cable parks the radio while the Bluetooth switch stays on, so the line under the name says
+# to unplug it.
+[[frame]]
+name = "setup-qr-cable"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupQr"
+args = ["--fresh", "--ble", "off"]
+
 # Back on the pairing step asks whether to ride without the app. Skip passes the step, which the
 # later setup frames do.
 [[frame]]

@@ -11,9 +11,9 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::Msg;
+use crate::{BleLink, Msg};
 
-use super::vocab::chrome::{title_frame, TITLE_BAR_H};
+use super::vocab::chrome::{copy_w, title_frame, TITLE_BAR_H};
 use super::vocab::marquee::fit;
 use super::{palette, Ctx, Render, Transition};
 
@@ -85,16 +85,19 @@ fn draw_code(cv: &mut impl Surface, x: i32, y: i32) {
 }
 
 /// The code under the title bar, the name the OBC advertises under it (BLE spec §9.3), and the
-/// line that says to scan it.
+/// line that says to scan it. With the rider's switch on, the radio is off only under the board's
+/// USB interlock, so that line then says to unplug the cable.
 pub(crate) fn code_page(cv: &mut impl Surface, rx: &Render) {
     let top = TITLE_BAR_H + 4;
     draw_code(cv, (rx.w - CODE_PX) / 2, top);
     let rename = rx.settings.device_name.as_str();
     let name = if rename.is_empty() { rx.factory_name } else { rename };
     let name_at = Point::new(rx.w / 2, top + CODE_PX + 2);
-    cv.text(&fit(name, rx.w - 16, Font::Label), name_at, Font::Label, TextAlign::Center, palette::INK);
+    cv.text(&fit(name, copy_w(rx.w), Font::Label), name_at, Font::Label, TextAlign::Center, palette::INK);
     let caption = name_at + Point::new(0, Font::Label.line_height() as i32);
-    cv.text(rx.t(Msg::PairScan), caption, Font::Caption, TextAlign::Center, palette::INK);
+    let cable = rx.settings.ble_enabled && rx.state.device.ble_link == BleLink::Off;
+    let line = if cable { Msg::PairUnplug } else { Msg::PairScan };
+    cv.text(rx.t(line), caption, Font::Caption, TextAlign::Center, palette::INK);
 }
 
 /// The pairing code outside setup, opened from Connections. Back returns there, and a bond closes

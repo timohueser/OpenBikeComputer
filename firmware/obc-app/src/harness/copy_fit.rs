@@ -342,6 +342,13 @@ fn every_string_fits_the_panel_in_every_language() {
                 offenders.extend(complaint(name, language, &drawn));
             }
         }
+        // The pairing code's line while the USB interlock parks the radio.
+        let off = crate::BleStatus { link: crate::BleLink::Off, ..crate::BleStatus::DISCONNECTED };
+        for (name, drawn) in walk(plain(vec![Screen::PairPhone(PairPhoneScreen)]).remove(0), language, &bytes, |app| {
+            app.set_ble_status(off)
+        }) {
+            offenders.extend(complaint(name, language, &drawn));
+        }
     }
     report(offenders);
 }

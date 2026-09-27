@@ -44,7 +44,7 @@ const SIM_FACTORY_NAME: &str = "OBC-7A2F";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BleSeed {
-    connected: bool,
+    link: obc_app::BleLink,
     paired: bool,
     passkey: Option<u32>,
 }
@@ -405,7 +405,9 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
     let mut seed = BleSeed::default();
     for part in s.split('+') {
         match part {
-            "connected" => seed.connected = true,
+            "connected" => seed.link = obc_app::BleLink::Connected,
+            // The radio parked with the rider's switch on: the board's USB cable interlock.
+            "off" => seed.link = obc_app::BleLink::Off,
             "paired" => seed.paired = true,
             _ if part.starts_with("passkey=") && seed.passkey.is_none() => {
                 seed.passkey = Some(
@@ -415,7 +417,11 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
                         .ok_or("--ble passkey needs 0..=999999")?,
                 );
             }
-            _ => return Err("--ble needs connected, paired, and/or passkey=N joined by + (N is 0..=999999)".into()),
+            _ => {
+                return Err(
+                    "--ble needs connected or off, paired, and/or passkey=N joined by + (N is 0..=999999)".into()
+                )
+            }
         }
     }
     Ok(seed)
@@ -1036,7 +1042,7 @@ Device state:
   --lang LANG             UI language: en|de|fr|es
   --stat-fields LIST      Comma-separated Statistics field ids
   --physical              Use saved physical-size calibration in the GUI
-  --ble STATE             connected|paired|passkey=N (join independent facts with +)
+  --ble STATE             connected|off|paired|passkey=N (join independent facts with +)
   --sensors MODE          demo|screen
 
 Scripted snapshots:
@@ -1380,11 +1386,7 @@ fn main() {
         app.set_rides(ride_store.catalog(), ride_store.trip_names());
         // Inject BLE before the script. `+` keeps independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
-        app.set_ble_status(obc_app::BleStatus {
-            link: if ble.connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising },
-            passkey: ble.passkey,
-            paired: ble.paired,
-        });
+        app.set_ble_status(obc_app::BleStatus { link: ble.link, passkey: ble.passkey, paired: ble.paired });
         // Planner emission and map-referenced altitude share terrain from this retained map.
         let mut elev = map.elevation();
         // The open ride log. Opened above the script, because every settling pass reconciles it
@@ -1914,7 +1916,7 @@ mod cli_tests {
         assert_eq!(parse(&["--peak-view", "scheidegg"]).unwrap().peak_view, Some(peak_view::Preset::KleineScheidegg));
         assert_eq!(parse(&["--ble", "passkey=42"]).unwrap().ble.unwrap().passkey, Some(42));
         let linked_bond = parse(&["--ble", "connected+paired"]).unwrap().ble.unwrap();
-        assert!(linked_bond.connected);
+        assert_eq!(linked_bond.link, obc_app::BleLink::Connected);
         assert!(linked_bond.paired);
         assert!(matches!(
             parse(&["--inject", "upload-replace=7"]).unwrap().inject,
