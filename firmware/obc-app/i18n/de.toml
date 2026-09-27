@@ -333,8 +333,6 @@ all_added_sub = "Erst eins entfernen"
 # --- Factory-reset settings screen ---
 [reset]
 title = "ZURÜCKSETZEN"
-complete = "Zurückgesetzt"
-restarting = "Neustart"
 factory = "Werksreset"
 erases = "Löscht alle Werte"
 saved_time = "& die Uhrzeit."

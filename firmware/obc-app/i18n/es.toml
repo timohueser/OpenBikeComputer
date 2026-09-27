@@ -332,8 +332,6 @@ all_added_sub = "Quita uno antes"
 # --- Factory-reset settings screen ---
 [reset]
 title = "RESTABLECER"
-complete = "Restablecido"
-restarting = "Reiniciando"
 factory = "Restablecer"
 erases = "Borra los ajustes"
 saved_time = "y la hora."

@@ -4497,7 +4497,7 @@ mod tests {
     #[test]
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::settings::page;
-        use crate::screen::{apply, AddFieldScreen, ResetScreen, SettingsPage, StatFieldsScreen, Transition};
+        use crate::screen::{apply, AddFieldScreen, SettingsPage, StatFieldsScreen, Transition};
         use crate::settings::Units;
 
         /// The screens to stack on the Home root (bottom first — parents under children, as the
@@ -4508,7 +4508,7 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 10] = [
+        let cases: [Case; 9] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsPage::hub())), &[]),
             // Open the UTC-offset editor sheet over the page, step it and commit; the sheet pops
@@ -4548,13 +4548,11 @@ mod tests {
             ("Power", || one(Screen::Power(SettingsPage::new(&page::POWER))), &[Gesture::Step(1), Gesture::Press]),
             // Pure navigation — the Firmware page's install action leaves the settings subtree.
             ("Firmware", || one(Screen::Firmware(SettingsPage::new(&page::FIRMWARE))), &[]),
-            // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
-            ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
         ];
 
         for (name, stack, edits) in cases {
             let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-            // A non-default seed, so the factory Reset's erase-to-defaults really changes something.
+            // A non-default seed, so a Units edit really changes something.
             app.set_settings(Settings { units: Units::Imperial, ..Settings::default() });
             for s in stack() {
                 apply(&mut app.ui.stack, Transition::Push(s));
@@ -4572,16 +4570,15 @@ mod tests {
             }
             assert!(!settings_dirty(&mut app), "{name}: the save is held while the screen is on top");
 
-            // Back out of the subtree, closing any open field on the way. It ends on the Home root,
-            // or in first-use setup after a reset.
+            // Back out to the Home root, closing any open field on the way.
             for _ in 0..MAX_DEPTH_BACKOUT {
-                if !app.ui.top_is_settings() {
+                if app.ui.stack.len() == 1 {
                     break;
                 }
                 assert!(!settings_dirty(&mut app), "{name}: still inside the settings subtree — save held");
                 app.apply_gesture(Gesture::Back);
             }
-            assert!(!app.ui.top_is_settings(), "{name}: backed out of the settings subtree");
+            assert_eq!(app.ui.stack.len(), 1, "{name}: backed out to the Home root");
             assert!(settings_dirty(&mut app), "{name}: leaving the settings subtree flushes the pending save");
             assert!(!settings_dirty(&mut app), "{name}: the flag drains — exactly one save");
         }
@@ -4590,6 +4587,23 @@ mod tests {
     /// Upper bound of `Back` presses needed to unwind any settings case above, so a regression
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
+
+    /// A factory reset saves the cleared settings at once and opens setup, so a power loss after
+    /// the hold boots into setup, as the forgotten phone expects.
+    #[test]
+    fn a_factory_reset_saves_at_once_and_opens_setup() {
+        use crate::screen::{ResetScreen, SettingsPage};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        let _ = app.ui.stack.push(Screen::Settings(SettingsPage::hub()));
+        let _ = app.ui.stack.push(Screen::Reset(ResetScreen::new()));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Hold);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
+        assert_eq!(*app.settings(), Settings::FACTORY);
+        assert!(app.state.ble_forget_requested, "the paired phone is forgotten");
+        assert!(settings_dirty(&mut app), "the reset is saved at once");
+    }
 
     /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
     /// walks that one path with gestures; how deep a rider can get at all, and what that leaves,

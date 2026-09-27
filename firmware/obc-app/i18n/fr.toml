@@ -332,8 +332,6 @@ all_added_sub = "Retirez-en un"
 # --- Factory-reset settings screen ---
 [reset]
 title = "RÉINITIALISER"
-complete = "Réinitialisé"
-restarting = "Redémarrage"
 factory = "Réinit. usine"
 erases = "Efface les réglages"
 saved_time = "& l'heure."

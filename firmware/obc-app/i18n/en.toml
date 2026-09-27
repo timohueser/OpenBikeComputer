@@ -361,8 +361,6 @@ all_added_sub = "Remove one to swap"
 # --- Factory-reset settings screen ---
 [reset]
 title = "RESET"
-complete = "Reset complete"
-restarting = "Restarting"
 factory = "Factory reset"
 erases = "Erases all settings"
 saved_time = "& saved time."
