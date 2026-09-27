@@ -2394,7 +2394,7 @@ impl App {
         // Clean. A pending edit is discarded, because seeding is a boot operation, not an edit.
         self.settings_ops.note_seeded();
         // An unfinished setup opens at its step. A recovered-ride decision already on top stays
-        // there, and setup opens on the next boot instead.
+        // there, and setup opens once it is answered.
         let decision_open = self.ui.stack.last().is_some_and(|top| top.caps().blocks_escape);
         if let Some(step) = screen::setup::screen(&self.settings).filter(|_| !decision_open) {
             screen::apply(&mut self.ui.stack, screen::Transition::Root(step));
@@ -6436,6 +6436,30 @@ mod tests {
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
         assert_eq!(app.settings().setup, SetupStep::Done);
         assert!(host.drain(&mut app).is_some(), "setup is saved as done");
+    }
+
+    /// The recovered ride is decided first, whichever the host offers first, and setup opens on
+    /// its saved step once the decision is answered.
+    #[test]
+    fn setup_opens_once_the_recovered_ride_is_answered() {
+        use crate::settings::SetupStep;
+        let saved = Settings { setup: SetupStep::Units, ..Settings::FACTORY };
+        // The board offers the ride before it seeds the settings.
+        let mut board = App::new_idle(AppState::new(0, 0, 1.0));
+        assert!(board.offer_recovered_ride(crate::RideContinuation::default()));
+        board.set_settings(saved);
+        assert!(matches!(board.top_screen(), Screen::RideRecovery(_)));
+        board.apply_gesture(Gesture::Press);
+        assert!(matches!(board.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]), "Continue");
+
+        // The iOS host seeds the settings first.
+        let mut phone = App::new_idle(AppState::new(0, 0, 1.0));
+        phone.set_settings(saved);
+        assert!(phone.offer_recovered_ride(crate::RideContinuation::default()));
+        assert!(matches!(phone.top_screen(), Screen::RideRecovery(_)));
+        phone.apply_gesture(Gesture::Step(1));
+        phone.apply_gesture(Gesture::Hold);
+        assert!(matches!(phone.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]), "Discard");
     }
 
     /// The quick drawer opens over setup for the power and the light, and holds no way out of it.
