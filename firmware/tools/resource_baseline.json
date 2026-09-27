@@ -95,10 +95,10 @@
         "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,744 B linked resident inside the band, residual main stack 43,680 B, poll frame 9,864 B, init_idle frame 1,856 B, image 1,964,500 B of the 2,019,328 B slot limit."
       },
       "_pairing_code_allocation_measurement": {
-        "source_commit": "f5-qr on claude/zu-skills-install-x0qn6t 155753961",
+        "source_commit": "fixed app link on claude/zu-skills-install-x0qn6t, working tree on 2719683e",
         "build": "cargo build --release --locked --features resource-report on x86_64-unknown-linux-gnu, rustc 1.98.1 (App 58,448 B)",
-        "changes": "App +8 B: AppState keeps the factory serial that the pairing code carries. The QR encoder keeps no resident state; its two 138 B buffers live in the draw frame. All other named allocations and ceilings are unchanged.",
-        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,744 B linked resident inside the band, residual main stack 43,680 B, poll frame 9,864 B, init_idle frame 1,856 B, image 1,969,916 B of the 2,019,328 B slot limit."
+        "changes": "App 58,448 B, unchanged: App keeps the 12 B factory name that the host declares, AppState drops the 8 B factory serial, and alignment padding takes the difference. The pairing code is a 116 B constant module table; no QR encoder links into the image. All other named allocations and ceilings are unchanged.",
+        "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,744 B linked resident inside the band, residual main stack 43,680 B, poll frame 9,864 B, init_idle frame 1,856 B, image 1,951,604 B of the 2,019,328 B slot limit, which is 12,896 B below the 1,964,500 B of the setup-step build."
       },
       "_ride_zone_limits_allocation_measurement": {
         "source_commit": "claude/ride-zone-limits on develop 0a0b15804",

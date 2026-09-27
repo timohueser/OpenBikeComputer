@@ -470,6 +470,8 @@ pub struct Render<'a> {
     pub stats: RenderStats,
     /// The running firmware version string. Empty until the host feeds it.
     pub fw_version: &'a str,
+    /// The factory name `OBC-XXXX`, the name the OBC advertises while no rename is stored.
+    pub factory_name: &'a str,
     /// The loaded map's display name. Empty until map load.
     pub map_name: &'a str,
     /// The loaded map's OBCM format version; `0` means no map yet.

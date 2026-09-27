@@ -124,9 +124,6 @@ pub struct AppState {
     /// Whether this platform can make a sound, declared once by the host at composition through
     /// [`App::set_sound_available`]. `false` hides the Sound settings page and plays no cue.
     pub sound_available: bool,
-    /// The factory device id that the DIS Serial Number String spells (BLE spec §3.1), declared
-    /// once by the host through [`App::set_serial`].
-    pub serial: u64,
 
     /// The Up-ahead timeline's category filter. It resets to Everything on each entry to the
     /// list. It lives here, not on the list screen, because the sheet that edits it sits above
@@ -158,7 +155,6 @@ impl AppState {
             bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
             sound_available: false,
-            serial: 0,
 
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
@@ -454,6 +450,9 @@ pub struct App {
     /// The running firmware version string, fed by the host at boot. Resident because the System
     /// screen draws on a frame with no `Reader`.
     fw_version: heapless::String<32>,
+    /// The factory name `OBC-XXXX` that the OBC advertises while no rename is stored (BLE spec
+    /// §9.3), fed by the host at boot.
+    factory_name: heapless::String<8>,
     /// The loaded map's display name, fed on map load. Empty until a map loads.
     map_name: heapless::String<24>,
     /// The loaded map's OBCM format version, the right half of the `Map` row. `0` until a map loads.
@@ -513,6 +512,7 @@ impl App {
             storage: StorageInfo::new(),
             pass: crate::device_core::pass::PassState::new(),
             fw_version: heapless::String::new(),
+            factory_name: heapless::String::new(),
             map_name: heapless::String::new(),
             map_obcm_version: 0,
             backlight_available: false,
@@ -557,6 +557,7 @@ impl App {
             storage,
             pass,
             fw_version,
+            factory_name,
             map_name,
             map_obcm_version,
             backlight_available,
@@ -581,7 +582,10 @@ impl App {
         assert_eq!(bond.status(), crate::ble::BondStatus::Idle);
         storage.assert_boot_state();
         assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
-        assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
+        assert!(
+            fw_version.is_empty() && factory_name.is_empty() && map_name.is_empty(),
+            "the host has identified nothing yet"
+        );
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*backlight_available, "no host has claimed a panel light yet");
         assert_eq!(*cues, crate::cues::Cues::new(), "no cue raised, no level pending");
@@ -917,9 +921,10 @@ impl App {
         }
     }
 
-    /// Declare the factory serial. The host calls this once at boot.
-    pub fn set_serial(&mut self, serial: u64) {
-        self.state.serial = serial;
+    /// Declare the factory name. The host calls this once at boot.
+    pub fn set_factory_name(&mut self, name: &str) {
+        self.factory_name.clear();
+        let _ = self.factory_name.push_str(name);
     }
 
     /// Feed the loaded map's display name and OBCM format version on map load. The System
@@ -3123,6 +3128,7 @@ impl App {
             recorder,
             ui,
             fw_version,
+            factory_name,
             map_name,
             map_obcm_version,
             storage,
@@ -3202,6 +3208,7 @@ impl App {
             clock,
             stats: RenderStats::default(),
             fw_version: fw_version.as_str(),
+            factory_name: factory_name.as_str(),
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
             card_free_bytes: storage.free_bytes(),

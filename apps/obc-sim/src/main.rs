@@ -39,9 +39,8 @@ use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, Ro
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 
-/// The sim's factory serial, the board's FICR device id stand-in: the example serial of BLE spec
-/// §9.1, so the pairing code a frame shows reads as the spec's example link.
-const SIM_SERIAL: u64 = 0x0123_4567_89AB_CDEF;
+/// The sim's factory name, the stand-in for the board's name from its FICR device id.
+const SIM_FACTORY_NAME: &str = "OBC-7A2F";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BleSeed {
@@ -1344,7 +1343,7 @@ fn main() {
         app.set_backlight_available(!args.no_backlight);
         // The sounder capability, stated as the window states it, with no device opened.
         app.set_sound_available(!args.no_sound);
-        app.set_serial(SIM_SERIAL);
+        app.set_factory_name(SIM_FACTORY_NAME);
         // No `set_resident_frame` here: the headless host composes one frame into a buffer that
         // holds nothing, so every screen must be drawn, including a base a resident host would
         // leave standing under a sheet.
