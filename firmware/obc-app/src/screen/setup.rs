@@ -432,7 +432,7 @@ impl SetupSensorScanScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         title_bar(cv, w, h, SetupStep::Sensors, rx.t(kind_msg(self.0.slot as usize)));
-        self.0.draw_list(cv, rx);
+        self.0.draw_list(cv, rx, h - 8 - HINT_H - 12);
         hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
 }

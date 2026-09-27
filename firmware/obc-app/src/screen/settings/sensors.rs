@@ -12,6 +12,7 @@ use obc_render::Surface;
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{empty_state, title_frame, LIST_TOP};
 use crate::screen::vocab::fmt::write_ble_address;
+use crate::screen::vocab::list::{scrollbar, window_start};
 use crate::screen::vocab::rows::{self, row_rect, Line2, ROW_GAP, ROW_TWO};
 use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::sensors::{SensorPhase, SensorStatus};
@@ -171,11 +172,12 @@ impl SensorScanScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(kind_msg(self.slot as usize)), "");
-        self.draw_list(cv, rx);
+        self.draw_list(cv, rx, h - 6);
     }
 
-    /// The hits under the title bar, or the scanning state while there is none.
-    pub(crate) fn draw_list(&self, cv: &mut impl Surface, rx: &Render) {
+    /// The hits under the title bar down to `bottom`, or the scanning state while there is none.
+    /// More hits than fit scroll the window with the cursor.
+    pub(crate) fn draw_list(&self, cv: &mut impl Surface, rx: &Render, bottom: i32) {
         let (w, h) = (rx.w, rx.h);
         let len = self.count(rx.sensor_scan_hits);
         if len == 0 {
@@ -184,8 +186,10 @@ impl SensorScanScreen {
         }
 
         let selected = self.selected.min(len - 1);
-        for (i, hit) in self.hits(rx.sensor_scan_hits).enumerate() {
-            let y = LIST_TOP + i as i32 * (ROW_TWO + ROW_GAP);
+        let visible = ((bottom - LIST_TOP + ROW_GAP) / (ROW_TWO + ROW_GAP)).max(1) as usize;
+        let first = window_start(selected, visible, len);
+        for (i, hit) in self.hits(rx.sensor_scan_hits).enumerate().skip(first).take(visible) {
+            let y = LIST_TOP + (i - first) as i32 * (ROW_TWO + ROW_GAP);
             let row = row_rect(y, w, ROW_TWO);
             let mut addr = heapless::String::<24>::new();
             if hit.name.is_empty() {
@@ -196,6 +200,7 @@ impl SensorScanScreen {
             let _ = write!(rssi, "{} dBm", hit.rssi);
             rows::nav_row(cv, row, name, Some(Line2::text(&rssi)), i == selected, true, false);
         }
+        scrollbar(cv, w - 8, LIST_TOP, bottom - LIST_TOP, len, first, visible);
     }
 }
 
@@ -351,5 +356,40 @@ mod tests {
         b.clear();
         status_line(&mut b, true, SensorStatus { phase: SensorPhase::Connected, battery: None, last_value_ms: 0 }, en);
         assert_eq!(b.as_str(), "Connected", "no battery → no percent tail");
+    }
+
+    /// More hits than fit scroll with the cursor, and no row reaches past the list's bottom: the
+    /// outline in Settings, the hint band in setup.
+    #[test]
+    fn the_scan_list_scrolls_with_the_cursor_and_stays_above_its_bottom() {
+        use crate::harness::support::{build_min_obcm, Buf};
+        use crate::screen::SetupSensorScanScreen;
+        use crate::App;
+        let bytes = build_min_obcm(0xF800);
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
+        let cache = obc_reader::MapCache::new();
+        let reader = obc_reader::Reader::new(&src, &tables, &cache);
+        let hits: Vec<SensorScanHit> = (0..6).map(|i| hit(1, &format!("Meter {i}"), -40)).collect();
+        for (screen, bottom) in [
+            (Screen::SensorScan(SensorScanScreen::new(1)), 314),
+            (Screen::SetupSensorScan(SetupSensorScanScreen::new(1)), 260),
+        ] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            assert!(app.ui.stack.push(screen).is_ok());
+            app.set_sensor_scan_hits(&hits);
+            app.apply_gesture(Gesture::Step(-1));
+            let (mut scratch, mut buf) = (Box::new(obc_render::RenderScratch::new()), Buf::new(240, 320));
+            let drawn = obc_render::text_tap::record(|| {
+                app.render_frame(Some(&mut scratch), &mut buf, &reader, None, 240.0, 320.0, |c| {
+                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                    embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+                });
+            });
+            let names: Vec<_> = drawn.iter().filter(|d| d.text.starts_with("Meter")).collect();
+            assert!(names.iter().any(|d| d.text == "Meter 5"), "the cursor wrapped to the last hit, and it shows");
+            assert!(!names.iter().any(|d| d.text == "Meter 0"), "the window left the first hit");
+            assert!(names.iter().all(|d| d.area.top_left.y + d.area.size.height as i32 <= bottom));
+        }
     }
 }
