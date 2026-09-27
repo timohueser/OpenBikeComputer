@@ -1,0 +1,334 @@
+<style>
+/* Editable chips and their pickers (round 2). Cropped panels: the phone sheet over a short map strip (390),
+   the website's left panel (380). Only shared primitives plus these scoped rules. Prefix rc-. */
+.rc-panel { height: auto; border-radius: 22px; box-shadow: none; border: 1px solid var(--line-strong); display: flex; flex-direction: column; }
+.rc-panel::before { display: none; }
+.rc-panel > .map { position: relative; inset: auto; flex: none; height: 64px; }
+.rc-panel > .sheet { position: relative; margin-top: -14px; flex: 1; display: flex; flex-direction: column; padding: 0 16px 14px; }
+.rc-panel .sheet > .qbox { margin-top: 10px; }
+.rc-x { margin-left: auto; }
+.rc-edited .typed { color: var(--ink-faint); }            /* the sentence is history once a chip was edited */
+
+/* phone chips: neutral, 36 pt tall with an 8 pt gap = a 44 pt tap area; a chevron marks an editable chip */
+.rc-panel .understood { gap: 8px; margin-top: 10px; }
+.rc-panel .understood > .lbl { font-size: 13px; }
+.rc-panel .chip { height: 36px; font-size: 15px; padding: 0 12px; border-radius: 18px; gap: 6px; }
+.rc-panel .chip svg { width: 15px; height: 15px; }
+.rc-panel .chip.what, .rc-panel .chip.where, .rc-panel .chip.filter { background: var(--parchment-2); color: var(--ink); border-color: transparent; }
+.rc-panel .chip.off { background: transparent; }
+.chip svg.rc-chev { width: 12px; height: 12px; color: var(--ink-faint); margin: 0 -3px 0 -2px; }
+.rc-panel .chip.rc-on, .rc-web .chip.rc-on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.chip.rc-on .k { color: var(--parchment-3); }
+.chip.rc-on svg.rc-chev { color: var(--parchment-3); transform: rotate(180deg); }
+
+/* the picker: an inline block under the chip row, its arrow under the open chip (--ax = the chip's centre) */
+.rc-pick { position: relative; margin-top: 10px; padding: 8px; border-radius: 14px; background: var(--parchment-2); display: grid; gap: 6px; }
+.rc-pick::before { content: ""; position: absolute; top: -6px; left: var(--ax, 40px); width: 12px; height: 12px; margin-left: -6px;
+  background: var(--parchment-2); transform: rotate(45deg); border-radius: 2px; }
+.rc-seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
+.rc-seg.two { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
+.rc-seg > * { min-height: 44px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  font-size: 15px; font-weight: 600; line-height: 1.2; color: var(--ink); border: 1px solid transparent; white-space: nowrap; }
+.rc-seg > * > small { font-size: 13px; font-weight: 400; color: var(--ink-soft); }
+.rc-seg > .on { background: var(--panel); border-color: var(--line-strong); }
+.rc-seg.rc-days { display: flex; overflow: hidden; }          /* scrolls sideways; the cut cell shows it */
+.rc-days > * { flex: none; width: 60px; }
+.rc-tg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.rc-tg > * { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 10px; border-radius: 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.rc-tg > * > i { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-strong); display: grid; place-items: center; color: var(--panel); }
+.rc-tg > .on > i { background: var(--ink); border-color: var(--ink); }
+.rc-tg > * > small { margin-left: auto; font-size: 13px; font-weight: 400; color: var(--ink-soft); }
+.rc-ck { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.rc-prow { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 6px; font-size: 15px; font-weight: 600; border-top: 1px solid var(--line); margin-top: 2px; }
+.rc-prow > svg { width: 18px; height: 18px; color: var(--ink-soft); flex: none; }
+.rc-prow > svg:last-child { margin-left: auto; color: var(--ink-faint); }
+.rc-note { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 6px 0; font-size: 15px; line-height: 1.3; color: var(--ink-soft); border-top: 1px solid var(--line); margin-top: 2px; }
+.rc-note > .btn { margin-left: auto; flex: none; }
+
+/* the answer under the picker */
+.rc-ans { margin-top: 12px; }
+.rc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 0 6px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); }
+.rc-head b { font-size: 15px; color: var(--ink); font-weight: 700; }
+.rc-panel .row .t { font-size: 17px; }
+.rc-panel .row .m { font-size: 15px; }
+.rc-panel .row > *, .rc-web .row > * { min-width: 0; }              /* two lines per row at most: long names truncate */
+.rc-panel .row .t, .rc-panel .row .m, .rc-web .row .t, .rc-web .row .m { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rc-r { font-size: 15px; color: var(--ink-soft); text-align: right; line-height: 1.3; max-width: 120px; }
+.rc-dim { opacity: .5; }
+.rc-bar { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.rc-bar > .btn { width: 100%; height: 50px; }
+.rc-route-t { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 17px; font-weight: 700; padding: 6px 0 2px; }
+.rc-route-t small { font-size: 15px; font-weight: 400; color: var(--ink-soft); }
+.rc-panel .ledger > dt, .rc-panel .ledger > dd { padding: 7px 0; font-size: 15px; }
+.rc-quiet { padding: 8px 0 0; font-size: 15px; color: var(--ink-soft); }
+
+/* website: the left panel; the picker is a popover under its chip, inside the panel, over the list */
+.rc-web { width: 380px; height: 400px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px;
+  box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.rc-web .understood { margin-top: 10px; position: relative; }
+.rc-web .rc-r { font-size: 12.5px; max-width: 150px; }
+.rc-pop { position: absolute; z-index: 3; top: calc(100% + 9px); left: 0; right: 0; padding: 6px; border-radius: 12px; background: var(--panel);
+  border: 1px solid var(--line-strong); box-shadow: var(--shadow-lg); display: grid; gap: 4px; }
+.rc-pop::before { content: ""; position: absolute; top: -6px; left: var(--ax, 40px); width: 10px; height: 10px; margin-left: -5px; background: var(--panel);
+  border-left: 1px solid var(--line-strong); border-top: 1px solid var(--line-strong); transform: rotate(45deg); }
+.rc-pop .rc-seg > * { min-height: 40px; font-size: 13.5px; }
+.rc-pop .rc-seg > * > small { font-size: 12px; }
+.rc-pop .rc-seg > .on { background: var(--parchment-2); border-color: transparent; }
+.rc-pop .rc-tg > * { min-height: 36px; font-size: 13.5px; }
+.rc-pop .rc-tg > * > i { width: 18px; height: 18px; }
+.rc-pop .rc-tg > * > small { font-size: 12px; }
+.rc-web .chip .rc-xb { display: none; width: 16px; height: 16px; border-radius: 50%; margin: 0 -4px 0 0; place-items: center; background: var(--parchment-3); color: var(--ink); }
+.rc-web .chip .rc-xb svg { width: 11px; height: 11px; }
+.rc-web .chip.rc-hover { background: var(--parchment-2); border-color: var(--line-strong); color: var(--ink); }
+.rc-web .chip.rc-hover .rc-xb { display: grid; }
+.rc-cursor { position: absolute; z-index: 5; width: 14px; height: 18px; pointer-events: none; }
+</style>
+
+<!-- 1 distance -->
+<figure class="mock state" id="rc-distance">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone rc-panel">
+    <div class="map"><svg viewBox="0 470 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox rc-edited"><svg><use href="#i-search"/></svg><span class="typed">places to sleep end of day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites and lodging<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter rc-on">within 25 km<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="rc-pick" style="--ax:258px">
+        <div class="rc-seg"><button>2 km<small>2</small></button><button>5 km<small>3</small></button><button>10 km<small>3</small></button><button class="on">25 km<small>4</small></button></div>
+      </div>
+      <div class="rc-ans">
+        <div class="rc-head"><b>4 places</b><span>nearest to the end of Day 4 first</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-bed"/></svg></span><div><div class="t">Hôtel Christiania, Valloire</div><div class="m">km 104 of Day 4 · 0.2 km off the line</div></div></div>
+        <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 17 km before the end · 0.9 km off the line</div></div></div>
+      </div>
+      <div class="rc-bar"><button class="btn primary">End Day 4 here</button></div>
+    </div>
+  </div></div>
+  <figcaption>Distance: the four rings with their counts; 25 km chosen, the chip and the list follow at once.</figcaption>
+</figure>
+
+<!-- 2 kinds -->
+<figure class="mock state" id="rc-kinds">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone rc-panel">
+    <div class="map"><svg viewBox="0 470 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">places to sleep end of day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what rc-on"><svg><use href="#i-tent"/></svg>Campsites and lodging<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="rc-pick" style="--ax:209px">
+        <div class="rc-tg">
+          <button class="on"><i><svg class="rc-ck" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg></i>Campsite<small>2</small></button>
+          <button class="on"><i><svg class="rc-ck" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg></i>Lodging<small>1</small></button>
+          <button><i></i>Hut<small>0</small></button>
+          <button><i></i>Shelter<small>0</small></button>
+        </div>
+      </div>
+      <div class="rc-ans">
+        <div class="rc-head"><b>3 places</b><span>nearest to the end of Day 4 first</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-bed"/></svg></span><div><div class="t">Hôtel Christiania, Valloire</div><div class="m">km 104 of Day 4 · 0.2 km off the line</div></div></div>
+        <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div></div>
+      </div>
+      <div class="rc-bar"><button class="btn primary">End Day 4 here</button></div>
+    </div>
+  </div></div>
+  <figcaption>Kinds: check marks with the count each kind adds; the last kind that is on cannot be turned off.</figcaption>
+</figure>
+
+<!-- 3 where -->
+<figure class="mock state" id="rc-where">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone rc-panel">
+    <div class="map"><svg viewBox="0 470 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">places to sleep end of day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites and lodging<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where rc-on">End of Day 4 <span class="k">Valloire</span><svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="rc-pick" style="--ax:93px">
+        <div class="rc-seg rc-days"><button>Day 1</button><button>Day 2</button><button>Day 3</button><button class="on">Day 4</button><button>Day 5</button><button>Day 6</button><button>Day 7</button><button>Day 8</button><button>Day 9</button><button>Day 10</button></div>
+        <div class="rc-seg"><button>Start</button><button>Middle</button><button class="on">End</button><button>Whole day</button></div>
+        <button class="rc-prow"><svg><use href="#i-route"/></svg>Pick on the map or the profile<svg><use href="#i-chev-r"/></svg></button>
+      </div>
+      <div class="rc-ans">
+        <div class="rc-head"><b>3 places</b><span>nearest to the end of Day 4 first</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-bed"/></svg></span><div><div class="t">Hôtel Christiania, Valloire</div><div class="m">km 104 of Day 4 · 0.2 km off the line</div></div></div>
+        <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div></div>
+      </div>
+      <div class="rc-bar"><button class="btn primary">End Day 4 here</button></div>
+    </div>
+  </div></div>
+  <figcaption>Where: the day in a row that scrolls, the part of the day, or a point on the map or the profile.</figcaption>
+</figure>
+
+<!-- 4 open on -->
+<figure class="mock state" id="rc-open">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone rc-panel">
+    <div class="map"><svg viewBox="400 296 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">shops open sunday day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-cart"/></svg>Shops<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">Day 4<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter rc-on">Open on Sunday<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="rc-pick" style="--ax:80px">
+        <div class="rc-seg"><button>Mon</button><button>Tue</button><button>Wed</button><button>Thu</button><button>Fri</button><button>Sat</button><button class="on">Sun</button></div>
+        <div class="rc-seg"><button>Any day</button></div>
+        <div class="rc-note">Open on Day 4 needs a date<button class="btn">Set trip dates</button></div>
+      </div>
+      <div class="rc-ans">
+        <div class="rc-head"><b>5 shops · 3 open on Sunday</b><span>by km on Day 4</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Épicerie de Bonneval</div><div class="m">km 30 · 0.1 km off the line</div></div><span class="rc-r">Hours unknown</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Vival, Termignon</div><div class="m">km 54 · 0.2 km off the line</div></div><span class="rc-r">Sun 8:00–12:00</span></div>
+        <div class="row sel"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Carrefour Market, Modane</div><div class="m">km 71 · 0.5 km off the line</div></div><span class="rc-r">Sun 8:30–12:30</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Sherpa, Valloire</div><div class="m">km 104 · 0.3 km off the line</div></div><span class="rc-r">Sun 8:00–12:30, 16:00–19:30</span></div>
+        <div class="row rc-dim"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Intermarché, Saint-Michel-de-Maurienne</div><div class="m">km 88 · 0.7 km off the line</div></div><span class="rc-r">Sun closed</span></div>
+      </div>
+      <div class="rc-bar"><button class="btn primary">Add as stop</button></div>
+    </div>
+  </div></div>
+  <figcaption>Weekday: Sun is on; the trip has no dates, so one note offers them, and nothing blocks.</figcaption>
+</figure>
+
+<!-- 5 bike and goal -->
+<figure class="mock state" id="rc-bike">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone rc-panel">
+    <div class="map"><svg viewBox="200 160 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-bf"/><use href="#route-bf-kandel" class="rt-casing"/><use href="#route-bf-kandel" class="rt-line"/>
+      <g transform="translate(256 191)"><circle r="7" style="fill:var(--navy);stroke:var(--panel);stroke-width:3"/></g>
+      <g transform="translate(536 203)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-flag" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">road bike route up Kandel starting here</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <span class="chip what"><svg><use href="#i-route"/></svg>Route</span>
+        <button class="chip where"><svg><use href="#i-here"/></svg>From here <span class="k">Denzlingen</span><svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">To Kandel summit<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter rc-on"><svg><use href="#i-bike"/></svg>Road<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="rc-pick" style="--ax:220px">
+        <div class="rc-seg"><button class="on">Road</button><button>Gravel</button><button>MTB</button><button>Touring</button></div>
+        <div class="rc-seg two"><button class="on">Balanced</button><button>Shortest</button><button>Least climbing</button><button>Least unpaved</button></div>
+      </div>
+      <div class="rc-ans">
+        <div class="rc-route-t"><span>Denzlingen → Kandel summit</span><small>Road · Balanced</small></div>
+        <dl class="ledger">
+          <dt>Distance</dt><dd>20.8 km</dd>
+          <dt>Climb</dt><dd>1,020 m</dd>
+          <dt>Riding time</dt><dd>1 h 55 <small>estimated</small></dd>
+          <dt>Surface</dt><dd>Paved <small>0 km unknown</small></dd>
+        </dl>
+        <div class="rc-quiet">No other way is shorter, flatter or more paved.</div>
+      </div>
+      <div class="rc-bar"><button class="btn primary">Use this route</button></div>
+    </div>
+  </div></div>
+  <figcaption>Bike and goal: the preset behind a route answer; a change re-routes the proposal, not a route in use.</figcaption>
+</figure>
+
+<!-- 6 removed -->
+<figure class="mock state" id="rc-remove">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone rc-panel">
+    <div class="map"><svg viewBox="400 296 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox rc-edited"><svg><use href="#i-search"/></svg><span class="typed">shops open sunday day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-cart"/></svg>Shops<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">Day 4<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip off">Open on Sunday</button>
+      </div>
+      <div class="rc-ans">
+        <div class="rc-head"><b>5 shops</b><span>by km on Day 4</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Épicerie de Bonneval</div><div class="m">km 30 · 0.1 km off the line</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Vival, Termignon</div><div class="m">km 54 · 0.2 km off the line</div></div></div>
+        <div class="row sel"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Carrefour Market, Modane</div><div class="m">km 71 · 0.5 km off the line</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Intermarché, Saint-Michel-de-Maurienne</div><div class="m">km 88 · 0.7 km off the line</div></div></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Sherpa, Valloire</div><div class="m">km 104 · 0.3 km off the line</div></div></div>
+      </div>
+      <div class="rc-bar"><button class="btn primary">Add as stop</button></div>
+    </div>
+  </div></div>
+  <figcaption>Removed: Any day turned the filter off; it stays as a struck chip, and a tap on it brings it back.</figcaption>
+</figure>
+
+<!-- web: distance -->
+<figure class="mock state web" id="rc-distance-web">
+  <div class="fit" data-w="380" data-max="0.8"><div class="mk rc-web">
+    <div class="qbox rc-edited"><svg><use href="#i-search"/></svg><span class="typed">places to sleep end of day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+    <div class="understood"><span class="lbl">Understood as</span>
+      <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites and lodging<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <button class="chip filter rc-on">within 25 km<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <div class="rc-pop" style="--ax:196px">
+        <div class="rc-seg"><button>2 km<small>2</small></button><button>5 km<small>3</small></button><button>10 km<small>3</small></button><button class="on">25 km<small>4</small></button></div>
+      </div>
+    </div>
+    <div class="rc-ans">
+      <div class="rc-head"><b>4 places</b><span>nearest to the end of Day 4 first</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-bed"/></svg></span><div><div class="t">Hôtel Christiania, Valloire</div><div class="m">km 104 of Day 4 · 0.2 km off the line</div></div></div>
+      <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 17 km before the end · 0.9 km off the line</div></div></div>
+    </div>
+  </div></div>
+  <figcaption>Website: the same picker as a popover under its chip, inside the panel; the list updates beneath it.</figcaption>
+</figure>
+
+<!-- web: kinds -->
+<figure class="mock state web" id="rc-kinds-web">
+  <div class="fit" data-w="380" data-max="0.8"><div class="mk rc-web">
+    <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">places to sleep end of day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+    <div class="understood"><span class="lbl">Understood as</span>
+      <button class="chip what rc-on"><svg><use href="#i-tent"/></svg>Campsites and lodging<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <button class="chip filter">within 5 km<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <div class="rc-pop" style="--ax:163px">
+        <div class="rc-tg">
+          <button class="on"><i><svg class="rc-ck" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg></i>Campsite<small>2</small></button>
+          <button class="on"><i><svg class="rc-ck" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg></i>Lodging<small>1</small></button>
+          <button><i></i>Hut<small>0</small></button>
+          <button><i></i>Shelter<small>0</small></button>
+        </div>
+      </div>
+    </div>
+    <div class="rc-ans">
+      <div class="rc-head"><b>3 places</b><span>nearest to the end of Day 4 first</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-bed"/></svg></span><div><div class="t">Hôtel Christiania, Valloire</div><div class="m">km 104 of Day 4 · 0.2 km off the line</div></div></div>
+      <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div></div>
+    </div>
+  </div></div>
+  <figcaption>Website: the kinds popover with check marks; the list stays visible around it.</figcaption>
+</figure>
+
+<!-- web: remove -->
+<figure class="mock state web" id="rc-remove-web">
+  <div class="fit" data-w="380" data-max="0.8"><div class="mk rc-web">
+    <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">shops open sunday day 4</span><svg class="rc-x"><use href="#i-close"/></svg></div>
+    <div class="understood"><span class="lbl">Understood as</span>
+      <button class="chip what"><svg><use href="#i-cart"/></svg>Shops<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <button class="chip where">Day 4<svg class="rc-chev"><use href="#i-chev-d"/></svg></button>
+      <button class="chip filter rc-hover">Open on Sunday<svg class="rc-chev"><use href="#i-chev-d"/></svg><i class="rc-xb"><svg><use href="#i-close"/></svg></i></button>
+      <svg class="rc-cursor" viewBox="0 0 14 18" style="left:118px;top:40px"><path d="M1.5 1.5l4.6 13.2 2.3-5.1 5.4-1.2z" style="fill:var(--panel);stroke:var(--ink);stroke-width:1.4;stroke-linejoin:round"/></svg>
+    </div>
+    <div class="rc-ans">
+      <div class="rc-head"><b>5 shops · 3 open on Sunday</b><span>by km on Day 4</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Épicerie de Bonneval</div><div class="m">km 30 · 0.1 km off the line</div></div><span class="rc-r">Hours unknown</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Vival, Termignon</div><div class="m">km 54 · 0.2 km off the line</div></div><span class="rc-r">Sun 8:00–12:00</span></div>
+      <div class="row sel"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Carrefour Market, Modane</div><div class="m">km 71 · 0.5 km off the line</div></div><span class="rc-r">Sun 8:30–12:30</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div><div class="t">Sherpa, Valloire</div><div class="m">km 104 · 0.3 km off the line</div></div><span class="rc-r">Sun 8:00–12:30, 16:00–19:30</span></div>
+    </div>
+  </div></div>
+  <figcaption>Website: a hover shows the × on a filter chip; a click turns the filter off, the same as Any day.</figcaption>
+</figure>

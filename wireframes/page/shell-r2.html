@@ -1,0 +1,87 @@
+<div class="pg">
+<div class="wrap">
+<header class="pg-head">
+  <h1>Route planner, round 2</h1>
+  <p class="lead">Map first, as you chose. Three ways to show that the box is more than a place search, a calmer phone, and chips you can edit. All places and figures are examples.</p>
+  <div class="meta">
+    <span>27 Sep 2026</span>
+    <a href="https://claude.ai/artifact/YWsNrqi3XuJiVdxGh5nh5L">Round 1</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/2236">Plan of record #2236</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/2238">Parser spike #2238</a>
+  </div>
+</header>
+</div>
+
+<nav class="pg-nav" aria-label="Sections"><div class="scroller">
+  <a href="#changed">What changed</a><a href="#compare">Compare</a><a href="#r1">R1 · Classic</a><a href="#r2">R2 · Scoped box</a><a href="#r3">R3 · Quick requests</a><a href="#chips">Chip pickers</a><a href="#questions">Questions</a>
+</div></nav>
+
+<div class="wrap">
+
+<section class="pg-sec" id="changed">
+  <h2>What changed since round 1</h2>
+  <ul class="prose">
+    <li>Map first on the website and the iPhone. The website keeps the layout of round 1, direction A.</li>
+    <li>Answers stay in the docked panel on the website and in the sheet on the iPhone. Nothing floats over the map except small map controls.</li>
+    <li>A trip shows its days as a list with a length bar for each day.</li>
+    <li>The phone is calmer: one content block and one amber action per screen, targets of 44 pt or more, body text 17 pt, at most two lines in a row, neutral chips, and the box at the top of the sheet in thumb reach.</li>
+    <li>The box reads one request per sentence (Level 2). Pointing puts a chip in the box; the box never shows words you did not type.</li>
+    <li>Each chip is editable: a tap opens a small picker for that part of the request, without the model.</li>
+  </ul>
+</section>
+
+<section class="pg-sec" id="compare">
+  <h2>Three ways to make the box look central</h2>
+  <p class="intro">Everything else is the same in the three directions. They differ only in how the box shows that it searches the route, not only the world.</p>
+  <!--INC:compare-r2-->
+</section>
+
+<section class="pg-sec dir" id="r1">
+  <div class="dir-head">
+    <h2>R1 · Classic, editable answer</h2>
+    <p class="thesis">The box looks like a standard search field. The twist is in the answer: the understood chips appear under the field, and each chip is a control. Nothing else is new.</p>
+  </div>
+  <div class="dir-grid r2grid">
+    <!--FRAG:r2-1-->
+    <div class="dir-notes"><!--NOTES:r1--></div>
+  </div>
+</section>
+
+<section class="pg-sec dir" id="r2">
+  <div class="dir-head">
+    <h2>R2 · Scoped box</h2>
+    <p class="thesis">The box always shows its scope as a chip inside the field: Whole trip, Day 4, Here or Map view. The scope follows what you select in the day list, on the map or on the profile, and your words are read inside it. An empty box offers a few requests for the current scope.</p>
+  </div>
+  <div class="dir-grid r2grid">
+    <!--FRAG:r2-2-->
+    <div class="dir-notes"><!--NOTES:r2--></div>
+  </div>
+</section>
+
+<section class="pg-sec dir" id="r3">
+  <div class="dir-head">
+    <h2>R3 · Quick requests</h2>
+    <p class="thesis">Under the box sits a fixed row of one-tap requests for the current selection: Sleep, Water, Shops, Bike shops, Gaps. One tap builds the same request and chips as typing would. The box is for everything else.</p>
+  </div>
+  <div class="dir-grid r2grid">
+    <!--FRAG:r2-3-->
+    <div class="dir-notes"><!--NOTES:r3--></div>
+  </div>
+</section>
+
+<section class="pg-sec" id="chips">
+  <h2>Chip pickers</h2>
+  <p class="intro">Each chip is one part of the request. A tap opens a picker for that part and changes the answer at once. The pickers work the same way in all three directions.</p>
+  <div class="gallery">
+    <!--FRAG:r2-chips-->
+  </div>
+</section>
+
+<!--INC:questions-r2-->
+
+<footer class="pg-foot">
+  <span>Mocks drawn from one shared content sheet; places and figures are examples, not measurements.</span>
+  <span>When a direction is chosen, it goes into #2236 in Simplified Technical English.</span>
+</footer>
+</div>
+</div>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="color-scheme" content="light dark">
+<title>OBC Planner</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;600&family=Atkinson+Hyperlegible+Next:wght@400;500;600;700;800&display=swap">
+<style>
+{{base.css}}
+{{app.css}}
+</style>
+</head>
+<body>
+{{icons.svg}}
+{{maps.svg}}
+<div id="stage"><div id="app" class="mk web">
+  <header id="bar" class="bar"></header>
+  <div class="mapcol">
+    <div id="map" class="map"></div>
+    <div class="ctl">
+      <div><button data-act="zoomIn" title="Zoom in"><svg><use href="#i-plus"/></svg></button><button data-act="zoomOut" title="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button></div>
+      <div><button data-act="fitAll" title="Show the whole route"><svg><use href="#i-route"/></svg></button></div>
+    </div>
+    <div id="prof" class="prof"></div>
+  </div>
+  <nav id="nav" class="nav"></nav>
+  <aside id="panel" class="panel">
+    <div class="grab"></div>
+    <div class="q">
+      <div class="qbox"><svg><use href="#i-search"/></svg><span id="pointed" class="pointed"></span><input id="qin" type="text" placeholder="Search places or the route" maxlength="80" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search places or the route"><span id="qcount" class="count"></span><button id="qclear" class="x" title="Clear" hidden><svg><use href="#i-close"/></svg></button></div>
+      <div id="chips" class="understood" hidden></div>
+    </div>
+    <div id="oneline" class="oneline rest"></div>
+    <div id="body" class="body"></div>
+    <div id="pin" class="acts" hidden></div>
+    <div id="foot" class="foot"></div>
+  </aside>
+  <div id="menus" class="menus" hidden></div>
+</div></div>
+<script>
+{{js}}
+</script>
+</body>
+</html>

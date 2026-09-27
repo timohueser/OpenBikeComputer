@@ -1,0 +1,98 @@
+<section class="pg-sec" id="model">
+  <h2>The model behind the box</h2>
+  <p class="intro">The box needs a model for one job only: to turn a typed sentence into a request. What the box accepts and what it must return decide which model fits. The speed and size of the models we can run decide in turn how free the sentence can be. This section sets out both sides and proposes an experiment.</p>
+
+  <h3>How a sentence becomes an answer</h3>
+  <div class="pipe" role="list">
+    <div role="listitem"><b>Sentence</b><code>campsites end of day 4</code><span>At most 80 characters.</span></div>
+    <i aria-hidden="true"><svg><use href="#i-chev-r"/></svg></i>
+    <div role="listitem" class="model"><b>Parser (the model)</b><span>Turns the words into a request. It knows nothing about the trip.</span></div>
+    <i aria-hidden="true"><svg><use href="#i-chev-r"/></svg></i>
+    <div role="listitem"><b>Request</b><code>places · campsite · end of day 4 · 5 km</code><span>Shown to the rider as chips.</span></div>
+    <i aria-hidden="true"><svg><use href="#i-chev-r"/></svg></i>
+    <div role="listitem"><b>Resolver (our code)</b><span>“End of Day 4” becomes km 317 of the trip, Valloire. “Kandel” becomes a place from the index.</span></div>
+    <i aria-hidden="true"><svg><use href="#i-chev-r"/></svg></i>
+    <div role="listitem"><b>Answer (our data)</b><span>The place index in the map cells, the router and the plan.</span></div>
+  </div>
+  <div class="prose" style="display:grid;gap:10px">
+    <p>The parser only returns references: “day 4”, “end”, “Kandel”, “here”. Our own code looks them up in the plan and the place index. So the parser needs no trip data in its input, the input stays at about 10 to 30 tokens, and the model can stay small. Everything the rider sees as a result comes from our data, so the model cannot invent a place.</p>
+    <p>Pointing at the strip or the map builds the request directly, without the parser. Place search also works without it. If the model is not downloaded yet, the box still works for names and for pointing.</p>
+  </div>
+
+  <h3>What comes out: the request language</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Request</th><th>Fields</th><th>Answer card</th></tr></thead>
+    <tbody>
+      <tr><th>Places</th><td>what (1 to 3 place kinds), where, filters (open on a weekday, open on Day N, within N km of the line)</td><td>List of places</td></tr>
+      <tr><th>Place</th><td>a name, and optionally near where</td><td>One place</td></tr>
+      <tr><th>Route</th><td>from, to, up to 2 via points, bike type, goal</td><td>Route</td></tr>
+      <tr><th>Change</th><td>end Day N at a place; add a visit, stop or pass; remove a point; split into N days; join two days; add gap markers</td><td>Change to the route</td></tr>
+      <tr><th>Gaps</th><td>water or shops, where, minimum length</td><td>List of stretches</td></tr>
+      <tr><th>Not a request</th><td>none</td><td>Place search for the text</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="prose">
+    <li><b>Where:</b> here, the map view, the route, Day N, start, middle or end of Day N, tomorrow, near a place, between two places, km A to B, this stretch.</li>
+    <li><b>What:</b> the seven kinds in the map cells (water, campsite, lodging, resupply, pharmacy, bike shop, train) and their sub-kinds (supermarket, bakery, hut, hostel, fountain, spring). The words in each language come from the term lists of the iD tagging schema.</li>
+  </ul>
+
+  <h3>What goes in: how free can the sentence be?</h3>
+  <div class="levels">
+    <div class="level"><div class="n">Level 1<small>Fixed forms</small></div><div><span class="ex">campsites end of day 4 · route to Titisee</span><p>Fixed word order, synonyms allowed. Hand-written rules can do it. You rejected fixed phrases in round 4.</p></div></div>
+    <div class="level pick"><div class="n">Level 2<small>Proposed for v1</small></div><div><span class="ex">where can I camp at the end of day 4 · wo kann ich am Ende von Tag 4 zelten · any supermarket open sunday tomorrow</span><p>Any wording of one request, in several languages, with typos. One what, one where and a few filters.</p></div></div>
+    <div class="level"><div class="n">Level 3<small>Combined</small></div><div><span class="ex">campsites near a supermarket at the end of day 4 · end day 4 in saint-michel and find a campsite there</span><p>Two things related to each other, or two requests in one sentence. The chips must then show a nested request.</p></div></div>
+    <div class="level"><div class="n">Level 4<small>Out of scope</small></div><div><span class="ex">is the galibier worth it · will it rain on thursday</span><p>Open questions. The box says it does not understand and shows place search results.</p></div></div>
+  </div>
+
+  <h3>The options</h3>
+  <div class="twocol">
+    <p><b>An encoder tagger</b> reads the whole sentence in one pass and puts a label on each word: “campsites” is the what, “end” is the part of the day, “day 4” is the day. One more label gives the request type. It is fast, and its time does not depend on the length of the answer. It can only label words that are in the sentence, so it cannot write a value that is not there. Simple code joins the labels into the request.</p>
+    <p><b>A small generative model</b> writes the request one token at a time, like autocomplete. It can express nested requests. Each token costs one pass through the model, so a 25-token request costs 25 passes, which makes it about ten times slower. A grammar lets it write only valid requests, but a valid request can still be wrong (“day 3” for “day 4”). A check that every value occurs in the sentence catches most of these.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Option</th><th>Level</th><th class="num">Download</th><th class="num">Parse time, iPhone 12</th><th class="num">Parse time, browser without WebGPU</th><th>Licence</th></tr></thead>
+    <tbody>
+      <tr><th>Rules and word lists</th><td>1</td><td class="num">under 1 MB per language</td><td class="num">under 5 ms</td><td class="num">under 5 ms</td><td>ours</td></tr>
+      <tr class="hl"><th>mmBERT-small tagger, vocabulary cut to our languages</th><td>2</td><td class="num">about 60 MB (est.)</td><td class="num">under 20 ms (est.)</td><td class="num">30–100 ms (est.)</td><td>MIT</td></tr>
+      <tr><th>Granite 4.0 350M, fine-tuned, with a grammar</th><td>2–3</td><td class="num">about 240 MB</td><td class="num">200–350 ms (est.)</td><td class="num">1–2.5 s (est.)</td><td>Apache 2.0</td></tr>
+      <tr><th>LFM2.5-230M or 350M (reference)</th><td>2–3</td><td class="num">150–230 MB</td><td class="num">about 200–300 ms</td><td class="num">1–2.5 s (est.)</td><td>LFM Open: free only below US$10M revenue a year</td></tr>
+      <tr><th>Gemma 3 270M, FunctionGemma (reference)</th><td>2–3</td><td class="num">about 250 MB</td><td class="num">similar</td><td class="num">similar</td><td>Gemma Terms of Use: restrictions pass to every user, not open source</td></tr>
+      <tr><th>Apple Foundation Models, Chrome’s Gemini Nano</th><td colspan="5">Not possible: only on some devices or one browser, and not open.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="src">Sources: DistilBERT runs in 3.47 ms for 128 tokens on the iPhone 13 Neural Engine (<a href="https://machinelearning.apple.com/research/neural-engine-transformers">Apple</a>). LFM2.5-350M on an iPhone 13 mini: 496 tokens/s in, 88 tokens/s out (<a href="https://www.liquid.ai/blog/lfm2-5-350m-no-size-left-behind">Liquid</a>). Granite 4.0 350M at 4 bits is 237 MB (<a href="https://huggingface.co/ibm-granite/granite-4.0-350m-GGUF">IBM</a>). mmBERT-small: 140M parameters, of which only 42M compute; the rest is a 256k-word vocabulary (<a href="https://huggingface.co/jhu-clsp/mmBERT-small">model card</a>). WebGPU is in Safari only from version 26 and in Firefox only on some platforms (<a href="https://github.com/gpuweb/gpuweb/wiki/Implementation-Status">status</a>), so many 2020 laptops run WebAssembly only. Licences: <a href="https://ai.google.dev/gemma/terms">Gemma</a>, <a href="https://www.liquid.ai/lfm-license">LFM</a>. “est.” marks our own estimates; the experiment replaces them with measurements.</p>
+
+  <h3>What decides what</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>If the box must…</th><th>then…</th></tr></thead>
+    <tbody>
+      <tr><td>update the chips while the rider types</td><td>the parse must take under about 50 ms: rules or an encoder. A generative model is too slow for every key.</td></tr>
+      <tr><td>understand combined requests (Level 3)</td><td>a generative model, or a much richer tagger: about four times the download, and 1–2.5 s in browsers without WebGPU.</td></tr>
+      <tr><td>work on the website without a large download</td><td>an encoder of about 60 MB, loaded on the first use of the box and then kept. A 240 MB model is too much for a visitor.</td></tr>
+      <tr><td>speak many languages</td><td>a multilingual model and training data in each language. Rules need hand work in each language.</td></tr>
+      <tr><td>work offline and without our servers</td><td>the parser runs on the phone and in the browser. A parser on a server is out.</td></tr>
+      <tr><td>use one code path on the phone and the website</td><td>ONNX Runtime runs the same encoder file on both. A Rust runtime (candle or tract) could keep the parser in the shared Rust core; its speed must be measured.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">On public tests of this kind of task, a fine-tuned encoder and a fine-tuned small generative model score almost the same: on MASSIVE (51 languages), XLM-R base reaches 85.1 % intent accuracy and mT5-base 85.3 % (<a href="https://arxiv.org/pdf/2204.08582">paper</a>). On a narrow request language, both reach the high 90s after fine-tuning. Without fine-tuning, models under one billion parameters are weak. The largest effect is training data in each language: without it, whole-request accuracy drops by about 25 points.</p>
+
+  <div class="callout">
+    <h3>Recommendation</h3>
+    <ul>
+      <li>Level 2 for v1, with a request language that can grow to Level 3 later without a new answer card.</li>
+      <li>mmBERT-small as a word tagger, with its vocabulary cut to English, German, French, Italian, Spanish and Dutch: about 60 MB, one file for the app and the website. Granite 4.0 350M with a grammar is the challenger, in case combined requests matter more than download size and speed.</li>
+      <li>English and German first.</li>
+    </ul>
+  </div>
+
+  <h3>Proposed experiment</h3>
+  <ol class="prose" style="display:grid;gap:6px">
+    <li>Write the request language above as a typed schema.</li>
+    <li>Write a test set by hand: about 300 sentences in English and German and 50 each in French and Italian, each with its correct request. Include typos, free word order, Level 3 sentences and out-of-scope questions. You write part of it, so that it holds sentences that riders really type.</li>
+    <li>Make training data: templates and word lists, then paraphrases written by a large model directly in each language. 5,000 to 20,000 examples per language. Remove examples with wrong labels.</li>
+    <li>Train and compare the mmBERT-small tagger, Granite 4.0 350M with a grammar, and a rules-only baseline. LFM2.5-230M runs as a reference only, because of its licence.</li>
+    <li>Measure whole-request accuracy; the share of wrong requests shown as understood, which is the worst error; the detection of out-of-scope sentences; parse time on a Mac, on an iPhone 12 or 13, and in Safari, Chrome and Firefox on a 2020 laptop without WebGPU; the download size.</li>
+    <li>Pass bar (proposal): 95 % whole-request accuracy on English and German Level 2 sentences and 85 % in French and Italian; at most 2 % wrong requests shown as understood; at most 100 ms on an iPhone 12 and 300 ms in a browser without WebGPU; at most 80 MB download.</li>
+  </ol>
+  <p class="prose muted">Effort: about 3 to 5 days of agent work on the Mac (estimate), about 2 GB of model downloads, and one session with your iPhone for the timing.</p>
+</section>

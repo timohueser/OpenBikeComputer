@@ -1,0 +1,469 @@
+<style>
+/* Direction D · map and strip, point or type. Scoped with dD-. */
+.dD-app{position:absolute;inset:0;display:grid;grid-template-rows:52px 1fr;grid-template-columns:380px 1fr}
+.dD-bar{grid-column:1/-1;display:flex;align-items:center;gap:2px;padding:0 10px 0 14px;background:var(--panel);border-bottom:1px solid var(--line);z-index:4}
+.dD-bar .brand{font-weight:800;font-size:15px;margin-right:12px;letter-spacing:-.01em}
+.dD-bar .plan{font-weight:600;margin-right:2px}
+.dD-bar .sp{flex:1}
+.dD-bar .btn.ghost{padding:0 8px}
+.dD-bar .btn.primary{margin-left:6px}
+.dD-panel{position:relative;display:flex;flex-direction:column;min-height:0;background:var(--panel);border-right:1px solid var(--line);z-index:3}
+.dD-panel>.top{padding:12px 14px 10px;border-bottom:1px solid var(--line)}
+.dD-panel>.body{flex:1;min-height:0;overflow:hidden;padding:2px 14px 0}
+.dD-panel>.foot{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-top:1px solid var(--line)}
+.dD-panel .understood{margin-top:10px}
+.dD-also{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
+.dD-also .lbl{font-size:12px;color:var(--ink-faint);margin-right:2px}
+.dD-sum{display:flex;flex-direction:column;gap:2px;padding:10px 0 6px;border-bottom:1px solid var(--line)}
+.dD-day{position:relative;display:grid;grid-template-columns:24px 1fr auto;column-gap:10px;align-items:center;padding:7px 0 9px;border-bottom:1px solid var(--line)}
+.dD-day .n{width:22px;height:22px;border-radius:50%;background:var(--ink);color:var(--panel);font-size:11px;font-weight:700;display:grid;place-items:center}
+.dD-day .n.rest{background:transparent;color:var(--ink-soft);border:1.5px solid var(--line-strong)}
+.dD-day .t{font-weight:600;font-size:13.5px}
+.dD-day .m{font-size:12px;color:var(--ink-soft)}
+.dD-day .km{font-weight:600;font-size:13px;align-self:start;padding-top:1px}
+.dD-day .bar{position:absolute;left:34px;bottom:3px;height:3px;border-radius:2px;background:var(--route);opacity:.4}
+.dD-ah{display:flex;align-items:center;gap:2px;padding:8px 0 2px;font-weight:600;font-size:13px}
+.dD-ah .sp{flex:1}
+.dD-sub{padding:10px 0 2px;font-weight:600;font-size:13px}
+.dD-sub .cap{font-weight:400;margin-left:6px}
+.dD-km{font-size:12.5px;color:var(--ink-soft);align-self:start;padding-top:2px}
+.dD-acts{display:flex;gap:6px;margin-top:8px}
+.dD-mapwrap{position:relative;min-height:0;overflow:hidden}
+.dD-mapwrap>.map{bottom:170px}
+.dD-mapnote{position:absolute;left:12px;top:12px;z-index:2;background:var(--panel);border:1px solid var(--line-strong);border-radius:6px;padding:3px 8px;font-size:12px;color:var(--ink-soft)}
+.dD-pop{position:absolute;z-index:3;padding:10px 12px;width:max-content}
+.dD-pop .hd{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+.dD-pop .hd b{font-size:14px}
+.dD-pop .hd .x{margin-left:auto;color:var(--ink-faint);display:grid;place-items:center;align-self:center}
+.dD-pop .hd .x svg{width:14px;height:14px}
+.dD-pop .seg>*{gap:5px}
+.dD-pop .seg svg{width:13px;height:13px}
+.dD-pop .ln{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+/* marks inside the map svg, in map coordinates */
+.dD-pin{color:var(--route)}
+.dD-pin circle{fill:var(--panel);stroke:var(--route);stroke-width:2}
+.dD-pin.sel{color:var(--on-amber)}
+.dD-pin.sel circle{fill:var(--amber);stroke:var(--ink)}
+.dD-pin.de{color:var(--panel)}
+.dD-pin.de circle{fill:var(--ink);stroke:var(--panel)}
+.dD-pin.de text{fill:var(--panel);font:700 12px var(--sans);text-anchor:middle}
+.dD-pin.end circle{fill:var(--panel);stroke:var(--ink);stroke-width:2.5}
+.dD-pin.end circle.d{fill:var(--ink);stroke:none}
+.dD-pin.ghost circle{stroke-dasharray:3 3}
+.dD-here .h{fill:var(--navy);opacity:.18}
+.dD-here .c{fill:var(--navy);stroke:var(--panel);stroke-width:3}
+.dD-ml{font:600 12px var(--sans);fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3.5px;stroke-linejoin:round}
+.dD-ml.ink{fill:var(--ink);font-weight:700}
+.dD-ml.soft{font-weight:500;fill:var(--ink-soft)}
+/* the strip: a gutter of row labels, then everything in km */
+.dD-strip{position:absolute;left:0;right:0;bottom:0;height:170px;background:var(--panel);border-top:1px solid var(--line);display:grid;grid-template-columns:100px 1fr;row-gap:4px;align-content:start;padding:6px 18px 0 0;z-index:2}
+.dD-g{font-size:10px;color:var(--ink-faint);white-space:nowrap;align-self:center;line-height:1;height:8px;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:10px}
+.dD-g svg{width:11px;height:11px}
+.dD-scope{display:inline-flex;align-items:center;gap:2px;font-size:12px;font-weight:600;color:var(--ink);justify-self:end;padding-right:10px;align-self:center}
+.dD-scope svg{width:13px;height:13px;color:var(--ink-faint)}
+.dD-days{position:relative;height:14px;font-size:11px;color:var(--ink-faint)}
+.dD-days>*{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}
+.dD-days>b{font-weight:600}
+.dD-days>b.on{color:var(--ink);font-weight:800}
+.dD-days>i{font-style:normal;font-size:9.5px}
+.dD-days>.end{transform:none;right:0}
+.dD-prof{position:relative;height:74px;margin-bottom:5px}
+.dD-prof>svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.dD-prof .tick{top:10px;bottom:0}
+.dD-prof .tick.sel{background:var(--ink);z-index:1}
+.dD-prof .tick.sel::after{width:14px;height:14px;left:-6px;top:-6px;background:var(--amber);border-color:var(--ink)}
+.dD-prof .tick.ghost{background:transparent;border-left:2px dashed var(--route);width:0}
+.dD-prof .tick.ghost::after{border-style:dashed;left:-5px}
+.dD-de{position:absolute;bottom:-7px;transform:translateX(-50%);width:14px;height:14px;border-radius:50%;background:var(--ink);border:2px solid var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.25);z-index:2}
+.dD-de.sel{width:18px;height:18px;bottom:-9px;background:var(--amber);border-color:var(--ink)}
+.dD-plab{position:absolute;font-size:10.5px;color:var(--ink-soft);white-space:nowrap;background:var(--panel);padding:1px 4px;border-radius:4px;line-height:1.2;z-index:1}
+.dD-plab.win{color:var(--ink);font-weight:600}
+.dD-tip{position:absolute;z-index:3;background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:6px 9px;font-size:11.5px;line-height:1.35;color:var(--ink);box-shadow:var(--shadow);white-space:nowrap}
+.dD-tip .cap{display:block}
+.band.dD-dots>i{width:8px;height:8px;margin-left:-4px;border-radius:50%;background:var(--water);border:1.5px solid var(--panel);box-shadow:0 0 0 1px var(--water)}
+/* phone */
+.dD-nav{position:absolute;left:0;right:0;top:0;height:100px;padding:56px 4px 0;display:flex;align-items:center;background:var(--panel);border-bottom:1px solid var(--line);z-index:5}
+.dD-nav button{width:44px;height:44px;display:grid;place-items:center;color:var(--ink)}
+.dD-nav button svg{width:22px;height:22px}
+.dD-nav .ttl{flex:1;text-align:center;font-weight:600;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dD-sheet{padding:0 16px;display:flex;flex-direction:column;z-index:6}
+.dD-sheet .qbox{margin-top:10px}
+.dD-sheet .understood{margin-top:8px}
+.dD-sheet .row{padding-top:8px;padding-bottom:8px}
+.dD-sheet .row .m{font-size:13px}
+.dD-sheet .row .t .km{font-weight:400;color:var(--ink-soft);font-family:var(--mono);font-size:13px;margin-left:6px}
+.dD-sheet .dD-ah{padding:8px 0 0;font-size:14px}
+.dD-sheet .dD-sub{font-size:14px;padding:8px 0 0}
+.dD-cta{margin-top:auto;padding:8px 0 28px}
+.dD-cta .btn{width:100%}
+.dD-pstrip{display:grid;grid-template-columns:82px 1fr;row-gap:4px;margin-top:8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.dD-pstrip .hd{grid-column:1/-1;display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:2px}
+.dD-pstrip .hd .dD-scope{padding-right:0;font-size:13px}
+.dD-pstrip .hd .cap{margin-left:auto;font-size:12px}
+.dD-pstrip .dD-prof{height:50px;margin-bottom:3px}
+.dD-pstrip .dD-g{font-size:10px}
+.dD-opt{display:grid;grid-template-columns:32px 1fr;column-gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.dD-opt.sel{background:var(--amber-soft);margin:0 -10px;padding-left:10px;padding-right:10px;border-radius:8px;border-color:transparent}
+.dD-opt .ic{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--parchment-2);color:var(--ink-soft)}
+.dD-opt.sel .ic{background:var(--panel);color:var(--ink)}
+.dD-opt .ic svg{width:16px;height:16px}
+.dD-opt .l1{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.dD-opt .t{font-weight:600}
+.dD-opt .f{font-family:var(--mono);font-size:13px;white-space:nowrap}
+.dD-opt .m{font-size:13px;color:var(--ink-soft)}
+.dD-prop{margin-top:12px}
+.dD-prop .h{display:flex;align-items:center;gap:8px}
+.dD-prop .h svg{width:18px;height:18px;color:var(--route);flex:none}
+.dD-prop .fig{font-family:var(--mono);font-size:15px;font-weight:600;margin:8px 0 4px}
+.dD-prop .cap{font-size:12.5px}
+.dD-prop .dD-acts{margin-top:12px}
+</style>
+
+<figure class="mock web" id="d-web-days">
+  <div class="fit" data-w="1280"><div class="mk mk-web">
+    <div class="winbar"><i></i><i></i><i></i><span>openbikecomputer.com/plan</span></div>
+    <div class="app"><div class="dD-app">
+      <div class="dD-bar">
+        <span class="brand">OBC Planner</span>
+        <span class="plan">Alps: Genève to Nice</span>
+        <button class="btn ghost sm"><svg><use href="#i-calendar"/></svg>17–26 Jun 2027</button>
+        <span class="sp"></span>
+        <button class="btn ghost icon"><svg><use href="#i-undo"/></svg></button>
+        <button class="btn ghost icon"><svg><use href="#i-redo"/></svg></button>
+        <button class="btn ghost"><svg><use href="#i-versions"/></svg>Versions</button>
+        <button class="btn ghost"><svg><use href="#i-import"/></svg>Import</button>
+        <button class="btn ghost"><svg><use href="#i-download"/></svg>Offline areas</button>
+        <button class="btn ghost"><svg><use href="#i-qr"/></svg>Continue on phone</button>
+        <button class="btn ghost"><svg><use href="#i-send"/></svg>Export GPX</button>
+        <button class="btn primary"><svg><use href="#i-device"/></svg>Send to device</button>
+      </div>
+      <div class="dD-panel">
+        <div class="top">
+          <div class="qbox"><svg><use href="#i-search"/></svg><span class="ph">Search places or the route</span></div>
+        </div>
+        <div class="body">
+          <div class="dD-sum"><b>634 km · 14,590 m · 49 h riding</b><span class="cap">12 km unknown surface · 1 seasonal closure on the route</span></div>
+          <div class="dD-day"><b class="n">1</b><div><div class="t">Genève → Le Grand-Bornand</div><div class="m">Thu 17 Jun · 1,640 m · 5 h 40</div></div><span class="km num">78 km</span><i class="bar" style="width:66%"></i></div>
+          <div class="dD-day"><b class="n">2</b><div><div class="t">Le Grand-Bornand → Beaufort</div><div class="m">Fri 18 Jun · 1,720 m · 5 h 20</div></div><span class="km num">64 km</span><i class="bar" style="width:54%"></i></div>
+          <div class="dD-day"><b class="n">3</b><div><div class="t">Beaufort → Val d'Isère</div><div class="m">Sat 19 Jun · 2,290 m · 6 h 30</div></div><span class="km num">71 km</span><i class="bar" style="width:60%"></i></div>
+          <div class="dD-day"><b class="n">4</b><div><div class="t">Val d'Isère → Valloire</div><div class="m">Sun 20 Jun · 2,310 m · 7 h 10</div></div><span class="km num">104 km</span><i class="bar" style="width:88%"></i></div>
+          <div class="dD-day"><b class="n">5</b><div><div class="t">Valloire → Briançon</div><div class="m">Mon 21 Jun · 1,480 m · 4 h 30</div></div><span class="km num">53 km</span><i class="bar" style="width:45%"></i></div>
+          <div class="dD-day"><b class="n rest">6</b><div><div class="t">Rest day · Briançon</div><div class="m">Tue 22 Jun</div></div><span class="km num">–</span></div>
+          <div class="dD-day"><b class="n">7</b><div><div class="t">Briançon → Guillestre</div><div class="m">Wed 23 Jun · 1,420 m · 4 h 40</div></div><span class="km num">56 km</span><i class="bar" style="width:47%"></i></div>
+          <div class="dD-day"><b class="n">8</b><div><div class="t">Guillestre → Barcelonnette</div><div class="m">Thu 24 Jun · 1,470 m · 4 h 30</div></div><span class="km num">51 km</span><i class="bar" style="width:43%"></i></div>
+          <div class="dD-day"><b class="n">9</b><div><div class="t">Barcelonnette → Saint-Étienne-de-Tinée</div><div class="m">Fri 25 Jun · 1,640 m · 5 h 30</div></div><span class="km num">63 km</span><i class="bar" style="width:53%"></i></div>
+          <div class="dD-day"><b class="n">10</b><div><div class="t">Saint-Étienne-de-Tinée → Nice</div><div class="m">Sat 26 Jun · 620 m · 4 h 50</div></div><span class="km num">94 km</span><i class="bar" style="width:80%"></i></div>
+        </div>
+        <div class="foot">
+          <button class="btn ghost sm"><svg><use href="#i-bike"/></svg>Touring · Balanced<svg><use href="#i-chev-d"/></svg></button>
+          <button class="btn ghost sm"><svg><use href="#i-sliders"/></svg>Advanced settings</button>
+        </div>
+      </div>
+      <div class="dD-mapwrap">
+        <div class="map">
+          <svg viewBox="20 0 700 426" preserveAspectRatio="xMidYMid slice">
+            <use href="#map-alps"/>
+            <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/>
+            <use href="#route-alps-d1" class="rt-line"/><use href="#route-alps-d2" class="rt-line"/><use href="#route-alps-d3" class="rt-line"/><use href="#route-alps-d4" class="rt-line"/><use href="#route-alps-d5" class="rt-line"/>
+            <g class="dD-pin end" transform="translate(190 32)"><circle r="9"/><circle class="d" r="3"/></g>
+            <g class="dD-pin de" transform="translate(290 119)"><circle r="10"/><text y="4">1</text></g>
+            <g class="dD-pin de" transform="translate(341 194)"><circle r="10"/><text y="4">2</text></g>
+            <g class="dD-pin de" transform="translate(483 284)"><circle r="10"/><text y="4">3</text></g>
+            <g class="dD-pin de" transform="translate(290 378)"><circle r="10"/><text y="4">4</text></g>
+          </svg>
+          <span class="attribution">© OpenStreetMap</span>
+        </div>
+        <div class="dD-strip">
+          <button class="dD-scope">Trip<svg><use href="#i-chev-d"/></svg></button>
+          <div class="dD-days"><b style="left:6.2%">1</b><b style="left:17.4%">2</b><b style="left:28%">3</b><b style="left:41.8%">4</b><b style="left:54.2%">5</b><i style="left:58.4%">rest</i><b style="left:62.8%">7</b><b style="left:71.2%">8</b><b style="left:80.2%">9</b><b style="left:92.6%">10</b><span class="end">634 km</span></div>
+          <span class="dD-g"></span>
+          <div class="dD-prof">
+            <svg viewBox="0 0 634 300" preserveAspectRatio="none">
+              <rect class="day-band" x="78" width="64" height="300"/><rect class="day-band" x="213" width="104" height="300"/><rect class="day-band" x="370" width="56" height="300"/><rect class="day-band" x="477" width="63" height="300"/>
+              <use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/>
+              <line class="day-rule" x1="78" y1="0" x2="78" y2="300"/><line class="day-rule" x1="142" y1="0" x2="142" y2="300"/><line class="day-rule" x1="213" y1="0" x2="213" y2="300"/><line class="day-rule" x1="317" y1="0" x2="317" y2="300"/><line class="day-rule" x1="370" y1="0" x2="370" y2="300"/><line class="day-rule" x1="426" y1="0" x2="426" y2="300"/><line class="day-rule" x1="477" y1="0" x2="477" y2="300"/><line class="day-rule" x1="540" y1="0" x2="540" y2="300"/>
+            </svg>
+            <b class="dD-de" style="left:12.3%"></b><b class="dD-de" style="left:22.4%"></b><b class="dD-de" style="left:33.6%"></b><b class="dD-de" style="left:50%"></b><b class="dD-de" style="left:58.4%"></b><b class="dD-de" style="left:67.2%"></b><b class="dD-de" style="left:75.2%"></b><b class="dD-de" style="left:85.2%"></b><b class="dD-de" style="left:100%"></b>
+            <div class="dD-tip" style="left:36.5%;top:2px"><b>Col de l'Iseran</b> · km 222–228<span class="cap">Free of snow on 20 Jun in 6 of 10 years · early year 28 May · late year 2 Jul</span><span class="cap">Seasonal closure in OSM: Nov–15 Jun</span></div>
+          </div>
+          <span class="dD-g">Surface</span>
+          <div class="band"><i class="paved" style="left:0;width:16.4%"></i><i class="unknown" style="left:16.4%;width:1.26%"></i><i class="paved" style="left:17.67%;width:.95%"></i><i class="unpaved" style="left:18.61%;width:.3%"></i><i class="paved" style="left:18.9%;width:43.9%"></i><i class="unknown" style="left:62.78%;width:.32%"></i><i class="unpaved" style="left:63.09%;width:.2%"></i><i class="unknown" style="left:63.25%;width:.2%"></i><i class="paved" style="left:63.41%;width:36.59%"></i></div>
+          <span class="dD-g">Snow · experiment</span>
+          <div class="band"><i class="snow" style="left:35.02%;width:.95%"></i><i class="snow" style="left:52.21%;width:.63%"></i><i class="snow" style="left:78.39%;width:.63%"></i></div>
+          <span class="dD-g">Closure</span>
+          <div class="band"><i class="closed" style="left:34.7%;width:1.42%"></i></div>
+        </div>
+      </div>
+    </div></div>
+  </div></div>
+  <figcaption>At home, at rest: the days list and the permanent strip (days, surface, snow, closure); gaps stay hidden until asked. The pointer rests on the Iseran, so its snow history shows.</figcaption>
+</figure>
+
+<figure class="mock web" id="d-web">
+  <div class="fit" data-w="1280"><div class="mk mk-web">
+    <div class="winbar"><i></i><i></i><i></i><span>openbikecomputer.com/plan</span></div>
+    <div class="app"><div class="dD-app">
+      <div class="dD-bar">
+        <span class="brand">OBC Planner</span>
+        <span class="plan">Alps: Genève to Nice</span>
+        <button class="btn ghost sm"><svg><use href="#i-calendar"/></svg>17–26 Jun 2027</button>
+        <span class="sp"></span>
+        <button class="btn ghost icon"><svg><use href="#i-undo"/></svg></button>
+        <button class="btn ghost icon"><svg><use href="#i-redo"/></svg></button>
+        <button class="btn ghost"><svg><use href="#i-versions"/></svg>Versions</button>
+        <button class="btn ghost"><svg><use href="#i-import"/></svg>Import</button>
+        <button class="btn ghost"><svg><use href="#i-download"/></svg>Offline areas</button>
+        <button class="btn ghost"><svg><use href="#i-qr"/></svg>Continue on phone</button>
+        <button class="btn ghost"><svg><use href="#i-send"/></svg>Export GPX</button>
+        <button class="btn primary"><svg><use href="#i-device"/></svg>Send to device</button>
+      </div>
+      <div class="dD-panel">
+        <div class="top">
+          <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">places to sleep, end of day 4<span class="caret"></span></span><span class="count">29/80</span></div>
+          <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites and lodging</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+          <div class="dD-also"><span class="lbl">Also here</span><span class="chip filter"><svg><use href="#i-drop"/></svg>Water</span><span class="chip filter"><svg><use href="#i-cart"/></svg>Shops</span><span class="chip filter">Photos and sights</span></div>
+        </div>
+        <div class="body">
+          <div class="dD-ah"><span>3 places within 5 km</span><span class="sp"></span><button class="btn ghost sm"><svg><use href="#i-layers"/></svg>Keep on strip</button><button class="btn ghost sm icon"><svg><use href="#i-close"/></svg></button></div>
+          <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">0.6 km off the line · +30 m · <span style="white-space:nowrap">Reception 8:00–20:00</span></div><div class="dD-acts"><button class="btn sm primary">End Day 4 here</button><button class="btn sm">Add as stop</button></div></div><span class="num dD-km">km 104</span></div>
+          <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">1.4 km off the line · +70 m · Hours unknown</div></div><span class="num dD-km">km 103</span></div>
+          <div class="row"><span class="ic"><svg><use href="#i-bed"/></svg></span><div><div class="t">Hôtel Christiania, Valloire</div><div class="m">0.2 km off the line · 0 m</div></div><span class="num dD-km">km 104</span></div>
+          <div class="dD-sub">Earlier on Day 4</div>
+          <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">17 km before the end · 0.9 km off the line · +10 m · Hours unknown</div></div><span class="num dD-km">km 87</span></div>
+          <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping de l'Arc, Modane</div><div class="m">33 km before the end · 0.4 km off the line · 0 m · <span style="white-space:nowrap">Reception 9:00–19:00</span></div></div><span class="num dD-km">km 71</span></div>
+        </div>
+        <div class="foot">
+          <button class="btn ghost sm"><svg><use href="#i-bike"/></svg>Touring · Balanced<svg><use href="#i-chev-d"/></svg></button>
+          <button class="btn ghost sm"><svg><use href="#i-sliders"/></svg>Advanced settings</button>
+        </div>
+      </div>
+      <div class="dD-mapwrap">
+        <div class="map">
+          <svg viewBox="0 180 700 426" preserveAspectRatio="xMidYMid slice">
+            <use href="#map-d4"/>
+            <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+            <g class="dD-pin" transform="translate(432 462)"><circle r="11"/><use href="#i-tent" x="-7" y="-7" width="14" height="14"/></g>
+            <text class="dD-ml" x="448" y="466">Camping de l'Arc</text>
+            <g class="dD-pin" transform="translate(150 405)"><circle r="11"/><use href="#i-tent" x="-7" y="-7" width="14" height="14"/></g>
+            <text class="dD-ml" x="166" y="400">Camping Le Petit Nice</text>
+            <g class="dD-pin" transform="translate(82 518)"><circle r="11"/><use href="#i-bed" x="-7" y="-7" width="14" height="14"/></g>
+            <g class="dD-pin" transform="translate(70 535)"><circle r="11"/><use href="#i-tent" x="-7" y="-7" width="14" height="14"/></g>
+            <g class="dD-pin de" transform="translate(105 501)"><circle r="11"/><text y="4">4</text></g>
+            <g class="dD-pin sel" transform="translate(140 470)"><circle r="14"/><use href="#i-tent" x="-8" y="-8" width="16" height="16"/></g>
+            <text class="dD-ml ink" x="158" y="462">Camping Caravaneige</text>
+          </svg>
+          <span class="attribution">© OpenStreetMap</span>
+          <div class="card dD-pop" style="left:162px;top:398px">
+            <div class="hd"><b>Valloire</b><span class="cap">End of Day 4 · km 104 · 1,430 m</span><button class="x"><svg><use href="#i-close"/></svg></button></div>
+            <div class="seg"><span><svg><use href="#i-ring"/></svg>Pass here</span><span><svg><use href="#i-dot"/></svg>Shape</span><span><svg><use href="#i-flag"/></svg>Visit</span><span class="on"><svg><use href="#i-tent"/></svg>Sleep</span></div>
+            <div class="ln"><span class="cap">Segment to here</span><div class="seg"><span class="on">Routed</span><span>Straight</span><span>Drawn</span></div></div>
+          </div>
+        </div>
+        <div class="dD-strip">
+          <button class="dD-scope">Trip<svg><use href="#i-chev-d"/></svg></button>
+          <div class="dD-days"><b style="left:6.2%">1</b><b style="left:17.4%">2</b><b style="left:28%">3</b><b class="on" style="left:41.8%">4</b><b style="left:54.2%">5</b><i style="left:58.4%">rest</i><b style="left:62.8%">7</b><b style="left:71.2%">8</b><b style="left:80.2%">9</b><b style="left:92.6%">10</b><span class="end">634 km</span></div>
+          <span class="dD-g"></span>
+          <div class="dD-prof">
+            <svg viewBox="0 0 634 300" preserveAspectRatio="none">
+              <rect class="day-band" x="78" width="64" height="300"/><rect class="day-band sel" x="213" width="104" height="300"/><rect class="day-band" x="370" width="56" height="300"/><rect class="day-band" x="477" width="63" height="300"/>
+              <use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/>
+              <line class="day-rule" x1="78" y1="0" x2="78" y2="300"/><line class="day-rule" x1="142" y1="0" x2="142" y2="300"/><line class="day-rule" x1="213" y1="0" x2="213" y2="300"/><line class="day-rule" x1="317" y1="0" x2="317" y2="300"/><line class="day-rule" x1="370" y1="0" x2="370" y2="300"/><line class="day-rule" x1="426" y1="0" x2="426" y2="300"/><line class="day-rule" x1="477" y1="0" x2="477" y2="300"/><line class="day-rule" x1="540" y1="0" x2="540" y2="300"/>
+            </svg>
+            <i class="tick" style="left:44.8%"></i><i class="tick" style="left:47.3%"></i><i class="tick" style="left:49.5%"></i><i class="tick" style="left:50.5%"></i><i class="tick sel" style="left:50%"></i>
+            <b class="dD-de" style="left:12.3%"></b><b class="dD-de" style="left:22.4%"></b><b class="dD-de" style="left:33.6%"></b><b class="dD-de sel" style="left:50%"></b><b class="dD-de" style="left:58.4%"></b><b class="dD-de" style="left:67.2%"></b><b class="dD-de" style="left:75.2%"></b><b class="dD-de" style="left:85.2%"></b><b class="dD-de" style="left:100%"></b>
+            <span class="dD-plab" style="left:51.5%;bottom:2px">End of Day 4 · Valloire</span>
+          </div>
+          <span class="dD-g">Surface</span>
+          <div class="band"><i class="paved" style="left:0;width:16.4%"></i><i class="unknown" style="left:16.4%;width:1.26%"></i><i class="paved" style="left:17.67%;width:.95%"></i><i class="unpaved" style="left:18.61%;width:.3%"></i><i class="paved" style="left:18.9%;width:43.9%"></i><i class="unknown" style="left:62.78%;width:.32%"></i><i class="unpaved" style="left:63.09%;width:.2%"></i><i class="unknown" style="left:63.25%;width:.2%"></i><i class="paved" style="left:63.41%;width:36.59%"></i></div>
+          <span class="dD-g">Snow · experiment</span>
+          <div class="band"><i class="snow" style="left:35.02%;width:.95%"></i><i class="snow" style="left:52.21%;width:.63%"></i><i class="snow" style="left:78.39%;width:.63%"></i></div>
+          <span class="dD-g">Closure</span>
+          <div class="band"><i class="closed" style="left:34.7%;width:1.42%"></i></div>
+          <span class="dD-g">Water · Day 4<svg><use href="#i-close"/></svg></span>
+          <div class="band dD-dots"><i style="left:38.33%"></i><i style="left:41.17%"></i></div>
+        </div>
+      </div>
+    </div></div>
+  </div></div>
+  <figcaption>At home: the Day 4 end was clicked on the strip, then "Places to sleep"; the box holds the same request as if typed, and the answer is linked in list, strip and map. Proposal: "Keep on strip" leaves a quiet row, like the kept "Water · Day 4" here.</figcaption>
+</figure>
+
+<figure class="mock phone" id="d-phone-tent">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map" style="bottom:556px">
+      <svg viewBox="0 120 600 443" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g class="dD-pin" transform="translate(432 462)"><circle r="14"/><use href="#i-tent" x="-9" y="-9" width="18" height="18"/></g>
+        <text class="dD-ml" x="452" y="468" style="font-size:17px">Camping de l'Arc</text>
+        <g class="dD-pin" transform="translate(128 484)"><circle r="14"/><use href="#i-tent" x="-9" y="-9" width="18" height="18"/></g>
+        <g class="dD-pin" transform="translate(72 530)"><circle r="14"/><use href="#i-tent" x="-9" y="-9" width="18" height="18"/></g>
+        <g class="dD-pin de" transform="translate(105 501)"><circle r="14"/><text y="6" style="font-size:16px">4</text></g>
+        <g class="dD-pin sel" transform="translate(150 405)"><circle r="18"/><use href="#i-tent" x="-11" y="-11" width="22" height="22"/></g>
+        <text class="dD-ml ink" x="174" y="398" style="font-size:17px">Camping Le Petit Nice</text>
+      </svg>
+    </div>
+    <div class="dD-nav">
+      <button><svg><use href="#i-chev-l"/></svg></button>
+      <div class="ttl">Alps: Genève to Nice</div>
+      <button><svg><use href="#i-undo"/></svg></button><button><svg><use href="#i-redo"/></svg></button><button><svg><use href="#i-more"/></svg></button>
+    </div>
+    <div class="sheet dD-sheet" style="height:556px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4</span><span class="count">22/80</span></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+      <div class="dD-pstrip">
+        <div class="hd"><button class="dD-scope">Day 4<svg><use href="#i-chev-d"/></svg></button><span>Val d'Isère → Valloire</span><span class="cap">104 km · 7 h 10</span></div>
+        <span class="dD-g"></span>
+        <div class="dD-prof">
+          <svg viewBox="0 15 104 225" preserveAspectRatio="none">
+            <rect class="day-band sel" x="80" y="15" width="12" height="225"/>
+            <use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/>
+          </svg>
+          <span class="dD-plab win" style="right:24%;top:2px">5–6 h riding</span>
+          <i class="tick" style="left:43.3%"></i><i class="tick" style="left:68.3%"></i><i class="tick" style="left:99%"></i><i class="tick" style="left:100%"></i><i class="tick sel" style="left:83.65%"></i>
+          <b class="dD-de" style="left:100%"></b>
+        </div>
+        <span class="dD-g">Snow · experiment</span>
+        <div class="band"><i class="snow" style="left:8.65%;width:5.77%"></i></div>
+      </div>
+      <div class="dD-ah"><span>2 within 5 km · 2 earlier</span><span class="sp"></span><span class="cap">Offline · downloaded areas</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire<span class="km">km 104</span></div><div class="m">0.6 km off the line · +30 m · Reception 8:00–20:00</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire<span class="km">km 103</span></div><div class="m">1.4 km off the line · +70 m · Hours unknown</div></div></div>
+      <div class="dD-sub">Earlier on Day 4</div>
+      <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice, Saint-Michel<span class="km">km 87</span></div><div class="m">5 h 20 into the day · 0.9 km off the line · +10 m · Hours unknown</div></div></div>
+      <div class="dD-cta"><button class="btn primary">End Day 4 here</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>In the tent: "campsites end of day 4" typed, or the day end tapped: the same chips. The 5–6 h window on the strip points at Saint-Michel; the selected campsite is one item in list, strip and map.</figcaption>
+</figure>
+
+<figure class="mock phone" id="d-phone-road">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map" style="bottom:530px">
+      <svg viewBox="160 20 760 612" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="dD-ml soft" x="560" y="522" style="font-size:20px">Least climbing</text>
+        <text class="dD-ml soft" x="796" y="440" style="font-size:20px">Least unpaved</text>
+        <text class="dD-ml ink" x="612" y="352" style="font-size:20px">Shortest</text>
+        <g class="dD-here" transform="translate(380 233)"><circle class="h" r="18"/><circle class="c" r="8"/></g>
+        <g class="dD-pin end" transform="translate(820 576)"><circle r="12"/><circle class="d" r="4"/></g>
+      </svg>
+    </div>
+    <div class="dD-nav">
+      <button><svg><use href="#i-chev-l"/></svg></button>
+      <div class="ttl">Glottertal → Titisee</div>
+      <button><svg><use href="#i-undo"/></svg></button><button><svg><use href="#i-redo"/></svg></button><button><svg><use href="#i-more"/></svg></button>
+    </div>
+    <div class="sheet dD-sheet" style="height:530px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">Titisee</span><span class="count">7/80</span></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-route"/></svg>Route</span><span class="chip where"><svg><use href="#i-here"/></svg>From here <span class="k">Glottertal</span></span><span class="chip where">To Titisee <span class="k">846 m</span></span><span class="chip filter"><svg><use href="#i-bike"/></svg>Touring</span></div>
+      <div class="dD-opt sel"><span class="ic"><svg><use href="#i-route"/></svg></span><div><div class="l1"><span class="t">Shortest</span><span class="f">34 km · 1,020 m · 2 h 50</span></div><div class="m">St. Peter, St. Märgen · 3.1 km unpaved, of which 1.4 km unknown</div></div></div>
+      <div class="dD-opt"><span class="ic"><svg><use href="#i-route"/></svg></span><div><div class="l1"><span class="t">Least climbing</span><span class="f">+13 km · −300 m · +0 h 20</span></div><div class="m">Freiburg, Kirchzarten, Höllental bike path, Hinterzarten · 0.8 km unpaved</div></div></div>
+      <div class="dD-opt"><span class="ic"><svg><use href="#i-route"/></svg></span><div><div class="l1"><span class="t">Least unpaved</span><span class="f">+2 km · +40 m · +0 h 10</span></div><div class="m">St. Peter, St. Märgen, on roads · 0 km unpaved</div></div></div>
+      <div class="dD-pstrip">
+        <div class="hd"><span class="dD-scope">Shortest</span><span class="cap">34 km · 1,020 m · 2 h 50</span></div>
+        <span class="dD-g"></span>
+        <div class="dD-prof" style="height:48px">
+          <svg viewBox="0 150 34 150" preserveAspectRatio="none">
+            <use href="#prof-bf-titisee-area" class="prof-area"/><use href="#prof-bf-titisee-line" class="prof-line"/>
+          </svg>
+          <span class="dD-plab" style="left:0;top:2px">3.1 km unpaved · 1.4 km unknown</span>
+        </div>
+        <span class="dD-g">Surface</span>
+        <div class="band"><i class="paved" style="left:0;width:36.76%"></i><i class="unpaved" style="left:36.76%;width:5%"></i><i class="unknown" style="left:41.76%;width:4.12%"></i><i class="paved" style="left:45.88%;width:54.12%"></i></div>
+      </div>
+      <div class="dD-cta"><button class="btn primary"><svg><use href="#i-device"/></svg>Send to device</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>On the road, one hand: "Titisee" typed, "Route from here" chosen. Three options named by what they win, as differences; the strip shows the selected option with its unknown stretch.</figcaption>
+</figure>
+
+<figure class="mock web" id="d-web-import">
+  <div class="fit" data-w="1280"><div class="mk mk-web">
+    <div class="winbar"><i></i><i></i><i></i><span>openbikecomputer.com/plan</span></div>
+    <div class="app"><div class="dD-app">
+      <div class="dD-bar">
+        <span class="brand">OBC Planner</span>
+        <span class="plan">Schwarzwald Gravel, 3 days</span>
+        <button class="btn ghost sm"><svg><use href="#i-calendar"/></svg>Add dates</button>
+        <span class="sp"></span>
+        <button class="btn ghost icon"><svg><use href="#i-undo"/></svg></button>
+        <button class="btn ghost icon"><svg><use href="#i-redo"/></svg></button>
+        <button class="btn ghost"><svg><use href="#i-versions"/></svg>Versions</button>
+        <button class="btn ghost"><svg><use href="#i-import"/></svg>Import</button>
+        <button class="btn ghost"><svg><use href="#i-download"/></svg>Offline areas</button>
+        <button class="btn ghost"><svg><use href="#i-qr"/></svg>Continue on phone</button>
+        <button class="btn ghost"><svg><use href="#i-send"/></svg>Export GPX</button>
+        <button class="btn primary"><svg><use href="#i-device"/></svg>Send to device</button>
+      </div>
+      <div class="dD-panel">
+        <div class="top">
+          <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">via Hotel Krone St. Peter</span><span class="count">25/80</span></div>
+          <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-flag"/></svg>Add a visit</span><span class="chip where">Hotel Krone, St. Peter <span class="k">1.1 km off the line</span></span></div>
+        </div>
+        <div class="body">
+          <div class="card dD-prop">
+            <div class="h"><svg><use href="#i-flag"/></svg><span>Add a visit · Hotel Krone, St. Peter</span></div>
+            <div class="fig">+2.3 km · +60 m</div>
+            <div class="cap">Only the detour is routed. 312 km of the line unchanged.</div>
+            <div class="dD-acts"><button class="btn primary">Apply</button><button class="btn">Cancel</button></div>
+          </div>
+          <div class="dD-sub">Schwarzwald Gravel, 3 days<span class="cap">Imported line · not re-routed</span></div>
+          <dl class="ledger">
+            <dt>Distance</dt><dd>312 km</dd>
+            <dt>Climb</dt><dd>6,480 m</dd>
+            <dt>Bike</dt><dd>Gravel</dd>
+            <dt>Surface</dt><dd>41 km unknown</dd>
+            <dt>Water</dt><dd>No mapped water for 38 km <small>Day 2</small></dd>
+          </dl>
+        </div>
+        <div class="foot">
+          <button class="btn ghost sm"><svg><use href="#i-bike"/></svg>Gravel · Balanced<svg><use href="#i-chev-d"/></svg></button>
+          <button class="btn ghost sm"><svg><use href="#i-sliders"/></svg>Advanced settings</button>
+        </div>
+      </div>
+      <div class="dD-mapwrap">
+        <div class="map">
+          <svg viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid slice">
+            <use href="#map-bf"/>
+            <use href="#route-bf-import" class="rt-import-casing"/><use href="#route-bf-import" class="rt-import"/>
+            <use href="#route-bf-krone" class="rt-ghost"/>
+            <g class="dD-pin ghost" transform="translate(590 318)"><circle r="11"/><use href="#i-flag" x="-7" y="-7" width="14" height="14"/></g>
+            <text class="dD-ml ink" x="606" y="316">Hotel Krone, St. Peter</text>
+            <text class="dD-ml soft" x="606" y="332">Detour · routed · +2.3 km</text>
+          </svg>
+          <span class="attribution">© OpenStreetMap</span>
+          <div class="dD-mapnote">Imported line · not re-routed</div>
+        </div>
+        <div class="dD-strip">
+          <button class="dD-scope">Trip<svg><use href="#i-chev-d"/></svg></button>
+          <div class="dD-days"><b style="left:16.7%">1</b><b style="left:50%">2</b><b style="left:83.3%">3</b><span class="end">312 km</span></div>
+          <span class="dD-g"></span>
+          <div class="dD-prof">
+            <svg viewBox="0 150 312 150" preserveAspectRatio="none">
+              <rect class="day-band" x="104" y="150" width="104" height="150"/>
+              <use href="#prof-bf-import-area" class="prof-area"/><use href="#prof-bf-import-line" class="prof-line"/>
+              <line class="day-rule" x1="104" y1="150" x2="104" y2="300"/><line class="day-rule" x1="208" y1="150" x2="208" y2="300"/>
+            </svg>
+            <i class="tick ghost" style="left:8.33%"></i>
+            <span class="dD-plab" style="left:9.5%;top:4px">Hotel Krone · +2.3 km</span>
+            <span class="dD-plab" style="left:48%;bottom:2px">No mapped water for 38 km</span>
+            <b class="dD-de" style="left:33.3%"></b><b class="dD-de" style="left:66.7%"></b><b class="dD-de" style="left:100%"></b>
+          </div>
+          <span class="dD-g">Surface</span>
+          <div class="band"><i class="paved" style="left:0;width:19.23%"></i><i class="unknown" style="left:19.23%;width:4.81%"></i><i class="paved" style="left:24.04%;width:17.63%"></i><i class="unknown" style="left:41.67%;width:3.85%"></i><i class="paved" style="left:45.52%;width:28.2%"></i><i class="unknown" style="left:73.72%;width:4.49%"></i><i class="paved" style="left:78.21%;width:21.79%"></i></div>
+          <span class="dD-g">Water · asked<svg><use href="#i-close"/></svg></span>
+          <div class="band"><i class="gap" style="left:48.08%;width:12.18%"></i></div>
+        </div>
+      </div>
+    </div></div>
+  </div></div>
+  <figcaption>The published route, via my hotel: the imported line is kept as it is; the water gap row shows because it was asked. "via Hotel Krone St. Peter" is a proposal: the detour as a ghost on map and strip, applied only on Apply.</figcaption>
+</figure>

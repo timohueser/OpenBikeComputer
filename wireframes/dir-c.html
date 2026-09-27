@@ -1,0 +1,255 @@
+<style>
+/* Direction C · query first: one box drives it. Scoped with dC-. */
+
+/* website corners */
+.dC-corner-l { position: absolute; left: 16px; top: 16px; display: flex; gap: 8px; align-items: center; z-index: 3; }
+.dC-corner-r { position: absolute; right: 16px; top: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; z-index: 3; }
+.dC-rail { background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; width: 172px; }
+.dC-rail button { display: flex; align-items: center; gap: 9px; width: 100%; height: 30px; padding: 0 8px; border-radius: 6px;
+  font-size: 13px; font-weight: 500; color: var(--ink-soft); text-align: left; }
+.dC-rail button svg { width: 16px; height: 16px; flex: none; }
+.dC-rail hr { border: 0; border-top: 1px solid var(--line); margin: 4px 6px; }
+
+/* the box column: box card, then the answer card */
+.dC-col { position: absolute; left: 360px; top: 16px; width: 560px; display: flex; flex-direction: column; gap: 8px; z-index: 4; }
+.dC-boxcard { padding: 10px; }
+.dC-boxcard .understood { margin-top: 9px; padding: 0 2px; }
+.dC-ans { padding: 12px 14px 8px; }
+.dC-ans-h { display: flex; align-items: baseline; gap: 8px; padding-bottom: 4px; }
+.dC-ans-h .h { font-size: 14.5px; }
+.dC-ans-h .cap { flex: 1; }
+.dC-ans-h .btn.icon { align-self: center; }
+.dC-ans .row { padding: 8px 0; }
+.dC-ans .row:last-child { border-bottom: 0; }
+.dC-ans .row .m { margin-top: 1px; }
+.dC-ans .row.sel { margin: 2px -10px; }
+.dC-ans .ic.n { font: 700 12px var(--sans); background: var(--panel); border: 2px solid var(--route); color: var(--ink); }
+.dC-ans .row.sel .ic.n { background: var(--amber); border-color: var(--ink); }
+.dC-acts { display: flex; gap: 6px; margin-top: 8px; }
+.dC-sub { font-size: 12px; color: var(--ink-faint); padding: 10px 0 2px; }
+
+/* the plan bar */
+.dC-planbar { position: absolute; left: 0; right: 0; bottom: 0; height: 60px; background: var(--panel); border-top: 1px solid var(--line-strong);
+  display: flex; align-items: center; gap: 14px; padding: 0 8px 0 16px; z-index: 3; }
+.dC-trip { width: 232px; flex: none; }
+.dC-trip .h { font-size: 14px; line-height: 1.2; white-space: nowrap; }
+.dC-trip .cap { white-space: nowrap; }
+.dC-days { flex: 1; min-width: 0; display: flex; gap: 2px; height: 30px; }
+.dC-days > i { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; overflow: hidden; border-radius: 5px;
+  background: var(--parchment-2); font: 11.5px var(--sans); color: var(--ink-soft); white-space: nowrap; }
+.dC-days > i b { color: var(--ink); font-weight: 700; }
+.dC-days > i.sel { background: var(--amber); color: var(--on-amber); }
+.dC-days > i.sel b { color: var(--on-amber); }
+.dC-days > i.rest { flex: none; width: 22px; }
+.dC-sum { flex: none; text-align: right; line-height: 1.25; }
+.dC-sum .h { font-size: 13.5px; }
+.dC-sum .cap { display: block; }
+.dC-planbar .btn.ghost svg { transform: rotate(180deg); }
+
+/* map marks (svg, map units) */
+.dC-mday { fill: var(--ink); stroke: var(--panel); stroke-width: 2; }
+.dC-mres { fill: var(--panel); stroke: var(--route); stroke-width: 2; }
+.dC-mres.sel { fill: var(--amber); stroke: var(--ink); }
+.dC-mn { font: 700 10px var(--sans); text-anchor: middle; fill: var(--ink); }
+.dC-ml { font: 600 10px var(--sans); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3px; stroke-linejoin: round; }
+.dC-ml.alt { font-weight: 500; fill: var(--ink-faint); }
+.dC-ring { fill: none; stroke: var(--ink-faint); stroke-width: 1.2; stroke-dasharray: 4 4; opacity: .6; }
+.dC-here { fill: var(--navy); stroke: var(--panel); stroke-width: 2.5; }
+.dC-dest { fill: var(--panel); stroke: var(--ink); stroke-width: 2; }
+
+/* phone */
+.dC-pill { position: absolute; top: 58px; left: 50%; transform: translateX(-50%); height: 36px; padding: 0 12px 0 14px; border-radius: 18px;
+  background: var(--panel); box-shadow: var(--shadow); display: flex; align-items: center; gap: 6px; font-size: 14px; white-space: nowrap; z-index: 3; }
+.dC-pill b { font-weight: 700; }
+.dC-pill svg { width: 16px; height: 16px; color: var(--ink-faint); }
+.dC-more { position: absolute; top: 58px; right: 14px; width: 36px; height: 36px; border-radius: 50%; background: var(--panel); box-shadow: var(--shadow);
+  display: grid; place-items: center; z-index: 3; }
+.dC-more svg { width: 18px; height: 18px; }
+.dC-boxp { padding: 10px 12px 30px; z-index: 4; }
+.dC-boxp .understood { margin-bottom: 8px; }
+.dC-pcard { position: absolute; left: 12px; right: 12px; padding: 14px 14px 14px; border-radius: 16px; z-index: 4; }
+.dC-pcard .dC-ans-h { padding-bottom: 6px; }
+.dC-pcard .row:last-of-type { border-bottom: 0; }
+.dC-pcard .row .t { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.dC-pcard .row .t .dC-fig { font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+.dC-pcard .row .t > b { font-weight: 600; white-space: nowrap; }
+.dC-pcard .row .m { margin-top: 2px; }
+.dC-pcard .row.sel { margin: 0 -8px; padding-left: 8px; padding-right: 8px; }
+.dC-pcard .btn.primary { width: 100%; margin-top: 12px; }
+.dC-pcard .ic.on { background: var(--amber); color: var(--on-amber); }
+.dC-req .row { padding: 8px 0; }
+.dC-req .row .t { font-weight: 600; }
+.dC-req .row .t span { font-weight: 400; color: var(--ink-soft); }
+.dC-sheet { padding: 0 16px 8px; z-index: 4; }
+.dC-sheet .qbox { margin-top: 8px; }
+
+/* a plain keyboard, drawn only to show what the box leaves to the map */
+.dC-kbd { position: absolute; left: 0; right: 0; bottom: 0; height: 291px; background: var(--parchment-2); border-top: 1px solid var(--line); padding: 8px 3px 0; z-index: 5; font-family: var(--ios); }
+.dC-kbd .r { display: flex; justify-content: center; gap: 6px; margin-bottom: 12px; }
+.dC-kbd .r span { width: 33px; height: 42px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); display: grid; place-items: center;
+  font-size: 20px; color: var(--ink); }
+.dC-kbd .r span.w { width: 42px; background: var(--parchment-3); font-size: 14px; }
+.dC-kbd .r span.f { width: 87px; background: var(--parchment-3); font-size: 15px; }
+.dC-kbd .r span.sp { width: 182px; font-size: 15px; }
+</style>
+
+<figure class="mock web" id="c-web">
+  <div class="fit" data-w="1280"><div class="mk mk-web">
+    <div class="winbar"><i></i><i></i><i></i><span>openbikecomputer.com/plan</span></div>
+    <div class="app">
+      <div class="map">
+        <svg viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid slice">
+          <use href="#map-d4"/>
+          <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+          <!-- the search radius: 5 km around the end of Day 4 -->
+          <circle cx="105" cy="501" r="85" class="dC-ring"/>
+          <!-- day ends -->
+          <g transform="translate(840 78)"><circle r="10" class="dC-mday"/><use href="#i-tent" x="-6" y="-6" width="12" height="12" style="color:var(--panel)"/>
+            <text class="dC-ml" x="-15" y="4" text-anchor="end">Day 3 ends</text></g>
+          <g transform="translate(105 501)"><circle r="10" class="dC-mday"/><use href="#i-tent" x="-6" y="-6" width="12" height="12" style="color:var(--panel)"/>
+            <text class="dC-ml" x="34" y="6">Valloire · Day 4 ends</text></g>
+          <!-- results, numbered as in the card -->
+          <g transform="translate(121 486)"><circle r="11" class="dC-mres sel"/><text class="dC-mn" y="3.5">1</text></g>
+          <g transform="translate(131 526)"><circle r="11" class="dC-mres"/><text class="dC-mn" y="3.5">2</text></g>
+          <g transform="translate(172 409)"><circle r="11" class="dC-mres"/><text class="dC-mn" y="3.5">3</text></g>
+          <g transform="translate(434 459)"><circle r="11" class="dC-mres"/><text class="dC-mn" y="3.5">4</text></g>
+        </svg>
+        <span class="attribution" style="bottom:64px">© OpenStreetMap contributors</span>
+      </div>
+
+      <div class="dC-corner-l">
+        <button class="btn"><svg><use href="#i-bike"/></svg>Touring · Balanced<svg><use href="#i-chev-d"/></svg></button>
+        <button class="btn icon" title="Advanced settings"><svg><use href="#i-sliders"/></svg></button>
+      </div>
+
+      <div class="dC-col">
+        <div class="card dC-boxcard">
+          <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4<span class="caret"></span></span><span class="count">22/80</span></div>
+          <div class="understood"><span class="lbl">Understood as</span>
+            <span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span>
+            <span class="chip where">End of Day 4 <span class="k">Valloire</span></span>
+            <span class="chip filter">within 5 km</span>
+          </div>
+        </div>
+        <div class="card dC-ans">
+          <div class="dC-ans-h"><span class="h">2 campsites</span><span class="cap">within 5 km of the end of Day 4</span><button class="btn ghost icon sm"><svg><use href="#i-close"/></svg></button></div>
+          <div class="row sel"><span class="ic n">1</span>
+            <div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 · 0.6 km off the line · +30 m · Reception 8:00–20:00</div>
+              <div class="dC-acts"><button class="btn sm primary">End Day 4 here</button><button class="btn sm">Add as stop</button></div></div>
+            <span></span></div>
+          <div class="row"><span class="ic n">2</span>
+            <div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 · 1.4 km off the line · +70 m · Hours unknown</div></div><span></span></div>
+          <div class="dC-sub">Earlier on Day 4</div>
+          <div class="row"><span class="ic n">3</span>
+            <div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 17 km before the end · 0.9 km off the line · +10 m · Hours unknown</div></div><span></span></div>
+          <div class="row"><span class="ic n">4</span>
+            <div><div class="t">Camping de l'Arc, Modane</div><div class="m">km 71 · 33 km before the end · 0.4 km off the line · 0 m · Reception 9:00–19:00</div></div><span></span></div>
+        </div>
+      </div>
+
+      <div class="dC-corner-r">
+        <button class="btn primary"><svg><use href="#i-device"/></svg>Send to device</button>
+        <div class="dC-rail">
+          <button><svg><use href="#i-undo"/></svg>Undo</button>
+          <button><svg><use href="#i-redo"/></svg>Redo</button>
+          <hr>
+          <button><svg><use href="#i-versions"/></svg>Versions</button>
+          <button><svg><use href="#i-import"/></svg>Import</button>
+          <button><svg><use href="#i-download"/></svg>Offline areas</button>
+          <button><svg><use href="#i-qr"/></svg>Continue on phone</button>
+          <button><svg><use href="#i-send"/></svg>Export GPX</button>
+        </div>
+      </div>
+
+      <div class="dC-planbar">
+        <div class="dC-trip"><div class="h">Alps: Genève to Nice</div><div class="cap">Thu 17 – Sat 26 Jun 2027 · Touring</div></div>
+        <div class="dC-days">
+          <i style="flex:78"><b>D1</b>78</i><i style="flex:64"><b>D2</b>64</i><i style="flex:71"><b>D3</b>71</i><i class="sel" style="flex:104"><b>D4</b>104</i>
+          <i style="flex:53"><b>D5</b>53</i><i class="rest"><b>R</b></i><i style="flex:56"><b>D7</b>56</i><i style="flex:51"><b>D8</b>51</i>
+          <i style="flex:63"><b>D9</b>63</i><i style="flex:94"><b>D10</b>94</i>
+        </div>
+        <div class="dC-sum"><span class="h">634 km · 14,590 m · 49 h 00 riding</span><span class="cap">12 km unknown surface · 1 seasonal closure on the route</span></div>
+        <button class="btn ghost sm">Profile<svg><use href="#i-chev-d"/></svg></button>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Website, at home: "campsites end of day 4" typed into the one box; the answer is a numbered place list with the day-end action, the plan is the slim bar.</figcaption>
+</figure>
+
+<figure class="mock phone" id="c-phone-tent">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="0 0 1000 2164" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g transform="translate(105 501)"><circle r="26" class="dC-mday" style="stroke-width:5"/><use href="#i-tent" x="-15" y="-15" width="30" height="30" style="color:var(--panel)"/>
+          <text class="dC-ml" x="38" y="11" style="font-size:30px;stroke-width:8px">Valloire · Day 4 ends</text></g>
+        <g transform="translate(840 78)"><circle r="20" class="dC-here" style="stroke-width:7"/></g>
+      </svg>
+    </div>
+    <div class="dC-pill"><b>Day 4</b> tomorrow · 104 km · 7 h 10<svg><use href="#i-chev-d"/></svg></div>
+    <button class="dC-more"><svg><use href="#i-more"/></svg></button>
+
+    <div class="sheet dC-sheet" style="bottom:291px">
+      <div class="grab"></div>
+      <div class="dC-req">
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Places to sleep <span>· end of Day 4</span></div><span></span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Places to sleep <span>· after 5–6 h on Day 4</span></div><span></span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Shops open on Sunday <span>· Day 4</span></div><span></span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-drop"/></svg></span><div class="t">Water gaps <span>· Day 4</span></div><span></span></div>
+        <div class="row"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3.5l1.5-2.5h6L16.5 8H20v11H4z"/><circle cx="12" cy="13" r="3"/></svg></span><div class="t">Sights <span>· Day 4</span></div><span></span></div>
+      </div>
+      <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed"><span class="ph">Search places or the route</span><span class="caret"></span></span><span class="count">0/80</span></div>
+    </div>
+
+    <div class="dC-kbd">
+      <div class="r"><span>q</span><span>w</span><span>e</span><span>r</span><span>t</span><span>y</span><span>u</span><span>i</span><span>o</span><span>p</span></div>
+      <div class="r"><span>a</span><span>s</span><span>d</span><span>f</span><span>g</span><span>h</span><span>j</span><span>k</span><span>l</span></div>
+      <div class="r"><span class="w">⇧</span><span>z</span><span>x</span><span>c</span><span>v</span><span>b</span><span>n</span><span>m</span><span class="w">⌫</span></div>
+      <div class="r"><span class="f">123</span><span class="sp">space</span><span class="f">search</span></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Phone, in the tent: the box empty and focused offers request rows fitted to tomorrow; row 1 returns the same campsite list as the website, with "End Day 4 here".</figcaption>
+</figure>
+
+<figure class="mock phone" id="c-phone-road">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="190 75 672 1454" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="dC-ml alt" x="410" y="474" text-anchor="middle" style="font-size:21px;stroke-width:6px">Least climbing</text>
+        <g transform="translate(820 576)"><circle r="20" class="dC-dest" style="stroke-width:3.5"/><use href="#i-flag" x="-12" y="-12" width="24" height="24" style="color:var(--ink)"/></g>
+        <g transform="translate(380 233)"><circle r="14" class="dC-here" style="stroke-width:5"/>
+          <text class="dC-ml" x="22" y="7" style="font-size:21px;stroke-width:6px">Here · Glottertal</text></g>
+      </svg>
+    </div>
+    <button class="dC-more"><svg><use href="#i-more"/></svg></button>
+
+    <div class="card dC-pcard" style="bottom:172px">
+      <div class="dC-ans-h"><span class="h">Titisee</span><span class="cap">from here · 3 ways</span><button class="btn ghost sm">Profile</button></div>
+      <div class="row sel"><span class="ic on"><svg><use href="#i-dot"/></svg></span>
+        <div><div class="t"><b>Shortest</b><span class="dC-fig">34 km · 1,020 m · 2 h 50</span></div><div class="m">via St. Peter, St. Märgen · 3.1 km unpaved, of which 1.4 km unknown</div></div><span></span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-ring"/></svg></span>
+        <div><div class="t"><b>Least climbing</b><span class="dC-fig">+13 km · −300 m · +0 h 20</span></div><div class="m">via Freiburg, Kirchzarten, Höllental bike path · 0.8 km unpaved</div></div><span></span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-ring"/></svg></span>
+        <div><div class="t"><b>Least unpaved</b><span class="dC-fig">+2 km · +40 m · +0 h 10</span></div><div class="m">via St. Peter, St. Märgen, on roads · 0 km unpaved</div></div><span></span></div>
+      <button class="btn primary"><svg><use href="#i-device"/></svg>Send to device</button>
+    </div>
+
+    <div class="sheet dC-boxp">
+      <div class="understood"><span class="lbl">Understood as</span>
+        <span class="chip what"><svg><use href="#i-route"/></svg>Route</span>
+        <span class="chip where">From here <span class="k">Glottertal</span></span>
+        <span class="chip where">To Titisee <span class="k">village, 846 m</span></span>
+        <span class="chip filter">Touring</span>
+      </div>
+      <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">Titisee<span class="caret"></span></span><span class="count">7/80</span></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Phone, on the road: "Titisee" typed one-handed; the route card names three ways by what they win, as differences, and the amber action sends the selected one to the device.</figcaption>
+</figure>

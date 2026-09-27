@@ -1,0 +1,447 @@
+<style>
+/* R2 · Scoped box. Prefix r2-. The box leads with its scope chip; every understood chip is a control. */
+.r2-ch { width: 12px; height: 12px; color: var(--ink-faint); flex: none; }
+.chip.r2-ed { cursor: pointer; }
+.chip.r2-open { border-color: var(--ink); }
+.qbox > .r2-scope { flex: none; background: var(--parchment-2); color: var(--ink); }
+
+/* website */
+.r2-app { display: grid; grid-template-columns: 372px 1fr; grid-template-rows: 52px 1fr; height: 770px; }
+.r2-bar { grid-column: 1 / 3; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.r2-brand, .r2-plan, .r2-dates { white-space: nowrap; flex: none; }
+.r2-brand { font-weight: 800; font-size: 15px; letter-spacing: .01em; }
+.r2-plan { font-weight: 600; padding-left: 14px; border-left: 1px solid var(--line-strong); }
+.r2-dates { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-soft); font-size: 13px; }
+.r2-dates svg { width: 14px; height: 14px; }
+.r2-tools { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.r2-tools .r2-sep { width: 1px; height: 22px; background: var(--line-strong); margin: 0 6px; }
+.r2-tools .btn.ghost { padding: 0 8px; }
+
+.r2-panel { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.r2-q { position: relative; padding: 12px 16px 10px; }
+.r2-q .understood { margin-top: 10px; }
+.r2-q .qbox { padding-left: 8px; }
+.r2-pop { position: absolute; z-index: 5; right: 16px; top: 128px; padding: 5px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-lg); }
+.r2-pop::before { content: ""; position: absolute; top: -6px; right: 118px; width: 10px; height: 10px; background: var(--panel); border-left: 1px solid var(--line); border-top: 1px solid var(--line); transform: rotate(45deg); }
+.r2-pop .seg > * { height: 30px; padding: 0 12px; font-size: 13px; }
+.r2-back { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 4px 6px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.r2-list { flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; }
+.r2-sec { padding: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--ink-faint); }
+.r2-acts { grid-column: 2 / 4; display: flex; gap: 8px; padding-top: 4px; }
+.r2-foot { border-top: 1px solid var(--line); padding: 8px 16px 10px; display: grid; grid-template-columns: 1fr auto; align-items: center; row-gap: 2px; }
+.r2-foot .r2-preset { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; white-space: nowrap; }
+.r2-foot .r2-preset svg { width: 16px; height: 16px; color: var(--ink-soft); }
+
+.r2-mapcol { position: relative; min-width: 0; }
+.r2-mt { font: 600 13px var(--sans); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3px; stroke-linejoin: round; }
+.r2-mt.rt { fill: var(--route); }
+.r2-mt.b { fill: var(--ink); font-weight: 700; }
+.r2-ctl { position: absolute; right: 12px; bottom: 174px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.r2-ctl .r2-zoom { display: flex; flex-direction: column; background: var(--panel); border-radius: 8px; box-shadow: var(--shadow); }
+.r2-ctl .r2-zoom button { width: 34px; height: 32px; display: grid; place-items: center; }
+.r2-ctl .r2-zoom button + button { border-top: 1px solid var(--line); }
+.r2-ctl .r2-zoom svg { width: 16px; height: 16px; }
+.r2-layers { width: 214px; padding: 6px 12px; }
+.r2-lrow { display: flex; align-items: center; gap: 8px; height: 32px; font-size: 13px; font-weight: 600; }
+.r2-lrow .cap { font-weight: 400; }
+.r2-sw { margin-left: auto; width: 30px; height: 18px; border-radius: 9px; background: var(--parchment-3); position: relative; flex: none; }
+.r2-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--panel); }
+.r2-sw.on { background: var(--ink); }
+.r2-sw.on::after { left: 14px; }
+
+.r2-prof { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 150px; padding: 8px 12px; }
+.r2-ph { display: flex; align-items: center; gap: 10px; height: 24px; }
+.r2-ph .h { font-size: 13px; }
+.r2-ph .r2-right { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.r2-pg { display: grid; grid-template-columns: 52px 1fr; column-gap: 8px; row-gap: 4px; align-items: center; margin-top: 6px; }
+.r2-pl { font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+.r2-days { position: relative; height: 14px; }
+.r2-days b { position: absolute; transform: translateX(-50%); font: 600 11px var(--sans); color: var(--ink-soft); }
+.r2-days b.sel { color: var(--ink); }
+.r2-prof .tick { bottom: 0; height: 20px; }
+
+/* phone: a solid navigation bar, the map, one sheet */
+.r2-nav { position: absolute; z-index: 6; top: 0; left: 0; right: 0; height: 103px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.r2-nav .r2-row { position: absolute; top: 59px; left: 4px; right: 4px; height: 44px; display: flex; align-items: center; }
+.r2-nav .r2-ib { width: 44px; height: 44px; display: grid; place-items: center; color: var(--ink); flex: none; }
+.r2-nav .r2-ib svg { width: 22px; height: 22px; }
+.r2-nav .r2-ib.off { opacity: .3; }
+.r2-nav .r2-sp { flex: 1; }
+.r2-nav .r2-title { position: absolute; left: 52px; right: 96px; top: 0; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; line-height: 1.15; }
+.r2-nav .r2-title b { font-size: 17px; font-weight: 600; white-space: nowrap; }
+.r2-nav .r2-title span { font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+.r2-loc { position: absolute; z-index: 5; right: 16px; top: 300px; width: 44px; height: 44px; border-radius: 50%; background: var(--panel); box-shadow: var(--shadow); display: grid; place-items: center; color: var(--ink); }
+.r2-loc svg { width: 20px; height: 20px; }
+.r2-pm { font: 600 13px var(--ios); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3.5px; stroke-linejoin: round; }
+.r2-pm.rt { fill: var(--route); }
+.r2-pm.b { fill: var(--ink); font-weight: 700; }
+.r2-pin text { font: 700 12px var(--ios); fill: var(--panel); text-anchor: middle; }
+
+.r2-sheet { height: 488px; display: flex; flex-direction: column; padding: 0 16px; overflow: hidden; }
+.r2-sheet > .grab { flex: none; }
+.r2-sheet .qbox { flex: none; height: 50px; margin-top: 8px; padding: 0 4px 0 7px; gap: 8px; }
+.r2-sheet .qbox > .r2-scope { height: 36px; font-size: 15px; border-radius: 18px; padding: 0 10px 0 13px; background: var(--panel); border: 1px solid var(--line-strong); }
+.r2-sheet .qbox .r2-ch { width: 14px; height: 14px; }
+.r2-sheet .qbox .ph { font-size: 17px; }
+.r2-x { width: 44px; height: 44px; display: grid; place-items: center; color: var(--ink-faint); flex: none; }
+.r2-x svg { width: 20px; height: 20px; }
+.r2-sheet .understood { flex: none; margin-top: 8px; gap: 6px; row-gap: 4px; }
+.r2-sheet .understood > .lbl { font-size: 13px; margin-right: 0; }
+.r2-sheet .chip { height: 40px; font-size: 15px; border-radius: 20px; padding: 0 11px 0 13px; background: var(--parchment-2); color: var(--ink); border-color: transparent; }
+.r2-sheet .chip .k { font-size: 14px; }
+.r2-sheet .chip svg { width: 15px; height: 15px; }
+.r2-sheet .chip .r2-ch { width: 14px; height: 14px; }
+.r2-head { flex: none; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 14px 0 6px; font-size: 15px; color: var(--ink-soft); white-space: nowrap; }
+.r2-head b { font-size: 17px; color: var(--ink); font-weight: 700; }
+.r2-body { flex: 1; min-height: 0; overflow: hidden; margin: 0 -10px; padding: 0 10px; }
+.r2-sheet .row > div { min-width: 0; }
+.r2-sheet .row.r2-opt { grid-template-columns: 1fr; }
+.r2-sheet .row { min-height: 56px; padding: 8px 0; gap: 12px; }
+.r2-sheet .row .t { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r2-sheet .row .m { font-size: 15px; line-height: 1.3; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r2-sheet .row > .ic svg { width: 17px; height: 17px; }
+.r2-hrs { font-size: 15px; color: var(--ink-soft); white-space: nowrap; }
+.r2-more > svg { width: 20px; height: 20px; color: var(--ink-faint); }
+.r2-opt .t { display: flex; justify-content: space-between; gap: 10px; }
+.r2-opt .t .r2-fig { font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; flex: none; }
+.r2-day { position: relative; display: grid; grid-template-columns: 28px 1fr auto; column-gap: 12px; align-items: start; min-height: 60px; padding: 8px 0 12px; border-bottom: 1px solid var(--line); }
+.r2-day .n { width: 28px; height: 28px; border-radius: 50%; background: var(--ink); color: var(--panel); font-size: 14px; font-weight: 700; display: grid; place-items: center; margin-top: 1px; }
+.r2-day .n.rest { background: transparent; color: var(--ink-soft); border: 1.5px solid var(--line-strong); }
+.r2-day .t { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r2-day .m { font-size: 15px; color: var(--ink-soft); line-height: 1.3; margin-top: 2px; }
+.r2-day .km { font-size: 15px; font-weight: 600; padding-top: 2px; }
+.r2-day .bar { position: absolute; left: 40px; right: 0; bottom: 5px; height: 4px; }
+.r2-day .bar i { display: block; height: 100%; border-radius: 2px; background: var(--route); opacity: .45; }
+/* the starters screen: the keyboard, drawn low, and plain request rows */
+.r2-start { display: flex; align-items: center; min-height: 56px; padding: 0 2px; border-bottom: 1px solid var(--line); font-size: 17px; color: var(--ink); }
+.r2-kbd { position: absolute; z-index: 8; left: 0; right: 0; bottom: 0; height: 270px; padding: 8px 3px 0; background: var(--parchment-2); display: grid; grid-auto-rows: 42px; row-gap: 11px; align-content: start; }
+.r2-kbd > div { display: flex; justify-content: center; gap: 6px; }
+.r2-kbd i { width: 33px; height: 42px; border-radius: 6px; background: var(--panel); box-shadow: 0 1px 0 var(--line-strong); font: 400 22px/42px var(--ios); font-style: normal; text-align: center; color: var(--ink); }
+.r2-kbd i.w { width: 44px; font-size: 15px; background: var(--parchment-3); }
+.r2-kbd i.sp { width: 180px; }
+.r2-sfoot { flex: none; margin-top: auto; padding: 10px 0 34px; border-top: 1px solid var(--line); display: flex; gap: 10px; }
+.r2-sfoot .btn { height: 50px; flex: 1; font-size: 17px; }
+.r2-sfoot .btn.ghost { flex: none; padding: 0 14px; }
+</style>
+
+<!-- 1 · Website, at home: Day 4 selected, the box scoped to it -->
+<figure class="mock web" id="r2-web">
+  <div class="fit" data-w="1280"><div class="mk mk-web">
+    <div class="winbar"><i></i><i></i><i></i><span>openbikecomputer.com/plan</span></div>
+    <div class="app r2-app">
+
+      <div class="r2-bar">
+        <span class="r2-brand">OBC Planner</span>
+        <span class="r2-plan">Alps: Genève to Nice</span>
+        <span class="r2-dates"><svg><use href="#i-calendar"/></svg>Thu 17 – Sat 26 Jun 2027</span>
+        <div class="r2-tools">
+          <button class="btn ghost icon" title="Undo"><svg><use href="#i-undo"/></svg></button>
+          <button class="btn ghost icon" title="Redo"><svg><use href="#i-redo"/></svg></button>
+          <span class="r2-sep"></span>
+          <button class="btn ghost"><svg><use href="#i-versions"/></svg>Versions</button>
+          <button class="btn ghost"><svg><use href="#i-import"/></svg>Import</button>
+          <button class="btn ghost"><svg><use href="#i-download"/></svg>Offline areas</button>
+          <button class="btn ghost"><svg><use href="#i-qr"/></svg>Continue on phone</button>
+          <button class="btn ghost"><svg><use href="#i-route"/></svg>Export GPX</button>
+          <span class="r2-sep"></span>
+          <button class="btn primary"><svg><use href="#i-send"/></svg>Send to device</button>
+        </div>
+      </div>
+
+      <aside class="r2-panel">
+        <div class="r2-q">
+          <div class="qbox focus"><button class="chip r2-scope r2-ed">Day 4<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><span class="typed">campsites end<span class="caret"></span></span><span class="count">13/80</span></div>
+          <div class="understood"><span class="lbl">Understood as</span><button class="chip what r2-ed"><svg><use href="#i-tent"/></svg>Campsites<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><button class="chip where r2-ed">End of Day 4 <span class="k">Valloire</span><svg class="r2-ch"><use href="#i-chev-d"/></svg></button><button class="chip filter r2-ed r2-open">within 5 km<svg class="r2-ch"><use href="#i-chev-d"/></svg></button></div>
+          <div class="r2-pop"><span class="seg"><span>2 km</span><span class="on">5 km</span><span>10 km</span><span>25 km</span></span></div>
+        </div>
+        <div class="r2-back">
+          <button class="btn ghost sm"><svg><use href="#i-chev-l"/></svg>Back to the days</button>
+          <span class="cap">2 within 5 km · 3 earlier on Day 4</span>
+        </div>
+        <div class="r2-list">
+          <div class="r2-sec">Within 5 km of the end of Day 4</div>
+          <div class="row sel">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line</div><div class="m">+30 m · Reception 8:00–20:00</div></div>
+            <span></span>
+            <div class="r2-acts"><button class="btn sm primary">End Day 4 here</button><button class="btn sm">Add as stop</button></div>
+          </div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line</div><div class="m">+70 m · Hours unknown</div></div>
+          </div>
+          <div class="r2-sec">Earlier on Day 4</div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 17 km before the end</div><div class="m">0.9 km off the line · +10 m · Hours unknown</div></div>
+          </div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping de l'Arc, Modane</div><div class="m">km 71 · 33 km before the end</div><div class="m">0.4 km off the line · 0 m · Reception 9:00–19:00</div></div>
+          </div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Les Mélèzes, Lanslevillard</div><div class="m">km 45 · 59 km before the end</div><div class="m">0.3 km off the line · +10 m · Hours unknown</div></div>
+          </div>
+        </div>
+        <div class="r2-foot">
+          <span class="r2-preset"><svg><use href="#i-bike"/></svg>Touring · Balanced</span>
+          <button class="btn ghost sm icon" title="Advanced settings"><svg><use href="#i-sliders"/></svg></button>
+          <span class="cap" style="grid-column:1/3">634 km · 14,590 m · 49 h riding · 12 km unknown surface</span>
+        </div>
+      </aside>
+
+      <div class="r2-mapcol">
+        <div class="map">
+          <svg viewBox="0 0 1000 780" preserveAspectRatio="xMidYMid slice">
+            <use href="#map-d4"/>
+            <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+            <text class="r2-mt rt" x="520" y="372">Day 4 · 104 km · 7 h 10</text>
+            <g transform="translate(840 78)"><circle r="12" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+            <text class="r2-mt" x="826" y="100" text-anchor="end">End of Day 3</text>
+            <g transform="translate(105 501)"><circle r="12" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+            <text class="r2-mt" x="118" y="560">End of Day 4 · Valloire</text>
+            <g transform="translate(132 520)"><circle r="15" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-tent" x="-9" y="-9" width="18" height="18" style="color:var(--on-amber)"/></g>
+            <text class="r2-mt b" x="153" y="524">Camping Caravaneige</text>
+            <g transform="translate(84 530)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+            <g transform="translate(172 406)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+            <g transform="translate(434 458)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+            <g transform="translate(752 318)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+          </svg>
+          <span class="attribution">© OpenStreetMap</span>
+        </div>
+
+        <div class="r2-ctl">
+          <div class="r2-zoom"><button><svg><use href="#i-plus"/></svg></button><button><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button></div>
+          <div class="r2-layers card">
+            <div class="r2-lrow"><svg style="width:15px;height:15px;color:var(--ink-soft)"><use href="#i-layers"/></svg>Layers</div>
+            <div class="r2-lrow">Surface<span class="r2-sw on"></span></div>
+            <div class="r2-lrow">Photos and sights<span class="r2-sw"></span></div>
+            <div class="r2-lrow">Snow history <span class="cap">experiment</span><span class="r2-sw on"></span></div>
+          </div>
+        </div>
+
+        <div class="r2-prof card">
+          <div class="r2-ph">
+            <span class="h">Day 4 · Sun 20 Jun</span>
+            <span class="cap">Val d'Isère → Valloire · 104 km · 2,310 m · 7 h 10</span>
+            <span class="r2-right"><span class="cap">Whole trip · 634 km · 14,590 m · 49 h riding</span><button class="btn ghost sm icon" title="Collapse"><svg><use href="#i-chev-d"/></svg></button></span>
+          </div>
+          <div class="r2-pg">
+            <span class="r2-pl">3,000 m<br><span style="opacity:.7">0 m</span></span>
+            <div class="strip">
+              <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none" style="height:58px">
+                <rect class="day-band" x="0" y="0" width="78" height="300"/><rect class="day-band" x="142" y="0" width="71" height="300"/><rect class="day-band sel" x="213" y="0" width="104" height="300"/><rect class="day-band" x="370" y="0" width="56" height="300"/><rect class="day-band" x="477" y="0" width="63" height="300"/>
+                <use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/>
+                <rect x="220" y="0" width="9" height="300" style="fill:var(--coral);opacity:.22"/>
+                <line class="day-rule" x1="78" y1="0" x2="78" y2="300"/><line class="day-rule" x1="142" y1="0" x2="142" y2="300"/><line class="day-rule" x1="213" y1="0" x2="213" y2="300"/><line class="day-rule" x1="317" y1="0" x2="317" y2="300"/><line class="day-rule" x1="370" y1="0" x2="370" y2="300"/><line class="day-rule" x1="426" y1="0" x2="426" y2="300"/><line class="day-rule" x1="477" y1="0" x2="477" y2="300"/><line class="day-rule" x1="540" y1="0" x2="540" y2="300"/>
+              </svg>
+              <i class="tick" style="left:40.7%"></i><i class="tick" style="left:44.8%"></i><i class="tick" style="left:47.3%"></i><i class="tick" style="left:50%"></i>
+            </div>
+            <span class="r2-pl">Days</span>
+            <div class="r2-days"><b style="left:6.2%">1</b><b style="left:17.4%">2</b><b style="left:28%">3</b><b class="sel" style="left:41.8%">4</b><b style="left:54.2%">5</b><b style="left:58.4%;opacity:.6">rest</b><b style="left:62.8%">7</b><b style="left:71.2%">8</b><b style="left:80.2%">9</b><b style="left:92.6%">10</b></div>
+            <span class="r2-pl">Surface</span>
+            <div class="band"><i class="paved" style="left:0;width:100%"></i><i class="unknown" style="left:16.4%;width:1.3%"></i><i class="unpaved" style="left:18.6%;width:.4%"></i><i class="unknown" style="left:62.8%;width:.7%"></i><i class="unpaved" style="left:63.1%;width:.3%"></i></div>
+            <span class="r2-pl">Snow history</span>
+            <div class="band"><i class="snow" style="left:35%;width:1%"></i><i class="snow" style="left:52.2%;width:.7%"></i><i class="snow" style="left:78.4%;width:.7%"></i></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div></div>
+  <figcaption>At home, website: Day 4 is selected on the profile, so the box is scoped to Day 4; "campsites end" is read inside that scope. Every chip is a control; the "within 5 km" picker is open.</figcaption>
+</figure>
+
+<!-- 2 · Phone, the trip at rest -->
+<figure class="mock phone" id="r2-phone-trip">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="150 86 470 1017" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d7" class="rt-casing"/>
+        <use href="#route-alps-d2" class="rt-line"/><use href="#route-alps-d3" class="rt-line"/><use href="#route-alps-d4" class="rt-line"/><use href="#route-alps-d5" class="rt-line"/><use href="#route-alps-d7" class="rt-line"/>
+        <g class="r2-pin" transform="translate(483 284)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">3</text></g>
+        <g class="r2-pin" transform="translate(290 378)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">4</text></g>
+        <g class="r2-pin" transform="translate(363 467)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">5</text></g>
+      </svg>
+    </div>
+
+    <div class="r2-nav">
+      <div class="r2-row">
+        <button class="r2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="r2-title"><b>Alps: Genève to Nice</b><span>Thu 17 – Sat 26 Jun 2027</span></div>
+        <span class="r2-sp"></span>
+        <button class="r2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="r2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+    </div>
+    <button class="r2-loc"><svg><use href="#i-here"/></svg></button>
+
+    <div class="sheet r2-sheet">
+      <div class="grab"></div>
+      <div class="qbox"><button class="chip r2-scope r2-ed">Whole trip<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><span class="typed ph">Search places or the route</span></div>
+      <div class="r2-head"><b>10 days</b><span>634 km · 14,590 m · 49 h riding</span></div>
+      <div class="r2-body">
+        <div class="r2-day"><b class="n">1</b><div><div class="t">Genève → Le Grand-Bornand</div><div class="m">1,640 m · 5 h 40</div></div><span class="km">78 km</span><span class="bar"><i style="width:75%"></i></span></div>
+        <div class="r2-day"><b class="n">2</b><div><div class="t">Le Grand-Bornand → Beaufort</div><div class="m">1,720 m · 5 h 20</div></div><span class="km">64 km</span><span class="bar"><i style="width:62%"></i></span></div>
+        <div class="r2-day"><b class="n">3</b><div><div class="t">Beaufort → Val d'Isère</div><div class="m">2,290 m · 6 h 30</div></div><span class="km">71 km</span><span class="bar"><i style="width:68%"></i></span></div>
+        <div class="r2-day"><b class="n">4</b><div><div class="t">Val d'Isère → Valloire</div><div class="m">2,310 m · 7 h 10</div></div><span class="km">104 km</span><span class="bar"><i style="width:100%"></i></span></div>
+        <div class="r2-day"><b class="n">5</b><div><div class="t">Valloire → Briançon</div><div class="m">1,480 m · 4 h 30</div></div><span class="km">53 km</span><span class="bar"><i style="width:51%"></i></span></div>
+        <div class="r2-day"><b class="n rest">6</b><div><div class="t">Rest day</div><div class="m">Briançon</div></div><span class="km">–</span></div>
+        <div class="r2-day"><b class="n">7</b><div><div class="t">Briançon → Guillestre</div><div class="m">1,420 m · 4 h 40</div></div><span class="km">56 km</span><span class="bar"><i style="width:54%"></i></span></div>
+      </div>
+      <div class="r2-sfoot"><button class="btn primary"><svg><use href="#i-send"/></svg>Send to device</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Phone, the trip at rest: nothing is selected, so the box is scoped to the whole trip. A tap on a day makes it the scope; a tap in the field lists three to five request starters for that scope.</figcaption>
+</figure>
+
+<!-- 2b · Phone, the field focused and empty: the starters for Day 4 -->
+<figure class="mock phone" id="r2-phone-starters">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="225 175 320 692" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d3" class="rt-alt-casing"/><use href="#route-alps-d3" class="rt-alt"/>
+        <use href="#route-alps-d5" class="rt-alt-casing"/><use href="#route-alps-d5" class="rt-alt"/>
+        <use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d4" class="rt-line"/>
+        <g class="r2-pin" transform="translate(483 284)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><text y="4">3</text></g>
+        <g class="r2-pin" transform="translate(290 378)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><text y="4">4</text></g>
+      </svg>
+    </div>
+
+    <div class="r2-nav">
+      <div class="r2-row">
+        <button class="r2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="r2-title"><b>Alps: Genève to Nice</b><span>Thu 17 – Sat 26 Jun 2027</span></div>
+        <span class="r2-sp"></span>
+        <button class="r2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="r2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+    </div>
+
+    <div class="sheet r2-sheet" style="height:572px">
+      <div class="grab"></div>
+      <div class="qbox focus"><button class="chip r2-scope r2-ed">Day 4<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><span class="typed"><span class="caret"></span> <span class="ph">Search places or the route</span></span></div>
+      <div class="r2-body">
+        <div class="r2-start">Places to sleep at the end of Day 4</div>
+        <div class="r2-start">Water on Day 4</div>
+        <div class="r2-start">Shops open on Sunday on Day 4</div>
+        <div class="r2-start">Gaps on Day 4</div>
+      </div>
+    </div>
+    <div class="r2-kbd">
+      <div><i>q</i><i>w</i><i>e</i><i>r</i><i>t</i><i>y</i><i>u</i><i>i</i><i>o</i><i>p</i></div>
+      <div><i>a</i><i>s</i><i>d</i><i>f</i><i>g</i><i>h</i><i>j</i><i>k</i><i>l</i></div>
+      <div><i class="w">⇧</i><i>z</i><i>x</i><i>c</i><i>v</i><i>b</i><i>n</i><i>m</i><i class="w">⌫</i></div>
+      <div><i class="w">123</i><i class="sp"></i><i class="w">search</i></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>The field focused and empty: Day 4 was tapped in the day list, so the scope is Day 4 and the map shows it as the selected line; the sheet lists four request starters for that scope as plain rows.</figcaption>
+</figure>
+
+<!-- 3 · Phone, in the tent: the Day 4 end was tapped on the map -->
+<figure class="mock phone" id="r2-phone-tent">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="0 217 420 909" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g transform="translate(172 406)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+        <text class="r2-pm" x="188" y="428">Le Petit Nice</text>
+        <g transform="translate(105 501)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--panel)"/></g>
+        <text class="r2-pm b" x="105" y="486" text-anchor="middle">End of Day 4</text>
+        <g transform="translate(78 524)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+        <text class="r2-pm" x="78" y="551" text-anchor="middle">Les Verneys</text>
+        <g transform="translate(138 530)"><circle r="16" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.5"/><use href="#i-tent" x="-10" y="-10" width="20" height="20" style="color:var(--on-amber)"/></g>
+        <text class="r2-pm b" x="160" y="535">Camping Caravaneige</text>
+      </svg>
+    </div>
+
+    <div class="r2-nav">
+      <div class="r2-row">
+        <button class="r2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="r2-title"><b>Alps: Genève to Nice</b><span>Thu 17 – Sat 26 Jun 2027</span></div>
+        <span class="r2-sp"></span>
+        <button class="r2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="r2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+    </div>
+    <button class="r2-loc"><svg><use href="#i-here"/></svg></button>
+
+    <div class="sheet r2-sheet">
+      <div class="grab"></div>
+      <div class="qbox"><button class="chip r2-scope r2-ed">End of Day 4<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><span class="typed">campsites</span><button class="r2-x"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span><button class="chip what r2-ed">Campsites<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><button class="chip filter r2-ed">within 5 km<svg class="r2-ch"><use href="#i-chev-d"/></svg></button></div>
+      <div class="r2-head"><b>2 campsites</b><span>within 5 km of Valloire</span></div>
+      <div class="r2-body">
+        <div class="row sel">
+          <span class="ic"><svg><use href="#i-tent"/></svg></span>
+          <div><div class="t">Camping Caravaneige</div><div class="m">0.6 km off the line · +30 m</div></div>
+          <span class="r2-hrs">8:00–20:00</span>
+        </div>
+        <div class="row">
+          <span class="ic"><svg><use href="#i-tent"/></svg></span>
+          <div><div class="t">Camping Les Verneys</div><div class="m">1.4 km off the line · +70 m</div></div>
+          <span class="r2-hrs">Hours unknown</span>
+        </div>
+        <div class="row r2-more">
+          <span class="ic"><svg><use href="#i-tent"/></svg></span>
+          <div><div class="t">Earlier on Day 4</div><div class="m">3 campsites · km 45 to km 87</div></div>
+          <svg><use href="#i-chev-r"/></svg>
+        </div>
+      </div>
+      <div class="r2-sfoot"><button class="btn ghost">Add as stop</button><button class="btn primary">End Day 4 here</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>In the tent: the rider tapped the Day 4 end on the map, so the scope chip reads "End of Day 4"; "campsites" typed after it gives the two places within 5 km. One is selected; the amber action acts on it.</figcaption>
+</figure>
+
+<!-- 4 · Phone, on the road: "Titisee" from here -->
+<figure class="mock phone" id="r2-phone-road">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="260 36 640 1385" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="r2-pm" x="440" y="500" style="font-size:21px;stroke-width:5px">Least climbing · +13 km</text>
+        <text class="r2-pm" x="730" y="440" text-anchor="end" style="font-size:21px;stroke-width:5px">Least unpaved · +2 km</text>
+        <text class="r2-pm rt" x="470" y="262" style="font-size:21px;stroke-width:5px">Shortest · 34 km</text>
+        <g transform="translate(380 233)"><circle r="24" fill="#2f7de1" opacity=".18"/><circle r="15" fill="#2f7de1" stroke="#ffffff" stroke-width="4.5"/></g>
+        <g transform="translate(820 576)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3.5"/><use href="#i-flag" x="-12" y="-12" width="24" height="24" style="color:var(--panel)"/></g>
+      </svg>
+    </div>
+
+    <div class="r2-nav">
+      <div class="r2-row">
+        <button class="r2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="r2-title"><b>New route</b></div>
+        <span class="r2-sp"></span>
+        <button class="r2-ib off" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="r2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+    </div>
+    <button class="r2-loc"><svg><use href="#i-here"/></svg></button>
+
+    <div class="sheet r2-sheet">
+      <div class="grab"></div>
+      <div class="qbox"><button class="chip r2-scope r2-ed">Here<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><span class="typed">Titisee</span><button class="r2-x"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span><button class="chip what r2-ed">Route<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><button class="chip where r2-ed">To Titisee<svg class="r2-ch"><use href="#i-chev-d"/></svg></button><button class="chip filter r2-ed">Touring<svg class="r2-ch"><use href="#i-chev-d"/></svg></button></div>
+      <div class="r2-head"><b>Glottertal → Titisee</b><span>3 options</span></div>
+      <div class="r2-body">
+        <div class="row sel r2-opt"><div><div class="t"><span>Shortest</span><span class="r2-fig">34 km · 1,020 m · 2 h 50</span></div><div class="m">via St. Peter, St. Märgen · 3.1 km unpaved</div></div></div>
+        <div class="row r2-opt"><div><div class="t"><span>Least climbing</span><span class="r2-fig">+13 km · −300 m · +0 h 20</span></div><div class="m">via Freiburg, Höllental · 0.8 km unpaved</div></div></div>
+        <div class="row r2-opt"><div><div class="t"><span>Least unpaved</span><span class="r2-fig">+2 km · +40 m · +0 h 10</span></div><div class="m">via St. Peter, on roads · 0 km unpaved</div></div></div>
+      </div>
+      <div class="r2-sfoot"><button class="btn primary"><svg><use href="#i-send"/></svg>Send to device</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>On the road: the scope is "Here" (Glottertal); "Titisee" typed after it is a route request. The three options are named by what they win, as differences from the selected one; one thumb sends it.</figcaption>
+</figure>

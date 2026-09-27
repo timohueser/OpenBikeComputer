@@ -1,0 +1,540 @@
+<style>
+/* Query-box states in the grammar of direction D: map, then the sheet with the box on top, the
+   profile strip, the answer, the one amber action at the bottom. Cropped phone panels, prefix dQ-. */
+.dQ-panel { height: auto; min-height: 360px; border-radius: 22px; box-shadow: none; border: 1px solid var(--line-strong);
+  display: flex; flex-direction: column; }
+.dQ-panel::before { display: none; }
+.dQ-panel > .map { position: relative; inset: auto; flex: none; height: 120px; }
+.dQ-panel > .sheet { position: relative; margin-top: -14px; flex: 1; display: flex; flex-direction: column; padding: 0 16px 14px; }
+.dQ-panel .sheet > .qbox { margin-top: 10px; }
+.dQ-panel .understood { margin-top: 8px; }
+.dQ-tail { font-size: 14px; color: var(--ink-faint); }                 /* words still being read: plain text, no chip */
+.dQ-why { display: inline-block; text-decoration: none; }             /* the reason after a struck word stays readable */
+.dQ-x { margin-left: auto; }
+
+/* the profile strip: labels in HTML above the svg, ticks and day ends in % of km */
+.dQ-strip { position: relative; margin-top: 12px; height: 56px; }
+.dQ-strip.bands { height: 66px; }
+.dQ-strip > svg.prof { position: absolute; left: 0; top: 16px; width: 100%; height: 40px; }
+.dQ-strip > .band { position: absolute; left: 0; right: 0; bottom: 0; }
+.dQ-lab { position: absolute; top: 0; font-size: 11px; line-height: 1; color: var(--ink-faint); white-space: nowrap; }
+.dQ-lab.c { transform: translateX(-50%); }
+.dQ-lab.r { transform: translateX(-100%); }
+.dQ-lab.new { color: var(--ink); font-weight: 600; }
+.dQ-strip > .tick { top: 20px; bottom: 0; margin-left: -1px; }
+.dQ-strip.bands > .tick { bottom: 10px; }
+.dQ-strip > .tick.sel::after { background: var(--amber); border-color: var(--ink); }
+.dQ-end { position: absolute; top: 16px; bottom: 0; width: 2px; margin-left: -1px; background: var(--ink); }
+.dQ-end::after { content: ""; position: absolute; left: -4px; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--ink); }
+.dQ-end.old { background: transparent; border-left: 2px dashed var(--ink-faint); opacity: .8; }
+.dQ-end.old::after { background: var(--panel); border: 2px solid var(--ink-faint); width: 6px; height: 6px; }
+.dQ-end.new { background: var(--amber); }
+.dQ-end.new::after { background: var(--amber); border: 2px solid var(--ink); width: 8px; height: 8px; left: -5px; }
+.dQ-strip.bands > .dQ-end { bottom: 10px; }
+
+/* answers */
+.dQ-ans { margin-top: 10px; }
+.dQ-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 0 6px;
+  border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); }
+.dQ-head b { font-size: 15px; color: var(--ink); font-weight: 700; }
+.dQ-r > .ic { grid-row: 1 / span 2; }
+.dQ-r > .t { align-self: start; }
+.dQ-hrs { grid-column: 3; grid-row: 1; max-width: 170px; text-align: right; font-size: 12.5px; line-height: 1.3; color: var(--ink-soft); align-self: start; padding-top: 2px; }
+.dQ-meta { grid-column: 2 / -1; }
+.dQ-dim { opacity: .5; }
+.dQ-note { display: flex; align-items: center; gap: 10px; padding: 10px 0; font-size: 15px; color: var(--ink-soft); }
+.dQ-note > svg { width: 18px; height: 18px; flex: none; color: var(--ink-faint); }
+.dQ-note > .btn { margin-left: auto; }
+.dQ-note.quiet { padding: 6px 0 0; font-size: 13px; }
+.dQ-bar { display: flex; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dQ-bar > .primary { flex: 1; }
+.dQ-bar > .ghost { padding: 0 8px; }
+
+.dQ-place .n { font-size: 20px; font-weight: 700; line-height: 1.2; }
+.dQ-place .k { font-size: 14px; color: var(--ink-soft); margin-top: 2px; }
+.dQ-place .w { font-size: 15px; margin-top: 6px; }
+.dQ-place .acts { display: flex; gap: 8px; margin-top: 10px; }
+.dQ-place .other { margin-top: 12px; }
+
+.dQ-route .t { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 16px; font-weight: 700; }
+.dQ-route .t small { font-size: 13px; font-weight: 400; color: var(--ink-soft); }
+.dQ-route .ledger { margin-top: 6px; }
+.dQ-route .ledger > dt, .dQ-route .ledger > dd { padding: 5px 0; }
+
+.dQ-diff { display: grid; grid-template-columns: 52px 1fr 1fr; row-gap: 8px; margin-top: 4px; font-variant-numeric: tabular-nums; align-items: baseline; }
+.dQ-diff .d { font-weight: 700; }
+.dQ-diff .b { color: var(--ink-faint); }
+.dQ-diff .ar { color: var(--ink-faint); padding: 0 4px; }
+.dQ-diff .a { font-weight: 700; }
+
+/* the keyboard, drawn low: it shows where the box sits when the rider types */
+.dQ-kbd { margin: 14px -16px -14px; padding: 8px 3px 10px; background: var(--parchment-2); display: grid; gap: 7px; }
+.dQ-kbd > div { display: flex; justify-content: center; gap: 5px; }
+.dQ-kbd i { width: 33px; height: 36px; border-radius: 5px; background: var(--panel); box-shadow: 0 1px 0 var(--line-strong);
+  font: 400 16px/36px var(--ios); font-style: normal; text-align: center; color: var(--ink); }
+.dQ-kbd i.w { width: 44px; font-size: 12px; background: var(--parchment-3); }
+.dQ-kbd i.sp { width: 184px; }
+
+/* the website's left panel: same content, actions inline for the mouse */
+.dQ-web { width: 380px; height: 640px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; }
+.dQ-web .understood { margin-top: 10px; }
+.dQ-web .dQ-hrs { font-size: 12.5px; }
+.dQ-acts { display: none; grid-column: 2 / -1; gap: 6px; padding-top: 2px; }
+.dQ-web .row.sel > .dQ-acts, .dQ-web .row.dQ-hover > .dQ-acts { display: flex; }
+.dQ-web .row.dQ-hover { background: var(--parchment-2); margin: 0 -10px; padding-left: 10px; padding-right: 10px; border-radius: 8px; border-color: transparent; }
+.dQ-cursor { position: absolute; width: 14px; height: 18px; pointer-events: none; }
+.dQ-web .dQ-bar { margin-top: 12px; }
+.dQ-web .dQ-bar > .primary { flex: none; margin-left: auto; }
+</style>
+
+<!-- 1 typing -->
+<figure class="mock state" id="q-typing">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:64px"><svg viewBox="200 300 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day<span class="caret"></span></span><span class="count">20/80</span></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="dQ-tail">end of day</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Alps: Genève to Nice · 634 km</span>
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none"><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/><g class="day-rule"><line x1="78" x2="78" y1="0" y2="300"/><line x1="142" x2="142" y1="0" y2="300"/><line x1="213" x2="213" y1="0" y2="300"/><line x1="317" x2="317" y1="0" y2="300"/><line x1="370" x2="370" y1="0" y2="300"/><line x1="426" x2="426" y1="0" y2="300"/><line x1="477" x2="477" y1="0" y2="300"/><line x1="540" x2="540" y1="0" y2="300"/></g></svg>
+      </div>
+      <div class="dQ-kbd">
+        <div><i>q</i><i>w</i><i>e</i><i>r</i><i>t</i><i>y</i><i>u</i><i>i</i><i>o</i><i>p</i></div>
+        <div><i>a</i><i>s</i><i>d</i><i>f</i><i>g</i><i>h</i><i>j</i><i>k</i><i>l</i></div>
+        <div><i class="w">⇧</i><i>z</i><i>x</i><i>c</i><i>v</i><i>b</i><i>n</i><i>m</i><i class="w">⌫</i></div>
+        <div><i class="w">123</i><i class="sp"></i><i class="w">search</i></div>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Typing: the chips build up as words are recognised; the tail stays plain text.</figcaption>
+</figure>
+
+<!-- 2 point -->
+<figure class="mock state" id="q-point">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:150px"><svg viewBox="0 400 390 150" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(160 420)"><circle r="4" style="fill:var(--ink)"/></g><text x="170" y="424" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Saint-Michel-de-Maurienne</text>
+      <g transform="translate(125 445)"><circle r="4" style="fill:var(--ink)"/></g><text x="135" y="449" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Col du Télégraphe</text>
+      <g transform="translate(105 501)"><circle r="15" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--on-amber)"/></g>
+      <text x="126" y="506" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Valloire · end of Day 4</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="chip where">End of Day 4 <span class="k">Valloire</span><svg><use href="#i-close"/></svg></span><span class="typed"><span class="caret"></span></span></div>
+      <div class="understood"><span class="lbl">Find</span><button class="chip what"><svg><use href="#i-tent"/></svg>Places to sleep</button><button class="chip what"><svg><use href="#i-drop"/></svg>Water</button><button class="chip what"><svg><use href="#i-cart"/></svg>Shops</button><button class="chip what"><svg><use href="#i-wrench"/></svg>Bike shops</button></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+        <span class="dQ-lab r new" style="left:100%">km 104</span>
+        <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+        <span class="dQ-end new" style="left:100%"></span>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Point: the Day 4 end tapped on the strip fills WHERE; the WHAT is one tap away.</figcaption>
+</figure>
+
+<!-- 3 list -->
+<figure class="mock state" id="q-list">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:150px"><svg viewBox="0 440 390 150" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+      <g transform="translate(142 516)"><circle r="14" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--on-amber)"/></g>
+      <text x="160" y="520" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Camping Caravaneige</text>
+      <g transform="translate(88 530)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+      <text x="104" y="534" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Les Verneys</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+        <span class="dQ-lab r" style="left:100%">km 104</span>
+        <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+        <span class="dQ-end" style="left:100%"></span>
+        <span class="tick" style="left:99%"></span>
+        <span class="tick sel" style="left:100%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-head"><b>2 campsites</b><span>by km on Day 4</span></div>
+        <div class="row dQ-r sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Camping Caravaneige, Valloire</div><div class="dQ-hrs">Reception<br>8:00–20:00</div><div class="m dQ-meta">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Camping Les Verneys, Valloire</div><div class="dQ-hrs">Hours unknown</div><div class="m dQ-meta">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div>
+      </div>
+      <div class="dQ-bar"><button class="btn ghost">Add as stop</button><button class="btn primary">End Day 4 here</button></div>
+    </div>
+  </div></div>
+  <figcaption>List of places: one row selected, the amber action at the bottom acts on it.</figcaption>
+</figure>
+
+<!-- 4 filter -->
+<figure class="mock state" id="q-filter">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:44px"><svg viewBox="200 300 390 44" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">shops open Sunday day 4</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-cart"/></svg>Shops</span><span class="chip where">Day 4</span><span class="chip filter">Open on Sunday</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+        <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+        <span class="dQ-end" style="left:100%"></span>
+        <span class="tick" style="left:28.8%"></span>
+        <span class="tick" style="left:51.9%"></span>
+        <span class="tick sel" style="left:68.3%"></span>
+        <span class="tick" style="left:100%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-head"><b>5 shops · 3 open on Sunday</b><span>by km on Day 4</span></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Épicerie de Bonneval</div><div class="dQ-hrs">Hours unknown</div><div class="m dQ-meta">km 30 of Day 4 · 0.1 km off the line</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Vival, Termignon</div><div class="dQ-hrs">Sun 8:00–12:00</div><div class="m dQ-meta">km 54 of Day 4 · 0.2 km off the line</div></div>
+        <div class="row dQ-r sel"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Carrefour Market, Modane</div><div class="dQ-hrs">Sun 8:30–12:30</div><div class="m dQ-meta">km 71 of Day 4 · 0.5 km off the line</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Sherpa, Valloire</div><div class="dQ-hrs">Sun 8:00–12:30,<br>16:00–19:30</div><div class="m dQ-meta">km 104 of Day 4 · 0.3 km off the line</div></div>
+        <div class="row dQ-r dQ-dim"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Intermarché, Saint-Michel-de-Maurienne</div><div class="dQ-hrs">Sun closed</div><div class="m dQ-meta">km 88 of Day 4 · 0.7 km off the line</div></div>
+      </div>
+      <div class="dQ-bar"><button class="btn primary">Add as stop</button></div>
+    </div>
+  </div></div>
+  <figcaption>Filter: each shop's Sunday hours; the closed one stays in the list, dimmed, at the end.</figcaption>
+</figure>
+
+<!-- 5 needs a date -->
+<figure class="mock state" id="q-needs-date">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:44px"><svg viewBox="200 300 390 44" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/></svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">shops open day 4</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-cart"/></svg>Shops</span><span class="chip where">Day 4</span><span class="chip need"><svg><use href="#i-calendar"/></svg>Open on Day 4 <span class="k">needs a date</span></span></div>
+      <div class="dQ-note quiet"><svg><use href="#i-calendar"/></svg>Day 4 has no date.<button class="btn sm">Set trip dates</button></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+        <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+        <span class="dQ-end" style="left:100%"></span>
+        <span class="tick" style="left:28.8%"></span>
+        <span class="tick" style="left:51.9%"></span>
+        <span class="tick" style="left:68.3%"></span>
+        <span class="tick" style="left:84.6%"></span>
+        <span class="tick" style="left:100%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-head"><b>5 shops</b><span>by km on Day 4</span></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Épicerie de Bonneval</div><div class="dQ-hrs">Hours unknown</div><div class="m dQ-meta">km 30 of Day 4 · 0.1 km off the line</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Vival, Termignon</div><div class="dQ-hrs">Sun 8:00–12:00</div><div class="m dQ-meta">km 54 of Day 4 · 0.2 km off the line</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Carrefour Market, Modane</div><div class="dQ-hrs">Sun 8:30–12:30</div><div class="m dQ-meta">km 71 of Day 4 · 0.5 km off the line</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Intermarché, Saint-Michel-de-Maurienne</div><div class="dQ-hrs">Sun closed</div><div class="m dQ-meta">km 88 of Day 4 · 0.7 km off the line</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-cart"/></svg></span><div class="t">Sherpa, Valloire</div><div class="dQ-hrs">Sun 8:00–12:30,<br>16:00–19:30</div><div class="m dQ-meta">km 104 of Day 4 · 0.3 km off the line</div></div>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Needs a date: the filter waits as a dashed chip; the list is shown anyway.</figcaption>
+</figure>
+
+<!-- 6 one place -->
+<figure class="mock state" id="q-place">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:120px"><svg viewBox="200 112 400 123" preserveAspectRatio="xMidYMid slice"><use href="#map-bf"/>
+      <g transform="translate(256 191)"><circle r="7" style="fill:var(--navy);stroke:var(--panel);stroke-width:3"/></g><text x="268" y="196" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Denzlingen</text>
+      <g transform="translate(424 131)"><circle r="4" style="fill:var(--ink)"/></g><text x="424" y="150" text-anchor="middle" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Waldkirch</text>
+      <g transform="translate(536 203)"><circle r="14" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-mountain" x="-8" y="-8" width="16" height="16" style="color:var(--on-amber)"/></g>
+      <text x="516" y="208" text-anchor="end" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Kandel · 1,241 m</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">Kandel</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-search"/></svg>Place</span><span class="chip where">Kandel <span class="k">near Freiburg</span></span></div>
+      <div class="dQ-ans dQ-place">
+        <div class="n">Kandel</div>
+        <div class="k">Mountain summit · 1,241 m · Black Forest</div>
+        <div class="acts"><button class="btn sm">Add to route</button><button class="btn sm">Add as stop</button></div>
+        <div class="other">
+          <div class="dQ-head"><span>Other places with this name</span></div>
+          <div class="row"><span class="ic"><svg><use href="#i-ring"/></svg></span><div><div class="t">Kandel</div><div class="m">Town · Rhineland-Palatinate · 138 km</div></div><svg style="width:18px;height:18px;color:var(--ink-faint)"><use href="#i-chev-r"/></svg></div>
+        </div>
+      </div>
+      <div class="dQ-bar"><button class="btn primary"><svg><use href="#i-route"/></svg>Route from here</button></div>
+    </div>
+  </div></div>
+  <figcaption>One place: the winner near Freiburg on top, the other Kandel one row below.</figcaption>
+</figure>
+
+<!-- 7 route -->
+<figure class="mock state" id="q-route">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:120px"><svg viewBox="200 112 400 123" preserveAspectRatio="xMidYMid slice"><use href="#map-bf"/><use href="#route-bf-kandel" class="rt-casing"/><use href="#route-bf-kandel" class="rt-line"/>
+      <g transform="translate(256 191)"><circle r="7" style="fill:var(--navy);stroke:var(--panel);stroke-width:3"/></g><text x="268" y="196" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Denzlingen</text>
+      <g transform="translate(424 131)"><circle r="4" style="fill:var(--ink)"/></g><text x="424" y="150" text-anchor="middle" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Waldkirch</text>
+      <g transform="translate(536 203)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-flag" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+      <text x="520" y="208" text-anchor="end" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Kandel summit</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">road bike route up Kandel starting here</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-route"/></svg>Route</span><span class="chip where"><svg><use href="#i-here"/></svg>From here <span class="k">Denzlingen</span></span><span class="chip where">To Kandel summit</span><span class="chip filter"><svg><use href="#i-bike"/></svg>Road</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Denzlingen → Kandel summit · 20.8 km</span>
+        <span class="dQ-lab r" style="left:100%">1,241 m</span>
+        <svg class="prof" viewBox="0 150 20.8 150" preserveAspectRatio="none"><use href="#prof-bf-kandel-area" class="prof-area"/><use href="#prof-bf-kandel-line" class="prof-line"/></svg>
+      </div>
+      <div class="dQ-ans dQ-route">
+        <div class="t"><span>Denzlingen → Kandel summit</span><small>Road bike</small></div>
+        <dl class="ledger">
+          <dt>Distance</dt><dd>20.8 km</dd>
+          <dt>Climb</dt><dd>1,020 m</dd>
+          <dt>Riding time</dt><dd>1 h 55 <small>estimated</small></dd>
+          <dt>Max gradient</dt><dd>12 %</dd>
+          <dt>Surface</dt><dd>Paved <small>0 km unknown</small></dd>
+        </dl>
+        <div class="dQ-note quiet">No other way is shorter, flatter or more paved.</div>
+      </div>
+      <div class="dQ-bar"><button class="btn primary">Use this route</button></div>
+    </div>
+  </div></div>
+  <figcaption>Route: the figures, the honest line on alternatives, one action.</figcaption>
+</figure>
+
+<!-- 8 change -->
+<figure class="mock state" id="q-change">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:120px"><svg viewBox="30 395 440 135" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(427 450)"><circle r="4" style="fill:var(--ink)"/></g><text x="427" y="468" text-anchor="middle" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Modane</text>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--panel);stroke:var(--ink-faint);stroke-width:2;stroke-dasharray:3 2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--ink-faint)"/></g>
+      <text x="122" y="506" style="font-size:12px;font-weight:600;fill:var(--ink-faint);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Valloire · now</text>
+      <g transform="translate(160 420)"><circle r="14" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--on-amber)"/></g>
+      <text x="180" y="425" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Saint-Michel-de-Maurienne · proposed</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">end day 4 at saint-michel</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>End Day 4</span><span class="chip where">at Saint-Michel-de-Maurienne <span class="k">km 88</span></span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Days 4–5</span>
+        <span class="dQ-lab r new" style="left:55%">Saint-Michel</span>
+        <span class="dQ-lab" style="left:67.5%">Valloire</span>
+        <svg class="prof" viewBox="213 0 157 300" preserveAspectRatio="none"><rect class="day-band sel" x="213" y="0" width="88" height="300"/><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/><line class="day-rule" x1="317" x2="317" y1="0" y2="300"/></svg>
+        <span class="dQ-end old" style="left:66.2%"></span>
+        <span class="dQ-end new" style="left:56%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-diff">
+          <span class="d">Day 4</span><span><span class="b">104 km</span><span class="ar">→</span><span class="a">88 km</span></span><span><span class="b">7 h 10</span><span class="ar">→</span><span class="a">5 h 20</span></span>
+          <span class="d">Day 5</span><span><span class="b">53 km</span><span class="ar">→</span><span class="a">69 km</span></span><span><span class="b">4 h 30</span><span class="ar">→</span><span class="a">6 h 20</span></span>
+        </div>
+        <div class="dQ-note quiet">Day 5 starts with the Col du Télégraphe.</div>
+        <div class="dQ-note quiet">The line does not change.</div>
+      </div>
+      <div class="dQ-bar"><button class="btn ghost">Cancel</button><button class="btn primary">Apply</button></div>
+    </div>
+  </div></div>
+  <figcaption>Change to the route: a proposal with before → after figures; nothing moves until Apply.</figcaption>
+</figure>
+
+<!-- 9 applied -->
+<figure class="mock state" id="q-applied">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:150px"><svg viewBox="30 391 440 152" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(427 450)"><circle r="4" style="fill:var(--ink)"/></g><text x="427" y="468" text-anchor="middle" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Modane</text>
+      <g transform="translate(105 501)"><circle r="4" style="fill:var(--ink)"/></g><text x="118" y="506" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Valloire</text>
+      <g transform="translate(160 420)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+      <text x="177" y="425" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Saint-Michel-de-Maurienne · end of Day 4</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="ph">Search places or the route</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Days 4–5</span>
+        <span class="dQ-lab c new" style="left:56%">Saint-Michel</span>
+        <svg class="prof" viewBox="213 0 157 300" preserveAspectRatio="none"><rect class="day-band sel" x="213" y="0" width="88" height="300"/><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/></svg>
+        <span class="dQ-end" style="left:56%"></span>
+      </div>
+      <div class="dQ-note">Day 4 now ends at Saint-Michel-de-Maurienne.<button class="btn sm"><svg><use href="#i-undo"/></svg>Undo</button></div>
+    </div>
+  </div></div>
+  <figcaption>Applied: one quiet line with Undo; the box is free again.</figcaption>
+</figure>
+
+<!-- 10 partly understood -->
+<figure class="mock state" id="q-partial">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:64px"><svg viewBox="0 460 390 64" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+      <g transform="translate(134 512)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites with a pool end of day 4</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span><span class="chip off">with a pool<span class="k"><span class="dQ-why">· not understood, ignored</span></span></span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+        <span class="dQ-lab r" style="left:100%">km 104</span>
+        <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+        <span class="dQ-end" style="left:100%"></span>
+        <span class="tick" style="left:99%"></span>
+        <span class="tick" style="left:100%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-head"><b>2 campsites</b><span>by km on Day 4</span></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Camping Caravaneige, Valloire</div><div class="dQ-hrs">Reception<br>8:00–20:00</div><div class="m dQ-meta">km 104 of Day 4 · 0.6 km off the line · +30 m</div></div>
+        <div class="row dQ-r"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Camping Les Verneys, Valloire</div><div class="dQ-hrs">Hours unknown</div><div class="m dQ-meta">km 103 of Day 4 · 1.4 km off the line · +70 m</div></div>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Partly understood: the ignored words stay visible as a struck chip; the rest is answered.</figcaption>
+</figure>
+
+<!-- 11 not understood -->
+<figure class="mock state" id="q-not-understood">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:120px"><svg viewBox="120 340 390 120" preserveAspectRatio="xMidYMid slice"><use href="#map-alps"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d4" class="rt-line"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d5" class="rt-line"/>
+      <g transform="translate(290 378)"><circle r="4" style="fill:var(--ink)"/></g><text x="300" y="382" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Valloire</text>
+      <g transform="translate(283 412)"><circle r="14" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-mountain" x="-8" y="-8" width="16" height="16" style="color:var(--on-amber)"/></g>
+      <text x="302" y="417" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Col du Galibier · 2,642 m</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">is the galibier worth it</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip off">is the</span><span class="chip what"><svg><use href="#i-search"/></svg>Place</span><span class="chip where">Galibier</span><span class="chip off">worth it</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Whole trip · 634 km</span>
+        <span class="dQ-lab c" style="left:52.8%">Day 5 · km 18</span>
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none"><rect class="day-band sel" x="317" y="0" width="53" height="300"/><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/><g class="day-rule"><line x1="78" x2="78" y1="0" y2="300"/><line x1="142" x2="142" y1="0" y2="300"/><line x1="213" x2="213" y1="0" y2="300"/><line x1="317" x2="317" y1="0" y2="300"/><line x1="370" x2="370" y1="0" y2="300"/><line x1="426" x2="426" y1="0" y2="300"/><line x1="477" x2="477" y1="0" y2="300"/><line x1="540" x2="540" y1="0" y2="300"/></g></svg>
+        <span class="tick sel" style="left:52.8%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-note quiet">Not a route request. Place search:</div>
+        <div class="dQ-place" style="margin-top:6px">
+          <div class="n">Col du Galibier</div>
+          <div class="k">Pass · 2,642 m</div>
+          <div class="w">On the route: Day 5 at km 18.</div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Not understood: one plain line, then the place the words match.</figcaption>
+</figure>
+
+<!-- 12 offline -->
+<figure class="mock state" id="q-offline">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:120px"><svg viewBox="250 600 390 120" preserveAspectRatio="xMidYMid slice"><use href="#map-alps"/><use href="#route-alps-d8" class="rt-casing"/><use href="#route-alps-d8" class="rt-line"/><use href="#route-alps-d9" class="rt-casing"/><use href="#route-alps-d9" class="rt-line"/>
+      <g transform="translate(368 638)"><circle r="4" style="fill:var(--ink)"/></g><text x="368" y="630" text-anchor="middle" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Barcelonnette</text>
+      <g transform="translate(422 660)"><circle r="4" style="fill:var(--ink)"/></g><text x="422" y="652" text-anchor="middle" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Cime de la Bonette</text>
+      <g transform="translate(464 681)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+      <text x="480" y="686" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Saint-Étienne-de-Tinée</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 9</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 9 <span class="k">Saint-Étienne-de-Tinée</span></span><span class="chip filter">within 5 km</span></div>
+      <div class="dQ-note quiet"><svg><use href="#i-offline"/></svg>Offline · results from downloaded areas</div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Whole trip · 634 km</span>
+        <span class="dQ-lab c" style="left:80.2%">Day 9</span>
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none"><rect class="day-band sel" x="477" y="0" width="63" height="300"/><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/><g class="day-rule"><line x1="78" x2="78" y1="0" y2="300"/><line x1="142" x2="142" y1="0" y2="300"/><line x1="213" x2="213" y1="0" y2="300"/><line x1="317" x2="317" y1="0" y2="300"/><line x1="370" x2="370" y1="0" y2="300"/><line x1="426" x2="426" y1="0" y2="300"/><line x1="477" x2="477" y1="0" y2="300"/><line x1="540" x2="540" y1="0" y2="300"/></g></svg>
+        <span class="dQ-end" style="left:85.2%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-note">Day 9 is outside your offline areas.</div>
+        <button class="btn"><svg><use href="#i-download"/></svg>Download Alpes du Sud · 212 MB</button>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Offline: a quiet status line; the missing area is named with its size.</figcaption>
+</figure>
+
+<!-- 13 empty -->
+<figure class="mock state" id="q-empty">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:120px"><svg viewBox="30 395 440 135" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(105 501)"><circle r="11" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+      <text x="122" y="506" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Valloire · end of Day 4</text>
+      <g transform="translate(168 432)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-wrench" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+      <text x="184" y="437" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Cycles Maurienne</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">bike shop end of day 4</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-wrench"/></svg>Bike shops</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+      <div class="strip dQ-strip">
+        <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+        <span class="dQ-lab r" style="left:100%">km 104</span>
+        <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+        <span class="dQ-end" style="left:100%"></span>
+        <span class="tick" style="left:84.6%"></span>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-note">No bike shops within 5 km of the end of Day 4.</div>
+        <button class="btn">Search within 25 km</button>
+        <div class="dQ-head" style="margin-top:14px"><span>Nearest on the route</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-wrench"/></svg></span><div><div class="t">Cycles Maurienne, Saint-Michel-de-Maurienne</div><div class="m">km 88 of Day 4 · 16 km before the end</div></div><span></span></div>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Empty: the answer says what was searched, offers a wider ring and the nearest on the route.</figcaption>
+</figure>
+
+<!-- 14 gaps -->
+<figure class="mock state" id="q-gaps">
+  <div class="fit" data-w="390" data-max="0.72"><div class="mk mk-phone dQ-panel">
+    <div class="map" style="height:160px"><svg viewBox="580 50 420 172" preserveAspectRatio="xMidYMid slice"><use href="#map-d4"/><use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+      <g transform="translate(840 78)"><circle r="11" style="fill:var(--panel);stroke:var(--amber);stroke-width:2.5"/><use href="#i-drop" x="-7" y="-7" width="14" height="14" style="color:var(--ink)"/></g>
+      <text x="824" y="83" text-anchor="end" style="font-size:12px;font-weight:700;fill:var(--ink);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Last water for 29 km</text>
+      <g transform="translate(908 125)"><circle r="4" style="fill:var(--ink)"/></g><text x="900" y="129" text-anchor="end" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Col de l'Iseran</text>
+      <g transform="translate(929 192)"><circle r="11" style="fill:var(--panel);stroke:var(--water);stroke-width:2"/><use href="#i-drop" x="-7" y="-7" width="14" height="14" style="color:var(--water)"/></g>
+      <text x="914" y="196" text-anchor="end" style="font-size:12px;font-weight:600;fill:var(--m-label);paint-order:stroke;stroke:var(--m-label-halo);stroke-width:3px">Fountain, Bonneval-sur-Arc</text>
+    </svg></div>
+    <div class="sheet"><div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">water gaps</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-drop"/></svg>Longest stretches without mapped water</span><span class="chip where">Whole trip</span></div>
+      <div class="strip dQ-strip bands">
+        <span class="dQ-lab">Whole trip · 634 km</span>
+        <span class="dQ-lab c" style="left:35.9%">29 km</span>
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none"><rect class="day-band sel" x="213" y="0" width="104" height="300"/><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/><g class="day-rule"><line x1="78" x2="78" y1="0" y2="300"/><line x1="142" x2="142" y1="0" y2="300"/><line x1="213" x2="213" y1="0" y2="300"/><line x1="317" x2="317" y1="0" y2="300"/><line x1="370" x2="370" y1="0" y2="300"/><line x1="426" x2="426" y1="0" y2="300"/><line x1="477" x2="477" y1="0" y2="300"/><line x1="540" x2="540" y1="0" y2="300"/></g></svg>
+        <div class="band"><i class="gap" style="left:33.6%;width:4.6%"></i></div>
+      </div>
+      <div class="dQ-ans">
+        <div class="dQ-head"><b>1 stretch</b><span>longest first</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-drop"/></svg></span><div><div class="t">No mapped water for 29 km</div><div class="m">Day 4 · km 0–29 · Col de l'Iseran</div><div class="m">Marker at Val d'Isère</div></div><button class="btn sm">Add marker</button></div>
+      </div>
+    </div>
+  </div></div>
+  <figcaption>Gaps: a list of stretches, not places; each can become a marker at its start.</figcaption>
+</figure>
+
+<!-- web: list -->
+<figure class="mock state web" id="q-web-list">
+  <div class="fit" data-w="380" data-max="0.8"><div class="mk dQ-web">
+    <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+    <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+    <div class="strip dQ-strip">
+      <span class="dQ-lab">Day 4 · Val d'Isère → Valloire · 104 km</span>
+      <span class="dQ-lab r" style="left:100%">km 104</span>
+      <svg class="prof" viewBox="0 0 104 300" preserveAspectRatio="none"><use href="#prof-d4-area" class="prof-area"/><use href="#prof-d4-line" class="prof-line"/></svg>
+      <span class="dQ-end" style="left:100%"></span>
+      <span class="tick" style="left:99%"></span>
+      <span class="tick sel" style="left:100%"></span>
+    </div>
+    <div class="dQ-ans">
+      <div class="dQ-head"><b>2 campsites</b><span>by km on Day 4</span></div>
+      <div class="row dQ-r sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Camping Caravaneige, Valloire</div><div class="dQ-hrs">Reception<br>8:00–20:00</div><div class="m dQ-meta">km 104 of Day 4 · 0.6 km off the line · +30 m</div>
+        <div class="dQ-acts"><button class="btn sm primary">End Day 4 here</button><button class="btn sm">Add as stop</button></div></div>
+      <div class="row dQ-r dQ-hover"><span class="ic"><svg><use href="#i-tent"/></svg></span><div class="t">Camping Les Verneys, Valloire</div><div class="dQ-hrs">Hours unknown</div><div class="m dQ-meta">km 103 of Day 4 · 1.4 km off the line · +70 m</div>
+        <div class="dQ-acts"><button class="btn sm">End Day 4 here</button><button class="btn sm">Add as stop</button></div></div>
+    </div>
+  </div></div>
+  <figcaption>Website: the same list; the selected row and the hovered row show their actions inline.</figcaption>
+</figure>
+
+<!-- web: change -->
+<figure class="mock state web" id="q-web-change">
+  <div class="fit" data-w="380" data-max="0.8"><div class="mk dQ-web">
+    <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">end day 4 at saint-michel</span><svg class="dQ-x"><use href="#i-close"/></svg></div>
+    <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>End Day 4</span><span class="chip where">at Saint-Michel-de-Maurienne <span class="k">km 88</span></span></div>
+    <div class="strip dQ-strip">
+      <span class="dQ-lab">Days 4–5</span>
+      <span class="dQ-lab r new" style="left:55%">Saint-Michel</span>
+      <span class="dQ-lab" style="left:67.5%">Valloire</span>
+      <svg class="prof" viewBox="213 0 157 300" preserveAspectRatio="none"><rect class="day-band sel" x="213" y="0" width="88" height="300"/><use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/><line class="day-rule" x1="317" x2="317" y1="0" y2="300"/></svg>
+      <span class="dQ-end old" style="left:66.2%"></span>
+      <span class="dQ-end new" style="left:56%"></span>
+    </div>
+    <div class="dQ-ans">
+      <div class="dQ-diff">
+        <span class="d">Day 4</span><span><span class="b">104 km</span><span class="ar">→</span><span class="a">88 km</span></span><span><span class="b">7 h 10</span><span class="ar">→</span><span class="a">5 h 20</span></span>
+        <span class="d">Day 5</span><span><span class="b">53 km</span><span class="ar">→</span><span class="a">69 km</span></span><span><span class="b">4 h 30</span><span class="ar">→</span><span class="a">6 h 20</span></span>
+      </div>
+      <div class="dQ-note quiet">Day 5 starts with the Col du Télégraphe.</div>
+      <div class="dQ-note quiet">The line does not change.</div>
+      <div class="dQ-bar"><button class="btn ghost">Cancel</button><button class="btn primary">Apply</button></div>
+    </div>
+  </div></div>
+  <figcaption>Website: the same change card, Apply and Cancel inline under the figures.</figcaption>
+</figure>

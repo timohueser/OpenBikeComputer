@@ -1,0 +1,337 @@
+<style>
+/* Direction A · map first. Prefix dA-. */
+.dA-app { display: grid; grid-template-columns: 360px 1fr; grid-template-rows: 52px 1fr; height: 770px; }
+.dA-bar { grid-column: 1 / 3; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.dA-brand { font-weight: 800; font-size: 15px; letter-spacing: .01em; }
+.dA-plan { font-weight: 600; padding-left: 14px; border-left: 1px solid var(--line-strong); }
+.dA-dates { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-soft); font-size: 13px; }
+.dA-dates svg { width: 14px; height: 14px; }
+.dA-tools { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.dA-tools .dA-sep { width: 1px; height: 22px; background: var(--line-strong); margin: 0 6px; }
+
+.dA-panel { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.dA-q { padding: 12px 16px 10px; }
+.dA-q .understood { margin-top: 10px; }
+.dA-back { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 4px 6px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.dA-list { flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; }
+.dA-sec { padding: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--ink-faint); }
+.dA-acts { grid-column: 2 / 4; display: flex; gap: 8px; padding-top: 4px; }
+.dA-foot { border-top: 1px solid var(--line); padding: 8px 16px 10px; display: grid; grid-template-columns: 1fr auto; align-items: center; row-gap: 2px; }
+.dA-foot .dA-preset { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+.dA-foot .dA-preset svg { width: 16px; height: 16px; color: var(--ink-soft); }
+
+.dA-mapcol { position: relative; min-width: 0; }
+.dA-mt { font: 600 13px var(--sans); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3px; stroke-linejoin: round; }
+.dA-mt.rt { fill: var(--route); }
+.dA-ctl { position: absolute; right: 12px; bottom: 174px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.dA-ctl .dA-zoom { display: flex; flex-direction: column; gap: 0; background: var(--panel); border-radius: 8px; box-shadow: var(--shadow); }
+.dA-ctl .dA-zoom button { width: 34px; height: 32px; display: grid; place-items: center; }
+.dA-ctl .dA-zoom button + button { border-top: 1px solid var(--line); }
+.dA-ctl .dA-zoom svg { width: 16px; height: 16px; }
+.dA-layers { width: 214px; padding: 6px 12px; }
+.dA-lrow { display: flex; align-items: center; gap: 8px; height: 32px; font-size: 13px; font-weight: 600; }
+.dA-lrow .cap { font-weight: 400; }
+.dA-sw { margin-left: auto; width: 30px; height: 18px; border-radius: 9px; background: var(--parchment-3); position: relative; flex: none; }
+.dA-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--panel); }
+.dA-sw.on { background: var(--ink); }
+.dA-sw.on::after { left: 14px; }
+
+.dA-prof { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 150px; padding: 8px 12px; }
+.dA-ph { display: flex; align-items: center; gap: 10px; height: 24px; }
+.dA-ph .h { font-size: 13px; }
+.dA-ph .dA-right { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.dA-pg { display: grid; grid-template-columns: 52px 1fr; column-gap: 8px; row-gap: 4px; align-items: center; margin-top: 6px; }
+.dA-pl { font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+.dA-days { position: relative; height: 14px; }
+.dA-days b { position: absolute; transform: translateX(-50%); font: 600 11px var(--sans); color: var(--ink-soft); }
+.dA-days b.sel { color: var(--ink); }
+.dA-prof .tick { bottom: 0; height: 20px; }
+
+/* phone */
+.dA-top { position: absolute; z-index: 5; left: 16px; right: 16px; top: 58px; padding: 8px; }
+.dA-top .understood { margin: 8px 2px 2px; }
+.dA-clear { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-faint); flex: none; }
+.dA-clear svg { width: 16px; height: 16px; }
+.dA-sheet { padding: 0 16px; }
+.dA-shead { padding: 10px 0 2px; }
+.dA-shead .h { font-size: 17px; }
+.dA-shead .cap { font-size: 13px; margin-top: 2px; display: flex; align-items: center; gap: 5px; }
+.dA-shead .cap svg { width: 13px; height: 13px; }
+.dA-more { display: grid; grid-template-columns: 32px 1fr auto; gap: 10px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.dA-more .ic { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-soft); }
+.dA-more .ic svg { width: 16px; height: 16px; }
+.dA-more > svg { width: 18px; height: 18px; color: var(--ink-faint); }
+.dA-pts { padding: 4px 0 0; }
+.dA-pt { display: grid; grid-template-columns: 32px 1fr auto; gap: 10px; align-items: center; height: 34px; }
+.dA-pt .ic { width: 32px; height: 32px; display: grid; place-items: center; }
+.dA-pt .ic svg { width: 18px; height: 18px; }
+.dA-pt .t { font-weight: 600; }
+.dA-pt .t .cap { font-weight: 400; font-size: 13px; margin-left: 6px; }
+.dA-mode { display: grid; grid-template-columns: 32px 1fr; gap: 10px; align-items: center; height: 18px; }
+.dA-mode .dA-vline { width: 2px; height: 18px; margin: 0 auto; background: var(--line-strong); border-radius: 1px; }
+.dA-mode .seg > * { height: 20px; padding: 0 7px; font-size: 11.5px; }
+.dA-preset { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ink-soft); }
+.dA-preset svg { width: 15px; height: 15px; }
+.dA-pstrip { margin: 6px 0 2px; }
+.dA-pstrip .strip { border-radius: 8px; overflow: hidden; }
+.dA-pstrip .band { margin-top: 4px; }
+.dA-plabels { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
+.mk-phone .dA-opt { padding: 8px 0; }
+.mk-phone .dA-opt .t { font-size: 15px; white-space: nowrap; }
+.dA-opt .num { font-size: 13px; font-weight: 600; }
+.dA-opt .m { grid-column: 2 / 4; margin-top: -4px; }
+.dA-send { margin-top: 8px; width: 100%; }
+</style>
+
+<!-- 1 · At home, website: "ten days through the Alps" -->
+<figure class="mock web" id="a-web">
+  <div class="fit" data-w="1280"><div class="mk mk-web">
+    <div class="winbar"><i></i><i></i><i></i><span>openbikecomputer.com/plan</span></div>
+    <div class="app dA-app">
+
+      <div class="dA-bar">
+        <span class="dA-brand">OBC Planner</span>
+        <span class="dA-plan">Alps: Genève to Nice</span>
+        <span class="dA-dates"><svg><use href="#i-calendar"/></svg>Thu 17 – Sat 26 Jun 2027 · 10 days</span>
+        <div class="dA-tools">
+          <button class="btn ghost icon" title="Undo"><svg><use href="#i-undo"/></svg></button>
+          <button class="btn ghost icon" title="Redo"><svg><use href="#i-redo"/></svg></button>
+          <span class="dA-sep"></span>
+          <button class="btn ghost"><svg><use href="#i-versions"/></svg>Versions</button>
+          <button class="btn ghost"><svg><use href="#i-import"/></svg>Import</button>
+          <button class="btn ghost"><svg><use href="#i-download"/></svg>Offline areas</button>
+          <button class="btn ghost"><svg><use href="#i-qr"/></svg>Continue on phone</button>
+          <button class="btn ghost"><svg><use href="#i-route"/></svg>Export GPX</button>
+          <span class="dA-sep"></span>
+          <button class="btn primary"><svg><use href="#i-send"/></svg>Send to device</button>
+        </div>
+      </div>
+
+      <aside class="dA-panel">
+        <div class="dA-q">
+          <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4<span class="caret"></span></span><span class="count">22/80</span></div>
+          <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+        </div>
+        <div class="dA-back">
+          <button class="btn ghost sm"><svg><use href="#i-chev-l"/></svg>Back to the route</button>
+          <span class="cap">2 within 5 km · 3 earlier on Day 4</span>
+        </div>
+        <div class="dA-list">
+          <div class="dA-sec">Within 5 km of the end of Day 4</div>
+          <div class="row sel">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 of Day 4 · 0.6 km off the line</div><div class="m">+30 m · Reception 8:00–20:00</div></div>
+            <span></span>
+            <div class="dA-acts"><button class="btn sm primary">End Day 4 here</button><button class="btn sm">Add as stop</button></div>
+          </div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 of Day 4 · 1.4 km off the line</div><div class="m">+70 m · Hours unknown</div></div>
+          </div>
+          <div class="dA-sec">Earlier on Day 4</div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 17 km before the end</div><div class="m">0.9 km off the line · +10 m · Hours unknown</div></div>
+          </div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping de l'Arc, Modane</div><div class="m">km 71 · 33 km before the end</div><div class="m">0.4 km off the line · 0 m · Reception 9:00–19:00</div></div>
+          </div>
+          <div class="row">
+            <span class="ic"><svg><use href="#i-tent"/></svg></span>
+            <div><div class="t">Camping Les Mélèzes, Lanslevillard</div><div class="m">km 45 · 59 km before the end</div><div class="m">0.3 km off the line · +10 m · Hours unknown</div></div>
+          </div>
+        </div>
+        <div class="dA-foot">
+          <span class="dA-preset"><svg><use href="#i-bike"/></svg>Touring · Balanced</span>
+          <button class="btn ghost sm icon" title="Advanced settings"><svg><use href="#i-sliders"/></svg></button>
+          <span class="cap" style="grid-column:1/3">634 km · 14,590 m · 49 h riding · 12 km unknown surface</span>
+        </div>
+      </aside>
+
+      <div class="dA-mapcol">
+        <div class="map">
+          <svg viewBox="0 0 1000 780" preserveAspectRatio="xMidYMid slice">
+            <use href="#map-d4"/>
+            <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+            <text class="dA-mt rt" x="520" y="372">Day 4 · 104 km · 7 h 10</text>
+            <!-- day ends -->
+            <g transform="translate(840 78)"><circle r="12" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+            <text class="dA-mt" x="822" y="83" text-anchor="end">End of Day 3</text>
+            <g transform="translate(105 501)"><circle r="12" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+            <text class="dA-mt" x="118" y="560">End of Day 4 · Valloire</text>
+            <!-- results -->
+            <g transform="translate(132 520)"><circle r="15" style="fill:var(--amber);stroke:var(--ink);stroke-width:2"/><use href="#i-tent" x="-9" y="-9" width="18" height="18" style="color:var(--on-amber)"/></g>
+            <text class="dA-mt" x="153" y="524">Camping Caravaneige</text>
+            <g transform="translate(84 530)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+            <g transform="translate(172 406)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+            <g transform="translate(434 458)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+            <g transform="translate(752 318)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+          </svg>
+          <span class="attribution">© OpenStreetMap</span>
+        </div>
+
+        <div class="dA-ctl">
+          <div class="dA-zoom"><button><svg><use href="#i-plus"/></svg></button><button><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button></div>
+          <div class="dA-layers card">
+            <div class="dA-lrow"><svg style="width:15px;height:15px;color:var(--ink-soft)"><use href="#i-layers"/></svg>Layers</div>
+            <div class="dA-lrow">Surface<span class="dA-sw on"></span></div>
+            <div class="dA-lrow">Photos and sights<span class="dA-sw"></span></div>
+            <div class="dA-lrow">Snow history <span class="cap">experiment</span><span class="dA-sw on"></span></div>
+          </div>
+        </div>
+
+        <div class="dA-prof card">
+          <div class="dA-ph">
+            <span class="h">Day 4 · Sun 20 Jun</span>
+            <span class="cap">Val d'Isère → Valloire · 104 km · 2,310 m · 7 h 10</span>
+            <span class="dA-right"><span class="cap">Whole trip · 634 km · 14,590 m · 49 h riding</span><button class="btn ghost sm icon" title="Collapse"><svg><use href="#i-chev-d"/></svg></button></span>
+          </div>
+          <div class="dA-pg">
+            <span class="dA-pl">3,000 m<br><span style="opacity:.7">0 m</span></span>
+            <div class="strip">
+              <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none" style="height:58px">
+                <rect class="day-band" x="0" y="0" width="78" height="300"/><rect class="day-band" x="142" y="0" width="71" height="300"/><rect class="day-band sel" x="213" y="0" width="104" height="300"/><rect class="day-band" x="370" y="0" width="56" height="300"/><rect class="day-band" x="477" y="0" width="63" height="300"/>
+                <use href="#prof-alps-area" class="prof-area"/><use href="#prof-alps-line" class="prof-line"/>
+                <rect x="220" y="0" width="9" height="300" style="fill:var(--coral);opacity:.22"/>
+                <line class="day-rule" x1="78" y1="0" x2="78" y2="300"/><line class="day-rule" x1="142" y1="0" x2="142" y2="300"/><line class="day-rule" x1="213" y1="0" x2="213" y2="300"/><line class="day-rule" x1="317" y1="0" x2="317" y2="300"/><line class="day-rule" x1="370" y1="0" x2="370" y2="300"/><line class="day-rule" x1="426" y1="0" x2="426" y2="300"/><line class="day-rule" x1="477" y1="0" x2="477" y2="300"/><line class="day-rule" x1="540" y1="0" x2="540" y2="300"/>
+              </svg>
+              <i class="tick" style="left:40.7%"></i><i class="tick" style="left:44.8%"></i><i class="tick" style="left:47.3%"></i><i class="tick" style="left:50%"></i>
+            </div>
+            <span class="dA-pl">Days</span>
+            <div class="dA-days"><b style="left:6.2%">1</b><b style="left:17.4%">2</b><b style="left:28%">3</b><b class="sel" style="left:41.8%">4</b><b style="left:54.2%">5</b><b style="left:58.4%;opacity:.6">rest</b><b style="left:62.8%">7</b><b style="left:71.2%">8</b><b style="left:80.2%">9</b><b style="left:92.6%">10</b></div>
+            <span class="dA-pl">Surface</span>
+            <div class="band"><i class="paved" style="left:0;width:100%"></i><i class="unknown" style="left:16.4%;width:1.3%"></i><i class="unpaved" style="left:18.6%;width:.4%"></i><i class="unknown" style="left:62.8%;width:.7%"></i><i class="unpaved" style="left:63.1%;width:.3%"></i></div>
+            <span class="dA-pl">Snow history</span>
+            <div class="band"><i class="snow" style="left:35%;width:1%"></i><i class="snow" style="left:52.2%;width:.7%"></i><i class="snow" style="left:78.4%;width:.7%"></i></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div></div>
+  <figcaption>At home, website: the box asked for campsites at the end of Day 4; the list replaces the route in the panel, the map and the profile keep Day 4 in view.</figcaption>
+</figure>
+
+<!-- 2 · In the tent: "where do I sleep tomorrow?" -->
+<figure class="mock phone" id="a-phone-tent">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="0 -5 500 1082" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <text class="dA-mt rt" x="330" y="482" style="font-size:15px;stroke-width:4px">Day 4</text>
+        <g transform="translate(105 501)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--panel)"/></g>
+        <g transform="translate(132 520)"><circle r="18" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.5"/><use href="#i-tent" x="-11" y="-11" width="22" height="22" style="color:var(--on-amber)"/></g>
+        <g transform="translate(84 530)"><circle r="14" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <g transform="translate(172 406)"><circle r="14" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <g transform="translate(434 458)"><circle r="14" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <text class="dA-mt" x="158" y="526" style="font-size:15px;stroke-width:4px">Camping Caravaneige</text>
+      </svg>
+    </div>
+
+    <div class="dA-top card">
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4</span><button class="dA-clear"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-tent"/></svg>Campsites</span><span class="chip where">End of Day 4 <span class="k">Valloire</span></span><span class="chip filter">within 5 km</span></div>
+    </div>
+
+    <div class="sheet dA-sheet" style="height:404px">
+      <div class="grab"></div>
+      <div class="dA-shead">
+        <div class="h">Campsites at the end of Day 4</div>
+        <div class="cap">Day 4 · Sun 20 Jun · Val d'Isère → Valloire · 104 km · 7 h 10</div>
+        <div class="cap"><svg><use href="#i-offline"/></svg>Offline · results from downloaded areas</div>
+      </div>
+      <div class="row sel">
+        <span class="ic"><svg><use href="#i-tent"/></svg></span>
+        <div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 · 0.6 km off the line · +30 m</div><div class="m">Reception 8:00–20:00</div></div>
+        <span></span>
+        <div class="dA-acts"><button class="btn primary">End Day 4 here</button><button class="btn">Add as stop</button></div>
+      </div>
+      <div class="row">
+        <span class="ic"><svg><use href="#i-tent"/></svg></span>
+        <div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 · 1.4 km off the line · +70 m</div><div class="m">Hours unknown</div></div>
+      </div>
+      <div class="dA-more">
+        <span class="ic"><svg><use href="#i-tent"/></svg></span>
+        <div><div class="t" style="font-weight:600">Earlier on Day 4</div><div class="m">3 campsites · km 45 to km 87</div></div>
+        <svg><use href="#i-chev-r"/></svg>
+      </div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>In the tent: Day 4 is tomorrow; the sheet lists the campsites at its end, one chosen, the earlier ones one tap away.</figcaption>
+</figure>
+
+<!-- 3 · On the road: "get me to Titisee", one hand -->
+<figure class="mock phone" id="a-phone-road">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone">
+    <div class="map">
+      <svg viewBox="90 -208 867 1876" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="dA-mt" x="280" y="540" style="font-size:26px;stroke-width:6px">Least climbing · +13 km</text>
+        <text class="dA-mt" x="720" y="440" text-anchor="end" style="font-size:26px;stroke-width:6px">Least unpaved · +2 km</text>
+        <text class="dA-mt rt" x="470" y="262" style="font-size:26px;stroke-width:6px">Shortest · 34 km</text>
+        <!-- here -->
+        <g transform="translate(380 233)"><circle r="32" fill="#2f7de1" opacity=".18"/><circle r="18" fill="#2f7de1" stroke="#ffffff" stroke-width="5"/></g>
+        <!-- Titisee -->
+        <g transform="translate(820 576)"><circle r="24" style="fill:var(--panel);stroke:var(--ink);stroke-width:4"/><use href="#i-flag" x="-14" y="-14" width="28" height="28" style="color:var(--ink)"/></g>
+      </svg>
+    </div>
+
+    <div class="dA-top card">
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">Titisee</span><button class="dA-clear"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span><span class="chip what"><svg><use href="#i-route"/></svg>Route</span><span class="chip where">From here <span class="k">Glottertal</span></span><span class="chip where">To Titisee</span><span class="chip filter">Touring</span></div>
+    </div>
+
+    <div class="sheet dA-sheet" style="height:484px">
+      <div class="grab"></div>
+      <div class="dA-pts">
+        <div class="dA-pt">
+          <span class="ic"><svg style="color:var(--ink-soft)"><use href="#i-here"/></svg></span>
+          <div class="t">Glottertal<span class="cap">here</span></div>
+          <span class="dA-preset"><svg><use href="#i-bike"/></svg>Touring · Shortest<svg><use href="#i-sliders"/></svg></span>
+        </div>
+        <div class="dA-mode"><span class="dA-vline"></span><span class="seg"><span class="on">Routed</span><span>Straight</span><span>Drawn</span></span></div>
+        <div class="dA-pt">
+          <span class="ic"><svg style="color:var(--ink)"><use href="#i-flag"/></svg></span>
+          <div class="t">Titisee<span class="cap">village · 846 m</span></div>
+        </div>
+      </div>
+
+      <div class="dA-pstrip">
+        <div class="strip">
+          <svg class="prof" viewBox="0 150 34 150" preserveAspectRatio="none" style="height:36px"><use href="#prof-bf-titisee-area" class="prof-area"/><use href="#prof-bf-titisee-line" class="prof-line"/></svg>
+        </div>
+        <div class="band"><i class="paved" style="left:0;width:100%"></i><i class="unpaved" style="left:36.8%;width:9.1%"></i><i class="unknown" style="left:41.8%;width:4.1%"></i></div>
+        <div class="dA-plabels"><span>0 km</span><span>3.1 km unpaved, of which 1.4 km unknown</span><span>34 km</span></div>
+      </div>
+
+      <div class="row sel dA-opt">
+        <span class="ic" style="background:transparent;color:var(--route)"><svg><use href="#i-dot"/></svg></span>
+        <div class="t">Shortest</div>
+        <span class="num">34 km · 1,020 m · 2 h 50</span>
+        <div class="m">via St. Peter, St. Märgen</div>
+      </div>
+      <div class="row dA-opt">
+        <span class="ic" style="background:transparent"><svg><use href="#i-ring"/></svg></span>
+        <div class="t">Least climbing</div>
+        <span class="num">+13 km · −300 m · +0 h 20</span>
+        <div class="m">via Freiburg, Kirchzarten, Höllental bike path, Hinterzarten · 0.8 km unpaved</div>
+      </div>
+      <div class="row dA-opt" style="border-bottom:0">
+        <span class="ic" style="background:transparent"><svg><use href="#i-ring"/></svg></span>
+        <div class="t">Least unpaved</div>
+        <span class="num">+2 km · +40 m · +0 h 10</span>
+        <div class="m">via St. Peter, St. Märgen, on roads · 0 km unpaved</div>
+      </div>
+
+      <button class="btn primary dA-send"><svg><use href="#i-send"/></svg>Send to device</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>On the road: Titisee from here; three options named by what they win, as differences from the chosen one; one thumb sends it.</figcaption>
+</figure>

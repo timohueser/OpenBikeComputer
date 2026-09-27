@@ -1,0 +1,176 @@
+<div class="pg">
+<div class="wrap">
+<header class="pg-head">
+  <h1>Route planner wireframes</h1>
+  <p class="lead">Four layout directions for the planner on the website and on the iPhone, the states of the query box, and the model behind the box. Direction D is the recommendation. All places and figures are examples.</p>
+  <div class="meta">
+    <span>27 Sep 2026</span>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/2236">Plan of record #2236</a>
+    <a href="https://claude.ai/artifact/JyftV8V8DVLS6sCXFhz2ru">Brainstorm page</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/2056">Trips #2056</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/1734">Ride Assistant #1734</a>
+  </div>
+</header>
+</div>
+
+<nav class="pg-nav" aria-label="Sections"><div class="scroller">
+  <a href="#compare">Compare</a><a href="#dir-a">A · Map first</a><a href="#dir-b">B · Profile first</a><a href="#dir-c">C · Query first</a><a class="rec" href="#dir-d">D · Map and strip</a><a href="#flows">Flows</a><a href="#box">Query box</a><a href="#model">Model</a><a href="#questions">Questions</a>
+</div></nav>
+
+<div class="wrap">
+
+<section class="pg-sec" id="compare">
+  <h2>The four directions</h2>
+  <p class="intro">Every direction uses the same trip, places and figures, drawn at real size for the website (1280 × 800) and for an iPhone (390 × 844). The table compares them on the four rider jobs from the brainstorm.</p>
+  <!--COMPARE-->
+</section>
+
+<section class="pg-sec dir" id="dir-a">
+  <div class="dir-head">
+    <h2>A · Map first</h2>
+    <p class="thesis">The planner riders already know from Komoot and Ride with GPS, with our rules applied well. The map is the work surface, a side panel holds the route, and the profile opens on request. The query box is the search field; its answers replace the panel until the rider goes back to the route.</p>
+  </div>
+  <div class="dir-grid">
+    <!--FRAG:dir-a-->
+    <div class="dir-notes"><!--NOTES:a--></div>
+  </div>
+</section>
+
+<section class="pg-sec dir" id="dir-b">
+  <div class="dir-head">
+    <h2>B · Profile first</h2>
+    <p class="thesis">The route is one line from start to end, so its natural shape is a strip. The profile strip is the main editing surface: it holds the days, surface, gaps, snow and the answers of the box, and the rider drags day ends on it. The map follows the strip and is used for new points and fine edits.</p>
+  </div>
+  <div class="dir-grid">
+    <!--FRAG:dir-b-->
+    <div class="dir-notes"><!--NOTES:b--></div>
+  </div>
+</section>
+
+<section class="pg-sec dir" id="dir-c">
+  <div class="dir-head">
+    <h2>C · Query first</h2>
+    <p class="thesis">One box drives the planning. Places, questions about the route and changes to it all go through the box, and each answer is one fixed card. The map is for looking and for fine edits by hand. The plan itself is a slim summary that opens into the days and the profile.</p>
+  </div>
+  <div class="dir-grid">
+    <!--FRAG:dir-c-->
+    <div class="dir-notes"><!--NOTES:c--></div>
+  </div>
+</section>
+
+<section class="pg-sec dir" id="dir-d">
+  <div class="dir-head">
+    <h2>D · Map and strip <span class="rec-chip">Recommended</span></h2>
+    <p class="thesis">The map-first layout riders know, with the profile strip always on screen, as in the trip day editor. The box is more than a search field: a request is always what and where. The rider can type it, or point at a day end, a point or a stretch to fill the where part and then choose what. Answers show in the list, on the strip and on the map at once.</p>
+  </div>
+  <div class="dir-grid">
+    <!--FRAG:dir-d-->
+    <div class="dir-notes"><!--NOTES:d--></div>
+  </div>
+</section>
+
+<section class="pg-sec" id="flows">
+  <h2>The rider jobs as visible states</h2>
+  <p class="intro">Each job is written as what the rider sees and does, step by step, in direction D. The last line of each job says where the other directions differ.</p>
+  <div class="flows">
+    <article class="flow">
+      <h3>On the road: “Get me to Titisee”</h3>
+      <p class="where">iPhone, one hand, weak signal. Here is Glottertal. Touring bike.</p>
+      <ol>
+        <li>The planner opens on the map at the rider’s position. The box is at the top of the sheet, in thumb reach.</li>
+        <li>The rider types <code>Titisee</code>. Matching places appear while they type: Titisee, village, 23 km; Titisee-Neustadt, town.</li>
+        <li>They tap Titisee. One place card shows its kind and distance, with Route from here and Add to route.</li>
+        <li>They tap Route from here. The map shows three lines. The sheet names each option by what it wins: Shortest, 34 km, 1,020 m, 2 h 50. Least climbing, +13 km, −300 m. Least unpaved, +2 km, +40 m.</li>
+        <li>The strip of the selected option shows its 3.1 km unpaved, of which 1.4 km is unknown surface.</li>
+        <li>They tap Send to device. The route goes to the OBC over Bluetooth. Without a connection, search and routing still work in downloaded areas.</li>
+      </ol>
+      <p class="diff">A puts the box at the top of the screen, far from the thumb. B gives the map less room. C shows the same card, from the same box at the bottom.</p>
+    </article>
+    <article class="flow">
+      <h3>In the tent: “Where do I sleep tomorrow?”</h3>
+      <p class="where">iPhone, the evening of Day 3 in Val d’Isère. Tomorrow is Day 4, Sunday 20 June.</p>
+      <ol>
+        <li>The rider opens the trip. The sheet shows the strip and the days. Day 4: 104 km, 2,310 m, 7 h 10 riding. Too long after a hard Day 3.</li>
+        <li>They tap the Day 4 end on the strip. The box shows End of Day 4 · Valloire and offers Places to sleep, Water, Shops.</li>
+        <li>They drag the Day 4 end to the left. The day figures change while they drag. The line does not change. They release near Saint-Michel-de-Maurienne: 88 km, 5 h 20.</li>
+        <li>They tap Places to sleep. The list shows the campsites near the new end, each with its km, distance off the line and extra climb. They tap Camping Le Petit Nice and then End Day 4 here.</li>
+        <li>Day 5 now shows 69 km and 6 h 20, and starts with the Col du Télégraphe. One quiet line says so. Undo is one tap.</li>
+        <li>They type <code>shops open sunday day 4</code>. The list shows each shop’s Sunday hours: Carrefour Market, Modane, Sun 8:30–12:30. Intermarché, Saint-Michel, Sun closed.</li>
+      </ol>
+      <p class="diff">B does the same on a larger strip, with a smaller map. A and C hide the days in a list, so the rider types or scrolls instead of dragging.</p>
+    </article>
+    <article class="flow">
+      <h3>At home: “Ten days through the Alps”</h3>
+      <p class="where">Website, several evenings. Touring bike.</p>
+      <ol>
+        <li>The rider types <code>Genève</code> and taps Start here, then <code>Nice</code> and Route to here. The planner shows the A→B route with its alternatives.</li>
+        <li>They add passes: <code>via Col du Galibier</code> gives a proposal card with its cost; Apply adds a Pass here point. A new point never changes the order of the others.</li>
+        <li>They type <code>10 days</code> or use Split into days. The proposal places the day ends at about 5 h of riding each. The strip shows the days; the panel lists them.</li>
+        <li>They refine: drag day ends on the strip; ask <code>campsites end of day 4</code>; ask <code>water gaps</code> and add the marker “Last water for 29 km”. The strip shows a seasonal closure mark and the snow history on the Col de l’Iseran.</li>
+        <li>They drag across the unknown surface on Day 2 on the strip and choose Other ways for this stretch. Only that stretch changes.</li>
+        <li>They set the trip dates in the header (start Thu 17 Jun, rest day 6). Each save makes a version under Versions. Continue on phone plays the animated QR code for the phone.</li>
+      </ol>
+      <p class="diff">A shows the same steps with the profile in a panel the rider opens. B makes the days easier and the new points harder. C does most steps by sentence, and the rider sees less of the plan at once.</p>
+    </article>
+    <article class="flow">
+      <h3>Import: “The published route, but via my hotel”</h3>
+      <p class="where">Website or iPhone. A GPX file, “Schwarzwald Gravel, 3 days”.</p>
+      <ol>
+        <li>The rider taps Import and chooses the file. The planner shows the line exactly as it is in the file, with the label “Imported line · not re-routed”, and its figures: 312 km, 6,480 m.</li>
+        <li>The strip shows our data on their line: 41 km unknown surface. The line itself does not change.</li>
+        <li>They type <code>via Hotel Krone St. Peter</code>. A proposal card says: Add a visit, +2.3 km, +60 m, only the detour is routed, 312 km of the line unchanged. The detour shows as a ghost line on the map.</li>
+        <li>They tap Apply. The line leaves the imported line at its nearest point, visits the hotel and returns to the same point.</li>
+        <li>They ask <code>water gaps</code>: “No mapped water for 38 km” on Day 2. Add marker puts a normal waypoint on the line, which the device shows in What’s next.</li>
+        <li>They tap Send to device.</li>
+      </ol>
+      <p class="diff">All four directions handle this well. The proposal card is the same in each; D and B also mark the detour on the strip.</p>
+    </article>
+  </div>
+</section>
+
+<section class="pg-sec" id="box">
+  <h2>The query box</h2>
+  <p class="intro">A request has three parts: what, where and filters. After “Understood as”, the box shows each part as a chip, so the rider sees what it will do before it does anything. The answer is always one of four cards, each with fixed actions. The states below use the grammar of direction D.</p>
+  <div class="twocol">
+    <div class="tbl"><table>
+      <thead><tr><th>Part</th><th>Examples</th></tr></thead>
+      <tbody>
+        <tr><th>What</th><td>campsites, shops, water, pharmacies, a place name, a route</td></tr>
+        <tr><th>Where</th><td>here, along the route, Day 4, end of Day 4, middle of Day 4, near St. Peter, this stretch</td></tr>
+        <tr><th>Filters</th><td>open on Sunday, open on Day 4, within 5 km, road bike, least climbing</td></tr>
+        <tr><th>Ignored</th><td>words the box did not understand, struck through</td></tr>
+        <tr><th>Missing</th><td>an input the answer needs, such as a trip date</td></tr>
+      </tbody>
+    </table></div>
+    <div class="tbl"><table>
+      <thead><tr><th>Answer</th><th>Typed</th><th>Actions</th></tr></thead>
+      <tbody>
+        <tr><th>List of places</th><td><code>campsites end of day 4</code></td><td>End Day 4 here, Add as stop</td></tr>
+        <tr><th>One place</th><td><code>Kandel</code></td><td>Route from here, Add to route, Add as stop</td></tr>
+        <tr><th>Route</th><td><code>road bike route up Kandel starting here</code></td><td>Use this route</td></tr>
+        <tr><th>Change</th><td><code>end day 4 at saint-michel</code></td><td>Apply, Cancel; then Undo</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+  <ul class="prose">
+    <li>The box never acts on a guess. A change to the route waits for Apply, and Undo reverses it like any other edit.</li>
+    <li>Words it does not understand stay visible, struck through, and are ignored. If it understands nothing, it says so and shows the place search results for the text.</li>
+    <li>Pointing builds the same request as typing. A tap on a day end, a point or a stretch fills the where chip. Pointing and place search need no model, so they work even before the model has downloaded.</li>
+    <li>“Open on Sunday” needs no trip dates: it filters on the Sunday hours. “Open on Day 4” needs the date of Day 4, so without dates the box asks for them in one quiet line. Issue #2236 currently says the Sunday case needs dates.</li>
+    <li>Offline, everything works in downloaded areas. The box says when a part of the request lies outside them.</li>
+  </ul>
+  <div class="gallery">
+    <!--FRAG:box-states-->
+  </div>
+</section>
+
+<!--MODEL-->
+
+<!--QUESTIONS-->
+
+<footer class="pg-foot">
+  <span>Mocks drawn from one shared content sheet; places and figures are examples, not measurements.</span>
+  <span>When a direction is chosen, it goes into #2236 in Simplified Technical English.</span>
+</footer>
+</div>
+</div>
