@@ -125,7 +125,9 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::SetupPaired(SetupPairedScreen),
         Screen::PairPhone(PairPhoneScreen),
         Screen::SetupSensors(SetupSensorsScreen::default()),
+        Screen::SetupSensorScan(SetupSensorScanScreen::new(0)),
         Screen::SetupSensorScan(SetupSensorScanScreen::new(1)),
+        Screen::SetupSensorScan(SetupSensorScanScreen::new(2)),
         Screen::SetupAllSet(SetupAllSetScreen),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
@@ -367,6 +369,21 @@ fn every_string_fits_the_panel_in_every_language() {
         }
     }
     report(offenders);
+}
+
+/// A setup scan list's title fits beside the step count whole in every language: the title bar
+/// cuts a title that does not, and the cut line still fits the panel.
+#[test]
+fn every_setup_scan_title_is_drawn_whole() {
+    let bytes = build_min_obcm(0xF800);
+    for language in Language::ALL {
+        for slot in 0..crate::settings::SENSOR_SLOTS {
+            let title = crate::i18n::t(crate::screen::setup::scan_title(slot), language);
+            let seed = plain(vec![Screen::SetupSensorScan(SetupSensorScanScreen::new(slot as u8))]).remove(0);
+            let drawn = walk(seed, language, &bytes, |_| {});
+            assert!(drawn.iter().any(|(_, d)| d.text == title), "{language:?}: {title:?} is cut");
+        }
+    }
 }
 
 /// The reading page, which `Landmarks`, `LandmarkSources` and `PeakArticle` all draw. It needs a

@@ -429,6 +429,16 @@ impl SetupSensorsScreen {
 #[derive(Debug)]
 pub struct SetupSensorScanScreen(SensorScanScreen);
 
+/// A scan list's title: its sensor kind, short and in capitals as every setup title is, so it fits
+/// beside the step count.
+pub(crate) fn scan_title(slot: usize) -> Msg {
+    match slot {
+        0 => Msg::SetupHeartRate,
+        1 => Msg::SetupPower,
+        _ => Msg::SetupCadence,
+    }
+}
+
 impl SetupSensorScanScreen {
     pub fn new(slot: u8) -> Self {
         SetupSensorScanScreen(SensorScanScreen::new(slot))
@@ -440,7 +450,7 @@ impl SetupSensorScanScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
-        title_bar(cv, w, h, SetupStep::Sensors, rx.t(kind_msg(self.0.slot as usize)));
+        title_bar(cv, w, h, SetupStep::Sensors, rx.t(scan_title(self.0.slot as usize)));
         self.0.draw_list(cv, rx, h - 8 - HINT_H - 12);
         hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }

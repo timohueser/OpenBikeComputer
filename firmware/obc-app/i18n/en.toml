@@ -584,6 +584,10 @@ skip = "Skip"
 units = "UNITS"
 theme = "THEME"
 effort = "ZONES"
+# The sensors step's scan list titles, one per kind. Each fits beside the step count.
+heart_rate = "HEART RATE"
+power = "POWER"
+cadence = "CADENCE"
 # The pairing step: its title, its Back hint, and the page that asks to ride without the app.
 qr = "GET THE APP"
 no_app = "No app?"
