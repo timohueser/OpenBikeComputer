@@ -1911,7 +1911,8 @@ impl App {
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
         let arrival = self.arrival_view();
-        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival);
+        let in_setup = self.settings.setup != crate::settings::SetupStep::Done;
+        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival, in_setup);
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
             self.ui.find.resume_route = self
@@ -1987,11 +1988,12 @@ impl App {
         self.ui.set_sensor_scan_hits(hits);
     }
 
-    /// Whether the rider is on the scan-list screen and a scan should run. The host reads the
-    /// level each pass: while `true` it keeps a discovery scan running and feeds the hits back;
-    /// when it falls it clears the app scan list.
+    /// Whether a scan list is on the stack, so a scan should run. The host reads the level each
+    /// pass: while `true` it keeps a discovery scan running and feeds the hits back; when it falls
+    /// it clears the app scan list. A card over the list keeps the scan, and whatever takes the list
+    /// off the stack ends it.
     pub fn sensor_scan_active(&self) -> bool {
-        self.activity.sensor_scan_active()
+        self.ui.stack.iter().any(|s| matches!(s, Screen::SensorScan(_) | Screen::SetupSensorScan(_)))
     }
 
     /// A committed route upload: forced adoption on an active replace + the advisory prompt.
@@ -6412,6 +6414,39 @@ mod tests {
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
         assert_eq!(app.settings().setup, SetupStep::Done);
         assert!(host.drain(&mut app).is_some(), "setup is saved as done");
+    }
+
+    /// A route card waits while setup runs, because its VIEW leads on to a ride, and lands once
+    /// setup ends.
+    #[test]
+    fn a_route_card_waits_for_setup_to_end() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::AllSet, ..Settings::FACTORY });
+        app.set_routes_with_ids(&[summary("Alpha")], &[10]);
+        app.on_route_uploaded(10, false, None);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupAllSet(_)]), "the card waits");
+        app.apply_gesture(Gesture::Press);
+        idle_tick(&mut app, 1_000);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::RouteReceived(_)]));
+    }
+
+    /// The scan runs while a scan list is on the stack, under a card too, and ends when the list
+    /// leaves the stack in any way.
+    #[test]
+    fn the_sensor_scan_ends_when_its_list_leaves_the_stack() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.test_mount_store();
+        app.set_routes_with_ids(&[summary("Alpha")], &[10]);
+        let _ = app.ui.stack.push(Screen::Sensors(crate::screen::SensorsScreen::new()));
+        app.apply_gesture(Gesture::Press);
+        assert!(app.sensor_scan_active());
+        app.on_route_uploaded(10, false, None);
+        assert!(app.sensor_scan_active(), "a card over the list keeps the scan");
+        app.apply_gesture(Gesture::Press); // VIEW
+        app.apply_gesture(Gesture::Press); // START RIDE
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Map(_)]));
+        assert!(!app.sensor_scan_active());
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

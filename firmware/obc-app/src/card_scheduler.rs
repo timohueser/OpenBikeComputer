@@ -241,6 +241,9 @@ pub(crate) struct CardCtx<'a> {
     /// The arrival level: `Some` from arrival at the route end until the rider rides on, finishes,
     /// pauses or loads another route.
     pub(crate) arrival: Option<screen::ArrivalView>,
+    /// First-use setup is running. Its pages are the only way out of it, so the upload prompt,
+    /// which opens routes and rides, waits for setup to end.
+    pub(crate) in_setup: bool,
 }
 
 /// The named pending slots plus the one sweep. One slot per family and no untyped queue, so what is
@@ -492,9 +495,10 @@ impl CardScheduler {
 
     /// Upload prompt. Conflict: the incoming prompt replaces the upload family in place, so
     /// consecutive uploads never stack and selection resets with the fresh screen. Revalidation:
-    /// the durable id must still resolve in the rescanned catalog, or the prompt is dropped.
+    /// the durable id must still resolve in the rescanned catalog, or the prompt is dropped. The
+    /// prompt waits while setup runs.
     fn deliver_upload(&mut self, stack: &mut Stack, ctx: &CardCtx, outranked: bool) -> bool {
-        let Some(ev) = self.upload else { return false };
+        let Some(ev) = self.upload.filter(|_| !ctx.in_setup) else { return false };
         self.upload = None; // delivered or dropped, never queued behind the passkey card
         if outranked {
             return false;

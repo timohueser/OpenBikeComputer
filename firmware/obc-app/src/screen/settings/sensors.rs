@@ -2,8 +2,8 @@
 //! three kinds, and [`SensorScanScreen`] is the scan list for one kind.
 //!
 //! A save or a forget is a plain [`Settings`](crate::Settings) edit. The host reconcile carries the
-//! change to the radio and persists it, so there is one durable path. Scan mode is a level
-//! ([`Activity::request_sensor_scan`]) the host polls to keep a discovery scan running.
+//! change to the radio and persists it, so there is one durable path. A scan runs while a scan list
+//! is on the stack ([`App::sensor_scan_active`](crate::App::sensor_scan_active)).
 
 use core::fmt::Write;
 
@@ -58,11 +58,7 @@ impl SensorsScreen {
                 self.selected = crate::screen::vocab::list::step_selection(self.selected, n, SENSOR_SLOTS);
                 Transition::None
             }
-            // Scan mode makes the host run a discovery scan. The scan screen lowers it on exit.
-            Gesture::Press => {
-                cx.activity.request_sensor_scan(true);
-                Transition::Push(Screen::SensorScan(SensorScanScreen::new(self.selected as u8)))
-            }
+            Gesture::Press => Transition::Push(Screen::SensorScan(SensorScanScreen::new(self.selected as u8))),
             // The guarded hold is the confirmation. There is no popup.
             Gesture::Hold if self.selection_is_guarded(cx.settings) => {
                 cx.settings.saved_sensors[self.selected] = SavedSensor::EMPTY;
@@ -155,16 +151,12 @@ impl SensorScanScreen {
                 let picked = self.hits(cx.sensor_scan_hits).nth(self.selected).map(|h| (h.addr_kind, h.addr));
                 if let Some((addr_kind, addr)) = picked {
                     cx.settings.saved_sensors[self.slot as usize] = SavedSensor::saved(addr_kind, addr);
-                    cx.activity.request_sensor_scan(false);
                     Transition::Pop
                 } else {
                     Transition::None
                 }
             }
-            Gesture::Back => {
-                cx.activity.request_sensor_scan(false);
-                Transition::Pop
-            }
+            Gesture::Back => Transition::Pop,
             _ => Transition::None,
         }
     }
@@ -235,11 +227,11 @@ mod tests {
         scr: &mut SensorScanScreen,
         st: &mut AppState,
         s: &mut Settings,
-        act: &mut Activity,
         hits: &[SensorScanHit],
         g: Gesture,
     ) -> Transition {
-        let mut cx = Ctx { sensor_scan_hits: hits, ..test_ctx(st, act, s) };
+        let mut act = Activity::new(Mode::Idle);
+        let mut cx = Ctx { sensor_scan_hits: hits, ..test_ctx(st, &mut act, s) };
         scr.handle(g, &mut cx)
     }
 
@@ -249,14 +241,7 @@ mod tests {
         let mut s = Settings::default();
         let mut scr = SensorsScreen::new();
         run(&mut scr, &mut st, &mut s, &[], Gesture::Step(1));
-        let t = {
-            let mut act = Activity::new(Mode::Idle);
-            let mut cx = test_ctx(&mut st, &mut act, &mut s);
-            let t = scr.handle(Gesture::Press, &mut cx);
-            assert!(act.sensor_scan_active(), "entering a row raises scan mode");
-            t
-        };
-        match t {
+        match run(&mut scr, &mut st, &mut s, &[], Gesture::Press) {
             Transition::Push(Screen::SensorScan(scan)) => {
                 assert_eq!(scan.slot, 1, "the Power slot travels with the scan")
             }
@@ -284,44 +269,28 @@ mod tests {
     fn picking_a_hit_saves_and_pops() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
-        let mut act = Activity::new(Mode::Idle);
-        act.request_sensor_scan(true);
         let mut scr = SensorScanScreen::new(0);
         let hits = [hit(1, "PWR", -50), hit(0, "HRM", -60), hit(0, "Watch", -72)];
 
         // The press selects the first heart rate hit. The power hit is filtered out.
-        let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
+        let t = run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Press);
         assert!(matches!(t, Transition::Pop), "a pick pops back to the row list");
         assert!(s.saved_sensors[0].present, "the HR slot now holds a saved sensor");
         assert_eq!(s.saved_sensors[0].addr, [1, 2, 3, 4, 5, 6]);
-        assert!(!act.sensor_scan_active(), "picking leaves scan mode");
     }
 
     #[test]
     fn scan_cursor_bounded_to_kind_and_empty_is_safe() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
-        let mut act = Activity::new(Mode::Idle);
         let mut scr = SensorScanScreen::new(2);
         let hits = [hit(0, "HRM", -60), hit(1, "PWR", -50)];
 
-        run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Step(1));
+        run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Step(1));
         assert_eq!(scr.selected, 0, "no cadence hits → the cursor can't move");
-        let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
+        let t = run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Press);
         assert!(matches!(t, Transition::None), "a press with no hit does nothing");
         assert!(!s.saved_sensors[2].present, "and saves nothing");
-    }
-
-    #[test]
-    fn back_cancels_scan() {
-        let mut st = AppState::new(0, 0, 1.0);
-        let mut s = Settings::default();
-        let mut act = Activity::new(Mode::Idle);
-        act.request_sensor_scan(true);
-        let mut scr = SensorScanScreen::new(0);
-        let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &[], Gesture::Back);
-        assert!(matches!(t, Transition::Pop));
-        assert!(!act.sensor_scan_active(), "Back leaves scan mode");
     }
 
     #[test]

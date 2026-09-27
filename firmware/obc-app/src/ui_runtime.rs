@@ -464,9 +464,10 @@ impl UiRuntime {
         tracking: bool,
         panning: bool,
         arrival: Option<crate::screen::ArrivalView>,
+        in_setup: bool,
     ) {
         let hold_charging = self.hold_charging();
-        let ctx = CardCtx { now_ms: self.now_ms, hold_charging, catalogs, tracking, panning, arrival };
+        let ctx = CardCtx { now_ms: self.now_ms, hold_charging, catalogs, tracking, panning, arrival, in_setup };
         if self.cards.sweep(&mut self.stack, &ctx) {
             self.map_dirty = true;
         }

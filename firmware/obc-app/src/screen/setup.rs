@@ -395,9 +395,7 @@ impl SetupSensorsScreen {
         match g {
             Gesture::Step(n) => on_step(&mut self.selected, n, SKIP + 1),
             Gesture::Press if self.selected == SKIP => finish(SetupStep::Sensors, cx),
-            // Scan mode makes the host run a discovery scan. The scan list lowers it on exit.
             Gesture::Press => {
-                cx.activity.request_sensor_scan(true);
                 Transition::Push(Screen::SetupSensorScan(SetupSensorScanScreen::new(self.selected as u8)))
             }
             Gesture::Back => back(SetupStep::Sensors, cx),
