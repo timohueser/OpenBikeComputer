@@ -7,7 +7,7 @@
 //!
 //! The first step is Hello: a greeting in the four UI languages, because the language is not chosen
 //! yet. Every step after it is a titled page: [`title_bar`] at its head and the [`hint`] at its
-//! foot.
+//! foot. The last step, All set, sums up the setup, and its Select opens Home.
 
 use core::fmt::Write;
 
@@ -28,7 +28,9 @@ use super::context_drawer::{ContextDrawerScreen, ContextValue};
 use super::home::contours;
 use super::pair_code::code_page;
 use super::settings::{kind_msg, status_line, wake_msg, LanguageScreen, SensorScanScreen};
-use super::vocab::chrome::{copy_w, row_check, title_frame, wrapped, wrapped_line_pitch, LIST_TOP};
+use super::vocab::chrome::{
+    card_check, copy_w, row_check, title_frame, wrapped, wrapped_line_pitch, LIST_TOP, ROW_CHECK_HALF, TITLE_BAR_H,
+};
 use super::vocab::flags::{FLAG_H, FLAG_W};
 use super::vocab::list::on_step;
 use super::vocab::rows::{
@@ -48,6 +50,7 @@ pub(crate) fn screen(s: &Settings) -> Option<Screen> {
         SetupStep::Qr => Some(Screen::SetupQr(SetupQrScreen)),
         SetupStep::Sensors => Some(Screen::SetupSensors(SetupSensorsScreen::new(s))),
         SetupStep::Effort => Some(Screen::SetupEffort(SetupEffortScreen::default())),
+        SetupStep::AllSet => Some(Screen::SetupAllSet(SetupAllSetScreen)),
         SetupStep::Done => None,
     }
 }
@@ -370,8 +373,16 @@ pub struct SetupSensorsScreen {
 /// The Skip row's index, after the slots.
 const SKIP: usize = SENSOR_SLOTS;
 
+fn sensors_saved(s: &Settings) -> usize {
+    s.saved_sensors.iter().filter(|s| s.present).count()
+}
+
 fn any_sensor_saved(s: &Settings) -> bool {
-    s.saved_sensors.iter().any(|s| s.present)
+    sensors_saved(s) > 0
+}
+
+fn any_limit_set(s: &Settings) -> bool {
+    s.max_hr != 0 || s.ftp_w != 0
 }
 
 impl SetupSensorsScreen {
@@ -540,7 +551,8 @@ fn swatch(cv: &mut impl Surface, x: i32, y: i32, theme: Theme) {
 /// The effort step: the two limits the effort zones are cut from, and a row that continues. A
 /// value row opens the drawer editor as a sheet over the page, as on the Ride settings page, and
 /// the editor's Select commits and saves the value. The last row reads Skip while neither limit
-/// is set. The ride tiles below show the zones a limit gives, and a plain tile without one.
+/// is set, and opens the All set page. The ride tiles below show the zones a limit gives, and a
+/// plain tile without one.
 #[derive(Debug, Default)]
 pub struct SetupEffortScreen {
     selected: usize,
@@ -581,8 +593,7 @@ impl SetupEffortScreen {
             nav_row(cv, row_rect(y, w, ROW_TWO), rx.t(label), Some(Line2::text(text)), i == self.selected, true, true);
             y += ROW_TWO + ROW_GAP;
         }
-        let set = rx.settings.max_hr != 0 || rx.settings.ftp_w != 0;
-        continue_row(cv, rx, y, set, self.selected == LIMITS.len());
+        continue_row(cv, rx, y, any_limit_set(rx.settings), self.selected == LIMITS.len());
 
         let limits = rx.settings.effort_limits();
         for (i, (metric, value)) in SAMPLE_EFFORT.into_iter().enumerate() {
@@ -599,6 +610,69 @@ impl SetupEffortScreen {
         }
         hint(cv, w, h, true, rx.t(Msg::SetupChoose), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
+}
+
+/// The last step: a check over one line each for the phone, the sensors and the zones, so the rider
+/// sees what setup holds and what it skipped. Select ends setup and opens Home, and Back returns to
+/// the effort step.
+#[derive(Debug)]
+pub struct SetupAllSetScreen;
+
+/// The top of the first summary line and the pitch of the lines.
+const SUMMARY: (i32, i32) = (TITLE_BAR_H + 102, 32);
+
+impl SetupAllSetScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Press => finish(SetupStep::AllSet, cx),
+            Gesture::Back => back(SetupStep::AllSet, cx),
+            _ => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, rx.t(Msg::SetupAllSet), "");
+        card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
+        let lines = summary(rx.settings, rx.state.device.ble_paired);
+        // The lines are one block centred on the panel, their marks in a column at its left.
+        let font = Font::Label;
+        let widest = lines.iter().map(|(_, text)| text_width(text, font) as i32).max().unwrap_or(0);
+        let left = (w - MARK_W - widest) / 2;
+        for (i, (done, text)) in lines.iter().enumerate() {
+            let y = SUMMARY.0 + i as i32 * SUMMARY.1;
+            let mark = Point::new(left + ROW_CHECK_HALF, y + font.cap_mid() as i32);
+            let ink = if *done {
+                row_check(cv, mark, INK);
+                INK
+            } else {
+                cv.fill(rect(mark.x - ROW_CHECK_HALF, mark.y - 1, 2 * ROW_CHECK_HALF, 2), SUBTEXT);
+                SUBTEXT
+            };
+            cv.text(text, Point::new(left + MARK_W, y), font, TextAlign::Left, ink);
+        }
+        hint(cv, w, h, false, rx.t(Msg::SetupContinue), Some(Key::Ok(rx.t(Msg::SetupOk))));
+    }
+}
+
+/// The width of a summary line's mark and the gap after it.
+const MARK_W: i32 = 2 * ROW_CHECK_HALF + 12;
+
+/// The All set page's lines, each with whether the rider set that part up: the phone, the saved
+/// sensors and the effort limits.
+fn summary(s: &Settings, paired: bool) -> [(bool, heapless::String<24>); 3] {
+    let line = |msg| heapless::String::try_from(t(msg, s.language)).unwrap_or_default();
+    let sensors = sensors_saved(s);
+    let mut counted = heapless::String::new();
+    let _ =
+        write!(counted, "{sensors} {}", t(if sensors == 1 { Msg::SetupSensor } else { Msg::SetupSensors }, s.language));
+    let zones = any_limit_set(s);
+    [
+        (paired, line(if paired { Msg::SetupPhonePaired } else { Msg::SetupNoPhone })),
+        (sensors > 0, if sensors > 0 { counted } else { line(Msg::SetupNoSensors) }),
+        (zones, line(if zones { Msg::SetupZonesSet } else { Msg::SetupNoZones })),
+    ]
 }
 
 /// A step's last row at `y`: Skip, or Continue once the step holds a `chosen` value. It acts, so it
@@ -631,11 +705,11 @@ fn preview_tile(rx: &Render, i: usize) -> Rectangle {
     rect(ROW_X + i as i32 * (tile_w + gap), rx.h - 8 - HINT_H - 12 - tile_h, tile_w, tile_h)
 }
 
-/// The rider's place among the titled steps, as `(n, of)`. Hello, the first step, has no title
-/// bar, so the count starts at the step after it.
+/// The rider's place among the counted steps, as `(n, of)`. The count leaves out the first step,
+/// Hello, which has no title bar, and the last, All set, which is not a choice.
 fn place(step: SetupStep) -> (usize, usize) {
-    let titled = &SetupStep::ORDER[1..];
-    (titled.iter().position(|&s| s == step).map_or(0, |i| i + 1), titled.len())
+    let counted = &SetupStep::ORDER[1..SetupStep::ORDER.len() - 1];
+    (counted.iter().position(|&s| s == step).map_or(0, |i| i + 1), counted.len())
 }
 
 /// The head of a titled setup page: the framed title bar, with the rider's [`place`] in its right
@@ -739,7 +813,25 @@ mod tests {
         assert_eq!(SetupSensorsScreen::new(&s).selected, SKIP);
     }
 
-    /// The count starts at the first titled step and ends at the last step.
+    /// The summary reads the bond, the saved sensors and either effort limit.
+    #[test]
+    fn the_all_set_summary_reads_what_setup_holds() {
+        use crate::settings::SavedSensor;
+        let mut s = Settings::default();
+        let lines = summary(&s, false);
+        let skipped = [(false, "No phone"), (false, "No sensors"), (false, "No zones")];
+        assert_eq!(lines.each_ref().map(|(done, text)| (*done, text.as_str())), skipped);
+
+        s.saved_sensors[2] = SavedSensor::saved(0, [1, 2, 3, 4, 5, 6]);
+        s.ftp_w = 250;
+        let lines = summary(&s, true);
+        let set = [(true, "Phone paired"), (true, "1 sensor"), (true, "Zones set")];
+        assert_eq!(lines.each_ref().map(|(done, text)| (*done, text.as_str())), set);
+        s.saved_sensors[0] = SavedSensor::saved(1, [6, 5, 4, 3, 2, 1]);
+        assert_eq!(summary(&s, true)[1].1, "2 sensors");
+    }
+
+    /// The count starts at the first titled step and ends at the last counted step, before All set.
     #[test]
     fn the_title_bar_counts_the_titled_steps() {
         let places = [
@@ -752,5 +844,6 @@ mod tests {
             SetupStep::Effort,
         ];
         assert_eq!(places.map(place), [(1, 7), (2, 7), (3, 7), (4, 7), (5, 7), (6, 7), (7, 7)]);
+        assert_eq!(place(SetupStep::AllSet), (0, 7));
     }
 }

@@ -120,8 +120,8 @@ pub use settings::{
     StatFieldsScreen,
 };
 pub use setup::{
-    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupNoAppScreen, SetupQrScreen,
-    SetupSensorScanScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
+    HelloScreen, SetupAllSetScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupNoAppScreen,
+    SetupQrScreen, SetupSensorScanScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
 };
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
@@ -938,6 +938,8 @@ screens! {
     /// Setup's effort step: max heart rate and FTP, each edited in the drawer editor over the page,
     /// then a row that continues.
     SetupEffort(SetupEffortScreen) => Caps::modal().blocking(),
+    /// Setup's last step: what the rider set up. Select ends setup and opens Home.
+    SetupAllSet(SetupAllSetScreen) => Caps::modal().blocking(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),

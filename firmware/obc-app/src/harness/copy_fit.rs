@@ -125,6 +125,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::PairPhone(PairPhoneScreen),
         Screen::SetupSensors(SetupSensorsScreen::default()),
         Screen::SetupSensorScan(SetupSensorScanScreen::new(1)),
+        Screen::SetupAllSet(SetupAllSetScreen),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
         Screen::Settings(SettingsPage::hub()),
@@ -347,6 +348,20 @@ fn every_string_fits_the_panel_in_every_language() {
         for (name, drawn) in walk(plain(vec![Screen::PairPhone(PairPhoneScreen)]).remove(0), language, &bytes, |app| {
             app.set_ble_status(off)
         }) {
+            offenders.extend(complaint(name, language, &drawn));
+        }
+        // The All set page with a phone paired, sensors saved and the zones set. One sensor reads
+        // shorter than two in every catalog.
+        for (name, drawn) in
+            walk(plain(vec![Screen::SetupAllSet(SetupAllSetScreen)]).remove(0), language, &bytes, |app| {
+                let mut s =
+                    Settings { language, setup: crate::settings::SetupStep::AllSet, max_hr: 185, ..Default::default() };
+                s.saved_sensors[0] = crate::settings::SavedSensor::saved(1, [1, 2, 3, 4, 5, 6]);
+                s.saved_sensors[1] = crate::settings::SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]);
+                app.set_settings(s);
+                app.set_ble_status(crate::BleStatus { paired: true, ..crate::BleStatus::DISCONNECTED });
+            })
+        {
             offenders.extend(complaint(name, language, &drawn));
         }
     }

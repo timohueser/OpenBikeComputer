@@ -2031,6 +2031,39 @@ script = "p p u d b p p p p b d p u p p d*5 p d p d*10 p d w"
 expect = "SetupEffort"
 args = ["--fresh"]
 
+# Setup's last page after the effort step skips: no phone, no sensors and no zones.
+[[frame]]
+name = "setup-all-set"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p u p"
+expect = "SetupAllSet"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-all-set"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p u p"
+expect = "SetupAllSet"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# A paired phone passes the pairing step by, two sensors are saved, and both limits are set: every
+# line is checked.
+[[frame]]
+name = "setup-all-set-full"
+map = "{grimsel}"
+script = "p p u d b p p p p p p d*5 p d p d*10 p d p"
+expect = "SetupAllSet"
+args = ["--fresh", "--ble", "connected+paired", "--sensors", "screen"]
+
+[[frame]]
+name = "setup-all-set-full"
+map = "{grimsel}"
+script = "p p u d b p p p p p p d*5 p d p d*10 p d p"
+expect = "SetupAllSet"
+args = ["--fresh", "--ble", "connected+paired", "--sensors", "screen"]
+langs = ["de", "fr", "es"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).

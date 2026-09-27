@@ -555,6 +555,14 @@ needs_app = "Necesita la app"
 recording = "Grabación"
 ride_sync = "Sync de salidas"
 show_code = "Ver el código"
+all_set = "TODO LISTO"
+phone_paired = "Móvil vinculado"
+no_phone = "Sin móvil"
+sensor = "sensor"
+sensors = "sensores"
+no_sensors = "Sin sensores"
+zones_set = "Zonas fijadas"
+no_zones = "Sin zonas"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

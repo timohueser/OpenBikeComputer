@@ -595,6 +595,16 @@ needs_app = "Needs the app"
 recording = "Ride recording"
 ride_sync = "Ride sync"
 show_code = "Show the code"
+# The closing page: its title, then a line each for the phone, the sensors and the zones. The count
+# of saved sensors goes before `sensor` (one) or `sensors`.
+all_set = "ALL SET"
+phone_paired = "Phone paired"
+no_phone = "No phone"
+sensor = "sensor"
+sensors = "sensors"
+no_sensors = "No sensors"
+zones_set = "Zones set"
+no_zones = "No zones"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

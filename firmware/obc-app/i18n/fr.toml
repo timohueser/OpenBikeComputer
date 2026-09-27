@@ -555,6 +555,14 @@ needs_app = "Il faut l'appli"
 recording = "Enregistrement"
 ride_sync = "Synchro sorties"
 show_code = "Voir le code"
+all_set = "TOUT EST PRÊT"
+phone_paired = "Tél. appairé"
+no_phone = "Pas de téléphone"
+sensor = "capteur"
+sensors = "capteurs"
+no_sensors = "Aucun capteur"
+zones_set = "Zones définies"
+no_zones = "Pas de zones"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]

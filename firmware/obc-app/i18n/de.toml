@@ -556,6 +556,14 @@ needs_app = "Braucht die App"
 recording = "Aufzeichnung"
 ride_sync = "Fahrten-Sync"
 show_code = "Code zeigen"
+all_set = "ALLES BEREIT"
+phone_paired = "Handy gekoppelt"
+no_phone = "Kein Handy"
+sensor = "Sensor"
+sensors = "Sensoren"
+no_sensors = "Keine Sensoren"
+zones_set = "Zonen gesetzt"
+no_zones = "Keine Zonen"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]
