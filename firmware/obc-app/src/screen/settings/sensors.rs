@@ -138,11 +138,14 @@ impl SensorScanScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        // The list refreshes under the cursor, so a shorter one moves it onto its last row, where
+        // the draw puts it.
+        let len = self.count(cx.sensor_scan_hits);
+        self.selected = self.selected.min(len.saturating_sub(1));
         match g {
             Gesture::Step(n) => {
-                let len = self.count(cx.sensor_scan_hits);
                 if len > 0 {
-                    self.selected = crate::screen::vocab::list::step_selection(self.selected.min(len - 1), n, len);
+                    self.selected = crate::screen::vocab::list::step_selection(self.selected, n, len);
                 }
                 Transition::None
             }
@@ -277,6 +280,20 @@ mod tests {
         assert!(matches!(t, Transition::Pop), "a pick pops back to the row list");
         assert!(s.saved_sensors[0].present, "the HR slot now holds a saved sensor");
         assert_eq!(s.saved_sensors[0].addr, [1, 2, 3, 4, 5, 6]);
+    }
+
+    /// A list that shrinks under the cursor leaves it on the last row, and Select picks that row.
+    #[test]
+    fn select_picks_the_last_row_after_the_list_shrinks_under_the_cursor() {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut s = Settings::default();
+        let mut scr = SensorScanScreen::new(1);
+        let hits: Vec<SensorScanHit> =
+            (0..6u8).map(|i| SensorScanHit::new(1, 0, [i, 2, 3, 4, 5, 6], "PWR", -40)).collect();
+        run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Step(-1));
+        let t = run_scan(&mut scr, &mut st, &mut s, &hits[..3], Gesture::Press);
+        assert!(matches!(t, Transition::Pop));
+        assert_eq!(s.saved_sensors[1], SavedSensor::saved(0, [2, 2, 3, 4, 5, 6]));
     }
 
     #[test]
