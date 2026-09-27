@@ -589,7 +589,7 @@ effort = "ZONES"
 # The pairing step: its title, its Back hint, and the page that asks to ride without the app.
 qr = "GET THE APP"
 no_app = "No app?"
-no_app_title = "NO APP"
+no_app_title = "WITHOUT APP"
 offline = "Works offline"
 needs_app = "Needs the app"
 recording = "Ride recording"
