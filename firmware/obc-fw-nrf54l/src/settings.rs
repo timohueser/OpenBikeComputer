@@ -394,12 +394,12 @@ impl SettingsStore for RramSettingsStore {
                 if settings.is_some() {
                     defmt::info!("settings: loaded {=usize} B from RRAM @ {=u32:#010x}", SLOT_LEN, off);
                 } else {
-                    defmt::info!("settings: RRAM slot @ {=u32:#010x} blank/invalid → booting defaults", off);
+                    defmt::info!("settings: RRAM slot @ {=u32:#010x} blank/invalid → booting factory settings", off);
                 }
                 settings
             }
             Err(e) => {
-                defmt::warn!("settings: RRAM read failed: {} → booting defaults", e);
+                defmt::warn!("settings: RRAM read failed: {} → booting factory settings", e);
                 None
             }
         }
