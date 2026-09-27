@@ -558,8 +558,6 @@ ride_sync = "Fahrten-Sync"
 show_code = "Code zeigen"
 paired_title = "GEKOPPELT"
 phone_paired = "Handy gekoppelt"
-app_goes_on = "In der App am Handy weiter"
-obc_goes_on = "Hier am OBC weiter"
 all_set = "ALLES BEREIT"
 no_phone = "Kein Handy"
 sensor = "Sensor"
@@ -567,6 +565,8 @@ sensors = "Sensoren"
 no_sensors = "Keine Sensoren"
 zones_set = "Zonen gesetzt"
 no_zones = "Keine Zonen"
+add_later = "Später: Einstellungen"
+lets_ride = "Los geht's"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

@@ -557,8 +557,6 @@ ride_sync = "Sync de salidas"
 show_code = "Ver el código"
 paired_title = "VINCULADO"
 phone_paired = "Móvil vinculado"
-app_goes_on = "Sigue en la app del móvil"
-obc_goes_on = "Sigue aquí en el OBC"
 all_set = "TODO LISTO"
 no_phone = "Sin móvil"
 sensor = "sensor"
@@ -566,6 +564,8 @@ sensors = "sensores"
 no_sensors = "Sin sensores"
 zones_set = "Zonas fijadas"
 no_zones = "Sin zonas"
+add_later = "Luego en Ajustes"
+lets_ride = "¡A rodar!"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

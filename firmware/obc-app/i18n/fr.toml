@@ -557,8 +557,6 @@ ride_sync = "Synchro sorties"
 show_code = "Voir le code"
 paired_title = "APPAIRÉ"
 phone_paired = "Tél. appairé"
-app_goes_on = "Suite dans l'appli du tél."
-obc_goes_on = "Suite ici, sur l'OBC"
 all_set = "TOUT EST PRÊT"
 no_phone = "Pas de téléphone"
 sensor = "capteur"
@@ -566,6 +564,8 @@ sensors = "capteurs"
 no_sensors = "Aucun capteur"
 zones_set = "Zones définies"
 no_zones = "Pas de zones"
+add_later = "Plus tard : Réglages"
+lets_ride = "C'est parti"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]

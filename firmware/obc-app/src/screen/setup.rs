@@ -29,8 +29,7 @@ use super::home::contours;
 use super::pair_code::code_page;
 use super::settings::{kind_msg, status_line, wake_msg, LanguageScreen, SensorScanScreen};
 use super::vocab::chrome::{
-    card_check, copy_w, row_check, title_frame, wrapped, wrapped_aligned, wrapped_line_pitch, LIST_TOP, ROW_CHECK_HALF,
-    TITLE_BAR_H,
+    card_check, copy_w, row_check, title_frame, wrapped, wrapped_line_pitch, LIST_TOP, ROW_CHECK_HALF, TITLE_BAR_H,
 };
 use super::vocab::flags::{FLAG_H, FLAG_W};
 use super::vocab::list::on_step;
@@ -526,8 +525,8 @@ impl SetupNoAppScreen {
     }
 }
 
-/// The page a bond opens over the pairing step: the phone is paired, the app goes on on the phone,
-/// and setup goes on here. The bond has already saved the next step, so a power loss resumes there.
+/// The page a bond opens over the pairing step: a check over "Phone paired", centred between the
+/// title bar and the hint. The bond has already saved the next step, so a power loss resumes there.
 /// Select goes on, and Back walks to the step before the pairing step, as on the skip-app page.
 #[derive(Debug)]
 pub struct SetupPairedScreen;
@@ -545,20 +544,9 @@ impl SetupPairedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_bar(cv, w, h, SetupStep::Qr, rx.t(Msg::SetupPairedTitle));
-        card_check(cv, Point::new(w / 2, TITLE_BAR_H + 46), 20);
-        let mut y = TITLE_BAR_H + 78;
-        cv.text(rx.t(Msg::SetupPhonePaired), Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
-        y += Font::Body.line_height() as i32 + 20;
-        let (x, text_w) = (ROW_X + 24, w - 2 * ROW_X - 24);
-        for (i, line) in [Msg::SetupAppGoesOn, Msg::SetupObcGoesOn].into_iter().enumerate() {
-            let cy = y + Font::Label.cap_mid() as i32;
-            if i == 0 {
-                phone(cv, ROW_X + 8, cy);
-            } else {
-                obc(cv, ROW_X + 8, cy);
-            }
-            y = wrapped_aligned(cv, rx.t(line), x, y, text_w, Font::Label, TextAlign::Left, INK) + 14;
-        }
+        let mid = (TITLE_BAR_H + h - 8 - HINT_H) / 2;
+        card_check(cv, Point::new(w / 2, mid - 24), 24);
+        cv.text(rx.t(Msg::SetupPhonePaired), Point::new(w / 2, mid + 14), Font::Body, TextAlign::Center, INK);
         hint(cv, w, h, false, rx.t(Msg::SetupContinue), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
 }
@@ -570,17 +558,6 @@ fn phone(cv: &mut impl Surface, cx: i32, cy: i32) {
     cv.round_outline(rect(cx - 5, cy - 8, 10, 17), 3, INK);
     cv.round_outline(rect(cx - 4, cy - 7, 8, 15), 2, INK);
     cv.hline(cx - 1, cy + 4, 2, INK);
-}
-
-/// The OBC centred on `(cx, cy)`, beside [`phone`] and as tall: a wider body round a filled screen,
-/// with a button on each flank.
-fn obc(cv: &mut impl Surface, cx: i32, cy: i32) {
-    use palette::*;
-    cv.round_outline(rect(cx - 6, cy - 8, 12, 17), 3, INK);
-    cv.round_outline(rect(cx - 5, cy - 7, 10, 15), 2, INK);
-    cv.fill(rect(cx - 3, cy - 5, 6, 8), AMBER);
-    cv.fill(rect(cx - 8, cy - 2, 2, 5), INK);
-    cv.fill(rect(cx + 6, cy - 2, 2, 5), INK);
 }
 
 /// A theme's page in the flag slot: its paper, its ink round the edge, and two lines of text. The
@@ -662,13 +639,13 @@ impl SetupEffortScreen {
 }
 
 /// The last step: a check over one line each for the phone, the sensors and the zones, so the rider
-/// sees what setup holds and what it skipped. Select ends setup and opens Home, and Back returns to
-/// the effort step.
+/// sees what setup holds and what it skipped. A skipped part adds a line that points to Settings.
+/// Select ends setup and opens Home, and Back returns to the effort step.
 #[derive(Debug)]
 pub struct SetupAllSetScreen;
 
 /// The top of the first summary line and the pitch of the lines.
-const SUMMARY: (i32, i32) = (TITLE_BAR_H + 102, 32);
+const SUMMARY: (i32, i32) = (TITLE_BAR_H + 96, 32);
 
 impl SetupAllSetScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -701,7 +678,11 @@ impl SetupAllSetScreen {
             };
             cv.text(text, Point::new(left + MARK_W, y), font, TextAlign::Left, ink);
         }
-        hint(cv, w, h, false, rx.t(Msg::SetupContinue), Some(Key::Ok(rx.t(Msg::SetupOk))));
+        if skipped(&lines) {
+            let y = SUMMARY.0 + 3 * SUMMARY.1 + 10;
+            cv.text(rx.t(Msg::SetupAddLater), Point::new(w / 2, y), Font::Caption, TextAlign::Center, SUBTEXT);
+        }
+        hint(cv, w, h, false, rx.t(Msg::SetupLetsRide), Some(Key::Ok(rx.t(Msg::SetupOk))));
     }
 }
 
@@ -722,6 +703,11 @@ fn summary(s: &Settings, paired: bool) -> [(bool, heapless::String<24>); 3] {
         (sensors > 0, if sensors > 0 { counted } else { line(Msg::SetupNoSensors) }),
         (zones, line(if zones { Msg::SetupZonesSet } else { Msg::SetupNoZones })),
     ]
+}
+
+/// Whether the rider skipped a part of setup, so the All set page points to Settings.
+fn skipped(lines: &[(bool, heapless::String<24>)]) -> bool {
+    lines.iter().any(|(done, _)| !done)
 }
 
 /// A step's last row at `y`: Skip, or Continue once the step holds a `chosen` value. It acts, so it
@@ -862,20 +848,24 @@ mod tests {
         assert_eq!(SetupSensorsScreen::new(&s).selected, SKIP);
     }
 
-    /// The summary reads the bond, the saved sensors and either effort limit.
+    /// The summary reads the bond, the saved sensors and either effort limit, and a skipped part
+    /// points to Settings.
     #[test]
     fn the_all_set_summary_reads_what_setup_holds() {
         use crate::settings::SavedSensor;
         let mut s = Settings::default();
         let lines = summary(&s, false);
-        let skipped = [(false, "No phone"), (false, "No sensors"), (false, "No zones")];
-        assert_eq!(lines.each_ref().map(|(done, text)| (*done, text.as_str())), skipped);
+        let none = [(false, "No phone"), (false, "No sensors"), (false, "No zones")];
+        assert_eq!(lines.each_ref().map(|(done, text)| (*done, text.as_str())), none);
+        assert!(skipped(&lines));
 
         s.saved_sensors[2] = SavedSensor::saved(0, [1, 2, 3, 4, 5, 6]);
         s.ftp_w = 250;
         let lines = summary(&s, true);
         let set = [(true, "Phone paired"), (true, "1 sensor"), (true, "Zones set")];
         assert_eq!(lines.each_ref().map(|(done, text)| (*done, text.as_str())), set);
+        assert!(!skipped(&lines), "nothing to add later");
+        assert!(skipped(&summary(&s, false)), "the phone alone is skipped");
         s.saved_sensors[0] = SavedSensor::saved(1, [6, 5, 4, 3, 2, 1]);
         assert_eq!(summary(&s, true)[1].1, "2 sensors");
     }
