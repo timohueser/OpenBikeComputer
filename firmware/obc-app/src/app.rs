@@ -124,6 +124,10 @@ pub struct AppState {
     /// Whether this platform can make a sound, declared once by the host at composition through
     /// [`App::set_sound_available`]. `false` hides the Sound settings page and plays no cue.
     pub sound_available: bool,
+    /// Whether this platform bonds a phone: [`PlatformSupport::bonding`](crate::device_core::PlatformSupport),
+    /// fed before the input of every pass. It reads `true` until the first pass. `false` hides the
+    /// pairing code in setup and in Connections.
+    pub bonding: bool,
 
     /// The Up-ahead timeline's category filter. It resets to Everything on each entry to the
     /// list. It lives here, not on the list screen, because the sheet that edits it sits above
@@ -155,6 +159,7 @@ impl AppState {
             bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
             sound_available: false,
+            bonding: true,
 
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
@@ -1890,7 +1895,7 @@ impl App {
             return;
         };
         if matches!(self.ui.stack[i], Screen::SetupQr(_)) {
-            self.settings.setup = screen::setup::after(crate::settings::SetupStep::Qr, true);
+            self.settings.setup = screen::setup::after(crate::settings::SetupStep::Qr, &self.state);
             self.settings_ops.note_edited();
             screen::apply(&mut self.ui.stack, screen::Transition::Root(Screen::SetupPaired(screen::SetupPairedScreen)));
         } else {

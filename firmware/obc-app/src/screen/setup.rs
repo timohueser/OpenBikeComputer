@@ -22,7 +22,7 @@ use crate::effort::Metric;
 use crate::i18n::t;
 use crate::input::Gesture;
 use crate::settings::{Language, Settings, SetupStep, Theme, Units, SENSOR_SLOTS};
-use crate::Msg;
+use crate::{AppState, Msg};
 
 use super::context_drawer::{ContextDrawerScreen, ContextValue};
 use super::home::contours;
@@ -60,36 +60,36 @@ pub(crate) fn go_to(s: &Settings) -> Transition {
     screen(s).map_or(Transition::Home, Transition::Root)
 }
 
-/// Whether `step` shows. The pairing step shows its code only while the bond slot is empty (BLE
-/// spec §9.3), so a bonded device passes it by.
-fn shows(step: SetupStep, paired: bool) -> bool {
-    step != SetupStep::Qr || !paired
+/// Whether `step` shows. The pairing step shows only on a platform that bonds, and only while the
+/// bond slot is empty (BLE spec §9.3), so a bonded device passes it by.
+fn shows(step: SetupStep, state: &AppState) -> bool {
+    step != SetupStep::Qr || (state.bonding && !state.device.ble_paired)
 }
 
 /// The first step that shows as `walk` leaves `step`.
-fn walk_to_shown(step: SetupStep, paired: bool, walk: fn(SetupStep) -> SetupStep) -> SetupStep {
+fn walk_to_shown(step: SetupStep, state: &AppState, walk: fn(SetupStep) -> SetupStep) -> SetupStep {
     let mut to = walk(step);
-    while !shows(to, paired) {
+    while !shows(to, state) {
         to = walk(to);
     }
     to
 }
 
 /// The first step after `step` that shows.
-pub(crate) fn after(step: SetupStep, paired: bool) -> SetupStep {
-    walk_to_shown(step, paired, SetupStep::next)
+pub(crate) fn after(step: SetupStep, state: &AppState) -> SetupStep {
+    walk_to_shown(step, state, SetupStep::next)
 }
 
 /// End setup step `step`: persist the next step that shows and go to it.
 fn finish(step: SetupStep, cx: &mut Ctx) -> Transition {
-    cx.settings.setup = after(step, cx.state.device.ble_paired);
+    cx.settings.setup = after(step, cx.state);
     go_to(cx.settings)
 }
 
 /// Leave setup step `step` for the one before it that shows. The persisted step follows, so a
 /// power loss resumes on the step the rider sees.
 fn back(step: SetupStep, cx: &mut Ctx) -> Transition {
-    cx.settings.setup = walk_to_shown(step, cx.state.device.ble_paired, SetupStep::prev);
+    cx.settings.setup = walk_to_shown(step, cx.state, SetupStep::prev);
     go_to(cx.settings)
 }
 

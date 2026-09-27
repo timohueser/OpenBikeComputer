@@ -185,14 +185,16 @@ pub(crate) static FIRMWARE: Menu = Menu {
 
 impl Item {
     /// Whether the row is on the page at all. The phone's Forget row is drawn only while there is a
-    /// bond to drop, the pairing code's door only while the radio is on and no phone is paired, the
-    /// Sound door only on a platform that can make a sound, and the Reset door only while no ride
-    /// records, because the setup it opens has no way to the ride.
+    /// bond to drop, the pairing code's door only on a platform that bonds while the radio is on and
+    /// no phone is paired, the Sound door only on a platform that can make a sound, and the Reset
+    /// door only while no ride records, because the setup it opens has no way to the ride.
     fn shown(self, f: &ContextFacts) -> bool {
         let state = f.state;
         match self {
             Item::Act(Act::ForgetPhone) => state.bond_status.can_forget(state.device.ble_paired),
-            Item::Door(Door::PairPhone) => state.device.ble_link != BleLink::Off && !state.device.ble_paired,
+            Item::Door(Door::PairPhone) => {
+                state.bonding && state.device.ble_link != BleLink::Off && !state.device.ble_paired
+            }
             Item::Door(Door::Sound) => state.sound_available,
             Item::Door(Door::Reset) => !f.recording,
             _ => true,
@@ -594,6 +596,11 @@ mod tests {
         run(&mut conn, &mut st, &mut s, Gesture::Step(-1));
         assert_eq!(conn.selected, 1, "with the radio off, no code is offered");
         st.device.ble_link = BleLink::Advertising;
+        st.bonding = false;
+        run(&mut conn, &mut st, &mut s, Gesture::Step(1));
+        assert_eq!(conn.selected, 0, "a platform that does not bond offers no code");
+        run(&mut conn, &mut st, &mut s, Gesture::Step(-1));
+        st.bonding = true;
 
         st.device.ble_paired = true;
         run(&mut conn, &mut st, &mut s, Gesture::Step(1));

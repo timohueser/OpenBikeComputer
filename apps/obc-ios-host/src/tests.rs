@@ -152,6 +152,26 @@ fn a_select_tap_presses_and_a_held_select_holds() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// The phone does not bond, so setup passes the pairing step by: Select on the theme step opens
+/// the sensors step.
+#[test]
+fn setup_on_the_phone_passes_the_pairing_step_by() {
+    use obc_app::settings::SetupStep;
+    let (card, directory) = card("setup");
+    let settings = Settings { setup: SetupStep::Theme, ..Settings::FACTORY };
+    FileSettingsStore::open(directory.join("settings")).save(&settings).expect("the settings file is written");
+    let mut host = open(&card, &directory);
+    host.tick(0.0);
+    assert_eq!(host.screen(), "SetupTheme");
+    host.push_button(Button::Select, true);
+    host.tick(16.0);
+    host.push_button(Button::Select, false);
+    host.tick(100.0);
+    assert_eq!(host.screen(), "SetupSensors");
+    drop(host);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// A GPX route converts through the one shared conversion, attributed against the card's map.
 #[test]
 fn a_gpx_route_imports_as_the_shared_conversion_attributed_to_the_card_map() {

@@ -35,6 +35,9 @@ use std::path::Path;
 pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
 pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 
+/// The phone's stand-in for the board's factory name, which the board derives from its device id.
+const FACTORY_NAME: &str = "OBC-IOS";
+
 /// What the phone honestly is. It has a card and a settings file, so detours and persisted
 /// settings are real. It is not a BLE peripheral, carries no staged firmware and reports no free
 /// space, so the screens behind those hide rather than offer a control that answers nothing.
@@ -181,6 +184,7 @@ impl Host {
         // The phone runs the settings a rider runs: whatever was saved, or a factory-fresh device.
         app.set_settings(boot_settings);
         app.set_sound_available(true);
+        app.set_factory_name(FACTORY_NAME);
         tracks.offer_recovery(&mut app);
 
         Ok(Box::new(Host {

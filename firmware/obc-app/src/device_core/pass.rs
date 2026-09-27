@@ -226,6 +226,7 @@ impl App {
 
         self.stage_outcomes(outcomes, now.ui.0);
         self.stage_facts(facts, derived, targets);
+        self.state.bonding = support.bonding;
         self.stage_input(now, gestures, sensors, route);
         self.stage_ui(now);
 
