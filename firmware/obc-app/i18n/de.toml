@@ -556,6 +556,10 @@ needs_app = "Braucht die App"
 recording = "Aufzeichnung"
 ride_sync = "Fahrten-Sync"
 show_code = "Code zeigen"
+paired_title = "GEKOPPELT"
+phone_paired = "Handy gekoppelt"
+app_goes_on = "In der App am Handy weiter"
+obc_goes_on = "Hier am OBC weiter"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

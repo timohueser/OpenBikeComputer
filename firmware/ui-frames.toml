@@ -1957,6 +1957,22 @@ expect = "SetupNoApp"
 args = ["--fresh"]
 langs = ["de", "fr", "es"]
 
+# A phone bonds on the pairing step: the page that confirms it, before the sensors step.
+[[frame]]
+name = "setup-paired"
+map = "{grimsel}"
+script = "p p u d b p p p p P"
+expect = "SetupPaired"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-paired"
+map = "{grimsel}"
+script = "p p u d b p p p p P"
+expect = "SetupPaired"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
 # Setup's sensors step with no sensor saved: each slot says how to wake its sensor, over Skip.
 [[frame]]
 name = "setup-sensors"

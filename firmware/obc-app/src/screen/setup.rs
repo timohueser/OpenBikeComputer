@@ -28,7 +28,9 @@ use super::context_drawer::{ContextDrawerScreen, ContextValue};
 use super::home::contours;
 use super::pair_code::code_page;
 use super::settings::{kind_msg, status_line, wake_msg, LanguageScreen, SensorScanScreen};
-use super::vocab::chrome::{copy_w, row_check, title_frame, wrapped, wrapped_line_pitch, LIST_TOP};
+use super::vocab::chrome::{
+    card_check, copy_w, row_check, title_frame, wrapped, wrapped_aligned, wrapped_line_pitch, LIST_TOP, TITLE_BAR_H,
+};
 use super::vocab::flags::{FLAG_H, FLAG_W};
 use super::vocab::list::on_step;
 use super::vocab::rows::{
@@ -514,13 +516,61 @@ impl SetupNoAppScreen {
     }
 }
 
-/// A phone centred on `(cx, cy)`, the height of a Label capital: what needs the app. The outline
+/// The page a bond opens over the pairing step: the phone is paired, the app goes on on the phone,
+/// and setup goes on here. The bond has already saved the next step, so a power loss resumes there.
+/// Select goes on, and Back walks to the step before the pairing step, as on the skip-app page.
+#[derive(Debug)]
+pub struct SetupPairedScreen;
+
+impl SetupPairedScreen {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Press => go_to(cx.settings),
+            Gesture::Back => back(SetupStep::Qr, cx),
+            _ => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        title_bar(cv, w, h, SetupStep::Qr, rx.t(Msg::SetupPairedTitle));
+        card_check(cv, Point::new(w / 2, TITLE_BAR_H + 46), 20);
+        let mut y = TITLE_BAR_H + 78;
+        cv.text(rx.t(Msg::SetupPhonePaired), Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
+        y += Font::Body.line_height() as i32 + 20;
+        let (x, text_w) = (ROW_X + 24, w - 2 * ROW_X - 24);
+        for (i, line) in [Msg::SetupAppGoesOn, Msg::SetupObcGoesOn].into_iter().enumerate() {
+            let cy = y + Font::Label.cap_mid() as i32;
+            if i == 0 {
+                phone(cv, ROW_X + 8, cy);
+            } else {
+                obc(cv, ROW_X + 8, cy);
+            }
+            y = wrapped_aligned(cv, rx.t(line), x, y, text_w, Font::Label, TextAlign::Left, INK) + 14;
+        }
+        hint(cv, w, h, false, rx.t(Msg::SetupContinue), Some(Key::Ok(rx.t(Msg::SetupOk))));
+    }
+}
+
+/// A phone centred on `(cx, cy)`, the height of a Label capital: the app. The outline
 /// is doubled for a 2 px stroke, as the passkey card's phone is.
 fn phone(cv: &mut impl Surface, cx: i32, cy: i32) {
     use palette::*;
     cv.round_outline(rect(cx - 5, cy - 8, 10, 17), 3, INK);
     cv.round_outline(rect(cx - 4, cy - 7, 8, 15), 2, INK);
     cv.hline(cx - 1, cy + 4, 2, INK);
+}
+
+/// The OBC centred on `(cx, cy)`, beside [`phone`] and as tall: a wider body round a filled screen,
+/// with a button on each flank.
+fn obc(cv: &mut impl Surface, cx: i32, cy: i32) {
+    use palette::*;
+    cv.round_outline(rect(cx - 6, cy - 8, 12, 17), 3, INK);
+    cv.round_outline(rect(cx - 5, cy - 7, 10, 15), 2, INK);
+    cv.fill(rect(cx - 3, cy - 5, 6, 8), AMBER);
+    cv.fill(rect(cx - 8, cy - 2, 2, 5), INK);
+    cv.fill(rect(cx + 6, cy - 2, 2, 5), INK);
 }
 
 /// A theme's page in the flag slot: its paper, its ink round the edge, and two lines of text. The

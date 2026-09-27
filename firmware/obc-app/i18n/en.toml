@@ -595,6 +595,11 @@ needs_app = "Needs the app"
 recording = "Ride recording"
 ride_sync = "Ride sync"
 show_code = "Show the code"
+# The page a bond opens on the pairing step: what goes on where.
+paired_title = "PAIRED"
+phone_paired = "Phone paired"
+app_goes_on = "Your phone goes on in the app"
+obc_goes_on = "This OBC goes on here"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]

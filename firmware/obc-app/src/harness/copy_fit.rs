@@ -122,6 +122,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::SetupTheme(SetupThemeScreen(crate::settings::Theme::Light)),
         Screen::SetupQr(SetupQrScreen),
         Screen::SetupNoApp(SetupNoAppScreen::default()),
+        Screen::SetupPaired(SetupPairedScreen),
         Screen::PairPhone(PairPhoneScreen),
         Screen::SetupSensors(SetupSensorsScreen::default()),
         Screen::SetupSensorScan(SetupSensorScanScreen::new(1)),

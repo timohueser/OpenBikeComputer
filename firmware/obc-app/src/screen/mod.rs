@@ -120,8 +120,8 @@ pub use settings::{
     StatFieldsScreen,
 };
 pub use setup::{
-    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupNoAppScreen, SetupQrScreen,
-    SetupSensorScanScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
+    HelloScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupNoAppScreen, SetupPairedScreen,
+    SetupQrScreen, SetupSensorScanScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
 };
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
@@ -930,6 +930,9 @@ screens! {
     SetupQr(SetupQrScreen) => Caps::modal().blocking(),
     /// Ride without the app: a row back to the code and Skip, which ends the pairing step.
     SetupNoApp(SetupNoAppScreen) => Caps::modal().blocking(),
+    /// The page a bond opens on the pairing step: the phone is paired, and each side goes on with
+    /// its own steps. Select opens the next step.
+    SetupPaired(SetupPairedScreen) => Caps::modal().blocking(),
     /// Setup's sensors step: the three sensor slots with their live status, then Skip or Continue.
     SetupSensors(SetupSensorsScreen) => Caps::modal().blocking().key(RenderKeyKind::SensorSettings),
     /// The Settings scan list for one slot in the setup chrome, opened from the sensors step. It

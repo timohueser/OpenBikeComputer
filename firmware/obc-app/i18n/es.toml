@@ -555,6 +555,10 @@ needs_app = "Necesita la app"
 recording = "Grabación"
 ride_sync = "Sync de salidas"
 show_code = "Ver el código"
+paired_title = "VINCULADO"
+phone_paired = "Móvil vinculado"
+app_goes_on = "Sigue en la app del móvil"
+obc_goes_on = "Sigue aquí en el OBC"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

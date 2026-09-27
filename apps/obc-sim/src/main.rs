@@ -997,6 +997,12 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                 now += 5 * 60_000 + 1_000;
                 feed(app, now, vec![]);
             }
+            // A phone bonds: the link is up and the passkey clears, as the board reports a bond.
+            'P' => app.set_ble_status(obc_app::BleStatus {
+                link: obc_app::BleLink::Connected,
+                passkey: None,
+                paired: true,
+            }),
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
         hook(app, ScriptHook::After(ch), now);
@@ -1050,7 +1056,7 @@ Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer tap, A held Up+Select (Assistant), C context-drawer squeeze,
-                           w wait, f frame, T tick, I idle)
+                           w wait, f frame, T tick, I idle, P a phone bonds)
   --trip-progress D:M:L   The first trip's progress: day D (from 0), M metres into it, and the
                           last finished day L (or -)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)

@@ -1883,7 +1883,8 @@ impl App {
     }
 
     /// Close the pairing code, which shows only while the bond slot is empty (BLE spec §9.3). In
-    /// setup a bond ends the pairing step; the page Connections opened returns there.
+    /// setup a bond ends the pairing step and opens the page that confirms it; the page Connections
+    /// opened returns there, where the phone row shows the bond.
     fn close_pairing_code(&mut self) {
         let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::SetupQr(_) | Screen::PairPhone(_))) else {
             return;
@@ -1891,7 +1892,7 @@ impl App {
         if matches!(self.ui.stack[i], Screen::SetupQr(_)) {
             self.settings.setup = screen::setup::after(crate::settings::SetupStep::Qr, true);
             self.settings_ops.note_edited();
-            screen::apply(&mut self.ui.stack, screen::setup::go_to(&self.settings));
+            screen::apply(&mut self.ui.stack, screen::Transition::Root(Screen::SetupPaired(screen::SetupPairedScreen)));
         } else {
             self.ui.stack.truncate(i);
         }
@@ -6277,22 +6278,33 @@ mod tests {
         assert_eq!(app.settings().setup, SetupStep::Sensors);
     }
 
-    /// A bond ends the pairing step, under the passkey card too, and the step is saved. A bonded
-    /// device passes the step by in both directions, because it shows no code (BLE spec §9.3).
+    /// A rejected pairing closes the passkey card onto the code. A bond ends the pairing step,
+    /// under the passkey card too: the step after it is saved at once, and the page that confirms
+    /// the bond opens. Its Select opens that step, and its Back the step before the pairing step,
+    /// which a bonded device passes by in both directions (BLE spec §9.3).
     #[test]
-    fn a_bond_ends_the_pairing_step_and_a_bonded_device_passes_it_by() {
+    fn a_bond_confirms_the_pairing_step_and_a_bonded_device_passes_it_by() {
         use crate::ble::{BleLink, BleStatus};
         use crate::settings::SetupStep;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
         let mut host = SettingsHost::default();
+        let pairing = BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: false };
 
-        app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: false });
+        app.set_ble_status(pairing);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_), Screen::Passkey(_)]));
+        app.set_ble_status(BleStatus { passkey: None, ..pairing });
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]), "a rejection");
+
+        app.set_ble_status(pairing);
         app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
-        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupPaired(_)]));
         assert_eq!(app.settings().setup, SetupStep::Sensors);
         assert!(host.drain(&mut app).is_some(), "the step is saved");
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupPaired(_)]), "no escape");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
 
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
@@ -6300,8 +6312,8 @@ mod tests {
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
     }
 
-    /// Connections offers the pairing code while no phone is paired. Back returns to the page, and
-    /// so does a bond.
+    /// Connections offers the pairing code while no phone is paired. Back returns to the page, a
+    /// rejected pairing to the code, and a bond to the page, where the phone row shows it.
     #[test]
     fn connections_opens_the_pairing_code_until_a_phone_pairs() {
         use crate::ble::{BleLink, BleStatus};
@@ -6318,6 +6330,10 @@ mod tests {
         assert!(matches!(app.ui.stack.last(), Some(Screen::Connections(_))));
 
         app.apply_gesture(Gesture::Press);
+        let pairing = BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: false };
+        app.set_ble_status(pairing);
+        app.set_ble_status(BleStatus { passkey: None, ..pairing });
+        assert!(matches!(app.ui.stack.last(), Some(Screen::PairPhone(_))), "a rejection returns to the code");
         app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
         assert!(matches!(app.ui.stack.last(), Some(Screen::Connections(_))), "a bond closes the code");
     }
