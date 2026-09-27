@@ -1174,7 +1174,9 @@ impl Screen {
             Screen::Arrival(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
-            Screen::Connections(s) => s.selection_is_guarded(state),
+            Screen::Connections(s) => {
+                s.selection_is_guarded(&context_drawer::ContextFacts { state, navigation, settings, recording })
+            }
             Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, routes),

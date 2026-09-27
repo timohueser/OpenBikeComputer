@@ -18,7 +18,7 @@ use crate::screen::vocab::list::{list_frame, scrollbar};
 use crate::screen::vocab::rows::{self, Line2, RowIcon, ROW_GAP};
 use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::sensors::SensorPhase;
-use crate::{t, AppState, Msg};
+use crate::{t, Msg};
 
 /// A page the hub or another page opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,13 +185,16 @@ pub(crate) static FIRMWARE: Menu = Menu {
 
 impl Item {
     /// Whether the row is on the page at all. The phone's Forget row is drawn only while there is a
-    /// bond to drop, the pairing code's door only while the radio is on and no phone is paired, and
-    /// the Sound door only on a platform that can make a sound.
-    fn shown(self, state: &AppState) -> bool {
+    /// bond to drop, the pairing code's door only while the radio is on and no phone is paired, the
+    /// Sound door only on a platform that can make a sound, and the Reset door only while no ride
+    /// records, because the setup it opens has no way to the ride.
+    fn shown(self, f: &ContextFacts) -> bool {
+        let state = f.state;
         match self {
             Item::Act(Act::ForgetPhone) => state.bond_status.can_forget(state.device.ble_paired),
             Item::Door(Door::PairPhone) => state.device.ble_link != BleLink::Off && !state.device.ble_paired,
             Item::Door(Door::Sound) => state.sound_available,
+            Item::Door(Door::Reset) => !f.recording,
             _ => true,
         }
     }
@@ -249,24 +252,24 @@ impl SettingsPage {
 
     /// The cursor, on a row that is shown and selectable. Walks forward, then wraps, so a hidden
     /// row under the cursor yields to the next one.
-    fn resolved(&self, state: &AppState) -> usize {
+    fn resolved(&self, f: &ContextFacts) -> usize {
         let rows = self.menu.rows;
-        let ok = |i: usize| rows[i].item.shown(state) && rows[i].item.selectable();
+        let ok = |i: usize| rows[i].item.shown(f) && rows[i].item.selectable();
         (0..rows.len()).map(|k| (self.selected + k) % rows.len()).find(|&i| ok(i)).unwrap_or(self.selected)
     }
 
     /// Move the cursor `n` selectable shown rows, wrapping at both ends.
-    fn step(&mut self, n: i32, state: &AppState) {
+    fn step(&mut self, n: i32, f: &ContextFacts) {
         let rows = self.menu.rows;
         let len = rows.len() as i32;
         let dir = n.signum();
-        let mut i = self.resolved(state) as i32;
+        let mut i = self.resolved(f) as i32;
         for _ in 0..n.unsigned_abs() {
             // Step at least one row, then on to the next selectable shown row, at most one lap.
             for _ in 0..len {
                 i = (i + dir).rem_euclid(len);
                 let item = rows[i as usize].item;
-                if item.selectable() && item.shown(state) {
+                if item.selectable() && item.shown(f) {
                     break;
                 }
             }
@@ -275,17 +278,17 @@ impl SettingsPage {
     }
 
     /// True while the cursor is on a guarded act, so its hold fill draws.
-    pub(crate) fn selection_is_guarded(&self, state: &AppState) -> bool {
-        matches!(self.menu.rows[self.resolved(state)].item, Item::Act(Act::ForgetPhone))
+    pub(crate) fn selection_is_guarded(&self, f: &ContextFacts) -> bool {
+        matches!(self.menu.rows[self.resolved(f)].item, Item::Act(Act::ForgetPhone))
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let i = self.resolved(cx.state);
-        let row = &self.menu.rows[i];
-        let live = row.item.live(&cx.context_facts());
+        let facts = cx.context_facts();
+        let row = &self.menu.rows[self.resolved(&facts)];
+        let live = row.item.live(&facts);
         match g {
             Gesture::Step(n) => {
-                self.step(n, cx.state);
+                self.step(n, &facts);
                 Transition::None
             }
             Gesture::Press => match row.item {
@@ -318,9 +321,9 @@ impl SettingsPage {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         let facts = rx.context_facts();
-        let selected = self.resolved(rx.state);
+        let selected = self.resolved(&facts);
         let shown: heapless::Vec<usize, 8> =
-            (0..self.menu.rows.len()).filter(|&i| self.menu.rows[i].item.shown(rx.state)).collect();
+            (0..self.menu.rows.len()).filter(|&i| self.menu.rows[i].item.shown(&facts)).collect();
         let heights: heapless::Vec<i32, 8> = shown.iter().map(|&i| self.menu.rows[i].item.height()).collect();
         let avail = h - LIST_TOP - 6;
         let sel_pos = shown.iter().position(|&i| i == selected).unwrap_or(0);
@@ -497,6 +500,29 @@ mod tests {
         (AppState::new(0, 0, 1.0), Settings::default())
     }
 
+    fn facts<'a>(state: &'a AppState, settings: &'a Settings) -> ContextFacts<'a> {
+        const IDLE: crate::navigator::RouteState = crate::navigator::RouteState::new();
+        ContextFacts { state, navigation: &IDLE, settings, recording: false }
+    }
+
+    /// The Reset door hides while a ride records, because the setup it opens has no way back to
+    /// the ride. The cursor wraps from the first row onto the last one shown.
+    #[test]
+    fn the_reset_door_hides_while_a_ride_records() {
+        let (mut st, mut s) = world();
+        let mut act = Activity::new(Mode::Idle);
+        let mut recorder = crate::RecorderMachine::new();
+        let mut cx = Ctx { recorder: &mut recorder, ..test_ctx(&mut st, &mut act, &mut s) };
+        let last = |cx: &mut Ctx| {
+            let mut system = SettingsPage::new(&SYSTEM);
+            system.handle(Gesture::Step(-1), cx);
+            system.handle(Gesture::Press, cx)
+        };
+        assert!(matches!(last(&mut cx), Transition::Push(Screen::Reset(_))));
+        cx.recorder.test_open();
+        assert!(matches!(last(&mut cx), Transition::Push(Screen::About(_))));
+    }
+
     #[test]
     fn every_hub_door_opens_its_page_and_the_tables_fit_a_page() {
         let (mut st, mut s) = world();
@@ -572,15 +598,15 @@ mod tests {
         st.device.ble_paired = true;
         run(&mut conn, &mut st, &mut s, Gesture::Step(1));
         assert_eq!(conn.selected, 4, "paired: the Forget row replaces the pairing code's");
-        assert!(conn.selection_is_guarded(&st));
+        assert!(conn.selection_is_guarded(&facts(&st, &s)));
         run(&mut conn, &mut st, &mut s, Gesture::Press);
         assert!(!st.ble_forget_requested, "a plain press never forgets");
         run(&mut conn, &mut st, &mut s, Gesture::Hold);
         assert!(st.ble_forget_requested, "the completed hold records the forget request");
 
         st.device.ble_paired = false;
-        assert_eq!(conn.resolved(&st), 0, "the row under the cursor vanished: it moves on");
-        assert!(!conn.selection_is_guarded(&st));
+        assert_eq!(conn.resolved(&facts(&st, &s)), 0, "the row under the cursor vanished: it moves on");
+        assert!(!conn.selection_is_guarded(&facts(&st, &s)));
 
         let mut dt = SettingsPage::new(&DATETIME);
         assert_eq!(dt.selected, 2, "Date & time parks on its one editable row");
