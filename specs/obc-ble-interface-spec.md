@@ -415,8 +415,8 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   device refuses every new pairing attempt** — from a stranger and from a peer claiming the bonded
   identity alike. A stored bond can only be cleared by the rider: the hold-guarded **Forget phone**
   action in Settings ▸ Connections zeroes the bond slot, removes the peer from the host's bond table
-  and resolving list, and drops the connection if that peer is connected. After Forget, the next
-  pairing is open again. Physical possession guards the *clear* step, so a stranger who can see the
+  and resolving list, and drops the connection if that peer is connected. A factory reset runs the
+  same clear. After the clear, the next pairing is open again. Physical possession guards the *clear* step, so a stranger who can see the
   screen cannot silently evict the rider's phone by pairing.
 - **Reject mechanics.** The pairing link is not bondable while a bond is stored, and the device
   refuses the attempt at its first SMP surface: it suppresses the passkey display and drops the
@@ -424,7 +424,7 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   SMP Pairing Request before the application sees it, and iOS does not surface an SMP reason code to
   the app. The app infers "already bonded elsewhere" from context, not from a code. A phone that
   forgets the device **while offline** is rejected like any other until the rider runs Forget phone
-  on the device; a forget **while connected** uses `forgetBond` (§4.4) and needs no on-device step.
+  or a factory reset on the device; a forget **while connected** uses `forgetBond` (§4.4) and needs no on-device step.
 
 - **Reconnect policy**: the device keeps a **stable static random address** and does **not** enable
   device-side privacy. The phone stores that identity and reconnects on any advertising contact.
