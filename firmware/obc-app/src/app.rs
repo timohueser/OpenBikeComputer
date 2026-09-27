@@ -6341,7 +6341,7 @@ mod tests {
     /// The effort step edits each limit in the drawer editor over the page: the editor's Select
     /// commits and saves the value, and its Back discards. The sheet keeps setup's refusals of the
     /// chords, the escape and the idle return. Back on the page returns to the sensors step with the
-    /// committed limits kept, and the last row ends setup.
+    /// committed limits kept, and the last row opens the All set page.
     #[test]
     fn the_effort_step_edits_its_limits_in_the_drawer_editor() {
         use crate::input::Chord;
@@ -6380,9 +6380,38 @@ mod tests {
         for g in [Gesture::Step(-1), Gesture::Press, Gesture::Step(-1), Gesture::Press] {
             app.apply_gesture(g);
         }
-        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]), "the last row ends setup");
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupAllSet(_)]), "the last row");
         let s = app.settings();
-        assert_eq!((s.setup, s.max_hr, s.ftp_w), (SetupStep::Done, 181, 0));
+        assert_eq!((s.setup, s.max_hr, s.ftp_w), (SetupStep::AllSet, 181, 0));
+    }
+
+    /// The All set page is the last step and refuses the escape. Back returns to the effort step,
+    /// and Select saves setup as done and opens Home.
+    #[test]
+    fn the_all_set_page_ends_setup_on_home() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::AllSet, ..Settings::FACTORY });
+        let mut host = SettingsHost::default();
+        let all_set = |app: &App| matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupAllSet(_)]);
+
+        assert!(all_set(&app), "a power loss resumes on the page");
+        app.apply_gesture(Gesture::BackHold);
+        assert!(all_set(&app), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Effort);
+
+        for g in [Gesture::Step(-1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(all_set(&app), "Skip on the effort step");
+        let revision = host.drain(&mut app).expect("the step is saved");
+        host.ack(&mut app, revision);
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Done);
+        assert!(host.drain(&mut app).is_some(), "setup is saved as done");
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

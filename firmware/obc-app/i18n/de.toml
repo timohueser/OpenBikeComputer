@@ -560,6 +560,13 @@ paired_title = "GEKOPPELT"
 phone_paired = "Handy gekoppelt"
 app_goes_on = "In der App am Handy weiter"
 obc_goes_on = "Hier am OBC weiter"
+all_set = "ALLES BEREIT"
+no_phone = "Kein Handy"
+sensor = "Sensor"
+sensors = "Sensoren"
+no_sensors = "Keine Sensoren"
+zones_set = "Zonen gesetzt"
+no_zones = "Keine Zonen"
 
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]

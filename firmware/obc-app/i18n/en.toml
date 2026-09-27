@@ -600,6 +600,15 @@ paired_title = "PAIRED"
 phone_paired = "Phone paired"
 app_goes_on = "Your phone goes on in the app"
 obc_goes_on = "This OBC goes on here"
+# The closing page: its title, then a line each for the phone (`phone_paired` or `no_phone`), the
+# sensors and the zones. The count of saved sensors goes before `sensor` (one) or `sensors`.
+all_set = "ALL SET"
+no_phone = "No phone"
+sensor = "sensor"
+sensors = "sensors"
+no_sensors = "No sensors"
+zones_set = "Zones set"
+no_zones = "No zones"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]
