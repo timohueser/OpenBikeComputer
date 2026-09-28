@@ -1,0 +1,2962 @@
+{
+ "source": "@openstreetmap/id-tagging-schema 6.19.2 (ISC licence), filtered and extended by lexicon/kinds.yaml",
+ "terms": {
+  "en": {
+   "atm": [
+    "ATM",
+    "ATMs",
+    "cash machine",
+    "cash machines",
+    "cash point",
+    "cashpoint",
+    "cash",
+    "money",
+    "bank",
+    "banks"
+   ],
+   "bakery": [
+    "bakery",
+    "bakeries",
+    "baker",
+    "bakers",
+    "baker's",
+    "bread",
+    "pastry shop",
+    "pastry shops",
+    "patisserie",
+    "bread shop",
+    "bread shops",
+    "buy bread",
+    "get bread",
+    "bakeshop",
+    "cake shop"
+   ],
+   "bar": [
+    "bar",
+    "bars",
+    "pub",
+    "pubs",
+    "beer",
+    "a beer",
+    "beers",
+    "beer garden",
+    "beer gardens",
+    "brewery",
+    "breweries",
+    "wine bar",
+    "bier",
+    "Biergarten"
+   ],
+   "beach": [
+    "beach",
+    "beaches",
+    "seaside",
+    "Beach Resort"
+   ],
+   "bike": [
+    "bike help",
+    "bike service",
+    "bike services",
+    "bike stuff",
+    "bike repair",
+    "bike repairs",
+    "bicycle repair",
+    "repair",
+    "repairs",
+    "fix my bike",
+    "fix the bike",
+    "repair my bike",
+    "repair the bike",
+    "get my bike fixed",
+    "fix a flat",
+    "fix my puncture"
+   ],
+   "bike_shop": [
+    "bike shop",
+    "bike shops",
+    "bicycle shop",
+    "bicycle shops",
+    "bike store",
+    "bike stores",
+    "cycle shop",
+    "cycle shops",
+    "bike mechanic",
+    "bike mechanics",
+    "LBS",
+    "bike repair shop",
+    "bike repair shops",
+    "bicycle repair shop",
+    "bicycle repair shops",
+    "repair shop",
+    "repair shops",
+    "bike parts",
+    "spare parts",
+    "inner tube",
+    "inner tubes",
+    "bicycle store"
+   ],
+   "bridge": [
+    "bridge",
+    "bridges",
+    "viaduct"
+   ],
+   "bus_stop": [
+    "bus stop",
+    "bus stops",
+    "bus",
+    "buses",
+    "bus station",
+    "coach"
+   ],
+   "butcher": [
+    "butcher",
+    "butchers",
+    "butcher's",
+    "butcher shop"
+   ],
+   "cafe": [
+    "cafe",
+    "cafes",
+    "coffee",
+    "a coffee",
+    "coffee shop",
+    "coffee shops",
+    "tea room",
+    "tearoom",
+    "bistro"
+   ],
+   "campsite": [
+    "campsite",
+    "campsites",
+    "camp site",
+    "camp sites",
+    "campground",
+    "campgrounds",
+    "camping",
+    "camp",
+    "camps",
+    "camping spot",
+    "camping spots",
+    "tent spot",
+    "tent spots",
+    "pitch",
+    "pitches",
+    "wild camping",
+    "wild camp",
+    "pitch a tent",
+    "pitch my tent",
+    "put up my tent",
+    "put up a tent",
+    "tenting",
+    "place to camp",
+    "places to camp",
+    "somewhere to camp",
+    "spot to camp",
+    "camp spot",
+    "camp ground",
+    "camp pitch"
+   ],
+   "castle": [
+    "castle",
+    "castles",
+    "palace",
+    "palaces",
+    "fortress",
+    "fortresses",
+    "fort",
+    "forts",
+    "château"
+   ],
+   "charging": [
+    "charging",
+    "charging station",
+    "charging stations",
+    "charger",
+    "chargers",
+    "charging point",
+    "e-bike charging",
+    "power outlet",
+    "socket",
+    "plug",
+    "charge my phone",
+    "recharge"
+   ],
+   "church": [
+    "church",
+    "churches",
+    "chapel",
+    "chapels",
+    "cathedral",
+    "cathedrals",
+    "basilica",
+    "Place of Worship"
+   ],
+   "convenience": [
+    "convenience store",
+    "convenience stores",
+    "corner shop",
+    "corner shops",
+    "corner store",
+    "mini market",
+    "minimarket",
+    "village shop",
+    "village shops",
+    "general store",
+    "kiosk",
+    "kiosks",
+    "deli",
+    "delis",
+    "mini-market",
+    "mini-mart",
+    "small-town store"
+   ],
+   "doctor": [
+    "doctor",
+    "doctors",
+    "doctor's",
+    "GP",
+    "physician",
+    "medic",
+    "clinic",
+    "clinics",
+    "medical practice",
+    "doctor's office",
+    "urgent care",
+    "GPs",
+    "family doctor",
+    "general practitioner"
+   ],
+   "drinking_water": [
+    "drinking water",
+    "potable water",
+    "drinkable water",
+    "drinking fountain",
+    "drinking fountains",
+    "water fountain",
+    "water fountains",
+    "drinking water fountain",
+    "drinking water fountains",
+    "potable water source"
+   ],
+   "fast_food": [
+    "fast food",
+    "takeaway",
+    "take-away",
+    "takeout",
+    "burger",
+    "burgers",
+    "kebab",
+    "kebabs",
+    "snack bar",
+    "snack bars",
+    "kebab shop",
+    "kebab shops",
+    "chippy",
+    "chip shop"
+   ],
+   "ferry": [
+    "ferry",
+    "ferries",
+    "ferry terminal",
+    "ferry port",
+    "boat"
+   ],
+   "food": [
+    "food",
+    "eat",
+    "eating",
+    "something to eat",
+    "a bite",
+    "bite to eat",
+    "a bite to eat",
+    "meal",
+    "meals",
+    "lunch",
+    "dinner",
+    "breakfast",
+    "supper",
+    "grub",
+    "food stop",
+    "place to eat",
+    "places to eat",
+    "somewhere to eat",
+    "eat out",
+    "eating out",
+    "go out to eat",
+    "grab a bite",
+    "Food Court"
+   ],
+   "fountain": [
+    "fountain",
+    "fountains",
+    "village fountain",
+    "village fountains"
+   ],
+   "fuel": [
+    "gas station",
+    "gas stations",
+    "petrol station",
+    "petrol stations",
+    "fuel station",
+    "fuel stations",
+    "service station",
+    "service stations",
+    "filling station"
+   ],
+   "guest_house": [
+    "guest house",
+    "guest houses",
+    "guesthouse",
+    "guesthouses",
+    "B&B",
+    "B&Bs",
+    "bed and breakfast",
+    "bnb",
+    "pension",
+    "b & b",
+    "b and b"
+   ],
+   "hospital": [
+    "hospital",
+    "hospitals",
+    "emergency room",
+    "emergency department",
+    "A&E",
+    "emergency",
+    "infirmary"
+   ],
+   "hostel": [
+    "hostel",
+    "hostels",
+    "youth hostel",
+    "youth hostels",
+    "backpackers",
+    "backpacker"
+   ],
+   "hotel": [
+    "hotel",
+    "hotels",
+    "inn",
+    "inns"
+   ],
+   "hut": [
+    "hut",
+    "huts",
+    "mountain hut",
+    "mountain huts",
+    "alpine hut",
+    "alpine huts",
+    "refuge",
+    "refuges",
+    "mountain refuge",
+    "Mountain Lodge"
+   ],
+   "ice_cream": [
+    "ice cream",
+    "ice creams",
+    "ice-cream",
+    "ice cream shop",
+    "gelato",
+    "gelateria"
+   ],
+   "lake": [
+    "lake",
+    "lakes",
+    "pond",
+    "ponds",
+    "lakeside",
+    "reservoir"
+   ],
+   "laundry": [
+    "laundry",
+    "laundromat",
+    "laundromats",
+    "launderette",
+    "laundrette",
+    "laundries",
+    "wash clothes",
+    "washing machine",
+    "do laundry",
+    "do my laundry",
+    "wash my clothes"
+   ],
+   "lodging": [
+    "accommodation",
+    "accommodations",
+    "lodging",
+    "lodgings",
+    "room",
+    "rooms",
+    "a room",
+    "bed",
+    "beds",
+    "a bed",
+    "place to stay",
+    "places to stay",
+    "somewhere to stay",
+    "where to stay",
+    "holiday apartment",
+    "holiday home",
+    "cabin",
+    "cabins",
+    "chalet",
+    "airbnb",
+    "rental",
+    "Holiday Cottage",
+    "holiday cabin",
+    "vacation cabin",
+    "vacation home"
+   ],
+   "marketplace": [
+    "market",
+    "markets",
+    "marketplace",
+    "farmers market",
+    "farmers' market",
+    "weekly market",
+    "market hall",
+    "bazaar"
+   ],
+   "medical": [
+    "medical",
+    "medical help",
+    "medical care",
+    "first aid",
+    "health care",
+    "healthcare",
+    "medical centre",
+    "medical center",
+    "medical facility"
+   ],
+   "monastery": [
+    "monastery",
+    "monasteries",
+    "abbey",
+    "abbeys",
+    "convent",
+    "priory"
+   ],
+   "motel": [
+    "motel",
+    "motels",
+    "motor hotel"
+   ],
+   "museum": [
+    "museum",
+    "museums",
+    "gallery",
+    "galleries",
+    "art gallery",
+    "art galleries"
+   ],
+   "pass": [
+    "pass",
+    "passes",
+    "mountain pass",
+    "mountain passes",
+    "col",
+    "cols",
+    "saddle"
+   ],
+   "pharmacy": [
+    "pharmacy",
+    "pharmacies",
+    "chemist",
+    "chemists",
+    "chemist's",
+    "drugstore",
+    "drugstores",
+    "drug store",
+    "apothecary",
+    "dispensary"
+   ],
+   "repair_station": [
+    "repair station",
+    "repair stations",
+    "bike repair station",
+    "bike repair stations",
+    "bike pump",
+    "pump",
+    "pumps",
+    "air pump",
+    "public pump",
+    "fix-it station",
+    "compressed air",
+    "bike repair stand",
+    "bike tools",
+    "cycle pump",
+    "air compressor",
+    "tire inflation"
+   ],
+   "restaurant": [
+    "restaurant",
+    "restaurants",
+    "pizzeria",
+    "trattoria",
+    "eatery",
+    "eateries",
+    "tavern",
+    "taverns",
+    "inn restaurant",
+    "brasserie"
+   ],
+   "resupply": [
+    "shop",
+    "shops",
+    "store",
+    "stores",
+    "groceries",
+    "grocery",
+    "food shop",
+    "food shops",
+    "food store",
+    "food stores",
+    "resupply",
+    "resupplies",
+    "resupply point",
+    "buy food",
+    "get food",
+    "food supplies",
+    "supplies",
+    "provisions",
+    "shopping",
+    "buy groceries",
+    "stock up",
+    "farm shop",
+    "farm shops",
+    "resupply points",
+    "supply point",
+    "supply points",
+    "Greengrocer"
+   ],
+   "ruins": [
+    "ruins",
+    "ruin",
+    "ancient ruins"
+   ],
+   "shelter": [
+    "shelter",
+    "shelters",
+    "bivouac",
+    "bivouacs",
+    "bivvy",
+    "bivy",
+    "bothy",
+    "bothies",
+    "lean-to",
+    "emergency shelter",
+    "wilderness hut",
+    "wilderness huts",
+    "sleeping shelter",
+    "covered shelter",
+    "biwakschachtel"
+   ],
+   "shower": [
+    "shower",
+    "showers",
+    "public shower",
+    "hot shower",
+    "take a shower",
+    "have a shower",
+    "get a shower",
+    "shower facilities"
+   ],
+   "sight": [
+    "sights",
+    "sight",
+    "sightseeing",
+    "attraction",
+    "attractions",
+    "tourist attraction",
+    "tourist attractions",
+    "things to see",
+    "something to see",
+    "points of interest",
+    "poi",
+    "pois",
+    "monument",
+    "monuments",
+    "landmark",
+    "landmarks"
+   ],
+   "sleep": [
+    "sleep",
+    "sleeping",
+    "place to sleep",
+    "places to sleep",
+    "somewhere to sleep",
+    "spot to sleep",
+    "spots to sleep",
+    "sleeping spot",
+    "sleeping spots",
+    "overnight stay",
+    "overnight stays",
+    "stay the night",
+    "spend the night",
+    "bed for the night",
+    "crash"
+   ],
+   "spring": [
+    "spring",
+    "springs",
+    "natural spring",
+    "water spring"
+   ],
+   "summit": [
+    "summit",
+    "summits",
+    "peak",
+    "peaks",
+    "mountain",
+    "mountains",
+    "top",
+    "hilltop",
+    "hill top",
+    "volcano",
+    "hill",
+    "mount"
+   ],
+   "supermarket": [
+    "supermarket",
+    "supermarkets",
+    "grocery store",
+    "grocery stores",
+    "hypermarket",
+    "groceries store"
+   ],
+   "swimming": [
+    "swim",
+    "swimming",
+    "swim spot",
+    "swim spots",
+    "swimming spot",
+    "swimming spots",
+    "place to swim",
+    "places to swim",
+    "bathing",
+    "bathing spot",
+    "go for a swim",
+    "a swim",
+    "dip",
+    "wild swimming",
+    "Natural Swimming Area"
+   ],
+   "swimming_pool": [
+    "swimming pool",
+    "swimming pools",
+    "pool",
+    "pools",
+    "outdoor pool",
+    "public pool",
+    "Water Park"
+   ],
+   "toilets": [
+    "toilet",
+    "toilets",
+    "restroom",
+    "restrooms",
+    "public toilet",
+    "public toilets",
+    "wc",
+    "loo",
+    "loos",
+    "bathroom",
+    "bathrooms",
+    "lavatory",
+    "pee",
+    "have a pee",
+    "wee",
+    "go to the toilet",
+    "go to the loo",
+    "latrine",
+    "outhouse",
+    "public restroom",
+    "w.c.",
+    "water closet"
+   ],
+   "tower": [
+    "tower",
+    "towers",
+    "lookout tower",
+    "observation tower"
+   ],
+   "town": [
+    "town",
+    "towns",
+    "village",
+    "villages",
+    "city",
+    "cities",
+    "hamlet",
+    "settlement"
+   ],
+   "train_station": [
+    "train station",
+    "train stations",
+    "railway station",
+    "railway stations",
+    "station",
+    "stations",
+    "train",
+    "trains",
+    "rail station",
+    "railway",
+    "train stop",
+    "train stops",
+    "take the train",
+    "take a train",
+    "catch a train",
+    "Train Station Building"
+   ],
+   "transport": [
+    "public transport",
+    "transit",
+    "public transportation",
+    "train or bus",
+    "transport",
+    "transportation",
+    "take public transport",
+    "public transit"
+   ],
+   "viewpoint": [
+    "viewpoint",
+    "viewpoints",
+    "view point",
+    "lookout",
+    "lookouts",
+    "overlook",
+    "overlooks",
+    "scenic view",
+    "scenic views",
+    "panorama",
+    "vista point",
+    "vantage point",
+    "vista"
+   ],
+   "water": [
+    "water",
+    "water source",
+    "water sources",
+    "water point",
+    "water points",
+    "water refill",
+    "water refills",
+    "refill water",
+    "refill",
+    "refills",
+    "refill bottles",
+    "fill bottles",
+    "fill up water",
+    "fill up",
+    "get water",
+    "top up water",
+    "top up",
+    "well",
+    "wells",
+    "water stop",
+    "water stops",
+    "refill point",
+    "refill points",
+    "refill station",
+    "refill stations",
+    "fill my bottles",
+    "fill up my bottles",
+    "refill my bottles",
+    "fill my bidons",
+    "get some water"
+   ],
+   "water_tap": [
+    "water tap",
+    "water taps",
+    "tap",
+    "taps",
+    "faucet",
+    "faucets",
+    "spigot",
+    "standpipe",
+    "water faucet",
+    "water spigot"
+   ],
+   "waterfall": [
+    "waterfall",
+    "waterfalls",
+    "falls",
+    "cascade"
+   ]
+  },
+  "de": {
+   "atm": [
+    "Geldautomat",
+    "Geldautomaten",
+    "Bankomat",
+    "Bancomat",
+    "Bargeld",
+    "Geld",
+    "Bank",
+    "Banken",
+    "bankautomat",
+    "geldausgabeautomat",
+    "atm"
+   ],
+   "bakery": [
+    "Bäckerei",
+    "Bäckereien",
+    "Bäcker",
+    "Konditorei",
+    "Konditoreien",
+    "Brot",
+    "Backstube",
+    "Brötchen",
+    "Brötchen holen",
+    "Brötchen kaufen",
+    "Brot kaufen",
+    "patisserie"
+   ],
+   "bar": [
+    "Bar",
+    "Bars",
+    "Kneipe",
+    "Kneipen",
+    "Bier",
+    "ein Bier",
+    "Biergarten",
+    "Brauerei",
+    "Brauereien",
+    "nachtbar",
+    "cocktailbar",
+    "pub"
+   ],
+   "beach": [
+    "Strand",
+    "Strände",
+    "Strandbad",
+    "Strandresort",
+    "strandhotelanalge",
+    "badestrandresort",
+    "badestrandhotelanlage"
+   ],
+   "bike": [
+    "Fahrradservice",
+    "Radservice",
+    "Fahrradhilfe",
+    "Fahrradreparatur",
+    "Fahrradreparaturen",
+    "Reparatur",
+    "mein Rad reparieren",
+    "Rad reparieren",
+    "Fahrrad reparieren",
+    "mein Fahrrad reparieren",
+    "Rad flicken",
+    "Reifen flicken",
+    "Platten flicken"
+   ],
+   "bike_shop": [
+    "Fahrradladen",
+    "Fahrradgeschäft",
+    "Fahrradgeschäfte",
+    "Radladen",
+    "Radgeschäft",
+    "Veloladen",
+    "Velogeschäft",
+    "Fahrradwerkstatt",
+    "Radwerkstatt",
+    "Fahrradhändler",
+    "Fahrradmechaniker",
+    "Velomech",
+    "Radhändler",
+    "Radgeschäfte",
+    "Fahrradwerkstätten",
+    "Ersatzteile",
+    "Schlauch",
+    "Schläuche",
+    "Fahrradschlauch",
+    "fahrrad-geschäft",
+    "fahrrad-handlung"
+   ],
+   "bridge": [
+    "Brücke",
+    "Brücken"
+   ],
+   "bus_stop": [
+    "Bushaltestelle",
+    "Bushaltestellen",
+    "Haltestelle",
+    "Haltestellen",
+    "Bus",
+    "Busbahnhof",
+    "Postauto"
+   ],
+   "butcher": [
+    "Metzgerei",
+    "Metzgereien",
+    "Metzger",
+    "Fleischerei",
+    "Fleischer",
+    "Schlachter",
+    "fleischhackerei",
+    "schlachterei"
+   ],
+   "cafe": [
+    "Café",
+    "Cafés",
+    "Kaffee",
+    "Kaffeehaus",
+    "Bistro",
+    "cafébar",
+    "teehaus",
+    "teestube"
+   ],
+   "campsite": [
+    "Campingplatz",
+    "Campingplätze",
+    "Zeltplatz",
+    "Zeltplätze",
+    "Camping",
+    "zelten",
+    "campen",
+    "Zeltwiese",
+    "Zeltwiesen",
+    "Wildcampen",
+    "wild zelten",
+    "wild campen",
+    "Zelt aufschlagen",
+    "Zelt aufstellen",
+    "Zeltstelle",
+    "Platz zum Zelten",
+    "Plätze zum Zelten",
+    "Zeltmöglichkeit",
+    "Zeltmöglichkeiten",
+    "Campingmöglichkeit",
+    "Campingmöglichkeiten"
+   ],
+   "castle": [
+    "Burg",
+    "Burgen",
+    "Schloss",
+    "Schlösser",
+    "Festung",
+    "Festungen",
+    "Palast"
+   ],
+   "charging": [
+    "Ladestation",
+    "Ladestationen",
+    "Ladesäule",
+    "Steckdose",
+    "Steckdosen",
+    "Strom",
+    "aufladen",
+    "E-Bike laden",
+    "Akku laden",
+    "Ladestation für Elektrofahrzeuge"
+   ],
+   "church": [
+    "Kirche",
+    "Kirchen",
+    "Kapelle",
+    "Kapellen",
+    "Dom",
+    "Münster",
+    "Kathedrale",
+    "Basilika",
+    "Andachtsstätte"
+   ],
+   "convenience": [
+    "Minimarkt",
+    "Späti",
+    "Spätis",
+    "Spätkauf",
+    "Dorfladen",
+    "Tante-Emma-Laden",
+    "Kiosk",
+    "Kioske",
+    "Greißler",
+    "Gemischtwarenladen",
+    "spätverkauf",
+    "kleines lebensmittelgeschäft",
+    "nachbarschaftsladen",
+    "Gemischtwarenhandlung"
+   ],
+   "doctor": [
+    "Arzt",
+    "Ärzte",
+    "Ärztin",
+    "Doktor",
+    "Hausarzt",
+    "Arztpraxis",
+    "Praxis",
+    "Ärztezentrum",
+    "Notarzt",
+    "Hausärzte",
+    "Allgemeinarzt"
+   ],
+   "drinking_water": [
+    "Trinkwasser",
+    "Trinkwasserstelle",
+    "Trinkwasserstellen",
+    "Trinkbrunnen",
+    "Trinkwasserbrunnen",
+    "Trinkwasserspender",
+    "Wasserspender",
+    "Trinkwasserautomat"
+   ],
+   "fast_food": [
+    "Imbiss",
+    "Imbisse",
+    "Schnellimbiss",
+    "Döner",
+    "Dönerbude",
+    "Pommesbude",
+    "Snackbar",
+    "Fastfood",
+    "Imbissbude",
+    "Dönerläden",
+    "Kebabladen",
+    "fast food",
+    "schnellrestaurant"
+   ],
+   "ferry": [
+    "Fähre",
+    "Fähren",
+    "Fähranleger",
+    "Schiffsanleger",
+    "Schiff",
+    "fährterminal"
+   ],
+   "food": [
+    "Essen",
+    "etwas essen",
+    "was essen",
+    "was zu essen",
+    "etwas zu essen",
+    "Mahlzeit",
+    "Mittagessen",
+    "Abendessen",
+    "Frühstück",
+    "einkehren",
+    "Einkehr",
+    "Einkehrmöglichkeit",
+    "Einkehrmöglichkeiten",
+    "Brotzeit",
+    "Gastronomie",
+    "Futter",
+    "essen gehen",
+    "was essen gehen",
+    "Essensmöglichkeit",
+    "Essensmöglichkeiten",
+    "etwas zu essen holen",
+    "Mittag",
+    "Gemeinschaftlicher Gastronomiebereich"
+   ],
+   "fountain": [
+    "Brunnen",
+    "Dorfbrunnen",
+    "Laufbrunnen",
+    "Springbrunnen",
+    "zierbrunnen",
+    "marktbrunnen"
+   ],
+   "fuel": [
+    "Tankstelle",
+    "Tankstellen",
+    "Tanke"
+   ],
+   "guest_house": [
+    "Pension",
+    "Pensionen",
+    "Gästehaus",
+    "Gästehäuser",
+    "Gästezimmer",
+    "Privatzimmer",
+    "Frühstückspension",
+    "bed & breakfast"
+   ],
+   "hospital": [
+    "Krankenhaus",
+    "Krankenhäuser",
+    "Klinik",
+    "Kliniken",
+    "Spital",
+    "Spitäler",
+    "Notaufnahme",
+    "Notfall",
+    "klinikgelände",
+    "hospital",
+    "krankenhausgelände"
+   ],
+   "hostel": [
+    "Hostel",
+    "Hostels",
+    "Jugendherberge",
+    "Jugendherbergen",
+    "Herberge",
+    "Herbergen"
+   ],
+   "hotel": [
+    "Hotel",
+    "Hotels",
+    "Hotel garni"
+   ],
+   "hut": [
+    "Hütte",
+    "Hütten",
+    "Berghütte",
+    "Berghütten",
+    "Alpenhütte",
+    "Almhütte",
+    "Almhütten",
+    "Alm",
+    "Alpenvereinshütte",
+    "Berggasthaus"
+   ],
+   "ice_cream": [
+    "Eis",
+    "ein Eis",
+    "Eisdiele",
+    "Eisdielen",
+    "Eiscafé",
+    "Eisladen",
+    "Glace",
+    "Eisgeschäft",
+    "schleckeisladen",
+    "schleckeishändler"
+   ],
+   "lake": [
+    "See",
+    "Seen",
+    "Weiher",
+    "Teich",
+    "Teiche",
+    "Stausee"
+   ],
+   "laundry": [
+    "Waschsalon",
+    "Waschsalons",
+    "Wäscherei",
+    "Waschmaschine",
+    "Wäsche waschen",
+    "Wäsche machen",
+    "Kleidung waschen"
+   ],
+   "lodging": [
+    "Unterkunft",
+    "Unterkünfte",
+    "Zimmer",
+    "Bett",
+    "Betten",
+    "Ferienwohnung",
+    "Ferienwohnungen",
+    "Ferienhaus",
+    "Quartier",
+    "Quartiere",
+    "Bleibe",
+    "Übernachtungsmöglichkeit mit Bett",
+    "gästewohnung",
+    "gästeapartment",
+    "ferienappartement",
+    "gästeappartement"
+   ],
+   "marketplace": [
+    "Markt",
+    "Märkte",
+    "Wochenmarkt",
+    "Wochenmärkte",
+    "Marktplatz",
+    "Bauernmarkt",
+    "Markthalle"
+   ],
+   "medical": [
+    "medizinische Hilfe",
+    "medizinisch",
+    "Erste Hilfe",
+    "ärztliche Hilfe",
+    "medizinische Versorgung"
+   ],
+   "monastery": [
+    "Kloster",
+    "Abtei",
+    "Stift"
+   ],
+   "motel": [
+    "Motel",
+    "Motels"
+   ],
+   "museum": [
+    "Museum",
+    "Museen",
+    "Galerie",
+    "Galerien",
+    "Kunstgalerie"
+   ],
+   "pass": [
+    "Pass",
+    "Pässe",
+    "Passhöhe",
+    "Bergpass",
+    "Joch",
+    "Sattel",
+    "Col",
+    "Bergsattel",
+    "scharte"
+   ],
+   "pharmacy": [
+    "Apotheke",
+    "Apotheken",
+    "Notapotheke"
+   ],
+   "repair_station": [
+    "Reparaturstation",
+    "Reparaturstationen",
+    "Fahrradreparaturstation",
+    "Luftpumpe",
+    "Pumpe",
+    "Druckluft",
+    "Servicestation",
+    "Fahrrad-Servicestation",
+    "fahrrad-servicestationen",
+    "pressluft"
+   ],
+   "restaurant": [
+    "Restaurant",
+    "Restaurants",
+    "Gasthaus",
+    "Gasthäuser",
+    "Gasthof",
+    "Gasthöfe",
+    "Wirtshaus",
+    "Wirtschaft",
+    "Beiz",
+    "Lokal",
+    "Lokale",
+    "Pizzeria",
+    "Gaststätte",
+    "Gaststätten",
+    "Landgasthof",
+    "Landgasthöfe",
+    "Gasthöfen",
+    "Lokalen",
+    "speisehaus",
+    "speiserestaurant",
+    "gastronomiebetrieb"
+   ],
+   "resupply": [
+    "Laden",
+    "Geschäft",
+    "Geschäfte",
+    "einkaufen",
+    "Einkauf",
+    "Einkaufsmöglichkeit",
+    "Einkaufsmöglichkeiten",
+    "Lebensmittel",
+    "Lebensmittelgeschäft",
+    "Lebensmittelgeschäfte",
+    "Lebensmittelladen",
+    "Proviant",
+    "Verpflegung",
+    "Essen kaufen",
+    "Hofladen",
+    "Nachschub",
+    "Versorgung",
+    "Versorgungspunkt",
+    "Versorgungspunkte",
+    "Versorgungsmöglichkeit",
+    "Versorgungsmöglichkeiten",
+    "Verpflegungsstelle",
+    "Verpflegungsstellen",
+    "Obst- und Gemüseladen"
+   ],
+   "ruins": [
+    "Ruine",
+    "Ruinen",
+    "Burgruine",
+    "Burgruinen",
+    "ruinenstätte"
+   ],
+   "shelter": [
+    "Unterstand",
+    "Unterstände",
+    "Schutzhütte",
+    "Schutzhütten",
+    "Wetterschutz",
+    "Biwak",
+    "Biwaks",
+    "Biwakschachtel",
+    "Schutzdach",
+    "Wetterpilz",
+    "Selbstversorgerhütte",
+    "unbewirtschaftete Schutzhütte"
+   ],
+   "shower": [
+    "Dusche",
+    "Duschen",
+    "Duschmöglichkeit",
+    "Duschmöglichkeiten",
+    "Duschgelegenheit",
+    "duschen gehen"
+   ],
+   "sight": [
+    "Sehenswürdigkeit",
+    "Sehenswürdigkeiten",
+    "Attraktion",
+    "Attraktionen",
+    "Denkmal",
+    "Denkmäler",
+    "Monument",
+    "was zu sehen",
+    "etwas zu sehen"
+   ],
+   "sleep": [
+    "schlafen",
+    "übernachten",
+    "Übernachtung",
+    "Übernachtungen",
+    "Schlafplatz",
+    "Schlafplätze",
+    "Übernachtungsmöglichkeit",
+    "Übernachtungsmöglichkeiten",
+    "Übernachtungsplatz",
+    "Übernachtungsplätze",
+    "pennen",
+    "nächtigen",
+    "Nachtlager"
+   ],
+   "spring": [
+    "Quelle",
+    "Quellen"
+   ],
+   "summit": [
+    "Gipfel",
+    "Berg",
+    "Berge",
+    "Bergspitze",
+    "Hügel",
+    "Vulkan",
+    "bergkuppe"
+   ],
+   "supermarket": [
+    "Supermarkt",
+    "Supermärkte",
+    "Discounter",
+    "Supermärkten",
+    "Lebensmittelmärkte"
+   ],
+   "swimming": [
+    "baden",
+    "schwimmen",
+    "Badestelle",
+    "Badestellen",
+    "Badeplatz",
+    "Badeplätze",
+    "Naturbad",
+    "Badesee",
+    "Badeseen",
+    "Badegelegenheit",
+    "Badegelegenheiten",
+    "Natürlicher Badebereich",
+    "natürlicher schwimmbereich"
+   ],
+   "swimming_pool": [
+    "Schwimmbad",
+    "Schwimmbäder",
+    "Freibad",
+    "Freibäder",
+    "Hallenbad",
+    "Hallenbäder",
+    "Pool",
+    "Erlebnisbad",
+    "wasserpark",
+    "spaßbad"
+   ],
+   "toilets": [
+    "Toilette",
+    "Toiletten",
+    "WC",
+    "Klo",
+    "öffentliche Toilette",
+    "öffentliche Toiletten",
+    "Klos",
+    "pinkeln",
+    "aufs Klo",
+    "klosett"
+   ],
+   "tower": [
+    "Turm",
+    "Türme",
+    "Aussichtsturm",
+    "Aussichtstürme"
+   ],
+   "town": [
+    "Stadt",
+    "Städte",
+    "Dorf",
+    "Dörfer",
+    "Ortschaft",
+    "Ortschaften",
+    "Ort",
+    "Weiler",
+    "Kleinstadt",
+    "Großstadt",
+    "dörfchen"
+   ],
+   "train_station": [
+    "Bahnhof",
+    "Bahnhöfe",
+    "Bahnstation",
+    "Hauptbahnhof",
+    "Haltepunkt",
+    "Zugverbindung",
+    "Züge",
+    "Zügen",
+    "mit dem Zug",
+    "mit dem Zug weiterfahren",
+    "den Zug nehmen",
+    "Zug nehmen",
+    "Zughalt",
+    "Eisenbahn-Station",
+    "eisenbahn-haltepunkt",
+    "Bahnhofsgebäude",
+    "bahnhofgebäude"
+   ],
+   "transport": [
+    "ÖPNV",
+    "öffentliche Verkehrsmittel",
+    "Nahverkehr",
+    "öffentlicher Verkehr",
+    "Öffis",
+    "öffentlichen Verkehrsmitteln",
+    "Öffis nehmen",
+    "Nahverkehrsmittel"
+   ],
+   "viewpoint": [
+    "Aussichtspunkt",
+    "Aussichtspunkte",
+    "Aussicht",
+    "Ausblick",
+    "Panorama",
+    "Aussichtsplattform"
+   ],
+   "water": [
+    "Wasser",
+    "Wasserstelle",
+    "Wasserstellen",
+    "Wasserquelle",
+    "Wasserquellen",
+    "Wasser auffüllen",
+    "Wasser nachfüllen",
+    "Wasser tanken",
+    "Wasser holen",
+    "Flaschen auffüllen",
+    "Flaschen füllen",
+    "auffüllen",
+    "nachfüllen",
+    "Wasserpunkt",
+    "Nachfüllstelle",
+    "Nachfüllstellen",
+    "Auffüllstelle",
+    "Auffüllstellen",
+    "Wasserstopp",
+    "Wasserstopps",
+    "meine Flaschen auffüllen",
+    "Flaschen nachfüllen",
+    "Trinkflaschen auffüllen"
+   ],
+   "water_tap": [
+    "Wasserhahn",
+    "Wasserhähne",
+    "Zapfstelle",
+    "Zapfstellen"
+   ],
+   "waterfall": [
+    "Wasserfall",
+    "Wasserfälle"
+   ]
+  },
+  "fr": {
+   "atm": [
+    "distributeur",
+    "distributeurs",
+    "distributeur de billets",
+    "DAB",
+    "retirer de l'argent",
+    "argent",
+    "banque",
+    "banques",
+    "distributeur automatique",
+    "guichet automatique",
+    "retrait d'argent",
+    "atm",
+    "bancontact"
+   ],
+   "bakery": [
+    "boulangerie",
+    "boulangeries",
+    "boulanger",
+    "pâtisserie",
+    "pâtisseries",
+    "pain",
+    "du pain",
+    "acheter du pain",
+    "chercher du pain",
+    "boulangeries-pâtisseries"
+   ],
+   "bar": [
+    "bar",
+    "bars",
+    "pub",
+    "pubs",
+    "bière",
+    "une bière",
+    "bières",
+    "Biergarten"
+   ],
+   "beach": [
+    "plage",
+    "plages",
+    "Station balnéaire"
+   ],
+   "bike": [
+    "réparation vélo",
+    "réparation de vélo",
+    "réparations vélo",
+    "service vélo",
+    "réparation",
+    "réparer mon vélo",
+    "réparer le vélo",
+    "réparer une crevaison",
+    "faire réparer mon vélo"
+   ],
+   "bike_shop": [
+    "magasin de vélo",
+    "magasin de vélos",
+    "magasins de vélos",
+    "vélociste",
+    "vélocistes",
+    "atelier vélo",
+    "réparateur vélo",
+    "marchand de vélos",
+    "atelier de réparation vélo",
+    "ateliers de réparation vélo",
+    "réparateur de vélos",
+    "réparateurs de vélos",
+    "pièces vélo",
+    "chambre à air",
+    "chambres à air"
+   ],
+   "bridge": [
+    "pont",
+    "ponts",
+    "viaduc"
+   ],
+   "bus_stop": [
+    "arrêt de bus",
+    "arrêts de bus",
+    "bus",
+    "gare routière",
+    "autocar",
+    "cars",
+    "arrêt de car",
+    "gare de cars"
+   ],
+   "butcher": [
+    "boucherie",
+    "boucheries",
+    "boucher",
+    "charcuterie",
+    "charcutier"
+   ],
+   "cafe": [
+    "café",
+    "cafés",
+    "salon de thé",
+    "bistrot",
+    "bistrots"
+   ],
+   "campsite": [
+    "camping",
+    "campings",
+    "terrain de camping",
+    "terrains de camping",
+    "aire de camping",
+    "camper",
+    "planter la tente",
+    "planter ma tente",
+    "emplacement de tente",
+    "bivouaquer",
+    "camping sauvage",
+    "endroit pour camper",
+    "endroits pour camper",
+    "où camper",
+    "coin pour camper",
+    "site de camping",
+    "emplacement de camping"
+   ],
+   "castle": [
+    "château",
+    "châteaux",
+    "forteresse",
+    "forteresses",
+    "citadelle",
+    "fort",
+    "palais"
+   ],
+   "charging": [
+    "borne de recharge",
+    "bornes de recharge",
+    "recharge",
+    "recharger",
+    "prise",
+    "prise électrique",
+    "station de recharge"
+   ],
+   "church": [
+    "église",
+    "églises",
+    "chapelle",
+    "chapelles",
+    "cathédrale",
+    "cathédrales",
+    "basilique",
+    "Lieu de culte",
+    "Chapelle - bâtiment",
+    "Cathédrale - bâtiment"
+   ],
+   "convenience": [
+    "supérette",
+    "supérettes",
+    "magasin général",
+    "kiosque",
+    "kiosques",
+    "alimentation générale",
+    "supérette de quartier",
+    "magasin de village"
+   ],
+   "doctor": [
+    "médecin",
+    "médecins",
+    "docteur",
+    "cabinet médical",
+    "généraliste",
+    "maison médicale",
+    "médecin généraliste",
+    "médecins généralistes"
+   ],
+   "drinking_water": [
+    "eau potable",
+    "fontaine à eau",
+    "fontaines à eau",
+    "fontaine d'eau potable",
+    "point d'eau potable",
+    "fontaines à eau potable",
+    "drinking water",
+    "Distributeur d'eau potable"
+   ],
+   "fast_food": [
+    "restauration rapide",
+    "fast-food",
+    "snack",
+    "snacks",
+    "kebab",
+    "friterie",
+    "sandwicherie",
+    "kebabs",
+    "restaurant rapide",
+    "fast food",
+    "vente à emporter",
+    "à emporter",
+    "burger"
+   ],
+   "ferry": [
+    "ferry",
+    "bac",
+    "bacs",
+    "traversier",
+    "embarcadère",
+    "bateau",
+    "Terminal de ferry"
+   ],
+   "food": [
+    "manger",
+    "à manger",
+    "quelque chose à manger",
+    "repas",
+    "déjeuner",
+    "dîner",
+    "petit-déjeuner",
+    "casse-croûte",
+    "se restaurer",
+    "restauration",
+    "endroit pour manger",
+    "endroits pour manger",
+    "où manger",
+    "aller manger",
+    "manger un morceau",
+    "manger au restaurant",
+    "sortir manger"
+   ],
+   "fountain": [
+    "fontaine",
+    "fontaines",
+    "lavoir",
+    "lavoirs"
+   ],
+   "fuel": [
+    "station-service",
+    "stations-service",
+    "station essence",
+    "stations essence",
+    "station-essence",
+    "station service",
+    "station de carburant",
+    "station d’essence",
+    "station à essence",
+    "essencerie",
+    "pompe à essence",
+    "pompe à carburant"
+   ],
+   "guest_house": [
+    "chambre d'hôtes",
+    "chambres d'hôtes",
+    "maison d'hôtes"
+   ],
+   "hospital": [
+    "hôpital",
+    "hôpitaux",
+    "urgences",
+    "clinique",
+    "cliniques"
+   ],
+   "hostel": [
+    "auberge de jeunesse",
+    "auberges de jeunesse",
+    "hostel",
+    "gîte d'étape",
+    "gîtes d'étape"
+   ],
+   "hotel": [
+    "hôtel",
+    "hôtels",
+    "auberge",
+    "auberges",
+    "bâtiment d'hôtel"
+   ],
+   "hut": [
+    "refuge",
+    "refuges",
+    "refuge de montagne",
+    "refuges de montagne",
+    "refuge gardé"
+   ],
+   "ice_cream": [
+    "glace",
+    "glaces",
+    "une glace",
+    "marchand de glaces",
+    "magasin de glaces"
+   ],
+   "lake": [
+    "lac",
+    "lacs",
+    "étang",
+    "étangs",
+    "plan d'eau"
+   ],
+   "laundry": [
+    "laverie",
+    "laveries",
+    "laverie automatique",
+    "lessive",
+    "faire la lessive",
+    "laver mes vêtements",
+    "laver le linge"
+   ],
+   "lodging": [
+    "hébergement",
+    "hébergements",
+    "logement",
+    "logements",
+    "chambre",
+    "chambres",
+    "gîte",
+    "gîtes",
+    "location",
+    "lit",
+    "un lit",
+    "Location de vacances",
+    "chalet"
+   ],
+   "marketplace": [
+    "marché",
+    "marchés",
+    "marché couvert",
+    "place du marché",
+    "place de marché"
+   ],
+   "medical": [
+    "médical",
+    "aide médicale",
+    "soins",
+    "soins médicaux",
+    "premiers secours",
+    "centre médical"
+   ],
+   "monastery": [
+    "monastère",
+    "monastères",
+    "abbaye",
+    "abbayes",
+    "couvent",
+    "prieuré"
+   ],
+   "motel": [
+    "motel",
+    "motels"
+   ],
+   "museum": [
+    "musée",
+    "musées",
+    "galerie",
+    "galeries",
+    "galerie d'art"
+   ],
+   "pass": [
+    "col",
+    "cols",
+    "col de montagne"
+   ],
+   "pharmacy": [
+    "pharmacie",
+    "pharmacies",
+    "pharmacie de garde"
+   ],
+   "repair_station": [
+    "station de réparation",
+    "station de réparation vélo",
+    "stations de réparation",
+    "pompe",
+    "pompe à vélo",
+    "station de gonflage",
+    "air comprimé",
+    "borne de réparation",
+    "compressed air"
+   ],
+   "restaurant": [
+    "restaurant",
+    "restaurants",
+    "resto",
+    "restos",
+    "brasserie",
+    "brasseries",
+    "crêperie",
+    "pizzeria",
+    "auberge de campagne",
+    "auberges de campagne"
+   ],
+   "resupply": [
+    "magasin",
+    "magasins",
+    "courses",
+    "faire les courses",
+    "faire des courses",
+    "faire mes courses",
+    "commerce",
+    "commerces",
+    "ravitaillement",
+    "ravitaillements",
+    "ravito",
+    "alimentation",
+    "acheter à manger",
+    "provisions",
+    "magasin d'alimentation",
+    "point de ravitaillement",
+    "points de ravitaillement",
+    "épicerie",
+    "épiceries",
+    "petite épicerie",
+    "épicerie du village",
+    "acheter de la nourriture",
+    "faire des provisions",
+    "Primeur",
+    "Magasin de producteurs"
+   ],
+   "ruins": [
+    "ruines",
+    "ruine"
+   ],
+   "shelter": [
+    "abri",
+    "abris",
+    "refuge non gardé",
+    "refuges non gardés",
+    "cabane",
+    "cabanes",
+    "bivouac",
+    "abri de bivouac",
+    "Refuge de bivouac"
+   ],
+   "shower": [
+    "douche",
+    "douches",
+    "se doucher",
+    "prendre une douche",
+    "possibilité de douche",
+    "douches publiques"
+   ],
+   "sight": [
+    "curiosité",
+    "curiosités",
+    "à voir",
+    "choses à voir",
+    "monument",
+    "monuments",
+    "attraction",
+    "attractions",
+    "site touristique",
+    "sites touristiques",
+    "Attraction touristique",
+    "Grand monument commémoratif"
+   ],
+   "sleep": [
+    "dormir",
+    "où dormir",
+    "passer la nuit",
+    "coucher",
+    "se coucher",
+    "nuitée",
+    "endroit pour dormir",
+    "hébergement pour la nuit",
+    "logement pour la nuit"
+   ],
+   "spring": [
+    "source",
+    "sources"
+   ],
+   "summit": [
+    "sommet",
+    "sommets",
+    "pic",
+    "pics",
+    "mont",
+    "montagne",
+    "montagnes",
+    "cime",
+    "colline",
+    "volcan"
+   ],
+   "supermarket": [
+    "supermarché",
+    "supermarchés",
+    "hypermarché",
+    "hypermarchés",
+    "grande surface",
+    "grandes surfaces"
+   ],
+   "swimming": [
+    "nager",
+    "se baigner",
+    "baignade",
+    "baignades",
+    "lieu de baignade",
+    "coin baignade",
+    "se rafraîchir"
+   ],
+   "swimming_pool": [
+    "piscine",
+    "piscines",
+    "parc d'attractions aquatiques"
+   ],
+   "toilets": [
+    "toilettes",
+    "wc",
+    "sanitaires",
+    "toilettes publiques",
+    "faire pipi",
+    "aller aux toilettes",
+    "latrine"
+   ],
+   "tower": [
+    "tour d'observation",
+    "tours d'observation",
+    "tour panoramique",
+    "tours panoramiques"
+   ],
+   "town": [
+    "ville",
+    "villes",
+    "village",
+    "villages",
+    "hameau",
+    "bourg"
+   ],
+   "train_station": [
+    "gare",
+    "gares",
+    "gare ferroviaire",
+    "train",
+    "trains",
+    "arrêt de train",
+    "arrêts de train",
+    "halte ferroviaire",
+    "prendre le train",
+    "station ferroviaire",
+    "station ferorviaire"
+   ],
+   "transport": [
+    "transports en commun",
+    "transport en commun",
+    "transport public",
+    "transports publics",
+    "transports",
+    "prendre les transports en commun",
+    "prendre les transports"
+   ],
+   "viewpoint": [
+    "point de vue",
+    "points de vue",
+    "belvédère",
+    "belvédères",
+    "panorama",
+    "mirador"
+   ],
+   "water": [
+    "eau",
+    "point d'eau",
+    "points d'eau",
+    "source d'eau",
+    "sources d'eau",
+    "remplir les gourdes",
+    "remplir mes gourdes",
+    "remplir les bidons",
+    "faire le plein d'eau",
+    "ravitaillement en eau",
+    "recharger en eau",
+    "puits",
+    "point de remplissage",
+    "points de remplissage",
+    "remplir ma gourde",
+    "remplir mes bidons",
+    "remplir mon bidon",
+    "arrêt eau",
+    "trouver de l'eau",
+    "point de ravitaillement en eau",
+    "points de ravitaillement en eau"
+   ],
+   "water_tap": [
+    "robinet",
+    "robinets",
+    "robinet d'eau"
+   ],
+   "waterfall": [
+    "cascade",
+    "cascades",
+    "chute d'eau",
+    "chutes d'eau"
+   ]
+  },
+  "it": {
+   "atm": [
+    "bancomat",
+    "prelievo",
+    "banca",
+    "banche",
+    "contanti",
+    "soldi",
+    "atm",
+    "sportello automatico",
+    "automated teller machine"
+   ],
+   "bakery": [
+    "panetteria",
+    "panetterie",
+    "panificio",
+    "panifici",
+    "forno",
+    "fornaio",
+    "pasticceria",
+    "pasticcerie",
+    "pane",
+    "comprare il pane",
+    "prendere il pane",
+    "patisserie"
+   ],
+   "bar": [
+    "pub",
+    "birreria",
+    "birrerie",
+    "birra",
+    "una birra",
+    "enoteca",
+    "vineria",
+    "Biergarten"
+   ],
+   "beach": [
+    "spiaggia",
+    "spiagge",
+    "lido",
+    "lidi",
+    "stabilimento balneare",
+    "spiaggia attrezzata"
+   ],
+   "bike": [
+    "riparazione bici",
+    "riparazioni bici",
+    "assistenza bici",
+    "riparazione",
+    "riparare la bici",
+    "sistemare la bici",
+    "aggiustare la bici",
+    "riparare una foratura"
+   ],
+   "bike_shop": [
+    "negozio di bici",
+    "negozio di biciclette",
+    "negozio bici",
+    "negozi di bici",
+    "ciclofficina",
+    "officina bici",
+    "meccanico bici",
+    "meccanico di bici",
+    "meccanici di bici",
+    "officine bici",
+    "officina di biciclette",
+    "camera d'aria",
+    "camere d'aria",
+    "ricambi bici"
+   ],
+   "bridge": [
+    "ponte",
+    "ponti",
+    "viadotto"
+   ],
+   "bus_stop": [
+    "fermata",
+    "fermata dell'autobus",
+    "fermata del bus",
+    "autobus",
+    "pullman",
+    "corriera",
+    "Fermata autobus",
+    "bus"
+   ],
+   "butcher": [
+    "macelleria",
+    "macellerie",
+    "macellaio",
+    "salumeria",
+    "salumiere"
+   ],
+   "cafe": [
+    "caffè",
+    "caffetteria",
+    "caffetterie",
+    "un caffè",
+    "bistrot"
+   ],
+   "campsite": [
+    "campeggio",
+    "campeggi",
+    "camping",
+    "campeggiare",
+    "piantare la tenda",
+    "piazzola",
+    "piazzole",
+    "area camping",
+    "campeggio libero",
+    "tenda",
+    "posto per campeggiare",
+    "posti per campeggiare",
+    "dove campeggiare",
+    "posto per la tenda"
+   ],
+   "castle": [
+    "castello",
+    "castelli",
+    "fortezza",
+    "fortezze",
+    "rocca",
+    "forte"
+   ],
+   "charging": [
+    "ricarica",
+    "colonnina di ricarica",
+    "stazione di ricarica",
+    "presa",
+    "presa elettrica",
+    "ricaricare"
+   ],
+   "church": [
+    "chiesa",
+    "chiese",
+    "cappella",
+    "cappelle",
+    "duomo",
+    "cattedrale",
+    "basilica",
+    "pieve",
+    "santuario",
+    "Luogo di culto"
+   ],
+   "convenience": [
+    "minimarket",
+    "negozio di paese",
+    "bottega",
+    "botteghe",
+    "chiosco",
+    "chioschi",
+    "emporio"
+   ],
+   "doctor": [
+    "medico",
+    "medici",
+    "dottore",
+    "guardia medica",
+    "ambulatorio",
+    "studio medico",
+    "poliambulatorio",
+    "medico di base",
+    "medico di famiglia",
+    "medici di base",
+    "Clinica medica"
+   ],
+   "drinking_water": [
+    "acqua potabile",
+    "nasone",
+    "nasoni",
+    "fontanelle d'acqua potabile"
+   ],
+   "fast_food": [
+    "fast food",
+    "rosticceria",
+    "paninoteca",
+    "tavola calda",
+    "kebab",
+    "pizza al taglio",
+    "asporto",
+    "kebabbaro",
+    "paninoteche"
+   ],
+   "ferry": [
+    "traghetto",
+    "traghetti",
+    "battello",
+    "battelli",
+    "imbarco",
+    "Terminal traghetti",
+    "stazione marittima"
+   ],
+   "food": [
+    "mangiare",
+    "da mangiare",
+    "qualcosa da mangiare",
+    "cibo",
+    "pasto",
+    "pasti",
+    "pranzo",
+    "cena",
+    "colazione",
+    "spuntino",
+    "ristoro",
+    "punto ristoro",
+    "punti ristoro",
+    "posto per mangiare",
+    "posti per mangiare",
+    "dove mangiare",
+    "mangiare fuori",
+    "andare a mangiare",
+    "mangiare qualcosa",
+    "Zona ristorazione"
+   ],
+   "fountain": [
+    "fontana",
+    "fontane",
+    "fontanella",
+    "fontanelle"
+   ],
+   "fuel": [
+    "distributore",
+    "distributori",
+    "benzinaio",
+    "benzinai",
+    "distributore di benzina",
+    "stazione di servizio",
+    "area di servizio",
+    "autogrill"
+   ],
+   "guest_house": [
+    "affittacamere",
+    "B&B",
+    "pensione",
+    "pensioni",
+    "agriturismo",
+    "agriturismi",
+    "locanda"
+   ],
+   "hospital": [
+    "ospedale",
+    "ospedali",
+    "pronto soccorso",
+    "clinica",
+    "cliniche",
+    "infermeria"
+   ],
+   "hostel": [
+    "ostello",
+    "ostelli",
+    "ostello della gioventù"
+   ],
+   "hotel": [
+    "albergo",
+    "alberghi",
+    "hotel"
+   ],
+   "hut": [
+    "rifugio",
+    "rifugi",
+    "rifugio alpino",
+    "rifugi alpini",
+    "baita",
+    "baite",
+    "malga",
+    "malghe"
+   ],
+   "ice_cream": [
+    "gelato",
+    "gelati",
+    "gelateria",
+    "gelaterie",
+    "gelataio",
+    "sorbetteria"
+   ],
+   "lake": [
+    "lago",
+    "laghi",
+    "laghetto",
+    "laghetti"
+   ],
+   "laundry": [
+    "lavanderia",
+    "lavanderie",
+    "lavanderia a gettoni",
+    "fare il bucato",
+    "bucato",
+    "lavare i vestiti"
+   ],
+   "lodging": [
+    "alloggio",
+    "alloggi",
+    "camera",
+    "camere",
+    "sistemazione",
+    "sistemazioni",
+    "appartamento",
+    "casa vacanze",
+    "chalet",
+    "letto",
+    "un letto",
+    "posto letto",
+    "posti letto",
+    "cottage"
+   ],
+   "marketplace": [
+    "mercato",
+    "mercati",
+    "mercatino",
+    "mercatini",
+    "bancarelle"
+   ],
+   "medical": [
+    "assistenza medica",
+    "soccorso",
+    "primo soccorso",
+    "cure mediche",
+    "centro medico"
+   ],
+   "monastery": [
+    "monastero",
+    "monasteri",
+    "abbazia",
+    "abbazie",
+    "badia",
+    "convento",
+    "certosa"
+   ],
+   "motel": [
+    "motel"
+   ],
+   "museum": [
+    "museo",
+    "musei",
+    "galleria d'arte",
+    "gallerie d'arte",
+    "pinacoteca"
+   ],
+   "pass": [
+    "passo",
+    "passi",
+    "valico",
+    "valichi",
+    "colle",
+    "forcella",
+    "sella"
+   ],
+   "pharmacy": [
+    "farmacia",
+    "farmacie",
+    "farmacia di turno"
+   ],
+   "repair_station": [
+    "stazione di riparazione",
+    "colonnina di riparazione",
+    "pompa",
+    "pompa bici",
+    "aria compressa"
+   ],
+   "restaurant": [
+    "ristorante",
+    "ristoranti",
+    "trattoria",
+    "trattorie",
+    "osteria",
+    "osterie",
+    "pizzeria",
+    "pizzerie",
+    "trattoria di campagna",
+    "osteria di campagna",
+    "ristorante self-service",
+    "braceria",
+    "bettola",
+    "griglieria"
+   ],
+   "resupply": [
+    "negozio",
+    "negozi",
+    "spesa",
+    "fare la spesa",
+    "rifornimento",
+    "rifornimenti",
+    "provviste",
+    "comprare da mangiare",
+    "negozio di alimentari",
+    "punto di rifornimento",
+    "punti di rifornimento",
+    "alimentari",
+    "comprare cibo",
+    "comprare del cibo",
+    "fare provviste",
+    "Fruttivendolo",
+    "Spaccio agricolo"
+   ],
+   "ruins": [
+    "rovine",
+    "ruderi",
+    "rudere"
+   ],
+   "shelter": [
+    "riparo",
+    "ripari",
+    "bivacco",
+    "bivacchi",
+    "tettoia",
+    "tettoie",
+    "baito",
+    "piccolo rifugio"
+   ],
+   "shower": [
+    "doccia",
+    "docce",
+    "fare la doccia",
+    "farsi una doccia",
+    "docce pubbliche",
+    "doccia calda",
+    "doccia fredda",
+    "doccia pubblica"
+   ],
+   "sight": [
+    "attrazione",
+    "attrazioni",
+    "da vedere",
+    "cose da vedere",
+    "monumento",
+    "monumenti",
+    "luoghi da visitare",
+    "Attrazione turistica"
+   ],
+   "sleep": [
+    "dormire",
+    "pernottare",
+    "pernottamento",
+    "pernottamenti",
+    "posto per dormire",
+    "posti per dormire",
+    "passare la notte",
+    "sistemazione per la notte",
+    "sistemazioni per la notte",
+    "posto per la notte"
+   ],
+   "spring": [
+    "sorgente",
+    "sorgenti",
+    "fonte",
+    "fonti"
+   ],
+   "summit": [
+    "vetta",
+    "vette",
+    "cima",
+    "cime",
+    "picco",
+    "monte",
+    "montagna",
+    "montagne",
+    "collina",
+    "vulcano",
+    "sommità"
+   ],
+   "supermarket": [
+    "supermercato",
+    "supermercati",
+    "ipermercato"
+   ],
+   "swimming": [
+    "nuotare",
+    "fare il bagno",
+    "nuoto",
+    "balneazione",
+    "zona balneabile",
+    "un bagno"
+   ],
+   "swimming_pool": [
+    "piscina",
+    "piscine",
+    "Parco acquatico",
+    "acquapark"
+   ],
+   "toilets": [
+    "bagno",
+    "bagni",
+    "toilette",
+    "servizi",
+    "servizi igienici",
+    "gabinetto",
+    "wc",
+    "bagni pubblici",
+    "fare pipì",
+    "andare in bagno",
+    "bagno pubblico"
+   ],
+   "tower": [
+    "torre",
+    "torri",
+    "torre panoramica",
+    "torri panoramiche"
+   ],
+   "town": [
+    "città",
+    "paese",
+    "paesi",
+    "villaggio",
+    "villaggi",
+    "borgo",
+    "borghi",
+    "Cittadina",
+    "Piccolo borgo"
+   ],
+   "train_station": [
+    "stazione",
+    "stazioni",
+    "stazione ferroviaria",
+    "treno",
+    "treni",
+    "fermata del treno",
+    "fermate del treno",
+    "prendere il treno"
+   ],
+   "transport": [
+    "trasporto pubblico",
+    "trasporti pubblici",
+    "mezzi pubblici",
+    "trasporti",
+    "prendere i mezzi",
+    "prendere i mezzi pubblici",
+    "fermata dei mezzi",
+    "fermate dei mezzi",
+    "mezzi"
+   ],
+   "viewpoint": [
+    "punto panoramico",
+    "punti panoramici",
+    "belvedere",
+    "panorama"
+   ],
+   "water": [
+    "acqua",
+    "punto acqua",
+    "punti acqua",
+    "punto d'acqua",
+    "punti d'acqua",
+    "fonte d'acqua",
+    "riempire le borracce",
+    "riempire la borraccia",
+    "rifornimento d'acqua",
+    "fare acqua",
+    "pozzo",
+    "pozzi",
+    "punto di rifornimento acqua",
+    "punti di rifornimento acqua",
+    "riempire la mia borraccia",
+    "rifornimento idrico",
+    "trovare acqua",
+    "punto di rifornimento d'acqua",
+    "punti di rifornimento d'acqua"
+   ],
+   "water_tap": [
+    "rubinetto",
+    "rubinetti",
+    "rubinetto dell'acqua"
+   ],
+   "waterfall": [
+    "cascata",
+    "cascate"
+   ]
+  },
+  "es": {
+   "atm": [
+    "Cajero automático"
+   ],
+   "bakery": [
+    "Panadería",
+    "Pastelería"
+   ],
+   "beach": [
+    "Playa",
+    "Balneario de playa"
+   ],
+   "bike_shop": [
+    "Tienda de bicicletas"
+   ],
+   "bridge": [
+    "Área del puente"
+   ],
+   "bus_stop": [
+    "Parada de bus"
+   ],
+   "butcher": [
+    "Carnicería"
+   ],
+   "cafe": [
+    "Cafetería"
+   ],
+   "campsite": [
+    "Campamento",
+    "Lugar para acampar"
+   ],
+   "castle": [
+    "Castillo",
+    "Fortaleza histórica",
+    "Palacio",
+    "Château",
+    "Fuerte histórico"
+   ],
+   "church": [
+    "Lugar de adoración",
+    "Edificio capilla",
+    "Edificio catedral"
+   ],
+   "convenience": [
+    "Tienda multiservicio",
+    "Tienda general",
+    "Quiosco"
+   ],
+   "doctor": [
+    "Médico"
+   ],
+   "drinking_water": [
+    "Agua potable"
+   ],
+   "fast_food": [
+    "Comida rápida"
+   ],
+   "ferry": [
+    "Terminal de ferry",
+    "Terminal del ferry"
+   ],
+   "food": [
+    "Plaza de comida"
+   ],
+   "fountain": [
+    "Fuente ornamental"
+   ],
+   "hospital": [
+    "Terreno del hospital"
+   ],
+   "hostel": [
+    "Albergue"
+   ],
+   "hotel": [
+    "Hotel"
+   ],
+   "hut": [
+    "Refugio de montaña"
+   ],
+   "ice_cream": [
+    "Heladería"
+   ],
+   "laundry": [
+    "Lavandería"
+   ],
+   "lodging": [
+    "Apartamento de huéspedes"
+   ],
+   "marketplace": [
+    "Mercado"
+   ],
+   "monastery": [
+    "Terreno del monasterio"
+   ],
+   "motel": [
+    "Motel"
+   ],
+   "museum": [
+    "Museo"
+   ],
+   "pharmacy": [
+    "Farmacia"
+   ],
+   "repair_station": [
+    "Aire comprimido"
+   ],
+   "restaurant": [
+    "Restaurante"
+   ],
+   "ruins": [
+    "Ruinas"
+   ],
+   "shelter": [
+    "Refugio"
+   ],
+   "shower": [
+    "Ducha"
+   ],
+   "sight": [
+    "Atracción turística",
+    "Monumento grande"
+   ],
+   "spring": [
+    "Manantial"
+   ],
+   "summit": [
+    "Pico",
+    "Volcán"
+   ],
+   "supermarket": [
+    "Supermercado"
+   ],
+   "swimming_pool": [
+    "Piscina",
+    "Parque acuático"
+   ],
+   "toilets": [
+    "Baño"
+   ],
+   "tower": [
+    "Torre"
+   ],
+   "town": [
+    "Ciudad",
+    "Aldea"
+   ],
+   "train_station": [
+    "Estación de tren",
+    "Apeadero"
+   ],
+   "water_tap": [
+    "Llave de agua"
+   ],
+   "waterfall": [
+    "Cascada"
+   ]
+  },
+  "nl": {
+   "atm": [
+    "Bankautomaat"
+   ],
+   "bakery": [
+    "Bakkerij",
+    "Patisserie"
+   ],
+   "bar": [
+    "Bar",
+    "Biergarten"
+   ],
+   "beach": [
+    "Strand",
+    "Strandoord"
+   ],
+   "bike_shop": [
+    "Fietswinkel"
+   ],
+   "bus_stop": [
+    "Bushalte"
+   ],
+   "butcher": [
+    "Slagerij"
+   ],
+   "cafe": [
+    "Café"
+   ],
+   "campsite": [
+    "Camping"
+   ],
+   "castle": [
+    "Kasteel",
+    "Historische fortificatie",
+    "Paleis",
+    "Historisch fort"
+   ],
+   "charging": [
+    "Oplaadstation"
+   ],
+   "church": [
+    "Gebedshuis",
+    "Kerkgebouw",
+    "Kapel",
+    "Kathedraal"
+   ],
+   "convenience": [
+    "Gemakswinkel",
+    "Algemene winkel",
+    "Winkelkiosk"
+   ],
+   "doctor": [
+    "Dokter",
+    "Dagbehandelingscentrum"
+   ],
+   "drinking_water": [
+    "Drinkwaterkraantje",
+    "Waterpunt voor kampeerauto's"
+   ],
+   "fast_food": [
+    "Fastfoodrestaurant"
+   ],
+   "ferry": [
+    "Veerbootterminal",
+    "Ferry terminal"
+   ],
+   "food": [
+    "Foodcourt"
+   ],
+   "fountain": [
+    "Fontein"
+   ],
+   "fuel": [
+    "Tankstation"
+   ],
+   "guest_house": [
+    "Pension"
+   ],
+   "hospital": [
+    "Ziekenhuisgebied"
+   ],
+   "hostel": [
+    "Jeugdherberg"
+   ],
+   "hotel": [
+    "Hotel"
+   ],
+   "hut": [
+    "Berghut"
+   ],
+   "ice_cream": [
+    "IJssalon"
+   ],
+   "laundry": [
+    "Wasserette"
+   ],
+   "lodging": [
+    "Vakantieappartement",
+    "Vakantiehuisje"
+   ],
+   "marketplace": [
+    "Marktplaats"
+   ],
+   "monastery": [
+    "Kloostergebied"
+   ],
+   "motel": [
+    "Motel"
+   ],
+   "museum": [
+    "Museum"
+   ],
+   "pass": [
+    "Zadelpunt"
+   ],
+   "pharmacy": [
+    "Apotheek"
+   ],
+   "repair_station": [
+    "Openbaar fietsgereedschap",
+    "Perslucht"
+   ],
+   "restaurant": [
+    "Restaurant"
+   ],
+   "resupply": [
+    "Groenteboer"
+   ],
+   "ruins": [
+    "Ruïne"
+   ],
+   "shelter": [
+    "Beschutting"
+   ],
+   "shower": [
+    "Douche"
+   ],
+   "sight": [
+    "Toeristische attractie",
+    "Monumentaal groot gedenkteken"
+   ],
+   "spring": [
+    "Bron"
+   ],
+   "summit": [
+    "Top",
+    "Vulkaan"
+   ],
+   "supermarket": [
+    "Supermarkt"
+   ],
+   "swimming": [
+    "Natuurlijk zwemgebied"
+   ],
+   "swimming_pool": [
+    "Waterpretpark"
+   ],
+   "toilets": [
+    "Toilet"
+   ],
+   "tower": [
+    "Toren"
+   ],
+   "town": [
+    "Plaats",
+    "Stad",
+    "Dorp"
+   ],
+   "train_station": [
+    "Treinstation",
+    "Treinstation op aanvraag",
+    "Treinstationgebouw"
+   ],
+   "viewpoint": [
+    "Uitzichtpunt"
+   ],
+   "water_tap": [
+    "Waterkraan"
+   ],
+   "waterfall": [
+    "Waterval"
+   ]
+  }
+ }
+}
