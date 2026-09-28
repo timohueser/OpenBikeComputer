@@ -2,30 +2,37 @@ import { simpleRequest, search, cuisineOf } from './web/engine.mjs';
 import { currentOpening } from './hours.mjs';
 import { resolve } from './resolver.mjs';
 import { validateRequest } from './validation.mjs';
+import { localQuery } from './local-query.mjs';
 
 export async function answerQuery(db, input, parser) {
   let canRetry = false;
-  let request = input.request || simpleRequest(input.q),
+  const local = !input.request && input.submitted && input.q.length <= 80
+    ? localQuery(db, input.q) : null;
+  let ordinary;
+  let request = input.request || local || simpleRequest(input.q),
     notice = '',
     elapsed = 0;
   // Exact names and dictionary categories stay usable without loading a model.
   if (
     !input.request &&
+    !local &&
     input.submitted &&
     request.type === 'place' &&
     input.q.length <= 80
   ) {
-    const exact = search(db, { q: input.q, view: input.view }).results.some(
-      (p) => p.why.match >= 96 || p.precision === 'house' || p.why.house,
+    ordinary = search(db, { q: input.q, view: input.view, limit: input.limit });
+    const exact = ordinary.results.some(
+      (p) => p.why.match >= 88 || p.precision === 'house' || p.why.house,
     );
     if (!exact)
       try {
         const parsed = await parser.parse(input.q);
         request = parsed.request;
+        ordinary = null;
         elapsed = parsed.elapsed;
       } catch (error) {
         canRetry = true;
-      notice = `${error.message} Showing ordinary place search.`;
+        notice = `${error.message} Showing ordinary place search.`;
       }
   } else if (!input.request && input.submitted && input.q.length > 80)
     notice =
@@ -52,7 +59,7 @@ export async function answerQuery(db, input, parser) {
   }
   let answer;
   try {
-    answer = resolve(db, request, input);
+    answer = ordinary ? { type: 'places', ...ordinary } : resolve(db, request, input);
   } catch (error) {
     answer = { type: 'unresolved', results: [], note: error.message };
   }

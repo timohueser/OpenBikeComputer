@@ -19,6 +19,18 @@ async function setup(extra: Record<string, unknown> = {}) {
     return {target,type,component};
 }
 describe('planner query requests',()=>{
+    it('shows and edits a route endpoint without losing its scope', async()=>{
+        const fetch=vi.fn(async(_url:string,init:RequestInit)=>reply(JSON.parse(String(init.body)).request??{type:'places',what:['restaurant'],where:{scope:'route',part:'end'}}));
+        vi.stubGlobal('fetch',fetch);
+        const {target,type}=await setup();await type('restaurant at the end of the route');await tick();
+        const chip=[...target.querySelectorAll<HTMLButtonElement>('.chip')].find(b=>b.textContent?.includes('Near route end'))!;
+        expect(chip).toBeDefined();chip.click();await tick();
+        const part=[...target.querySelectorAll('label')].find(l=>l.textContent?.startsWith('Part of route'))!.querySelector('select')!;
+        expect(part.value).toBe('end');
+        part.value='start';part.dispatchEvent(new Event('change',{bubbles:true}));await tick();
+        (target.querySelector('.apply') as HTMLButtonElement).click();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(JSON.parse(String(fetch.mock.lastCall![1].body)).request.where).toEqual({scope:'route',part:'start'});
+    });
     it('discards stale responses and keeps a cleared search empty',async()=>{
         const pending: ((response:Response)=>void)[]=[];
         const fetch=vi.fn(()=>new Promise<Response>(resolve=>pending.push(resolve)));

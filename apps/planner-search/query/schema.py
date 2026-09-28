@@ -159,7 +159,8 @@ def _where(w: Any) -> None:
     if "day" in w:
         _day(w["day"])
     if "part" in w:
-        _need(w["part"] in PARTS and "day" in w, f"part needs a day {w!r}")
+        _need(w["part"] in PARTS and ("day" in w or w.get("scope") == "route"),
+              f"part needs a day or route {w!r}")
     if "near" in w:
         _need(isinstance(w["near"], list) and 1 <= len(w["near"]) <= 2, f"near {w!r}")
         for p in w["near"]:
