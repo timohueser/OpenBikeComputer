@@ -83,6 +83,11 @@ class PlannerMaps(unittest.TestCase):
             self.assertIn("assets/fonts/OFL.txt", manifest["files"])
             self.assertEqual((destination / "assets/sprites/LICENSE.txt").read_bytes(), b"MIT licence")
             self.assertEqual(list(Path(temporary).iterdir()), [destination])
+            with patch.object(maps, "DATA", destination):
+                maps.check_bundle(full=True)
+                (destination / "basemap.pmtiles").write_bytes(b"oops")
+                with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                    maps.check_bundle(full=True)
 
 
 if __name__ == "__main__":

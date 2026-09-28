@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -29,10 +30,12 @@ def verify(path, expected):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--build-data', action='store_true', help='Download the Germany source and build both regional packages.')
+    ap.add_argument('--build-data', action='store_true', help='Download the Germany source and build the selected regional packages.')
+    ap.add_argument('--data-dir', type=Path, default=ROOT / 'data')
+    ap.add_argument('--region', choices=['germany', 'baden-wuerttemberg', 'all'], default='all')
     args = ap.parse_args()
-    data = ROOT / 'data'
-    data.mkdir(exist_ok=True)
+    data = args.data_dir.resolve()
+    data.mkdir(parents=True, exist_ok=True)
     run('npm', 'ci')
     if not (ROOT / '.venv').exists():
         run('uv', 'venv', '--python', '>=3.12', '.venv')
@@ -66,19 +69,21 @@ def main():
             urllib.request.urlretrieve(DUMP_URL, partial)
             partial.rename(source)
         verify(source, DUMP_SHA)
-        packages = [data / f'{name}.sqlite' for name in ('germany', 'baden-wuerttemberg')]
-        if not any(p.exists() for p in packages):
-            run('.venv/bin/python', 'build.py', str(source))
-        else:
-            for package in packages:
-                try:
-                    with sqlite3.connect(f'file:{package}?mode=ro', uri=True) as db:
-                        schema = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
-                        if schema != ('1',):
-                            raise ValueError('Incomplete data')
-                except (sqlite3.Error, ValueError):
-                    raise SystemExit('Incomplete data build. Use build.py --output with a fresh directory.')
-    print('Start the planner with: npm run dev --prefix apps/planner-search')
+        regions = ['germany', 'baden-wuerttemberg'] if args.region == 'all' else [args.region]
+        for region in regions:
+            package = data / f'{region}.sqlite'
+            if not package.exists():
+                with tempfile.TemporaryDirectory(prefix='.search-', dir=data) as stage:
+                    run('.venv/bin/python', 'build.py', str(source), '--output', stage, '--region', region)
+                    Path(stage, package.name).rename(package)
+            try:
+                with sqlite3.connect(f'{package.as_uri()}?mode=ro', uri=True) as db:
+                    schema = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
+                    if schema != ('1',) or db.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                        raise ValueError('Incomplete data')
+            except (sqlite3.Error, ValueError):
+                raise SystemExit(f'Invalid search package: {package}. Move it aside, then repeat setup.')
+    print(f'Search data ready: {data}')
 
 
 if __name__ == '__main__':

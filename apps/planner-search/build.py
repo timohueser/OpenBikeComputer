@@ -148,9 +148,11 @@ def main():
     ap.add_argument('dump', type=Path)
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--output', type=Path, default=ROOT / 'data')
+    ap.add_argument('--region', choices=['germany', 'baden-wuerttemberg', 'all'], default='all')
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    writers = [Writer('germany', args.output), Writer('baden-wuerttemberg', args.output)]
+    regions = ['germany', 'baden-wuerttemberg'] if args.region == 'all' else [args.region]
+    writers = {name: Writer(name, args.output) for name in regions}
     start = time.monotonic()
     n = 0
     outlines = []
@@ -165,17 +167,18 @@ def main():
             for p in obj['content']:
                 if p.get('country_code') != 'de' or not p.get('centroid'):
                     continue
-                writers[0].add(p)
+                if 'germany' in writers:
+                    writers['germany'].add(p)
                 state = p.get('address', {}).get('state', '')
                 name = p.get('name', {}).get('name', '')
-                if state == 'Baden-Württemberg' or name == 'Baden-Württemberg':
-                    writers[1].add(p)
+                if 'baden-wuerttemberg' in writers and (state == 'Baden-Württemberg' or name == 'Baden-Württemberg'):
+                    writers['baden-wuerttemberg'].add(p)
                 if p.get('address_type') == 'state' and p.get('geometry'):
                     geom = mapping(shape(p['geometry']).simplify(.003, preserve_topology=True))
                     outlines.append({'type': 'Feature', 'properties': {'name': name}, 'geometry': geom})
                 n += 1
                 if n % 100000 == 0:
-                    for w in writers:
+                    for w in writers.values():
                         w.db.commit()
                     print(f'{n:,} records, {time.monotonic()-start:.0f}s', flush=True)
                 if args.limit and n >= args.limit:
@@ -183,7 +186,7 @@ def main():
             if args.limit and n >= args.limit:
                 break
     (args.output / 'regions.geojson').write_bytes(orjson.dumps({'type':'FeatureCollection','features':outlines}))
-    for w in writers:
+    for w in writers.values():
         w.finish(meta)
     print(f'Complete: {n:,} records, {time.monotonic()-start:.0f}s', flush=True)
 

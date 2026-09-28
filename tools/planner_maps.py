@@ -38,7 +38,29 @@ def bounds(value):
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, check=True, **kwargs)
+    if kwargs.pop("capture_output", False):
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen([str(arg) for arg in args], start_new_session=True, **kwargs)
+    try:
+        stdout, stderr = process.communicate()
+    except BaseException:
+        stop_process(process)
+        raise
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, args, stdout, stderr)
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def stop_process(process):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
 
 
 def terrain_bounds(region):
@@ -135,55 +157,71 @@ def check_port(port):
         listener.bind(("127.0.0.1", port))
 
 
-def serve(args):
+def check_bundle(full=False):
     manifest = json.loads((DATA / "manifest.json").read_text())
     for name, item in manifest["files"].items():
-        if (DATA / name).stat().st_size != item["bytes"]:
+        path = DATA / name
+        if not path.resolve().is_relative_to(DATA.resolve()):
+            raise ValueError(f"Map path is outside the bundle: {name}")
+        if path.stat().st_size != item["bytes"]:
             raise ValueError(f"Incomplete map bundle: {name}")
+        if full:
+            with path.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]:
+                    raise ValueError(f"Map checksum mismatch: {name}")
+    return manifest
+
+
+def preview(args):
+    manifest = check_bundle()
+    tile_origin = f"http://127.0.0.1:{args.tile_port}"
+    base = "/@fs" + str(DATA.resolve())
+    env = {
+        **os.environ,
+        "OBC_PLANNER_MAPS_DIR": str(DATA.resolve()),
+        "OBC_PLANNER_TILES_URL": tile_origin,
+        "OBC_PLANNER_ROUTING_URL": args.routing,
+        "VITE_PLANNER_ROUTING_URL": "/routing",
+        "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
+        "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
+        "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
+        "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",
+        "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, manifest["bounds"])),
+    }
+    commands = [
+        ([args.pmtiles, "serve", str(DATA), "--interface=127.0.0.1",
+          f"--port={args.tile_port}", f"--public-url={tile_origin}"], ROOT),
+        (["npm", "run", "dev", "--", "--mode", "web", "--host", "127.0.0.1",
+          "--port", str(args.port), "--strictPort"], APP),
+    ]
+    return commands, env
+
+
+def supervise(commands, env, ready=None):
+    children = []
+    try:
+        for command, cwd in commands:
+            children.append(subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True))
+        if ready:
+            ready(children)
+        while all(child.poll() is None for child in children):
+            time.sleep(0.25)
+        raise RuntimeError("A local planner service stopped.")
+    finally:
+        for child in reversed(children):
+            # npm starts Vite as a child; stop the complete process group.
+            stop_process(child)
+
+
+def serve(args):
     if args.port == args.tile_port:
         raise ValueError("The page and tile ports must differ.")
     check_port(args.port)
     check_port(args.tile_port)
-    tile_origin = f"http://127.0.0.1:{args.tile_port}"
-    env = {
-        **os.environ,
-        "OBC_PLANNER_TILES_URL": tile_origin,
-        "OBC_PLANNER_ROUTING_URL": args.routing,
-        "VITE_PLANNER_ROUTING_URL": "/routing",
-        "VITE_PLANNER_PMTILES_URL": "/data/planner/basemap.pmtiles",
-        "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
-        "VITE_PLANNER_GLYPHS_URL": "/data/planner/assets/fonts/{fontstack}/{range}.pbf",
-        "VITE_PLANNER_SPRITES_URL": "/data/planner/assets/sprites/v4",
-        "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, manifest["bounds"])),
-    }
-    children = []
-    try:
-        children.append(subprocess.Popen([
-            args.pmtiles, "serve", str(DATA), "--interface=127.0.0.1",
-            f"--port={args.tile_port}", f"--public-url={tile_origin}",
-        ], start_new_session=True))
-        children.append(subprocess.Popen([
-            "npm", "run", "dev", "--", "--mode", "web", "--host", "127.0.0.1",
-            "--port", str(args.port), "--strictPort",
-        ], cwd=APP, env=env, start_new_session=True))
-        print(f"Planner: http://127.0.0.1:{args.port}/planner.html", flush=True)
-        print(f"Routing: {args.routing} (start route-server separately)", flush=True)
-        while all(child.poll() is None for child in children):
-            time.sleep(0.25)
-        raise RuntimeError("A preview server stopped.")
-    finally:
-        for child in reversed(children):
-            try:
-                # npm starts Vite as a child; stop the complete process group.
-                os.killpg(child.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        for child in children:
-            try:
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
+    commands, env = preview(args)
+    print(f"Planner: http://127.0.0.1:{args.port}/planner.html", flush=True)
+    print(f"Routing: {args.routing} (start route-server separately)", flush=True)
+    supervise(commands, env)
 
 
 def main():

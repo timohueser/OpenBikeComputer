@@ -24,6 +24,8 @@
 # `obc bake publish` all use this tree. Keep R2 credentials only in this gitignored
 # local file (or in your shell environment), never in the tracked justfile.
 OBC_BAKE_TREE="$HOME/obc-bake"
+# Local planner packages and source cache. `obc planner setup` fills this directory.
+#OBC_PLANNER_DATA="$HOME/.cache/obc/planner/baden-wuerttemberg"
 # The terrain reference archive (host/obc-dem/reference/README.md). When set, `obc bake`
 # and `obc bake terrain` pass it as --reference unless the command line names one.
 #OBC_REFERENCE_ARCHIVE="$HOME/obc-reference"

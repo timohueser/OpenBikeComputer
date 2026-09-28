@@ -20,6 +20,7 @@
     let answeredContext: SearchContext | undefined;
     let limit = 6;
     let settings = $state(false);
+    const regions = (import.meta.env.VITE_PLANNER_SEARCH_REGIONS || 'baden-wuerttemberg,germany').split(',');
     let activeFilter = $state<string | null>(null);
     const days = $derived(context.plan.days.filter(d => !d.rest).map(d => d.number));
     const fields = $derived(Object.entries(request ?? {}).filter(([key]) => !['type','ignored','via_source'].includes(key)));
@@ -122,11 +123,11 @@
     <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{region === 'germany' ? 'Germany' : 'Baden-Württemberg'} · local data<PlannerIcon name="down" size={12} /></button>
     {#if settings}
         <div class="settings">
-            <label>Search coverage<select bind:value={region} onchange={() => { if (text.trim()) run(20); }}><option value="baden-wuerttemberg">Baden-Württemberg</option><option value="germany">Germany</option></select></label>
+            <label>Search coverage<select bind:value={region} onchange={() => { if (text.trim()) run(20); }}>{#each regions as id}<option value={id}>{id === 'germany' ? 'Germany' : 'Baden-Württemberg'}</option>{/each}</select></label>
             <label>Trip start date<input type="date" value={context.startDate ?? ''} onchange={e => onDate(e.currentTarget.value)} /></label>
             <button type="button" onclick={onLocation}>{context.here ? 'Update my location' : 'Use my location'}</button>
             <button type="button" onclick={onSample}>Load Black Forest test route</button>
-            <p class="note">Both search packages run on this computer. Map tiles have their own coverage.</p>
+            <p class="note">Search uses the selected local package. Map tiles have their own coverage.</p>
         </div>
     {/if}
 </div>
