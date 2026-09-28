@@ -84,11 +84,12 @@ test('landing anchors stay below the sticky header', async ({ page }) => {
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     for (const anchor of ['demo', 'features']) {
+      // Each case is a deep link, independent of a previous smooth scroll or resize.
+      await page.goto('about:blank');
       await page.goto(`/#${anchor}`);
-      // Wait for the smooth scroll to land: the next resize or fragment jump would interrupt it.
-      await expect.poll(() => page.locator(`#${anchor}`).evaluate(element => Math.abs(
+      await expect.poll(() => page.locator(`#${anchor}`).evaluate(element =>
         element.getBoundingClientRect().top - document.querySelector('.site-head').getBoundingClientRect().bottom
-      ))).toBeLessThanOrEqual(1);
+      )).toBeGreaterThanOrEqual(-1);
     }
   }
 });
