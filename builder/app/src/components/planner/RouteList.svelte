@@ -1,18 +1,62 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
 
     let { stops, onInspect, onReorder }: {
         stops: { point: RoutePoint; distance: number }[];
         onInspect: (point: RoutePoint) => void;
-        onReorder: (id: string, direction: -1 | 1) => void;
+        onReorder: (id: string, offset: number) => void;
     } = $props();
 
+    const helpId = $props.id();
+    let list: HTMLOListElement;
+    let drag = $state<{ id: string; from: number; to: number; y: number; delta: number; centers: number[] } | null>(null);
+    let announcement = $state('');
+
+    async function move(id: string, from: number, to: number, restoreFocus = false) {
+        if (from === to || to < 1 || to > stops.length - 2) return;
+        const label = stops[from].point.label;
+        onReorder(id, to - from);
+        announcement = `${label} moved to stop ${to} of ${stops.length - 2}.`;
+        if (restoreFocus) {
+            await tick();
+            [...list.querySelectorAll<HTMLButtonElement>('.handle')].find(handle => handle.dataset.point === id)?.focus();
+        }
+    }
+
+    function startDrag(event: PointerEvent, id: string, index: number) {
+        if (event.button !== 0 || stops.length < 4) return;
+        const centers = [...list.children].map(row => { const rect = row.getBoundingClientRect(); return rect.top + rect.height / 2; });
+        drag = { id, from: index, to: index, y: event.clientY, delta: 0, centers };
+        event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId);
+    }
+
+    function dragMove(event: PointerEvent) {
+        if (!drag) return;
+        drag.delta = event.clientY - drag.y;
+        drag.to = drag.centers.reduce((nearest, center, index) =>
+            index > 0 && index < stops.length - 1 && Math.abs(center - event.clientY) < Math.abs(drag!.centers[nearest] - event.clientY) ? index : nearest, drag.from);
+    }
+
+    function drop(event: PointerEvent) {
+        if (!drag) return;
+        const bounds = list.getBoundingClientRect();
+        if (Math.abs(drag.delta) > 4 && event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom) {
+            move(drag.id, drag.from, drag.to);
+        }
+        drag = null;
+    }
 </script>
 
-<ol class="route">
+<svelte:window onkeydown={(event) => { if (event.key === 'Escape') drag = null; }} onblur={() => drag = null} />
+
+<ol class="route" bind:this={list}>
     {#each stops as { point, distance }, index (point.id)}
-        <li>
+        <li class:dragging={drag?.id === point.id && Math.abs(drag.delta) > 4}
+            class:drop-before={drag?.to === index && drag.to < drag.from}
+            class:drop-after={drag?.to === index && drag.to > drag.from}
+            style:--drag-y={`${drag?.id === point.id ? drag.delta : 0}px`}>
             <button type="button" class="stop" onclick={() => onInspect(point)}>
                 <Icon name={point.kind === 'via' ? 'route' : point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
                 <span>
@@ -21,10 +65,16 @@
                 </span>
             </button>
             {#if index > 0 && index < stops.length - 1}
-                <span class="reorder">
-                    <button type="button" aria-label={`Move ${point.label} earlier`} disabled={index === 1} onclick={() => onReorder(point.id, -1)}><Icon name="up" size={15} /></button>
-                    <button type="button" aria-label={`Move ${point.label} later`} disabled={index === stops.length - 2} onclick={() => onReorder(point.id, 1)}><Icon name="down" size={15} /></button>
-                </span>
+                <button type="button" class="handle" data-point={point.id} aria-label={`Reorder ${point.label}`} aria-describedby={helpId}
+                    title="Drag to reorder · use ↑ or ↓ when focused" disabled={stops.length < 4}
+                    onpointerdown={(event) => startDrag(event, point.id, index)} onpointermove={dragMove}
+                    onpointerup={drop} onpointercancel={() => drag = null}
+                    onkeydown={(event) => {
+                        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                            event.preventDefault();
+                            move(point.id, index, index + (event.key === 'ArrowUp' ? -1 : 1), true);
+                        }
+                    }}><Icon name="grip" size={20} /></button>
             {:else}
                 <small class="end">{index === 0 ? 'Start' : 'Finish'}</small>
             {/if}
@@ -32,6 +82,8 @@
     {/each}
 </ol>
 <p class="note">Cumulative from the start</p>
+<span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
+<span class="sr-only" role="status">{announcement}</span>
 
 <style>
     .route {
@@ -40,11 +92,16 @@
         list-style: none;
     }
     li {
+        position: relative;
         display: flex;
         align-items: center;
         gap: 8px;
         margin-bottom: 4px;
     }
+    li.dragging { z-index: 1; transform: translateY(var(--drag-y)); background: var(--panel); border-radius: 6px; box-shadow: var(--planner-shadow); pointer-events: none; }
+    li.drop-before::before, li.drop-after::after { content: ''; position: absolute; left: 0; right: 0; height: 2px; background: var(--forest); }
+    li.drop-before::before { top: -3px; }
+    li.drop-after::after { bottom: -3px; }
     button {
         border: 0;
         background: none;
@@ -86,19 +143,21 @@
     .end {
         margin: 0;
     }
-    .reorder {
-        display: flex;
-    }
-    .reorder button {
+    .handle {
         display: grid;
         place-items: center;
-        width: 30px;
-        height: 30px;
+        width: 32px;
+        height: 36px;
         border-radius: 6px;
+        color: var(--ink-soft);
+        cursor: grab;
+        touch-action: none;
     }
-    .reorder button:hover:not(:disabled) {
+    .handle:active { cursor: grabbing; }
+    .handle:hover:not(:disabled) {
         background: var(--parchment-2);
     }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .note {
         margin: 8px 16px 16px;
         font-size: 13px;
