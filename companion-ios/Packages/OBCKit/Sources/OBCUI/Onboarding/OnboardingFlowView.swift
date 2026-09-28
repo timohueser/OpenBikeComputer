@@ -209,10 +209,17 @@ public struct OnboardingFlowView: View {
                 .disabled(!canTransfer || library.sync.syncState == .syncing)
                 .accessibilityIdentifier("onboarding.syncRide")
             }
-            Button(hasDemoRide ? "Open Library" : "Skip for now", action: finish)
-                .buttonStyle(.obcGhost)
-                .disabled(library.sync.syncState == .syncing)
-                .accessibilityIdentifier("onboarding.finish")
+            if hasDemoRide {
+                Button("Open Library", action: finish)
+                    .buttonStyle(.obcPrimary)
+                    .disabled(library.sync.syncState == .syncing)
+                    .accessibilityIdentifier("onboarding.finish")
+            } else {
+                Button("Skip for now", action: finish)
+                    .buttonStyle(.obcGhost)
+                    .disabled(library.sync.syncState == .syncing)
+                    .accessibilityIdentifier("onboarding.finish")
+            }
         }
     }
 

@@ -42,7 +42,7 @@ final class PairingFlowTests: XCTestCase {
     /// The intro, the scan with the row sliding in, the pairing beat, then the main screen.
     @MainActor
     func testFirstRunPairingHappyPath() {
-        let app = launch(scenario: "noDevice")
+        let app = launch(scenario: "onboarding")
 
         enterPairing(app, capture: true)
 

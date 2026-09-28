@@ -7,7 +7,7 @@ struct WelcomeView: View {
     var body: some View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
-                DeviceGlyphView(variant: .home(name: "OpenBikeComputer"))
+                DeviceGlyphView(variant: .home(name: "OBC"))
                     .padding(.bottom, 32)
                 LaunchTitle("Your next ride starts here")
                     .accessibilityIdentifier("onboarding.welcomeTitle")
