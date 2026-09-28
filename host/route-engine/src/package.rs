@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 pub const FORMAT: u32 = 1;
+pub const MAX_MANIFEST_BYTES: usize = 128 * 1024 * 1024;
 pub const ROADS_PER_PAGE: u32 = 128;
 pub const CELL: i32 = 10_000;
 
@@ -81,7 +82,7 @@ impl<S: Source> Package<S> {
     }
 
     pub fn open(source: S, manifest: &[u8]) -> Result<Self> {
-        if manifest.len() > 64 * 1024 * 1024 {
+        if manifest.len() > MAX_MANIFEST_BYTES {
             return Err(Error::Limit);
         }
         let identity = digest(manifest);
