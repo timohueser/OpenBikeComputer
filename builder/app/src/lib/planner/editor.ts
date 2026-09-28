@@ -1,3 +1,4 @@
+import { movingSecondsAt } from './routing';
 import { profileAscent } from './profile-data';
 import type { PlaceCategory } from './poi-kinds';
 
@@ -15,12 +16,16 @@ export interface RoutePoint {
     leg?: LegMode;
     /** Inner path of a drawn leg. The leg always joins its two points, so moving a point keeps the drawing. */
     drawn?: Coordinate[];
+    /** A visit-and-return rejoins this exact position on the planned line. */
+    anchor?: Coordinate;
 }
 export type Place = RoutePoint & {
     category: PlaceCategory;
     description: string;
 };
 export interface Trip {
+    live?: boolean;
+    routing?: import('./routing').RoutingLine;
     bike?: import('./riding-profiles').BikeType;
     preset?: string;
     routeOrder?: string[];
@@ -144,6 +149,14 @@ export function reorderPoint(trip: Trip, id: string, direction: -1 | 1): Trip {
 type Stop = { point: RoutePoint; distance: number };
 
 function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
+    if (trip.live) {
+        const points = orderedRoutePoints(trip);
+        const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
+        return {
+            coordinates: line?.coordinates ?? [points[0].coordinate],
+            stops: points.map(point => ({ point, distance: line?.stops.find(stop => stop.id === point.id)?.distance ?? 0 })),
+        };
+    }
     const base = corridorCoordinates(trip);
     const points = orderedRoutePoints(trip);
     if (!trip.routeOrder && points.slice(1).every(p => (p.leg ?? 'routed') === 'routed')) {
@@ -173,6 +186,11 @@ function legCoordinates(base: Coordinate[], before: RoutePoint, point: RoutePoin
 
 export function routeCoordinates(trip: Trip): Coordinate[] { return routeLayout(trip).coordinates; }
 export function routeStops(trip: Trip): Stop[] { return routeLayout(trip).stops; }
+
+/** Itinerary edits and labels never invalidate a selected route. */
+export function routingKey(trip: Trip): string {
+    return JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor])]);
+}
 
 // Stored anchors use one corridor frame; current-route fractions change with every detour.
 export function anchorProgress(coordinate: Coordinate): number {
@@ -283,10 +301,12 @@ export function nearestProgress(coordinates: Coordinate[], point: Coordinate): n
 }
 
 export function tripDays(trip: Trip): Day[] {
+    const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
+    const hours = (from: number, to: number, distance: number) => line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / 15;
     const { coordinates, stops } = routeLayout(trip);
     const total = cumulative(coordinates).at(-1)!;
     if (trip.mode === 'route') {
-        return [{ number: 1, from: 0, to: 1, distance: total, hours: total / 15, pinned: undefined }];
+        return [{ number: 1, from: 0, to: 1, distance: total, hours: hours(0, 1, total), pinned: undefined }];
     }
     const pinned = trip.points.filter(p => p.kind === 'night');
     const count = nightCount(trip);
@@ -307,7 +327,7 @@ export function tripDays(trip: Trip): Day[] {
         const distance = Math.max(0, to - boundaries[i]) * total;
         const pin = pinned.find(p => p.night === i + 1);
         const split = !pin && fixed.has(i + 1);
-        return { number: i + 1, from: boundaries[i], to, distance, hours: distance / 15, pinned: pin, split };
+        return { number: i + 1, from: boundaries[i], to, distance, hours: hours(boundaries[i], to, distance), pinned: pin, split };
     });
 }
 
@@ -400,7 +420,7 @@ export function removeRestDay(trip: Trip, index: number): Trip {
 export function pinNight(trip: Trip, night: number, coordinate: Coordinate, label: string): Trip {
     const id = `night-${night}`;
     const others: Trip = { ...trip, points: trip.points.filter(p => p.id !== id) };
-    const point: RoutePoint = { id, kind: 'night', night, coordinate, label, progress: anchorProgress(coordinate) };
+    const point: RoutePoint = { id, kind: 'night', night, coordinate, label, progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) };
     const next = trip.routeOrder && !trip.routeOrder.includes(id)
         ? intoLeg(others, point, nearestLegEnd(others, coordinate))
         : { ...others, points: [...others.points, point] };
@@ -427,7 +447,7 @@ export function addPointNear(trip: Trip, point: RoutePoint): Trip {
 export function insertPoint(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
     const end = trip.points.find(p => p.id === legEndId);
     if (!end || end.kind === 'start' || end.kind === 'marker') return trip;
-    return intoLeg(trip, { id: crypto.randomUUID(), kind: 'via', label: 'Shaping point', coordinate: [...coordinate], progress: anchorProgress(coordinate) }, legEndId);
+    return intoLeg(trip, { id: crypto.randomUUID(), kind: 'via', label: 'Shaping point', coordinate: [...coordinate], progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) }, legEndId);
 }
 
 export function setLegMode(trip: Trip, id: string, mode: LegMode): Trip {

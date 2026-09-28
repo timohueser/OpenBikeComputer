@@ -1,14 +1,16 @@
 <script lang="ts">
     import Segmented from './Segmented.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileHeightAt, profileHeights } from '../../lib/planner/profile-data';
+    import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
+    import type { RoutingLine } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
 
     let {
-        total, days, dayLabels, theme = 'light', activeNight, band, window: view = { from: 0, to: 1 }, height = 190,
+        lineData, total, days, dayLabels, theme = 'light', activeNight, band, window: view = { from: 0, to: 1 }, height = 190,
         onNight, onDayEndDrag, onHover,
     }: {
         /** Route length in km. */
+        lineData?: RoutingLine;
         total: number;
         days: Day[];
         /** Riding number → calendar number. */
@@ -25,8 +27,19 @@
         onHover: (progress: number | null) => void;
     } = $props();
 
-    // Heights map to y = 105 - (h - 350) / 5, so the grid lines at y 25, 65 and 105 are 750, 550 and 350 m.
-    const line = profileHeights.map((h, i) => `${i / 120 * 1000},${105 - (h - 350) / 5}`).join(' ');
+    const samples = $derived(profileSamples(lineData));
+    const known = $derived(samples.flatMap(s => s.height === null ? [] : [s.height]));
+    const low = $derived(known.length ? Math.floor(known.reduce((a, b) => Math.min(a, b), Infinity) / 100) * 100 : 0);
+    const high = $derived(known.length ? Math.max(low + 100, Math.ceil(known.reduce((a, b) => Math.max(a, b), -Infinity) / 100) * 100) : 100);
+    const line = $derived.by(() => {
+        let drawing = false;
+        return samples.map(sample => {
+            if (sample.height === null) { drawing = false; return ''; }
+            const command = `${drawing ? 'L' : 'M'}${sample.progress * 1000} ${105 - (sample.height - low) / (high - low) * 100}`;
+            drawing = true;
+            return command;
+        }).join(' ');
+    });
     let plot: HTMLDivElement;
     let hover = $state<number | null>(null);
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
@@ -93,20 +106,20 @@
         <strong>Elevation</strong>
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: 'Map view' }, { value: 'route', label: 'Whole route' }]} />
-        <span>Illustrative profile</span>
+        <span>{known.length ? 'Terrain estimate' : 'Elevation unavailable'}</span>
         <span class="distance">{total.toFixed(1)} km</span>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
-        <span class="height" style:top="22%">750 m</span>
-        <span class="height" style:top="94%">350 m</span>
+        <span class="height" style:top="22%">{high} m</span>
+        <span class="height" style:top="94%">{low} m</span>
         <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none" role="img" aria-label="Elevation profile. The shaded band is the suggested overnight stretch.">
             <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
-            <polygon points={`0,112 ${line} 1000,112`} class="terrain" />
+
             {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
             {#each days as day (day.number)}
                 <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
-                    <polyline points={line} style:stroke={dayColor(day.number, theme)} />
+                    <path d={line} fill="none" style:stroke={dayColor(day.number, theme)} />
                 </svg>
             {/each}
             {#each days.slice(0, -1) as day (day.number)}
@@ -115,7 +128,7 @@
         </svg>
         {#if hover !== null}
             <span class="readout" style:left={`${x(hover)}%`}>
-                <span class="chip" class:flip={x(hover) > 80}>{(hover * total).toFixed(1)} km · {Math.round(profileHeightAt(hover))} m</span>
+                <span class="chip" class:flip={x(hover) > 80}>{(hover * total).toFixed(1)} km · {profileHeightAt(hover, lineData) === null ? 'Elevation unknown' : `${Math.round(profileHeightAt(hover, lineData)!)} m`}</span>
             </span>
         {/if}
         {#each handles as { day, x: left } (day.number)}
@@ -196,13 +209,10 @@
         stroke-width: 1;
         vector-effect: non-scaling-stroke;
     }
-    .terrain {
-        fill: var(--terrain);
-    }
     .band {
         fill: var(--band);
     }
-    polyline {
+    path:not(.grid) {
         fill: none;
         stroke-width: 2;
         vector-effect: non-scaling-stroke;

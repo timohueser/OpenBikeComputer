@@ -1,16 +1,31 @@
-// Shared example heights for the profile and its displayed ascent figures.
-export const profileHeights = Array.from({ length: 121 }, (_, i) => 430 + Math.sin(i * .047) * 90 + Math.sin(i * .21) ** 2 * 120 + Math.sin(i * .073) ** 4 * 110);
+import type { RoutingLine } from './routing';
+import { cumulative } from './editor';
 
-export function profileAscent(from = 0, to = 1): number {
-    let ascent = 0;
-    for (let i = Math.max(1, Math.ceil(from * 120)); i <= Math.min(120, Math.floor(to * 120)); i++) {
-        ascent += Math.max(0, profileHeights[i] - profileHeights[i - 1]);
-    }
-    return Math.round(ascent / 10) * 10;
+export function profileSamples(line?: RoutingLine): { progress: number; height: number | null }[] {
+    if (!line) return [];
+    const distance = cumulative(line.coordinates);
+    const total = distance.at(-1) || 1;
+    return line.elevation.map((height, i) => ({ progress: distance[i] / total, height }));
 }
 
-export function profileHeightAt(progress: number): number {
-    const x = Math.max(0, Math.min(1, progress)) * 120;
-    const i = Math.min(119, Math.floor(x));
-    return profileHeights[i] + (profileHeights[i + 1] - profileHeights[i]) * (x - i);
+export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
+    const samples = profileSamples(line);
+    let ascent = 0;
+    for (let i = 1; i < samples.length; i++) {
+        const a = samples[i - 1], b = samples[i];
+        if (a.height === null || b.height === null || b.progress <= a.progress) continue;
+        const share = Math.max(0, Math.min(b.progress, to) - Math.max(a.progress, from)) / (b.progress - a.progress);
+        ascent += Math.max(0, b.height - a.height) * share;
+    }
+    return Math.round(ascent);
+}
+
+export function profileHeightAt(progress: number, line?: RoutingLine): number | null {
+    const samples = profileSamples(line);
+    const i = samples.findIndex(p => p.progress >= progress);
+    if (i < 0) return samples.at(-1)?.height ?? null;
+    if (i === 0) return samples[0].height;
+    const a = samples[i - 1], b = samples[i];
+    if (a.height === null || b.height === null) return null;
+    return a.height + (b.height - a.height) * (progress - a.progress) / (b.progress - a.progress || 1);
 }

@@ -6,9 +6,10 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
+        "build:planner": "vite build --mode planner",
         "build:web": "vite build --mode web",
         "build:desktop": "vite build --mode desktop",
-        "build:all": "npm run build && npm run build:web && npm run build:desktop",
+        "build:all": "npm run build && npm run build:web && npm run build:desktop && npm run build:planner",
         "build:wasm": "bash ../build-wasm-bridges.sh",
         "preview": "vite preview",
         "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",

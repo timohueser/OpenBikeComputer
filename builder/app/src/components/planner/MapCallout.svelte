@@ -68,7 +68,7 @@
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
         const day = tripDays(pinNight(trip, sleepDay, coordinate, 'Preview'))[sleepDay - 1];
-        const ascent = profileAscent(day.from, day.to);
+        const ascent = profileAscent(day.from, day.to, trip.routing);
         const over = dayOverTarget(trip, day, ascent);
         return { distance: day.distance, ascent, over: over.km > 0 || over.climb > 0 };
     });

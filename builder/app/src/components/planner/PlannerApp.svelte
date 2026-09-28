@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, untrack } from 'svelte';
     import PlannerMap from './PlannerMap.svelte';
     import Icon from './PlannerIcon.svelte';
     import Profile from './PlannerProfile.svelte';
@@ -10,16 +10,16 @@
     import Segmented from './Segmented.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
-    import WaysList, { ways } from './WaysList.svelte';
+    import WaysList from './WaysList.svelte';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
     import NearbyLandmark from './NearbyLandmark.svelte';
     import {
-        addClickedPoint, addPointNear, addRestDay, anchorProgress, applyBudget, coordinateAt, cumulative, initialTrip,
+        addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, initialTrip,
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
         overnightWindow, pinNight, places, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
-        setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays,
+        setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, routingKey,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -32,7 +32,8 @@
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
 
-    const storageKey = 'obc-planner-lab-v1';
+    const storageKey = 'obc-planner-routing-v2';
+    import { calculateLine, selectRoute, type EngineRoute } from '../../lib/planner/routing';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -41,7 +42,36 @@
         marker: 'Marker',
     };
 
-    let trip = $state<Trip>(initialTrip());
+    let trip = $state<Trip>({ ...initialTrip(), live: true, routeOrder: [], mode: 'route', days: 1, bike: 'touring', points: [
+        { id: 'start', coordinate: [7.8415, 47.9974], label: 'Freiburg Hbf', kind: 'start', progress: 0 },
+        { id: 'finish', coordinate: [8.154, 47.902], label: 'Titisee', kind: 'finish', progress: 1 },
+    ] });
+    let routingStatus = $state('Calculating route…');
+    const routingInput = $derived(routingKey(trip));
+    $effect(() => {
+        const key = routingInput;
+        const snapshot = untrack(() => $state.snapshot(trip));
+        if (snapshot.routing?.key === key) return;
+        const abort = new AbortController();
+        routingStatus = 'Calculating route…';
+        const timer = setTimeout(() => {
+            calculateLine(snapshot, abort.signal).then(line => {
+                if (abort.signal.aborted || key !== routingInput) return;
+                trip = { ...trip, routing: line };
+                save();
+            }).catch(error => { if (!abort.signal.aborted) routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.'; });
+        }, 120);
+        return () => { clearTimeout(timer); abort.abort(); };
+    });
+    function pickRoute(route: EngineRoute) {
+        const next = { ...$state.snapshot(trip), preset: route.profile.endsWith('/shorter') ? 'Shorter' : route.profile.endsWith('/smoother') ? 'Smoother' : route.profile.endsWith('/less-climbing') ? 'Less climbing' : 'Balanced' };
+        next.routing = selectRoute(next, route, trip.routing?.alternatives ?? [route]);
+        commit(next, 'Route preference changed');
+    }
+    const currentRoute = $derived(trip.routing?.key === routingInput ? trip.routing : undefined);
+    const routingMessage = $derived(currentRoute
+        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
+        : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     let searching = $state(false);
     let planEditing = $state(false);
@@ -74,7 +104,7 @@
     let showRoute = $state(true);
     let query = $state('');
     let searchValue = $state<PlannerQueryValue>({ text: '', category: 'all', day: null, within: null });
-    let message = $state('Example route and places');
+    let message = $state('OpenStreetMap routing');
     // The status line offers Undo after a version restore, until the next change.
     let undoable = $state(false);
     let draftSavedAt = $state<number | null>(null);
@@ -476,7 +506,7 @@
     }
 
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
-        return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? defaultLabels[kind], kind, progress: anchorProgress(coordinate) };
+        return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? defaultLabels[kind], kind, progress: nearestProgress(coordinates, coordinate) };
     }
 
     const added: Partial<Record<PointKind, string>> = { via: 'Shaping point added', waypoint: 'Visit added', night: 'Overnight pinned', marker: 'Marker added', pass: 'Pass added' };
@@ -506,7 +536,7 @@
         }
         const next = $state.snapshot(trip);
         next.points = next.points.map(p => p.id === id
-            ? { ...p, coordinate, progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : anchorProgress(coordinate) }
+            ? { ...p, coordinate, progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : nearestProgress(coordinates, coordinate) }
             : p);
         commit(next, 'Point moved');
     }
@@ -542,7 +572,7 @@
             : point.kind === 'via' ? defaultLabels[kind === 'detour' ? 'waypoint' : kind]
             : point.label;
         const next = $state.snapshot(trip);
-        next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label } : p);
+        next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, anchor: kind === 'detour' ? coordinateAt(coordinates, nearestProgress(coordinates, point.coordinate)) : undefined } : p);
         next.routeOrder = next.routeOrder?.map(old => old === point.id ? id : old);
         commit(next, 'Point type updated');
         selectedId = id;
@@ -599,7 +629,8 @@
     }
 
     function duration(hours: number) {
-        return `${Math.floor(hours)}h ${Math.round(hours % 1 * 60)}m`;
+        const minutes = Math.round(hours * 60);
+        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
     }
 </script>
 
@@ -609,7 +640,7 @@
     <header class="site-header">
         <a class="brand" href="/"><img src="/brand/app-icon.svg" alt="" /><span>OpenBikeComputer</span></a>
         <nav aria-label="Preview navigation">
-            <a href="/map-study.html">Map study</a>
+            {#if import.meta.env.MODE !== 'planner'}<a href="/map-study.html">Map study</a>{/if}
             <span aria-current="page">Planner</span>
         </nav>
         <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={() => theme = theme === 'light' ? 'dark' : 'light'}>
@@ -632,8 +663,8 @@
             {:else}
                 <dl class="totals">
                     <div><dt>Distance</dt><dd>{total.toFixed(1)}<small>km</small></dd></div>
-                    <div><dt>Ascent</dt><dd>{profileAscent()}<small>m</small></dd></div>
-                    <div><dt>Riding time</dt><dd>{duration(total / 15)}</dd></div>
+                    <div><dt>Ascent</dt><dd>{currentRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, currentRoute) : '—'}<small>m</small></dd></div>
+                    <div><dt>Riding time</dt><dd>{currentRoute ? duration(currentRoute.seconds / 3600) : '—'}</dd></div>
                 </dl>
                 <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
                 {#if nearbyLandmark}
@@ -641,11 +672,11 @@
                 {/if}
                 <div class="list-switch">
                     <Segmented compact label="List" value={list} onChange={(value) => list = value}
-                        options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: `Ways · ${ways.length}` }]} />
+                        options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: `Ways · ${currentRoute?.alternatives.length ?? 0}` }]} />
                 </div>
                 <div class="pane-scroll">
                     {#if list === 'ways'}
-                        <WaysList {trip} onPick={(variant) => edit({ variant }, 'Way changed')} />
+                        <WaysList routes={currentRoute?.alternatives ?? []} choiceId={currentRoute?.choiceId ?? ''} onPick={pickRoute} />
                     {:else if multi}
                         <Itinerary
                             {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId}
@@ -723,15 +754,15 @@
             </div>
             <Resize value={Math.min(profileHeight, maxProfile)} min={130} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
             <Profile
-                height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
+                lineData={currentRoute} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
                 activeNight={expandedDay ?? 0} band={overnightContext ? area : null} window={profileWindow}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             />
             <div class="status-line" role="status">
-                <span>{message}</span>
+                <span>{message} · {routingMessage}</span>
                 {#if undoable}<span>·</span><button type="button" class="planner-link" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
-                <span class="lab-note">Routing & elevation mocked</span>
+                <span class="lab-note">Regional routing · place suggestions are examples{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
             </div>
         </section>
     </main>

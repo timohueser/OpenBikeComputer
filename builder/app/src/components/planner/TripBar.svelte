@@ -35,13 +35,13 @@
         <label>Bike
             <select value={bike} onchange={(event) => {
                 const next = event.currentTarget.value as BikeType;
-                onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike preference saved · routing is mocked');
+                onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike profile changed');
             }}>
                 {#each Object.entries(ridingProfiles) as [id, profile]}<option value={id}>{profile.label}</option>{/each}
             </select>
         </label>
         <label>Preset
-            <select value={trip.preset ?? 'Balanced'} onchange={(event) => onChange({ preset: event.currentTarget.value }, 'Preset saved · routing is mocked')}>
+            <select value={trip.preset ?? 'Balanced'} onchange={(event) => onChange({ preset: event.currentTarget.value }, 'Route preference changed')}>
                 {#each ridingProfiles[bike].presets as preset}<option>{preset}</option>{/each}
             </select>
         </label>

@@ -1,6 +1,5 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
-    import { profileAscent } from '../../lib/planner/profile-data';
     import type { RoutePoint } from '../../lib/planner/editor';
 
     let { stops, onInspect, onReorder }: {
@@ -9,7 +8,6 @@
         onReorder: (id: string, direction: -1 | 1) => void;
     } = $props();
 
-    const total = $derived(stops.at(-1)?.distance || 1);
 </script>
 
 <ol class="route">
@@ -19,7 +17,7 @@
                 <Icon name={point.kind === 'via' ? 'route' : point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
                 <span>
                     <strong>{point.kind === 'via' ? 'Shaping point' : point.label}</strong>
-                    <small>{distance.toFixed(1)} km · ↑ {profileAscent(0, distance / total)} m</small>
+                    <small>{distance.toFixed(1)} km</small>
                 </span>
             </button>
             {#if index > 0 && index < stops.length - 1}
@@ -33,7 +31,7 @@
         </li>
     {/each}
 </ol>
-<p class="note">Cumulative from the start · climb is illustrative</p>
+<p class="note">Cumulative from the start</p>
 
 <style>
     .route {
