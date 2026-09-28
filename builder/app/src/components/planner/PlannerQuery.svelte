@@ -2,11 +2,12 @@
     import { onDestroy, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
     import QueryChip from './QueryChip.svelte';
+    import type { Coordinate } from '../../lib/planner/editor';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, region = $bindable('baden-wuerttemberg'), onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, region = $bindable('baden-wuerttemberg'), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
         text?: string; region?: string; searchState?: SearchState; context: SearchContext;
-        onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
+        viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
@@ -14,14 +15,18 @@
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let serial = 0;
+    let previousContext = '';
+    let framePending = false;
     let limit = 6;
     let settings = $state(false);
+    let activeFilter = $state<string | null>(null);
     const days = $derived(context.plan.days.filter(d => !d.rest).map(d => d.number));
     const fields = $derived(Object.entries(request ?? {}).filter(([key]) => !['type','ignored','via_source'].includes(key)));
     const required = $derived(request?.type === 'places' ? ['what'] : request?.type === 'place' ? ['name'] : request?.type === 'route' ? ['to'] : request?.type === 'end_day' ? ['day','at'] : ['add_point','remove_point'].includes(request?.type ?? '') ? ['point'] : request?.type === 'split' ? ['days','per_day'] : request?.type === 'join' ? ['day'] : request?.type === 'stretches' ? ['what'] : []);
     const explicitWhere = $derived(request?.where ?? context.pointing ?? { scope: 'view' as const });
 
-    async function run(nextLimit = 20, parsed = request, reparse = false) {
+    async function run(nextLimit = 20, parsed = request, reparse = false, fit = true) {
+        if (fit) framePending = true;
         if (reparse) parsed = undefined;
         clearTimeout(timer); controller?.abort(); const id = ++serial;
         if (!text.trim()) { clear(); return; }
@@ -32,13 +37,16 @@
             const answer = await searchPlaces(input, $state.snapshot(context), region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
             request = answer.request; searchState = { loading: false, error: '', answer };
+            if (framePending && answer.type === 'places' && answer.results?.length) onResults?.(answer.results.map(p => [p.lon, p.lat]));
+            framePending = false;
         } catch (error) {
             if (id !== serial || signal.aborted) return;
             searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'The local search server is not available. Start it, then retry.' : (error as Error).message };
         }
     }
     function input(value: string) {
-        text = value; request = undefined; removed = {}; edited = false;
+        framePending = true;
+        text = value; request = undefined; removed = {}; edited = false; activeFilter = null;
         clearTimeout(timer); controller?.abort(); serial++;
         searchState = { loading: !!text.trim(), error: '', answer: null };
         if (!text.trim()) { onClear(); return; }
@@ -46,7 +54,8 @@
     }
     function clear() {
         clearTimeout(timer); controller?.abort(); serial++;
-        text = ''; request = undefined; removed = {}; edited = false;
+        framePending = false;
+        text = ''; request = undefined; removed = {}; edited = false; activeFilter = null;
         searchState = { loading: false, error: '', answer: null }; onClear();
     }
     function edit(key: string, value: unknown) {
@@ -64,8 +73,11 @@
     export function more() { run(Math.min(100, Math.max(20, limit + 20))); }
     export function retry() { run(Math.max(20, limit), request, !edited); }
     $effect(() => {
-        const current = JSON.stringify(context);
-        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit), 200); } });
+        // Result framing updates the live bounds but does not advance viewRevision.
+        const current = JSON.stringify([viewRevision, context.here, context.startDate, context.pointing, context.plan]);
+        if (current === previousContext) return;
+        previousContext = current;
+        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, false, false), 200); } });
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
@@ -82,19 +94,19 @@
             <div class="meaning" aria-label="Understood request">
                 <span class="meaning-label">{edited ? 'Edited request' : request.type === 'place' ? 'Place search' : request.type.replaceAll('_', ' ')}</span>
                 {#each fields as [field, value] (field)}
-                    <QueryChip {field} {value} {days} removable={!required.includes(field)} onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />
+                    <QueryChip bind:active={activeFilter} {field} {value} {days} removable={!required.includes(field)} onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />
                 {/each}
                 {#if request.type === 'places' && !request.where && !('where' in removed)}
-                    <QueryChip field="where" value={explicitWhere} {days} removable={false} onChange={value => edit('where', value)} onToggle={() => {}} />
+                    <QueryChip bind:active={activeFilter} field="where" value={explicitWhere} {days} removable={false} onChange={value => edit('where', value)} onToggle={() => {}} />
                 {/if}
-                {#each Object.entries(removed) as [field, value] (field)}<QueryChip {field} {value} {days} removed onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />{/each}
+                {#each Object.entries(removed) as [field, value] (field)}<QueryChip bind:active={activeFilter} {field} {value} {days} removed onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />{/each}
             </div>
             {#if request.ignored?.length}<p class="note" role="status">Not understood: {request.ignored.map(word => `“${word}”`).join(', ')}. These words are ignored.</p>{/if}
         {/if}
         {#if text.length > 80}<p class="note">Smart requests use up to 80 characters. Longer text uses ordinary place search.</p>{/if}
     {/if}
     {#if !text.trim() && context.pointing}
-        <div class="meaning"><QueryChip field="where" value={context.pointing} {days} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
+        <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing} {days} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
     {/if}
     <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{region === 'germany' ? 'Germany' : 'Baden-Württemberg'} · local data<PlannerIcon name="down" size={12} /></button>
     {#if settings}
@@ -120,7 +132,7 @@
     button { font: inherit; color: inherit; cursor: pointer; }
     button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .clear { border: 0; background: transparent; width: 28px; height: 32px; padding: 0; display: grid; place-items: center; flex: none; }
-    .meaning { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 9px; }
+    .meaning { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
     .meaning-label { font-size: 11px; color: var(--ink-soft); width: 100%; text-transform: capitalize; }
     .note { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
     .data-button { display: flex; align-items: center; gap: 5px; padding: 8px 0 0; min-height: 32px; border: 0; background: transparent; font-size: 11px; color: var(--ink-soft); }

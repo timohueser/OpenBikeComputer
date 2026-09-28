@@ -78,6 +78,7 @@
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox: Query | undefined;
+    let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>([7.77,47.965,7.96,48.06]);
     let here = $state<Coordinate | undefined>();
     let pointing = $state<Where | undefined>();
@@ -664,7 +665,7 @@
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
             {#if overnightContext && overnightNote}<p class="search-note" role="status">{overnightNote}</p>{/if}
-            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={() => searching = false} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
+            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={() => searching = false} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
             {#if searching}
                 <div class="pane-scroll">
                     <QueryResults state={searchState} {selectedId} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
@@ -717,7 +718,7 @@
                     {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
-                    onBounds={bounds => viewBounds = bounds} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onDayEndDrag={moveDayEnd}
+                    onBounds={(bounds, fromSearch) => { viewBounds = bounds; if (!fromSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
                     onVisibleRange={(range) => visibleRange = range}
                 >
@@ -823,6 +824,9 @@
     }
     /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     .planner-shell {
+        --query-place: #3b654c;
+        --query-area: #365f84;
+        --query-time: #965125;
         --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
         --link: var(--forest);
         display: flex;
@@ -832,6 +836,9 @@
         min-height: 580px;
     }
     :global([data-theme="dark"]) .planner-shell {
+        --query-place: #aed0b5;
+        --query-area: #a9cce9;
+        --query-time: #edb58b;
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
         --link: var(--wood);
     }

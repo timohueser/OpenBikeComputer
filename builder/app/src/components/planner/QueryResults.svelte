@@ -28,9 +28,9 @@
             {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>km {stretch.from.toFixed(1)}–{stretch.to.toFixed(1)} · {(stretch.to - stretch.from).toFixed(1)} km</span></button>{/each}
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
-            <p class="count">{answer.area}</p>
+            <div class="result-heading"><p class="count">{answer.area}</p><span>{answer.results?.length ?? 0}{answer.hasMore ? '+' : ''}</span></div>
             {#each answer.results ?? [] as result (result.source)}
-                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.city, result.position ? `${result.position.along.toFixed(1)} km from start · ${result.position.distance.toFixed(1)} km from line` : `${result.distance.toFixed(1)} km from search centre`, result.opening_hours ?? ''].filter(Boolean).join(' · ')} selected={selectedId === result.source} {onSelect} />
+                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${result.position.along.toFixed(1)} km along route · ${result.position.distance.toFixed(1)} km off route` : `${result.distance.toFixed(1)} km from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} {onSelect} />
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}
@@ -41,6 +41,9 @@
 <style>
     .results { padding: 12px 16px 16px; }
     p { margin: 0 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-soft); overflow-wrap: anywhere; }
+    .result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+    .result-heading p { margin: 0; }
+    .result-heading > span { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
     .count, .description { color: var(--ink); font-weight: 600; }
     .note { margin-top: 12px; }
     ol { padding-inline-start: 22px; font-size: 13px; }

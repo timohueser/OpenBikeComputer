@@ -9,6 +9,8 @@
     import { onMount } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
+    import OpeningHours from './OpeningHours.svelte';
+    import { kindLabel } from '../../lib/planner/search/presentation';
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
@@ -121,8 +123,14 @@
         <button type="button" class="planner-link" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
-        <h2>{place?.label ?? 'Overnight spot'}</h2>
-        {#if place}<p class="kind">{[placeCategories[place.category].label, place.description].filter((part, i, all) => all.indexOf(part) === i).join(' · ')}</p>{/if}
+        <div class="place-heading">
+            {#if place}<span class="place-symbol"><Icon path={placeCategories[place.category].icon} size={21} /></span>{/if}
+            <div><h2>{place?.label ?? 'Overnight spot'}</h2>
+                {#if place}<p class="kind">{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</p>{/if}
+            </div>
+        </div>
+        {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
+        {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -172,7 +180,8 @@
     /* Never taller than the map it sits on; the content scrolls as a last resort. */
     .callout {
         position: relative;
-        width: 320px;
+        width: 340px;
+        max-width: calc(100vw - 48px);
         max-height: calc(var(--map-height, 100vh) - 48px);
         overflow-y: auto;
         padding: 16px;
@@ -224,10 +233,11 @@
         border-radius: 6px;
         color: var(--ink-soft);
     }
-    .kind {
-        margin: -8px 0 12px;
-        color: var(--ink-soft);
-    }
+    .place-heading { display: flex; gap: 12px; align-items: flex-start; margin-right: 16px; }
+    .place-heading h2 { margin: 0 12px 5px 0; font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
+    .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--query-place); background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); }
+    .kind { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
+    .place-note { margin: 10px 0; color: var(--ink-soft); line-height: 1.45; }
     .add-types {
         display: flex;
         gap: 8px;

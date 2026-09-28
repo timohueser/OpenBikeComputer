@@ -20,6 +20,8 @@ export interface RoutePoint {
 export type Place = RoutePoint & {
     category: PlaceCategory;
     description: string;
+    locality?: string;
+    openingHours?: string;
 };
 export interface Trip {
     startDate?: string;
