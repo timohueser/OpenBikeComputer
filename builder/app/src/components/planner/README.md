@@ -1,7 +1,8 @@
 # Planner previews
 
 These entry points use the builder's Svelte runtime. The map renders vector
-tiles and terrain. Routing, elevation profiles and place search use fixtures.
+tiles and terrain. The editor uses the Rust route service for routing, terrain profiles and
+moving time. Place search still uses examples.
 They are not inputs to the default production build.
 
 From `builder/app`:
@@ -12,7 +13,8 @@ npm run dev -- --mode web
 ```
 
 Open `/map-study.html` for map styling or `/planner.html` for the desktop editor.
-The editor saves its example trip in browser storage. Undo and Redo apply to
+Start the [route service](../../../../../apps/route-server/README.md) first.
+The editor saves its trip in browser storage. Undo and Redo apply to
 changes made in the current session.
 
 ## Tile sources
@@ -24,6 +26,8 @@ uncommitted `builder/app/.env.local` is the easiest place):
 
 | Variable | Value |
 | --- | --- |
+| `VITE_PLANNER_DATA_URL` | Optional downloadable regional package for a public preview |
+| `VITE_PLANNER_ROUTING_URL` | Route API prefix; defaults to the local `/routing` proxy |
 | `VITE_PLANNER_PMTILES_URL` | Basemap PMTiles URL; absolute or relative to this host |
 | `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template with `{z}`, `{x}` and `{y}` |
 
