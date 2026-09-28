@@ -1,0 +1,165 @@
+import { describe, expect, it } from 'vitest';
+import { addRestDay, anchorProgress, applyBudget, coordinateAt, cumulative, initialTrip, itineraryDays, kilometres, nightOrderConflicts, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, TripHistory, tripDays, type Coordinate, type Trip } from './editor';
+
+describe('planner commitments', () => {
+    it('keeps a previous pin intact through a later edit and undo', () => {
+        const initial = initialTrip();
+        const coordinates = routeCoordinates(initial);
+        const first = pinNight(initial, 1, coordinateAt(coordinates, .35), 'Friend’s house');
+        const history = new TripHistory();
+        const moved = history.commit(first, pinNight(first, 1, coordinateAt(coordinates, .65), 'New spot'));
+        expect(first.points.find(p => p.night === 1)?.label).toBe('Friend’s house');
+        expect(history.undo(moved)).toEqual(first);
+        expect(history.redo(first)).toEqual(moved);
+    });
+
+    it('reports crossed overnight choices without changing their day assignments', () => {
+        const initial = initialTrip();
+        const coordinates = routeCoordinates(initial);
+        const first = pinNight(initial, 1, coordinateAt(coordinates, .8), 'Night one');
+        const crossed = pinNight(first, 2, coordinateAt(coordinates, .3), 'Night two');
+        expect(crossed.points.find(p => p.label === 'Night one')?.night).toBe(1);
+        expect(crossed.points.find(p => p.label === 'Night two')?.night).toBe(2);
+        expect(nightOrderConflicts(crossed)).toHaveLength(1);
+    });
+
+    it('keeps the highest pinned night when the requested budget is smaller', () => {
+        const initial = initialTrip();
+        const pinned = pinNight(initial, 4, coordinateAt(routeCoordinates(initial), .8), 'Fourth night');
+        const updated = applyBudget(pinned, 'days', 2, 50);
+        expect(updated.days).toBe(5);
+        expect(tripDays(pinned)).toHaveLength(5);
+        expect(updated.points.find(p => p.night === 4)?.label).toBe('Fourth night');
+    });
+
+    it('allows a manual overnight exception without relaxing the distance rule', () => {
+        const initial = { ...initialTrip(), limit: 20 };
+        const pinned = pinNight(initial, 1, coordinateAt(routeCoordinates(initial), .6), 'Required hotel');
+        expect(pinned.limit).toBe(20);
+        expect(pinned.points.some(p => p.label === 'Required hotel')).toBe(true);
+        expect(tripDays(pinned)[0].distance).toBeGreaterThan(pinned.limit);
+    });
+});
+
+describe('overnight suggestions', () => {
+    it('clips the window to the distance available on both sides', () => {
+        const trip = initialTrip();
+        const total = cumulative(routeCoordinates(trip)).at(-1)!;
+        trip.limit = total / 3 + .5;
+        const window = overnightWindow(trip, 1);
+        expect(window.blocked).toBe(false);
+        expect(window.to * total).toBeLessThanOrEqual(trip.limit + 1e-8);
+        expect((1 - window.from) * total).toBeLessThanOrEqual(2 * trip.limit + 1e-8);
+        trip.limit = total / 3 - 1;
+        expect(overnightWindow(trip, 1).blocked).toBe(true);
+    });
+
+    it('balances between fixed nights while ignoring its own pin as an anchor', () => {
+        let trip = { ...initialTrip(), days: 4, limit: 0 };
+        const coordinates = routeCoordinates(trip);
+        trip = pinNight(trip, 1, coordinateAt(coordinates, .2), 'Keep first night');
+        trip = pinNight(trip, 2, coordinateAt(coordinates, .3), 'Move this night');
+        trip = pinNight(trip, 3, coordinateAt(coordinates, .8), 'Keep third night');
+        const snapshot = structuredClone(trip);
+        const window = overnightWindow(trip, 2);
+        expect(window.center).toBeCloseTo(.5, 4);
+        expect(window.from).toBeCloseTo(.44, 4);
+        expect(window.to).toBeCloseTo(.56, 4);
+        expect(trip).toEqual(snapshot);
+        expect(places.map(p => p.coordinate)).toEqual(places.map(p => coordinateAt(routeCoordinates(initialTrip()), p.progress)));
+    });
+});
+
+describe('route slices', () => {
+    it('interpolates boundaries and retains the vertices between them', () => {
+        const coordinates: [number, number][] = [[0, 0], [1, 0], [2, 0], [3, 0]];
+        const slice = routeSlice(coordinates, .2, .8);
+        expect(slice[0][0]).toBeCloseTo(.6, 10);
+        expect(slice.at(-1)![0]).toBeCloseTo(2.4, 10);
+        expect(slice.slice(1, -1)).toEqual([[1, 0], [2, 0]]);
+        expect(cumulative(slice).at(-1)).toBeCloseTo(cumulative(coordinates).at(-1)! * .6, 7);
+        expect(routeSlice(coordinates, .8, .2)).toEqual([...slice].reverse());
+    });
+});
+
+describe('rest days', () => {
+    it('inserts consecutive rest days without moving nights or changing the route', () => {
+        const initial = initialTrip();
+        const trip = pinNight(initial, 1, coordinateAt(routeCoordinates(initial), .35), 'Stay two more nights');
+        const withRest = addRestDay(addRestDay(trip, 1), 1);
+        const itinerary = itineraryDays(withRest);
+        expect(itinerary.map(d => [d.number, d.ridingNumber, d.rest])).toEqual([
+            [1, 1, false], [2, 1, true], [3, 1, true], [4, 2, false], [5, 3, false],
+        ]);
+        expect(itinerary[1]).toMatchObject({ distance: 0, hours: 0, from: itinerary[0].to, to: itinerary[0].to, restIndex: 0 });
+        expect(withRest.target).toBe(5);
+        expect(routeCoordinates(withRest)).toEqual(routeCoordinates(trip));
+        expect(withRest.points).toEqual(trip.points);
+        const removed = removeRestDay(withRest, itinerary[2].restIndex!);
+        expect(removed.restAfter).toEqual([1]);
+        expect(removed.target).toBe(4);
+        expect(removed.points).toEqual(trip.points);
+    });
+
+    it('counts rest days inside the calendar budget while retaining fixed nights', () => {
+        const initial = initialTrip();
+        const withRest = addRestDay(initial, 1);
+        expect(applyBudget(withRest, 'days', 4, 50).days).toBe(3);
+        const pinned = pinNight(withRest, 3, coordinateAt(routeCoordinates(initial), .8), 'Required last night');
+        const shorter = applyBudget(pinned, 'days', 3, 50);
+        expect(shorter.days).toBe(4);
+        expect(itineraryDays(shorter)).toHaveLength(5);
+        expect(shorter.points).toEqual(pinned.points);
+    });
+});
+
+describe('point roles', () => {
+    it('keeps a later overnight on the same route after an earlier long excursion', () => {
+        const initial = initialTrip();
+        const base = routeCoordinates(initial);
+        const excursion = coordinateAt(base, .15);
+        excursion[1] += .4;
+        const withDetour: Trip = { ...initial, points: [...initial.points, { id: 'detour', kind: 'detour', label: 'Long visit', coordinate: excursion, progress: .15 }] };
+        const overnight = coordinateAt(base, .7);
+        const pinned = pinNight(withDetour, 2, overnight, 'Same route overnight');
+        expect(pinned.points.find(p => p.kind === 'night')!.progress).toBeCloseTo(.7, 6);
+        expect(anchorProgress(overnight)).toBeCloseTo(.7, 6);
+        expect(cumulative(routeCoordinates(pinned)).at(-1)).toBeCloseTo(cumulative(routeCoordinates(withDetour)).at(-1)!, 5);
+        expect(pinned.points.find(p => p.id === 'detour')).toEqual(withDetour.points.at(-1));
+    });
+
+    it('returns from a detour to its anchor while a named waypoint stays on the through-route', () => {
+        const initial = initialTrip();
+        const base = routeCoordinates(initial);
+        const anchor = coordinateAt(base, .5);
+        const destination: Coordinate = [anchor[0], anchor[1] + .08];
+        const point = { id: 'visit', coordinate: destination, progress: .5, label: 'Hilltop visit' };
+        const detourTrip: Trip = { ...initial, points: [...initial.points, { ...point, kind: 'detour' }] };
+        const detour = routeCoordinates(detourTrip);
+        const index = detour.findIndex(p => p[0] === destination[0] && p[1] === destination[1]);
+        expect(detour[index - 1]).toEqual(anchor);
+        expect(detour[index + 1]).toEqual(anchor);
+        expect(cumulative(detour).at(-1)).toBeCloseTo(cumulative(base).at(-1)! + 2 * kilometres(anchor, destination), 5);
+        const waypoint = routeCoordinates({ ...initial, points: [...initial.points, { ...point, kind: 'waypoint' }] });
+        const waypointIndex = waypoint.findIndex(p => p[0] === destination[0] && p[1] === destination[1]);
+        expect(waypoint[waypointIndex - 1]).not.toEqual(waypoint[waypointIndex + 1]);
+        expect(routeCoordinates({ ...initial, points: [...initial.points, { ...point, kind: 'via' }] })).toEqual(waypoint);
+        expect(routeCoordinates({ ...initial, points: [...initial.points, { ...point, kind: 'pass' }] })).toEqual(waypoint);
+        expect(routeCoordinates({ ...initial, points: [...initial.points, { ...point, kind: 'marker' }] })).toEqual(base);
+    });
+});
+
+
+describe('planning modes', () => {
+    it('keeps the route and day decisions when switching to a single route and back', () => {
+        const initial = initialTrip();
+        const trip = addRestDay(pinNight(initial, 1, coordinateAt(routeCoordinates(initial), .35), 'Camp'), 1);
+        const single: Trip = { ...trip, mode: 'route' };
+        expect(routeCoordinates(single)).toEqual(routeCoordinates(trip));
+        expect(itineraryDays(single)).toHaveLength(1);
+        expect(tripDays(single)[0].distance).toBeCloseTo(cumulative(routeCoordinates(trip)).at(-1)!);
+        const restored: Trip = { ...single, mode: 'trip' };
+        expect(itineraryDays(restored)).toEqual(itineraryDays(trip));
+        expect(restored.points).toEqual(trip.points);
+    });
+});
