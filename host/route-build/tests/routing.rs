@@ -21,7 +21,7 @@ fn package(graph: &Graph) -> (Memory, Vec<u8>) {
     let mut objects = HashMap::new();
     let profiles = Profile::presets();
     let manifest =
-        route_build::prepare(graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles[..1], vec![], |bytes| {
+        route_build::prepare(graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles[..5], vec![], |bytes| {
             let key = digest(bytes);
             objects.insert(key.clone(), bytes.to_vec());
             Ok(key)
@@ -64,7 +64,15 @@ fn fixture() -> Graph {
                 .filter_map(move |b| (roads[a].to == roads[b].from && (a + b) % 7 == 0).then_some((a as u32, b as u32)))
         })
         .collect();
-    Graph { points, roads, forbidden, forbidden_foot: vec![], warnings: vec![] }
+    let forbidden_foot = (0..roads.len())
+        .flat_map(|a| {
+            let roads = &roads;
+            (0..roads.len()).filter_map(move |b| {
+                (roads[a].to == roads[b].from && (a + b) % 11 == 0).then_some((a as u32, b as u32))
+            })
+        })
+        .collect();
+    Graph { points, roads, forbidden, forbidden_foot, warnings: vec![] }
 }
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
 fn oracle(graph: &Graph, profile: &Profile, from: &Candidate, to: &Candidate) -> Option<u64> {
@@ -107,57 +115,59 @@ fn coordinate(road: &Road, fraction: f64) -> [f64; 2] {
 #[test]
 fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let graph = fixture();
-    let profile = Profile::presets().remove(0);
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 4 * 1024 * 1024);
     let coords: Vec<_> = graph.roads.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
-    for &from in &coords {
-        for &to in &coords {
-            let mut snaps = Vec::new();
-            for [lon, lat] in [from, to] {
-                snaps.push(
-                    router
-                        .snap(
-                            Point {
-                                lon: (lon * 1e6).round() as i32,
-                                lat: (lat * 1e6).round() as i32,
-                                elevation: NO_ELEVATION,
-                            },
-                            "touring",
-                            Policy::default(),
-                        )
-                        .unwrap(),
-                );
-            }
-            let expected = snaps[0]
-                .retained
-                .iter()
-                .flat_map(|a| snaps[1].retained.iter().filter_map(|b| oracle(&graph, &profile, a, b)))
-                .min();
-            let actual = router.route(
-                &Request {
-                    points: vec![from, to],
-                    profile: "touring".into(),
-                    pace: Pace::default(),
-                    alternatives: false,
-                    turnarounds: vec![],
-                },
-                &Control::default(),
-            );
-            match (expected, actual) {
-                (Some(cost), Ok(route)) => {
-                    assert_eq!(cost, route.cost, "{from:?} -> {to:?}");
-                    for pair in route.legs[0].roads.windows(2) {
-                        assert_eq!(graph.roads[pair[0].road as usize].to, graph.roads[pair[1].road as usize].from);
-                        assert!(graph.permits_turn(pair[0].road, pair[1].road, false));
-                    }
+    for profile in &Profile::presets()[..5] {
+        for &from in &coords {
+            for &to in &coords {
+                let mut snaps = Vec::new();
+                for [lon, lat] in [from, to] {
+                    snaps.push(
+                        router
+                            .snap(
+                                Point {
+                                    lon: (lon * 1e6).round() as i32,
+                                    lat: (lat * 1e6).round() as i32,
+                                    elevation: NO_ELEVATION,
+                                },
+                                &profile.name,
+                                Policy::default(),
+                            )
+                            .unwrap(),
+                    );
                 }
-                (None, Err(Error::NoPath)) => {}
-                (expected, actual) => panic!("expected {expected:?}, got {actual:?}"),
+                let expected = snaps[0]
+                    .retained
+                    .iter()
+                    .flat_map(|a| snaps[1].retained.iter().filter_map(|b| oracle(&graph, profile, a, b)))
+                    .min();
+                let actual = router.route(
+                    &Request {
+                        points: vec![from, to],
+                        profile: profile.name.clone(),
+                        pace: Pace::default(),
+                        alternatives: false,
+                        turnarounds: vec![],
+                    },
+                    &Control::default(),
+                );
+                match (expected, actual) {
+                    (Some(cost), Ok(route)) => {
+                        assert_eq!(cost, route.cost, "{from:?} -> {to:?}");
+                        for pair in route.legs[0].roads.windows(2) {
+                            assert_eq!(graph.roads[pair[0].road as usize].to, graph.roads[pair[1].road as usize].from);
+                            assert!(graph.permits_turn(pair[0].road, pair[1].road, profile.walking));
+                        }
+                    }
+                    (None, Err(Error::NoPath)) => {}
+                    (expected, actual) => panic!("expected {expected:?}, got {actual:?}"),
+                }
             }
         }
     }
 }
+
 #[test]
 fn via_direction_pace_and_failure_states_are_explicit() {
     let graph = fixture();
@@ -205,6 +215,7 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     let mut graph = fixture();
     graph.roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0));
     graph.forbidden.clear();
+    graph.forbidden_foot.clear();
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 1024 * 1024);
     let mut request = Request {
