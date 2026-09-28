@@ -9,7 +9,7 @@ Build the finished ride from the repository root:
 cargo run -p obc-replay --example gpx_to_ride -- \
   fixtures/sources/kandel-ride/kandel.gpx \
   fixtures/build/kandel-ride/kandel.obcr \
-  1790236800 'Kandel (simulated)'
+  1790236800 'Kandel (simulated)' --demo
 ```
 
 The output is a recorded-ride v6 object. The generator keeps every GPX track point and adds
@@ -25,13 +25,11 @@ Use the J4 debug cable. Keep the exact normal firmware ELF before the temporary 
 The transfer protocol does not accept ride uploads.
 
 ```sh
-OBC_DEMO_RIDE_FILE="$PWD/fixtures/build/kandel-ride/kandel.obcr" obc flash seed-rides
+OBC_DEMO_RIDE_FILE="$PWD/fixtures/build/kandel-ride/kandel.obcr" obc flash factory-demo-ride
 ```
 
-Wait for `demo rides: complete`, then press Ctrl-C. The temporary image stays idle.
+Wait for `factory demo ride: complete`, then press Ctrl-C. The temporary image stays idle.
 Restore the saved normal firmware with `obc board run /absolute/path/to/normal.elf`.
 The ride remains on the card and syncs to the companion app like a recorded ride.
-Reusing the same fixture does not add a duplicate. A v5 ride with the same name is replaced
-in place; any other different payload with the same name is refused. The seeder rewrites every
-other v5 ride on the card as a v6 ride without limits, with its samples unchanged, because the
-v6 firmware cannot read v5 rides. Existing routes and maps are preserved.
+Reusing the same fixture does not add a duplicate. A different payload with the same name is
+refused. The factory step requires a ride with the demo flag set. Rebuild the file before use.

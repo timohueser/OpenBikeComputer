@@ -106,11 +106,12 @@ riscv64-elf-gcc`, or the apt package `gcc-riscv64-unknown-elf`, or `RISCV_GCC=<p
 Run `cargo run --release` here or `obc flash` from the checkout root.
 Select a probe with `PROBE_RS_PROBE=VID:PID:SERIAL`. BLE and USB are always enabled.
 
-Run `obc flash seed-rides` over J4 for three finished demo rides. The two sensor rides record
-max HR 185 and FTP 250. To seed one finished ride file instead, set `OBC_DEMO_RIDE_FILE` to its
-absolute path. See the [Kandel fixture](../../fixtures/sources/kandel-ride/README.md). Wait for
-`demo rides: complete`, then restore normal firmware. The rides remain. Existing objects are
-preserved; unformatted cards, active recordings, and conflicting fixture names are refused.
+Run `obc flash factory-demo-ride` over J4 to write the app's Grimsel Pass demo route as a ride,
+dated 1 January of the current production year. Sensors are synthetic.
+Wait for `factory demo ride: complete`, stop the probe session, then run `obc flash`.
+The factory image stays idle. Normal firmware never seeds rides, including after reset.
+Existing objects stay; unformatted cards, active recordings and conflicting names are refused.
+For another marked demo, set `OBC_DEMO_RIDE_FILE` to its absolute path.
 
 | Feature | What it does |
 | :-- | :-- |
@@ -118,7 +119,7 @@ preserved; unformatted cards, active recordings, and conflicting fixture names a
 | `debug-uart` | Streams GPS, altimeter and compass from a host over VCOM, and enables the VCOM word-tag commands. Takes precedence over the real sensors and `synth`. |
 | `com-hw` | Drives the COM wave from a zero-CPU TIMER21 → DPPIC20 → GPIOTE20 chain instead of `com::com_task`. Off by default until it is verified on glass and a logic analyzer. |
 | `sd-bench` | Adds SD read counters and one `map SD bench:` RTT line per map redraw. Use with `synth`. |
-| `seed-rides` | Adds finished demo rides. Use `obc flash seed-rides`. |
+| `factory-demo-ride` | Writes one demo ride, then stays idle. Use `obc flash factory-demo-ride`. |
 | `peak-view-demo` | Seeds a Kleine Scheidegg fix and opens Peak View at boot. |
 | `resource-report` | Adds the `.obc_resources` table for `firmware/tools/resource_guard.py`. Diagnostic only — never flash or package this image as the shipping artifact. |
 | `flat-store-reset` | Destructive maintenance mode for `flat_store_bench` only. |
