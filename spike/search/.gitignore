@@ -1,0 +1,9 @@
+data/
+node_modules/
+.venv/
+parser/
+web/vendor/
+test-output/
+web/regions.geojson
+web/labels.json
+web/kinds.json

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f4f2eb">
+  <title>Place search · OpenBikeComputer</title>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/leaflet/leaflet.js" defer></script>
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header class="topbar"><a href="/" class="brand">OpenBikeComputer</a><h1>Place search</h1><span class="prototype">Research prototype</span>
+    <label class="connection"><input id="online" type="checkbox" checked> Use Germany server</label>
+  </header>
+  <main>
+    <section class="panel" aria-label="Search places">
+      <form id="search-form" role="search">
+        <label for="query">Where would you like to go?</label>
+        <div class="searchbox"><input id="query" name="q" type="search" autocomplete="off" placeholder="A place, an address, or bakeries…" maxlength="240"><button type="submit" aria-label="Search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>
+      </form>
+      <div class="examples" aria-label="Example searches"><button data-query="bakery">Bakery</button><button data-query="Kandel">Kandel</button><button data-query="bakeries in Munich">In Munich</button></div>
+      <div id="scope" class="scope">Search the map, or find a place anywhere in Germany.</div>
+      <div id="status" role="status" aria-live="polite">Type a name or try an example.</div>
+      <div id="results" class="results"></div>
+      <button id="more" class="more" hidden>Show more results</button>
+      <div class="panel-foot">
+        <details id="offline-details" open><summary>Offline search <span id="offline-state">Not downloaded</span></summary>
+          <p id="download-copy">Keep Baden-Württemberg on this browser. Search works without the Germany server.</p>
+          <button id="download" class="primary">Download Baden-Württemberg</button><progress id="progress" max="1" value="0" hidden></progress>
+          <p class="small" id="storage-note">This downloads search data and the query model. Detailed offline maps are a separate prototype.</p>
+        </details>
+        <details><summary>Inspect this search</summary><pre id="inspect">Run a search to see its interpretation and timing.</pre></details>
+      </div>
+    </section>
+    <section class="map-panel" aria-label="Map and search context">
+      <div id="map"></div>
+      <nav class="map-tools" aria-label="Map views"><button data-view="freiburg">Freiburg</button><button data-view="munich">Munich</button><button data-view="germany">Germany</button><button id="locate">Use my location</button></nav>
+      <div class="map-note" id="map-note">Categories search the visible map. Place names search all available data.</div>
+      <div class="route-tools"><div><strong>Try a route search</strong><p>Load a GPX, or use the Black Forest sample.</p></div><button id="sample-route">Load sample route</button><button id="open-gpx" type="button">Open GPX</button><input id="gpx" type="file" accept=".gpx" hidden><button id="clear-route" hidden>Clear</button></div>
+    </section>
+  </main>
+</body>
+</html>

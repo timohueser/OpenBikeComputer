@@ -1,0 +1,19 @@
+{
+  "name": "obc-search-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser.mjs"
+  },
+  "dependencies": {
+    "@huggingface/tokenizers": "^0.2.0",
+    "@sqlite.org/sqlite-wasm": "3.53.0-build1",
+    "leaflet": "1.9.4",
+    "onnxruntime-web": "^1.30.0"
+  },
+  "devDependencies": {
+    "playwright": "1.58.2"
+  }
+}
