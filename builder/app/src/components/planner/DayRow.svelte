@@ -167,11 +167,18 @@
     .title small {
         display: block;
         overflow: hidden;
+    }
+    .title small {
         text-overflow: ellipsis;
         white-space: nowrap;
     }
     .title strong {
-        font: 600 14px var(--sans);
+        font: 600 14px/1.3 var(--sans);
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow-wrap: anywhere;
     }
     .title small {
         margin-top: 2px;

@@ -17,8 +17,10 @@ changes made in the current session.
 
 ## Tile sources
 
-The defaults use public evaluation sources. Set these variables before starting
-Vite to use owned sources:
+The basemap default points at a public Protomaps demo archive that no longer
+exists, so the map needs a local extract. Terrain defaults to public Mapterhorn
+tiles, which still work. Set these variables before starting Vite (an
+uncommitted `builder/app/.env.local` is the easiest place):
 
 | Variable | Value |
 | --- | --- |
@@ -29,7 +31,10 @@ The style expects the Protomaps basemap schema. Terrain is capped at zoom 12.
 Glyphs and sprites still use public Protomaps assets.
 
 Use the PMTiles CLI to extract a region from a compatible archive. Put local
-extracts in `builder/app/public/data/planner/`, which is ignored by git.
+extracts in `builder/app/public/data/planner/`, which is ignored by git. A
+symlink to an extract in another checkout works. Vite serves the basemap with
+range requests, so `VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles`
+is enough for the basemap.
 Serve the terrain archive with `pmtiles serve` and enable CORS for the Vite origin.
 
 ```sh
