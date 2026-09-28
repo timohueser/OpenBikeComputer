@@ -63,10 +63,10 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
   fail visibly if it is absent. No route is committed after a failed request.
 
 The request context accepts a cumulative `plan.hours` array aligned with coordinates,
-and `plan.segments` with kilometre bounds and verified route attributes. The UI base
-has no such data. Time, surface, gradient, access, and closure queries report that gap.
-The sample line preserves imported coordinates; its inherited elevation display is
-illustrative. Split and join keep the line. They require unpinned nights and no rest days.
+and `plan.segments` with kilometre bounds and verified route attributes. The UI supplies
+riding time when all legs use the routing engine. Manual legs have no verified time.
+Surface, gradient, access, and closure queries report missing segment data.
+The sample line preserves imported coordinates and has no terrain data. Split and join keep the line. They require unpinned nights and no rest days.
 
 Opening filters use mapped `opening_hours`. Unknown hours are excluded and counted.
 Trip-day filters need a start date. Weekday filters need no date; date-dependent rules

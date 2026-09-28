@@ -45,7 +45,8 @@ guarantee identical weights across devices.
 
 Export requires trained heads and a matching `labels.json`. It copies the label contract
 and training record into the runtime directory. The runtime rejects a different label
-order. Export parity checks do not replace held-out evaluation.
+order. Export parity checks do not replace held-out evaluation. Use
+`--compression-sizes` only when you need gzip and Brotli measurements.
 
 Evaluate the exported directory before use:
 
