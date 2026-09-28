@@ -23,6 +23,7 @@ type HostName = keyof typeof HOSTS;
 // a typo, and quietly building the dev host for a mistyped deploy target is the one
 // outcome worth failing over.
 function hostFor(mode: string): HostName {
+    if (mode === "planner") return "web";
     if (mode in HOSTS) return mode as HostName;
     if (mode === "development" || mode === "production" || mode === "test") return "dev";
     throw new Error(
@@ -51,7 +52,8 @@ export default defineConfig(({ mode }) => {
             ...(mode === "test" ? { conditions: ["browser"] } : {}),
         },
         build: {
-            outDir: host.outDir,
+            outDir: mode === "planner" ? "dist/planner" : host.outDir,
+            ...(mode === "planner" ? { copyPublicDir: false, rollupOptions: { input: "planner.html" } } : {}),
             emptyOutDir: true,
         },
         worker: {
@@ -74,6 +76,7 @@ export default defineConfig(({ mode }) => {
             // the API; Vite proxies it (plain http-proxy streams SSE fine).
             proxy: {
                 "/api/planner-search": `http://127.0.0.1:${process.env.OBC_SEARCH_PORT || "8780"}`,
+                "/routing": { target: "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
                 "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
             },
         },

@@ -20,7 +20,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
-        onEmptyClick, onPointSelect, onPointMove, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
+        onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
@@ -37,6 +37,7 @@
         center?: Coordinate; zoom?: number;
         onEmptyClick?: (coordinate: Coordinate) => void;
         onPointSelect?: (id: string) => void;
+        onPointPreview?: (id: string, coordinate: Coordinate) => void;
         onPointMove?: (id: string, coordinate: Coordinate) => void;
         onDayEndDrag?: (night: number, progress: number) => void;
         onLegClick?: (legEndId: string, coordinate: Coordinate) => void;
@@ -62,6 +63,7 @@
     let errorDetail = $state("");
     let markerList: maplibregl.Marker[] = [];
     let pinButtons = $state.raw(new Map<string, HTMLButtonElement>());
+    let draggingPin = $state(false);
     let builtPins = "";
     let calloutPopup: maplibregl.Popup | undefined;
     let dem: InstanceType<typeof mlcontour.DemSource>;
@@ -298,7 +300,7 @@
         } else {
             const onMap = event.originalEvent.target === map.getCanvas();
             overPoi = onMap && !!placeAt(event.point);
-            hover = onMap && !overPoi && !dragging && !drawing && !pickMode ? lineHit(event.point) : null;
+            hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !pickMode ? lineHit(event.point) : null;
         }
     }
 
@@ -463,7 +465,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {
@@ -494,6 +496,7 @@
     // Pins are rebuilt only when the points change, so a focused pin keeps its focus through a selection.
     $effect(() => {
         if (!map) return;
+        if (draggingPin) return;
         const shown = points.filter((point) => showRoute || point.kind === "place" || point.kind === "marker");
         const key = JSON.stringify(shown);
         if (key === builtPins) return;
@@ -524,7 +527,9 @@
                 marker.on("drag", () => marker.setLngLat(coordinateAt(coordinates, routeProgress(marker))));
                 marker.on("dragend", () => onDayEndDrag?.(point.night!, routeProgress(marker)));
             } else {
-                marker.on("dragend", () => { const p = marker.getLngLat(); onPointMove?.(point.id, [p.lng, p.lat]); });
+                marker.on("dragstart", () => { draggingPin = true; hover = null; });
+                marker.on("drag", () => { const p = marker.getLngLat(); onPointPreview?.(point.id, [p.lng, p.lat]); });
+                marker.on("dragend", () => { const p = marker.getLngLat(); onPointMove?.(point.id, [p.lng, p.lat]); draggingPin = false; });
             }
             return marker;
         });

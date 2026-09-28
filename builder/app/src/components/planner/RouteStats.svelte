@@ -1,12 +1,12 @@
 <script lang="ts">
-    let { distance, ascent, hours }: { distance: number; ascent: number; hours: number } = $props();
-    const minutes = $derived(Math.round(hours * 60));
+    let { distance, ascent, hours }: { distance: number; ascent: number | null; hours: number | null } = $props();
+    const minutes = $derived(hours === null ? null : Math.round(hours * 60));
 </script>
 
 <dl class="stats">
     <div><dt>Distance</dt><dd>{distance.toFixed(1)}<small>km</small></dd></div>
-    <div><dt>Ascent</dt><dd>{ascent}<small>m</small></dd></div>
-    <div><dt>Riding time</dt><dd>{Math.floor(minutes / 60)}h {minutes % 60}m</dd></div>
+    <div><dt>Ascent</dt><dd>{ascent ?? '—'}<small>m</small></dd></div>
+    <div><dt>Riding time</dt><dd>{minutes === null ? '—' : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}</dd></div>
 </dl>
 
 <style>

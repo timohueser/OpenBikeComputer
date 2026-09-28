@@ -6,7 +6,7 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, dayStops, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayOverTarget, dayStops, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
         trip, day, days, theme, scale, expanded, changing, candidates, conflict, selectedId, revealId, calendar,
@@ -43,7 +43,9 @@
     const previous = $derived(days[riding - 2]);
     const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
     const end = $derived(last ? trip.points.find(p => p.kind === 'finish')!.label : day.pinned?.label ?? 'Overnight to choose');
-    const ascent = $derived(profileAscent(day.from, day.to));
+    const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
+    const ascent = $derived(profileAscent(day.from, day.to, line));
+    const ascentKnown = $derived(line?.elevation.every(h => h !== null));
     const over = $derived(dayOverTarget(trip, day, ascent));
     // Both ends chosen: the figures are what the rider will ride. Otherwise they are a suggestion, shown with ≈.
     const confirmed = $derived((riding === 1 || !!previous?.pinned) && (last || !!day.pinned));
@@ -83,14 +85,14 @@
             <span class="badge">{day.number}</span>
             <h2>{start} → {end}</h2>
         </header>
-        <RouteStats distance={day.distance} {ascent} hours={day.hours} />
+        <RouteStats distance={day.distance} ascent={ascentKnown ? ascent : null} hours={line ? day.hours : null} />
     {:else}
     <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{start} → {end}</strong>
-            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascent} m</span>{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? ascent : '—'} m</span>{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />

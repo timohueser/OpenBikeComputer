@@ -97,7 +97,12 @@ function noticeFor(dir: string): PackageNotice {
     const manifest = path.join(dir, "package.json");
     const pkg = JSON.parse(fs.readFileSync(manifest, "utf8")) as Record<string, unknown>;
     const name = String(pkg.name ?? path.basename(dir));
-    const text = licenseTextIn(dir);
+    // These npm tarballs omit their repository license. Fallbacks are version-bound.
+    const vendored = name === "pmtiles" && pkg.version === "4.5.0"
+        ? path.resolve(import.meta.dirname, "licenses/pmtiles-4.5.0")
+        : name === "@protomaps/basemaps" && pkg.version === "5.7.2"
+        ? path.resolve(import.meta.dirname, "licenses/protomaps-basemaps-5.7.2") : undefined;
+    const text = licenseTextIn(dir) ?? (vendored ? licenseTextIn(vendored) : null);
     const license = declaredLicense(pkg);
     if (!text) {
         // Not a warning: a package whose licence text we cannot ship is a package we cannot

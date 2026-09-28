@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { coordinateAt, initialTrip, maxRidingDays, routeCoordinates, type Place } from '../../lib/planner/editor';
+import { coordinateAt, cumulative, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Place } from '../../lib/planner/editor';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
+import type { RoutingLine } from '../../lib/planner/routing';
 
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', () => ({ corridorPlaces: vi.fn() }));
@@ -14,7 +15,19 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 
 beforeEach(() => {
     stored.clear();
+    const trip = { ...initialTrip(), live: true };
+    const coordinates = routeCoordinates(initialTrip());
+    const distance = cumulative(coordinates);
+    const line: RoutingLine = {
+        key: routingKey(trip), choiceId: 'saved-route', profile: 'touring', coordinates,
+        elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
+        surfaces: coordinates.slice(1).map(() => 'Paved'), seconds: distance.at(-1)! * 240,
+        stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
+        alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
+    };
+    stored.set('obc-planner-routing-v2', JSON.stringify({ ...trip, routing: line }));
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        if (!_url.includes('planner-search')) throw new Error('Routing service offline');
         const input = JSON.parse(String(init.body));
         return {ok:true,json:async () => ({type:'places',request:input.request ?? {type:'places',what:['campsite']},results:[{source:tilePlace.id,name:tilePlace.label,kind:'campsite',lon:tilePlace.coordinate[0],lat:tilePlace.coordinate[1],precision:'place',distance:0}]})};
     }));
@@ -84,8 +97,9 @@ describe('planner app transitions', () => {
         vi.spyOn(localStorage, 'getItem').mockReturnValueOnce(JSON.stringify({ points: [], days: 3, limit: 50 }));
         app = mount(PlannerApp, { target: document.body });
         await tick();
-        expect(document.body.textContent).toContain('Saved draft is invalid · example route loaded');
-        expect(button('Open day 1: Basel to Overnight to choose')).toBeDefined();
+        expect(document.body.textContent).toContain('Saved draft is invalid · default route loaded');
+        expect(document.body.textContent).toContain('Freiburg Hbf → Titisee');
+        expect(document.body.textContent).toContain('Elevation unavailable');
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {
