@@ -22,6 +22,7 @@ export type Place = RoutePoint & {
     description: string;
     locality?: string;
     openingHours?: string;
+    hoursStatus?: import('./search/types').HoursStatus;
 };
 export interface Trip {
     startDate?: string;

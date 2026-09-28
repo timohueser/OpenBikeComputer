@@ -10,7 +10,7 @@ const reply = (request: QueryRequest) => ({ok:true,json:async()=>({type:'places'
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(component); vi.unstubAllGlobals(); vi.useRealTimers(); document.body.replaceChildren(); });
 async function setup(extra: Record<string, unknown> = {}) {
-    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
     const target=document.createElement('div');document.body.append(target);
     const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{},...extra}});
     mounted.push(component);await tick();
@@ -81,7 +81,7 @@ describe('planner query requests',()=>{
         const onResults=vi.fn();
         const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12},{lon:7.85,lat:48.14}]})}));
         vi.stubGlobal('fetch',fetch);
-        vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
         const target=document.createElement('div');document.body.append(target);
         const component=mount(Query,{target,props:{get context(){return current.current.context;},get viewRevision(){return current.current.viewRevision;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
@@ -101,7 +101,7 @@ describe('planner query requests',()=>{
         const state=writable({context,viewRevision:0});const current=fromStore(state);
         const onResults=vi.fn();
         const fetch=vi.fn().mockImplementationOnce(()=>new Promise(()=>{})).mockResolvedValue({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
-        vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+        vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
         const target=document.createElement('div');document.body.append(target);
         const component=mount(Query,{target,props:{get context(){return current.current.context;},get viewRevision(){return current.current.viewRevision;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
@@ -109,5 +109,19 @@ describe('planner query requests',()=>{
         state.set({context:{...context,view:[7,47,9,49]},viewRevision:1});await tick();await vi.advanceTimersByTimeAsync(250);
         expect(fetch).toHaveBeenCalledTimes(2);
         expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12]]);
+    });
+    it('refreshes current hours without a new search presentation or another map fit', async()=>{
+        const onResults=vi.fn(), onSearch=vi.fn();
+        const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12,opening_hours:'24/7'}]})}));
+        vi.stubGlobal('fetch',fetch);
+        const currentContext={...context};
+        const {type}=await setup({onResults,onSearch,context:currentContext});await type('pharmacies');await tick();
+        currentContext.view=[7,47,9,49];
+        const searches=onSearch.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(60_000);await tick();
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(onSearch).toHaveBeenCalledTimes(searches);
+        expect(JSON.parse(String((fetch.mock.lastCall as unknown as [string,RequestInit])[1].body)).view).toEqual(context.view);
+        expect(onResults).toHaveBeenCalledTimes(1);
     });
 });

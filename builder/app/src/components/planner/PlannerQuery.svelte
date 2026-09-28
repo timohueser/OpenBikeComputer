@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onDestroy, untrack } from 'svelte';
+    import { onDestroy, onMount, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/editor';
@@ -17,6 +17,7 @@
     let serial = 0;
     let previousContext = '';
     let framePending = false;
+    let answeredContext: SearchContext | undefined;
     let limit = 6;
     let settings = $state(false);
     let activeFilter = $state<string | null>(null);
@@ -25,22 +26,26 @@
     const required = $derived(request?.type === 'places' ? ['what'] : request?.type === 'place' ? ['name'] : request?.type === 'route' ? ['to'] : request?.type === 'end_day' ? ['day','at'] : ['add_point','remove_point'].includes(request?.type ?? '') ? ['point'] : request?.type === 'split' ? ['days','per_day'] : request?.type === 'join' ? ['day'] : request?.type === 'stretches' ? ['what'] : []);
     const explicitWhere = $derived(request?.where ?? context.pointing ?? { scope: 'view' as const });
 
-    async function run(nextLimit = 20, parsed = request, reparse = false, fit = true) {
+    async function run(nextLimit = 20, parsed = request, reparse = false, fit = true, background = false) {
         if (fit) framePending = true;
         if (reparse) parsed = undefined;
         clearTimeout(timer); controller?.abort(); const id = ++serial;
         if (!text.trim()) { clear(); return; }
         controller = new AbortController(); limit = nextLimit;
         const input = text, signal = controller.signal;
-        onSearch(); searchState = { loading: true, error: '', answer: null };
+        const searchContext = background && answeredContext ? answeredContext : $state.snapshot(context);
+        if (!background) onSearch();
+        searchState = { loading: true, error: '', answer: background ? searchState.answer : null };
         try {
-            const answer = await searchPlaces(input, $state.snapshot(context), region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
+            const answer = await searchPlaces(input, searchContext, region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
+            answeredContext = searchContext;
             request = answer.request; searchState = { loading: false, error: '', answer };
             if (framePending && answer.type === 'places' && answer.results?.length) onResults?.(answer.results.map(p => [p.lon, p.lat]));
             framePending = false;
         } catch (error) {
             if (id !== serial || signal.aborted) return;
+            if (background) { searchState = { ...searchState, loading: false }; return; }
             searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'The local search server is not available. Start it, then retry.' : (error as Error).message };
         }
     }
@@ -78,6 +83,12 @@
         if (current === previousContext) return;
         previousContext = current;
         untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, false, false), 200); } });
+    });
+    onMount(() => {
+        const refresh = setInterval(() => {
+            if (!document.hidden && !searchState.loading && searchState.answer?.results?.some(p => p.opening_hours)) run(limit, request, false, false, true);
+        }, 60_000);
+        return () => clearInterval(refresh);
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>

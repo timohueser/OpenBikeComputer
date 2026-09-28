@@ -19,10 +19,11 @@ export interface SearchContext {
     plan: { coordinates: Coordinate[]; days: { number: number; from: number; to: number; rest: boolean }[];
         points: { id: string; label: string; coordinate: Coordinate; kind: string; placeKind?: string }[]; hours?: number[] };
 }
+export interface HoursStatus { state: 'open' | 'closed' | 'unknown'; checkedAt: number; validUntil: number; closesAt?: number }
 export interface SearchPlace {
     source: string; name: string; kind: string; lon: number; lat: number; city: string; region: string;
     distance: number; position?: { along: number; distance: number }; precision: 'place' | 'street' | 'house';
-    opening_hours?: string; opening?: string;
+    opening_hours?: string; opening?: string; hoursStatus?: HoursStatus;
 }
 export interface ResolvedPoint { coordinate: Coordinate; label: string; source?: string; kind?: string; detail?: string; along?: number; alternatives?: ResolvedPoint[] }
 export interface QueryChange {

@@ -1,4 +1,5 @@
 import { simpleRequest, search, cuisineOf } from './web/engine.mjs';
+import { currentOpening } from './hours.mjs';
 import { resolve } from './resolver.mjs';
 import { validateRequest } from './validation.mjs';
 
@@ -55,5 +56,7 @@ export async function answerQuery(db, input, parser) {
   } catch (error) {
     answer = { type: 'unresolved', results: [], note: error.message };
   }
+  const now = Date.now();
+  if (answer.results) answer.results = answer.results.map(place => ({ ...place, hoursStatus: currentOpening(place, now) }));
   return { ...answer, request, notice, canRetry, parserMs: elapsed };
 }

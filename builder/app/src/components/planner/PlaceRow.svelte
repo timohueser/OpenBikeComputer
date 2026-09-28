@@ -1,6 +1,6 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
-    import OpeningHours from './OpeningHours.svelte';
+    import OpeningStatus from './OpeningStatus.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import type { Place } from '../../lib/planner/editor';
@@ -23,7 +23,7 @@
         <strong>{place.label}</strong>
         <small>{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</small>
         {#if detail}<span class="detail">{detail}</span>{/if}
-        {#if wrapDetail && place.openingHours}<OpeningHours value={place.openingHours} compact />{/if}
+        {#if wrapDetail && place.hoursStatus}<OpeningStatus value={place.hoursStatus} />{/if}
     </span>
     {#if day}
         <span class="figure" class:over={day.over}>{day.distance.toFixed(1)} km<small>↑ {day.ascent} m</small></span>

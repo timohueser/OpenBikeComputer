@@ -10,7 +10,7 @@
     const answer = $derived(state.answer);
 </script>
 <div class="results" aria-busy={state.loading}>
-    {#if state.loading}<p role="status">Searching local data…</p>
+    {#if state.loading && !answer}<p role="status">Searching local data…</p>
     {:else if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>
     {:else if answer}
         {#if answer.notice}<p class="note" role="status">{answer.notice}</p>{/if}
