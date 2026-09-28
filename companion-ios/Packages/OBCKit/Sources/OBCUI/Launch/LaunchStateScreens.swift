@@ -106,6 +106,9 @@ struct RadioBlockedView: View {
                 Button("Open Settings", action: openSettings)
                     .buttonStyle(.obcPrimary)
                     .accessibilityIdentifier("radio.openSettings")
+                Button("Try again", action: onRetry)
+                    .buttonStyle(.obcGhost)
+                    .accessibilityIdentifier("radio.tryAgain")
             }
             Button("Browse library", action: onBrowseLibrary)
                 .buttonStyle(.obcGhost)

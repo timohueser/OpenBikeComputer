@@ -20,12 +20,19 @@ import OBCProtocolV4
 /// CoreBluetooth delivers every delegate callback on that queue.
 public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.openbikecomputer.ble")
-    private lazy var central = CBCentralManager(
-        delegate: self,
-        queue: queue
-    )
+    private var centralStorage: CBCentralManager?
+    private var central: CBCentralManager {
+        if let centralStorage { return centralStorage }
+        let manager = CBCentralManager(delegate: self, queue: queue)
+        centralStorage = manager
+        return manager
+    }
     private let discoveryStore: any BLEDiscoveryStore
     private var discoveryPolicy = BLEDiscoveryIntentPolicy()
+    private var pairingScan: AsyncPromise<Result<[PairingDevice], Error>>?
+    private var pairingCandidates: [UUID: PairingDevice] = [:]
+    private var pairingSettle: DispatchWorkItem?
+    private var selectedPairingID: UUID?
 
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
     /// `nil` until the first real BAS value — the seed must not replay as "0%".
@@ -60,9 +67,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // Outstanding operations, touched only on `queue`. Connecting is two phases: `discover()`
     // un-gated, then `authenticate()` gated, which raises the passkey sheet.
     private var discoveryAttempt: AsyncPromise<Result<Void, Error>>?
-    private var authenticateContinuation: CheckedContinuation<Void, Error>?
+    private var authenticateAttempt: AsyncPromise<Result<Void, Error>>?
 
-    /// True only across the gated-phase retry beat, where `authenticateContinuation` is
+    /// True only across the gated-phase retry beat, where `authenticateAttempt` is
     /// momentarily nil. A disconnect in this window is terminal: kicking the reconnect loop
     /// could re-raise the passkey sheet.
     private var awaitingGatedRetry = false
@@ -107,8 +114,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     init(discoveryStore: any BLEDiscoveryStore) {
         self.discoveryStore = discoveryStore
         super.init()
-
-        _ = central  // force manager creation (and a state callback)
     }
 
     // MARK: DeviceTransport — lifecycle
@@ -140,7 +145,38 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         try await authenticate()
     }
 
+    public func scanForPairing() async throws -> [PairingDevice] {
+        let attempt = AsyncPromise<Result<[PairingDevice], Error>>()
+        return try await withTaskCancellationHandler {
+            queue.async { [self] in
+                guard attempt.current == nil else { return }
+                guard pairingScan == nil, !discoveryPolicy.hasIntent else {
+                    attempt.fulfill(.failure(DeviceError.notConnected))
+                    return
+                }
+                pairingCandidates = [:]
+                pairingScan = attempt
+                startConnectIfReady()
+            }
+            return try await attempt.value.get()
+        } onCancel: {
+            attempt.fulfill(.failure(CancellationError()))
+            self.queue.async { [self] in
+                guard pairingScan === attempt else { return }
+                finishPairingScan(.failure(CancellationError()))
+            }
+        }
+    }
+
+    public func discover(_ candidate: PairingDevice) async throws {
+        try await discover(selecting: candidate.id)
+    }
+
     public func discover() async throws {
+        try await discover(selecting: nil)
+    }
+
+    private func discover(selecting candidateID: UUID?) async throws {
         // Phase 1: scan, connect, and discover the services and the un-gated characteristics
         // only. Resolves once every service's characteristics are in hand, so `deviceInfo()` can
         // read them, and never touches a gated characteristic.
@@ -148,10 +184,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         try await withTaskCancellationHandler {
             queue.async { [self] in
                 guard attempt.current == nil else { return }
-                guard discoveryAttempt == nil else {
+                guard discoveryAttempt == nil, pairingScan == nil else {
                     attempt.fulfill(.failure(DeviceError.notConnected))
                     return
                 }
+                if let candidateID, pairingCandidates[candidateID] == nil {
+                    attempt.fulfill(.failure(DeviceError.deviceNotFound))
+                    return
+                }
+                selectedPairingID = candidateID
                 discoveryAttempt = attempt
                 discoveryPolicy.requestForeground()
                 startConnectIfReady()
@@ -195,16 +236,27 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // A terminal `DeviceError` already tore the intent down and is rethrown straight through.
     }
 
-    /// One gated-phase attempt: park the authenticate continuation and kick `beginAuthenticate()`.
+    /// One cancellable gated-phase attempt. Only its own cancellation can tear it down.
     /// Throws `GatedPairingWindowError` on a retryable failure, a `DeviceError` on a terminal one.
     private func runGatedPhaseOnce() async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        let attempt = AsyncPromise<Result<Void, Error>>()
+        try await withTaskCancellationHandler {
             queue.async { [self] in
-                // This attempt is now live; from here `authenticateContinuation`
-                // (not `awaitingGatedRetry`) owns drop handling.
+                guard attempt.current == nil else { return }
+                guard authenticateAttempt == nil else {
+                    attempt.fulfill(.failure(DeviceError.notConnected))
+                    return
+                }
                 awaitingGatedRetry = false
-                authenticateContinuation = cont
+                authenticateAttempt = attempt
                 beginAuthenticate()
+            }
+            try await attempt.value.get()
+        } onCancel: {
+            attempt.fulfill(.failure(CancellationError()))
+            self.queue.async { [self] in
+                guard authenticateAttempt === attempt else { return }
+                failAuthenticate(.notConnected)
             }
         }
     }
@@ -213,10 +265,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async { [self] in
                 let cancelForegroundConnection = discoveryPolicy.cancelForeground()
-                if cancelForegroundConnection, let peripheral { central.cancelPeripheralConnection(peripheral) }
-                if central.isScanning, !discoveryPolicy.hasIntent { central.stopScan() }
+                if pairingScan != nil { finishPairingScan(.failure(DeviceError.notConnected)) }
+                if cancelForegroundConnection, let peripheral { centralStorage?.cancelPeripheralConnection(peripheral) }
+                if centralStorage?.isScanning == true, !discoveryPolicy.hasIntent { centralStorage?.stopScan() }
                 if discoveryAttempt != nil { failDiscover(.notConnected) }
-                if authenticateContinuation != nil { failAuthenticate(.notConnected) }
+                if authenticateAttempt != nil { failAuthenticate(.notConnected) }
                 stateMulticast.send(.disconnected)
                 if discoveryPolicy.hasIntent { startConnectIfReady() }
                 cont.resume()
@@ -667,15 +720,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // MARK: Connect flow (queue-confined)
 
     private func startConnectIfReady() {
-        guard discoveryPolicy.hasIntent else { return }
+        guard pairingScan != nil || discoveryPolicy.hasIntent else { return }
         guard discoveryPolicy.phase == .scanning || discoveryPolicy.phase == .idle else { return }
         switch central.state {
         case .poweredOn:
-            stateMulticast.send(.connecting)
+            if pairingScan == nil { stateMulticast.send(.connecting) }
             guard !central.isScanning else { return }
             // A known device is selected by its identifier in `discovered`.
-            let scanServices: [CBUUID]? = discoveryStore.knownPeripheralID() == nil
-                ? [GATT.obcControlService] : nil
+            let scanServices: [CBUUID]? = pairingScan != nil || selectedPairingID != nil
+                || discoveryStore.knownPeripheralID() == nil ? [GATT.obcControlService] : nil
             central.scanForPeripherals(withServices: scanServices)
         case .poweredOff:
             failRadioUnavailable(.bluetoothUnavailable(.poweredOff))
@@ -688,8 +741,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    private func failRadioUnavailable(_ error: DeviceError) {
+    private func finishPairingScan(_ result: Result<[PairingDevice], Error>) {
+        pairingSettle?.cancel()
+        pairingSettle = nil
+        centralStorage?.stopScan()
+        pairingScan?.fulfill(result)
+        pairingScan = nil
+        if case .failure = result { pairingCandidates = [:] }
+    }
 
+    private func failRadioUnavailable(_ error: DeviceError) {
+        if pairingScan != nil { finishPairingScan(.failure(error)) }
         if discoveryAttempt != nil {
             failDiscover(error)
         } else {
@@ -710,7 +772,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
         // Finish the protected subscription before opening the stream. A live CoC alone does
         // not prove the peer can deliver the result of any object operation.
-        armChannelWatchdog(after: authenticateContinuation != nil ? Self.pairingTimeout : Self.phaseTimeout)
+        armChannelWatchdog(after: authenticateAttempt != nil ? Self.pairingTimeout : Self.phaseTimeout)
         if control.isNotifying {
             openAuthenticatedChannel()
         } else {
@@ -735,7 +797,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let waiters = channelWaiters
         channelWaiters.removeAll()
         for waiter in waiters { waiter.resume(throwing: error) }
-        if authenticateContinuation != nil {
+        if authenticateAttempt != nil {
             failAuthenticate(error)
         } else if let peripheral {
             central.cancelPeripheralConnection(peripheral)
@@ -803,8 +865,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         awaitingGatedRetry = false
         _ = discoveryPolicy.cancelForeground()
         stateMulticast.send(.disconnected)
-        authenticateContinuation?.resume(throwing: error)
-        authenticateContinuation = nil
+        authenticateAttempt?.fulfill(.failure(error))
+        authenticateAttempt = nil
         if let peripheral { central.cancelPeripheralConnection(peripheral) }
     }
 
@@ -815,8 +877,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private func resolveAuthenticateRetryable() {
         disarmChannelWatchdog()
         awaitingGatedRetry = true
-        authenticateContinuation?.resume(throwing: GatedPairingWindowError())
-        authenticateContinuation = nil
+        authenticateAttempt?.fulfill(.failure(GatedPairingWindowError()))
+        authenticateAttempt = nil
     }
 
     /// The single retry also failed with the pairing-window error, so the link may still be up
@@ -884,8 +946,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             discoveryStore.saveKnownPeripheralID(peripheral.identifier)
         }
         awaitingGatedRetry = false
-        authenticateContinuation?.resume()
-        authenticateContinuation = nil
+        authenticateAttempt?.fulfill(.success(()))
+        authenticateAttempt = nil
 
     }
 
@@ -1366,16 +1428,36 @@ extension BLETransport: CBCentralManagerDelegate {
         if central.state != .poweredOn {
             clearPhysicalLink()
             discoveryPolicy.didDisconnect()
-            if authenticateContinuation != nil { failAuthenticate(.notConnected) }
+            if authenticateAttempt != nil { failAuthenticate(.notConnected) }
         }
         startConnectIfReady()
     }
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                                advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        if pairingScan != nil {
+            let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+                ?? peripheral.name ?? DeviceInfo.unnamed
+            pairingCandidates[peripheral.identifier] = PairingDevice(id: peripheral.identifier, name: name)
+            if pairingSettle == nil {
+                // Collect a short window after the first advertisement so nearby devices can
+                // appear together. Choosing the first radio response can pair the wrong OBC.
+                let attempt = pairingScan
+                let settle = DispatchWorkItem { [weak self] in
+                    guard let self, pairingScan === attempt else { return }
+                    let candidates = pairingCandidates.values.sorted {
+                        $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name < $1.name
+                    }
+                    finishPairingScan(.success(candidates))
+                }
+                pairingSettle = settle
+                queue.asyncAfter(deadline: .now() + 2, execute: settle)
+            }
+            return
+        }
         let action = discoveryPolicy.discovered(
             peripheralID: peripheral.identifier,
-            knownPeripheralID: discoveryStore.knownPeripheralID()
+            knownPeripheralID: selectedPairingID ?? discoveryStore.knownPeripheralID()
         )
         switch action {
         case .ignore:
@@ -1410,7 +1492,7 @@ extension BLETransport: CBCentralManagerDelegate {
         clearPhysicalLink()
         if discoveryAttempt != nil {
             failDiscover(.notConnected)
-        } else if discoveryPolicy.foregroundRequested {
+        } else if discoveryPolicy.foregroundRequested || pairingScan != nil {
             startConnectIfReady()
         }
     }
@@ -1428,7 +1510,7 @@ extension BLETransport: CBCentralManagerDelegate {
             failDiscover(.notConnected)
             return
         }
-        if authenticateContinuation != nil {
+        if authenticateAttempt != nil {
             failAuthenticate(.pairingFailed)
             return
         }
@@ -1442,7 +1524,7 @@ extension BLETransport: CBCentralManagerDelegate {
             return
         }
         stateMulticast.send(discoveryPolicy.foregroundRequested ? .outOfRange : .disconnected)
-        if discoveryPolicy.hasIntent {
+        if discoveryPolicy.hasIntent || pairingScan != nil {
             startConnectIfReady()
         }
     }
@@ -1530,7 +1612,7 @@ extension BLETransport: CBPeripheralDelegate {
                 // waiters fail as before; the retry re-opens the CoC.
                 if Self.isRetryableGatedFailure(
                     error, peripheralConnected: peripheral.state == .connected,
-                    authenticatePending: authenticateContinuation != nil
+                    authenticatePending: authenticateAttempt != nil
                 ) {
                     for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
                     resolveAuthenticateRetryable()
@@ -1602,7 +1684,7 @@ extension BLETransport: CBPeripheralDelegate {
             openAuthenticatedChannel()
         } else if Self.isRetryableGatedFailure(
             error, peripheralConnected: peripheral.state == .connected,
-            authenticatePending: authenticateContinuation != nil
+            authenticatePending: authenticateAttempt != nil
         ) {
             resolveAuthenticateRetryable()
         } else {

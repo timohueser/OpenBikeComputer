@@ -45,6 +45,7 @@ public final class MockControl: @unchecked Sendable {
     private var _latency: Duration
     private var _throughput: Int
     private var _radio: RadioState
+    private var _pairingDevices: [PairingDevice]?
     private var _bonded: Bool
     private var _bondedName: String?
     private var _pairingFail: PairingFail?
@@ -151,6 +152,12 @@ public final class MockControl: @unchecked Sendable {
         set { lock.withLocked { _bondedName = newValue } }
     }
 
+    /// Nil uses the fixture device. An empty list models a scan with no nearby OBC.
+    public var pairingDevices: [PairingDevice]? {
+        get { lock.withLocked { _pairingDevices } }
+        set { lock.withLocked { _pairingDevices = newValue } }
+    }
+
     public var deviceInfo: DeviceInfo {
         get { lock.withLocked { _fixtures.deviceInfo } }
         set { lock.withLocked { _fixtures.deviceInfo = newValue } }
@@ -174,6 +181,7 @@ public final class MockControl: @unchecked Sendable {
             _radio = preset.radio
             _bonded = preset.bonded
             _bondedName = nil
+            _pairingDevices = nil
             _pairingFail = preset.pairingFail
             _pendingFailures = preset.pendingFailure.map { [$0] } ?? []
             _dropFraction = preset.dropAtFraction
@@ -725,7 +733,7 @@ extension NSLock {
 }
 
 extension DeviceInfo {
-    fileprivate func renamed(_ name: String) -> DeviceInfo {
+    func renamed(_ name: String) -> DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion,
                    serial: serial, protocolVersion: protocolVersion, storeID: storeID,
                    obcmVersion: obcmVersion)

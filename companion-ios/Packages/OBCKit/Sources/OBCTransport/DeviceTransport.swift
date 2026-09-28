@@ -18,7 +18,7 @@ public protocol DeviceLink: Sendable {
     func discover() async throws
     /// First-time-pairing phase 2: the gated operations that establish the encrypted,
     /// LESC-authenticated link. This is what raises the system passkey sheet, so the launch flow
-    /// calls it on the device-row tap. Requires a prior `discover()`.
+    /// calls it after selecting a nearby device. Requires a prior `discover()`.
     func authenticate() async throws
     /// Tear the link down.
     func disconnect() async
@@ -133,7 +133,7 @@ public protocol DeviceUpdates: Sendable {
     func installFirmware() async throws -> FirmwareInstallResult
 }
 
-public protocol DeviceTransport: DeviceLink, DeviceBattery, DeviceConfiguration,
+public protocol DeviceTransport: DeviceLink, DevicePairing, DeviceBattery, DeviceConfiguration,
     DeviceBonding, DeviceObjects, DeviceClock, DeviceUpdates {
     // MARK: Control plane
     func readDiagnostics() async throws -> Data

@@ -3,27 +3,13 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// The launch branch and the first-run pairing flow, as one `@Observable` state machine the
-/// host view renders; `Phase` below lists the screens.
-///
-/// Depends only on `DeviceLink` and `BondStore`. Pairing is a two-phase connect: `startPairing`
-/// runs the un-gated `discover()`, which surfaces the device row, and the row tap runs the gated
-/// `authenticate()`, the op that raises the system passkey sheet. The sheet therefore lands in
-/// the pairing beat, not on the scanning screen. "Have we bonded before" comes from the
-/// `BondStore`, never from a CoreBluetooth detour.
+/// Launch, nearby-device selection and pairing. Optional setup owns its own progress after `.setup`.
 @MainActor @Observable
 public final class LaunchFlowModel {
-    /// Why pairing failed; it selects the copy variant.
     public enum PairingFailure: Equatable, Sendable {
-        /// Scan ended without finding the device (`DeviceError.deviceNotFound`).
         case timeout
-        /// Found it, but pairing did not complete. Covers a declined or wrong passkey and a
-        /// device that refuses because it is already bonded to another phone: the device
-        /// suppresses its passkey and drops the link, and no distinguishable reason reaches the
-        /// app, so this one case carries the combined copy.
         case rejected
 
-        /// The headline for this failure. On the model, so the copy is testable without a view.
         public var title: String {
             switch self {
             case .timeout: "Couldn't find your OBC"
@@ -31,9 +17,6 @@ public final class LaunchFlowModel {
             }
         }
 
-        /// The body copy. For `.rejected` it is deliberately combined: a declined passkey and an
-        /// already-bonded refusal arrive identically over the wire, so it offers both recoveries
-        /// without claiming which one happened.
         public var reason: String {
             switch self {
             case .timeout:
@@ -44,64 +27,31 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// Why the radio is unusable.
-    public enum RadioBlock: Equatable, Sendable {
-        case off
-        case denied
-    }
+    public enum RadioBlock: Equatable, Sendable { case off, denied }
 
-    /// The device row that slides into the scanning screen.
-    public struct DiscoveredDevice: Equatable, Sendable {
-        /// The clean device name, which the greeting shows and the bond record stores.
-        public var name: String
-
-        public init(name: String) {
-            self.name = name
-        }
-
-        /// What the device advertises.
-        public var advertisedName: String {
-            name.hasPrefix("OBC-") ? name : "OBC-\(name)"
-        }
-    }
-
-    /// The screen being shown. The host view switches over this exhaustively.
     public enum Phase: Equatable, Sendable {
-        /// Pre-`start()` blank; it reads as the launch screen.
         case idle
-        /// Bonded and quietly reconnecting. Resolves to `.main`, or to `.connectFailed` when the
-        /// grace expires with the device silent.
         case connecting(deviceName: String)
-        /// The bonded device did not answer within the grace window. The background attempt
-        /// keeps listening either way.
         case connectFailed(deviceName: String)
+        case welcome
         case pairIntro
-        /// Scanning; the row slides in when `discovered` is non-nil.
-        case scanning(discovered: DiscoveredDevice?)
-        /// The beat while the system pairing completes.
+        case bluetoothPermission
+        case scanning(devices: [PairingDevice])
         case pairing
         case paired(deviceName: String)
         case pairFailed(PairingFailure)
-        /// The radio is off, or Bluetooth access was denied.
         case radioBlocked(RadioBlock)
-        /// Hand over to the main screen.
+        case setup
         case main
     }
 
-    /// Flow pacing, injectable so the model tests run in milliseconds.
     public struct Timing: Sendable {
-        /// How long the connecting state may hold before it resolves: never a blocking
-        /// full-screen spinner. The connect attempt keeps trying in the background either way.
         public var connectGrace: Duration
-        /// The scan window; expiry drives the "we scanned for 30 seconds" copy.
         public var scanTimeout: Duration
-        /// The minimum dwell after the gated `authenticate()` resolves, so the pairing beat is
-        /// perceptible even when the mock authenticates instantly.
         public var pairingBeat: Duration
 
         public init(
-            connectGrace: Duration = .seconds(8),
-            scanTimeout: Duration = .seconds(30),
+            connectGrace: Duration = .seconds(8), scanTimeout: Duration = .seconds(30),
             pairingBeat: Duration = .milliseconds(700)
         ) {
             self.connectGrace = connectGrace
@@ -111,67 +61,60 @@ public final class LaunchFlowModel {
     }
 
     public private(set) var phase: Phase = .idle
+    public var deviceNameDraft = ""
+    public private(set) var savingName = false
+    public private(set) var nameSaveError: String?
+    public var canSaveName: Bool { !savingName && !DeviceRenaming.normalized(deviceNameDraft).isEmpty }
 
-    private let transport: any DeviceLink
+    private let transport: any DeviceLink & DevicePairing & DeviceConfiguration
     private let bondStore: any BondStore
     private let timing: Timing
+    private let onboardingPending: @MainActor () -> Bool
     @ObservationIgnored private var flowTask: Task<Void, Never>?
-    /// The one background bonded-connect attempt (see `startConnectAttemptIfNeeded`).
     @ObservationIgnored private var connectAttempt: Task<Void, Never>?
+    @ObservationIgnored private var teardownTask: Task<Void, Never>?
 
     public init(
-        transport: any DeviceLink,
-        bondStore: any BondStore,
-        timing: Timing = Timing()
+        transport: any DeviceLink & DevicePairing & DeviceConfiguration,
+        bondStore: any BondStore, timing: Timing = Timing(),
+        onboardingPending: @escaping @MainActor () -> Bool = { false }
     ) {
         self.transport = transport
         self.bondStore = bondStore
         self.timing = timing
+        self.onboardingPending = onboardingPending
     }
 
     deinit {
         flowTask?.cancel()
         connectAttempt?.cancel()
+        teardownTask?.cancel()
     }
 
-    // MARK: The launch branch
-
-    /// Check the bond and branch. Call once.
     public func start() {
         guard phase == .idle else { return }
-        if let bond = bondStore.load() {
-            beginBondedConnect(bond)
-        } else {
-            phase = .pairIntro
-        }
+        if let bond = bondStore.load() { beginBondedConnect(bond) } else { phase = .welcome }
     }
+
+    private var connectedDestination: Phase { onboardingPending() ? .setup : .main }
 
     private func beginBondedConnect(_ bond: BondRecord) {
         phase = .connecting(deviceName: bond.deviceName)
         flowTask = Task { [transport, timing] in
-            // The state stream replays its latest value: already connected, or degraded but
-            // known, means there is nothing to wait for, and out of range means the transport's
-            // own reconnect loop is already on it.
             var current: ConnectionState?
             for await state in transport.state { current = state; break }
+            guard !Task.isCancelled else { return }
             if current == .connected || current == .outOfRange {
-                phase = .main
+                phase = connectedDestination
                 return
             }
             startConnectAttemptIfNeeded()
-            // Watch for the link under the grace cap. The connect attempt runs unstructured,
-            // because the real `connect()` is not cancellation-responsive while it scans for an
-            // absent device: racing it inside a task group wedged the group's implicit drain.
             let connected = await Self.linkCameUp(transport.state, within: timing.connectGrace)
             guard !Task.isCancelled else { return }
-            phase = connected ? .main : .connectFailed(deviceName: bond.deviceName)
+            phase = connected ? connectedDestination : .connectFailed(deviceName: bond.deviceName)
         }
     }
 
-    /// The background bonded-connect attempt, started at most once. While the device is out of
-    /// reach the transport keeps scanning, so "Try again" re-watches this same attempt under a
-    /// fresh grace window instead of stacking scans. When it resolves it finishes a still-waiting
-    /// screen: a hard failure degrades to main, because the library never locks.
     private func startConnectAttemptIfNeeded() {
         guard connectAttempt == nil else { return }
         connectAttempt = Task { [transport, weak self] in
@@ -181,19 +124,13 @@ public final class LaunchFlowModel {
             switch phase {
             case .connecting, .connectFailed:
                 flowTask?.cancel()
-                phase = .main
-            default:
-                break
+                phase = connectedDestination
+            default: break
             }
         }
     }
 
-    /// Whether `states` reports `.connected` within `grace`. Both children are
-    /// cancellation-responsive, so the group's implicit drain cannot wedge.
-    private static func linkCameUp(
-        _ states: AsyncStream<ConnectionState>,
-        within grace: Duration
-    ) async -> Bool {
+    private static func linkCameUp(_ states: AsyncStream<ConnectionState>, within grace: Duration) async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 for await state in states where state == .connected { return true }
@@ -209,133 +146,200 @@ public final class LaunchFlowModel {
         }
     }
 
-    /// "Try again": back to connecting under a fresh grace window. A bond that vanished
-    /// underneath, from a raced forget, falls back to the pairing prompt.
     public func retryConnect() {
-        guard let bond = bondStore.load() else {
-            phase = .pairIntro
-            return
-        }
+        guard let bond = bondStore.load() else { phase = .welcome; return }
         flowTask?.cancel()
         beginBondedConnect(bond)
     }
 
-    // MARK: The pairing flow
+    public static func acceptsPairingLink(_ url: URL) -> Bool {
+        guard let link = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return link.scheme?.lowercased() == "https" && link.host?.lowercased() == "openbikecomputer.com"
+            && link.percentEncodedPath == "/app" && link.query == nil && link.fragment == nil
+            && link.user == nil && link.password == nil && link.port == nil
+    }
 
-    /// Scan and discover the un-gated surface under the scan window, then show the found device
-    /// as a row. This is `discover()`, not `connect()`: touching a gated characteristic raises
-    /// the passkey sheet, and that is deferred to the row tap.
+    /// The fixed QR link selects the pairing door, never a different device or an existing bond.
+    public func openPairingLink() {
+        switch phase {
+        case .scanning, .pairing, .paired, .setup: return
+        default: break
+        }
+        if bondStore.load() != nil {
+            if phase == .idle { start() }
+        } else {
+            startPairing()
+        }
+    }
+
+    public func showSwitchOn() {
+        cancelPairingWork()
+        phase = .pairIntro
+    }
+
+    public func showWelcome() {
+        cancelPairingWork()
+        phase = .welcome
+    }
+
+    /// Present the explanation before anything can instantiate the Bluetooth manager.
     public func startPairing() {
-        flowTask?.cancel()
-        phase = .scanning(discovered: nil)
+        guard bondStore.load() == nil else { return }
+        cancelPairingWork()
+        phase = .bluetoothPermission
+    }
+
+    public func allowBluetooth() {
+        guard phase == .bluetoothPermission || isRetryScreen else { return }
+        cancelPairingWork()
+        let teardown = teardownTask
+        phase = .scanning(devices: [])
         flowTask = Task { [transport, timing] in
+            await teardown?.value
+            guard !Task.isCancelled else { return }
             do {
-                try await Self.withScanWindow(timing.scanTimeout) {
-                    try await transport.discover()
+                let devices = try await Self.withScanWindow(timing.scanTimeout) {
+                    try await transport.scanForPairing()
                 }
-                // The device exists; let the row slide in and wait for the rider's tap.
-                let name = (try? await transport.deviceInfo().name) ?? DeviceInfo.unnamed
                 guard !Task.isCancelled else { return }
-                phase = .scanning(discovered: DiscoveredDevice(name: name))
+                guard !devices.isEmpty else { throw DeviceError.deviceNotFound }
+                if devices.count == 1 {
+                    await pair(devices[0])
+                } else {
+                    phase = .scanning(devices: devices)
+                }
             } catch {
+                guard !Task.isCancelled else { return }
+                await transport.disconnect()
                 guard !Task.isCancelled else { return }
                 phase = Self.failurePhase(for: error)
             }
         }
     }
 
-    /// The row tap: run the gated `authenticate()`, the operation that raises the system passkey
-    /// sheet, inside the pairing beat that is already on screen. On success record the bond and
-    /// celebrate; a decline drops to the failure screen.
-    public func confirmPairing() {
-        guard case .scanning(.some(let device)) = phase else { return }
+    public func confirmPairing(_ device: PairingDevice) {
+        guard case .scanning(let devices) = phase, devices.contains(device) else { return }
         phase = .pairing
-        flowTask = Task { [transport, bondStore, timing] in
+        flowTask = Task { await pair(device) }
+    }
+
+    private func pair(_ device: PairingDevice) async {
+        phase = .pairing
+        do {
+            try await Self.withScanWindow(timing.scanTimeout) { [transport] in
+                try await transport.discover(device)
+            }
+            try Task.checkCancellation()
+            let name = (try? await transport.deviceInfo())?.name ?? device.name
+            try await Task.sleep(for: timing.pairingBeat)
+            try await transport.authenticate()
+            try Task.checkCancellation()
+            // Store the bond and advance together: Cancel cannot land in a success animation
+            // after pairing has already succeeded.
+            bondStore.save(BondRecord(deviceName: name))
+            deviceNameDraft = name
+            nameSaveError = nil
+            phase = .paired(deviceName: name)
+        } catch {
+            guard !Task.isCancelled else { return }
+            await transport.disconnect()
+            guard !Task.isCancelled else { return }
+            phase = Self.failurePhase(for: error)
+        }
+    }
+
+    /// The name is committed on the OBC before the phone records it or advances.
+    public func saveNameAndContinue() {
+        guard case .paired(let current) = phase, canSaveName else { return }
+        let name = DeviceRenaming.normalized(deviceNameDraft)
+        guard name != current else { finishPairing(); return }
+        savingName = true
+        nameSaveError = nil
+        flowTask = Task { [transport, bondStore] in
             do {
-                try await transport.authenticate()
+                try await DeviceRenaming.save(name, to: transport)
+                guard !Task.isCancelled else { return }
+                bondStore.save(BondRecord(deviceName: name))
+                deviceNameDraft = name
+                savingName = false
+                phase = .setup
             } catch {
                 guard !Task.isCancelled else { return }
-                phase = Self.failurePhase(for: error)
-                return
+                savingName = false
+                nameSaveError = "The name did not save. Keep your OBC nearby and try again, or keep its current name."
             }
-            // A minimum dwell, so success does not snap straight to the greeting.
-            try? await Task.sleep(for: timing.pairingBeat)
-            guard !Task.isCancelled else { return }
-            bondStore.save(BondRecord(deviceName: device.name))
-            phase = .paired(deviceName: device.name)
         }
     }
 
     public func finishPairing() {
-        phase = .main
+        guard case .paired = phase, !savingName else { return }
+        phase = .setup
     }
 
-    public func retryPairing() {
-        startPairing()
+    public func finishSetup() { phase = .main }
+
+    public func replaySetup() {
+        cancelPairingWork()
+        phase = bondStore.load() == nil ? .welcome : .setup
     }
 
-    public func showPairingHelp() {
-        flowTask?.cancel()
-        phase = .pairIntro
-    }
+    public func retryPairing() { allowBluetooth() }
+    public func showPairingHelp() { showSwitchOn() }
+    public func cancelScanning() { showSwitchOn() }
 
-    /// Stop the scan, or drop a half-open link, and step back.
-    public func cancelScanning() {
-        flowTask?.cancel()
-        flowTask = Task { [transport] in
-            await transport.disconnect()
-        }
-        phase = .pairIntro
-    }
-
-    /// The library never locks. A still-running connect attempt keeps listening, so the link
-    /// comes up on its own once the device is nearby.
     public func browseLibrary() {
-        flowTask?.cancel()
+        cancelPairingWork()
         phase = .main
     }
 
-    /// The bond record is already cleared and the link dropped by the Settings flow; cancel
-    /// anything in flight and return to the pairing prompt.
     public func forgetDevice() {
-        flowTask?.cancel()
-        connectAttempt?.cancel()  // its completion must not touch the phase now
+        cancelPairingWork()
+        connectAttempt?.cancel()
         connectAttempt = nil
-        phase = .pairIntro
+        phase = .welcome
     }
 
-    // MARK: Helpers
+    private var isRetryScreen: Bool {
+        switch phase {
+        case .pairFailed, .radioBlocked: true
+        default: false
+        }
+    }
 
-    /// Run `connect` under the scan window; expiry throws `deviceNotFound`.
-    private static func withScanWindow(
-        _ window: Duration,
-        _ connect: @escaping @Sendable () async throws -> Void
-    ) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await connect() }
+    private func cancelPairingWork() {
+        flowTask?.cancel()
+        flowTask = nil
+        switch phase {
+        case .scanning, .pairing:
+            let previous = teardownTask
+            teardownTask = Task { [transport] in
+                await previous?.value
+                await transport.disconnect()
+            }
+        default: break
+        }
+    }
+
+    private static func withScanWindow<T: Sendable>(
+        _ window: Duration, _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
             group.addTask {
                 try await Task.sleep(for: window)
                 throw DeviceError.deviceNotFound
             }
-            // First child to finish decides; the loser's error is discarded with the group.
-            try await group.next()
-            group.cancelAll()
+            defer { group.cancelAll() }
+            return try await group.next()!
         }
     }
 
     private static func failurePhase(for error: Error) -> Phase {
         switch error {
-        case DeviceError.bluetoothUnavailable(.unauthorized):
-            return .radioBlocked(.denied)
-        case DeviceError.bluetoothUnavailable:
-            return .radioBlocked(.off)
-        case DeviceError.deviceNotFound:
-            return .pairFailed(.timeout)
-        case DeviceError.pairingFailed:
-            // Declined or wrong passkey, or the encrypted link was refused.
-            return .pairFailed(.rejected)
-        default:
-            return .pairFailed(.rejected)
+        case DeviceError.bluetoothUnavailable(.unauthorized): .radioBlocked(.denied)
+        case DeviceError.bluetoothUnavailable: .radioBlocked(.off)
+        case DeviceError.deviceNotFound: .pairFailed(.timeout)
+        default: .pairFailed(.rejected)
         }
     }
 }

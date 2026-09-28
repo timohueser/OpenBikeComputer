@@ -7,6 +7,7 @@ import SwiftUI
 /// The screen draws a device page in its exact on-glass colours and Terminus.
 struct DeviceGlyphView: View {
     enum Variant {
+        case welcome
         /// The title bar with the device's name and the amber track squiggle.
         case home(name: String)
         /// The device's pairing card. The app never knows the code, so the digits are blanks.
@@ -89,6 +90,8 @@ struct DeviceGlyphView: View {
     @ViewBuilder
     private var screenContent: some View {
         switch variant {
+        case .welcome:
+            DeviceWelcomeScreen()
         case .home(let name):
             DeviceHomeScreen(name: name)
         case .passkey:
@@ -104,6 +107,7 @@ struct DeviceGlyphView: View {
 
     private var accessibilityText: String {
         switch variant {
+        case .welcome: "The bike computer's welcome screen"
         case .home(let name): "\(name), the bike computer"
         case .passkey: "The bike computer's pairing screen, which shows a six-digit code"
         case .routeOverview(let overview): "The bike computer's screen showing \(overview.name)"
@@ -143,6 +147,18 @@ private struct DeviceHomeScreen: View {
             path.addCurve(to: point(40, 52), control1: point(20, 40), control2: point(34, 44))
             path.addCurve(to: point(68, 20), control1: point(48, 62), control2: point(60, 40))
             context.stroke(path, with: .color(OBCTheme.deviceTrack), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+        }
+    }
+}
+
+private struct DeviceWelcomeScreen: View {
+    var body: some View {
+        Canvas { context, size in
+            context.deviceFrame(size: size, title: "WELCOME")
+            for (index, greeting) in ["Hello", "Hallo", "Bonjour", "Hola"].enumerated() {
+                context.pixelText(greeting, .display, x: 120, capTop: CGFloat(70 + index * 44),
+                                  color: OBCTheme.deviceInk, centered: true)
+            }
         }
     }
 }

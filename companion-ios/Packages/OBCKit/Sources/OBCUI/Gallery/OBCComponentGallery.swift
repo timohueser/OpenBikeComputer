@@ -231,16 +231,18 @@ public struct OBCComponentGallery: View {
                 section("Launch & Pairing") {
                     launchScreen { LaunchConnectingView(deviceName: "Trailhead") }
                     launchScreen { LaunchConnectFailedView(deviceName: "Trailhead", onRetry: {}, onGoToRoutes: {}) }
-                    launchScreen { PairIntroView(onStart: {}) }
+                    launchScreen { WelcomeView(onStart: {}, onBrowse: {}) }
+                    launchScreen { SwitchOnView(onFind: {}, onBack: {}) }
+                    launchScreen { BluetoothPermissionView(onAllow: {}, onBack: {}, onBrowse: {}) }
                     launchScreen {
                         PairScanningView(
-                            discovered: .init(name: "Trailhead"),
-                            onTapDevice: {},
+                            devices: [],
+                            onTapDevice: { _ in },
                             onCancel: {}
                         )
                     }
                     launchScreen { PairingBackdropView() }
-                    launchScreen { PairedView(deviceName: "Trailhead", onContinue: {}) }
+                    launchScreen { PairedView(deviceName: "Trailhead", name: .constant("Trailhead"), onSave: {}, onKeepName: {}) }
                     launchScreen { PairFailedView(failure: .timeout, onRetry: {}, onHelp: {}) }
                     launchScreen { PairFailedView(failure: .rejected, onRetry: {}, onHelp: {}) }
                     launchScreen { RadioBlockedView(block: .off, onRetry: {}, onBrowseLibrary: {}) }
