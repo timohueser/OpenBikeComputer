@@ -5,31 +5,58 @@ tiles and terrain. The editor uses the Rust route service for routing, terrain p
 and moving time. Place search uses the [local search service](../../../../../apps/planner-search/README.md).
 They are not inputs to the default production build.
 
-Install the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli) on `PATH`.
-Use Python 3.11 or later and Node.js. From the repository root:
+## Local Baden-Württemberg planner
+
+Install Node 24+, Python 3.12+, Rust, `uv`, `gh`, `curl`, and the
+[PMTiles CLI](https://docs.protomaps.com/pmtiles/cli). Authenticate `gh` for the
+query model release. From this checkout:
 
 ```sh
-npm ci --prefix builder/app
-python3 tools/planner_maps.py prepare --basemap <Protomaps-PMTiles-URL>
-python3 tools/planner_maps.py serve
+obc planner setup
+obc planner
 ```
 
-Choose a compatible source from [Protomaps builds](https://maps.protomaps.com/builds/).
-Preparation extracts the Baden-Württemberg bounding box, with vector zooms 0–14
-and terrain zooms 0–12. Terrain includes a border of neighbouring tiles for
-contour calculation at the region edge. It copies fonts, sprites and their licence notices.
-The output goes to `builder/app/public/data/planner/`, which git ignores.
-Archive checks must pass before the bundle becomes visible. `manifest.json`
-records source URLs, bounds, file sizes and SHA-256 hashes. Move an existing
-bundle aside before preparing a replacement. Use `prepare --bbox west,south,east,north`
-for another region. `--pmtiles /path/to/pmtiles` selects a CLI outside `PATH`.
+Open `http://127.0.0.1:4175/planner.html`. Setup downloads prepared search records,
+the query model, Protomaps vector tiles, Mapterhorn terrain, fonts and sprites.
+It builds the BW search database and all routing profiles from a regional OSM
+extract. Routing uses the local curated elevation archive when configured,
+with downloaded Copernicus DEM tiles as fallback. Map hillshade and contours
+use Mapterhorn. The inputs do not share an OSM snapshot.
 
-Open `http://127.0.0.1:4175/planner.html` for the editor or
-`http://127.0.0.1:4175/map-study.html` for map styling.
-Start the [route service](../../../../../apps/route-server/README.md) first.
-Map coverage and route-service coverage are separate. `serve --routing URL`
-selects the route service; `--port` and `--tile-port` change the local ports.
-Ctrl-C stops both preview servers. All map requests stay local.
+Setup needs network access and can take a long time. It reuses complete packages.
+Normal launch performs no downloads or builds. Maps, search, model inference and
+routing run locally. Ctrl-C stops all four services. Each service binds to loopback.
+An occupied port or an incomplete package stops launch with an error.
+
+| Setting | Default |
+| --- | --- |
+| `OBC_PLANNER_DATA` or `--data-dir` | `~/.cache/obc/planner/baden-wuerttemberg` |
+| `--port` | Planner `4175` |
+| `--tile-port` | Terrain tiles `8789` |
+| `--route-port` | Routing `8787` |
+| `--search-port` | Search `8786` |
+| `--reference` or `OBC_REFERENCE_ARCHIVE` | `~/obc-reference` when its index exists |
+| `--dem-dir` | `~/.cache/obcm/dem` |
+| `setup --osm PATH` | Use an existing BW OSM PBF |
+| `setup --basemap URL` | Use this Protomaps archive for a new map bundle |
+
+The data directory contains `maps/`, `search/` and `routing/`. Search preparation
+reads the Germany Photon dump but builds only the BW package. Route preparation
+uses the existing Geofabrik cache. Bounds are `7.45,47.5,10.5,49.85`; routing stays
+inside the OSM extract. The map stores vector zooms 0–14 and terrain zooms 0–12.
+Terrain includes neighbouring tiles for contour calculation at the region edge.
+
+Run `obc planner verify` for map checksums, SQLite integrity and routing object
+verification. To replace a package, stop the planner, move its directory aside,
+then repeat setup. A new map preparation selects an available Protomaps v4 build
+and records the chosen URL. Existing maps keep their source. `maps/manifest.json`
+records bounds, sizes, hashes and source URLs. Routing records source hashes and
+terrain credits. Setup does not upload data or change hosting.
+
+For map styling alone, `tools/planner_maps.py` provides `prepare` and `serve`.
+Its separate default directory is `builder/app/public/data/planner/`. Open
+`map-study.html` on the preview host. Use `--help` for archive and port options.
+
 The editor saves its trip in browser storage. Undo and Redo apply to
 changes made in the current session. Hold a dragged point still to preview its
 route. Release it to save one change. Open Route options to load alternatives. The surface
@@ -64,13 +91,8 @@ terrain requests to `pmtiles serve` on port 8789. The browser makes contours fro
 those terrain tiles. The bundle contains two archives and an `assets/` directory;
 it needs no database or tile build server at runtime.
 
-For R2, upload the bundle under a versioned prefix. Serve the basemap with range
-support, expose terrain XYZ requests through a Worker, and serve assets as static
-files. Set the four map URLs above. Cross-origin endpoints need CORS.
-The planner build excludes the bundle; distribute it separately. Local serving
-tests the archive and HTTP interfaces, but does not emulate Worker caching or billing.
-The supplied archives do not share the route package's OSM snapshot. A release
-pipeline must align vector, routing and search snapshots.
+The planner build excludes generated data. Publication and common-source
+preparation are separate work.
 
 ## Checks
 

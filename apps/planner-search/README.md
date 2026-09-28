@@ -6,6 +6,11 @@ this local server. Map tiles and the routing engine are separate services.
 
 ## Setup and run
 
+For the complete BW planner, use `obc planner setup` and `obc planner` from the
+repository root. This starts local maps, search and routing together. See the
+[planner README](../../builder/app/src/components/planner/README.md).
+The commands below run search and its UI separately.
+
 Install Node 24 or later, Python 3.12 or later, `uv`, and the GitHub CLI. Run from the
 repository root. Allow 12 GB of free disk space for the source and generated packages.
 
@@ -29,14 +34,18 @@ It does not install Photon or OpenSearch. A build from raw OSM is not included.
 To use existing packages, omit `--build-data`. An interrupted build has no completion
 metadata. Build into a fresh directory with `build.py SOURCE --output DIRECTORY`.
 
+Pass `--data-dir DIRECTORY --region baden-wuerttemberg` to setup to build only BW
+in another directory. Set `OBC_SEARCH_DATA` to that directory when starting the
+search service. A regional build becomes visible only after it completes.
+
 For local map tiles, place a basemap at `builder/app/public/data/planner/basemap.pmtiles`:
 
 ```sh
 VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles npm run dev --prefix apps/planner-search
 ```
 
-Terrain uses `VITE_PLANNER_DEM_URL`, a Terrarium WebP tile URL template. Without local map
-settings, the planner uses its public evaluation map sources. Search still works if
+Terrain uses `VITE_PLANNER_DEM_URL`, a Terrarium WebP tile URL template. The default map
+URLs point to local files and services. Search still works if
 those sources are unavailable.
 
 | Setting | Default |
@@ -46,6 +55,7 @@ those sources are unavailable.
 | `OBC_SEARCH_PORT` | `8780` |
 | `OBC_PLANNER_PORT` | `4184` |
 | `OBC_QUERY_ROUTER` | `http://127.0.0.1:8788` |
+| `OBC_SEARCH_REGIONS` | `germany,baden-wuerttemberg` |
 
 The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 
@@ -85,6 +95,8 @@ npm run test:model --prefix apps/planner-search
 
 The first two suites run in CI without large downloads. The last two use local packages
 and model weights. Model evaluation uses the hand-written EN, DE, FR, and IT testsets.
+For the shared BW cache, pass `OBC_SEARCH_DATA` and
+`OBC_SEARCH_REGIONS=baden-wuerttemberg` to the data suite.
 
 ## Model development
 
