@@ -102,9 +102,9 @@ struct LaunchFlowModelTests {
         #expect(model.phase == .scanning(devices: [first, second]))
         model.confirmPairing(second)
         model.confirmPairing(first)
-        try await wait { model.phase == .paired(deviceName: "Second") }
-        #expect(control.deviceInfo.name == "Second")
-        #expect(control.bondedName == "Second")
+        try await wait { model.phase == .paired(deviceName: "OBC-Second") }
+        #expect(control.deviceInfo.name == "OBC-Second")
+        #expect(control.bondedName == "OBC-Second")
     }
 
     @Test func namingWritesExistingConfigAndPersistsOnlySuccess() async throws {

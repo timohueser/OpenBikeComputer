@@ -93,6 +93,7 @@ public final class MockControl: @unchecked Sendable {
         self._dropFraction = preset.dropAtFraction
         self._supportsClockSync = preset.supportsClockSync
         self._fixtures = fixtures
+        OnboardingFixtures.configure(self)
     }
 
     /// Start from `happyPath` but override the reported device identity.
@@ -189,6 +190,7 @@ public final class MockControl: @unchecked Sendable {
             _setClockSamples = []
             _fixtures = fixtures
         }
+        OnboardingFixtures.configure(self)
         stateMulticast.send(preset.connection)
         batteryMulticast.send(fixtures.battery)
     }
@@ -636,7 +638,7 @@ public final class MockControl: @unchecked Sendable {
             deviceInfo = DeviceInfo(
                 name: current.name, firmwareVersion: version,
                 hardwareVersion: current.hardwareVersion, serial: current.serial,
-                protocolVersion: current.protocolVersion,
+                protocolVersion: scenario == .onboardingUpdateNeeded ? OBCProtocol.version : current.protocolVersion,
                 // Firmware replacement keeps the mounted store's identity.
                 storeID: current.storeID,
                 obcmVersion: current.obcmVersion

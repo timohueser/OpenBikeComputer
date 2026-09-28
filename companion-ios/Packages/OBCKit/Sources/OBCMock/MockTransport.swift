@@ -45,9 +45,10 @@ public struct MockTransport: DeviceTransport {
         try Task.checkCancellation()
         try control.radioGate()
         try control.takePendingFailure()
+        let name = control.deviceInfo.name
         return control.pairingDevices ?? [PairingDevice(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-            name: "OBC-\(control.deviceInfo.name)"
+            name: name.hasPrefix("OBC-") ? name : "OBC-\(name)"
         )]
     }
 
@@ -57,7 +58,7 @@ public struct MockTransport: DeviceTransport {
         try await discover()
         if control.pairingDevices != nil {
             var config = control.fixtures.config
-            config.name = candidate.name.hasPrefix("OBC-") ? String(candidate.name.dropFirst(4)) : candidate.name
+            config.name = candidate.name
             control.setConfig(config)
         }
     }
