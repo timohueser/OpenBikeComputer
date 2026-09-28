@@ -27,7 +27,7 @@ DEMO_RS = REPO_DIR / "apps/obc-web-demo/src/demo.rs"
 DISPLAY_NAME = "Grimsel Pass"
 FIXTURE_DIR = REPO_DIR / "companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures"
 FIXTURE_JSON = FIXTURE_DIR / "website.json"
-IMPORT_GPX = FIXTURE_DIR / "website-import.gpx"
+IMPORT_GPX = REPO_DIR / "companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx"
 GPX_NS = "http://www.topografix.com/GPX/1/1"
 
 

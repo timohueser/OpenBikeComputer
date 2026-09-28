@@ -12,7 +12,7 @@ final class PairingFlowTests: XCTestCase {
     @MainActor
     private func launch(scenario: String) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-OBCScenario", scenario]
+        app.launchArguments += ["-OBCScenario", scenario, "-OBCHideMockHUD", "-OBCDisableAnimations"]
         app.launch()
         return app
     }
@@ -26,25 +26,41 @@ final class PairingFlowTests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor
+    private func enterPairing(_ app: XCUIApplication, capture: Bool = false) {
+        XCTAssertTrue(app.staticTexts["onboarding.welcomeTitle"].waitForExistence(timeout: 10))
+        if capture { snap(app, "onboarding-P01-welcome") }
+        app.buttons["onboarding.getStarted"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.switchOnTitle"].waitForExistence(timeout: 10))
+        if capture { snap(app, "onboarding-P02-switch-on") }
+        app.buttons["pair.start"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.bluetoothTitle"].waitForExistence(timeout: 10))
+        if capture { snap(app, "onboarding-P03-bluetooth") }
+        app.buttons["onboarding.allowBluetooth"].tap()
+    }
+
     /// The intro, the scan with the row sliding in, the pairing beat, then the main screen.
     @MainActor
     func testFirstRunPairingHappyPath() {
         let app = launch(scenario: "noDevice")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10), "D1 missing")
-        snap(app, "D1-pairing-prompt")
-        app.buttons["pair.start"].tap()
-
-        let row = app.buttons["pair.deviceRow"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
-        snap(app, "D2-scanning-found")
-        row.tap()
+        enterPairing(app, capture: true)
 
         XCTAssertTrue(app.staticTexts["pair.pairedTitle"].waitForExistence(timeout: 10), "D4 missing")
-        snap(app, "D4-paired")
-        app.buttons["pair.goToRoutes"].tap()
-
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after pairing")
+        snap(app, "onboarding-P06-paired")
+        app.buttons["pairing.keepName"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.sensorsTitle"].waitForExistence(timeout: 10))
+        snap(app, "onboarding-P08-sensors")
+        app.buttons["onboarding.sensorsContinue"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.routeTitle"].waitForExistence(timeout: 10))
+        snap(app, "onboarding-P10-route")
+        app.buttons["onboarding.routeSkip"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.rideTitle"].waitForExistence(timeout: 10))
+        snap(app, "onboarding-P11-ride")
+        app.buttons["onboarding.finish"].tap()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after setup")
+        XCTAssertTrue(app.descendants(matching: .any)["onboarding.readyNote"].firstMatch.exists)
+        snap(app, "onboarding-P12-library")
     }
 
     /// A scan timeout resolves to the failure screen; Try again loops back through scanning.
@@ -52,8 +68,7 @@ final class PairingFlowTests: XCTestCase {
     func testPairingTimeoutShowsD5AndRetryLoops() {
         let app = launch(scenario: "pairingTimeout")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
+        enterPairing(app)
 
         let failed = app.staticTexts["pair.failedTitle"]
         XCTAssertTrue(failed.waitForExistence(timeout: 10), "D5 missing")
@@ -68,14 +83,7 @@ final class PairingFlowTests: XCTestCase {
     func testPairingRejectedShowsD5RejectedCopy() {
         let app = launch(scenario: "pairingRejected")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
-
-        // The row appears first, from un-gated discovery. The passkey is gated and only fires on
-        // the row tap, so a rejection surfaces after confirming, not before.
-        let row = app.buttons["pair.deviceRow"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
-        row.tap()
+        enterPairing(app)
 
         let failed = app.staticTexts["pair.failedTitle"]
         XCTAssertTrue(failed.waitForExistence(timeout: 10), "D5 missing")
@@ -87,8 +95,7 @@ final class PairingFlowTests: XCTestCase {
     func testBluetoothOffShowsH8AndLibraryStaysReachable() {
         let app = launch(scenario: "bluetoothOff")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
+        enterPairing(app)
 
         let title = app.staticTexts["radio.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10), "H8 missing")
@@ -104,8 +111,7 @@ final class PairingFlowTests: XCTestCase {
     func testPermissionDeniedShowsH7State() {
         let app = launch(scenario: "permissionDenied")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
+        enterPairing(app)
 
         let title = app.staticTexts["radio.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10), "H7 state missing")

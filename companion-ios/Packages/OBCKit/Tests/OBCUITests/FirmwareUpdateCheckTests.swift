@@ -113,6 +113,40 @@ struct FirmwareUpdateCheckTests {
         #expect(store.loadCheck()?.release?.version == "1.4.0", "the refreshed answer is cached")
     }
 
+    @Test func reconnectRefreshesTheVersionAfterAnInitialReadFailure() async throws {
+        let cached = UpdateCheckRecord(
+            release: FirmwareRelease(
+                version: "1.4.0", bytes: 10, sha256: String(repeating: "a", count: 64),
+                url: Self.containerURL
+            ), checkedAt: Date()
+        )
+        let (model, transport, fetcher, _) = makeModel(cached: cached)
+        transport.deviceInfoError = .notConnected
+        model.start()
+        defer { model.stop() }
+        try await waitFor("initial version read") { transport.deviceInfoReads == 1 }
+        #expect(!model.hasUpdateAnswer)
+
+        transport.push(.outOfRange)
+        try await waitFor("disconnected") { model.connection == .outOfRange }
+        transport.deviceInfoError = nil
+        transport.push(.connected)
+        try await waitFor("version after reconnect") { model.hasUpdateAnswer }
+        #expect(model.updateStatus == .available)
+        #expect(model.deviceSerial == "OBC-001")
+
+        transport.push(.outOfRange)
+        try await waitFor("disconnected again") { model.connection == .outOfRange }
+        #expect(model.runningVersion == "1.3.0")
+        #expect(model.deviceSerial == "OBC-001")
+        #expect(model.canDownloadUpdate)
+        transport.fwVersion = "1.4.0"
+        transport.push(.connected)
+        try await waitFor("new running version") { model.runningVersion == "1.4.0" }
+        #expect(model.updateStatus == .current)
+        #expect(fetcher.requested.isEmpty)
+    }
+
     @Test func aManualCheckReAsksEvenWithAFreshCache() async throws {
         let payload = container(version: "1.5.0")
         let cached = UpdateCheckRecord(
@@ -385,6 +419,8 @@ private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendabl
     private var stateConts: [AsyncStream<ConnectionState>.Continuation] = []
     private var lastState: ConnectionState = .connected
     var fwVersion = "1.3.0"
+    var deviceInfoError: DeviceError?
+    var deviceInfoReads = 0
     var installResult: FirmwareInstallResult = .accepted
 
     private var uploadProgress: AsyncStream<TransferProgress>.Continuation?
@@ -408,7 +444,9 @@ private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendabl
     }
 
     func deviceInfo() async throws -> DeviceInfo {
-        DeviceInfo(name: "Trailhead", firmwareVersion: fwVersion)
+        deviceInfoReads += 1
+        if let deviceInfoError { throw deviceInfoError }
+        return DeviceInfo(name: "Trailhead", firmwareVersion: fwVersion, serial: "OBC-001")
     }
 
     func uploadFirmware(_ container: Data) -> TransferHandle {

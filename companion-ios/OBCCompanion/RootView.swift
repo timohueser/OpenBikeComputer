@@ -11,6 +11,11 @@ import OBCUI
 struct RootView: View {
     @State private var launchModel: LaunchFlowModel
     @State private var mainModel: MainScreenModel
+    @State private var onboarding: OnboardingProgress
+    @State private var onboardingFirmware: FirmwareUpdateModel
+    @State private var onboardingUpload: UploadRequest?
+    @State private var pendingSetupRoute: RouteID?
+    @State private var setupRouteError: String?
     @State private var importModel: ImportFlowModel
     /// The foreground-only link policy: a real background transition suspends the link, after
     /// draining any in-flight transfer; foreground re-raises it over the bonded reconnect path.
@@ -49,6 +54,8 @@ struct RootView: View {
     init(
         transport: any DeviceTransport,
         bondStore: any BondStore,
+        onboarding: OnboardingProgress = OnboardingProgress(),
+        updateChecker: UpdateChecker? = nil,
         library: any LibraryStore = InMemoryLibraryStore(),
         photoLibrary: any PhotoLibrary = PhotoKitLibrary(),
         lastBikeType: LastBikeTypeStore = LastBikeTypeStore(),
@@ -78,7 +85,15 @@ struct RootView: View {
         self.importer = importer
         let transferActivity = TransferActivity()
         self.transferActivity = transferActivity
-        _launchModel = State(initialValue: LaunchFlowModel(transport: transport, bondStore: bondStore))
+        _onboarding = State(initialValue: onboarding)
+        _onboardingFirmware = State(initialValue: FirmwareUpdateModel(
+            transport: transport, deviceName: bondStore.load()?.deviceName ?? "your OBC",
+            activity: transferActivity, updateChecker: updateChecker
+        ))
+        _launchModel = State(initialValue: LaunchFlowModel(
+            transport: transport, bondStore: bondStore,
+            onboardingPending: { onboarding.isPending }
+        ))
         _lifecycleModel = State(initialValue: LinkLifecycleModel(
             transport: transport, activity: transferActivity, backgroundTasks: backgroundTasks
         ))
@@ -110,13 +125,24 @@ struct RootView: View {
         _updateSurfaceModel = State(initialValue: UpdateSurfaceModel(
             transport: transport,
             bondStore: bondStore,
-            runner: UpdateSurfaceRunner(store: updateSurface),
+            runner: updateChecker.map { UpdateSurfaceRunner(checker: $0, store: updateSurface) },
             notifier: updateNotifier
         ))
     }
 
     var body: some View {
-        LaunchFlowView(model: launchModel) {
+        LaunchFlowView(model: launchModel, setup: {
+            OnboardingFlowView(
+                progress: onboarding, firmware: onboardingFirmware, library: mainModel,
+                onDemoRoute: sendDemoRoute,
+                onImport: { urls in Task { await importModel.openFiles(at: urls) } },
+                onUpdateAnswered: recordSetupUpdateAnswer,
+                onFinish: {
+                    mainModel.tab = mainModel.rides.contains(where: \.isDemo) ? .tracked : .planned
+                    launchModel.finishSetup()
+                }
+            )
+        }) {
             NavigationStack(path: $path) {
                 MainScreenView(
                     model: mainModel,
@@ -138,7 +164,9 @@ struct RootView: View {
                     },
                     onOpenTrash: {
                         path.append(.trash)
-                    }
+                    },
+                    showsReadyNote: onboarding.showsReadyNote,
+                    onDismissReadyNote: { onboarding.dismissReadyNote() }
                 )
                 // The main screen draws its own chrome, but the title still names the pop target.
                 .navigationTitle("Library")
@@ -149,7 +177,12 @@ struct RootView: View {
         }
         // Everything below hangs outside the launch gate: a share can arrive before pairing, so
         // the import cover and its alert must present over the pairing flow too.
-        .fullScreenCover(item: $importModel.pendingImport) { pending in
+        .fullScreenCover(item: $importModel.pendingImport, onDismiss: {
+            if let id = pendingSetupRoute {
+                pendingSetupRoute = nil
+                sendSetupRoute(id)
+            }
+        }) { pending in
             importLanding(for: pending)
         }
         .fullScreenCover(item: $importModel.pendingJoin) { join in
@@ -192,12 +225,12 @@ struct RootView: View {
             onSave: importModel.confirmNewName
         )
         .task {
+            updateSurfaceModel.setEnabled(launchModel.phase == .main)
             lifecycleModel.start()
             reachability.start()
             // Remember the device's version while the link can be read, and run the launch check
             // once for this cold start; the `.active` edge below covers every return.
-            updateSurfaceModel.start()
-            updateSurfaceModel.appBecameActive()
+            if launchModel.phase == .main { startLibraryServices() }
             // A notice tapped from a cold launch: iOS delivers the response during startup, so
             // the flag may already be set by the time the first `.task` runs.
             if UpdateRouteRequest.shared.consume() { pushFirmwareUpdate() }
@@ -218,7 +251,7 @@ struct RootView: View {
             // the way out. `.inactive` is deliberately neither.
             switch newPhase {
             case .active:
-                updateSurfaceModel.appBecameActive()
+                if launchModel.phase == .main { updateSurfaceModel.appBecameActive() }
 
             case .background: BackgroundUpdateRefresh.schedule()
             default: break
@@ -226,9 +259,28 @@ struct RootView: View {
         }
         // Share-sheet delivery: iOS hands route files here, the same path as a Files pick.
         .onOpenURL { url in
-            // A share of several files arrives one URL at a time; the model batches them.
-            importModel.receive(url)
+            receive(url)
         }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            if let url = activity.webpageURL { receive(url) }
+        }
+        .onChange(of: launchModel.phase) { _, phase in
+            updateSurfaceModel.setEnabled(phase == .main)
+            switch phase {
+            case .pairing: onboarding.begin()
+            case .setup: mainModel.start()
+            case .main: startLibraryServices()
+            default: break
+            }
+        }
+        .sheet(item: $onboardingUpload) { request in
+            UploadSheetView(model: request.model)
+        }
+        .alert("Could not send the route", isPresented: Binding(
+            get: { setupRouteError != nil }, set: { if !$0 { setupRouteError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(setupRouteError ?? "") }
         // One shared online and offline signal for every basemap preview.
         .environment(\.obcIsOnline, reachability.isOnline)
         // Hold the screen awake while any transfer is in flight: the idle-timer touch reads the
@@ -254,12 +306,86 @@ struct RootView: View {
         }
     }
 
+    private func receive(_ url: URL) {
+        if LaunchFlowModel.acceptsPairingLink(url) {
+            launchModel.openPairingLink()
+        } else if url.isFileURL {
+            importModel.receive(url)
+        }
+    }
+
+    private func startLibraryServices() {
+        updateSurfaceModel.setEnabled(true)
+        mainModel.start()
+        updateSurfaceModel.start()
+        updateSurfaceModel.appBecameActive()
+    }
+
+    private func recordSetupUpdateAnswer(_ version: String) {
+        guard let serial = onboardingFirmware.deviceSerial,
+              let runningVersion = onboardingFirmware.runningVersion else { return }
+        let device = LastSeenDevice(serial: serial, firmwareVersion: runningVersion, seenAt: Date())
+        let runner = UpdateSurfaceRunner(store: updateSurface)
+        runner.remember(device)
+        runner.recordAnswered(version: version, device: device)
+    }
+
+    private func sendDemoRoute() {
+        do {
+            let data = try BundledDemoRoute.data()
+            let route = try importer.importRoute(from: data, fileExtension: "gpx")
+            let existing = library.plannedRoutes().first {
+                $0.sourceFileName == BundledDemoRoute.fileName && $0.sourceFileData == data && $0.route == route
+            }
+            if let existing {
+                sendSetupRoute(existing.id)
+                return
+            }
+            let detail = RouteDetailModel(
+                transport: transport, dressing: .imported(route, fileName: BundledDemoRoute.fileName)
+            ).makeDetail()
+            mainModel.addImportedRoute(PlannedRouteRecord(
+                summary: detail.summary, route: route,
+                sourceFileName: BundledDemoRoute.fileName, sourceFileData: data
+            ))
+            sendSetupRoute(detail.summary.id)
+        } catch {
+            setupRouteError = "The demo route could not be opened. You can import a GPX or TCX route, or skip this step."
+        }
+    }
+
+    private func sendSetupRoute(_ id: RouteID) {
+        guard mainModel.connection == .connected, mainModel.connectedScope != nil,
+              mainModel.protocolMismatch == nil,
+              let summary = mainModel.routes.first(where: { $0.id == id }) else {
+            setupRouteError = "Keep your OBC on and nearby, then try again. Routes need compatible app and OBC versions."
+            return
+        }
+        let detail = RouteDetailModel(
+            transport: transport, dressing: .planned(summary),
+            bikeType: mainModel.plannedBikeType(for: id),
+            preloadedDetail: mainModel.importedDetail(for: id),
+            plannedGeometry: mainModel.plannedGeometry(for: id),
+            sourceFileName: mainModel.plannedSourceFileName(for: id),
+            deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
+            provenCommittedCRC: mainModel.plannedProvenCommittedCRC(for: id)
+        )
+        onboardingUpload = UploadRequest(model: UploadSheetModel(
+            transport: transport, blob: detail.makeUploadBlob(), deviceName: mainModel.deviceName,
+            timing: OBCCompanionApp.launchUploadTiming(), activity: transferActivity,
+            onCompleted: { objectID, crc in
+                if let objectID { mainModel.markRouteUploaded(id, objectID: objectID, crc32: crc) }
+                onboarding.move(to: .ride)
+            }
+        ))
+    }
+
     // MARK: The proactive update surface
 
     /// Presentation binding for the launch sheet. Dismissal answers: a swipe-away says "not now".
     private var pendingUpdate: Binding<UpdateSurfaceModel.PendingUpdate?> {
         Binding(
-            get: { updateSurfaceModel.pending },
+            get: { launchModel.phase == .main ? updateSurfaceModel.pending : nil },
             set: { if $0 == nil { updateSurfaceModel.dismiss() } }
         )
     }
@@ -289,9 +415,15 @@ struct RootView: View {
             noDevicePaired: pending.noDevicePaired,
             // A trip is app-local, so the trip rows work with no device paired just the same.
             trips: mainModel.tripPickerItems,
+            isOnboarding: launchModel.phase == .setup && onboarding.stage == .route,
             replacing: pending.replacing,
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
+                if launchModel.phase == .setup, onboarding.stage == .route {
+                    pendingSetupRoute = detail.summary.id
+                    importModel.closeImport()
+                    return
+                }
                 // A trip choice moves the route into the trip and opens the trip page.
                 // A new trip from one file opens in the day editor's split mode.
                 if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
@@ -511,12 +643,17 @@ struct RootView: View {
                 // Bond cleared and link dropped by the model; pop the stack and show the pairing prompt.
                 onForget: {
                     path.removeAll()
+                    onboarding.reset()
                     launchModel.forgetDevice()
                 },
                 // Its own destination, so the host owns a stable model and an in-flight transfer
                 // survives Settings body passes.
                 onOpenFirmwareUpdate: { path.append(.firmwareUpdate) },
-
+                onReplaySetup: {
+                    path.removeAll()
+                    onboarding.replay()
+                    launchModel.replaySetup()
+                },
                 onOpenDevPanel: devPanelOpener
             )
         case .firmwareUpdate:

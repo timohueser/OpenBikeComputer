@@ -17,6 +17,8 @@ public struct MainScreenView: View {
     private let onSelectRide: (RideSummary) -> Void
     private let onSettings: () -> Void
     private let onOpenTrash: () -> Void
+    private let showsReadyNote: Bool
+    private let onDismissReadyNote: () -> Void
 
     @State private var emptyStatePickerShown = false
     @State private var libraryMapShown = false
@@ -35,7 +37,9 @@ public struct MainScreenView: View {
         onSelectTrip: @escaping (Trip) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
         onSettings: @escaping () -> Void = {},
-        onOpenTrash: @escaping () -> Void = {}
+        onOpenTrash: @escaping () -> Void = {},
+        showsReadyNote: Bool = false,
+        onDismissReadyNote: @escaping () -> Void = {}
     ) {
         self.model = model
         self.importFileExtensions = importFileExtensions
@@ -45,6 +49,8 @@ public struct MainScreenView: View {
         self.onSelectRide = onSelectRide
         self.onSettings = onSettings
         self.onOpenTrash = onOpenTrash
+        self.showsReadyNote = showsReadyNote
+        self.onDismissReadyNote = onDismissReadyNote
     }
 
     public var body: some View {
@@ -60,6 +66,19 @@ public struct MainScreenView: View {
                 onSync: { sync.sync() },
                 onSettings: onSettings
             )
+
+            if showsReadyNote {
+                OBCInlineBanner(
+                    systemImage: "checkmark",
+                    title: "Ready to ride",
+                    message: "Hold BACK on your OBC to open the menu. You can change your setup in Settings.",
+                    actionTitle: "Got it",
+                    action: onDismissReadyNote
+                )
+                .accessibilityIdentifier("onboarding.readyNote")
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+            }
 
             // One banner at a time. A protocol mismatch outranks the rest: the link is up but
             // unusable for data, so it is neither a transfer nor an out-of-range story.

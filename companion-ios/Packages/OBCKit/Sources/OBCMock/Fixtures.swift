@@ -2,6 +2,7 @@
 import Foundation
 import OBCDomain
 import OBCTransport
+import OBCFormats
 
 /// A loaded fixture set: the domain objects the mock serves. A value type, so the live
 /// `MockControl` can copy-mutate it under its lock. Built by decoding editable JSON in
@@ -187,6 +188,15 @@ extension FixtureSet {
     /// without the planned route, so an import can share that launch without a collision. Missing
     /// or unreadable resources fall back to `builtIn`: the mock never traps.
     public static func load(_ named: String) -> FixtureSet {
+        if named == "onboarding" {
+            var fixtures = load("website-rides")
+            fixtures.deviceInfo = fixtures.deviceInfo.renamed("OBC-7A2F")
+            fixtures.config.name = "OBC-7A2F"
+            for index in fixtures.rides.indices {
+                fixtures.rides[index].summary.isDemo = true
+            }
+            return fixtures
+        }
         if named == "website-rides" {
             var fixtures = load("website")
             fixtures.routes = []
@@ -238,7 +248,7 @@ public enum SampleRouteFile {
         case .gpx, .tcx:
             bundled("sample-import", kind.rawValue).map { [($0, "sample-import.\(kind.rawValue)")] } ?? []
         case .grimsel:
-            bundled("website-import", "gpx").map { [($0, "website-import.gpx")] } ?? []
+            (try? BundledDemoRoute.data()).map { [($0, BundledDemoRoute.fileName)] } ?? []
         case .bad:
             [(Data("socks · stove · sleeping bag — definitely not a route\n".utf8), "packing-list.pdf")]
         case .trip:

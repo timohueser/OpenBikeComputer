@@ -85,6 +85,10 @@ final class OnboardingBranchesTests: XCTestCase {
         capture(app, "P09-update-or-later")
         tap(app, "onboarding.updateLater")
         XCTAssertTrue(app.staticTexts["onboarding.routeTitle"].waitForExistence(timeout: 10))
+        tap(app, "onboarding.routeSkip")
+        tap(app, "onboarding.finish")
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["firmware.updateSheet.view"].exists)
     }
 
     @MainActor

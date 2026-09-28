@@ -46,8 +46,9 @@ public final class FirmwareUpdateModel {
         }
     }
     public private(set) var progress = TransferProgress(bytesDone: 0, total: 0)
-    /// The device's running firmware version, nil until it lands or while the link is down.
+    /// The last version read from the device. Kept offline so a known update can be downloaded.
     public private(set) var runningVersion: String?
+    public private(set) var deviceSerial: String?
     public private(set) var staged: StagedFirmware?
     public private(set) var connection: ConnectionState = .connecting
     /// A picked file that is not a usable update, surfaced as an alert and never a phase.
@@ -97,6 +98,7 @@ public final class FirmwareUpdateModel {
     @ObservationIgnored private let updateChecker: UpdateChecker?
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var stateTask: Task<Void, Never>?
+    @ObservationIgnored private var versionTask: Task<Void, Never>?
     @ObservationIgnored private var checkTask: Task<Void, Never>?
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
     @ObservationIgnored private var transferWatchers: [Task<Void, Never>] = []
@@ -238,20 +240,17 @@ public final class FirmwareUpdateModel {
         }
         stateTask = Task { [weak self, transport] in
             for await state in transport.state {
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 handleState(state)
             }
-        }
-        Task { [weak self, transport] in
-            guard let info = try? await transport.deviceInfo() else { return }
-            guard let self else { return }
-            runningVersion = info.firmwareVersion
         }
         checkForUpdate()
     }
 
     private func handleState(_ state: ConnectionState) {
         connection = state
+        versionTask?.cancel()
+        versionTask = nil
         let dropped = !linkUp
         switch phase {
         case .transferring where dropped:
@@ -259,20 +258,21 @@ public final class FirmwareUpdateModel {
             if let handle, handle.currentOutcome == nil { phase = .interrupted }
         case .awaitingConfirm:
             if dropped { sawDropSinceInstall = true }
-            if state == .connected, sawDropSinceInstall { checkInstalledVersion() }
         default:
             break
         }
+        if state == .connected { refreshRunningVersion() }
     }
 
-    /// A reconnect after the install reboot: re-read the device info. The staged version now
-    /// running means the update landed.
-    private func checkInstalledVersion() {
-        Task { [weak self, transport] in
+    /// Every connection gets a fresh version. After an install reboot it also confirms success.
+    private func refreshRunningVersion() {
+        versionTask = Task { [weak self, transport] in
             guard let info = try? await transport.deviceInfo() else { return }
-            guard let self else { return }
+            guard let self, !Task.isCancelled, connection == .connected else { return }
             runningVersion = info.firmwareVersion
-            if let staged, info.firmwareVersion == staged.version, phase == .awaitingConfirm {
+            deviceSerial = info.serial
+            if let staged, info.firmwareVersion == staged.version,
+               phase == .awaitingConfirm, sawDropSinceInstall {
                 phase = .done
             }
         }
@@ -480,6 +480,8 @@ public final class FirmwareUpdateModel {
         started = false
         stateTask?.cancel()
         stateTask = nil
+        versionTask?.cancel()
+        versionTask = nil
         // The check and the download are screen-scoped too: a popped screen has nobody to tell,
         // and `start()` re-runs the check from the cache anyway. A killed download stages nothing.
         checkTask?.cancel()
@@ -504,6 +506,7 @@ public final class FirmwareUpdateModel {
 
     deinit {
         stateTask?.cancel()
+        versionTask?.cancel()
         checkTask?.cancel()
         downloadTask?.cancel()
         transferWatchers.forEach { $0.cancel() }

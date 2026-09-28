@@ -28,7 +28,9 @@ public final class UpdateSurfaceModel {
     @ObservationIgnored private let notifier: (any UpdateNotifying)?
     @ObservationIgnored private var stateTask: Task<Void, Never>?
     @ObservationIgnored private var checkTask: Task<Void, Never>?
+    @ObservationIgnored private var notificationTask: Task<Void, Never>?
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var enabled = true
     /// The device the offer is about, so a dismiss writes the ledger under the right key.
     @ObservationIgnored private var pendingDevice: LastSeenDevice?
 
@@ -51,7 +53,7 @@ public final class UpdateSurfaceModel {
         stateTask = Task { [weak self, transport] in
             for await state in transport.state {
                 guard let self else { return }
-                guard state == .connected else { continue }
+                guard enabled, state == .connected else { continue }
                 await rememberDevice()
                 // The link arrives after the app does, so the check on `.active` had
                 // only the persisted version. Re-decide with the live one; the cache
@@ -61,20 +63,33 @@ public final class UpdateSurfaceModel {
         }
     }
 
+    /// Setup owns the update offer while it is open, including when the rider replays it.
+    public func setEnabled(_ enabled: Bool) {
+        self.enabled = enabled
+        guard !enabled else { return }
+        checkTask?.cancel()
+        checkTask = nil
+        notificationTask?.cancel()
+        notificationTask = nil
+        pending = nil
+        pendingDevice = nil
+    }
+
     /// The app came to the front. Runs the policy; presents a sheet only if it says to.
     public func appBecameActive() {
-        guard let runner, pending == nil, checkTask == nil else { return }
+        guard enabled, let runner, pending == nil, checkTask == nil else { return }
         checkTask = Task { [weak self, runner] in
             // A live read beats the remembered one and refreshes it. `?? nil` flattens
             // the optional chain: no model and no link both land on the persisted record.
             let live = await self?.rememberDevice() ?? nil
+            guard !Task.isCancelled, self?.enabled == true else { return }
             // Capture the fallback once: another device can connect while the request
             // is in flight, and the offer must stay with the evaluated device.
             let target = runner.device(live)
             let release = await runner.run(device: target)
-            guard let self else { return }
+            guard let self, !Task.isCancelled, enabled else { return }
             checkTask = nil
-            guard !Task.isCancelled, pending == nil, let release else { return }
+            guard pending == nil, let release else { return }
             present(release, device: target)
         }
     }
@@ -101,8 +116,11 @@ public final class UpdateSurfaceModel {
 
     private func askForNotificationPermissionOnce() {
         guard let runner, let notifier, !runner.didAskNotificationPermission else { return }
-        runner.markAskedNotificationPermission()
-        Task { await notifier.requestAuthorization() }
+        notificationTask = Task { [weak self] in
+            guard let self, !Task.isCancelled, enabled else { return }
+            runner.markAskedNotificationPermission()
+            await notifier.requestAuthorization()
+        }
     }
 
     /// "View": acting on the offer is also an answer. Navigation belongs to the host.
@@ -126,5 +144,6 @@ public final class UpdateSurfaceModel {
     deinit {
         stateTask?.cancel()
         checkTask?.cancel()
+        notificationTask?.cancel()
     }
 }
