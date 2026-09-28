@@ -1,6 +1,8 @@
 """Prepare local dependencies, the pinned model, and optional Germany search data."""
 import argparse
 import hashlib
+import json
+import sys
 import shutil
 import sqlite3
 import subprocess
@@ -50,6 +52,12 @@ def main():
                 raise SystemExit(f'Invalid model member: {name}')
             with tf.extractfile(member) as src, (model / name).open('wb') as dest:
                 shutil.copyfileobj(src, dest)
+    sys.path.insert(0, str(ROOT / 'query'))
+    from artifacts import label_contract
+    labels = json.dumps(label_contract())
+    if hashlib.sha256(labels.encode()).hexdigest() != 'f0f50354f70c53a1868d8143abc271145d7d4bb968b7e690fb1a0fb9d428215a':
+        raise SystemExit('The pinned model does not match the query schema. Train a new model.')
+    (model / 'labels.json').write_text(labels)
     if args.build_data:
         source = data / 'germany.jsonl.zst'
         if not source.exists():

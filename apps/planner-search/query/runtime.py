@@ -11,6 +11,7 @@ import numpy as np
 import onnxruntime as ort
 from tokenizers import Tokenizer
 
+from artifacts import check_labels
 from decode import decode
 from schema import INTENTS, LABELS, validate
 from words import split
@@ -18,6 +19,7 @@ from words import split
 
 class Parser:
     def __init__(self, directory: Path):
+        check_labels(directory)
         self.tokenizer = Tokenizer.from_file(str(directory / 'tokenizer.json'))
         self.tokenizer.enable_truncation(max_length=64)
         options = ort.SessionOptions()

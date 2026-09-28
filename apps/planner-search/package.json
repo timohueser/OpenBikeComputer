@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:query": ".venv/bin/python -m pytest -q query/test_decode.py",
+    "test:query": ".venv/bin/python -m pytest -q query/test_decode.py query/test_artifacts.py",
     "test:data": "node test/data.mjs",
     "dev": "node dev.mjs",
     "test:model": ".venv/bin/python query/evaluate.py runtime:data/model"

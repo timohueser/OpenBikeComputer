@@ -365,6 +365,8 @@ class Lang:
     def _names(self) -> dict[str, list[str]]:
         out = {}
         for f in sorted((HERE / "data" / "names").glob("*.json")):
+            if f.name.startswith("."):
+                continue
             out[f.stem] = json.loads(f.read_text(encoding="utf-8"))
         hand = yaml.safe_load((HERE / "templates" / "names.yaml").read_text(encoding="utf-8"))
         out["common"] = list(hand["common"])

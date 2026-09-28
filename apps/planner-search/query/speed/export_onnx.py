@@ -1,9 +1,9 @@
 """Export the joint tagger to ONNX (fp32, int8 per-tensor, int8 per-channel) and check int8 against fp32.
 
-    .venv/bin/python export_onnx.py --checkpoint work/cut-50k --out work/onnx/cut-50k
+    .venv/bin/python export_onnx.py --checkpoint ../work/checkpoint --out work/onnx/checkpoint
 
-The checkpoint is a cut encoder directory (cut_vocab.py) with an optional heads.safetensors
-(keys intent.weight, intent.bias, tags.weight, tags.bias); without it the heads are random.
+The checkpoint contains a trained encoder, heads.safetensors, and labels.json.
+The export rejects missing heads and labels that differ from the decoder schema.
 The output directory gets model.onnx, model.int8.onnx (per-tensor weights), model.int8pc.onnx
 (per-channel weights), the tokenizer files,
 expected_ids.json (the bench sentences with their token ids, for the web and Rust benches) and
@@ -13,6 +13,7 @@ import argparse
 import gzip
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import brotli
@@ -24,6 +25,9 @@ from onnxruntime.quantization import QuantType, quantize_dynamic
 from tokenizers import Tokenizer
 
 from common import HELDOUT, QUERIES, SPEED, joint_tagger, load_sentences, model_dir
+
+sys.path.insert(0, str(SPEED.parent))
+from artifacts import check_labels, label_contract
 
 
 def sizes(path: Path):
@@ -69,9 +73,12 @@ def main():
                     help="MatMuls with a larger input activation stay fp32 (mmBERT-small: two MatMuls at 4600 and 9400, the rest below 100); inf disables")
     args = ap.parse_args()
     ckpt = model_dir(str(SPEED / args.checkpoint) if not Path(args.checkpoint).is_absolute() else args.checkpoint)
+    if not (ckpt / 'heads.safetensors').is_file():
+        ap.error('checkpoint has no trained heads.safetensors')
+    check_labels(ckpt)
     out = SPEED / args.out
     out.mkdir(parents=True, exist_ok=True)
-    for f in ["tokenizer.json", "tokenizer_config.json"]:
+    for f in ["tokenizer.json", "tokenizer_config.json", "labels.json", "training.json"]:
         if (ckpt / f).exists():
             shutil.copy(ckpt / f, out / f)
     tok = Tokenizer.from_file(str(ckpt / "tokenizer.json"))
@@ -79,6 +86,8 @@ def main():
     (out / "expected_ids.json").write_text(json.dumps(expected, ensure_ascii=False))
 
     model = joint_tagger(ckpt)
+    if model.intent.out_features != len(label_contract()['intents']) or model.tags.out_features != len(label_contract()['labels']):
+        raise ValueError('Trained heads do not match labels.json')
     ids = torch.tensor([tok.encode("campsites end of day 4").ids])
     fp32 = out / "model.onnx"
     seq = torch.export.Dim("seq", min=2, max=512)

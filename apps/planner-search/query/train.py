@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import importlib.metadata
 import random
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from artifacts import fingerprints, label_contract
 from tagger import INTENTS, LABELS, collate, encode, joint_tagger, predict
 
 
@@ -41,6 +43,16 @@ def main() -> None:
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     args = ap.parse_args()
 
+    if args.epochs < 1 or args.batch < 1:
+        ap.error('epochs and batch must be positive')
+    if not Path(args.base).is_dir():
+        ap.error('base must be a local encoder directory')
+    manifest = {
+        'arguments': vars(args),
+        'data': fingerprints(args.train + args.dev),
+        'base': fingerprints(sorted(p for p in Path(args.base).iterdir() if p.is_file() and not p.name.startswith("."))),
+        'versions': {name: importlib.metadata.version(name) for name in ('torch', 'transformers', 'tokenizers', 'safetensors')},
+    }
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     from transformers import AutoTokenizer
@@ -57,6 +69,8 @@ def main() -> None:
         return out
 
     train = items(read(args.train))
+    if not train:
+        ap.error('training data is empty')
     dev_rows = read(args.dev)
     print(f"train {len(train)}  dev {len(dev_rows)}  labels {len(LABELS)}", flush=True)
 
@@ -106,7 +120,8 @@ def main() -> None:
 
     save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()
                if not k.startswith("encoder.")}, str(out / "heads.safetensors"))
-    (out / "labels.json").write_text(json.dumps({"intents": INTENTS, "labels": LABELS}))
+    (out / "labels.json").write_text(json.dumps(label_contract()))
+    (out / 'training.json').write_text(json.dumps(manifest, indent=2))
     print(f"saved {out}")
 
 
