@@ -1,0 +1,9 @@
+work/
+.venv/
+*.onnx
+*.safetensors
+*.bin
+node_modules/
+pkg/
+target/
+__pycache__/

@@ -1,0 +1,190 @@
+# Query-box style sentences for timing and tokenizer checks. lang<TAB>sentence, at most 80 chars.
+en	campsites end of day 4
+en	shops middle of day 4
+en	pharmacies along route
+en	shops open day 3
+en	road bike route up Kandel starting here
+en	Kandel
+en	end day 4 at saint-michel
+en	via Hotel Krone St. Peter
+en	water gaps
+en	campsites with a pool end of day 4
+en	is the galibier worth it
+en	where can I get water in the next 30 km
+en	any bakeries open on sunday near the end of day 2
+en	bike shop within 5 km of the route
+en	find me a hostel near Saint-Michel-de-Maurienne
+en	gravel route from here to Passo dello Stelvio avoiding big climbs
+en	split the trip into 6 days
+en	join day 3 and day 4
+en	remove the stop at Col du Galibier
+en	add a stop at the Hôtel de la Poste in Valloire
+en	train station near the end of tomorrow's stage
+en	supermarkets between km 40 and km 60
+en	drinking water fountains on day 5
+en	pls show campsite near Bourg d'Oisans
+en	shortest route to Briançon by touring bike
+en	where do I sleep tonight
+en	huts in the map view
+en	any shops open monday within 3 km of the line
+en	least climbing route from Freiburg to Titisee via Schauinsland
+en	stretches without water longer than 40 km
+en	campsits at the end of day 4
+en	grocery store at the start of day 6
+en	end today's ride at Andermatt
+en	pass through Furka Pass tomorrow
+en	mtb route to Feldberg with most climbing
+en	spring water near here
+en	hotels between Chamonix and Martigny
+en	nearest pharmacy
+en	bike repair shop open saturday along the route
+en	Stilfser Joch
+en	gaps in shops on day 7
+en	make day 2 end at km 85
+en	is there a bakery in Lanslebourg-Mont-Cenis
+en	cheap lodging in the middle of day 3
+en	route from Innsbruck to Bolzano on road bike, least unpaved
+en	water sources along the next 50 km please
+en	how steep is the Mortirolo
+en	camping near a supermarket at the end of day 4
+de	wo kann ich am Ende von Tag 4 zelten
+de	Supermarkt in der Mitte von Tag 2
+de	Apotheken entlang der Route
+de	Läden die am Sonntag offen haben
+de	Rennradroute auf den Kandel ab hier
+de	Tag 4 in Saint-Michel beenden
+de	über Hotel Krone St. Peter
+de	Wasserlücken
+de	Campingplätze mit Pool am Ende von Tag 4
+de	lohnt sich der Galibier
+de	Wo gibt es Trinkwasser auf den nächsten 30 km
+de	Bäckerei am Ende von Tag 3, die sonntags geöffnet ist
+de	Fahrradladen im Umkreis von 5 km
+de	Jugendherberge in der Nähe von Bad Säckingen
+de	Gravelroute von hier zum Stilfser Joch ohne große Anstiege
+de	Reise auf 6 Tage aufteilen
+de	Tag 3 und Tag 4 zusammenlegen
+de	Halt am Col du Galibier entfernen
+de	Zwischenstopp beim Gasthaus Löwen in Hinterzarten
+de	Bahnhof am Ende der morgigen Etappe
+de	Supermärkte zwischen km 40 und km 60
+de	Brunnen an Tag 5
+de	zeig mir bitte Campingplätze bei Bourg d'Oisans
+de	kürzeste Route nach Brixen mit dem Reiserad
+de	wo schlafe ich heute Nacht
+de	Hütten im Kartenausschnitt
+de	Geschäfte die Montag offen sind, max 3 km von der Strecke
+de	Route mit wenig Höhenmetern von Freiburg nach Titisee über Schauinsland
+de	Abschnitte ohne Wasser länger als 40 km
+de	Campigplätze Ende Tag 4
+de	Lebensmittelgeschäft am Anfang von Tag 6
+de	heutige Etappe in Andermatt enden lassen
+de	morgen über den Furkapass
+de	MTB Route zum Feldberg mit möglichst vielen Höhenmetern
+de	Quelle in der Nähe
+de	Hotels zwischen Chamonix und Martigny
+de	nächste Apotheke
+de	Fahrradwerkstatt, die samstags offen hat, entlang der Strecke
+de	Straße über das Stilfser Joch
+de	Lücken bei Einkaufsmöglichkeiten an Tag 7
+de	Tag 2 bei km 85 enden lassen
+de	gibt es eine Bäckerei in Lanslebourg-Mont-Cenis
+de	günstige Unterkunft in der Mitte von Tag 3
+de	Route von Innsbruck nach Bozen mit dem Rennrad, möglichst wenig Schotter
+de	Wasserstellen auf den nächsten 50 km bitte
+de	wie steil ist der Mortirolo
+de	Zeltplatz in der Nähe von einem Supermarkt am Ende von Tag 4
+de	Übernachtung in Oberstdorf oder Sonthofen
+de	Wo ist der nächste Edeka oder Rewe
+fr	campings fin du jour 4
+fr	supermarché ouvert dimanche jour 3
+fr	pharmacies le long de l'itinéraire
+fr	magasins au milieu du jour 2
+fr	itinéraire vélo de route vers le Grand Ballon depuis ici
+fr	finir le jour 4 à Saint-Michel-de-Maurienne
+fr	passer par l'Hôtel du Lautaret
+fr	manques d'eau
+fr	campings avec piscine à la fin du jour 4
+fr	est-ce que le Galibier vaut le coup
+fr	où trouver de l'eau potable dans les 30 prochains km
+fr	boulangerie ouverte le dimanche près de la fin de l'étape
+fr	magasin de vélo à moins de 5 km du tracé
+fr	auberge de jeunesse près de Bourg-Saint-Maurice
+fr	itinéraire gravel d'ici au Col de la Croix de Fer
+fr	diviser le voyage en 6 jours
+fr	fusionner le jour 3 et le jour 4
+fr	supprimer l'arrêt au Col du Galibier
+fr	ajouter une halte à l'Hôtel de la Poste à Valloire
+fr	gare près de la fin de l'étape de demain
+fr	supermarchés entre le km 40 et le km 60
+fr	fontaines d'eau potable le jour 5
+fr	refuges dans la vue de la carte
+fr	le plus court chemin vers Briançon en vélo de voyage
+fr	où dormir ce soir
+fr	épiceries ouvertes lundi à moins de 3 km de la trace
+fr	tronçons sans eau de plus de 40 km
+fr	campigns fin du jour 4
+fr	hôtels entre Chamonix et Martigny
+fr	pharmacie la plus proche
+fr	réparateur de vélos ouvert samedi sur le parcours
+fr	terminer le jour 2 au km 85
+fr	y a-t-il une boulangerie à Lanslebourg-Mont-Cenis
+fr	hébergement pas cher au milieu du jour 3
+fr	itinéraire VTT vers le Mont Ventoux avec le plus de dénivelé
+fr	source d'eau près d'ici
+fr	chambre d'hôte à Saint-Jean-de-Maurienne
+fr	quelle est la pente du col de l'Iseran
+fr	camping près d'un supermarché à la fin du jour 4
+fr	route la moins vallonnée de Grenoble à Gap
+it	campeggi alla fine del giorno 4
+it	supermercato aperto domenica giorno 3
+it	farmacie lungo il percorso
+it	negozi a metà del giorno 2
+it	percorso bici da corsa verso il Passo dello Stelvio da qui
+it	finire il giorno 4 a Bormio
+it	passare per l'Albergo Stella Alpina
+it	mancanza d'acqua
+it	campeggi con piscina alla fine del giorno 4
+it	vale la pena fare il Mortirolo
+it	dove trovo acqua potabile nei prossimi 30 km
+it	panetteria aperta la domenica vicino alla fine della tappa
+it	negozio di bici entro 5 km dal percorso
+it	ostello vicino a Sant'Antonio di Mavignola
+it	percorso gravel da qui al Passo Gavia
+it	dividere il viaggio in 6 giorni
+it	unire il giorno 3 e il giorno 4
+it	togliere la sosta al Passo del Tonale
+it	aggiungere una sosta al Rifugio Garibaldi
+it	stazione ferroviaria alla fine della tappa di domani
+it	supermercati tra il km 40 e il km 60
+it	fontanelle il giorno 5
+it	rifugi nella vista della mappa
+it	percorso più breve verso Merano in bici da viaggio
+it	dove dormo stasera
+it	alimentari aperti lunedì entro 3 km dalla traccia
+it	tratti senza acqua più lunghi di 40 km
+it	campegi fine giorno 4
+it	alberghi tra Chiavenna e Sondrio
+it	farmacia più vicina
+it	ciclofficina aperta sabato lungo il percorso
+it	finire il giorno 2 al km 85
+it	c'è un forno a Ponte di Legno
+it	alloggio economico a metà del giorno 3
+it	percorso MTB verso il Monte Grappa con più dislivello
+it	sorgente vicino a qui
+it	quanto è ripido il Passo Fedaia
+it	campeggio vicino a un supermercato alla fine del giorno 4
+it	percorso con meno salita da Trento a Riva del Garda
+it	agriturismo vicino a Castelnuovo di Garfagnana
+es	campings al final del día 4
+es	supermercado abierto el domingo día 3
+es	farmacias a lo largo de la ruta
+es	dónde hay agua potable en los próximos 30 km
+es	albergue cerca de Jaca
+es	ruta de grava desde aquí hasta el Col du Tourmalet
+nl	campings aan het einde van dag 4
+nl	supermarkt open op zondag dag 3
+nl	apotheken langs de route
+nl	waar kan ik drinkwater vinden in de komende 30 km
+nl	fietsenmaker binnen 5 km van de route
+nl	route van hier naar 's-Hertogenbosch met de racefiets

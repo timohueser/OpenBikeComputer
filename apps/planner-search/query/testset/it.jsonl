@@ -1,0 +1,50 @@
+{"id": "it-001", "lang": "it", "text": "campeggi alla fine del giorno 4", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}}
+{"id": "it-002", "lang": "it", "text": "supermercato nei primi 20 chilometri", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"along": {"ref": "start", "to": {"value": 20, "unit": "km"}}}}}
+{"id": "it-003", "lang": "it", "text": "negozi a meta del giorno 4", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 4, "part": "middle"}}, "note": "accent missing"}
+{"id": "it-004", "lang": "it", "text": "supermercato aperto domenica giorno 3", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"day": 3}, "open": {"weekday": "sun"}}}
+{"id": "it-005", "lang": "it", "text": "mi fai vedere gli alberghi sulla mappa?", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"scope": "view"}}}
+{"id": "it-006", "lang": "it", "text": "fontanele qui vicino", "scope": "in", "request": {"type": "places", "what": ["fountain"], "where": {"scope": "here"}}, "note": "typo"}
+{"id": "it-007", "lang": "it", "text": "acqua tra Bormio e il Passo dello Stelvio", "scope": "in", "request": {"type": "places", "what": ["water"], "where": {"near": [{"name": "Bormio"}, {"name": "Passo dello Stelvio"}]}}}
+{"id": "it-008", "lang": "it", "text": "bagni dal km 40 al 60", "scope": "in", "request": {"type": "places", "what": ["toilets"], "where": {"along": {"ref": "km", "from": {"value": 40, "unit": "km"}, "to": {"value": 60, "unit": "km"}}}}}
+{"id": "it-009", "lang": "it", "text": "un caffè nelle prossime due ore", "scope": "in", "request": {"type": "places", "what": ["cafe"], "where": {"along": {"ref": "here", "to": {"value": 2, "unit": "h"}}}}}
+{"id": "it-010", "lang": "it", "text": "spesa negli ultimi 15 km del giorno 2", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 2, "along": {"ref": "end", "to": {"value": 15, "unit": "km"}}}}}
+{"id": "it-011", "lang": "it", "text": "fontana prima dell'arrivo", "scope": "in", "request": {"type": "places", "what": ["fountain"], "where": {"before": {"plan": "end"}}}}
+{"id": "it-012", "lang": "it", "text": "supermecato dopo Bormio", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"after": {"name": "Bormio"}}}, "note": "typo"}
+{"id": "it-013", "lang": "it", "text": "farmacia aperta adeso", "scope": "in", "request": {"type": "places", "what": ["pharmacy"], "open": {"now": true}}, "note": "typo"}
+{"id": "it-014", "lang": "it", "text": "campeggi entro 5 km dal percorso", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"scope": "route"}, "radius": {"value": 5, "unit": "km"}}}
+{"id": "it-015", "lang": "it", "text": "un albergo ogni sera", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"day": "every", "part": "end"}}}
+{"id": "it-016", "lang": "it", "text": "lavanderia a Ora", "scope": "in", "request": {"type": "places", "what": ["laundry"], "where": {"near": [{"name": "Ora"}]}}, "note": "Ora is a town and means 'now'"}
+{"id": "it-017", "lang": "it", "text": "negozi aperti il giorno 5", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 5}, "open": {"day": 5}}}
+{"id": "it-018", "lang": "it", "text": "campegio economico vicino a Riva del Garda", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"near": [{"name": "Riva del Garda"}]}, "ignored": ["economico"]}, "note": "typo"}
+{"id": "it-019", "lang": "it", "text": "gelato dopo 3 ore", "scope": "in", "request": {"type": "places", "what": ["ice_cream"], "where": {"along": {"ref": "start", "at": {"value": 3, "unit": "h"}}}}}
+{"id": "it-020", "lang": "it", "text": "forno domani mattina", "scope": "in", "request": {"type": "places", "what": ["bakery"], "where": {"day": "tomorrow", "part": "start"}}, "note": "forno is a bakery here"}
+{"id": "it-021", "lang": "it", "text": "Passo dello Stelvio", "scope": "in", "request": {"type": "place", "name": "Passo dello Stelvio"}}
+{"id": "it-022", "lang": "it", "text": "dov'e il Rifugio Garibaldi", "scope": "in", "request": {"type": "place", "name": "Rifugio Garibaldi"}, "note": "accent missing"}
+{"id": "it-023", "lang": "it", "text": "percorso per la farmacia più vicina", "scope": "in", "request": {"type": "route", "to": {"kind": "pharmacy"}}}
+{"id": "it-024", "lang": "it", "text": "portami in cima al passo della Furka", "scope": "in", "request": {"type": "route", "to": {"name": "passo della Furka"}}}
+{"id": "it-025", "lang": "it", "text": "cicloturismo da Milano a Venezia in 4 giorni passando per Verona", "scope": "in", "request": {"type": "route", "to": {"name": "Venezia"}, "from": {"name": "Milano"}, "via": [{"name": "Verona"}], "bike": "touring", "days": 4}}
+{"id": "it-026", "lang": "it", "text": "bici da corsa fino al Mortirolo partendo da qui", "scope": "in", "request": {"type": "route", "to": {"name": "Mortirolo"}, "from": {"here": true}, "bike": "road"}}
+{"id": "it-027", "lang": "it", "text": "il percorso più corto in mtb per Trento", "scope": "in", "request": {"type": "route", "to": {"name": "Trento"}, "bike": "mtb", "goal": "shortest"}}
+{"id": "it-028", "lang": "it", "text": "dalla fine della tappa 3 alla stazione più vicina", "scope": "in", "request": {"type": "route", "to": {"kind": "train_station"}, "from": {"day": 3, "part": "end"}}, "note": "tappa means day"}
+{"id": "it-029", "lang": "it", "text": "tratti senza acqua", "scope": "in", "request": {"type": "stretches", "what": "gap:water"}}
+{"id": "it-030", "lang": "it", "text": "salite oltre il 10%", "scope": "in", "request": {"type": "stretches", "what": "climb", "min": {"value": 10, "unit": "%"}}, "note": "a climb with a gradient threshold"}
+{"id": "it-031", "lang": "it", "text": "sterato il giorno 3", "scope": "in", "request": {"type": "stretches", "what": "unpaved", "where": {"day": 3}}, "note": "typo"}
+{"id": "it-032", "lang": "it", "text": "finire il giorno 4 a Bormio", "scope": "in", "request": {"type": "end_day", "day": 4, "at": {"name": "Bormio"}}}
+{"id": "it-033", "lang": "it", "text": "la tappa 2 finisce al km 95", "scope": "in", "request": {"type": "end_day", "day": 2, "at": {"along": {"ref": "km", "at": {"value": 95, "unit": "km"}}}}}
+{"id": "it-034", "lang": "it", "text": "aggiungi soste acqua ogni tre ore al percorso", "scope": "in", "request": {"type": "add_point", "point": {"kind": "water"}, "kind": "stop", "every": {"value": 3, "unit": "h"}, "where": {"scope": "route"}}}
+{"id": "it-035", "lang": "it", "text": "passa per Merano", "scope": "in", "request": {"type": "add_point", "point": {"name": "Merano"}, "kind": "pass"}}
+{"id": "it-036", "lang": "it", "text": "togli Bormio", "scope": "in", "request": {"type": "remove_point", "point": {"name": "Bormio"}}}
+{"id": "it-037", "lang": "it", "text": "dividi in cinque tappe", "scope": "in", "request": {"type": "split", "days": 5}}
+{"id": "it-038", "lang": "it", "text": "massimo 80 km al giorno", "scope": "in", "request": {"type": "split", "per_day": {"value": 80, "unit": "km"}}}
+{"id": "it-039", "lang": "it", "text": "unisic i giorni 2 e 3", "scope": "in", "request": {"type": "join", "day": 2}, "note": "typo"}
+{"id": "it-040", "lang": "it", "text": "percoso al contrario", "scope": "in", "request": {"type": "reverse"}, "note": "typo"}
+{"id": "it-041", "lang": "it", "text": "meno dislivello il giorno 3", "scope": "in", "request": {"type": "reroute", "where": {"day": 3}, "goal": "least_climbing"}}
+{"id": "it-042", "lang": "it", "text": "evita lo sterrato domani", "scope": "in", "request": {"type": "reroute", "where": {"day": "tomorrow"}, "goal": "least_unpaved"}}
+{"id": "it-043", "lang": "it", "text": "vale la pena fare il Gavia?", "scope": "out", "request": {"type": "none"}}
+{"id": "it-044", "lang": "it", "text": "campeggi vicino a un supermercato alla fine del giorno 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["vicino a un supermercato"]}}
+{"id": "it-045", "lang": "it", "text": "che tempo fa il giorno 3", "scope": "out", "request": {"type": "none"}}
+{"id": "it-046", "lang": "it", "text": "ciao!", "scope": "out", "request": {"type": "none"}}
+{"id": "it-047", "lang": "it", "text": "grazie mile", "scope": "out", "request": {"type": "none"}, "note": "typo"}
+{"id": "it-048", "lang": "it", "text": "è dura la tappa 2?", "scope": "out", "request": {"type": "none"}}
+{"id": "it-049", "lang": "it", "text": "farmacia vicino a un hotel entro 20 km da Trento", "scope": "out", "request": {"type": "none"}}
+{"id": "it-050", "lang": "it", "text": "albergo vicino a un bar alla fine del giorno 2", "scope": "out", "request": {"type": "places", "what": ["hotel"], "where": {"day": 2, "part": "end"}, "ignored": ["vicino a un bar"]}}

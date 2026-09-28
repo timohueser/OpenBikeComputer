@@ -1,0 +1,50 @@
+{"id": "fr-001", "lang": "fr", "text": "supermarché ouvert dimanche jour 3", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"day": 3}, "open": {"weekday": "sun"}}}
+{"id": "fr-002", "lang": "fr", "text": "supermarché dans les 20 premiers kilomètres", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"along": {"ref": "start", "to": {"value": 20, "unit": "km"}}}}}
+{"id": "fr-003", "lang": "fr", "text": "tu peux me montrer les hôtels sur la carte ?", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"scope": "view"}}}
+{"id": "fr-004", "lang": "fr", "text": "eau potable près d'ici", "scope": "in", "request": {"type": "places", "what": ["drinking_water"], "where": {"scope": "here"}}}
+{"id": "fr-005", "lang": "fr", "text": "fontaines entre Briançon et le col du Lautaret", "scope": "in", "request": {"type": "places", "what": ["fountain"], "where": {"near": [{"name": "Briançon"}, {"name": "col du Lautaret"}]}}}
+{"id": "fr-006", "lang": "fr", "text": "toillettes du km 40 au km 60", "scope": "in", "request": {"type": "places", "what": ["toilets"], "where": {"along": {"ref": "km", "from": {"value": 40, "unit": "km"}, "to": {"value": 60, "unit": "km"}}}}, "note": "typo"}
+{"id": "fr-007", "lang": "fr", "text": "un café dans les deux prochianes heures", "scope": "in", "request": {"type": "places", "what": ["cafe"], "where": {"along": {"ref": "here", "to": {"value": 2, "unit": "h"}}}}, "note": "typo"}
+{"id": "fr-008", "lang": "fr", "text": "courses dans les 15 derniers km du jour 2", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 2, "along": {"ref": "end", "to": {"value": 15, "unit": "km"}}}}}
+{"id": "fr-009", "lang": "fr", "text": "fontaine avant le Col du Galiber", "scope": "in", "request": {"type": "places", "what": ["fountain"], "where": {"before": {"name": "Col du Galiber"}}}, "note": "typo"}
+{"id": "fr-010", "lang": "fr", "text": "supermarche apres Saint-Michel-de-Maurienne", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"after": {"name": "Saint-Michel-de-Maurienne"}}}, "note": "accents missing"}
+{"id": "fr-011", "lang": "fr", "text": "pharmacie ouverte maintenat", "scope": "in", "request": {"type": "places", "what": ["pharmacy"], "open": {"now": true}}, "note": "typo"}
+{"id": "fr-012", "lang": "fr", "text": "campings à moins de 5 km de l'itinéraire", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"scope": "route"}, "radius": {"value": 5, "unit": "km"}}}
+{"id": "fr-013", "lang": "fr", "text": "un hôtel à la fin de chaque étape", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"day": "every", "part": "end"}}, "note": "étape means day"}
+{"id": "fr-014", "lang": "fr", "text": "cols du jour 2", "scope": "in", "request": {"type": "places", "what": ["pass"], "where": {"day": 2}}, "note": "col is the common word here"}
+{"id": "fr-015", "lang": "fr", "text": "refuge au milleu du jour 3", "scope": "in", "request": {"type": "places", "what": ["hut"], "where": {"day": 3, "part": "middle"}}, "note": "typo"}
+{"id": "fr-016", "lang": "fr", "text": "distributeur avant l'arrivée", "scope": "in", "request": {"type": "places", "what": ["atm"], "where": {"before": {"plan": "end"}}}}
+{"id": "fr-017", "lang": "fr", "text": "magasins ouverts le jour 5", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 5}, "open": {"day": 5}}}
+{"id": "fr-018", "lang": "fr", "text": "camping pas cher près d'Annecy", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"near": [{"name": "Annecy"}]}, "ignored": ["pas cher"]}}
+{"id": "fr-019", "lang": "fr", "text": "camping vers le km 250", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"along": {"ref": "km", "at": {"value": 250, "unit": "km"}}}}}
+{"id": "fr-020", "lang": "fr", "text": "boulangerie demain matin", "scope": "in", "request": {"type": "places", "what": ["bakery"], "where": {"day": "tomorrow", "part": "start"}}}
+{"id": "fr-021", "lang": "fr", "text": "Col du Galibier", "scope": "in", "request": {"type": "place", "name": "Col du Galibier"}}
+{"id": "fr-022", "lang": "fr", "text": "où est l'Alpe d'Huez", "scope": "in", "request": {"type": "place", "name": "l'Alpe d'Huez"}}
+{"id": "fr-023", "lang": "fr", "text": "itinéraire vers la pharmacie la plus proche", "scope": "in", "request": {"type": "route", "to": {"kind": "pharmacy"}}}
+{"id": "fr-024", "lang": "fr", "text": "emmène-moi en haut du col de la Furka", "scope": "in", "request": {"type": "route", "to": {"name": "col de la Furka"}}}
+{"id": "fr-025", "lang": "fr", "text": "de Genève à Nice par Briançon en six jours", "scope": "in", "request": {"type": "route", "to": {"name": "Nice"}, "from": {"name": "Genève"}, "via": [{"name": "Briançon"}], "days": 6}}
+{"id": "fr-026", "lang": "fr", "text": "vélo de route jusqu'au Mont Ventoux depuis ici", "scope": "in", "request": {"type": "route", "to": {"name": "Mont Ventoux"}, "from": {"here": true}, "bike": "road"}}
+{"id": "fr-027", "lang": "fr", "text": "gravel le plus plat de Chambéry à Grenoble", "scope": "in", "request": {"type": "route", "to": {"name": "Grenoble"}, "from": {"name": "Chambéry"}, "bike": "gravel", "goal": "least_climbing"}}
+{"id": "fr-028", "lang": "fr", "text": "de la fin du jour 3 à la gare la plus proche", "scope": "in", "request": {"type": "route", "to": {"kind": "train_station"}, "from": {"day": 3, "part": "end"}}}
+{"id": "fr-029", "lang": "fr", "text": "tronçons sans eau", "scope": "in", "request": {"type": "stretches", "what": "gap:water"}}
+{"id": "fr-030", "lang": "fr", "text": "montées de plus de 800 m de dénivelé", "scope": "in", "request": {"type": "stretches", "what": "climb", "min": {"value": 800, "unit": "m"}}}
+{"id": "fr-031", "lang": "fr", "text": "portions non goudronnées le jour 3", "scope": "in", "request": {"type": "stretches", "what": "unpaved", "where": {"day": 3}}}
+{"id": "fr-032", "lang": "fr", "text": "finir le jour 4 à Saint-Michel", "scope": "in", "request": {"type": "end_day", "day": 4, "at": {"name": "Saint-Michel"}}}
+{"id": "fr-033", "lang": "fr", "text": "arrêter l'étape 2 au km 95", "scope": "in", "request": {"type": "end_day", "day": 2, "at": {"along": {"ref": "km", "at": {"value": 95, "unit": "km"}}}}}
+{"id": "fr-034", "lang": "fr", "text": "ajoute des arrêts eau toutes les trois heures à l'itinéraire", "scope": "in", "request": {"type": "add_point", "point": {"kind": "water"}, "kind": "stop", "every": {"value": 3, "unit": "h"}, "where": {"scope": "route"}}}
+{"id": "fr-035", "lang": "fr", "text": "passer par Bourg-Saint-Maurice", "scope": "in", "request": {"type": "add_point", "point": {"name": "Bourg-Saint-Maurice"}, "kind": "pass"}, "note": "'passer par' read as pass, like 'pass through'"}
+{"id": "fr-036", "lang": "fr", "text": "suprime le passage par Annecy", "scope": "in", "request": {"type": "remove_point", "point": {"name": "Annecy"}}, "note": "typo"}
+{"id": "fr-037", "lang": "fr", "text": "decoupe en 5 etapes", "scope": "in", "request": {"type": "split", "days": 5}, "note": "accents missing"}
+{"id": "fr-038", "lang": "fr", "text": "80 km par jour", "scope": "in", "request": {"type": "split", "per_day": {"value": 80, "unit": "km"}}}
+{"id": "fr-039", "lang": "fr", "text": "fussioner les jours 2 et 3", "scope": "in", "request": {"type": "join", "day": 2}, "note": "typo"}
+{"id": "fr-040", "lang": "fr", "text": "inverser le sens", "scope": "in", "request": {"type": "reverse"}}
+{"id": "fr-041", "lang": "fr", "text": "plus de dénivelé le jour 3", "scope": "in", "request": {"type": "reroute", "where": {"day": 3}, "goal": "most_climbing"}}
+{"id": "fr-042", "lang": "fr", "text": "eviter le gravier demain", "scope": "in", "request": {"type": "reroute", "where": {"day": "tomorrow"}, "goal": "least_unpaved"}, "note": "accent missing"}
+{"id": "fr-043", "lang": "fr", "text": "est-ce que le Galibier vaut le coup ?", "scope": "out", "request": {"type": "none"}}
+{"id": "fr-044", "lang": "fr", "text": "campings près d'un supermarché à la fin du jour 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["près d'un supermarché"]}}
+{"id": "fr-045", "lang": "fr", "text": "quel temps fera-t-il le jour 3", "scope": "out", "request": {"type": "none"}}
+{"id": "fr-046", "lang": "fr", "text": "bonjour !", "scope": "out", "request": {"type": "none"}}
+{"id": "fr-047", "lang": "fr", "text": "merci beaucop", "scope": "out", "request": {"type": "none"}, "note": "typo"}
+{"id": "fr-048", "lang": "fr", "text": "c'est dur le jour 2 ?", "scope": "out", "request": {"type": "none"}}
+{"id": "fr-049", "lang": "fr", "text": "pharmacie près d'un hôtel à 20 km de Chambéry", "scope": "out", "request": {"type": "none"}}
+{"id": "fr-050", "lang": "fr", "text": "hôtel avec une boulangerie à côté, fin du jour 2", "scope": "out", "request": {"type": "places", "what": ["hotel"], "where": {"day": 2, "part": "end"}, "ignored": ["avec une boulangerie à côté"]}}

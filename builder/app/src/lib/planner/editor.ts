@@ -7,6 +7,7 @@ export const maxRidingDays = 14;
 export type LegMode = 'routed' | 'straight' | 'drawn';
 export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'detour' | 'night' | 'marker' | 'place';
 export interface RoutePoint {
+    placeKind?: string;
     id: string;
     coordinate: Coordinate;
     label: string;
@@ -23,8 +24,12 @@ export interface RoutePoint {
 export type Place = RoutePoint & {
     category: PlaceCategory;
     description: string;
+    locality?: string;
+    openingHours?: string;
+    hoursStatus?: import('./search/types').HoursStatus;
 };
 export interface Trip {
+    startDate?: string;
     live?: boolean;
     routing?: import('./routing').RoutingLine;
     bike?: import('./riding-profiles').BikeType;
@@ -66,28 +71,6 @@ const valley: Coordinate[] = [
     [6.797, 47.51], [6.691, 47.432], [6.579, 47.392], [6.422, 47.355],
     [6.362, 47.348], [6.232, 47.29], [6.138, 47.263], [6.024, 47.237],
 ];
-
-// Fictional places keep their geographic positions when the mock route changes.
-export const places: Place[] = [
-    { progress: .2, category: 'camp', label: 'Orchard camp', description: 'A quiet overnight spot beside an orchard.' },
-    { progress: .3, category: 'hotel', label: 'Canal-side rooms', description: 'A small hotel near the canal.' },
-    { progress: .37, category: 'camp', label: 'Willow camp', description: 'A camping option beside a willow grove.' },
-    { progress: .46, category: 'hotel', label: 'Village inn', description: 'Rooms in a village along the valley.' },
-    { progress: .56, category: 'camp', label: 'Meadow camp', description: 'A camping option on an open meadow.' },
-    { progress: .65, category: 'hotel', label: 'Riverside rooms', description: 'A small hotel beside the river.' },
-    { progress: .73, category: 'camp', label: 'Forest-edge camp', description: 'A camping option near the edge of a wood.' },
-    { progress: .82, category: 'hotel', label: 'Valley inn', description: 'Rooms for an overnight stop in the valley.' },
-    { progress: .9, category: 'camp', label: 'Mill meadow camp', description: 'A camping option near an old mill.' },
-    { progress: .47, category: 'water', label: 'Water stop', description: 'A water point with unverified availability.' },
-].map((place, index) => ({
-    ...place,
-    category: place.category as Place['category'],
-    id: `${place.category}-${index}`,
-    kind: 'place' as const,
-    coordinate: coordinateAt(valley, place.progress),
-}));
-
-export const searchPlaces = places;
 
 export function initialTrip(): Trip {
     return {
@@ -369,7 +352,7 @@ export interface OvernightCandidate {
 }
 
 /** The three places nearest the suggested day end, each with its predicted day, shortest day first. */
-export function overnightCandidates(trip: Trip, night: number): OvernightCandidate[] {
+export function overnightCandidates(trip: Trip, night: number, places: Place[]): OvernightCandidate[] {
     if (trip.mode === 'route' || night < 1 || night >= tripDays(trip).length) return [];
     const coordinates = routeCoordinates(trip);
     const { center } = overnightWindow(trip, night);

@@ -3,6 +3,7 @@
     import type { MapPoint } from '../../src/lib/planner/map-types';
 
     let { popup, points = [], onPointSelect }: { popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void } = $props();
+    export function fitSearchResults() {}
     export function fitRoute() {}
     export function fitCoordinates() {}
     export function showPlace() {}

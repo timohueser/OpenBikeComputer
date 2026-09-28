@@ -2,6 +2,9 @@
     /** `path` draws a 24 px stroke path instead of a named icon. */
     let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
     const paths: Record<string, string> = {
+        calendar: 'M4 5h16v16H4V5Zm0 5h16M8 3v4m8-4v4M8 14h2m4 0h2m-8 3h2',
+        clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4v5l3 2',
+        locate: 'M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0-5v3m0 14v3M2 12h3m14 0h3',
         up: 'm6 15 6-6 6 6',
         grip: 'M9 5v.1M15 5v.1M9 12v.1M15 12v.1M9 19v.1M15 19v.1',
         layers: 'm12 3 10 6-10 6L2 9l10-6Zm-10 10 10 6 10-6M2 17l10 6 10-6',

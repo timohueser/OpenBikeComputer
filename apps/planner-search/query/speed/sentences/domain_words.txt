@@ -1,0 +1,30 @@
+campsite campsites camping campground campgrounds tent pitch water drinking fountain fountains spring springs tap refill
+lodging hotel hotels hostel hostels hut huts guesthouse guesthouses motel inn b&b shelter bivouac
+resupply shop shops store stores supermarket supermarkets grocery groceries bakery bakeries convenience kiosk food
+pharmacy pharmacies chemist bike bikes bicycle repair mechanic train trains station stations railway
+day days today tomorrow tonight start middle end beginning km kilometers kilometres miles within near nearby along route here
+monday tuesday wednesday thursday friday saturday sunday open closed weekday
+road gravel mtb touring shortest least climbing unpaved flattest balanced via stop split join remove add pass through
+gaps gap stretch stretches without longer next map view line track stage stages
+Zeltplatz Zeltplätze Campingplatz Campingplätze Wasser Trinkwasser Brunnen Quelle Wasserstelle Wasserstellen Wasserhahn
+Unterkunft Unterkünfte Hotel Hotels Pension Herberge Jugendherberge Hütte Hütten Gasthaus Gasthof Ferienwohnung Biwak
+Laden Läden Geschäft Geschäfte Supermarkt Supermärkte Lebensmittel Bäckerei Bäckereien Kiosk Einkaufen Einkaufsmöglichkeit
+Apotheke Apotheken Fahrradladen Fahrradläden Fahrradwerkstatt Werkstatt Bahnhof Bahnhöfe Zug Bahn Haltestelle
+Tag Tage Tages heute morgen übermorgen heute Nacht Anfang Mitte Ende Beginn Kilometer entlang Strecke Route Nähe hier Umkreis
+Montag Dienstag Mittwoch Donnerstag Freitag Samstag Sonntag montags sonntags samstags geöffnet offen geschlossen
+Rennrad Gravelbike Mountainbike Reiserad kürzeste wenigsten Höhenmeter Anstieg Schotter unbefestigt über Zwischenstopp Etappe Etappen aufteilen zusammenlegen entfernen hinzufügen
+Lücke Lücken Abschnitt Abschnitte ohne länger nächsten Karte Kartenausschnitt Linie
+camping campings aire tente eau potable fontaine fontaines source robinet hébergement hôtel hôtels auberge gîte gîtes refuge refuges chambre
+magasin magasins épicerie épiceries supermarché supermarchés boulangerie boulangeries alimentation pharmacie pharmacies vélo vélos réparateur atelier gare gares train
+jour jours aujourd'hui demain soir début milieu fin kilomètres près proche le long itinéraire parcours trace tracé ici autour
+lundi mardi mercredi jeudi vendredi samedi dimanche ouvert ouverte ouverts fermé
+route gravel VTT randonnée plus court moins dénivelé montée non goudronné via étape étapes arrêt halte diviser fusionner supprimer ajouter passer
+manque manques tronçon tronçons sans plus long prochains carte vue ligne
+campeggio campeggi tenda acqua potabile fontana fontanella fontanelle sorgente rubinetto alloggio albergo alberghi ostello rifugio rifugi agriturismo
+negozio negozi alimentari supermercato supermercati panetteria panifici forno farmacia farmacie bici bicicletta ciclofficina officina stazione treno
+giorno giorni oggi domani stasera inizio metà fine chilometri vicino lungo percorso traccia qui
+lunedì martedì mercoledì giovedì venerdì sabato domenica aperto aperta aperti chiuso
+corsa gravel MTB cicloturismo breve salita dislivello sterrato tappa tappe sosta dividere unire togliere aggiungere passare
+mancanza tratto tratti senza lungo prossimi mappa vista
+agua potable fuente fuentes albergue refugio tienda supermercado panadería farmacia bicicleta taller estación día fin mitad cerca ruta domingo abierto
+drinkwater kraan bron camping kampeerplaats hotel herberg winkel supermarkt bakkerij apotheek fietsenmaker fiets station dag einde midden begin zondag open route
