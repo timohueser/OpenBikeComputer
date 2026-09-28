@@ -186,6 +186,11 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     };
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.attachments.len(), 3);
+    assert_eq!(route.surfaces.len(), route.geometry.len() - 1);
+    for leg in &route.legs {
+        assert_eq!(route.surfaces[leg.from_index], graph.roads[leg.roads[0].road as usize].surface);
+        assert_eq!(route.surfaces[leg.to_index - 1], graph.roads[leg.roads.last().unwrap().road as usize].surface);
+    }
     for pair in route.legs.windows(2) {
         let (a, b) = (pair[0].roads.last().unwrap(), pair[1].roads.first().unwrap());
         assert_eq!(a.road, b.road);
@@ -355,4 +360,42 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let costs: Vec<_> = [0.0, 0.1, 0.5, 0.9, 1.0].iter().map(|&f| prefix_cost(&road, &profile, f).unwrap()).collect();
     assert!(costs.is_sorted());
     assert_eq!(costs.windows(2).map(|c| c[1] - c[0]).sum::<u64>(), full);
+}
+
+#[test]
+fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
+    use route_engine::{package::Manifest, storage::encode};
+    use std::cell::Cell;
+    struct Counted<'a>(Memory, &'a Cell<usize>);
+    impl Source for Counted<'_> {
+        fn read(&self, key: &str) -> route_engine::Result<Vec<u8>> {
+            self.1.set(self.1.get() + 1);
+            self.0.read(key)
+        }
+    }
+    let graph = fixture();
+    let (source, bytes) = package(&graph);
+    let mut objects = (*source.0).clone();
+    let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+    manifest.roads = 20 * 128;
+    manifest.geometry.clear();
+    for page in 0..20 {
+        let road = Road { way: page, ..graph.roads[0].clone() };
+        let bytes = encode(&vec![road; 128]).unwrap();
+        let key = digest(&bytes);
+        manifest.geometry.push(key.clone());
+        objects.insert(key, bytes);
+    }
+    for metric in manifest.metrics.values_mut() {
+        metric.endpoints.resize(20, metric.endpoints[0].clone());
+    }
+    let reads = Cell::new(0);
+    let mut package =
+        Package::open(Counted(Memory(Arc::new(objects)), &reads), &serde_json::to_vec(&manifest).unwrap()).unwrap();
+    for _ in 0..2 {
+        for page in 0..20 {
+            assert_eq!(package.road(page * 128).unwrap().way, page as i64);
+        }
+    }
+    assert_eq!(reads.get(), 20);
 }

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { calculateLine, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { surfaceRuns, surfaceWindow } from './surface-data';
 import { initialTrip, cumulative, routingKey, routeCoordinates, type Trip } from './editor';
 
 const route: EngineRoute = {
-    id: 'test-route', reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
+    id: 'test-route', surfaces: ['Paved', 'Gravel'], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
     totals: { distance_m: 15000, ascent_m: 0, descent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
     legs: [{ from_index: 0, to_index: 1, totals: { distance_m: 7500 } as EngineRoute['totals'] }, { from_index: 1, to_index: 2, totals: { distance_m: 7500 } as EngineRoute['totals'] }],
     snap_truncated: false,
@@ -23,6 +24,12 @@ describe('routing integration', () => {
         const plan = trip();
         const line = await calculateLine(plan, new AbortController().signal);
         expect(fetch).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
+        expect(line.alternativesReady).toBe(false);
+        expect(line.surfaces).toEqual(['Paved', 'Gravel']);
+        const withAlternatives = await calculateLine(plan, new AbortController().signal, true);
+        expect(JSON.parse(fetch.mock.calls[1][1].body).alternatives).toBe(true);
+        expect(withAlternatives.alternativesReady).toBe(true);
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
@@ -56,6 +63,25 @@ describe('routing integration', () => {
         expect(line.unroutedKm).toBeCloseTo(line.unknownSurfaceKm);
         expect(line.elapsed.at(-1)).toBe(line.seconds);
         expect(line.elevation.every(h => h === null)).toBe(true);
+        expect(line.surfaces).toHaveLength(line.coordinates.length - 1);
+        expect(line.surfaces.every(s => s === 'Unknown')).toBe(true);
+        manual.points[2].leg = 'routed';
+        const mixed = await calculateLine(manual, new AbortController().signal);
+        expect(mixed.surfaces).toEqual(['Unknown', 'Unknown', 'Paved', 'Gravel']);
+        expect(mixed.surfaces).toHaveLength(mixed.coordinates.length - 1);
+    });
+    it('aligns surface sections by distance and clips the view without changing route shares', () => {
+        const line = selectRoute(trip(), route, [route]);
+        const data = surfaceRuns(line);
+        expect(data.runs.map(run => run.surface)).toEqual(['Paved', 'Gravel']);
+        expect(data.runs[0].to).toBeCloseTo(.5);
+        expect(data.runs[1].from).toBe(data.runs[0].to);
+        const clipped = surfaceWindow(data.runs, .25, .75);
+        expect(clipped[0]).toEqual({ ...data.runs[0], from: .25 });
+        expect(clipped[1]).toEqual({ ...data.runs[1], to: .75 });
+        expect(data.shares.get('Gravel')).toBeCloseTo(.5);
+        expect(surfaceRuns({ ...line, surfaces: [] }).shares.get('Unknown')).toBe(1);
+        expect(surfaceRuns().runs).toEqual([]);
     });
     it('reports service failure and never substitutes fixture geometry', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));

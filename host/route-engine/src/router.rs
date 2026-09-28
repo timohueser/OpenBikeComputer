@@ -1,5 +1,5 @@
 use crate::{
-    model::{Pace, Point, Road, Totals, BIKE, NO_ELEVATION},
+    model::{Pace, Point, Road, Surface, Totals, BIKE, NO_ELEVATION},
     package::{Package, Source},
     search::{Progress, Search},
     snap::{self, Candidate, Policy},
@@ -52,6 +52,8 @@ pub struct Route {
     pub cost: u64,
     pub geometry: Vec<[f64; 2]>,
     pub elevation: Vec<Option<i16>>,
+    /// Surface of each edge from geometry[i] to geometry[i + 1].
+    pub surfaces: Vec<Surface>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
@@ -86,6 +88,7 @@ pub struct Router<S> {
     cache_bytes: usize,
     paths: VecDeque<(String, Path)>,
     cached_roads: usize,
+    snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
 
 impl<S: Source> Router<S> {
@@ -105,6 +108,7 @@ impl<S: Source> Router<S> {
             cache_bytes,
             paths: VecDeque::new(),
             cached_roads: 0,
+            snaps: VecDeque::new(),
         }
     }
 
@@ -138,11 +142,22 @@ impl<S: Source> Router<S> {
             if lon < bounds[0] || lon > bounds[2] || lat < bounds[1] || lat > bounds[3] {
                 return Err(Error::MissingRegion(format!("Point {index} is outside {}", self.package.manifest.region)));
             }
-            let found = self.package.snap(
-                Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION },
-                &request.profile,
-                Policy::default(),
-            )?;
+            let point =
+                Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
+            let found = if let Some((_, _, _, found)) = self
+                .snaps
+                .iter()
+                .find(|(lat, lon, metric, _)| *lat == point.lat && *lon == point.lon && metric == &request.profile)
+            {
+                found.clone()
+            } else {
+                let found = self.package.snap(point, &request.profile, Policy::default())?;
+                if self.snaps.len() == 32 {
+                    self.snaps.pop_front();
+                }
+                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), found.clone()));
+                found
+            };
             truncated |= found.truncated;
             if found.retained.is_empty() {
                 return Err(Error::NoSnap(index));
@@ -218,6 +233,7 @@ impl<S: Source> Router<S> {
             cost,
             geometry: Vec::new(),
             elevation: Vec::new(),
+            surfaces: Vec::new(),
             elapsed: Vec::new(),
             legs: Vec::new(),
             attachments,
@@ -251,6 +267,9 @@ impl<S: Source> Router<S> {
                     }
                     if route.geometry.len() >= control.max_geometry {
                         return Err(Error::Limit);
+                    }
+                    if !route.geometry.is_empty() {
+                        route.surfaces.push(road.surface);
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);

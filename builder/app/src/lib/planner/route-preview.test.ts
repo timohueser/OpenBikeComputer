@@ -1,0 +1,33 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { routePreview } from './route-preview';
+
+afterEach(() => vi.useRealTimers());
+it('previews only stationary positions and rejects late replies after movement or drop', async () => {
+    vi.useFakeTimers();
+    const replies: ((value: string) => void)[] = [];
+    const calculate = vi.fn((_position: number, _signal: AbortSignal) => new Promise<string>(resolve => replies.push(resolve)));
+    const publish = vi.fn(), fail = vi.fn();
+    const preview = routePreview(calculate, publish, fail);
+    preview.move(1);
+    await vi.advanceTimersByTimeAsync(200);
+    preview.move(2);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(calculate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calculate.mock.calls[0][0]).toBe(2);
+    preview.move(3);
+    expect(calculate.mock.calls[0][1].aborted).toBe(true);
+    replies[0]('stale');
+    await vi.advanceTimersByTimeAsync(250);
+    expect(publish).not.toHaveBeenCalled();
+    replies[1]('current');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(3, 'current');
+    preview.move(4);
+    await vi.advanceTimersByTimeAsync(250);
+    preview.cancel();
+    replies[2]('after drop');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(fail).not.toHaveBeenCalled();
+});

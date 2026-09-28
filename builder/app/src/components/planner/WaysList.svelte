@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { EngineRoute } from '../../lib/planner/routing';
-    let { routes, choiceId, onPick }: { routes: EngineRoute[]; choiceId: string; onPick: (route: EngineRoute) => void } = $props();
+    let { routes, choiceId, status = '', onPick }: { routes: EngineRoute[]; status?: string; choiceId: string; onPick: (route: EngineRoute) => void } = $props();
     function title(id: string) { return id.endsWith('/shorter') ? 'Shorter' : id.endsWith('/smoother') ? 'Smoother' : id.endsWith('/less-climbing') ? 'Less climbing' : 'Balanced'; }
     function differences(route: EngineRoute) {
         const a = routes[0].totals, b = route.totals;
@@ -18,7 +18,7 @@
             <span class="figure">{(route.totals.distance_m / 1000).toFixed(1)} km<small>{route.totals.unknown_elevation_m ? 'Elevation incomplete' : `↑ ${route.totals.ascent_m} m`}</small></span>
         </button>
     {/each}
-    <p class="note">{routes.length < 2 ? 'No useful alternative found.' : 'Alternatives offer a distance, surface, climbing or corridor trade-off.'}</p>
+    <p class="note" role="status">{status || (routes.length < 2 ? 'No useful alternative found.' : 'Alternatives offer a distance, surface, climbing or corridor trade-off.')}</p>
 </div>
 
 <style>

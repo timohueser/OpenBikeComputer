@@ -4,7 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 pub const FORMAT: u32 = 1;
@@ -65,8 +65,10 @@ pub struct Package<S> {
     pub(crate) manifest: Manifest,
     pub(crate) identity: String,
     source: S,
-    // A small geometry cache is separate from the query's bounded summary cache.
-    geometry: VecDeque<(u32, Arc<Vec<Road>>, usize)>,
+    // Geometry has a separate byte budget from the query summaries.
+    geometry: HashMap<u32, (Arc<Vec<Road>>, usize)>,
+    geometry_order: VecDeque<u32>,
+    geometry_bytes: usize,
     endpoints: VecDeque<(String, u32, Arc<Vec<Endpoint>>, usize)>,
 }
 
@@ -119,7 +121,15 @@ impl<S: Source> Package<S> {
                 return Err(Error::InvalidData("Invalid object identity".into()));
             }
         }
-        Ok(Self { manifest, identity, source, geometry: VecDeque::new(), endpoints: VecDeque::new() })
+        Ok(Self {
+            manifest,
+            identity,
+            source,
+            geometry: HashMap::new(),
+            geometry_order: VecDeque::new(),
+            geometry_bytes: 0,
+            endpoints: VecDeque::new(),
+        })
     }
 
     /// Check the complete object closure before publishing or installing a region.
@@ -158,8 +168,8 @@ impl<S: Source> Package<S> {
             return Err(Error::InvalidData("Road outside package".into()));
         }
         let page = id / ROADS_PER_PAGE;
-        let value = if let Some(index) = self.geometry.iter().position(|(key, _, _)| *key == page) {
-            self.geometry.remove(index).unwrap().1
+        let value = if let Some((value, _)) = self.geometry.get(&page) {
+            Arc::clone(value)
         } else {
             let value: Vec<Road> = self.read(&self.manifest.geometry[page as usize])?;
             if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize
@@ -173,18 +183,24 @@ impl<S: Source> Package<S> {
             {
                 return Err(Error::InvalidData("Invalid road page".into()));
             }
-            Arc::new(value)
+            let size = value.capacity() * std::mem::size_of::<Road>()
+                + value.iter().map(|r| r.shape.capacity() * std::mem::size_of::<Point>()).sum::<usize>();
+            let value = Arc::new(value);
+            if size <= 32 * 1024 * 1024 {
+                while self.geometry_bytes + size > 32 * 1024 * 1024 {
+                    let key = self.geometry_order.pop_front().unwrap();
+                    self.geometry_bytes -= self.geometry.remove(&key).unwrap().1;
+                }
+                self.geometry.insert(page, (Arc::clone(&value), size));
+                self.geometry_order.push_back(page);
+                self.geometry_bytes += size;
+            }
+            value
         };
         let road = value
             .get((id % ROADS_PER_PAGE) as usize)
             .cloned()
             .ok_or_else(|| Error::InvalidData("Missing road".into()))?;
-        let size = value.capacity() * std::mem::size_of::<Road>()
-            + value.iter().map(|r| r.shape.capacity() * std::mem::size_of::<Point>()).sum::<usize>();
-        self.geometry.push_back((page, value, size));
-        while self.geometry.len() > 16 || self.geometry.iter().map(|entry| entry.2).sum::<usize>() > 32 * 1024 * 1024 {
-            self.geometry.pop_front();
-        }
         Ok(road)
     }
 

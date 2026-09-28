@@ -1,4 +1,5 @@
 <script lang="ts">
+    import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
@@ -150,6 +151,7 @@
     <div class="axis">
         {#each ticks as km, i (i)}<span>{km.toFixed(span < .25 ? 1 : 0)} km</span>{/each}
     </div>
+    <Surface line={lineData} from={shown.from} to={shown.to} {onHover} />
 </section>
 
 <style>
@@ -159,7 +161,7 @@
         display: flex;
         flex-direction: column;
         flex: none;
-        min-height: 130px;
+        min-height: 175px;
         padding: 12px 24px 8px;
         background: var(--panel);
     }
