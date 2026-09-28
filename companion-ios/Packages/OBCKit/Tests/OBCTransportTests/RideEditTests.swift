@@ -33,6 +33,20 @@ struct RideEditTests {
     }
 
     @Test
+    func demoEditsStayMarkedAndCannotMergeWithRecordedRides() throws {
+        var demo = Self.ride("demo", start: t0, seconds: 60)
+        demo.summary.isDemo = true
+        let real = Self.ride("real", start: t0.addingTimeInterval(61), seconds: 60)
+        let store = store(demo, real)
+        #expect(!RideEdit.suggestsMerge(demo, real))
+        #expect(!store.mergeRides(demo.summary, real.id))
+        #expect(!store.mergeRides(real.summary, demo.id))
+        #expect(store.trimRide(demo.id, to: t0...t0.addingTimeInterval(30), summary: demo.summary))
+        #expect(try #require(store.rideSummaries().first { $0.id == demo.id }).isDemo)
+        #expect(RideTotals(store.rideSummaries()) == RideTotals([real.summary]))
+    }
+
+    @Test
     func statsEstimateTheEnergyFromTheStoredPointsAndCountTheDescent() {
         // One point every 5 s at 500 W, one of them without power. Each interval counts at most
         // 2 s, as the device caps a gap: four intervals × 2 s × 500 W = 4 kJ.

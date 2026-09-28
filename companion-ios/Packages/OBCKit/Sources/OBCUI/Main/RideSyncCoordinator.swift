@@ -288,6 +288,7 @@ public final class RideSyncCoordinator {
                         let decoded = ride.summary
                         ride.summary = summary
                         if ride.summary.trackPreview == nil { ride.summary.trackPreview = decoded.trackPreview }
+                        ride.summary.isDemo = decoded.isDemo
                         ride.summary.descentMeters = decoded.descentMeters
                         ride.summary.avgHeartRate = decoded.avgHeartRate
                         ride.summary.maxHeartRate = decoded.maxHeartRate

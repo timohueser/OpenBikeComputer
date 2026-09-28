@@ -212,7 +212,7 @@ pub fn ride_v6() -> Vec<u8> {
     v.push(142); // avg_hr
     v.push(176); // max_hr
     v.push(85); // avg_cad
-    v.push(0); // reserved
+    v.push(1); // flags: demo ride
     v.extend_from_slice(&le16(210)); // avg_pwr
     v.extend_from_slice(&le16(480)); // max_pwr
     v.extend_from_slice(&le32(756)); // energy kJ

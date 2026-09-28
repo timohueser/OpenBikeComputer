@@ -156,6 +156,8 @@ public struct Ride: Identifiable, Equatable, Sendable {
 }
 
 public struct RideSummary: Identifiable, Equatable, Sendable {
+    /// A factory sample ride, shown in the library but excluded from totals.
+    public var isDemo: Bool
     public var source: RideSource?
     public let id: RideID
     public var name: String
@@ -211,7 +213,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         bikeType: BikeType = .road,
         trip: RideTrip? = nil,
         zoneLimits: RideZoneLimits = .notSet,
-        source: RideSource? = nil
+        source: RideSource? = nil,
+        isDemo: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -232,6 +235,7 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.trip = trip
         self.zoneLimits = zoneLimits
         self.source = source
+        self.isDemo = isDemo
     }
 }
 

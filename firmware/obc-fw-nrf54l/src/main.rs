@@ -20,9 +20,8 @@
 mod board;
 mod buzzer;
 // The raw-card flat store and the board adapter that binds it to sEMMC.
-#[cfg(feature = "seed-rides")]
-#[allow(dead_code)]
-mod demo_rides;
+#[cfg(feature = "factory-demo-ride")]
+mod factory_demo_ride;
 mod flat_ride;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR: native 4-bit SD mode,
@@ -865,34 +864,13 @@ async fn main(_spawner: Spawner) {
         // mount is bounded by the catalog it reads.
         let flat_started = embassy_time::Instant::now();
         let flat = flat_store::mount_at_boot();
-        #[cfg(feature = "seed-rides")]
+        #[cfg(feature = "factory-demo-ride")]
         {
-            #[cfg(demo_ride_file)]
-            let result = demo_rides::seed_file(flat, include_bytes!(concat!(env!("OUT_DIR"), "/demo_ride.obcr")));
-            #[cfg(not(demo_ride_file))]
-            let result = {
-                let start = option_env!("OBC_DEMO_RIDE_START").unwrap_or("0").parse().unwrap_or(0);
-                demo_rides::seed(flat, start)
-            };
-            match result {
-                #[cfg(demo_ride_file)]
-                Ok(id) => {
-                    info!("demo ride: object {}", id.0);
-                    info!("demo rides: complete");
-                }
-                #[cfg(not(demo_ride_file))]
-                Ok(ids) => {
-                    for (name, id) in demo_rides::NAMES.iter().zip(ids) {
-                        info!("demo rides: {} = object {}", name, id.0);
-                    }
-                    info!("demo rides: complete");
-                }
-                Err(error) => {
-                    defmt::error!("demo rides: refused: {:?}", defmt::Debug2Format(&error));
-                    idle_blink(&mut led).await
-                }
+            match factory_demo_ride::seed(flat, include_bytes!(concat!(env!("OUT_DIR"), "/demo_ride.obcr"))) {
+                Ok(id) => info!("factory demo ride: complete, object {}", id.0),
+                Err(error) => defmt::error!("factory demo ride: refused: {:?}", defmt::Debug2Format(&error)),
             }
-            if cfg!(demo_ride_file) {
+            if cfg!(feature = "factory-demo-ride") {
                 idle_blink(&mut led).await
             }
         }

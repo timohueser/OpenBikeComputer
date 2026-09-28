@@ -78,7 +78,8 @@ public enum RideEdit {
     /// starts within `maxGapMeters` and `maxGapSeconds` of where the first ended, on the same
     /// trip day or both without a trip.
     public static func suggestsMerge(_ first: Ride, _ second: Ride) -> Bool {
-        guard let end = first.points.last, let start = second.points.first else { return false }
+        guard first.summary.isDemo == second.summary.isDemo,
+              let end = first.points.last, let start = second.points.first else { return false }
         let gap = start.timestamp.timeIntervalSince(end.timestamp)
         guard gap >= 0, gap <= maxGapSeconds,
               end.coordinate.routeDistance(to: start.coordinate) <= maxGapMeters
@@ -165,7 +166,7 @@ extension RideSummary {
             climbMeters: climb, descentMeters: descent, trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: heartRate.average, maxHeartRate: heartRate.max, avgCadence: cadence.average,
             avgPower: power.average, maxPower: power.max, energyKJ: joules.map { Int($0 / 1_000) },
-            bikeType: bikeType, trip: trip, zoneLimits: zoneLimits
+            bikeType: bikeType, trip: trip, zoneLimits: zoneLimits, isDemo: isDemo
         )
     }
 }

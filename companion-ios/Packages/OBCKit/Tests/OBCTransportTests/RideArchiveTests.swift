@@ -28,11 +28,13 @@ struct RideArchiveTests {
         ])
     }
 
-    @Test func archiveReopensWithAllFieldsAndExactSource() throws {
+    @Test(arguments: [false, true])
+    func archiveReopensWithAllFieldsAndExactSource(isDemo: Bool) throws {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = FileLibraryStore(directory: dir)
-        let ride = ride()
+        var ride = ride()
+        ride.summary.isDemo = isDemo
         let receipt = try #require(try store.archiveRide(ride))
         #expect(receipt.source == ride.summary.source)
         let reopened = FileLibraryStore(directory: dir)

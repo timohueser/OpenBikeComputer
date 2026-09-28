@@ -1309,7 +1309,7 @@ public final class MainScreenModel {
     /// The listed ride after `id` in time: the partner of Merge with next.
     public func nextRide(after id: RideID) -> RideSummary? {
         guard let ride = rides.first(where: { $0.id == id }) else { return nil }
-        return rides.filter { $0.date > ride.date }.min { $0.date < $1.date }
+        return rides.filter { $0.date > ride.date && $0.isDemo == ride.isDemo }.min { $0.date < $1.date }
     }
 
     /// Join the next ride onto this one. The time between the two does not count as moving time.

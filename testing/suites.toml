@@ -101,10 +101,15 @@ name = "obc-web-assemble"
 fixtures = true
 triggers = ["apps/obc-web-assemble/tests/fixture/**"]
 
+# The factory ride is built from the app's bundled route.
+[[package]]
+name = "obc-replay"
+triggers = ["companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx"]
+
 # The board runs the host crate's detour and ride logic; no Cargo edge carries that.
 [[package]]
 name = "obc-host-core"
-triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/flat_ride.rs", "firmware/obc-fw-nrf54l/src/demo_rides.rs"]
+triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/flat_ride.rs", "firmware/obc-fw-nrf54l/src/factory_demo_ride.rs"]
 
 # The phone's router test reads the web builder's fixture; no Cargo edge carries that.
 [[package]]

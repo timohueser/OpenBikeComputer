@@ -47,6 +47,7 @@ let package = Package(
         .target(
             name: "OBCFormats",
             dependencies: ["OBCDomain"],
+            resources: [.process("Resources")],
             swiftSettings: languageMode
         ),
         .target(
