@@ -16,12 +16,14 @@
     let {
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
-        showRoute = true, center = [8.0, 46.7], zoom = 11,
+        showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
         onEmptyClick, onPointSelect, onPointMove, onDayEndDrag, onLegClick, onInsert, onDrawn, onPoiClick, onVisibleRange, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         pickMode?: boolean; showRoute?: boolean; theme?: "light" | "dark"; hillshade?: boolean; contours?: boolean;
+        /** Route progress the elevation profile points at. */
+        hoverProgress?: number | null;
         center?: Coordinate; zoom?: number;
         onEmptyClick?: (coordinate: Coordinate) => void;
         onPointSelect?: (id: string) => void;
@@ -55,6 +57,7 @@
     let hover = $state<LineHit | null>(null);
     let overPoi = $state(false);
     let insertDot: maplibregl.Marker;
+    let hoverDot: maplibregl.Marker;
     let press: { hit: LineHit; start: maplibregl.Point; moved: boolean } | null = null;
     let sketch: Coordinate[] | null = null;
     let sketchEnd: maplibregl.Point;
@@ -262,6 +265,7 @@
         dem.setupMaplibre(maplibregl);
         const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
+        hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
             map = new maplibregl.Map({ container, center, zoom, style: mapStyle(theme, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
             fitInitialRoute();
@@ -310,6 +314,7 @@
             clearTimeout(refit);
             markerList.forEach((marker) => marker.remove());
             insertDot.remove();
+            hoverDot.remove();
             calloutPopup?.remove();
             map?.remove();
             maplibregl.removeProtocol(dem.sharedDemProtocolId);
@@ -340,6 +345,11 @@
     $effect(() => {
         const ids = [...highlightedPlaceIds];
         if (map && ready && map.getLayer("planner-pois-matched")) map.setFilter("planner-pois-matched", ["in", ["to-string", ["id"]], ["literal", ids]]);
+    });
+    $effect(() => {
+        if (!map) return;
+        if (hoverProgress !== null && coordinates.length) hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress)).addTo(map);
+        else hoverDot.remove();
     });
     $effect(() => {
         if (!map) return;
@@ -396,7 +406,8 @@
             const dayEnd = point.kind === "dayend";
             const draggable = dayEnd ? !!onDayEndDrag : !!onPointMove && !point.fixed && point.kind !== "place";
             const button = document.createElement("button");
-            button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}${point.id === selectedId ? " selected" : ""}`;
+            const matched = highlightedPlaceIds.includes(point.id);
+            button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}${point.id === selectedId ? " selected" : ""}${matched ? " matched" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.label);
             button.setAttribute("aria-pressed", String(point.id === selectedId));
@@ -449,7 +460,7 @@
     .popup-storage { display: none; }
     .map-status { position: absolute; bottom: 32px; left: 12px; right: 12px; padding: 10px 12px; background: var(--panel, white); color: var(--ink, #1c1b14); border: 1px solid var(--line-strong, #bcb9aa); font-size: 13px; }
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
-    :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 12px var(--sans, sans-serif); cursor: pointer; box-shadow: 0 2px 5px #0003; }
+    :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
     :global(.planner-map-pin.draggable) { cursor: grab; }
     :global(.planner-map-pin.via) { width: 16px; height: 16px; background: var(--route, #cc2a93); }
     :global(.planner-map-pin.pass) { width: 22px; height: 22px; background: var(--panel, #fff); border: 3px solid var(--route, #cc2a93); }
@@ -465,11 +476,15 @@
     :global(.planner-map-pin.night:not(.suggested)) { color: var(--panel, #fff); background: var(--pin-color, var(--ink, #1c1b14)); }
     :global(.planner-map-pin.dayend) { width: 24px; height: 24px; font: 600 11px var(--sans, sans-serif); color: var(--pin-color); background: var(--panel, #fff); border: 2px dashed var(--pin-color); }
     :global(.planner-map-pin.dayend.draggable) { cursor: ew-resize; }
+    :global(.planner-map-pin.matched) { border: 3px solid var(--amber, #f4a81d); }
     :global(.planner-map-pin.selected) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
+    :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }
-    .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: 0 5px 18px #0003; }
+    .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 8px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
+    .map-frame :global(.maplibregl-ctrl-scale) { font: 11px var(--sans, sans-serif); color: var(--ink, #1c1b14); }
+    .map-frame :global(.maplibregl-ctrl-attrib) { font: 11px var(--sans, sans-serif); }
     .map-frame :global(.maplibregl-popup-anchor-bottom .maplibregl-popup-tip) { border-top-color: var(--panel, white); }
     .map-frame :global(.maplibregl-popup-anchor-top .maplibregl-popup-tip) { border-bottom-color: var(--panel, white); }
 </style>

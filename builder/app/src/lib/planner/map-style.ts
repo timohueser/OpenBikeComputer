@@ -87,7 +87,7 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
     base.push({
         id: "contour-labels", type: "symbol", source: "contours", "source-layer": "contours", minzoom: 12,
         filter: ["==", ["get", "level"], 1],
-        layout: { "symbol-placement": "line", "symbol-spacing": 500, "text-field": ["concat", ["to-string", ["get", "ele"]], " m"], "text-font": ["Noto Sans Regular"], "text-size": 10 },
+        layout: { "symbol-placement": "line", "symbol-spacing": 500, "text-field": ["concat", ["to-string", ["get", "ele"]], " m"], "text-font": ["Noto Sans Regular"], "text-size": 11 },
         paint: { "text-color": dark ? "#b7b184" : "#596f65", "text-halo-color": dark ? "#20271e" : "#f4f2eb", "text-halo-width": 1 },
     });
     return {

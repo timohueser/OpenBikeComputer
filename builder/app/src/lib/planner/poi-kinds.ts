@@ -16,3 +16,12 @@ export const poiKinds: Record<string, { category: PlaceCategory; label: string }
     bicycle: { category: 'bike', label: 'Bike shop' },
     station: { category: 'station', label: 'Station' },
 };
+
+export const categoryLabels: Record<PlaceCategory, string> = {
+    hotel: 'Hotel',
+    camp: 'Campsite',
+    shop: 'Shop',
+    water: 'Drinking water',
+    bike: 'Bike shop',
+    station: 'Station',
+};

@@ -305,7 +305,7 @@ export function setSplit(trip: Trip, night: number, progress: number): Trip {
 }
 
 /** How far a day goes over the rider's targets; 0 when under or without a target. */
-export function dayOverTarget(trip: Trip, day: Day, ascent: number): { km: number; climb: number } {
+export function dayOverTarget(trip: Trip, day: Pick<Day, 'distance'>, ascent: number): { km: number; climb: number } {
     return {
         km: trip.limit > 0 ? Math.max(0, day.distance - trip.limit) : 0,
         climb: trip.climbTarget ? Math.max(0, ascent - trip.climbTarget) : 0,
